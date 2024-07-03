@@ -21,7 +21,7 @@ license = "Unlicense"
 name = "zid"
 readme = "README.md"
 repository = "https://github.com/Zaczero/zid"
-version = "1.0.0"
+version = "1.0.1"
 
 [tool.poetry.dependencies]
 python = "^3.8"
@@ -39,11 +39,12 @@ requires = ["poetry-core"]
 exclude = [
   ".direnv",
   ".git",
+  ".github",
   ".mypy_cache",
+  ".pytest_cache",
   ".ruff_cache",
   ".venv",
-  "build",
-  "dist",
+  ".vscode",
 ]
 
 indent-width = 4
