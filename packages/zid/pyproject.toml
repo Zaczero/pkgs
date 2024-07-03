@@ -16,7 +16,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 description = "ZID is a unique identifier with nice properties"
-keywords = ["zid", "unique identifier", "identifier", "id", "primary key"]
+keywords = ["uuid", "unique identifier", "identifier", "primary key"]
 license = "Unlicense"
 name = "zid"
 readme = "README.md"
