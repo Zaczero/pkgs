@@ -4,7 +4,7 @@
 [![Liberapay Patrons](https://shields.monicz.dev/liberapay/patrons/Zaczero?logo=liberapay&label=Patrons)](https://liberapay.com/Zaczero/)
 [![GitHub Sponsors](https://shields.monicz.dev/github/sponsors/Zaczero?logo=github&label=Sponsors&color=%23db61a2)](https://github.com/sponsors/Zaczero)
 
-**ZID** is a unique identifier with nice properties:
+**zid** is a unique identifier with nice properties:
 
 - It behaves like a 64-bit signed integer, so it can be safely used with external software, e.g., in a database. ZIDs will never overflow into negative values.
 
@@ -50,7 +50,7 @@ def zid() -> int:
     return (time << 16) | sequence
 ```
 
-## Basic Usage
+## Basic usage
 
 ```py
 from zid import zid
