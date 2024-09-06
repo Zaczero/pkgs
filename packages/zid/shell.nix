@@ -2,12 +2,15 @@
 
 let
   # Update packages with `nixpkgs-update` command
-  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/0aeab749216e4c073cece5d34bc01b79e717c3e0.tar.gz") { };
+  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/45508c1098a3fb7140ae3d86414cee8f5ee7511c.tar.gz") { };
 
   packages' = with pkgs; [
+    coreutils
     python313
-    poetry
+    uv
     ruff
+    gcc14
+    maturin
 
     (writeShellScriptBin "run-tests" ''
       set -e
@@ -18,8 +21,11 @@ let
         --cov-report "''${1:-xml}"
     '')
     (writeShellScriptBin "nixpkgs-update" ''
-      set -e
-      hash=$(git ls-remote https://github.com/NixOS/nixpkgs nixpkgs-unstable | cut -f 1)
+      hash=$(
+        curl --silent --location \
+        https://prometheus.nixos.org/api/v1/query \
+        -d "query=channel_revision{channel=\"nixpkgs-unstable\"}" | \
+        grep --only-matching --extended-regexp "[0-9a-f]{40}")
       sed -i -E "s|/nixpkgs/archive/[0-9a-f]{40}\.tar\.gz|/nixpkgs/archive/$hash.tar.gz|" shell.nix
       echo "Nixpkgs updated to $hash"
     '')
@@ -31,8 +37,8 @@ let
     [ "$current_python" != "${python313}" ] && rm -rf .venv/
 
     echo "Installing Python dependencies"
-    poetry env use ${python313}/bin/python
-    poetry install --compile
+    echo "${python313}/bin/python" > .python-version
+    uv sync --frozen
 
     echo "Activating Python virtual environment"
     source .venv/bin/activate

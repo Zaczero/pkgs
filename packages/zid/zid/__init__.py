@@ -37,13 +37,13 @@ def zid() -> int:
             _random_buffer.write(urandom(RANDOM_BUFFER_SIZE))
             _random_buffer.seek(0)
             rand = _random_buffer.read(2)
-        _last_sequence = sequence = int.from_bytes(rand)
+        _last_sequence = sequence = int.from_bytes(rand, 'big')
         _last_time = time
 
     return (time << 16) | sequence
 
 
-def _zid_simple() -> int:
+def _zid_simple() -> int:  # pyright: ignore[reportUnusedFunction]
     global _last_time, _last_sequence
 
     # UNIX timestamp in milliseconds
@@ -56,7 +56,7 @@ def _zid_simple() -> int:
     if _last_time == time:
         _last_sequence = sequence = (_last_sequence + 1) & 0xFFFF
     else:
-        _last_sequence = sequence = int.from_bytes(urandom(2))
+        _last_sequence = sequence = int.from_bytes(urandom(2), 'big')
         _last_time = time
 
     return (time << 16) | sequence
