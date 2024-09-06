@@ -215,3 +215,5 @@ Cargo.lock
 
 # Python version lock
 .python-version
+
+.intentionally-empty-file.*

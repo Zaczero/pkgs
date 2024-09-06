@@ -12,8 +12,11 @@ let
     gcc14
     maturin
 
-    (writeShellScriptBin "run-tests" ''
+    (writeShellScriptBin "build" ''
       set -e
+      maturin build
+    '')
+    (writeShellScriptBin "run-tests" ''
       python -m pytest . \
         --verbose \
         --no-header \
