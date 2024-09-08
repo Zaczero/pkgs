@@ -10,6 +10,7 @@ let
     uv
     ruff
     maturin
+    (lib.optional stdenv.isDarwin libiconv)
 
     (writeShellScriptBin "make" "maturin develop --uv")
     (writeShellScriptBin "run-tests" ''
