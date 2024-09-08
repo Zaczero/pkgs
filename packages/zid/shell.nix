@@ -37,6 +37,8 @@ let
     current_python=''${current_python%/bin/*}
     [ "$current_python" != "${python313}" ] && rm -rf .venv/
 
+    export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
+
     echo "Installing Python dependencies"
     echo "${python313}/bin/python" > .python-version
     NIX_ENFORCE_PURITY=0 uv sync --frozen
