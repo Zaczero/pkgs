@@ -1,0 +1,15 @@
+[package]
+edition = "2021"
+name = "zid"
+version = "1.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+name = "zid"
+
+[dependencies]
+pyo3 = {version = "0.22.2", features = ["extension-module", "generate-import-lib", "abi3-py38"]}
+rand = "0.8.5"
+
+[profile.release]
+overflow-checks = true
