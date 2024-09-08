@@ -51,13 +51,11 @@ jobs:
         run: |
           nix-store --import < /tmp/nix-cache
 
-      - name: Cache Python venv
+      - name: Cache Python packages
         uses: actions/cache@v4
         with:
           key: python-${{ env.CACHE_KEY }}-${{ hashFiles('uv.lock') }}
-          path: |
-            ~/.cache/uv
-            .venv
+          path: ~/.cache/uv
 
       - name: Install dependencies
         run: |

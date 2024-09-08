@@ -14,6 +14,7 @@ let
     cargo
     maturin
 
+    (writeShellScriptBin "make" "maturin develop --uv")
     (writeShellScriptBin "run-tests" ''
       python -m pytest . \
         --verbose \
