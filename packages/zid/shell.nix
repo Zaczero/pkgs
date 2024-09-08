@@ -10,6 +10,8 @@ let
     uv
     ruff
     gcc14
+    rustc
+    cargo
     maturin
 
     (writeShellScriptBin "run-tests" ''
