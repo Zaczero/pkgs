@@ -61,7 +61,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          nix-shell --run true
+          nix-shell --pure --run true
 
       - name: Export Nix store cache
         if: steps.nix-cache.outputs.cache-hit != 'true'

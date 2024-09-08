@@ -39,7 +39,7 @@ let
 
     echo "Installing Python dependencies"
     echo "${python313}/bin/python" > .python-version
-    uv sync --frozen
+    NIX_ENFORCE_PURITY=0 uv sync --frozen
 
     echo "Activating Python virtual environment"
     source .venv/bin/activate
