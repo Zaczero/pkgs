@@ -36,7 +36,7 @@ def zid() -> int:
 
     # UNIX timestamp in milliseconds
     time: int = time_ns() // 1_000_000
-    if time > 0x7FFFFFFFFFFF:
+    if time > 0x7FFF_FFFF_FFFF:
         raise OverflowError('Time value is too large')
 
     # CSPRNG-initialized sequence numbers
