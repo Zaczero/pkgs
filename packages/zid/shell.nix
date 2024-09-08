@@ -2,7 +2,7 @@
 
 let
   # Update packages with `nixpkgs-update` command
-  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/45508c1098a3fb7140ae3d86414cee8f5ee7511c.tar.gz") { };
+  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/9bb1e7571aadf31ddb4af77fc64b2d59580f9a39.tar.gz") { };
 
   packages' = with pkgs; [
     coreutils
@@ -10,8 +10,6 @@ let
     uv
     ruff
     gcc14
-    rustc
-    cargo
     maturin
 
     (writeShellScriptBin "make" "maturin develop --uv")
@@ -37,8 +35,6 @@ let
     current_python=$(readlink -e .venv/bin/python || echo "")
     current_python=''${current_python%/bin/*}
     [ "$current_python" != "${python313}" ] && rm -rf .venv/
-
-    export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
 
     echo "Installing Python dependencies"
     echo "${python313}/bin/python" > .python-version
