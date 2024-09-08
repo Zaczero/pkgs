@@ -16,13 +16,15 @@
 
 ## Installation
 
+The recommended installation method is through the PyPI package manager. The project is implemented in Rust, offering excellent performance characteristics. Several pre-built binary wheels are available for Linux, macOS, and Windows, with support for both x64 and ARM architectures.
+
 ```sh
 pip install zid
 ```
 
 ## Installation (copy & paste)
 
-Alternatively, you can copy and paste the following code for an installation-free ZID generator. This code excludes some performance optimizations and utility methods for the sake of simplicity:
+Alternatively, you can copy and paste the following code for an installation-free ZID generator. This code excludes performance optimizations and utility methods for the sake of simplicity and portability:
 
 ```py
 from os import urandom
@@ -57,6 +59,10 @@ from zid import zid
 zid()  # -> 112723768038396241
 zid()  # -> 112723768130153517
 zid()  # -> 112723768205368402
+
+from zid import zids
+zids(3)
+# -> [113103096068704205, 113103096068704206, 113103096068704207]
 
 from zid import parse_zid_timestamp
 parse_zid_timestamp(112723768038396241)
