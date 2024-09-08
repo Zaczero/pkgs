@@ -30,7 +30,7 @@ jobs:
           - macos-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixpkgs-24.05-darwin
@@ -233,6 +233,7 @@ jobs:
 
   sdist:
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
       - name: Build sdist
