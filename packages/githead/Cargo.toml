@@ -1,11 +1,11 @@
 [package]
 edition = "2021"
-name = "githash"
+name = "githead"
 version = "1.0.0"
 
 [lib]
 crate-type = ["cdylib"]
-name = "githash"
+name = "githead"
 
 [dependencies]
 pyo3 = { version = "0.22.2", features = ["abi3-py38", "extension-module"] }

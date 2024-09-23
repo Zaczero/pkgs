@@ -7,7 +7,7 @@ use std::{
 
 #[pyfunction]
 #[pyo3(signature = (dir_ = PathBuf::from(".git")))]
-fn githash(dir_: PathBuf) -> PyResult<String> {
+fn githead(dir_: PathBuf) -> PyResult<String> {
     let head_path: PathBuf = dir_.join("HEAD");
     let head_raw = fs::read_to_string(head_path)?;
     let head = head_raw.trim_end();
@@ -33,6 +33,6 @@ fn githash(dir_: PathBuf) -> PyResult<String> {
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(githash, m)?)?;
+    m.add_function(wrap_pyfunction!(githead, m)?)?;
     Ok(())
 }

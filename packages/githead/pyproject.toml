@@ -21,13 +21,13 @@ dependencies = []
 description = "Simple utility for getting the current git commit hash"
 dynamic = ["version"]
 keywords = ["commit", "git", "hash", "vcs", "version-control"]
-name = "githash"
+name = "githead"
 readme = "README.md"
 requires-python = ">=3.8"
 
 [project.urls]
-Issues = "https://github.com/Zaczero/githash/issues"
-Repository = "https://github.com/Zaczero/githash"
+Issues = "https://github.com/Zaczero/githead/issues"
+Repository = "https://github.com/Zaczero/githead"
 
 [build-system]
 build-backend = "maturin"
@@ -35,7 +35,7 @@ requires = ["maturin>=1.7,<2.0"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "githash._lib"
+module-name = "githead._lib"
 python-source = "python"
 
 [tool.uv]
@@ -147,10 +147,10 @@ multiline-quotes = "double"
 max-args = 10
 
 [tool.pyright]
-include = ["python/githash", "tests"]
+include = ["python/githead", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.8"
-strict = ["python/githash"]
+strict = ["python/githead"]
 
 [tool.pytest.ini_options]
 addopts = "--quiet"

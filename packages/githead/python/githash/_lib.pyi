@@ -1,9 +1,9 @@
 from os import PathLike
 
-def githash(dir_: PathLike[str] | str = '.git') -> str:
+def githead(dir_: PathLike[str] | str = '.git') -> str:
     """
     Get the current git commit hash.
 
-    >>> githash()
+    >>> githead()
     'bca663418428d603eea8243d08a5ded19eb19a34'
     """
