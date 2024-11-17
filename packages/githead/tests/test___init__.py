@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from githead import githead
 
 GIT_PATH = Path('tests/git')
@@ -31,5 +32,7 @@ def test_reference_not_found():
 
 def test_reference_outside_git():
     HEAD_PATH.write_text('ref: ../test___init__.py\n')
-    with pytest.raises(ValueError, match='HEAD references outside of .git directory'):
+    with pytest.raises(
+        ValueError, match='HEAD references outside of tests/git directory'
+    ):
         githead(GIT_PATH)

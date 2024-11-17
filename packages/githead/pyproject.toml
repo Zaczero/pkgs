@@ -10,35 +10,37 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
-  "Programming Language :: Rust",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
 dependencies = []
 description = "Simple utility for getting the current git commit hash (HEAD)"
-dynamic = ["version"]
-keywords = ["commit", "git", "hash", "vcs", "version-control"]
+keywords = [
+  "commit",
+  "git",
+  "git-commit",
+  "hash",
+  "head",
+  "vcs",
+  "version-control",
+]
 name = "githead"
 readme = "README.md"
 requires-python = ">=3.9"
+version = "1.2.0"
 
 [project.urls]
 Issues = "https://github.com/Zaczero/githead/issues"
 Repository = "https://github.com/Zaczero/githead"
 
-[build-system]
-build-backend = "maturin"
-requires = ["maturin>=1.7,<2.0"]
-
-[tool.maturin]
-features = ["pyo3/extension-module"]
-module-name = "githead._lib"
-python-source = "python"
-
 [tool.uv]
 dev-dependencies = ["pytest"]
+package = true
+python-downloads = "never"
+python-preference = "only-system"
+
+[tool.setuptools]
+packages = ["githead"]
 
 [tool.ruff]
 exclude = [
@@ -52,11 +54,10 @@ exclude = [
 ]
 
 indent-width = 4
-line-length = 120
+line-length = 88
 target-version = "py39"
 
 [tool.ruff.lint]
-# custom + https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
 ignore = [
   "B017",   # assert-raises-exception
   "COM812", # missing-trailing-comma
@@ -79,7 +80,7 @@ ignore = [
   "TRY003", # raise-vanilla-args
   "W191",   # tab-indentation
 ]
-# see https://docs.astral.sh/ruff/rules/ for rules documentation
+# see https://docs.astral.sh/ruff/rules/
 select = [
   "A",     # flake8-builtins
   "ARG",   # flake8-unused-arguments
@@ -92,7 +93,8 @@ select = [
   "E9",
   "F",     # pyflakes
   "FA",    # flake8-future-annotations
-  "FLY",   # flynt  # "FURB", # refurb
+  "FLY",   # flynt
+  "FURB",  # refurb
   "G",     # flake8-logging-format
   "I",     # isort
   "ICN",   # flake8-import-conventions
@@ -103,6 +105,10 @@ select = [
   "NPY",   # numpy
   "PERF",  # perflint
   "PIE",   # flake8-pie
+  "PLC",   # pylint
+  "PLE",   # pylint
+  "PLR",   # pylint
+  "PLW",   # pylint
   "PT",    # flake8-pytest-style
   "PTH",   # flake8-use-pathlib
   "PYI",   # flake8-pyi
@@ -121,21 +127,14 @@ select = [
   "YTT",   # flake8-2020
 ]
 
-# allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
-
-# allow unused variables when underscore-prefixed.
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.format]
 indent-style = "space"
 line-ending = "lf"
 quote-style = "single"
 skip-magic-trailing-comma = false
-
-[tool.ruff.lint.flake8-builtins]
-builtins-ignorelist = ["input"]
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"
@@ -146,10 +145,10 @@ multiline-quotes = "double"
 max-args = 10
 
 [tool.pyright]
-include = ["python/githead", "tests"]
+include = ["githead", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.9"
-strict = ["python/githead"]
+strict = ["githead"]
 
 [tool.pytest.ini_options]
 addopts = "--quiet"
