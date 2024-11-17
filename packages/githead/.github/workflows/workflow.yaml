@@ -64,11 +64,11 @@ jobs:
         run: nix-shell --pure --run run-tests
 
       - name: Build distributions
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.runner == 'ubuntu-latest'
         run: nix-shell --pure --run uv build
 
       - name: Upload distributions
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: dist
