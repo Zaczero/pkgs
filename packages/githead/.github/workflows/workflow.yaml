@@ -65,7 +65,7 @@ jobs:
 
       - name: Build distributions
         if: matrix.runner == 'ubuntu-latest'
-        run: nix-shell --pure --run uv build
+        run: nix-shell --pure --run "uv build"
 
       - name: Upload distributions
         if: matrix.runner == 'ubuntu-latest'
