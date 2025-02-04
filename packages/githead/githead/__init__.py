@@ -17,7 +17,7 @@ def githead(git_dir: PathLike[str] | str = '.git') -> str:
     head_path = dir_path.joinpath('HEAD')
     head = head_path.read_text().strip()
 
-    is_symbolic = head.startswith('ref: ')
+    is_symbolic = head[:5] == 'ref: '
     if not is_symbolic:
         return head
 
