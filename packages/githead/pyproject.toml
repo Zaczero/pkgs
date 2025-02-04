@@ -33,14 +33,20 @@ version = "1.2.1"
 Issues = "https://github.com/Zaczero/githead/issues"
 Repository = "https://github.com/Zaczero/githead"
 
+[dependency-groups]
+dev = [
+  "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.uv]
-dev-dependencies = ["pytest"]
+compile-bytecode = true
 package = true
 python-downloads = "never"
 python-preference = "only-system"
-
-[tool.setuptools]
-packages = ["githead"]
 
 [tool.ruff]
 exclude = [

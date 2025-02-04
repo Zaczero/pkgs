@@ -35,9 +35,8 @@ let
     [ "$current_python" != "${python313}" ] && rm -rf .venv/
 
     echo "Installing Python dependencies"
-    export UV_COMPILE_BYTECODE=1
     export UV_PYTHON="${python313}/bin/python"
-    NIX_ENFORCE_PURITY=0 uv sync --frozen
+    uv sync --frozen
 
     echo "Activating Python virtual environment"
     source .venv/bin/activate
