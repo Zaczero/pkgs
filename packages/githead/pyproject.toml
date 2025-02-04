@@ -3,7 +3,7 @@ authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: The Unlicense (Unlicense)",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -27,7 +27,7 @@ keywords = [
 name = "githead"
 readme = "README.md"
 requires-python = ">=3.9"
-version = "1.2.1"
+version = "1.2.2"
 
 [project.urls]
 Issues = "https://github.com/Zaczero/githead/issues"
