@@ -49,16 +49,6 @@ python-downloads = "never"
 python-preference = "only-system"
 
 [tool.ruff]
-exclude = [
-  ".direnv",
-  ".git",
-  ".github",
-  ".pytest_cache",
-  ".ruff_cache",
-  ".venv",
-  ".vscode",
-]
-
 indent-width = 4
 line-length = 88
 target-version = "py39"
