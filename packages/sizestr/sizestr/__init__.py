@@ -1,6 +1,6 @@
 from math import isfinite, log
 
-VERSION = '1.2.0'
+__version__ = '1.2.1'
 
 _SUFFIXES = (' KiB', ' MiB', ' GiB', ' TiB', ' PiB', ' EiB', ' ZiB')
 
