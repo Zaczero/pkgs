@@ -3,16 +3,13 @@ authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: The Unlicense (Unlicense)",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
-  "Programming Language :: Rust",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
@@ -20,39 +17,37 @@ dependencies = []
 description = "Simple and fast formatting of sizes for Python"
 dynamic = ["version"]
 keywords = ["file-size", "human-readable", "humanize", "stringify"]
+license = "0BSD"
 name = "sizestr"
 readme = "README.md"
 requires-python = ">=3.9"
 
+[dependency-groups]
+dev = ["pytest"]
+
 [project.urls]
-Issues = "https://github.com/Zaczero/sizestr/issues"
+Issues     = "https://github.com/Zaczero/sizestr/issues"
 Repository = "https://github.com/Zaczero/sizestr"
 
 [build-system]
-build-backend = "maturin"
-requires = ["maturin>=1.7,<2.0"]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.maturin]
-features = ["pyo3/extension-module"]
-module-name = "sizestr._lib"
-python-source = "python"
+[tool.hatch.version]
+path = "sizestr/__init__.py"
 
 [tool.uv]
-dev-dependencies = ["pytest"]
-
-[tool.ruff]
-exclude = [
-  ".direnv",
-  ".git",
-  ".github",
-  ".pytest_cache",
-  ".ruff_cache",
-  ".venv",
-  ".vscode",
+package = true
+python-downloads = "never"
+python-preference = "only-system"
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "starlette_compress/__init__.py" },
 ]
 
-indent-width = 4
-line-length = 120
+[tool.ruff]
+indent-width   = 4
+line-length    = 88
 target-version = "py39"
 
 [tool.ruff.lint]
@@ -121,17 +116,13 @@ select = [
   "YTT",   # flake8-2020
 ]
 
-# allow fix for all enabled rules (when `--fix`) is provided.
-fixable = ["ALL"]
+fixable   = ["ALL"]
 unfixable = []
 
-# allow unused variables when underscore-prefixed.
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-
 [tool.ruff.format]
-indent-style = "space"
-line-ending = "lf"
-quote-style = "single"
+indent-style              = "space"
+line-ending               = "lf"
+quote-style               = "single"
 skip-magic-trailing-comma = false
 
 [tool.ruff.lint.flake8-builtins]
@@ -139,19 +130,19 @@ builtins-ignorelist = ["input"]
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"
-inline-quotes = "single"
+inline-quotes    = "single"
 multiline-quotes = "double"
 
 [tool.ruff.lint.pylint]
 max-args = 10
 
 [tool.pyright]
-include = ["python/sizestr", "tests"]
+include        = ["sizestr", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.9"
-strict = ["python/sizestr"]
+pythonVersion  = "3.9"
+strict         = ["sizestr"]
 
 [tool.pytest.ini_options]
-addopts = "--quiet"
+addopts    = "--quiet"
 minversion = "6.0"
-testpaths = ["tests"]
+testpaths  = ["tests"]

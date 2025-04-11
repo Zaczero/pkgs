@@ -1,4 +1,5 @@
 import pytest
+
 from sizestr import sizestr
 
 
@@ -16,7 +17,7 @@ from sizestr import sizestr
         (-1023, '-1023 B'),
         (float('inf'), '(inf)'),
         (float('-inf'), '(-inf)'),
-        (float('NaN'), '(NaN)'),
+        (float('NaN'), '(nan)'),
         (1e24, '847.0 ZiB'),
         (1e25, '(too large to display)'),
     ],

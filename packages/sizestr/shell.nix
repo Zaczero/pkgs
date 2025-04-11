@@ -2,17 +2,15 @@
 
 let
   # Update packages with `nixpkgs-update` command
-  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/41dea55321e5a999b17033296ac05fe8a8b5a257.tar.gz") { };
+  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/d19cf9dfc633816a437204555afeb9e722386b76.tar.gz") { };
 
   packages' = with pkgs; [
     coreutils
     python313
     uv
+    hatch
     ruff
-    maturin
-    (lib.optional stdenv.isDarwin libiconv)
 
-    (writeShellScriptBin "make" "maturin develop --uv")
     (writeShellScriptBin "run-tests" ''
       python -m pytest . \
         --verbose \
@@ -31,6 +29,7 @@ let
 
   shell' = with pkgs; lib.optionalString isDevelopment ''
     export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
     export TZ=UTC
 
     current_python=$(readlink -e .venv/bin/python || echo "")
@@ -38,14 +37,14 @@ let
     [ "$current_python" != "${python313}" ] && rm -rf .venv/
 
     echo "Installing Python dependencies"
-    echo "${python313}/bin/python" > .python-version
-    NIX_ENFORCE_PURITY=0 uv sync --frozen
+    export UV_PYTHON="${python313}/bin/python"
+    uv sync --frozen
 
     echo "Activating Python virtual environment"
     source .venv/bin/activate
   '';
 in
-pkgs.mkShell {
+pkgs.mkShellNoCC {
   buildInputs = packages';
   shellHook = shell';
 }

@@ -8,8 +8,6 @@ Simple and fast formatting of sizes for Python.
 
 ## Installation
 
-The recommended installation method is through the PyPI package manager. The project is implemented in Rust and several pre-built binary wheels are available for Linux, macOS, and Windows, with support for both x64 and ARM architectures.
-
 ```sh
 pip install sizestr
 ```
