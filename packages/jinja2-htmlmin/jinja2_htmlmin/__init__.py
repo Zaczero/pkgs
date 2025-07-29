@@ -36,13 +36,17 @@ if TYPE_CHECKING:
         cls: type[HTMLMinParser]
 
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 _ESCAPE_RE = re.compile(r"\{(?:\{.*?\}|%.*?%|#.*?#)\}")
 _UNESCAPE_RE = re.compile(r"__jinja2_htmlmin (\d+)__")
 
 
-def minify_loader(loader: _Loader, /, **kwargs: "Unpack[_HTMLMinKwargs]") -> _Loader:
+def minify_loader(
+    loader: "_Loader",
+    /,
+    **kwargs: "Unpack[_HTMLMinKwargs]",
+) -> "_Loader":
     """
     Enhance a Jinja2 loader to automatically minify HTML templates.
 
