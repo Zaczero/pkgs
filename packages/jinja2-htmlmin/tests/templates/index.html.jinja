@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <!-- This comment should be removed -->
+</head>
+
+<body>
+
+    <h1>{{ title }}</h1>
+
+    <div class="content">
+        <p> Extra whitespace should be removed </p>
+        <p>{{ content | safe }}</p>
+
+        {%- if items -%}
+        <ul>
+            {% for item in items %}
+            <li data-id="{{ item.id }}">{{ item.name }}</li>
+            {% endfor %}
+        </ul>
+        {%- endif -%}
+
+        <form>
+            <input type="text" required="" disabled checked>
+            <input type="checkbox" checked="checked">
+            <button type="submit" disabled="disabled">Submit</button>
+        </form>
+
+        <div class="{{ 'active' if is_active else 'inactive' }}">
+            Dynamic content
+        </div>
+
+        <pre>
+            This content    should preserve
+                spacing and line breaks
+        </pre>
+    </div>
+
+</body>
+
+</html>
