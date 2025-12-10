@@ -11,6 +11,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const BUFFER_SIZE: usize = 128 * 1024; // 128 KiB
 
+#[inline]
+fn make_zid(time: u64, sequence: u16) -> u64 {
+    (time << 16) | (sequence as u64)
+}
+
 struct State {
     buffer: Box<[u8; BUFFER_SIZE]>,
     buffer_pos: usize,
@@ -31,10 +36,6 @@ impl State {
         self.buffer_pos += 2;
     }
 
-    #[inline]
-    fn zid(&self) -> u64 {
-        (self.time << 16) | (self.sequence as u64)
-    }
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
@@ -68,7 +69,7 @@ fn zid() -> u64 {
         state.next_rand_sequence();
         state.time = time;
     }
-    state.zid()
+    make_zid(state.time, state.sequence)
 }
 
 #[pyfunction]
@@ -82,7 +83,7 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
         )));
     }
 
-    let base = {
+    let (time, start_seq) = {
         let time = time();
         let mut state = STATE.lock();
 
@@ -93,12 +94,12 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
             state.time = time;
         }
 
-        let base = state.zid();
+        let start_seq = state.sequence;
         state.sequence = state.sequence.wrapping_add((n - 1) as u16);
-        base
+        (state.time, start_seq)
     };
 
-    PyList::new(py, (0..n).map(|i| base + i as u64))
+    PyList::new(py, (0..n).map(|i| make_zid(time, start_seq.wrapping_add(i as u16))))
 }
 
 #[pyfunction]
