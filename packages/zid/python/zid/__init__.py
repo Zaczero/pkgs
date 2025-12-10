@@ -1,8 +1,7 @@
-from zid._lib import parse_zid_timestamp, set_random_buffer_size, zid, zids
+from zid._lib import parse_zid_timestamp, zid, zids
 
 __all__ = [
+    'parse_zid_timestamp',
     'zid',
     'zids',
-    'parse_zid_timestamp',
-    'set_random_buffer_size',
 ]

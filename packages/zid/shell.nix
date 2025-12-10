@@ -1,15 +1,20 @@
-{ isDevelopment ? true }:
+{ }:
 
 let
   # Update packages with `nixpkgs-update` command
-  pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/41dea55321e5a999b17033296ac05fe8a8b5a257.tar.gz") { };
+  pkgs =
+    import
+      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/677fbe97984e7af3175b6c121f3c39ee5c8d62c9.tar.gz")
+      { };
 
   packages' = with pkgs; [
     coreutils
-    python313
-    uv
-    ruff
+    curl
+    jq
     maturin
+    python314
+    ruff
+    uv
     (lib.optional stdenv.isDarwin libiconv)
 
     (writeShellScriptBin "make" "maturin develop --uv")
@@ -22,25 +27,27 @@ let
     '')
     (writeShellScriptBin "nixpkgs-update" ''
       hash=$(
-        curl --silent --location \
-        https://prometheus.nixos.org/api/v1/query \
-        -d "query=channel_revision{channel=\"nixpkgs-unstable\"}" | \
-        grep --only-matching --extended-regexp "[0-9a-f]{40}")
-      sed -i -E "s|/nixpkgs/archive/[0-9a-f]{40}\.tar\.gz|/nixpkgs/archive/$hash.tar.gz|" shell.nix
+        curl -fsSL \
+          https://prometheus.nixos.org/api/v1/query \
+          -d 'query=channel_revision{channel="nixpkgs-unstable"}' \
+        | jq -r ".data.result[0].metric.revision")
+      sed -i "s|nixpkgs/archive/[0-9a-f]\\{40\\}|nixpkgs/archive/$hash|" shell.nix
       echo "Nixpkgs updated to $hash"
     '')
   ];
 
-  shell' = with pkgs; lib.optionalString isDevelopment ''
-    export PYTHONNOUSERSITE=1
+  shell' = with pkgs; ''
     export TZ=UTC
+    export NIX_ENFORCE_NO_NATIVE=0
+    export PYTHONNOUSERSITE=1
 
     current_python=$(readlink -e .venv/bin/python || echo "")
     current_python=''${current_python%/bin/*}
-    [ "$current_python" != "${python313}" ] && rm -rf .venv/
+    [ "$current_python" != "${python314}" ] && rm -rf .venv/
 
     echo "Installing Python dependencies"
-    echo "${python313}/bin/python" > .python-version
+    export UV_NATIVE_TLS=true
+    export UV_PYTHON="${python314}/bin/python"
     NIX_ENFORCE_PURITY=0 uv sync --frozen
 
     echo "Activating Python virtual environment"

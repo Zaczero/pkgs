@@ -1,25 +1,28 @@
-use pyo3::exceptions::{PyOverflowError, PyValueError};
+#![feature(likely_unlikely)]
+
+use parking_lot::Mutex;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rand::rngs::OsRng;
-use rand::RngCore;
-use std::sync::Mutex;
+use pyo3::types::PyList;
+use rand::Rng;
+use std::hint::{likely, unlikely};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const BUFFER_SIZE: usize = 128 * 1024; // 128 KiB
+
 struct State {
-    buffer: Vec<u8>,
+    buffer: Box<[u8; BUFFER_SIZE]>,
     buffer_pos: usize,
-    buffer_size: usize,
     time: u64,
     sequence: u16,
 }
 
 impl State {
-    fn next_rand_sequence(&mut self) -> () {
-        if self.buffer_pos + 2 > self.buffer.len() {
-            let buffer_size = self.buffer_size;
-            self.buffer.resize(buffer_size, 0);
+    fn next_rand_sequence(&mut self) {
+        if unlikely(self.buffer_pos + 2 > BUFFER_SIZE) {
+            rand::rng().fill(self.buffer.as_mut_slice());
             self.buffer_pos = 0;
-            OsRng.fill_bytes(&mut self.buffer);
         }
         self.sequence = u16::from_be_bytes([
             self.buffer[self.buffer_pos],
@@ -28,92 +31,87 @@ impl State {
         self.buffer_pos += 2;
     }
 
+    #[inline]
     fn zid(&self) -> u64 {
         (self.time << 16) | (self.sequence as u64)
     }
 }
 
-static STATE: Mutex<State> = Mutex::new(State {
-    buffer: Vec::new(),
-    buffer_pos: 0,
-    buffer_size: 128 * 1024, // 128 KiB
-    time: 0,
-    sequence: 0,
+static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
+    Mutex::new(State {
+        // All-zeros is valid for [u8; N]
+        buffer: unsafe { Box::new_zeroed().assume_init() },
+        buffer_pos: BUFFER_SIZE, // Fill on first call
+        time: 0,
+        sequence: 0,
+    })
 });
 
-fn time() -> PyResult<u64> {
+#[inline]
+fn time() -> u64 {
     let time128 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    if time128 > 0x7FFF_FFFF_FFFF {
-        return Err(PyOverflowError::new_err("Time value is too large"));
-    }
-    Ok(time128 as u64)
+    debug_assert!(time128 <= 0x7FFF_FFFF_FFFF, "Time value is too large");
+    time128 as u64
 }
 
 #[pyfunction]
-fn zid() -> PyResult<u64> {
-    let time = time()?;
-    let mut state = STATE.lock().unwrap();
+fn zid() -> u64 {
+    let time = time();
+    let mut state = STATE.lock();
 
-    if state.time == time {
+    if likely(state.time == time) {
         state.sequence = state.sequence.wrapping_add(1);
     } else {
         state.next_rand_sequence();
         state.time = time;
     }
-    Ok(state.zid())
+    state.zid()
 }
 
-#[pyfunction()]
-fn zids(n: usize) -> PyResult<Vec<u64>> {
-    if n == 0 {
-        return Ok(Vec::new());
+#[pyfunction]
+fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
+    if unlikely(n == 0) {
+        return Ok(PyList::empty(py));
     }
-    if n > (u16::MAX as usize) + 1 {
+    if unlikely(n > (u16::MAX as usize) + 1) {
         return Err(PyValueError::new_err(format!(
             "Only up to 65536 ZIDs can be generated at once (attempted {n})"
         )));
     }
 
-    let time = time()?;
-    let mut zids = Vec::with_capacity(n);
-    let mut state = STATE.lock().unwrap();
+    let base = {
+        let time = time();
+        let mut state = STATE.lock();
 
-    if state.time == time {
-        state.sequence = state.sequence.wrapping_add(1);
-    } else {
-        state.next_rand_sequence();
-        state.time = time;
-    }
-    zids.push(state.zid());
+        if likely(state.time == time) {
+            state.sequence = state.sequence.wrapping_add(1);
+        } else {
+            state.next_rand_sequence();
+            state.time = time;
+        }
 
-    for _ in 1..n {
-        state.sequence = state.sequence.wrapping_add(1);
-        zids.push(state.zid());
-    }
+        let base = state.zid();
+        state.sequence = state.sequence.wrapping_add((n - 1) as u16);
+        base
+    };
 
-    Ok(zids)
+    PyList::new(py, (0..n).map(|i| base + i as u64))
 }
 
 #[pyfunction]
-fn parse_zid_timestamp(zid: u64) -> PyResult<u64> {
-    Ok((zid >> 16) as u64)
+#[inline]
+fn parse_zid_timestamp(zid: u64) -> u64 {
+    zid >> 16
 }
 
-#[pyfunction]
-fn set_random_buffer_size(size: usize) -> PyResult<()> {
-    STATE.lock().unwrap().buffer_size = size;
-    Ok(())
-}
-
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zid, m)?)?;
     m.add_function(wrap_pyfunction!(zids, m)?)?;
     m.add_function(wrap_pyfunction!(parse_zid_timestamp, m)?)?;
-    m.add_function(wrap_pyfunction!(set_random_buffer_size, m)?)?;
     Ok(())
 }
