@@ -6,7 +6,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rand::Rng;
 use std::hint::{likely, unlikely};
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BUFFER_SIZE: usize = 128 * 1024; // 128 KiB
@@ -17,16 +16,25 @@ fn make_zid(time: u64, sequence: u16) -> u64 {
 }
 
 struct State {
-    buffer: Box<[u8; BUFFER_SIZE]>,
+    buffer: [u8; BUFFER_SIZE],
     buffer_pos: usize,
     time: u64,
     sequence: u16,
 }
 
 impl State {
+    const fn new() -> Self {
+        Self {
+            buffer: [0; BUFFER_SIZE],
+            buffer_pos: BUFFER_SIZE,
+            time: 0,
+            sequence: 0,
+        }
+    }
+
     fn next_rand_sequence(&mut self) {
         if unlikely(self.buffer_pos + 2 > BUFFER_SIZE) {
-            rand::rng().fill(self.buffer.as_mut_slice());
+            rand::rng().fill(&mut self.buffer);
             self.buffer_pos = 0;
         }
         self.sequence = u16::from_be_bytes([
@@ -35,18 +43,9 @@ impl State {
         ]);
         self.buffer_pos += 2;
     }
-
 }
 
-static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
-    Mutex::new(State {
-        // All-zeros is valid for [u8; N]
-        buffer: unsafe { Box::new_zeroed().assume_init() },
-        buffer_pos: BUFFER_SIZE, // Fill on first call
-        time: 0,
-        sequence: 0,
-    })
-});
+static STATE: Mutex<State> = parking_lot::const_mutex(State::new());
 
 #[inline]
 fn time() -> u64 {
