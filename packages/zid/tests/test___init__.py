@@ -1,6 +1,7 @@
 from time import time_ns
 
 import pytest
+
 from zid import parse_zid_timestamp, zid, zids
 
 
