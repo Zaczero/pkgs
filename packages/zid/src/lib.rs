@@ -59,8 +59,8 @@ fn time() -> u64 {
 
 #[pyfunction]
 fn zid() -> u64 {
-    let time = time();
     let mut state = STATE.lock();
+    let time = time();
 
     if likely(state.time == time) {
         state.sequence = state.sequence.wrapping_add(1);
@@ -83,8 +83,8 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
     }
 
     let (time, start_seq) = {
-        let time = time();
         let mut state = STATE.lock();
+        let time = time();
 
         if likely(state.time == time) {
             state.sequence = state.sequence.wrapping_add(1);
@@ -98,7 +98,10 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
         (state.time, start_seq)
     };
 
-    PyList::new(py, (0..n).map(|i| make_zid(time, start_seq.wrapping_add(i as u16))))
+    PyList::new(
+        py,
+        (0..n).map(|i| make_zid(time, start_seq.wrapping_add(i as u16))),
+    )
 }
 
 #[pyfunction]
