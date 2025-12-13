@@ -41,6 +41,29 @@ dev = [
 requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
+[tool.cibuildwheel]
+enable = ["cpython-freethreading", "pypy"]
+test-command = "pytest {project}/tests"
+test-requires = ["pytest"]
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+before-all = "curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly"
+environment.PATH = "$HOME/.cargo/bin:$PATH"
+
+[tool.cibuildwheel.macos]
+environment.MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_x86_64"
+inherit.environment = "append"
+environment.RUSTFLAGS = "-C target-cpu=x86-64-v2"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-musllinux_x86_64"
+inherit.environment = "append"
+environment.RUSTFLAGS = "-C target-cpu=x86-64-v2"
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "zid._lib"
