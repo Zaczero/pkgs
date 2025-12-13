@@ -1,0 +1,84 @@
+[project]
+name = "jinja2-htmlmin"
+requires-python = ">=3.9"
+dependencies = ["htmlmin2", "jinja2"]
+description = "Automatic HTML minification for Jinja2 templates"
+readme = "README.md"
+license = "0BSD"
+keywords = [
+  "fastapi",
+  "html",
+  "htmlmin",
+  "jinja",
+  "jinja2",
+  "minification",
+  "minify",
+  "optimization",
+  "performance",
+  "response",
+  "starlette",
+  "template",
+  "web",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.9",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Topic :: Software Development :: Code Generators",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing :: Markup :: HTML",
+  "Typing :: Typed",
+]
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Zaczero/jinja2-htmlmin"
+Issues = "https://github.com/Zaczero/jinja2-htmlmin/issues"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "jinja2_htmlmin/__init__.py"
+
+[tool.uv]
+package = true
+python-downloads = "never"
+python-preference = "only-system"
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "jinja2_htmlmin/__init__.py" },
+]
+
+[tool.ruff]
+indent-width = 4
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+ignore = ["ANN", "D", "PGH", "INP", "S101"]
+select = ["ALL"]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+preview = true
+
+[tool.pyright]
+include = ["jinja2_htmlmin"]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
