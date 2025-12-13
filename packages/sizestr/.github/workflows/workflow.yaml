@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Setup NIX_PATH
+        run: |
+          nixpkgs_hash=$(grep -Eo 'archive/[0-9a-f]{40}\.tar\.gz' shell.nix | cut -d'/' -f2 | cut -d'.' -f1)
+          path=$(nix eval --impure --expr "(import (fetchTarball \"https://github.com/NixOS/nixpkgs/archive/$nixpkgs_hash.tar.gz\") {}).path")
+          echo "NIX_PATH=nixpkgs=$path" >> $GITHUB_ENV
+
+      - name: Assert tag name matches version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(nix-shell --pure --run "hatch version" 2>/dev/null | tail -n1)
+          tag_name=${{ github.ref_name }}
+          if [ "$version" != "$tag_name" ]; then
+            echo "Tag name mismatch: $version != $tag_name"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: nix-shell --pure --run "run-tests"
+
+      - name: Build distribution
+        run: nix-shell --pure --run "uv build"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: dist/
+
+  publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sizestr
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
