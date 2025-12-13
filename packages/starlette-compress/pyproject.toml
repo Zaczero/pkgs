@@ -1,0 +1,182 @@
+[project]
+name = "starlette-compress"
+requires-python = ">=3.9"
+dependencies = [
+  "brotli>=1; platform_python_implementation == 'CPython'",
+  "brotlicffi>=1; platform_python_implementation != 'CPython'",
+  "starlette",
+  "zstandard>=0.15; python_version<'3.14'",
+]
+description = "Compression middleware for Starlette - supporting ZStd, Brotli, and GZip"
+license = "0BSD"
+readme = "README.md"
+keywords = [
+  "asgi",
+  "brotli",
+  "compression",
+  "deflate",
+  "encoding",
+  "fastapi",
+  "gzip",
+  "http",
+  "middleware",
+  "performance",
+  "response",
+  "starlette",
+  "web",
+  "zstandard",
+  "zstd",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Web Environment",
+  "Framework :: AnyIO",
+  "Framework :: AsyncIO",
+  "Framework :: FastAPI",
+  "Framework :: Trio",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.9",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Zaczero/starlette-compress"
+Issues = "https://github.com/Zaczero/starlette-compress/issues"
+
+[dependency-groups]
+dev = ["brotlicffi", "coverage", "httpx", "pytest", "trio", "uvloop"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "starlette_compress/__init__.py"
+
+[tool.uv]
+package = true
+python-downloads = "never"
+python-preference = "only-system"
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "starlette_compress/__init__.py" },
+]
+
+[tool.ruff]
+indent-width = 4
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+ignore = [
+  "ARG001", # unused-function-argument
+  "COM812", # missing-trailing-comma
+  "COM819", # prohibited-trailing-comma
+  "D206", # indent-with-spaces
+  "D300", # triple-single-quotes
+  "E111", # indentation-with-invalid-multiple
+  "E114", # indentation-with-invalid-multiple-comment
+  "E117", # over-indented
+  "E501", # line-too-long
+  "ISC001", # single-line-implicit-string-concatenation
+  "ISC002", # multi-line-implicit-string-concatenation
+  "Q000", # bad-quotes-inline-string
+  "Q001", # bad-quotes-multiline-string
+  "Q002", # bad-quotes-docstring
+  "Q003", # avoidable-escaped-quote
+  "S101", # assert
+  "SIM108", # if-else-block-instead-of-if-exp
+  "TRY003", # raise-vanilla-args
+  "W191", # tab-indentation
+]
+# see https://docs.astral.sh/ruff/rules/
+select = [
+  "A", # flake8-builtins
+  "ARG", # flake8-unused-arguments
+  "ASYNC", # flake8-async
+  "B", # flake8-bugbear
+  "C4", # flake8-comprehensions
+  "DTZ", # flake8-datetimez
+  "E4", # pycodestyle
+  "E7",
+  "E9",
+  "F", # pyflakes
+  "FA", # flake8-future-annotations
+  "FBT", # flake8-boolean-trap
+  "FLY", # flynt
+  "FURB", # refurb
+  "G", # flake8-logging-format
+  "I", # isort
+  "ICN", # flake8-import-conventions
+  "INT", # flake8-gettext
+  "ISC", # flake8-implicit-str-concat
+  "LOG", # flake8-logging
+  "N", # pep8-naming
+  "NPY", # numpy
+  "PERF", # perflint
+  "PIE", # flake8-pie
+  "PLC", # pylint
+  "PLE", # pylint
+  "PLW", # pylint
+  "PT", # flake8-pytest-style
+  "PTH", # flake8-use-pathlib
+  "PYI", # flake8-pyi
+  "Q", # flake8-quotes
+  "RSE", # flake8-raise
+  "RUF", # ruff
+  "S", # flake8-bandit
+  "SIM", # flake8-simplify
+  "SLF", # flake8-self
+  "SLOT", # flake8-slots
+  "T10", # flake8-debugger
+  "T20", # flake8-print
+  "TCH", # flake8-type-checking
+  "TID", # flake8-tidy-imports
+  "TRY", # tryceratops
+  "UP", # pyupgrade
+  "W6",
+  "YTT", # flake8-2020
+]
+
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+indent-style = "space"
+line-ending = "lf"
+quote-style = "single"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "single"
+multiline-quotes = "double"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.pyright]
+include = ["starlette_compress", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+addopts = "-ra --quiet --disable-pytest-warnings"
+minversion = "6.0"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["starlette_compress"]
