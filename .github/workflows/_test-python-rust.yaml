@@ -17,6 +17,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CIBW_ENABLE: "cpython-freethreading pypy"
+      CIBW_SKIP: "pp39-* pp310-*"
       CIBW_TEST_COMMAND: "pytest {project}/${{ inputs.package }}/tests"
       CIBW_TEST_REQUIRES: "pytest"
       CIBW_BUILD_VERBOSITY: "1"
