@@ -125,6 +125,9 @@ jobs:
     needs: [detect, test-python]
     if: needs.detect.outputs.release-type == 'python'
     uses: ./.github/workflows/_release.yaml
+    permissions:
+      id-token: write
+      attestations: write
     with:
       package: ${{ needs.detect.outputs.release-package }}
       version: ${{ needs.detect.outputs.release-version }}
@@ -134,6 +137,9 @@ jobs:
     needs: [detect, test-python-rust]
     if: needs.detect.outputs.release-type == 'python-rust'
     uses: ./.github/workflows/_release.yaml
+    permissions:
+      id-token: write
+      attestations: write
     with:
       package: ${{ needs.detect.outputs.release-package }}
       version: ${{ needs.detect.outputs.release-version }}
