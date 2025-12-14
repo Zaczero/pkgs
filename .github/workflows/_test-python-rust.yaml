@@ -23,16 +23,19 @@ jobs:
       CIBW_ENVIRONMENT_MACOS: 'MACOSX_DEPLOYMENT_TARGET="11.0"'
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv
 
       - name: Install Rust toolchain
         if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@nightly
 
-      - uses: pypa/cibuildwheel@v3
-        with:
-          package-dir: ${{ inputs.package }}
-          output-dir: dist
+      - name: Build wheels
+        run: >
+          uv tool run
+          --from "cibuildwheel<4"
+          cibuildwheel
+          --output-dir dist
+          ${{ inputs.package }}
 
       - name: Build sdist
         if: matrix.runner == 'ubuntu-latest'
