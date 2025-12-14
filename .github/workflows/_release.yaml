@@ -75,7 +75,7 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv
+      - uses: astral-sh/setup-uv@main
 
       - name: Build
         run: uv build -o dist ${{ inputs.package }}
