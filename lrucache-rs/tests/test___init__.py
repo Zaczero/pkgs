@@ -96,3 +96,47 @@ def test_getitem():
     assert cache['2'] == 2
     with pytest.raises(KeyError, match="'3'"):
         cache['3']
+
+
+def test_hash_collision_with_non_equal_keys():
+    class Key:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def __hash__(self) -> int:
+            return 0
+
+        def __eq__(self, other: object) -> bool:
+            if not isinstance(other, Key):
+                return NotImplemented
+            return self.value == other.value
+
+        def __repr__(self) -> str:
+            return f'Key({self.value!r})'
+
+    # Arrange: three distinct keys that all collide in the hash table.
+    k1 = Key('a')
+    k2 = Key('b')
+    k3 = Key('c')
+    assert hash(k1) == hash(k2) == hash(k3)
+    assert k1 != k2
+
+    cache = LRUCache[object, int](2)
+
+    # Act: insert two colliding, non-equal keys.
+    cache[k1] = 1
+    cache[k2] = 2
+
+    # Assert: collision does not overwrite or alias the keys.
+    assert len(cache) == 2
+    assert cache.get(k1) == 1
+    assert cache.get(k2) == 2
+
+    # Act: touch k1 so k2 becomes the LRU, then insert another colliding key.
+    cache.get(Key('a'))  # Equal (but not identical) key, forces __eq__ path.
+    cache[k3] = 3
+
+    # Assert: only the true LRU entry is evicted, even under hash collisions.
+    assert cache.get(k2) is None
+    assert cache.get(k1) == 1
+    assert cache.get(k3) == 3

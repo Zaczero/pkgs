@@ -26,7 +26,6 @@ impl RandBuffer {
         }
     }
 
-    #[inline]
     fn next_u16(&mut self) -> u16 {
         if unlikely(self.pos + 2 > RAND_BUFFER_SIZE) {
             rand::rng().fill_bytes(&mut self.buffer);
@@ -42,7 +41,6 @@ thread_local! {
     static RAND_BUFFER: UnsafeCell<RandBuffer> = UnsafeCell::new(RandBuffer::new());
 }
 
-#[inline]
 fn next_rand_u16() -> u16 {
     // Safety: `RAND_BUFFER` is thread-local, so this `UnsafeCell` is only accessed from the
     // current thread, and we don't leak references outside this closure.
@@ -51,7 +49,6 @@ fn next_rand_u16() -> u16 {
 
 static LAST_ZID: AtomicU64 = AtomicU64::new(0);
 
-#[inline]
 fn time() -> u64 {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -61,12 +58,10 @@ fn time() -> u64 {
     time
 }
 
-#[inline]
 fn make_zid(time: u64, sequence: u16) -> u64 {
     (time << 16) | (sequence as u64)
 }
 
-#[inline]
 fn reserve_sequences(additional: u16) -> (u64, u16) {
     let now = time();
     loop {
@@ -122,7 +117,6 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
 }
 
 #[pyfunction]
-#[inline]
 fn parse_zid_timestamp(zid: u64) -> u64 {
     zid >> 16
 }

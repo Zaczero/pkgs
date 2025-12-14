@@ -7,24 +7,16 @@ _D = TypeVar('_D')
 
 class LRUCache(MutableMapping[_K, _V]):
     def __init__(self, maxsize: int) -> None:
-        """
-        Initialize the LRUCache with a specified maximum size.
-        """
+        """Initialize the LRUCache with a specified maximum size."""
 
     def __len__(self) -> int:
-        """
-        Return the number of items currently in the cache.
-        """
+        """Return the number of items currently in the cache."""
 
     def __contains__(self, key: object, /) -> bool:
-        """
-        Check if the given key is present in the cache.
-        """
+        """Check if the given key is present in the cache."""
 
     def __iter__(self) -> Iterator[_K]:
-        """
-        Return an iterator over the keys in the cache.
-        """
+        """Return an iterator over the keys in the cache."""
 
     def __setitem__(self, key: _K, value: _V, /) -> None:
         """
