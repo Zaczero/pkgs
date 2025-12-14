@@ -22,7 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           working-directory: ${{ inputs.package }}
           cache-dependency-glob: |
-            ${{ inputs.package }}/pyproject.toml
+            pyproject.toml
           cache-suffix: ${{ inputs.package }}-py${{ matrix.python-version }}
 
       - name: Install Python
