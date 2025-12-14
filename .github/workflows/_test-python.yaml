@@ -30,4 +30,5 @@ jobs:
 
       - name: Test
         run: |
+          cd ${{ inputs.package }}
           uv sync && uv run pytest
