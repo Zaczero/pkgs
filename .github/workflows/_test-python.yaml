@@ -9,7 +9,6 @@ on:
 
 jobs:
   resolve_python_versions:
-    name: Resolve Python Versions
     runs-on: ubuntu-latest
     outputs:
       python-versions: ${{ steps.resolve.outputs.python-versions }}
