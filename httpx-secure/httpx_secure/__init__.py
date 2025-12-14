@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 
     _CacheKey = tuple[str, int]  # (hostname, port)
 
-    _AsyncClientT = TypeVar("_AsyncClientT", bound=AsyncClient)
+    _AsyncClientT = TypeVar('_AsyncClientT', bound=AsyncClient)
 
-__version__ = "1.2.0"
+__version__ = '1.2.0'
 
 
 class SSRFProtectionError(RequestError):
@@ -45,7 +45,7 @@ class SSRFProtectionError(RequestError):
 
 
 class _DNSCache:
-    __slots__ = ("_cache", "_max_size", "_ttl")
+    __slots__ = ('_cache', '_max_size', '_ttl')
 
     def __init__(self, max_size: int, ttl: float) -> None:
         self._cache: OrderedDict[
@@ -92,12 +92,12 @@ class _DNSCache:
 
 class _SSRFProtectionHook:
     __slots__ = (
-        "_cache",
-        "_locks",
-        "check_globally_reachable",
-        "connect_timeout",
-        "custom_validator",
-        "happy_eyeballs_delay",
+        '_cache',
+        '_locks',
+        'check_globally_reachable',
+        'connect_timeout',
+        'custom_validator',
+        'happy_eyeballs_delay',
     )
 
     def __init__(
@@ -146,7 +146,7 @@ class _SSRFProtectionHook:
             ip_addr = ip_address(ip_str)
         except ValueError as e:
             raise SSRFProtectionError(
-                f"Invalid IP address format: {ip_str!r}",
+                f'Invalid IP address format: {ip_str!r}',
                 hostname=hostname,
                 ip_addr=None,
                 port=port,
@@ -154,7 +154,7 @@ class _SSRFProtectionHook:
 
         if self.check_globally_reachable and not ip_addr.is_global:
             raise SSRFProtectionError(
-                f"Access denied: IP address {ip_str!r} is not globally reachable",
+                f'Access denied: IP address {ip_str!r} is not globally reachable',
                 hostname=hostname,
                 ip_addr=ip_addr,
                 port=port,
@@ -166,7 +166,7 @@ class _SSRFProtectionHook:
                 result = await result
             if not result:
                 raise SSRFProtectionError(
-                    f"Access denied: IP address {ip_str!r} failed custom validation",
+                    f'Access denied: IP address {ip_str!r} failed custom validation',
                     hostname=hostname,
                     ip_addr=ip_addr,
                     port=port,
@@ -210,13 +210,13 @@ class _SSRFProtectionHook:
     async def __call__(self, request: Request) -> None:
         url = request.url
         hostname = url.host
-        port = url.port or (443 if url.scheme in {"https", "wss"} else 80)
+        port = url.port or (443 if url.scheme in {'https', 'wss'} else 80)
 
         ip_str = await self._process(request, hostname, port)
 
         request.url = url.copy_with(host=ip_str)
-        request.headers["Host"] = hostname
-        request.extensions["sni_hostname"] = hostname
+        request.headers['Host'] = hostname
+        request.extensions['sni_hostname'] = hostname
 
 
 def httpx_ssrf_protection(
@@ -249,11 +249,11 @@ def httpx_ssrf_protection(
     """
     if not check_globally_reachable and custom_validator is None:
         raise ValueError(
-            "When check_globally_reachable is False, custom_validator must be provided "
-            "to ensure SSRF protection is not completely disabled",
+            'When check_globally_reachable is False, custom_validator must be provided '
+            'to ensure SSRF protection is not completely disabled',
         )
 
-    client.event_hooks["request"].append(
+    client.event_hooks['request'].append(
         _SSRFProtectionHook(
             cache=_DNSCache(dns_cache_size, dns_cache_ttl),
             check_globally_reachable=check_globally_reachable,

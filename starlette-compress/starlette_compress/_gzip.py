@@ -99,12 +99,10 @@ class GZipResponder:
                     buffer.truncate()
                 else:
                     return
-            await send(
-                {
-                    'type': 'http.response.body',
-                    'body': compressed_body,
-                    'more_body': more_body,
-                }
-            )
+            await send({
+                'type': 'http.response.body',
+                'body': compressed_body,
+                'more_body': more_body,
+            })
 
         await self.app(scope, receive, wrapper)

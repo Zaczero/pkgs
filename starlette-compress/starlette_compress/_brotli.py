@@ -95,9 +95,11 @@ class BrotliResponder:
             # streaming
             chunk = compressor.process(body)
             if chunk:
-                await send(
-                    {'type': 'http.response.body', 'body': chunk, 'more_body': True}
-                )
+                await send({
+                    'type': 'http.response.body',
+                    'body': chunk,
+                    'more_body': True,
+                })
             if more_body:
                 return
             chunk = compressor.finish()

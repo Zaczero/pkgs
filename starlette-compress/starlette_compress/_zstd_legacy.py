@@ -85,15 +85,19 @@ class ZstdResponder:
 
             # streaming
             for chunk in chunker.compress(body):  # type: ignore
-                await send(
-                    {'type': 'http.response.body', 'body': chunk, 'more_body': True}
-                )
+                await send({
+                    'type': 'http.response.body',
+                    'body': chunk,
+                    'more_body': True,
+                })
             if more_body:
                 return
             for chunk in chunker.finish():  # type: ignore
-                await send(
-                    {'type': 'http.response.body', 'body': chunk, 'more_body': True}
-                )
+                await send({
+                    'type': 'http.response.body',
+                    'body': chunk,
+                    'more_body': True,
+                })
 
             await send({'type': 'http.response.body'})
 

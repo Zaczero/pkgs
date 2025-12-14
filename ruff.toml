@@ -130,8 +130,5 @@ multiline-quotes = "double"
 max-args = 10
 
 [format]
-indent-style = "space"
-line-ending = "lf"
 quote-style = "single"
-skip-magic-trailing-comma = false
 preview = true

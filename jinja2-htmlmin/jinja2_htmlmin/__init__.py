@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from htmlmin.parser import HTMLMinParser
     from jinja2 import BaseLoader
 
-    _Loader = TypeVar("_Loader", bound=BaseLoader)
+    _Loader = TypeVar('_Loader', bound=BaseLoader)
 
     class _HTMLMinKwargs(TypedDict, total=False):
         remove_comments: bool
@@ -36,17 +36,17 @@ if TYPE_CHECKING:
         cls: type[HTMLMinParser]
 
 
-__version__ = "1.0.1"
+__version__ = '1.0.1'
 
-_ESCAPE_RE = re.compile(r"\{(?:\{.*?\}|%.*?%|#.*?#)\}")
-_UNESCAPE_RE = re.compile(r"__jinja2_htmlmin (\d+)__")
+_ESCAPE_RE = re.compile(r'\{(?:\{.*?\}|%.*?%|#.*?#)\}')
+_UNESCAPE_RE = re.compile(r'__jinja2_htmlmin (\d+)__')
 
 
 def minify_loader(
-    loader: "_Loader",
+    loader: '_Loader',
     /,
-    **kwargs: "Unpack[_HTMLMinKwargs]",
-) -> "_Loader":
+    **kwargs: 'Unpack[_HTMLMinKwargs]',
+) -> '_Loader':
     """
     Enhance a Jinja2 loader to automatically minify HTML templates.
 
@@ -84,7 +84,7 @@ def minify_loader(
         def repl_escape(match: re.Match[str]) -> str:
             id_ = len(lookup)
             lookup.append(match[0])
-            return f"__jinja2_htmlmin {id_:05d}__"
+            return f'__jinja2_htmlmin {id_:05d}__'
 
         lookup: list[str] = []
         source = _ESCAPE_RE.sub(repl_escape, source)
