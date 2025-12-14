@@ -1,0 +1,20 @@
+[package]
+name = "totp_rs"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "totp_rs"
+
+[dependencies]
+hmac = { version = "0.12.1", features = ["reset"] }
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
+sha1 = "0.10.6"
+sha2 = "0.10.8"
+subtle = "2.6.1"
+
+[profile.release]
+overflow-checks = true
+lto = true
+codegen-units = 1

@@ -28,8 +28,7 @@ const fn build_decode_lut() -> [u8; 256] {
     let mut i = 0;
     while i < 64 {
         let t = i as u32;
-        let x_chunk =
-            (((t >> 1) & 1) | (((t >> 3) & 1) << 1) | (((t >> 5) & 1) << 2)) as u8;
+        let x_chunk = (((t >> 1) & 1) | (((t >> 3) & 1) << 1) | (((t >> 5) & 1) << 2)) as u8;
         let y_chunk = ((t & 1) | (((t >> 2) & 1) << 1) | (((t >> 4) & 1) << 2)) as u8;
         let packed = x_chunk | (y_chunk << 3);
 
@@ -103,7 +102,7 @@ fn shortlink_decode(s: &str) -> PyResult<(f64, f64, u8)> {
     let mut z_offset: i8 = 0;
 
     for c in s.bytes() {
-        if unlikely((c & 0x80) != 0) {
+        if unlikely(!c.is_ascii()) {
             return Err(PyValueError::new_err(
                 "Invalid shortlink: expected ASCII string",
             ));

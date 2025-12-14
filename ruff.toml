@@ -39,6 +39,7 @@ ignore = [
   "PT011",  # pytest-raises-too-broad
   "PT018",  # pytest-composite-assertion
   "PT023",  # pytest-incorrect-mark-parentheses-style
+  "PYI015",  # assignment-default-in-stub
   "PYI021",  # docstring-in-stub
   "PYI025",  # unaliased-collections-abc-set-import
   "PYI041",  # redundant-numeric-union
@@ -99,7 +100,6 @@ select = [
   "PLR",  # pylint
   "PLW",  # pylint
   "PT",  # flake8-pytest-style
-  "PTH",  # flake8-use-pathlib
   "PYI",  # flake8-pyi
   "Q",  # flake8-quotes
   "RSE",  # flake8-raise
