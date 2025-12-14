@@ -20,19 +20,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          default_versions='["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]'
           versions_file="${{ inputs.package }}/.python-versions"
-
-          if [ -f "$versions_file" ]; then
-            versions="$(jq -R -s -c '
-              split("\n")
-              | map(gsub("\r$"; ""))
-              | map(select(length > 0))
-              | map(select(startswith("#") | not))
-            ' "$versions_file")"
-          else
-            versions="$default_versions"
+          if [ ! -f "$versions_file" ]; then
+            versions_file=".python-versions"
           fi
+
+          versions="$(jq -R -s -c '
+            split("\n")
+            | map(gsub("\r$"; ""))
+            | map(select(length > 0))
+            | map(select(startswith("#") | not))
+          ' "$versions_file")"
 
           echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
 
