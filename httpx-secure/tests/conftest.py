@@ -2,7 +2,7 @@ import pytest
 import pytest_asyncio
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):  # noqa: ARG001
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
     # run all tests in the session in the same event loop
     # https://pytest-asyncio.readthedocs.io/en/latest/how-to-guides/run_session_tests_in_same_loop.html
     session_scope_marker = pytest.mark.asyncio(loop_scope="session")

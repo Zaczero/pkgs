@@ -1,9 +1,7 @@
 from time import time_ns
 
 import pytest
-
 from zid import parse_zid_timestamp, zid, zids
-
 
 # Python's `time_ns()` and the Rust extension's `SystemTime::now()` can differ by a few milliseconds
 # on some platforms (notably Windows) due to different clock sources / resolution.

@@ -25,6 +25,7 @@ ignore = [
   "LOG015",  # root-logger-call
   "N803",  # invalid-argument-name
   "N806",  # non-lowercase-variable-in-function
+  "PLC0415",  # import-outside-top-level
   "PLR09",  # too-many-*
   "PLR1702",  # too-many-nested-blocks
   "PLR1704",  # redefined-argument-from-local
@@ -55,6 +56,7 @@ ignore = [
   "S6",
   "SIM105",  # suppressible-exception
   "SIM108",  # if-else-block-instead-of-if-exp
+  "SLF001",  # private-member-access
   "TRY003",  # raise-vanilla-args
   "W191",  # tab-indentation
 ]
@@ -108,6 +110,7 @@ select = [
   "SLOT",  # flake8-slots
   "T10",  # flake8-debugger
   "TD006",  # invalid-todo-capitalization
+  "TC",  # flake8-type-checking
   "TID",  # flake8-tidy-imports
   "TRY",  # tryceratops
   "UP",  # pyupgrade
