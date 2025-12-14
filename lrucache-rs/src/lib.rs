@@ -2,7 +2,7 @@ use ordered_hash_map::OrderedHashMap;
 use pyo3::{
     exceptions::{PyKeyError, PyValueError},
     prelude::*,
-    types::{PyIterator, PyTuple},
+    types::{PyIterator, PyTuple, PyType},
 };
 use std::hash::{Hash, Hasher};
 
@@ -33,6 +33,14 @@ struct LRUCache {
 
 #[pymethods]
 impl LRUCache {
+    #[classmethod]
+    fn __class_getitem__(
+        cls: &Bound<'_, PyType>,
+        _item: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyType>> {
+        Ok(cls.clone().unbind())
+    }
+
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
         if maxsize == 0 {

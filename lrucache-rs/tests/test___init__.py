@@ -10,7 +10,7 @@ def test_invalid_maxsize():
 
 
 def test_maxsize():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     cache['1'] = 1
     cache['2'] = 2
     cache['3'] = 3
@@ -25,7 +25,7 @@ def test_maxsize():
 
 
 def test_move_to_end():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     cache['1'] = 1
     cache['2'] = 2
     cache['3'] = 3
@@ -40,7 +40,7 @@ def test_move_to_end():
 
 
 def test_default():
-    cache: LRUCache[str, int] = LRUCache(1)
+    cache = LRUCache[str, int](1)
     cache['1'] = 1
     cache['2'] = 2
     assert cache.get('1') is None
@@ -50,7 +50,7 @@ def test_default():
 
 
 def test_len_and_delitem():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     assert len(cache) == 0
     cache['1'] = 1
     cache['2'] = 2
@@ -66,7 +66,7 @@ def test_len_and_delitem():
 
 
 def test_contains():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     assert '1' not in cache
     cache['1'] = 1
     assert '1' in cache
@@ -75,7 +75,7 @@ def test_contains():
 
 
 def test_iter():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     cache['1'] = 1
     cache['2'] = 2
     iterator = iter(cache)
@@ -89,7 +89,7 @@ def test_iter():
 
 
 def test_getitem():
-    cache: LRUCache[str, int] = LRUCache(2)
+    cache = LRUCache[str, int](2)
     cache['1'] = 1
     cache['2'] = 2
     assert cache['1'] == 1
