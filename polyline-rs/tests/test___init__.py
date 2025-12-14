@@ -43,8 +43,10 @@ from polyline_rs import decode_latlon, decode_lonlat, encode_latlon, encode_lonl
     ],
 )
 def test_encode_decode(coords, precision, expected):
+    coords_iter = ((v for v in c) for c in coords)
     coords_lonlat = tuple((x, y) for y, x in coords)
     assert encode_latlon(coords, precision) == expected
+    assert encode_latlon(coords_iter, precision) == expected
     assert encode_lonlat(coords_lonlat, precision) == expected
     assert all(
         decoded == pytest.approx(coord, abs=0.1**precision)
