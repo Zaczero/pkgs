@@ -16,7 +16,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - id: resolve
-        name: Resolve matrix from `.python-versions`
         run: |
           set -euo pipefail
 
@@ -33,6 +32,20 @@ jobs:
           ' "$versions_file")"
 
           echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@main
+
+      - name: Build
+        run: uv build -o dist ${{ inputs.package }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.package }}-ubuntu-latest
+          path: dist
 
   test:
     needs: resolve_python_versions
