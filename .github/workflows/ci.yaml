@@ -105,6 +105,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python-rust-packages != '[]'
     strategy:
+      fail-fast: false
       matrix:
         package: ${{ fromJson(needs.detect.outputs.python-rust-packages) }}
     uses: ./.github/workflows/_test-python-rust.yaml
@@ -115,6 +116,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python-packages != '[]'
     strategy:
+      fail-fast: false
       matrix:
         package: ${{ fromJson(needs.detect.outputs.python-packages) }}
     uses: ./.github/workflows/_test-python.yaml
