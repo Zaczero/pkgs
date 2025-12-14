@@ -1,0 +1,60 @@
+[project]
+name = "githead"
+description = "Simple utility for getting the current git commit hash (HEAD)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "0BSD"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "commit",
+  "git",
+  "git-commit",
+  "hash",
+  "head",
+  "vcs",
+  "version-control",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/githead"
+
+[dependency-groups]
+dev = [
+  "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "githead/__init__.py"
+
+[tool.pyright]
+include = ["githead", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+strict = ["githead"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"

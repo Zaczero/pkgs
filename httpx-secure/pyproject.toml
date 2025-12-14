@@ -1,0 +1,79 @@
+[project]
+name = "httpx-secure"
+description = "Drop-in SSRF protection for httpx"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "0BSD"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "anyio",
+  "async",
+  "asyncio",
+  "client",
+  "dns",
+  "dns-cache",
+  "http",
+  "httpx",
+  "security",
+  "ssrf",
+  "ssrf-protection",
+  "trio",
+  "web-security",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: AnyIO",
+  "Framework :: AsyncIO",
+  "Framework :: Trio",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+]
+dependencies = ["anyio>=3.0.0", "httpx>=0.20.0"]
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/httpx-secure"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "httpx_secure/__init__.py"
+
+[tool.pyright]
+include = ["httpx_secure"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "session"
+asyncio_mode = "auto"
+
+[tool.ruff]
+extend = "../ruff.toml"
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "httpx_secure/__init__.py" },
+]

@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["*/*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      python-rust-packages: ${{ steps.detect.outputs.python-rust-packages }}
+      python-packages: ${{ steps.detect.outputs.python-packages }}
+      release-package: ${{ steps.release.outputs.package }}
+      release-version: ${{ steps.release.outputs.version }}
+      release-type: ${{ steps.release.outputs.type }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: detect
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # On tag releases, always test the tagged package.
+            tag="${GITHUB_REF#refs/tags/}"
+            changed="${tag%/*}"
+          else
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              base="${{ github.event.pull_request.base.sha }}"
+            else
+              base="${{ github.event.before }}"
+            fi
+
+            git fetch --no-tags --depth=1 origin "$base"
+            files="$(git diff --name-only "$base" HEAD)"
+
+            test_all=false
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+
+              case "$file" in
+                .github/*)
+                  test_all=true
+                  break
+                  ;;
+                */*|.*|*.md|*.nix)
+                  ;;
+                *)
+                  test_all=true
+                  break
+                  ;;
+              esac
+            done <<<"$files"
+
+            if $test_all; then
+              # If shared repo files change, test everything.
+              list_all_packages() {
+                for d in */; do
+                  [ -d "$d" ] || continue
+                  echo "${d%/}"
+                done
+              }
+
+              changed="$(list_all_packages | sort)"
+            else
+              changed="$(cut -d'/' -f1 <<<"$files" | sort -u)"
+            fi
+          fi
+
+          python_rust_pkgs='[]'
+          python_pkgs='[]'
+
+          for pkg in $changed; do
+            [ ! -d "$pkg" ] && continue
+
+            if [ -f "$pkg/Cargo.toml" ]; then
+              python_rust_pkgs=$(echo "$python_rust_pkgs" | jq -c ". + [\"$pkg\"]")
+            elif [ -f "$pkg/pyproject.toml" ]; then
+              python_pkgs=$(echo "$python_pkgs" | jq -c ". + [\"$pkg\"]")
+            fi
+          done
+
+          echo "python-rust-packages=$python_rust_pkgs" >> $GITHUB_OUTPUT
+          echo "python-packages=$python_pkgs" >> $GITHUB_OUTPUT
+
+      - id: release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          package="${tag%/*}"
+          version="${tag#*/}"
+          if [ -f "$package/Cargo.toml" ]; then
+            type="python-rust"
+          else
+            type="python"
+          fi
+          echo "package=$package" >> $GITHUB_OUTPUT
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "type=$type" >> $GITHUB_OUTPUT
+
+  test-python-rust:
+    needs: detect
+    if: needs.detect.outputs.python-rust-packages != '[]'
+    strategy:
+      matrix:
+        package: ${{ fromJson(needs.detect.outputs.python-rust-packages) }}
+    uses: ./.github/workflows/_test-python-rust.yaml
+    with:
+      package: ${{ matrix.package }}
+
+  test-python:
+    needs: detect
+    if: needs.detect.outputs.python-packages != '[]'
+    strategy:
+      matrix:
+        package: ${{ fromJson(needs.detect.outputs.python-packages) }}
+    uses: ./.github/workflows/_test-python.yaml
+    with:
+      package: ${{ matrix.package }}
+
+  release-python:
+    needs: [detect, test-python]
+    if: needs.detect.outputs.release-type == 'python'
+    uses: ./.github/workflows/_release.yaml
+    with:
+      package: ${{ needs.detect.outputs.release-package }}
+      version: ${{ needs.detect.outputs.release-version }}
+    secrets: inherit
+
+  release-python-rust:
+    needs: [detect, test-python-rust]
+    if: needs.detect.outputs.release-type == 'python-rust'
+    uses: ./.github/workflows/_release.yaml
+    with:
+      package: ${{ needs.detect.outputs.release-package }}
+      version: ${{ needs.detect.outputs.release-version }}
+    secrets: inherit

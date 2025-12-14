@@ -1,0 +1,44 @@
+name: Test Rusty Python Package
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        required: true
+        type: string
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
+    runs-on: ${{ matrix.runner }}
+    env:
+      CIBW_ENABLE: "cpython-freethreading pypy"
+      CIBW_TEST_COMMAND: "pytest {project}/tests"
+      CIBW_TEST_REQUIRES: "pytest"
+      CIBW_BUILD_VERBOSITY: "1"
+      CIBW_BEFORE_ALL_LINUX: "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly"
+      CIBW_ENVIRONMENT_LINUX: ${{ matrix.runner == 'ubuntu-latest' && 'PATH="$HOME/.cargo/bin:$PATH" RUSTFLAGS="-C target-cpu=x86-64-v2"' || 'PATH="$HOME/.cargo/bin:$PATH"' }}
+      CIBW_ENVIRONMENT_MACOS: 'MACOSX_DEPLOYMENT_TARGET="11.0"'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Rust toolchain
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: pypa/cibuildwheel@v3
+        with:
+          package-dir: ${{ inputs.package }}
+          output-dir: dist
+
+      - name: Build sdist
+        if: matrix.runner == 'ubuntu-latest'
+        run: uv build --sdist -o dist ${{ inputs.package }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.package }}-${{ matrix.runner }}
+          path: dist

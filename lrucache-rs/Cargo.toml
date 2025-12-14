@@ -1,0 +1,17 @@
+[package]
+name = "lrucache_rs"
+version = "1.4.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "lrucache_rs"
+
+[dependencies]
+ordered_hash_map = "0.4.0"
+pyo3 = { version = "0.23.3", features = ["abi3-py39", "extension-module"] }
+
+[profile.release]
+overflow-checks = true
+lto = true
+codegen-units = 1

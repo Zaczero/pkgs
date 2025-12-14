@@ -1,0 +1,16 @@
+[package]
+name = "polyline_rs"
+version = "1.2.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "polyline_rs"
+
+[dependencies]
+pyo3 = { version = "0.23.3", features = ["abi3-py39", "extension-module"] }
+
+[profile.release]
+overflow-checks = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,87 @@
+[project]
+name = "starlette-compress"
+description = "Compression middleware for Starlette - supporting ZStd, Brotli, and GZip"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "0BSD"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "asgi",
+  "brotli",
+  "compression",
+  "deflate",
+  "encoding",
+  "fastapi",
+  "gzip",
+  "http",
+  "middleware",
+  "performance",
+  "response",
+  "starlette",
+  "web",
+  "zstandard",
+  "zstd",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Web Environment",
+  "Framework :: AnyIO",
+  "Framework :: AsyncIO",
+  "Framework :: FastAPI",
+  "Framework :: Trio",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "brotli>=1; platform_python_implementation == 'CPython'",
+  "brotlicffi>=1; platform_python_implementation != 'CPython'",
+  "starlette",
+  "zstandard>=0.15; python_version<'3.14'",
+]
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/starlette-compress"
+
+[dependency-groups]
+dev = ["brotlicffi", "coverage", "httpx", "pytest", "trio", "uvloop"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.coverage.run]
+source = ["starlette_compress"]
+
+[tool.hatch.version]
+path = "starlette_compress/__init__.py"
+
+[tool.pyright]
+include = ["starlette_compress", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "starlette_compress/__init__.py" },
+]

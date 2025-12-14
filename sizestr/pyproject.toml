@@ -1,0 +1,56 @@
+[project]
+name = "sizestr"
+description = "Simple and fast formatting of sizes for Python"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "0BSD"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = ["file-size", "human-readable", "humanize", "stringify"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/sizestr"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "sizestr/__init__.py"
+
+[tool.pyright]
+include = ["sizestr", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+strict = ["sizestr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "sizestr/__init__.py" },
+]

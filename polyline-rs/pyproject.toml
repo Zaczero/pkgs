@@ -1,0 +1,63 @@
+[project]
+name = "polyline-rs"
+description = "Fast Google Encoded Polyline encoding & decoding"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "0BSD"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "decoding",
+  "encoding",
+  "gis",
+  "google",
+  "mapbox",
+  "openstreetmap",
+  "polyline",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/polyline-rs"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "polyline_rs._lib"
+python-source = "python"
+
+[tool.pyright]
+include = ["python/polyline_rs", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+strict = ["python/polyline_rs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"
