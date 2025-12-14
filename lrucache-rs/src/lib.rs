@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 
 struct PyObjectWrapper {
     hash: isize,
-    obj: PyObject,
+    obj: Py<PyAny>,
 }
 
 impl Hash for PyObjectWrapper {
@@ -19,7 +19,7 @@ impl Hash for PyObjectWrapper {
 
 impl PartialEq for PyObjectWrapper {
     fn eq(&self, other: &Self) -> bool {
-        Python::with_gil(|py| self.obj.bind(py).eq(other.obj.bind(py)).unwrap())
+        Python::attach(|py| self.obj.bind(py).eq(other.obj.bind(py)).unwrap())
     }
 }
 
@@ -28,7 +28,7 @@ impl Eq for PyObjectWrapper {}
 #[pyclass]
 struct LRUCache {
     maxsize: usize,
-    cache: OrderedHashMap<PyObjectWrapper, PyObject>,
+    cache: OrderedHashMap<PyObjectWrapper, Py<PyAny>>,
 }
 
 #[pymethods]
@@ -49,7 +49,7 @@ impl LRUCache {
         self.cache.len()
     }
 
-    fn __contains__(&self, py: Python, key: PyObject) -> bool {
+    fn __contains__(&self, py: Python, key: Py<PyAny>) -> bool {
         self.cache.contains_key(&PyObjectWrapper {
             hash: key.bind(py).hash().unwrap(),
             obj: key,
@@ -57,12 +57,12 @@ impl LRUCache {
     }
 
     fn __iter__<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyIterator>> {
-        let objects: Vec<PyObject> = self.cache.keys().map(|key| key.obj.clone_ref(py)).collect();
+        let objects: Vec<Py<PyAny>> = self.cache.keys().map(|key| key.obj.clone_ref(py)).collect();
         let tuple = PyTuple::new(py, objects)?;
         PyIterator::from_object(tuple.as_any())
     }
 
-    fn __setitem__(&mut self, py: Python, key: PyObject, value: PyObject) {
+    fn __setitem__(&mut self, py: Python, key: Py<PyAny>, value: Py<PyAny>) {
         let key = PyObjectWrapper {
             hash: key.bind(py).hash().unwrap(),
             obj: key,
@@ -78,7 +78,7 @@ impl LRUCache {
         ()
     }
 
-    fn __getitem__(&mut self, py: Python, key: PyObject) -> PyResult<PyObject> {
+    fn __getitem__(&mut self, py: Python, key: Py<PyAny>) -> PyResult<Py<PyAny>> {
         let cache_key = PyObjectWrapper {
             hash: key.bind(py).hash().unwrap(),
             obj: key.clone_ref(py),
@@ -96,7 +96,7 @@ impl LRUCache {
         }
     }
 
-    fn __delitem__(&mut self, py: Python, key: PyObject) -> PyResult<()> {
+    fn __delitem__(&mut self, py: Python, key: Py<PyAny>) -> PyResult<()> {
         let cache_key = PyObjectWrapper {
             hash: key.bind(py).hash().unwrap(),
             obj: key.clone_ref(py),
@@ -113,7 +113,7 @@ impl LRUCache {
     }
 
     #[pyo3(signature = (key, /, default=None))]
-    fn get(&mut self, py: Python, key: PyObject, default: Option<PyObject>) -> PyObject {
+    fn get(&mut self, py: Python, key: Py<PyAny>, default: Option<Py<PyAny>>) -> Py<PyAny> {
         let cache_key = PyObjectWrapper {
             hash: key.bind(py).hash().unwrap(),
             obj: key,
