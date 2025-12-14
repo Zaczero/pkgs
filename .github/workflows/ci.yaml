@@ -121,21 +121,15 @@ jobs:
     with:
       package: ${{ matrix.package }}
 
-  release-python:
-    needs: [detect, test-python]
-    if: needs.detect.outputs.release-type == 'python'
-    uses: ./.github/workflows/_release.yaml
-    permissions:
-      id-token: write
-      attestations: write
-    with:
-      package: ${{ needs.detect.outputs.release-package }}
-      version: ${{ needs.detect.outputs.release-version }}
-    secrets: inherit
-
-  release-python-rust:
-    needs: [detect, test-python-rust]
-    if: needs.detect.outputs.release-type == 'python-rust'
+  release:
+    needs: [detect, test-python, test-python-rust]
+    if: >-
+      always()
+      && startsWith(github.ref, 'refs/tags/')
+      && (
+        (needs.detect.outputs.release-type == 'python' && needs.test-python.result == 'success')
+        || (needs.detect.outputs.release-type == 'python-rust' && needs.test-python-rust.result == 'success')
+      )
     uses: ./.github/workflows/_release.yaml
     permissions:
       id-token: write
