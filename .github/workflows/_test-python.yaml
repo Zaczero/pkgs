@@ -9,13 +9,25 @@ on:
 
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          ["3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@main
+        with:
+          python-version: ${{ matrix.python-version }}
+          working-directory: ${{ inputs.package }}
+          cache-dependency-glob: |
+            ${{ inputs.package }}/pyproject.toml
+          cache-suffix: ${{ inputs.package }}-py${{ matrix.python-version }}
+
+      - name: Install Python
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Test
         run: |
-          cd ${{ inputs.package }}
-          uv sync
-          uv run pytest
+          uv sync && uv run pytest
