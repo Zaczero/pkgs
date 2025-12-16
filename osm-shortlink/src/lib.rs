@@ -1,9 +1,11 @@
 #![feature(likely_unlikely)]
+#![feature(portable_simd)]
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyString;
 use std::hint::unlikely;
+use std::simd::u64x2;
 
 // 64 chars to encode 6 bits
 const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
@@ -44,17 +46,14 @@ const fn build_decode_lut() -> [u8; 256] {
 const DECODE_LUT: [u8; 256] = build_decode_lut();
 
 fn interleave_bits(x: u32, y: u32) -> u64 {
-    fn part1by1(n: u32) -> u64 {
-        let mut x = n as u64;
-        x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
-        x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
-        x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
-        x = (x | (x << 2)) & 0x3333_3333_3333_3333;
-        x = (x | (x << 1)) & 0x5555_5555_5555_5555;
-        x
-    }
-
-    (part1by1(x) << 1) | part1by1(y)
+    let mut v = u64x2::from_array([x as u64, y as u64]);
+    v = (v | (v << 16)) & u64x2::splat(0x0000_FFFF_0000_FFFF);
+    v = (v | (v << 8)) & u64x2::splat(0x00FF_00FF_00FF_00FF);
+    v = (v | (v << 4)) & u64x2::splat(0x0F0F_0F0F_0F0F_0F0F);
+    v = (v | (v << 2)) & u64x2::splat(0x3333_3333_3333_3333);
+    v = (v | (v << 1)) & u64x2::splat(0x5555_5555_5555_5555);
+    let [sx, sy] = v.to_array();
+    (sx << 1) | sy
 }
 
 #[pyfunction]
