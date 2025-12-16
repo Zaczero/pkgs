@@ -2,9 +2,9 @@
 
 Fast [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238)-compliant TOTP implementation.
 
-## Install
+## Installation
 
-```bash
+```sh
 pip install totp-rs
 ```
 
@@ -22,31 +22,26 @@ assert totp_verify(secret_b32, code)
 
 ## Benchmarks
 
-See `benchmark.py`.
-
 Benchmarks use `window=1` (typical drift tolerance).
 
-Linux x86_64, CPython 3.14, `pyperf --rigorous`:
+### Run
 
-```text
-+-----------------+---------------+-------------+
-| Benchmark       | totp-rs 1.0.0 | pyotp 2.9.0 |
-+-----------------+---------------+-------------+
-| generate        |      456.6 ns |   17.191 µs |
-| verify ok       |      436.7 ns |   35.315 µs |
-| verify prev ok  |      518.5 ns |   17.655 µs |
-| verify bad      |      598.9 ns |   53.279 µs |
-+-----------------+---------------+-------------+
-
-+-----------------+------------------+
-| Benchmark       | Speedup vs pyotp |
-+-----------------+------------------+
-| generate        |           37.65x |
-| verify ok       |           80.87x |
-| verify prev ok  |           34.05x |
-| verify bad      |           88.96x |
-+-----------------+------------------+
+```sh
+benchmark.py --impl totp-rs -o totp-rs.json --rigorous
+benchmark.py --impl pyotp -o pyotp.json --rigorous
 ```
+
+### Results
+
+Linux x86_64, CPython 3.14.0:
+
+| Benchmark      | pyotp-2.9.0 | totp-rs-1.0.0 |
+|----------------|:-------:|:---------------------:|
+| generate       | 17.6 us   | 466 ns: 37.85x faster |
+| verify ok      | 36.1 us   | 435 ns: 82.91x faster |
+| verify prev ok | 18.0 us   | 518 ns: 34.70x faster |
+| verify bad     | 53.2 us   | 598 ns: 88.92x faster |
+| Geometric mean | (ref)     | 55.78x faster         |
 
 ## Notes
 

@@ -33,7 +33,7 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/totp-rs"
 
 [dependency-groups]
 dev = ["pytest"]
-bench = ["prettytable", "pyotp", "pyperf"]
+bench = ["pyotp", "pyperf"]
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
