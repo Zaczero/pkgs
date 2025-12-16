@@ -15,7 +15,7 @@ Drop-in SSRF protection for httpx.
 
 ## Installation
 
-```bash
+```sh
 pip install httpx-secure
 ```
 

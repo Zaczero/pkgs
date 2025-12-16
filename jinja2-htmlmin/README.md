@@ -15,7 +15,7 @@ Automatic HTML minification for Jinja2 templates.
 
 ## Installation
 
-```bash
+```sh
 pip install jinja2-htmlmin
 ```
 
