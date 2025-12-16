@@ -1,0 +1,5 @@
+# RGB pixels (4x3)
+# Format: whitespace-separated `RRGGBB` hex tokens, row-major order.
+000000 ff0000 00ff00 0000ff
+ffff00 00ffff ff00ff ffffff
+808080 4080c0 c04080 201008

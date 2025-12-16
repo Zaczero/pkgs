@@ -1,0 +1,68 @@
+[project]
+name = "blurhash-rs"
+description = "High-performance BlurHash encoder/decoder"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "blurhash",
+  "decoder",
+  "encoder",
+  "image",
+  "loading",
+  "placeholder",
+  "preview",
+  "progressive"
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+  "Programming Language :: Rust",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = ["Pillow>=9.0.0"]
+dynamic = ["version"]
+
+[project.urls]
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/blurhash-rs"
+
+[dependency-groups]
+dev = ["pytest"]
+bench = ["blurhash-python", "pyperf"]
+bench-2 = ["blurhash", "pyperf"]
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+module-name = "blurhash_rs._lib"
+python-source = "python"
+
+[tool.pyright]
+include = ["python/blurhash_rs", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.9"
+strict = ["python/blurhash_rs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"

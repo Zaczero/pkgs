@@ -1,0 +1,16 @@
+[package]
+name = "blurhash_rs"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "blurhash_rs"
+
+[dependencies]
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
+
+[profile.release]
+overflow-checks = true
+lto = true
+codegen-units = 1
