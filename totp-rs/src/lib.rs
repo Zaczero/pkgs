@@ -40,16 +40,15 @@ fn parse_code_str(code: &str, digits: u8) -> Option<u32> {
         if !b.is_ascii_digit() {
             continue;
         }
+        if unlikely(seen_digits == digits) {
+            return None;
+        }
 
         value = value * 10 + u32::from(b - b'0');
         seen_digits += 1;
-
-        if seen_digits == digits {
-            return Some(value);
-        }
     }
 
-    None
+    (seen_digits == digits).then_some(value)
 }
 
 fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: u32) -> Option<u32> {
@@ -122,7 +121,7 @@ fn totp_verify(
     t0: i64,
     window: u8,
 ) -> PyResult<bool> {
-    if unlikely(digits > 9) {
+    if unlikely(!(1..=9).contains(&digits)) {
         return Err(PyValueError::new_err(
             Error::DigitsOutOfRange { digits }.message(),
         ));
