@@ -5,13 +5,13 @@ use crate::constants::MAX_ZIDS_AT_ONCE;
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    TooManyZidsAtOnce { attempted: usize },
+    TooManyZIDsAtOnce { attempted: usize },
 }
 
 impl Error {
     pub(crate) fn message(&self) -> Cow<'static, str> {
         match self {
-            Self::TooManyZidsAtOnce { attempted } => Cow::Owned(format!(
+            Self::TooManyZIDsAtOnce { attempted } => Cow::Owned(format!(
                 "Up to {MAX_ZIDS_AT_ONCE} ZIDs can be generated at once (attempted {attempted})"
             )),
         }

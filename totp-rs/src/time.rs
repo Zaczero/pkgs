@@ -15,9 +15,17 @@ fn time_seconds_or_default(time: Option<f64>) -> i64 {
     }
 }
 
-pub(crate) fn time_window_from_time(time: Option<f64>, step_seconds: i64, t0: i64) -> i64 {
+pub(crate) fn time_window_from_time(
+    time: Option<f64>,
+    step_seconds: i64,
+    t0: i64,
+) -> Result<i64, Error> {
+    if unlikely(step_seconds == 0) {
+        return Err(Error::StepSecondsMustBeNonZero);
+    }
+
     let diff = time_seconds_or_default(time) - t0;
-    diff.div_euclid(step_seconds)
+    Ok(diff.div_euclid(step_seconds))
 }
 
 pub(crate) fn resolve_counter(
@@ -32,6 +40,6 @@ pub(crate) fn resolve_counter(
 
     match time_window {
         Some(window) => Ok(window),
-        None => Ok(time_window_from_time(time, step_seconds, t0)),
+        None => Ok(time_window_from_time(time, step_seconds, t0)?),
     }
 }

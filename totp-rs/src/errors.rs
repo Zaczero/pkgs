@@ -5,7 +5,8 @@ use std::fmt;
 pub(crate) enum Error {
     InvalidSecretChar { index: usize },
     InvalidSecretType,
-    InvalidDigits { digits: u8 },
+    DigitsOutOfRange { digits: u8 },
+    StepSecondsMustBeNonZero,
     InvalidAlgorithm,
     TimeAndTimeWindowBothSet,
 }
@@ -19,9 +20,10 @@ impl Error {
             Self::InvalidSecretType => {
                 Cow::Borrowed("Invalid secret: must be bytes or base32 string")
             }
-            Self::InvalidDigits { digits } => {
+            Self::DigitsOutOfRange { digits } => {
                 Cow::Owned(format!("digits must be in 1..=9 (got {digits})"))
             }
+            Self::StepSecondsMustBeNonZero => Cow::Borrowed("step_seconds must be non-zero"),
             Self::InvalidAlgorithm => {
                 Cow::Borrowed("algorithm must be one of: sha1, sha256, sha512")
             }

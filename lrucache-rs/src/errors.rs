@@ -8,7 +8,7 @@ pub(crate) enum Error {
 
 impl Error {
     pub(crate) fn message(&self) -> Cow<'static, str> {
-        Cow::Borrowed("Invalid maxsize: must be positive")
+        Cow::Borrowed("maxsize must be positive")
     }
 }
 

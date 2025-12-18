@@ -72,8 +72,9 @@ fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: u32) -> Option<u3
 
 #[pyfunction]
 #[pyo3(signature = (time = None, *, step_seconds = 30, t0 = 0))]
-fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> i64 {
+fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> PyResult<i64> {
     time_window_from_time(time, step_seconds, t0)
+        .map_err(|err| PyValueError::new_err(err.message()))
 }
 
 #[pyfunction]
@@ -89,9 +90,9 @@ fn totp_generate(
     step_seconds: i64,
     t0: i64,
 ) -> PyResult<Py<PyString>> {
-    if unlikely(digits > 9) {
+    if unlikely(!(1..=9).contains(&digits)) {
         return Err(PyValueError::new_err(
-            Error::InvalidDigits { digits }.message(),
+            Error::DigitsOutOfRange { digits }.message(),
         ));
     }
     let algorithm =
@@ -123,7 +124,7 @@ fn totp_verify(
 ) -> PyResult<bool> {
     if unlikely(digits > 9) {
         return Err(PyValueError::new_err(
-            Error::InvalidDigits { digits }.message(),
+            Error::DigitsOutOfRange { digits }.message(),
         ));
     }
     let algorithm =

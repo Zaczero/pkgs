@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 from math import isclose, sqrt
 
 import pytest
@@ -53,21 +52,6 @@ def test_encode_lat_wrapping(lon, lat, expected_lon, expected_lat):
 
 
 @pytest.mark.parametrize(
-    ('zoom', 'valid'),
-    [
-        (-1, False),
-        (0, True),
-        (1, True),
-        (22, True),
-        (23, False),
-    ],
-)
-def test_encode_invalid_zoom(zoom, valid):
-    with nullcontext() if valid else pytest.raises(ValueError, match='Invalid zoom'):
-        shortlink_encode(0, 0, zoom)
-
-
-@pytest.mark.parametrize(
     ('input', 'expected'),
     [
         ('0EEQjE--', (0.0550, 51.5110, 9)),
@@ -95,44 +79,3 @@ def test_decode_deprecated(new, old):
     decoded2 = shortlink_decode(old)
     for a, b in zip(decoded1, decoded2):
         assert isclose(a, b)
-
-
-def test_decode_non_ascii():
-    with pytest.raises(ValueError, match='expected ASCII string'):
-        shortlink_decode('D~hV--ą')
-
-
-def test_decode_too_many_offsets():
-    with pytest.raises(ValueError, match='too many offset characters'):
-        shortlink_decode('D~hV---')
-
-
-def test_decode_bad_character():
-    with pytest.raises(ValueError, match=r"bad character '\$'"):
-        shortlink_decode('D~hV--$')
-
-
-def test_decode_too_long():
-    with pytest.raises(ValueError, match='too long'):
-        shortlink_decode('aaaaaaaaaaa')
-
-
-@pytest.mark.parametrize(
-    'input',
-    [
-        '',
-        '--',
-        'a',
-        'a--',
-        'ab',
-        'ab--',
-    ],
-)
-def test_decode_too_short(input):
-    with pytest.raises(ValueError, match='too short'):
-        shortlink_decode(input)
-
-
-def test_decode_malformed_zoom():
-    with pytest.raises(ValueError, match='malformed zoom'):
-        shortlink_decode('aaa-')

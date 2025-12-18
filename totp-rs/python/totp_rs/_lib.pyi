@@ -8,7 +8,7 @@ except ImportError:
     except ImportError:
         from typing import Any as TypeAlias
 
-Algorithm: TypeAlias = Literal['sha1', 'sha256', 'sha512']
+_Algorithm: TypeAlias = Literal['sha1', 'sha256', 'sha512']
 
 def totp_time_window(
     time: float | None = None,
@@ -22,7 +22,7 @@ def totp_generate(
     secret: bytes | str,
     *,
     digits: int = 6,
-    algorithm: Algorithm = 'sha1',
+    algorithm: _Algorithm = 'sha1',
     time: float | None = None,
     time_window: int | None = None,
     step_seconds: int = 30,
@@ -42,7 +42,7 @@ def totp_verify(
     code: str | int,
     *,
     digits: int = 6,
-    algorithm: Algorithm = 'sha1',
+    algorithm: _Algorithm = 'sha1',
     time: float | None = None,
     time_window: int | None = None,
     step_seconds: int = 30,

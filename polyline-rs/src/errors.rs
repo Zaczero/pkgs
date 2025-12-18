@@ -10,7 +10,7 @@ impl Error {
     pub(crate) fn message(&self) -> Cow<'static, str> {
         match self {
             Self::CoordinateMustContain2Values { index } => Cow::Owned(format!(
-                "Invalid coordinate at index {index}: expected 2 values"
+                "Invalid coordinate: expected 2 values at index {index}"
             )),
         }
     }

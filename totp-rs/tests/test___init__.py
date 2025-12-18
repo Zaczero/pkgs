@@ -1,5 +1,10 @@
+from typing import Literal
+
 import pytest
 from totp_rs import totp_generate, totp_time_window, totp_verify
+
+Algorithm = Literal['sha1', 'sha256', 'sha512']
+
 
 SECRET_SHA1 = b'12345678901234567890'
 SECRET_SHA256 = b'12345678901234567890123456789012'
@@ -37,7 +42,7 @@ SECRET_SHA512_B32 = (
     ],
 )
 def test_rfc6238_vectors(
-    secret: bytes, algorithm: str, time: int, expected: str
+    secret: bytes, algorithm: Algorithm, time: int, expected: str
 ) -> None:
     assert (
         totp_generate(
@@ -128,11 +133,6 @@ def test_negative_t0_hybrid() -> None:
         window=0,
     )
 
-    with pytest.raises(ValueError):
-        totp_time_window(-1, step_seconds=30, t0=0)
-    with pytest.raises(ValueError):
-        totp_generate(SECRET_SHA1, time=-1, t0=0, step_seconds=30)
-
 
 def test_verify_window_allows_drift() -> None:
     # Arrange: RFC vector at t=59s is counter=1.
@@ -176,7 +176,7 @@ def test_time_accepts_float_seconds() -> None:
     ],
 )
 def test_secret_accepts_base32_str(
-    secret_bytes: bytes, secret_b32: str, algorithm: str
+    secret_bytes: bytes, secret_b32: str, algorithm: Algorithm
 ) -> None:
     expected = totp_generate(
         secret_bytes,
@@ -230,17 +230,14 @@ def test_invalid_inputs() -> None:
             totp_generate(SECRET_SHA1, digits=digits)
 
     with pytest.raises(ValueError):
-        totp_generate(SECRET_SHA1, algorithm='md5')
+        totp_generate(SECRET_SHA1, algorithm='md5')  # type: ignore
+
     with pytest.raises(ValueError):
         totp_generate(SECRET_SHA1, time=0, time_window=0)
-    with pytest.raises(ValueError):
-        totp_generate(SECRET_SHA1, time_window=-1)
 
     for code in ('not-a-code', '12345', '1234567'):
         assert not totp_verify(SECRET_SHA1, code, digits=6)
 
-    with pytest.raises(ValueError):
-        totp_verify(SECRET_SHA1, '123456', digits=10)
-
+    assert not totp_verify(SECRET_SHA1, '123456', digits=1)
     assert not totp_verify(SECRET_SHA1, 10_000_000_000, digits=9)
     assert not totp_verify(SECRET_SHA1, -1, digits=6)

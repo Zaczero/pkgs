@@ -24,7 +24,7 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
     }
     if unlikely(n > MAX_ZIDS_AT_ONCE) {
         return Err(PyValueError::new_err(
-            Error::TooManyZidsAtOnce { attempted: n }.message(),
+            Error::TooManyZIDsAtOnce { attempted: n }.message(),
         ));
     }
 
