@@ -3,14 +3,19 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 use std::simd::Simd;
 
-pub fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
+type V4 = Simd<f32, 4>;
+type CacheKey = (usize, usize);
+type CosAxisCache = Vec<(CacheKey, Rc<[f32]>)>;
+type CosAxisSimd4Cache = Vec<(CacheKey, Rc<[V4]>)>;
+
+pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
     let mut out = vec![0.0f32; len * components];
     for p in 0..len {
         let p_f = p as f32;
         let row = &mut out[p * components..(p + 1) * components];
-        for c in 0..components {
-            row[c] = (PI * p_f * (c as f32) / len_f).cos();
+        for (c, slot) in row.iter_mut().enumerate() {
+            *slot = (PI * p_f * (c as f32) / len_f).cos();
         }
     }
     out
@@ -20,13 +25,11 @@ thread_local! {
     // Small caches: typical callers only ever use a handful of image sizes and
     // component counts. A linear scan over a tiny Vec has better locality than
     // a HashMap and avoids hashing overhead.
-    static COS_AXIS_CACHE: RefCell<Vec<((usize, usize), Rc<[f32]>)>> =
-        RefCell::new(Vec::with_capacity(1));
-    static COS_AXIS_SIMD4_CACHE: RefCell<Vec<((usize, usize), Rc<[Simd<f32, 4>]>)>> =
-        RefCell::new(Vec::with_capacity(1));
+    static COS_AXIS_CACHE: RefCell<CosAxisCache> = RefCell::new(Vec::with_capacity(1));
+    static COS_AXIS_SIMD4_CACHE: RefCell<CosAxisSimd4Cache> = RefCell::new(Vec::with_capacity(1));
 }
 
-pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
+pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     let key = (len, components);
     COS_AXIS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -41,14 +44,13 @@ pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
             cache.clear();
         }
 
-        let vec = precompute_cos_axis(len, components);
-        let rc: Rc<[f32]> = vec.into();
+        let rc: Rc<[f32]> = precompute_cos_axis(len, components).into();
         cache.push((key, rc.clone()));
         rc
     })
 }
 
-pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[Simd<f32, 4>]> {
+pub(crate) fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
     let key = (len, components);
     COS_AXIS_SIMD4_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -63,7 +65,7 @@ pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[Simd<f32, 4>]
             cache.clear();
         }
 
-        let blocks = (components + 3) / 4;
+        let blocks = components.div_ceil(4);
         let len_f = len as f32;
 
         let mut out = Vec::with_capacity(len * blocks);
@@ -73,15 +75,15 @@ pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[Simd<f32, 4>]
                 let start = block * 4;
                 let lanes = (components - start).min(4);
                 let mut v = [0.0f32; 4];
-                for lane in 0..lanes {
+                for (lane, slot) in v.iter_mut().enumerate().take(lanes) {
                     let c = start + lane;
-                    v[lane] = (PI * p_f * (c as f32) / len_f).cos();
+                    *slot = (PI * p_f * (c as f32) / len_f).cos();
                 }
                 out.push(Simd::from_array(v));
             }
         }
 
-        let rc: Rc<[Simd<f32, 4>]> = out.into();
+        let rc: Rc<[V4]> = out.into();
         cache.push((key, rc.clone()));
         rc
     })

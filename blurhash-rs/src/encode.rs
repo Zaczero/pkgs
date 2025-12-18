@@ -1,54 +1,56 @@
-use core::hint::unlikely;
+use std::hint::unlikely;
 use std::simd::Simd;
 
 use crate::base83;
 use crate::cos;
+use crate::errors::Error;
 use crate::srgb;
 
 type V4 = Simd<f32, 4>;
-
-pub type EncodeResult<T> = Result<T, &'static str>;
 
 fn sign_pow_05(v: f32) -> f32 {
     v.signum() * v.abs().sqrt()
 }
 
-pub fn encode_rgb(
+pub(crate) fn encode_rgb(
     rgb: &[u8],
     width: usize,
     height: usize,
-    x_components: usize,
-    y_components: usize,
-) -> EncodeResult<String> {
+    x_components: u8,
+    y_components: u8,
+) -> Result<String, Error> {
+    let rgb_len = width * height * 3;
+    if unlikely(rgb.len() != rgb_len) {
+        return Err(Error::InvalidRGBBufferLength {
+            expected: rgb_len,
+            got: rgb.len(),
+        });
+    }
     if unlikely(width == 0 || height == 0) {
-        return Err("Image is empty");
-    }
-    if unlikely(x_components == 0 || x_components > 9 || y_components == 0 || y_components > 9) {
-        return Err("x_components and y_components must be in 1..=9");
+        return Ok(String::new());
     }
 
-    let expected_len = width
-        .checked_mul(height)
-        .and_then(|v| v.checked_mul(3))
-        .ok_or("Image is too large")?;
-
-    if unlikely(rgb.len() != expected_len) {
-        return Err("Invalid RGB buffer length");
-    }
-
-    encode_rgb_impl(rgb, width, height, x_components, y_components)
+    Ok(encode_rgb_impl(
+        rgb,
+        width,
+        height,
+        x_components,
+        y_components,
+    ))
 }
 
 fn encode_rgb_impl(
     rgb: &[u8],
     width: usize,
     height: usize,
-    x_components: usize,
-    y_components: usize,
-) -> EncodeResult<String> {
+    x_components: u8,
+    y_components: u8,
+) -> String {
+    let x_components = x_components as usize;
+    let y_components = y_components as usize;
     let num_components = x_components * y_components;
 
-    let blocks = (x_components + 3) / 4;
+    let blocks = x_components.div_ceil(4);
 
     let cos_y = cos::cos_axis_cached(height, y_components);
     let cos_x_simd = cos::cos_axis_simd4_cached(width, x_components);
@@ -70,7 +72,7 @@ fn encode_rgb_impl(
 
         let mut pixel = y * width * 3;
         for x in 0..width {
-            let r = srgb::srgb_u8_to_linear(rgb[pixel + 0]);
+            let r = srgb::srgb_u8_to_linear(rgb[pixel]);
             let g = srgb::srgb_u8_to_linear(rgb[pixel + 1]);
             let b = srgb::srgb_u8_to_linear(rgb[pixel + 2]);
             pixel += 3;
@@ -90,8 +92,8 @@ fn encode_rgb_impl(
         }
 
         let cos_y_row = &cos_y[y * y_components..(y + 1) * y_components];
-        for j in 0..y_components {
-            let cosy = V4::splat(cos_y_row[j]);
+        for (j, &cosy) in cos_y_row.iter().enumerate() {
+            let cosy = V4::splat(cosy);
             let base = j * blocks;
             for k in 0..blocks {
                 let idx = base + k;
@@ -190,6 +192,6 @@ fn encode_rgb_impl(
         }
     }
 
-    // Safety: we only ever push bytes from the base83 charset.
-    Ok(unsafe { String::from_utf8_unchecked(out) })
+    // Safety: all bytes are ASCII (base83).
+    unsafe { String::from_utf8_unchecked(out) }
 }

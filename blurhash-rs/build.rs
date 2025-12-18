@@ -50,4 +50,3 @@ fn main() {
 
     fs::write(dest, out).expect("Failed to write generated sRGB tables");
 }
-

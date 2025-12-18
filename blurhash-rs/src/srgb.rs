@@ -1,16 +1,14 @@
-use core::hint::unlikely;
-
 include!(concat!(env!("OUT_DIR"), "/srgb_tables.rs"));
 
-pub fn srgb_u8_to_linear(v: u8) -> f32 {
+pub(crate) fn srgb_u8_to_linear(v: u8) -> f32 {
     SRGB_U8_TO_LINEAR[v as usize]
 }
 
-pub fn linear_to_srgb_u8(v: f32) -> u8 {
-    if unlikely(v <= 0.0) {
+pub(crate) fn linear_to_srgb_u8(v: f32) -> u8 {
+    if v <= 0.0 {
         return 0;
     }
-    if unlikely(v >= 1.0) {
+    if v >= 1.0 {
         return 255;
     }
 

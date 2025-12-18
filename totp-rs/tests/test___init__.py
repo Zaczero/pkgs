@@ -62,7 +62,7 @@ def test_rfc6238_vectors(
     )
     assert totp_verify(
         secret,
-        f' {expected}\n',
+        f' {expected[:4]} {expected[4:6]}-{expected[6:]}\n',
         digits=8,
         algorithm=algorithm,
         time=time,

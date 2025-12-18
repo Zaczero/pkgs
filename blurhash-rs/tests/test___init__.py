@@ -107,6 +107,8 @@ def test_decode_invalid_blurhash_raises() -> None:
     assert excinfo.value.blurhash == 'not a blurhash'
 
 
-def test_decode_whitespace_suffix_raises() -> None:
-    with pytest.raises(BlurhashDecodeError):
-        blurhash_decode('LEHV6nWB2yk8pyo0adR*.7kCMdnj ', 8, 8)
+def test_decode_whitespace_suffix_is_ignored() -> None:
+    hash_ = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj'
+    clean = blurhash_decode(hash_, 8, 8)
+    trimmed = blurhash_decode(f' {hash_}\n', 8, 8)
+    assert trimmed.tobytes() == clean.tobytes()

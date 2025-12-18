@@ -30,19 +30,26 @@ def test_encode_wrapping():
 
 
 @pytest.mark.parametrize(
-    ('lat', 'valid'),
+    'lat',
+    [-91, -90, 90, 91],
+)
+def test_encode_lat(lat):
+    shortlink_encode(0, lat, 5)
+
+
+@pytest.mark.parametrize(
+    ('lon', 'lat', 'expected_lon', 'expected_lat'),
     [
-        (-91, False),
-        (-90, True),
-        (90, True),
-        (91, False),
+        (0, 100, 180, 80),
+        (0, -100, 180, -80),
+        (10, 180, 190, 0),
+        (10, -180, 190, 0),
     ],
 )
-def test_encode_lat(lat, valid):
-    with (
-        nullcontext() if valid else pytest.raises(ValueError, match='Invalid latitude')
-    ):
-        shortlink_encode(0, lat, 5)
+def test_encode_lat_wrapping(lon, lat, expected_lon, expected_lat):
+    assert shortlink_encode(lon, lat, 5) == shortlink_encode(
+        expected_lon, expected_lat, 5
+    )
 
 
 @pytest.mark.parametrize(

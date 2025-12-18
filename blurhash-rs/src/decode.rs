@@ -1,41 +1,40 @@
-use core::hint::unlikely;
+use std::hint::unlikely;
 use std::simd::Simd;
 use std::simd::num::SimdFloat;
 
 use crate::base83;
 use crate::cos;
+use crate::errors::Error;
 use crate::srgb;
 
 type V4 = Simd<f32, 4>;
-
-pub type DecodeResult<T> = Result<T, &'static str>;
 
 fn sign_pow_2(v: f32) -> f32 {
     let abs = v.abs();
     v.signum() * abs * abs
 }
 
-pub fn decode_rgb_into(
+pub(crate) fn decode_rgb_into(
     blurhash: &str,
     width: usize,
     height: usize,
     punch: f32,
     out_pixels: &mut [u8],
-) -> DecodeResult<()> {
+) -> Result<(), Error> {
     if unlikely(width == 0 || height == 0) {
-        return Err("Image is empty");
-    }
-    if unlikely(!punch.is_finite()) {
-        return Err("punch must be finite");
+        return Ok(());
     }
 
     let bytes = blurhash.as_bytes();
     if unlikely(bytes.len() < 6) {
-        return Err("blurhash is too short");
+        return Err(Error::BlurhashLengthMismatch {
+            expected: 6,
+            got: bytes.len(),
+        });
     }
 
     let Some(size_flag) = base83::decode_byte(bytes[0]) else {
-        return Err("blurhash is malformed");
+        return Err(Error::BlurhashMalformed { index: 0 });
     };
     let size_flag = size_flag as usize;
     let num_y = (size_flag / 9) + 1;
@@ -44,25 +43,27 @@ pub fn decode_rgb_into(
 
     let expected_len = 4 + 2 * num_components;
     if unlikely(bytes.len() != expected_len) {
-        return Err("blurhash length mismatch");
+        return Err(Error::BlurhashLengthMismatch {
+            expected: expected_len,
+            got: bytes.len(),
+        });
     }
 
     let Some(quantised_max_value) = base83::decode_byte(bytes[1]) else {
-        return Err("blurhash is malformed");
+        return Err(Error::BlurhashMalformed { index: 1 });
     };
     let quantised_max_value = quantised_max_value as f32;
     let max_value = ((quantised_max_value + 1.0) / 166.0) * punch.max(1.0);
 
-    let out_len = width
-        .checked_mul(height)
-        .and_then(|v| v.checked_mul(3))
-        .ok_or("Image is too large")?;
-
+    let out_len = width * height * 3;
     if unlikely(out_pixels.len() != out_len) {
-        return Err("Invalid output buffer length");
+        return Err(Error::InvalidRGBBufferLength {
+            expected: out_len,
+            got: out_pixels.len(),
+        });
     }
 
-    let blocks = (num_x + 3) / 4;
+    let blocks = num_x.div_ceil(4);
 
     let zero = V4::splat(0.0);
     let mut colors_r_v = [zero; 27];
@@ -70,7 +71,7 @@ pub fn decode_rgb_into(
     let mut colors_b_v = [zero; 27];
 
     let Some(dc_value) = base83::decode_u32(&bytes[2..6]) else {
-        return Err("blurhash is malformed");
+        return Err(Error::BlurhashMalformed { index: 2 });
     };
     colors_r_v[0].as_mut_array()[0] = srgb::srgb_u8_to_linear((dc_value >> 16) as u8);
     colors_g_v[0].as_mut_array()[0] = srgb::srgb_u8_to_linear(((dc_value >> 8) & 255) as u8);
@@ -79,7 +80,7 @@ pub fn decode_rgb_into(
     for idx in 1..num_components {
         let start = 4 + idx * 2;
         let Some(value) = base83::decode_u32(&bytes[start..start + 2]) else {
-            return Err("blurhash is malformed");
+            return Err(Error::BlurhashMalformed { index: start });
         };
 
         let quant_r = (value / (19 * 19)) as i32;
@@ -111,8 +112,8 @@ pub fn decode_rgb_into(
         let mut row_b = [zero; 3];
 
         let cos_y_row = &cos_y[y * num_y..(y + 1) * num_y];
-        for j in 0..num_y {
-            let cosy = V4::splat(cos_y_row[j]);
+        for (j, &cosy) in cos_y_row.iter().enumerate() {
+            let cosy = V4::splat(cosy);
             let base = j * blocks;
 
             for k in 0..blocks {
@@ -142,7 +143,7 @@ pub fn decode_rgb_into(
             let g = acc_g.reduce_sum();
             let b = acc_b.reduce_sum();
 
-            out_pixels[out_idx + 0] = srgb::linear_to_srgb_u8(r);
+            out_pixels[out_idx] = srgb::linear_to_srgb_u8(r);
             out_pixels[out_idx + 1] = srgb::linear_to_srgb_u8(g);
             out_pixels[out_idx + 2] = srgb::linear_to_srgb_u8(b);
             out_idx += 3;
