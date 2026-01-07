@@ -3,10 +3,12 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 use std::simd::Simd;
 
+use arrayvec::ArrayVec;
+
 type V4 = Simd<f32, 4>;
 type CacheKey = (usize, usize);
-type CosAxisCache = Vec<(CacheKey, Rc<[f32]>)>;
-type CosAxisSimd4Cache = Vec<(CacheKey, Rc<[V4]>)>;
+type CosAxisCache = ArrayVec<(CacheKey, Rc<[f32]>), 32>;
+type CosAxisSimd4Cache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
 
 pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
@@ -25,8 +27,8 @@ thread_local! {
     // Small caches: typical callers only ever use a handful of image sizes and
     // component counts. A linear scan over a tiny Vec has better locality than
     // a HashMap and avoids hashing overhead.
-    static COS_AXIS_CACHE: RefCell<CosAxisCache> = RefCell::new(Vec::with_capacity(1));
-    static COS_AXIS_SIMD4_CACHE: RefCell<CosAxisSimd4Cache> = RefCell::new(Vec::with_capacity(1));
+    static COS_AXIS_CACHE: RefCell<CosAxisCache> = RefCell::new(ArrayVec::new());
+    static COS_AXIS_SIMD4_CACHE: RefCell<CosAxisSimd4Cache> = RefCell::new(ArrayVec::new());
 }
 
 pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
@@ -40,7 +42,7 @@ pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
         }
 
         // Simple eviction to avoid unbounded growth in pathological cases.
-        if cache.len() >= 32 {
+        if cache.is_full() {
             cache.clear();
         }
 
@@ -61,7 +63,7 @@ pub(crate) fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
         }
 
         // Simple eviction to avoid unbounded growth in pathological cases.
-        if cache.len() >= 32 {
+        if cache.is_full() {
             cache.clear();
         }
 
