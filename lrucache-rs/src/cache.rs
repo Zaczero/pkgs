@@ -6,14 +6,14 @@ use pyo3::{
     prelude::*,
     types::{PyIterator, PyTuple, PyType},
 };
-use std::hint::unlikely;
+use std::num::NonZeroUsize;
 
 use crate::errors::Error;
 use crate::key::PyObjectWrapper;
 
 #[pyclass]
 pub(crate) struct LRUCache {
-    maxsize: usize,
+    maxsize: NonZeroUsize,
     cache: Mutex<OrderedHashMap<PyObjectWrapper, Py<PyAny>, BuildNoHashHasher<PyObjectWrapper>>>,
 }
 
@@ -44,19 +44,17 @@ impl LRUCache {
 
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
-        if unlikely(maxsize == 0) {
-            Err(PyValueError::new_err(
-                Error::MaxsizeMustBePositive.message(),
-            ))
-        } else {
-            Ok(Self {
-                maxsize,
-                cache: Mutex::new(OrderedHashMap::with_capacity_and_hasher(
-                    maxsize,
-                    BuildNoHashHasher::default(),
-                )),
-            })
-        }
+        let maxsize = NonZeroUsize::new(maxsize).ok_or_else(|| {
+            PyValueError::new_err(Error::MaxsizeMustBePositive.message())
+        })?;
+
+        Ok(Self {
+            maxsize,
+            cache: Mutex::new(OrderedHashMap::with_capacity_and_hasher(
+                maxsize.get(),
+                BuildNoHashHasher::default(),
+            )),
+        })
     }
 
     fn __len__(&self) -> usize {
@@ -78,7 +76,7 @@ impl LRUCache {
         let key = Self::wrap_key(py, key)?;
         let mut cache = self.cache.lock();
         cache.insert(key, value);
-        if cache.len() > self.maxsize {
+        if cache.len() > self.maxsize.get() {
             cache.pop_front();
         }
         Ok(())

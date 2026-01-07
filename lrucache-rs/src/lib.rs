@@ -1,5 +1,3 @@
-#![feature(likely_unlikely)]
-
 mod cache;
 mod errors;
 mod key;

@@ -8,6 +8,7 @@ mod time;
 mod totp;
 
 use std::hint::unlikely;
+use std::num::NonZeroU32;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -51,7 +52,7 @@ fn parse_code_str(code: &str, digits: u8) -> Option<u32> {
     (seen_digits == digits).then_some(value)
 }
 
-fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: u32) -> Option<u32> {
+fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: NonZeroU32) -> Option<u32> {
     if let Ok(value) = code.cast::<PyString>() {
         if let Ok(s) = value.to_str() {
             return parse_code_str(s, digits);
@@ -63,7 +64,7 @@ fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: u32) -> Option<u3
         let Ok(value) = value.extract::<u32>() else {
             return None;
         };
-        return (value < modulus).then_some(value);
+        return (value < modulus.get()).then_some(value);
     }
 
     None
@@ -100,7 +101,7 @@ fn totp_generate(
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
     let secret = parse_secret_from_py(secret)?;
-    let modulus = 10_u32.pow(digits as u32);
+    let modulus = NonZeroU32::new(10_u32.pow(digits as u32)).expect("pow() result is >= 10");
 
     let code = totp_code(secret.as_ref(), counter, modulus, algorithm);
 
@@ -131,7 +132,7 @@ fn totp_verify(
     let counter = resolve_counter(time, time_window, step_seconds, t0)
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
-    let modulus = 10_u32.pow(digits as u32);
+    let modulus = NonZeroU32::new(10_u32.pow(digits as u32)).expect("pow() result is >= 10");
     let Some(code) = parse_code_py(code, digits, modulus) else {
         return Ok(false);
     };

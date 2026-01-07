@@ -1,4 +1,5 @@
 use std::hint::unlikely;
+use std::num::NonZeroUsize;
 use std::simd::Simd;
 
 use crate::base83;
@@ -26,9 +27,13 @@ pub(crate) fn encode_rgb(
             got: rgb.len(),
         });
     }
-    if unlikely(width == 0 || height == 0) {
+
+    let Some(width) = NonZeroUsize::new(width) else {
         return Ok(String::new());
-    }
+    };
+    let Some(height) = NonZeroUsize::new(height) else {
+        return Ok(String::new());
+    };
 
     Ok(encode_rgb_impl(
         rgb,
@@ -41,11 +46,13 @@ pub(crate) fn encode_rgb(
 
 fn encode_rgb_impl(
     rgb: &[u8],
-    width: usize,
-    height: usize,
+    width: NonZeroUsize,
+    height: NonZeroUsize,
     x_components: u8,
     y_components: u8,
 ) -> String {
+    let width = width.get();
+    let height = height.get();
     let x_components = x_components as usize;
     let y_components = y_components as usize;
     let num_components = x_components * y_components;

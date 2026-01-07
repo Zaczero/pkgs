@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use hmac::digest::{FixedOutputReset, KeyInit};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
@@ -15,7 +17,11 @@ fn dynamic_truncate(digest: &[u8]) -> u32 {
         | u32::from(p[3])
 }
 
-fn totp_code_with<M: Mac + KeyInit>(secret: &[u8], counter_bytes: &[u8; 8], modulus: u32) -> u32 {
+fn totp_code_with<M: Mac + KeyInit>(
+    secret: &[u8],
+    counter_bytes: &[u8; 8],
+    modulus: NonZeroU32,
+) -> u32 {
     let mut mac = <M as KeyInit>::new_from_slice(secret).expect("HMAC accepts any key size");
     mac.update(counter_bytes);
     let digest = mac.finalize().into_bytes();
@@ -23,7 +29,12 @@ fn totp_code_with<M: Mac + KeyInit>(secret: &[u8], counter_bytes: &[u8; 8], modu
     truncated % modulus
 }
 
-pub(crate) fn totp_code(secret: &[u8], counter: i64, modulus: u32, algorithm: Algorithm) -> u32 {
+pub(crate) fn totp_code(
+    secret: &[u8],
+    counter: i64,
+    modulus: NonZeroU32,
+    algorithm: Algorithm,
+) -> u32 {
     let counter_bytes = counter.to_be_bytes();
     match algorithm {
         Algorithm::Sha1 => totp_code_with::<Hmac<Sha1>>(secret, &counter_bytes, modulus),
@@ -32,7 +43,11 @@ pub(crate) fn totp_code(secret: &[u8], counter: i64, modulus: u32, algorithm: Al
     }
 }
 
-fn totp_code_with_reset<M: Mac + FixedOutputReset>(mac: &mut M, counter: i64, modulus: u32) -> u32 {
+fn totp_code_with_reset<M: Mac + FixedOutputReset>(
+    mac: &mut M,
+    counter: i64,
+    modulus: NonZeroU32,
+) -> u32 {
     Mac::update(mac, &counter.to_be_bytes());
     let digest = mac.finalize_reset().into_bytes();
     let truncated = dynamic_truncate(&digest);
@@ -43,7 +58,7 @@ fn verify_with_mac<M: Mac + FixedOutputReset>(
     mut mac: M,
     counter: i64,
     window: u8,
-    modulus: u32,
+    modulus: NonZeroU32,
     code: u32,
 ) -> bool {
     let code_bytes = code.to_be_bytes();
@@ -76,7 +91,7 @@ pub(crate) fn verify(
     secret: &[u8],
     counter: i64,
     window: u8,
-    modulus: u32,
+    modulus: NonZeroU32,
     code: u32,
     algorithm: Algorithm,
 ) -> bool {
