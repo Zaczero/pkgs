@@ -78,7 +78,10 @@ class ZstdResponder:
                     return
 
                 # begin streaming
-                content_length: int = int(headers.get('Content-Length', -1))
+                try:
+                    content_length = int(headers.get('Content-Length', -1))
+                except ValueError:
+                    content_length = -1
                 del headers['Content-Length']
                 await send(start_message)
                 chunker = ZstdCompressor(level=self.level).chunker(content_length)

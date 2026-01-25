@@ -78,7 +78,7 @@ app.add_middleware(CompressMiddleware, zstd_level=6, brotli_quality=6, gzip_leve
 
 ### Supporting Custom Content-Types
 
-Manage the supported content-types. Unknown response types are not compressed. [Check here](https://github.com/Zaczero/pkgs/blob/main/starlette-compress/starlette_compress/__init__.py) for the default configuration.
+Manage the supported content-types. Unknown response types are not compressed. [Check here](https://github.com/Zaczero/pkgs/blob/main/starlette-compress/starlette_compress/_utils.py) for the default configuration.
 
 ```py
 from starlette_compress import add_compress_type, remove_compress_type
@@ -86,3 +86,8 @@ from starlette_compress import add_compress_type, remove_compress_type
 add_compress_type("application/my-custom-type")
 remove_compress_type("application/json")
 ```
+
+### Dropping Accept-Encoding Header
+
+By default, starlette-compress leaves the request `Accept-Encoding` header intact. Set
+`remove_accept_encoding=True` to remove it before calling downstream middleware/application.

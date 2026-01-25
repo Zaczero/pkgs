@@ -27,28 +27,34 @@ def parse_accept_encoding(accept_encoding: str) -> frozenset[str]:
 # - https://developers.cloudflare.com/speed/optimization/content/compression/
 _compress_content_types: set[str] = {
     'application/atom+xml',
+    'application/connect+json',
+    'application/connect+proto',
     'application/eot',
-    'application/font',
     'application/font-sfnt',
     'application/font-woff',
+    'application/font',
     'application/geo+json',
     'application/gpx+xml',
     'application/graphql+json',
-    'application/javascript',
     'application/javascript-binast',
+    'application/javascript',
     'application/json',
     'application/ld+json',
     'application/manifest+json',
     'application/opentype',
     'application/otf',
+    'application/proto',
+    'application/protobuf',
     'application/rdf+xml',
     'application/rss+xml',
     'application/truetype',
     'application/ttf',
     'application/vnd.api+json',
+    'application/vnd.google.protobuf',
     'application/vnd.mapbox-vector-tile',
     'application/vnd.ms-fontobject',
     'application/wasm',
+    'application/x-google-protobuf',
     'application/x-httpd-cgi',
     'application/x-javascript',
     'application/x-opentype',
@@ -105,8 +111,11 @@ def is_start_message_satisfied(message: Message) -> bool:
     headers = Headers(raw=message['headers'])
 
     # must not already be compressed
-    if 'Content-Encoding' in headers:
-        return False
+    for content_encoding in headers.getlist('Content-Encoding'):
+        for v in content_encoding.split(','):
+            v = v.strip()
+            if v and v.lower() != 'identity':
+                return False
 
     # content-type header must be present
     content_type = headers.get('Content-Type')

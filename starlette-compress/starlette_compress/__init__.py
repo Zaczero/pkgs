@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from starlette.datastructures import Headers
+from starlette.datastructures import MutableHeaders
 
 from starlette_compress._identity import IdentityResponder
 from starlette_compress._utils import (
@@ -23,6 +23,7 @@ class CompressMiddleware:
         '_brotli',
         '_gzip',
         '_identity',
+        '_remove_accept_encoding',
         '_zstd',
         'app',
     )
@@ -38,6 +39,7 @@ class CompressMiddleware:
         brotli_quality: int = 4,
         gzip: bool = True,
         gzip_level: int = 4,
+        remove_accept_encoding: bool = False,
     ) -> None:
         """Compression middleware supporting multiple algorithms.
 
@@ -53,9 +55,11 @@ class CompressMiddleware:
         :param brotli_quality: Brotli quality level, 0 (fastest) to 11 (best).
         :param gzip: Enable Gzip compression.
         :param gzip_level: Gzip compression level, 0 (fastest) to 9 (best).
+        :param remove_accept_encoding: Remove request Accept-Encoding after reading it.
         """
         self.app = app
         self._identity = IdentityResponder(app, minimum_size)
+        self._remove_accept_encoding = remove_accept_encoding
 
         if zstd:
             if sys.version_info < (3, 14):
@@ -85,9 +89,17 @@ class CompressMiddleware:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
 
-        accept_encoding = Headers(scope=scope).get('Accept-Encoding')
+        headers = MutableHeaders(scope=scope)
+        accept_encoding = headers.getlist('Accept-Encoding')
         if accept_encoding:
-            accept_encodings = parse_accept_encoding(accept_encoding)
+            if self._remove_accept_encoding:
+                del headers['Accept-Encoding']
+
+            accept_encodings = parse_accept_encoding(
+                ','.join(accept_encoding)
+                if len(accept_encoding) > 1
+                else accept_encoding[0]
+            )
             if (self._zstd is not None) and 'zstd' in accept_encodings:
                 return await self._zstd(scope, receive, send)
             if (self._brotli is not None) and 'br' in accept_encodings:

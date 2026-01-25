@@ -27,7 +27,7 @@ TestClientFactory = Callable[[ASGIApp], TestClient]
 
 def test_compress_responses(test_client_factory: TestClientFactory):
     def homepage(request: Request) -> PlainTextResponse:
-        return PlainTextResponse('x' * 4000, status_code=200)
+        return PlainTextResponse('x' * 4000)
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -57,7 +57,7 @@ def test_compress_responses(test_client_factory: TestClientFactory):
 
 def test_compress_not_in_accept_encoding(test_client_factory: TestClientFactory):
     def homepage(request: Request) -> PlainTextResponse:
-        return PlainTextResponse('x' * 4000, status_code=200)
+        return PlainTextResponse('x' * 4000)
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -75,7 +75,7 @@ def test_compress_not_in_accept_encoding(test_client_factory: TestClientFactory)
 
 def test_compress_ignored_for_small_responses(test_client_factory: TestClientFactory):
     def homepage(request: Request) -> PlainTextResponse:
-        return PlainTextResponse('OK', status_code=200)
+        return PlainTextResponse('OK')
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -113,7 +113,7 @@ def test_compress_streaming_response(
                 yield random.getrandbits(8 * chunk_size).to_bytes(chunk_size, 'big')
 
         streaming = generator(chunk_count)
-        return StreamingResponse(streaming, status_code=200, media_type='text/plain')
+        return StreamingResponse(streaming, media_type='text/plain')
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -150,9 +150,7 @@ def test_compress_ignored_for_responses_with_encoding_set(
                 yield content
 
         streaming = generator(content=b'x' * 400, count=10)
-        return StreamingResponse(
-            streaming, status_code=200, headers={'Content-Encoding': 'test'}
-        )
+        return StreamingResponse(streaming, headers={'Content-Encoding': 'test'})
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -170,11 +168,62 @@ def test_compress_ignored_for_responses_with_encoding_set(
         assert 'Vary' not in response.headers
 
 
+def test_compress_not_ignored_for_identity_content_encoding(
+    test_client_factory: TestClientFactory,
+):
+    def homepage(request: Request) -> PlainTextResponse:
+        return PlainTextResponse(
+            'x' * 4000, headers={'Content-Encoding': 'identity, identity'}
+        )
+
+    app = Starlette(
+        routes=[Route('/', endpoint=homepage)],
+        middleware=[Middleware(CompressMiddleware)],
+    )
+
+    client = test_client_factory(app)
+    response = client.get('/', headers={'accept-encoding': 'gzip'})
+    assert response.status_code == 200
+    assert response.text == 'x' * 4000
+    assert response.headers['Content-Encoding'] == 'gzip'
+    assert int(response.headers['Content-Length']) < 4000
+    assert response.headers['Vary'] == 'Accept-Encoding'
+
+
+@pytest.mark.parametrize(
+    'remove_accept_encoding',
+    [True, False],
+)
+def test_accept_encoding_removed_from_scope(
+    test_client_factory: TestClientFactory,
+    remove_accept_encoding: bool,
+):
+    def homepage(request: Request) -> PlainTextResponse:
+        accept_encoding = request.headers.get('accept-encoding', '<missing>')
+        return PlainTextResponse(headers={'x-request-accept-encoding': accept_encoding})
+
+    app = Starlette(
+        routes=[Route('/', endpoint=homepage)],
+        middleware=[
+            Middleware(
+                CompressMiddleware, remove_accept_encoding=remove_accept_encoding
+            )
+        ],
+    )
+
+    client = test_client_factory(app)
+    response = client.get('/', headers={'accept-encoding': 'gzip'})
+    assert response.status_code == 200
+    assert response.headers['x-request-accept-encoding'] == (
+        '<missing>' if remove_accept_encoding else 'gzip'
+    )
+
+
 def test_compress_ignored_for_missing_accept_encoding(
     test_client_factory: TestClientFactory,
 ):
     def homepage(request: Request) -> PlainTextResponse:
-        return PlainTextResponse('x' * 4000, status_code=200)
+        return PlainTextResponse('x' * 4000)
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -194,7 +243,7 @@ def test_compress_ignored_for_missing_content_type(
     test_client_factory: TestClientFactory,
 ):
     def homepage(request: Request) -> Response:
-        return Response('x' * 4000, status_code=200, media_type=None)
+        return Response('x' * 4000)
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -214,7 +263,7 @@ def test_compress_ignored_for_missing_content_type(
 
 def test_compress_registered_content_type(test_client_factory: TestClientFactory):
     def homepage(request: Request) -> Response:
-        return Response('x' * 4000, status_code=200, media_type='test/test')
+        return Response('x' * 4000, media_type='test/test')
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
