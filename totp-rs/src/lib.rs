@@ -1,5 +1,6 @@
 #![feature(likely_unlikely)]
 
+use std::str;
 mod algorithm;
 mod base32;
 mod errors;
@@ -29,7 +30,7 @@ fn format_code_py(py: Python<'_>, mut code: u32, digits: u8) -> Py<PyString> {
     }
 
     // Safety: all bytes are ASCII digits.
-    let view = unsafe { std::str::from_utf8_unchecked(&buf[buf.len() - digits as usize..]) };
+    let view = unsafe { str::from_utf8_unchecked(&buf[buf.len() - digits as usize..]) };
     PyString::new(py, view).into()
 }
 

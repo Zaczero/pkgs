@@ -1,3 +1,4 @@
+use std::hint;
 use rand::RngCore;
 use std::cell::UnsafeCell;
 use std::hint::{likely, unlikely};
@@ -96,7 +97,7 @@ pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
         ) {
             return (zid_time, start_seq);
         }
-        std::hint::spin_loop();
+        hint::spin_loop();
     }
 }
 
