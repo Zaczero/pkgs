@@ -1,0 +1,70 @@
+[project]
+name = "h2corn"
+dynamic = ["version"]
+description = "High-performance HTTP/2 cleartext ASGI server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = ["asgi", "fastapi", "h2c", "http", "http2", "server", "starlette", "websocket"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: POSIX",
+  "Operating System :: Unix",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Rust",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Zaczero/h2corn"
+Issues = "https://github.com/Zaczero/h2corn/issues"
+
+[project.scripts]
+h2corn = "h2corn._server:main"
+
+[dependency-groups]
+dev = [
+  "fastapi>=0.118.0",
+  "gunicorn>=25.3.0",
+  "h2>=4.2.0",
+  "hpack>=4.1.0",
+  "hypercorn>=0.18.0",
+  "matplotlib>=3.10.8",
+  "maturin>=1.12.6,<2",
+  "maturin-import-hook>=0.3.0",
+  "pytest>=9.0.0",
+  "pytest-asyncio>=0.26.0",
+  "starlette>=0.46.0",
+  "uvicorn>=0.43.0",
+  "websockets>=16.0",
+]
+
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "h2corn._lib"
+python-source = "python"
+
+[tool.ruff]
+extend = "../ruff.toml"
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]

@@ -1,0 +1,519 @@
+use std::{mem, num::NonZeroUsize};
+
+use bytes::{Buf, Bytes, BytesMut};
+
+#[cfg(test)]
+use super::super::deflate::PerMessageDeflateDisabled;
+use super::super::deflate::PerMessageDeflateMode;
+use super::cursor::SegmentCursor;
+use super::frame::{decode_control_frame, parse_frame_header};
+use super::mask::apply_websocket_mask;
+use super::{
+    CLIENT_FRAME_PREFIX_MAX_LEN, CLIENT_MASK_LEN, DecodedFrame, OPCODE_BINARY, OPCODE_CLOSE,
+    OPCODE_CONTINUATION, OPCODE_TEXT, SEGMENT_INLINE_CAPACITY, WebSocketDecodeError,
+};
+use crate::error::WebSocketProtocolError;
+use crate::hpack::BytesStr;
+
+#[derive(Debug, Default)]
+pub(crate) struct WebSocketCodec {
+    pub(crate) buffer: BytesMut,
+    segmented: SegmentCursor<SEGMENT_INLINE_CAPACITY>,
+    fragmented: FragmentState,
+    max_message_size: Option<NonZeroUsize>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum FragmentBuffer {
+    Bytes(Bytes),
+    Mut(BytesMut),
+}
+
+impl FragmentBuffer {
+    fn len(&self) -> usize {
+        match self {
+            Self::Bytes(data) => data.len(),
+            Self::Mut(data) => data.len(),
+        }
+    }
+
+    fn extend_from_slice(&mut self, payload: &[u8]) {
+        match self {
+            Self::Bytes(existing) => {
+                let mut out = BytesMut::with_capacity(existing.len() + payload.len());
+                out.extend_from_slice(existing.as_ref());
+                out.extend_from_slice(payload);
+                *self = Self::Mut(out);
+            }
+            Self::Mut(data) => data.extend_from_slice(payload),
+        }
+    }
+
+    fn freeze(self) -> Bytes {
+        match self {
+            Self::Bytes(data) => data,
+            Self::Mut(data) => data.freeze(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+enum FragmentState {
+    #[default]
+    Idle,
+    Text {
+        data: FragmentBuffer,
+        compressed: bool,
+    },
+    Binary {
+        data: FragmentBuffer,
+        compressed: bool,
+    },
+}
+
+impl WebSocketCodec {
+    pub(crate) fn with_options(buffer: BytesMut, max_message_size: Option<NonZeroUsize>) -> Self {
+        Self {
+            buffer,
+            segmented: SegmentCursor::default(),
+            fragmented: FragmentState::Idle,
+            max_message_size,
+        }
+    }
+
+    pub(crate) fn segmented(max_message_size: Option<NonZeroUsize>) -> Self {
+        Self::with_options(BytesMut::new(), max_message_size)
+    }
+
+    pub(crate) fn push_segment(&mut self, segment: Bytes) {
+        debug_assert!(
+            self.buffer.is_empty(),
+            "segmented websocket input should not be mixed with the contiguous buffer path"
+        );
+        self.segmented.push(segment);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_next(&mut self) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        let mut inflater = ();
+        self.decode_next_with_inflater::<PerMessageDeflateDisabled>(&mut inflater)
+    }
+
+    pub(crate) fn decode_next_with_inflater<M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if let Some(max_message_size) = self.max_message_size {
+            self.decode_next_with_mode::<true, M>(inflater, max_message_size.get())
+        } else {
+            self.decode_next_with_mode::<false, M>(inflater, 0)
+        }
+    }
+
+    fn decode_next_with_mode<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+        max_message_size: usize,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if self.segmented.len() != 0 {
+            return self
+                .decode_next_segmented::<ENFORCE_MESSAGE_LIMIT, M>(inflater, max_message_size);
+        }
+
+        if self.buffer.len() < 2 {
+            return Ok(None);
+        }
+
+        let Some(header) = parse_frame_header::<M>(&self.buffer)? else {
+            return Ok(None);
+        };
+
+        let needed = header.header_len + CLIENT_MASK_LEN + header.payload_len;
+        if self.buffer.len() < needed {
+            return Ok(None);
+        }
+
+        let payload = self.take_buffered_payload(needed, header.header_len);
+
+        self.decode_frame_payload::<ENFORCE_MESSAGE_LIMIT, M>(
+            inflater,
+            header.fin,
+            header.compressed,
+            header.opcode,
+            payload,
+            max_message_size,
+        )
+    }
+
+    fn decode_next_segmented<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+        max_message_size: usize,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if self.segmented.len() < 2 {
+            return Ok(None);
+        }
+
+        let prefix_len = self.segmented.len().min(CLIENT_FRAME_PREFIX_MAX_LEN);
+        let mut prefix = [0_u8; CLIENT_FRAME_PREFIX_MAX_LEN];
+        self.segmented
+            .peek_prefix(prefix_len, &mut prefix[..prefix_len]);
+
+        let Some(header) = parse_frame_header::<M>(&prefix[..prefix_len])? else {
+            return Ok(None);
+        };
+
+        let needed = header.header_len + CLIENT_MASK_LEN + header.payload_len;
+        if self.segmented.len() < needed {
+            return Ok(None);
+        }
+
+        let mask = *prefix[header.header_len..header.header_len + CLIENT_MASK_LEN]
+            .first_chunk::<CLIENT_MASK_LEN>()
+            .expect("segmented websocket mask is buffered");
+        self.segmented.skip(header.header_len + CLIENT_MASK_LEN);
+        let payload = self.segmented.take_masked_payload(header.payload_len, mask);
+
+        self.decode_frame_payload::<ENFORCE_MESSAGE_LIMIT, M>(
+            inflater,
+            header.fin,
+            header.compressed,
+            header.opcode,
+            payload,
+            max_message_size,
+        )
+    }
+
+    fn decode_frame_payload<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+        fin: bool,
+        compressed: bool,
+        opcode: u8,
+        payload: Bytes,
+        max_message_size: usize,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if opcode >= OPCODE_CLOSE {
+            if compressed {
+                return Err(WebSocketDecodeError::protocol(
+                    WebSocketProtocolError::CompressedControlFrame,
+                ));
+            }
+            return decode_control_frame(opcode, fin, payload).map(Some);
+        }
+
+        match opcode {
+            OPCODE_CONTINUATION => self.decode_continuation::<ENFORCE_MESSAGE_LIMIT, M>(
+                inflater,
+                fin,
+                compressed,
+                payload,
+                max_message_size,
+            ),
+            OPCODE_TEXT | OPCODE_BINARY => self.decode_data_frame::<ENFORCE_MESSAGE_LIMIT, M>(
+                inflater,
+                opcode,
+                fin,
+                compressed,
+                payload,
+                max_message_size,
+            ),
+            _ => Err(WebSocketDecodeError::protocol(
+                WebSocketProtocolError::UnsupportedOpcode,
+            )),
+        }
+    }
+
+    fn take_buffered_payload(&mut self, needed: usize, header_len: usize) -> Bytes {
+        let mut frame = self.buffer.split_to(needed);
+        frame.advance(header_len);
+        let mask = unsafe { *frame.as_ptr().cast::<[u8; 4]>() };
+        frame.advance(CLIENT_MASK_LEN);
+        apply_websocket_mask(frame.as_mut(), mask);
+        frame.freeze()
+    }
+
+    fn decode_payload<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        inflater: &mut M::Inflater,
+        opcode: u8,
+        compressed: bool,
+        payload: Bytes,
+        max_message_size: usize,
+    ) -> Result<DecodedFrame, WebSocketDecodeError> {
+        let payload = if compressed {
+            M::decompress::<ENFORCE_MESSAGE_LIMIT>(inflater, payload.as_ref(), max_message_size)
+                .map_err(|err| match err {
+                    WebSocketProtocolError::MessageTooLarge => {
+                        WebSocketDecodeError::message_too_large()
+                    }
+                    other => WebSocketDecodeError::protocol(other),
+                })?
+        } else {
+            Self::ensure_message_size::<ENFORCE_MESSAGE_LIMIT>(payload.len(), max_message_size)?;
+            payload
+        };
+
+        if opcode == OPCODE_TEXT {
+            let text = BytesStr::try_from(payload)
+                .map_err(|err| WebSocketDecodeError::invalid_utf8(err.to_string()))?;
+            Ok(DecodedFrame::Text(text))
+        } else {
+            Ok(DecodedFrame::Binary(payload))
+        }
+    }
+
+    fn ensure_message_size<const ENFORCE_MESSAGE_LIMIT: bool>(
+        len: usize,
+        max_message_size: usize,
+    ) -> Result<(), WebSocketDecodeError> {
+        if ENFORCE_MESSAGE_LIMIT && len > max_message_size {
+            return Err(WebSocketDecodeError::message_too_large());
+        }
+        Ok(())
+    }
+
+    fn decode_data_frame<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+        opcode: u8,
+        fin: bool,
+        compressed: bool,
+        payload: Bytes,
+        max_message_size: usize,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if self.fragmented != FragmentState::Idle {
+            return Err(WebSocketDecodeError::protocol(
+                WebSocketProtocolError::DataBeforeFragmentCompletion,
+            ));
+        }
+        if !fin {
+            if !compressed {
+                Self::ensure_message_size::<ENFORCE_MESSAGE_LIMIT>(
+                    payload.len(),
+                    max_message_size,
+                )?;
+            }
+            self.fragmented = if opcode == OPCODE_TEXT {
+                FragmentState::Text {
+                    data: FragmentBuffer::Bytes(payload),
+                    compressed,
+                }
+            } else {
+                FragmentState::Binary {
+                    data: FragmentBuffer::Bytes(payload),
+                    compressed,
+                }
+            };
+            return Ok(None);
+        }
+        Self::decode_payload::<ENFORCE_MESSAGE_LIMIT, M>(
+            inflater,
+            opcode,
+            compressed,
+            payload,
+            max_message_size,
+        )
+        .map(Some)
+    }
+
+    fn decode_continuation<const ENFORCE_MESSAGE_LIMIT: bool, M: PerMessageDeflateMode>(
+        &mut self,
+        inflater: &mut M::Inflater,
+        fin: bool,
+        compressed: bool,
+        payload: Bytes,
+        max_message_size: usize,
+    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+        if compressed {
+            return Err(WebSocketDecodeError::protocol(
+                WebSocketProtocolError::CompressedContinuationFrame,
+            ));
+        }
+        match &mut self.fragmented {
+            FragmentState::Idle => {
+                return Err(WebSocketDecodeError::protocol(
+                    WebSocketProtocolError::UnexpectedContinuationFrame,
+                ));
+            }
+            FragmentState::Text {
+                data,
+                compressed: is_compressed,
+            }
+            | FragmentState::Binary {
+                data,
+                compressed: is_compressed,
+            } => {
+                data.extend_from_slice(payload.as_ref());
+                let len = data.len();
+                if !*is_compressed && ENFORCE_MESSAGE_LIMIT && len > max_message_size {
+                    return Err(WebSocketDecodeError::message_too_large());
+                }
+            }
+        }
+        if !fin {
+            return Ok(None);
+        }
+        match mem::take(&mut self.fragmented) {
+            FragmentState::Text { data, compressed } => {
+                Self::decode_payload::<ENFORCE_MESSAGE_LIMIT, M>(
+                    inflater,
+                    OPCODE_TEXT,
+                    compressed,
+                    data.freeze(),
+                    max_message_size,
+                )
+                .map(Some)
+            }
+            FragmentState::Binary { data, compressed } => {
+                Self::decode_payload::<ENFORCE_MESSAGE_LIMIT, M>(
+                    inflater,
+                    OPCODE_BINARY,
+                    compressed,
+                    data.freeze(),
+                    max_message_size,
+                )
+                .map(Some)
+            }
+            FragmentState::Idle => Err(WebSocketDecodeError::protocol(
+                WebSocketProtocolError::UnexpectedContinuationFrame,
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::{
+        super::{
+            CLIENT_FRAME_PREFIX_MAX_LEN, FIN_MASK, INLINE_PAYLOAD_LEN_MAX, MASK_FLAG,
+            PAYLOAD_LEN_U16_MARKER, PAYLOAD_LEN_U64_MARKER, close_code,
+        },
+        DecodedFrame, OPCODE_BINARY, OPCODE_TEXT, WebSocketCodec,
+    };
+
+    fn encode_masked_client_frame(opcode: u8, payload: &[u8], fin: bool) -> Vec<u8> {
+        let mask = [1_u8, 2, 3, 4];
+        let first = if fin { FIN_MASK } else { 0x00 } | opcode;
+        let mut out = Vec::with_capacity(payload.len() + CLIENT_FRAME_PREFIX_MAX_LEN);
+        out.push(first);
+        match payload.len() {
+            len if len <= INLINE_PAYLOAD_LEN_MAX => out.push(MASK_FLAG | len as u8),
+            len if len < 65_536 => {
+                out.push(MASK_FLAG | PAYLOAD_LEN_U16_MARKER);
+                out.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                out.push(MASK_FLAG | PAYLOAD_LEN_U64_MARKER);
+                out.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(&mask);
+        out.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index & 3]),
+        );
+        out
+    }
+
+    #[test]
+    fn websocket_codec_rejects_invalid_utf8_text() {
+        let mut codec = WebSocketCodec::default();
+        codec
+            .buffer
+            .extend_from_slice(&encode_masked_client_frame(OPCODE_TEXT, b"\xff", true));
+
+        let err = codec.decode_next().expect_err("invalid utf-8 should fail");
+
+        assert_eq!(err.close_code, close_code::INVALID_FRAME_PAYLOAD_DATA);
+    }
+
+    #[test]
+    fn websocket_codec_rejects_non_canonical_16_bit_length() {
+        let mut frame = vec![
+            FIN_MASK | OPCODE_BINARY,
+            MASK_FLAG | PAYLOAD_LEN_U16_MARKER,
+            0x00,
+            INLINE_PAYLOAD_LEN_MAX as u8,
+        ];
+        frame.extend_from_slice(&[1, 2, 3, 4]);
+
+        let mut codec = WebSocketCodec::default();
+        codec.buffer.extend_from_slice(&frame);
+
+        let err = codec
+            .decode_next()
+            .expect_err("non-canonical 16-bit length should fail");
+
+        assert_eq!(err.close_code, close_code::PROTOCOL_ERROR);
+    }
+
+    #[test]
+    fn websocket_codec_rejects_reserved_high_bit_in_64_bit_length() {
+        let mut frame = vec![FIN_MASK | OPCODE_BINARY, MASK_FLAG | PAYLOAD_LEN_U64_MARKER];
+        frame.extend_from_slice(&(1_u64 << 63).to_be_bytes());
+        frame.extend_from_slice(&[1, 2, 3, 4]);
+
+        let mut codec = WebSocketCodec::default();
+        codec.buffer.extend_from_slice(&frame);
+
+        let err = codec
+            .decode_next()
+            .expect_err("reserved high bit should fail");
+
+        assert_eq!(err.close_code, close_code::PROTOCOL_ERROR);
+    }
+
+    #[test]
+    fn websocket_codec_decodes_segmented_text_frame_split_across_header_mask_and_payload() {
+        let frame = encode_masked_client_frame(OPCODE_TEXT, b"hello", true);
+        let mut codec = WebSocketCodec::segmented(None);
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[..1]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[1..4]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[4..7]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[7..]));
+        let Some(DecodedFrame::Text(text)) = codec.decode_next().unwrap() else {
+            panic!("expected a decoded text frame");
+        };
+
+        assert_eq!(AsRef::<[u8]>::as_ref(&text), b"hello");
+    }
+
+    #[test]
+    fn websocket_codec_decodes_segmented_extended_length_text_frame() {
+        let payload = vec![b'x'; 126];
+        let frame = encode_masked_client_frame(OPCODE_TEXT, &payload, true);
+        let mut codec = WebSocketCodec::segmented(None);
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[..2]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[2..5]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[5..11]));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.push_segment(Bytes::copy_from_slice(&frame[11..]));
+        let Some(DecodedFrame::Text(text)) = codec.decode_next().unwrap() else {
+            panic!("expected a decoded text frame");
+        };
+
+        assert_eq!(AsRef::<[u8]>::as_ref(&text).len(), payload.len());
+        assert!(
+            AsRef::<[u8]>::as_ref(&text)
+                .iter()
+                .all(|&byte| byte == b'x')
+        );
+    }
+}
