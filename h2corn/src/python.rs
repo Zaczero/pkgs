@@ -1,60 +1,47 @@
 pub(crate) use pyo3::sync::PyOnceLock;
 pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
-use pyo3::{IntoPyObject, IntoPyObjectExt, PyErr, ffi, prelude::*};
+use pyo3::{prelude::*, IntoPyObject, IntoPyObjectExt};
 pub(crate) use pyo3::{Py, PyResult};
 use std::{any::Any, mem::MaybeUninit};
 
-unsafe extern "C" {
-    fn _PyDict_NewPresized(minused: ffi::Py_ssize_t) -> *mut ffi::PyObject;
-    fn _PyDict_GetItem_KnownHash(
-        mp: *mut ffi::PyObject,
-        key: *mut ffi::PyObject,
-        hash: ffi::Py_hash_t,
-    ) -> *mut ffi::PyObject;
-    fn _PyDict_SetItem_KnownHash(
-        mp: *mut ffi::PyObject,
-        key: *mut ffi::PyObject,
-        value: *mut ffi::PyObject,
-        hash: ffi::Py_hash_t,
-    ) -> ::std::os::raw::c_int;
-}
+#[cfg(not(any(PyPy, GraalPy, Py_LIMITED_API)))]
+mod dict_api {
+    use super::*;
+    use pyo3::{ffi, PyErr};
+    use std::ffi::c_int;
 
-fn py_dict_set_item_known_hash(
-    py: Python<'_>,
-    dict: *mut ffi::PyObject,
-    key: *mut ffi::PyObject,
-    value: *mut ffi::PyObject,
-    hash: ffi::Py_hash_t,
-) -> PyResult<()> {
-    if unsafe { _PyDict_SetItem_KnownHash(dict, key, value, hash) } == -1 {
-        Err(PyErr::fetch(py))
-    } else {
-        Ok(())
+    pub(super) type CachedKey = (Py<PyString>, ffi::Py_hash_t);
+
+    unsafe extern "C" {
+        fn _PyDict_NewPresized(minused: ffi::Py_ssize_t) -> *mut ffi::PyObject;
+        fn _PyDict_GetItem_KnownHash(
+            mp: *mut ffi::PyObject,
+            key: *mut ffi::PyObject,
+            hash: ffi::Py_hash_t,
+        ) -> *mut ffi::PyObject;
+        fn _PyDict_SetItem_KnownHash(
+            mp: *mut ffi::PyObject,
+            key: *mut ffi::PyObject,
+            value: *mut ffi::PyObject,
+            hash: ffi::Py_hash_t,
+        ) -> c_int;
     }
-}
 
-fn py_dict_get_item_known_hash<'py>(
-    py: Python<'py>,
-    dict: &Bound<'py, PyDict>,
-    key: &Bound<'py, PyString>,
-    hash: ffi::Py_hash_t,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let value = unsafe { _PyDict_GetItem_KnownHash(dict.as_ptr(), key.as_ptr(), hash) };
-    if value.is_null() {
-        if unsafe { ffi::PyErr_Occurred().is_null() } {
-            Ok(None)
-        } else {
+    pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
+        let key = PyString::intern(py, text).unbind();
+        let hash = unsafe { ffi::PyObject_Hash(key.as_ptr()) };
+        if hash == -1 {
             Err(PyErr::fetch(py))
+        } else {
+            Ok((key, hash))
         }
-    } else {
-        Ok(Some(unsafe { Bound::from_borrowed_ptr(py, value) }))
     }
-}
 
-pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
-    if capacity <= 5 {
-        Ok(PyDict::new(py))
-    } else {
+    pub(super) fn new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+        if capacity <= 5 {
+            return Ok(PyDict::new(py));
+        }
+
         let capacity = capacity.min(ffi::PY_SSIZE_T_MAX as usize).cast_signed();
         // SAFETY: the GIL is held by `py`; `_PyDict_NewPresized` returns a new
         // owned dict pointer or sets a Python exception; and the result is
@@ -64,11 +51,82 @@ pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_,
                 .map(|dict| dict.cast_into_unchecked::<PyDict>())
         }
     }
+
+    pub(super) fn get_item<'py>(
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        (key, hash): &CachedKey,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let key = key.bind(py);
+        let value = unsafe { _PyDict_GetItem_KnownHash(dict.as_ptr(), key.as_ptr(), *hash) };
+        if value.is_null() {
+            if unsafe { ffi::PyErr_Occurred().is_null() } {
+                Ok(None)
+            } else {
+                Err(PyErr::fetch(py))
+            }
+        } else {
+            Ok(Some(unsafe { Bound::from_borrowed_ptr(py, value) }))
+        }
+    }
+
+    pub(super) fn set_item<'py>(
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        (key, hash): &CachedKey,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
+        let key = key.bind(py);
+        if unsafe { _PyDict_SetItem_KnownHash(dict.as_ptr(), key.as_ptr(), value.as_ptr(), *hash) }
+            == -1
+        {
+            Err(PyErr::fetch(py))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(PyPy, GraalPy, Py_LIMITED_API))]
+mod dict_api {
+    use super::*;
+    use pyo3::types::PyDictMethods;
+
+    pub(super) type CachedKey = Py<PyString>;
+
+    pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
+        Ok(PyString::intern(py, text).unbind())
+    }
+
+    pub(super) fn new_dict(py: Python<'_>, _capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+        Ok(PyDict::new(py))
+    }
+
+    pub(super) fn get_item<'py>(
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        key: &CachedKey,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        dict.get_item(key.bind(py))
+    }
+
+    pub(super) fn set_item<'py>(
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        key: &CachedKey,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
+        dict.set_item(key.bind(py), value)
+    }
+}
+
+pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+    dict_api::new_dict(py, capacity)
 }
 
 pub(crate) struct StaticPyKey {
     text: &'static str,
-    cached: PyOnceLock<(Py<PyString>, ffi::Py_hash_t)>,
+    cached: PyOnceLock<dict_api::CachedKey>,
 }
 
 impl StaticPyKey {
@@ -79,20 +137,9 @@ impl StaticPyKey {
         }
     }
 
-    fn key_and_hash<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(&Bound<'py, PyString>, ffi::Py_hash_t)> {
-        let (key, hash) = self.cached.get_or_try_init(py, || {
-            let key = PyString::intern(py, self.text).unbind();
-            let hash = unsafe { ffi::PyObject_Hash(key.as_ptr()) };
-            if hash == -1 {
-                Err(PyErr::fetch(py))
-            } else {
-                Ok((key, hash))
-            }
-        })?;
-        Ok((key.bind(py), *hash))
+    fn key(&self, py: Python<'_>) -> PyResult<&dict_api::CachedKey> {
+        self.cached
+            .get_or_try_init(py, || dict_api::cache_key(py, self.text))
     }
 
     pub(crate) fn get_item<'py>(
@@ -100,8 +147,7 @@ impl StaticPyKey {
         py: Python<'py>,
         dict: &Bound<'py, PyDict>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let (key, hash) = self.key_and_hash(py)?;
-        py_dict_get_item_known_hash(py, dict, key, hash)
+        dict_api::get_item(py, dict, self.key(py)?)
     }
 
     fn set_item<'py>(
@@ -110,8 +156,7 @@ impl StaticPyKey {
         dict: &Bound<'py, PyDict>,
         value: &Bound<'py, PyAny>,
     ) -> PyResult<()> {
-        let (key, hash) = self.key_and_hash(py)?;
-        py_dict_set_item_known_hash(py, dict.as_ptr(), key.as_ptr(), value.as_ptr(), hash)
+        dict_api::set_item(py, dict, self.key(py)?, value)
     }
 }
 
@@ -387,8 +432,9 @@ pub(crate) use py_match_cached_bytes;
 mod tests {
     use super::PyString;
     use pyo3::{
-        IntoPyObjectExt, PyResult, Python, ffi,
+        ffi,
         types::{PyBool, PyBytes, PyDictMethods},
+        IntoPyObjectExt, PyResult, Python,
     };
 
     fn init_python() {

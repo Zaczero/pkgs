@@ -2,12 +2,12 @@
 name = "h2corn"
 version = "1.0.0"
 edition = "2024"
-license = "MIT"
 readme = "README.md"
+license = "MIT"
 
 [lib]
-name = "_lib"
 crate-type = ["cdylib"]
+name = "_lib"
 
 [dependencies]
 anstream = "0.6"
@@ -25,8 +25,20 @@ pyo3-async-runtimes = { version = "0.28.0", features = ["tokio-runtime"] }
 rustix = { version = "1.1", features = ["fs", "net"] }
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
 thiserror = "2.0"
-tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.48", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "parking_lot",
+  "rt-multi-thread",
+  "sync",
+  "time"
+] }
 zerocopy = { version = "0.8", features = ["derive"] }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
 
 [profile.release]
 lto = "thin"

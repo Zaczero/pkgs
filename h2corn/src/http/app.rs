@@ -188,7 +188,9 @@ where
     T: HttpResponseTransport,
 {
     while let Some(event) = send_buffer.take_ready(response.needs_live_stream()) {
-        apply_http_event(response, transport, actions, event).await?;
+        if let Err(err) = apply_http_event(response, transport, actions, event).await {
+            return finalize_response(response, transport, actions, Err(err)).await;
+        }
     }
     finalize_response(response, transport, actions, app_result).await
 }
