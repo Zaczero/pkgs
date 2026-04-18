@@ -1,47 +1,49 @@
 use std::io;
 
-#[cfg(all(unix, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::io::{Error, ErrorKind};
 
-#[cfg(all(unix, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use rustix::fs::sendfile;
 use tokio::fs::File;
 use tokio::io::BufWriter;
-#[cfg(not(all(unix, target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 use tokio::io::copy;
 use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn sendfile_all_tcp(
     writer: &mut BufWriter<TcpOwnedWriteHalf>,
     file: &mut File,
     offset: &mut u64,
     len: usize,
 ) -> io::Result<()> {
-    #[cfg(all(unix, target_os = "linux"))]
-    {
-        let end = *offset + len as u64;
-        while *offset < end {
-            writer.get_ref().writable().await?;
-            let remaining = (end - *offset) as usize;
-            match sendfile(writer.get_ref().as_ref(), &*file, Some(offset), remaining) {
-                Ok(0) => {
-                    return Err(Error::new(
-                        ErrorKind::WriteZero,
-                        "sendfile wrote zero bytes",
-                    ));
-                }
-                Ok(_) => {}
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                Err(err) => return Err(err.into()),
+    let end = *offset + len as u64;
+    while *offset < end {
+        writer.get_ref().writable().await?;
+        let remaining = (end - *offset) as usize;
+        match sendfile(writer.get_ref().as_ref(), &*file, Some(offset), remaining) {
+            Ok(0) => {
+                return Err(Error::new(
+                    ErrorKind::WriteZero,
+                    "sendfile wrote zero bytes",
+                ));
             }
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+            Err(err) => return Err(err.into()),
         }
-        Ok(())
     }
-    #[cfg(not(all(unix, target_os = "linux")))]
-    {
-        let _ = offset;
-        let _ = len;
-        copy(file, writer.get_mut()).await?;
-        Ok(())
-    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn sendfile_all_tcp(
+    writer: &mut BufWriter<TcpOwnedWriteHalf>,
+    file: &mut File,
+    _offset: &mut u64,
+    _len: usize,
+) -> io::Result<()> {
+    copy(file, writer.get_mut()).await?;
+    Ok(())
 }

@@ -5,9 +5,6 @@ use std::{
     task::{Context, Poll},
 };
 
-#[cfg(unix)]
-use std::os;
-
 use pyo3::prelude::*;
 use pyo3_async_runtimes::TaskLocals;
 #[cfg(target_os = "linux")]
@@ -177,11 +174,11 @@ async fn serve_tcp(
 
 #[cfg(unix)]
 fn adopt_unix_listener(fd: i64) -> io::Result<UnixListener> {
-    use std::os::fd::FromRawFd;
+    use std::os::fd::{FromRawFd, RawFd};
 
     // SAFETY: `fd` comes from the Python socket builder and ownership is
     // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { os::unix::net::UnixListener::from_raw_fd(fd as i32) };
+    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd as RawFd) };
     UnixListener::from_std(listener)
 }
 
@@ -195,13 +192,13 @@ fn adopt_tcp_listener(fd: i64) -> io::Result<TcpListener> {
     TcpListener::from_std(listener)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn adopt_tcp_listener(fd: i64) -> io::Result<TcpListener> {
-    use std::os::fd::FromRawFd;
+    use std::os::fd::{FromRawFd, RawFd};
 
     // SAFETY: `fd` comes from the Python socket builder and ownership is
     // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { net::TcpListener::from_raw_fd(fd as i32) };
+    let listener = unsafe { net::TcpListener::from_raw_fd(fd as RawFd) };
     TcpListener::from_std(listener)
 }
 
