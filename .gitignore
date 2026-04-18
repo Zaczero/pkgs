@@ -443,7 +443,12 @@ Cargo.lock
 
 !.envrc
 
+.codex
+repomix-output.xml
 uv.lock
+vendor/
 
 githead/tests/git/HEAD
+h2corn/bench/*.bin
+h2corn/bench/results/*_summary.json
 jinja2-htmlmin/tests/templates/.*

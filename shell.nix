@@ -3,7 +3,7 @@
 let
   pkgs =
     import
-      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/5d6bdbddb4695a62f0d00a3620b37a15275a5093.tar.gz")
+      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/8d8c1fa5b412c223ffa47410867813290cdedfef.tar.gz")
       { };
 
   makeScript =
@@ -25,26 +25,36 @@ let
       meta.mainProgram = name;
     };
 
-  python' = pkgs.python314;
-
   packages' = with pkgs; [
     coreutils
     curl
-    jq
-    python'
-    uv
+    gnugrep
+    h2spec
     hatch
-    ruff
+    jq
+    k6
     pyright
+    ruff
+    uv
 
     (makeScript "activate" ''
       if [ -f pyproject.toml ]; then
-        current_python=$(readlink -e .venv/bin/python || echo "")
-        current_python=''${current_python%/bin/*}
-        [ "$current_python" != "${python'}" ] && rm -rf .venv/
-
         uv sync
-        source .venv/bin/activate
+        if ${gnugrep}/bin/grep -q 'build-backend = "maturin"' pyproject.toml; then
+          if ! .venv/bin/python - <<'PY'
+      import sys
+      import sysconfig
+      from pathlib import Path
+
+      sitecustomize = Path(sysconfig.get_paths()["purelib"]) / "sitecustomize.py"
+      if sitecustomize.exists() and "maturin_import_hook" in sitecustomize.read_text():
+          raise SystemExit(0)
+      raise SystemExit(1)
+      PY
+          then
+            uv run python -m maturin_import_hook site install --args="--release"
+          fi
+        fi
       fi
     '')
 
@@ -63,13 +73,8 @@ let
     export TZ=UTC
     export NIX_ENFORCE_NO_NATIVE=0
     export NIX_ENFORCE_PURITY=0
-    export PYTHONNOUSERSITE=1
     export PYTHONPATH=""
     export COVERAGE_CORE=sysmon
-    export UV_DOWNLOADS=never
-    export UV_NATIVE_TLS=true
-    export UV_PYTHON_PREFERENCE=only-system
-    export UV_PYTHON="${python'}/bin/python"
     export PYTEST_ADDOPTS="--quiet --import-mode=importlib --strict-markers --strict-config"
   '';
 in

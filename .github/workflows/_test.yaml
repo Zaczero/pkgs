@@ -1,0 +1,250 @@
+name: Test & Build Package
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      import-name: ${{ steps.resolve.outputs.import-name }}
+      is-rusty: ${{ steps.resolve.outputs.is-rusty }}
+      python-versions: ${{ steps.resolve.outputs.python-versions }}
+      rust-toolchain: ${{ steps.resolve.outputs.rust-toolchain }}
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          versions_file="$PACKAGE/.python-versions"
+          if [ ! -f "$versions_file" ]; then
+            versions_file=".python-versions"
+          fi
+
+          versions="$(
+            jq -R -s -c '
+              split("\n")
+              | map(gsub("\r$"; ""))
+              | map(select(length > 0))
+              | map(select(startswith("#") | not))
+            ' "$versions_file"
+          )"
+          echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
+
+          if [ -f "$PACKAGE/Cargo.toml" ]; then
+            echo "is-rusty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-rusty=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          rust_toolchain="$(
+            python3 - <<'PY'
+          import tomllib
+
+          with open("rust-toolchain.toml", "rb") as file:
+              print(tomllib.load(file)["toolchain"]["channel"])
+          PY
+          )"
+          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
+
+          import_name="${PACKAGE//-/_}"
+          echo "import-name=$import_name" >> "$GITHUB_OUTPUT"
+
+  test-rust:
+    needs: resolve
+    if: needs.resolve.outputs.is-rusty == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: ${{ inputs.package }} -> target
+
+      - name: Test Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          cargo test
+
+  test:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(needs.resolve.outputs.python-versions) }}
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ inputs.package }}
+      PYTHON_VERSION: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          cache-dependency-glob: |
+            ${{ inputs.package }}/pyproject.toml
+            ${{ inputs.package }}/uv.lock
+          cache-suffix: ${{ inputs.package }}-py${{ matrix.python-version }}
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          working-directory: ${{ inputs.package }}
+
+      - name: Install Python
+        shell: bash
+        run: uv python install "$PYTHON_VERSION"
+
+      - name: Install Rust toolchain
+        if: needs.resolve.outputs.is-rusty == 'true'
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
+
+      - name: Restore Rust cache
+        if: needs.resolve.outputs.is-rusty == 'true'
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: ${{ inputs.package }} -> target
+
+      - name: Install h2spec
+        if: inputs.package == 'h2corn'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz \
+            | tar -xzf - h2spec
+          sudo mv h2spec /usr/local/bin/
+
+      - name: Test Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          uv sync
+          uv run pytest
+
+  build-pure:
+    needs: resolve
+    if: needs.resolve.outputs.is-rusty == 'false'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          cache-dependency-glob: |
+            ${{ inputs.package }}/pyproject.toml
+            ${{ inputs.package }}/uv.lock
+          enable-cache: true
+          working-directory: ${{ inputs.package }}
+
+      - name: Build package
+        shell: bash
+        run: uv build -o dist "$PACKAGE"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-${{ inputs.package }}-ubuntu-latest
+          path: dist
+
+  build-rusty:
+    needs: resolve
+    if: needs.resolve.outputs.is-rusty == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15-intel, macos-15 ]
+    runs-on: ${{ matrix.runner }}
+    env:
+      CIBW_ARCHS_WINDOWS: "AMD64"
+      CIBW_BUILD_VERBOSITY: "1"
+      CIBW_ENABLE: "cpython-freethreading pypy"
+      CIBW_ENVIRONMENT_LINUX: ${{ matrix.runner == 'ubuntu-latest' &&
+        'PATH="$HOME/.cargo/bin:$PATH" RUSTFLAGS="-C target-cpu=x86-64-v2"' ||
+        'PATH="$HOME/.cargo/bin:$PATH"' }}
+      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
+      CIBW_ENVIRONMENT_PASS_LINUX: RUSTUP_TOOLCHAIN
+      CIBW_SKIP: "pp39-* pp310-*"
+      CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
+      RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
+      CIBW_BEFORE_ALL_LINUX: "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+        --default-toolchain none && rustup toolchain install --profile minimal
+        \"$RUSTUP_TOOLCHAIN\""
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          cache-dependency-glob: |
+            ${{ inputs.package }}/pyproject.toml
+            ${{ inputs.package }}/uv.lock
+          enable-cache: true
+          working-directory: ${{ inputs.package }}
+
+      - name: Install Rust toolchain
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - name: Restore Rust cache
+        if: runner.os != 'Linux'
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: ${{ inputs.package }} -> target
+
+      - name: Build wheels
+        shell: bash
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          uv tool run \
+            --from "cibuildwheel<4" cibuildwheel \
+            --output-dir dist \
+            "$PACKAGE"
+
+      - name: Build sdist
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: uv build --sdist -o dist "$PACKAGE"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-${{ inputs.package }}-${{ matrix.runner }}
+          path: dist
