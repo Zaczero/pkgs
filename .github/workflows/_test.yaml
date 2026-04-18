@@ -25,6 +25,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: astral-sh/setup-uv@v8.1.0
+
       - id: resolve
         shell: bash
         run: |
@@ -35,14 +37,24 @@ jobs:
             versions_file=".python-versions"
           fi
 
-          versions="$(
-            jq -R -s -c '
-              split("\n")
-              | map(gsub("\r$"; ""))
-              | map(select(length > 0))
-              | map(select(startswith("#") | not))
-            ' "$versions_file"
+          versions="$(awk '$0 && $0 !~ /^#/ { print }' "$versions_file")"
+          requires_python="$(
+            sed -nE \
+              's/^requires-python = "([^"]+)"/\1/p' \
+              "$PACKAGE/pyproject.toml"
           )"
+          if [ -n "$requires_python" ]; then
+            supported="$(
+              uv python list "$requires_python" \
+                --only-downloads \
+                --output-format json \
+                | jq -r '.[].version_parts | "\(.major).\(.minor)"' \
+                | sort -u
+            )"
+            versions="$(grep -Fx -f <(printf '%s\n' "$supported") <<< "$versions")"
+          fi
+
+          versions="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<< "$versions")"
           echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
 
           if [ -f "$PACKAGE/Cargo.toml" ]; then

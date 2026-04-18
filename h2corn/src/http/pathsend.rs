@@ -1,6 +1,6 @@
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use rustix::fs::{Advice, fadvise};
 use std::fs::File as SyncFile;
 use tokio::fs::File;
@@ -108,7 +108,7 @@ pub(crate) async fn open_pathsend_file(
             file.metadata().map_err(pathsend_io_error)?.len() as usize
         };
         if len >= PATHSEND_BUFFER_SIZE {
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             let _ = fadvise(&file, 0, None, Advice::Sequential);
         }
         Ok::<_, PathsendError>((file, len))

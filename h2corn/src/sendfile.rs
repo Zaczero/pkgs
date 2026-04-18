@@ -1,4 +1,7 @@
-use std::io::{self, Error, ErrorKind};
+use std::io;
+
+#[cfg(all(unix, target_os = "linux"))]
+use std::io::{Error, ErrorKind};
 
 #[cfg(all(unix, target_os = "linux"))]
 use rustix::fs::sendfile;
@@ -37,6 +40,7 @@ pub(crate) async fn sendfile_all_tcp(
     #[cfg(not(all(unix, target_os = "linux")))]
     {
         let _ = offset;
+        let _ = len;
         copy(file, writer.get_mut()).await?;
         Ok(())
     }

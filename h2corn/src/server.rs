@@ -1,9 +1,12 @@
 use std::{
     future::{Future, poll_fn, ready},
-    io, net, os,
+    io, net,
     sync::Arc,
     task::{Context, Poll},
 };
+
+#[cfg(unix)]
+use std::os;
 
 use pyo3::prelude::*;
 use pyo3_async_runtimes::TaskLocals;
@@ -20,7 +23,9 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::config::{ServerBind, ServerConfig};
+#[cfg(unix)]
+use crate::config::ServerBind;
+use crate::config::ServerConfig;
 use crate::error::{H2CornError, H2Error};
 use crate::frame::FrameReader;
 use crate::h1::{self, H1WriteTarget};
@@ -182,11 +187,11 @@ fn adopt_unix_listener(fd: i64) -> io::Result<UnixListener> {
 
 #[cfg(windows)]
 fn adopt_tcp_listener(fd: i64) -> io::Result<TcpListener> {
-    use std::os::windows::io::FromRawSocket;
+    use std::os::windows::io::{FromRawSocket, RawSocket};
 
     // SAFETY: `fd` comes from the Python socket builder and ownership is
     // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { net::TcpListener::from_raw_socket(fd as usize) };
+    let listener = unsafe { net::TcpListener::from_raw_socket(fd as RawSocket) };
     TcpListener::from_std(listener)
 }
 

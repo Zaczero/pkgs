@@ -4,7 +4,9 @@ use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
 use tokio::fs::File;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter, copy};
+#[cfg(unix)]
+use tokio::io::copy;
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
 #[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
