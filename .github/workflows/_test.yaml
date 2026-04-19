@@ -122,8 +122,8 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           cache-dependency-glob: |
-            ${{ inputs.package }}/pyproject.toml
-            ${{ inputs.package }}/uv.lock
+            pyproject.toml
+            uv.lock
           cache-suffix: ${{ inputs.package }}-py${{ matrix.python-version }}
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -177,8 +177,8 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           cache-dependency-glob: |
-            ${{ inputs.package }}/pyproject.toml
-            ${{ inputs.package }}/uv.lock
+            pyproject.toml
+            uv.lock
           enable-cache: true
           working-directory: ${{ inputs.package }}
 
@@ -222,8 +222,8 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           cache-dependency-glob: |
-            ${{ inputs.package }}/pyproject.toml
-            ${{ inputs.package }}/uv.lock
+            pyproject.toml
+            uv.lock
           enable-cache: true
           working-directory: ${{ inputs.package }}
 
