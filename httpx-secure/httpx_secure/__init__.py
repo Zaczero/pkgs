@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from inspect import isawaitable
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
 from time import monotonic
 from weakref import WeakValueDictionary
 
@@ -12,7 +12,6 @@ from httpx import ConnectError, ConnectTimeout, RequestError
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from ipaddress import IPv4Address, IPv6Address
     from typing import TypeVar, Union
 
     from httpx import AsyncClient, Request
@@ -23,7 +22,9 @@ if TYPE_CHECKING:
 
     _AsyncClientT = TypeVar('_AsyncClientT', bound=AsyncClient)
 
-__version__ = '1.2.0'
+__version__ = '1.3.0'
+
+_NAT64_WELL_KNOWN_PREFIX = IPv6Network('64:ff9b::/96')
 
 
 class SSRFProtectionError(RequestError):
@@ -152,7 +153,14 @@ class _SSRFProtectionHook:
                 port=port,
             ) from e
 
-        if self.check_globally_reachable and not ip_addr.is_global:
+        if self.check_globally_reachable and (
+            not ip_addr.is_global
+            or (
+                isinstance(ip_addr, IPv6Address)
+                and ip_addr in _NAT64_WELL_KNOWN_PREFIX
+                and not IPv4Address(ip_addr.packed[-4:]).is_global
+            )
+        ):
             raise SSRFProtectionError(
                 f'Access denied: IP address {ip_str!r} is not globally reachable',
                 hostname=hostname,

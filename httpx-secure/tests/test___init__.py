@@ -79,6 +79,19 @@ async def test_blocks_localhost(client, url):
 @pytest.mark.parametrize(
     'url',
     [
+        'http://[64:ff9b::7f00:1]/',
+        'http://[64:ff9b::c0a8:101]/',
+        'http://[64:ff9b::6440:1]/',
+    ],
+)
+async def test_blocks_nat64_with_non_global_embedded_ipv4(client, url):
+    with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+        await client.get(url)
+
+
+@pytest.mark.parametrize(
+    'url',
+    [
         'http://192.168.1.1/',
         'http://10.0.0.1/',
         'http://172.16.0.1/',
@@ -98,6 +111,7 @@ async def test_blocks_private_networks(client, url):
         'http://8.8.8.8/',
         'http://1.1.1.1/',
         'http://[2001:4860:4860::8888]/',
+        'http://[64:ff9b::808:808]/',
     ],
 )
 async def test_allows_global_addresses(client, url):
@@ -142,6 +156,18 @@ async def test_dns_results_are_cached(mock_tcp_fixture):
         with pytest.raises(SuccessError):
             await client.get('https://api.example.com/path')
         assert call_count == 2
+
+
+async def test_blocks_nat64_with_non_global_embedded_ipv4_after_dns_resolution(
+    mock_tcp_fixture,
+):
+    mock_tcp_fixture.side_effect = mock_tcp('64:ff9b::c0a8:101')
+
+    async with httpx_ssrf_protection(AsyncClient()) as client:
+        client.event_hooks['request'].append(success_hook)
+
+        with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+            await client.get('https://example.com/')
 
 
 async def test_custom_validator_blocks_specific_ips():
