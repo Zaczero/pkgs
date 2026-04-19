@@ -9,6 +9,7 @@ def _recording_socket(
     calls: list[tuple[str, tuple[object, ...]]],
     *,
     fail_tcp_defer_accept: bool = False,
+    bound_port: int = 43_210,
 ):
     from h2corn import _socket
 
@@ -30,6 +31,9 @@ def _recording_socket(
 
         def setblocking(self, *args) -> None:
             calls.append(('setblocking', args))
+
+        def getsockname(self) -> tuple[str, int]:
+            return ('127.0.0.1', bound_port)
 
     return FakeSocket()
 
@@ -112,6 +116,27 @@ def test_build_socket_sets_nonblocking_after_creation_off_linux(
     assert calls[0] == ('socket', (_socket.socket.AF_INET, _socket.socket.SOCK_STREAM))
     assert ('setblocking', (False,)) in calls
     assert ('listen', (config.backlog,)) in calls
+
+
+def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    config = Config(port=0)
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        _socket.socket,
+        'socket',
+        lambda *_args: _recording_socket(calls, bound_port=54_321),
+    )
+
+    _socket._build_socket(config)
+
+    assert ('bind', (('127.0.0.1', 0),)) in calls
+    assert config.port == 54_321
 
 
 def test_signal_wakeup_pipe_uses_pipe2_when_available(

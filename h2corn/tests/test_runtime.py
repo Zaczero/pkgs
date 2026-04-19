@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import signal
 import sys
 import textwrap
@@ -25,8 +26,12 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         await asyncio.wait_for(process.wait(), timeout=5)
         return
-    process.kill()
-    await asyncio.wait_for(process.wait(), timeout=5)
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        process.kill()
+        await asyncio.wait_for(process.wait(), timeout=5)
 
 
 async def _wait_for_h2_success(
@@ -50,6 +55,25 @@ async def _wait_for_h2_success(
         return
 
 
+async def _wait_for_listening_port(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 5.0,
+) -> int:
+    assert process.stderr is not None
+
+    async def _read_port() -> int:
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                raise AssertionError('server exited before printing listening banner')
+            match = re.search(rb"Listening on http://127\.0\.0\.1:(\d+)", line)
+            if match is not None:
+                return int(match.group(1))
+
+    return await asyncio.wait_for(_read_port(), timeout=timeout)
+
+
 async def _spawn_server_process(
     *,
     tmp_path: Path,
@@ -58,6 +82,7 @@ async def _spawn_server_process(
     workers: int,
     port: int | None = None,
     extra_args: list[str] | None = None,
+    stderr=None,
 ) -> tuple[asyncio.subprocess.Process, int]:
     port = find_free_port() if port is None else port
     module_path = tmp_path / f'{module_name}.py'
@@ -78,7 +103,7 @@ async def _spawn_server_process(
         *(extra_args or []),
         env=env,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL if stderr is None else stderr,
     )
     return process, port
 
@@ -167,6 +192,35 @@ async def test_worker_supervisor_serves_requests(tmp_path: Path, workers: int) -
         status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
         assert status == 200
         assert body == b'supervisor'
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+async def test_worker_supervisor_banner_reports_kernel_allocated_port(
+    tmp_path: Path,
+) -> None:
+    process, configured_port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='banner_port_zero_app',
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'banner-port-zero'})
+        """,
+        workers=1,
+        port=0,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        bound_port = await _wait_for_listening_port(process)
+        assert configured_port == 0
+        assert bound_port != 0
+        await wait_for_port(bound_port)
+        status, body = await asyncio.wait_for(h2_request(port=bound_port), timeout=5)
+        assert status == 200
+        assert body == b'banner-port-zero'
         assert process.returncode is None
     finally:
         await _terminate_process(process)

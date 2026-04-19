@@ -121,6 +121,8 @@ def _build_tcp_socket(config: Config) -> socket.socket:
     sock = _new_tcp_socket()
     _prepare_tcp_listener(sock)
     sock.bind((config.host, config.port))
+    if config.port == 0:
+        object.__setattr__(config, 'port', sock.getsockname()[1])
     return _finish_bound_socket(sock, config.backlog)
 
 
