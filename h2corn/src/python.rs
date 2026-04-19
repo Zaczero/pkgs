@@ -1,13 +1,13 @@
 pub(crate) use pyo3::sync::PyOnceLock;
 pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
-use pyo3::{prelude::*, IntoPyObject, IntoPyObjectExt};
+use pyo3::{IntoPyObject, IntoPyObjectExt, prelude::*};
 pub(crate) use pyo3::{Py, PyResult};
 use std::{any::Any, mem::MaybeUninit};
 
 #[cfg(not(any(PyPy, GraalPy, Py_LIMITED_API)))]
 mod dict_api {
     use super::*;
-    use pyo3::{ffi, PyErr};
+    use pyo3::{PyErr, ffi};
     use std::ffi::c_int;
 
     pub(super) type CachedKey = (Py<PyString>, ffi::Py_hash_t);
@@ -432,9 +432,8 @@ pub(crate) use py_match_cached_bytes;
 mod tests {
     use super::PyString;
     use pyo3::{
-        ffi,
+        IntoPyObjectExt, PyResult, Python, ffi,
         types::{PyBool, PyBytes, PyDictMethods},
-        IntoPyObjectExt, PyResult, Python,
     };
 
     fn init_python() {

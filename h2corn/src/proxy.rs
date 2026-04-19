@@ -77,7 +77,7 @@ impl TrustedPeer {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProxyV1Transport {
     Tcp4,
     Tcp6,

@@ -51,13 +51,13 @@ fn fair_write_quantum(max_frame_size: usize) -> usize {
     max_frame_size.max(FAIR_WRITE_QUANTUM)
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FlushBodyProgress {
     Continue,
     ConnectionBlocked,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChunkAdvance {
     KeepFront,
     PopFront,
@@ -80,7 +80,7 @@ struct FlushBodyParts<'a, W> {
     response_closes: &'a mut ResponseCloseBatch,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FlushPassResult {
     Continue,
     ConnectionBlocked,

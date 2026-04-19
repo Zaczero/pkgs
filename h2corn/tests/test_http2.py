@@ -335,6 +335,25 @@ async def test_h2_header_list_limit_returns_431() -> None:
     assert body == b''
 
 
+async def test_h2_header_list_limit_counts_rfc_overhead() -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('header list limit should reject before the app runs')
+
+    config = Config(port=find_free_port(), h2_max_header_list_size=90)
+    extra_headers = [(f'x{i}'.encode(), b'1') for i in range(10)]
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=config.port,
+                extra_headers=extra_headers,
+            ),
+            timeout=5,
+        )
+
+    assert status == 431
+    assert body == b''
+
+
 async def test_h2_content_length_limit_returns_413() -> None:
     async def app(scope, receive, send):
         raise AssertionError(

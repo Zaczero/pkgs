@@ -24,13 +24,14 @@ use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct AcceptedWebSocketState {
     pub(crate) close_state: CloseState,
     pub(crate) close_code: Option<NonZeroU16>,
     pending_close: Option<PendingClose>,
 }
 
+#[derive(Debug)]
 pub(crate) struct PendingClose {
     code: WebSocketCloseCode,
     reason: Box<str>,
@@ -153,6 +154,7 @@ pub(crate) enum CloseState {
     PeerReset,
 }
 
+#[derive(Debug)]
 pub(crate) enum TransportRead {
     Progress,
     PeerGone,
@@ -160,7 +162,7 @@ pub(crate) enum TransportRead {
     PeerReset { reason: BytesStr },
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameFlushMode {
     Buffered,
     Immediate,

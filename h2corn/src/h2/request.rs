@@ -33,6 +33,7 @@ pub(super) struct HeaderBlockFragment {
     pub stream_dependency: Option<PriorityDependency>,
 }
 
+#[derive(Debug)]
 pub(super) enum RequestHeadError {
     Connection {
         error_code: ErrorCode,
@@ -152,7 +153,7 @@ struct RequestHeadBuilder<const ENFORCE_HEADER_LIST_LIMIT: bool> {
     websocket: WebSocketRequestAnalysis,
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum HeaderSection {
     #[default]
     Pseudo,
@@ -204,29 +205,25 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
     }
 
     fn push(&mut self, header: Header) -> Result<(), RequestHeadError> {
+        let header_len = header.len();
         match header {
             Header::Method(value) => {
-                self.account_header_bytes(7 + value.as_str().len())?;
                 push_request_pseudo(&mut self.method, self.section, value)
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
             Header::Scheme(value) => {
-                self.account_header_bytes(7 + value.len())?;
                 push_request_pseudo(&mut self.scheme, self.section, value)
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
             Header::Authority(value) => {
-                self.account_header_bytes(10 + value.len())?;
                 push_request_pseudo(&mut self.authority, self.section, value)
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
             Header::Path(value) => {
-                self.account_header_bytes(5 + value.len())?;
                 push_request_pseudo(&mut self.path, self.section, value)
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
             Header::Protocol(value) => {
-                self.account_header_bytes(9 + value.as_str().len())?;
                 push_request_pseudo(&mut self.protocol, self.section, value)
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
@@ -239,6 +236,7 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             }
         }
+        self.account_header_bytes(header_len)?;
         Ok(())
     }
 
@@ -284,9 +282,6 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
             }
             _ => {}
         }
-
-        self.account_header_bytes(name.as_str().len() + value_bytes.len())
-            .map_err(|_| ())?;
         if let Some(known_name) = known_name {
             self.websocket.observe(known_name, &value);
             self.proxy_headers
@@ -489,4 +484,77 @@ fn map_hpack_error(err: DecoderError) -> RequestHeadError {
         },
     };
     RequestHeadError::compression(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::{Bytes, BytesMut};
+    use http::Method;
+
+    use crate::hpack::{BytesStr, Encoder};
+
+    use super::{RequestHeadError, decode_request_head_with_mode};
+
+    fn encode_request_block(headers: &[(&[u8], &[u8])]) -> Bytes {
+        let mut encoder = Encoder::new();
+        let mut block = BytesMut::new();
+        encoder.begin_block(&mut block);
+        for (name, value) in headers {
+            encoder.encode_field_bytes(name, value, &mut block);
+        }
+        block.freeze()
+    }
+
+    #[test]
+    fn header_list_limit_counts_rfc_overhead() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"x0", b"1"),
+            (b"x1", b"1"),
+            (b"x2", b"1"),
+            (b"x3", b"1"),
+            (b"x4", b"1"),
+            (b"x5", b"1"),
+            (b"x6", b"1"),
+            (b"x7", b"1"),
+            (b"x8", b"1"),
+            (b"x9", b"1"),
+        ]);
+
+        let mut decoder = crate::hpack::Decoder::new(4096);
+        let result = decode_request_head_with_mode::<true>(&mut decoder, block, 90);
+
+        assert!(matches!(
+            result,
+            Err(RequestHeadError::Reject {
+                status: crate::http::types::status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            })
+        ));
+    }
+
+    #[test]
+    fn synthesized_host_is_not_counted_against_received_limit() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+        ]);
+        let exact_received_size = crate::hpack::Header::Method(Method::GET).len()
+            + crate::hpack::Header::Scheme(BytesStr::from_static("http")).len()
+            + crate::hpack::Header::Authority(BytesStr::from_static("example.com")).len()
+            + crate::hpack::Header::Path(BytesStr::from_static("/")).len();
+
+        let mut decoder = crate::hpack::Decoder::new(4096);
+        let request =
+            decode_request_head_with_mode::<true>(&mut decoder, block, exact_received_size)
+                .expect("received header list size should ignore synthesized host");
+
+        assert_eq!(request.headers.len(), 1);
+        assert_eq!(request.headers[0].0.as_str(), "host");
+        assert_eq!(request.headers[0].1.as_bytes(), b"example.com");
+    }
 }

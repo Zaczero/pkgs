@@ -36,19 +36,19 @@ static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
     }
 });
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AccessLogMode {
     Plain,
     Styled(ColorChoice),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestSummaryKind {
     Http,
     WebSocket,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AccessLogRequest {
     method: Method,
     path_and_query: BytesStr,
@@ -65,7 +65,7 @@ impl AccessLogRequest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct HttpAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
@@ -75,6 +75,7 @@ pub(crate) struct HttpAccessLogEntry<'a> {
     pub tx_bytes: u64,
 }
 
+#[derive(Debug)]
 pub(crate) struct WebSocketAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
@@ -84,7 +85,7 @@ pub(crate) struct WebSocketAccessLogEntry<'a> {
     pub tx_bytes: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct AccessLogIoSummary {
     duration: Duration,
     rx_bytes: u64,
@@ -506,11 +507,7 @@ fn write_io_summary_to(
     write_nonzero_byte_field(out, "tx", tx_bytes)
 }
 
-fn write_nonzero_byte_field(
-    out: &mut impl fmt::Write,
-    label: &str,
-    bytes: u64,
-) -> fmt::Result {
+fn write_nonzero_byte_field(out: &mut impl fmt::Write, label: &str, bytes: u64) -> fmt::Result {
     if bytes == 0 {
         return Ok(());
     }
@@ -646,8 +643,8 @@ fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client,
-        write_bytes_to, write_duration_to, write_io_summary_to,
+        AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client, write_bytes_to,
+        write_duration_to, write_io_summary_to,
     };
     use crate::hpack::BytesStr;
     use crate::http::types::HttpVersion;
@@ -757,7 +754,10 @@ mod tests {
             render(|out| append_io_summary_to(out, duration, 12, 0)),
             " 0.4ms rx=12b"
         );
-        assert_eq!(render(|out| append_io_summary_to(out, duration, 0, 0)), " 0.4ms");
+        assert_eq!(
+            render(|out| append_io_summary_to(out, duration, 0, 0)),
+            " 0.4ms"
+        );
     }
 
     #[test]

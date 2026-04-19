@@ -480,19 +480,6 @@ where
         )
         .await?;
     } else {
-        if state
-            .context
-            .config
-            .http2
-            .max_header_list_size
-            .is_some_and(|limit| fragment.block.len() > limit.get())
-        {
-            state
-                .writer
-                .reset_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
-                .await?;
-            return Ok(());
-        }
         state.pending_headers = Some(PendingHeaders {
             stream_id,
             end_stream: fragment.end_stream,
@@ -531,22 +518,6 @@ where
     }
 
     pending.block.extend_from_slice(frame.payload.as_ref());
-    if state
-        .context
-        .config
-        .http2
-        .max_header_list_size
-        .is_some_and(|limit| pending.block.len() > limit.get())
-        && !frame.header.flags.contains(FrameFlags::END_HEADERS)
-    {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(pending.stream_id, ErrorCode::PROTOCOL_ERROR),
-        )
-        .await?;
-        return Ok(());
-    }
     if frame.header.flags.contains(FrameFlags::END_HEADERS) {
         start_request_stream_from_block(
             RequestStartContext {
