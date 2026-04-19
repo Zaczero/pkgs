@@ -58,7 +58,7 @@ Listening on 127.0.0.1:8000
 HTTP/1 compatibility is enabled; disable with --no-http1
 
 Started worker [12345]
-127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms rx=0B tx=25B
+127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms tx=25b
 ```
 
 Typical production-style run behind a proxy:

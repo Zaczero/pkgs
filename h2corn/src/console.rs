@@ -502,10 +502,22 @@ fn write_io_summary_to(
 ) -> fmt::Result {
     out.write_char(' ')?;
     write_duration_to(out, duration)?;
-    out.write_str(" rx=")?;
-    write_bytes_to(out, rx_bytes)?;
-    out.write_str(" tx=")?;
-    write_bytes_to(out, tx_bytes)
+    write_nonzero_byte_field(out, "rx", rx_bytes)?;
+    write_nonzero_byte_field(out, "tx", tx_bytes)
+}
+
+fn write_nonzero_byte_field(
+    out: &mut impl fmt::Write,
+    label: &str,
+    bytes: u64,
+) -> fmt::Result {
+    if bytes == 0 {
+        return Ok(());
+    }
+    out.write_char(' ')?;
+    out.write_str(label)?;
+    out.write_char('=')?;
+    write_bytes_to(out, bytes)
 }
 
 fn write_duration_to(out: &mut impl fmt::Write, duration: Duration) -> fmt::Result {
@@ -634,8 +646,8 @@ fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client, write_bytes_to,
-        write_duration_to,
+        AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client,
+        write_bytes_to, write_duration_to, write_io_summary_to,
     };
     use crate::hpack::BytesStr;
     use crate::http::types::HttpVersion;
@@ -662,6 +674,11 @@ mod tests {
 
     fn append_bytes_to(out: &mut String, bytes: u64) {
         write_bytes_to(out, bytes).expect("writing to String cannot fail");
+    }
+
+    fn append_io_summary_to(out: &mut String, duration: Duration, rx_bytes: u64, tx_bytes: u64) {
+        write_io_summary_to(out, duration, rx_bytes, tx_bytes)
+            .expect("writing to String cannot fail");
     }
 
     fn format_request_summary(
@@ -722,6 +739,25 @@ mod tests {
         assert_eq!(render(|out| append_bytes_to(out, 0)), "0b");
         assert_eq!(render(|out| append_bytes_to(out, 2150)), "2.1kib");
         assert_eq!(render(|out| append_bytes_to(out, 1_258_291)), "1.2mib");
+    }
+
+    #[test]
+    fn io_summary_omits_empty_byte_fields() {
+        let duration = Duration::from_micros(400);
+
+        assert_eq!(
+            render(|out| append_io_summary_to(out, duration, 0, 25)),
+            " 0.4ms tx=25b"
+        );
+        assert_eq!(
+            render(|out| append_io_summary_to(out, duration, 12, 25)),
+            " 0.4ms rx=12b tx=25b"
+        );
+        assert_eq!(
+            render(|out| append_io_summary_to(out, duration, 12, 0)),
+            " 0.4ms rx=12b"
+        );
+        assert_eq!(render(|out| append_io_summary_to(out, duration, 0, 0)), " 0.4ms");
     }
 
     #[test]
