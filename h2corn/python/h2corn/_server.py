@@ -39,7 +39,7 @@ def _pidfile(config: Config):
         yield
         return
 
-    pid_text = f'{os.getpid()}\n'
+    pid_text = f'{os.getpid()}\n'.encode()
 
     fd = os.open(
         path,
@@ -52,26 +52,23 @@ def _pidfile(config: Config):
         ),
         0o666,
     )
-    created = os.fstat(fd)
 
     def unlink_pidfile():
         try:
             current = os.lstat(path)
-            if os.path.samestat(created, current):
+            if os.path.samestat(os.fstat(fd), current):
                 path.unlink()
         except OSError:
             pass
 
     try:
-        with os.fdopen(fd, 'w') as handle:
-            _ = handle.write(pid_text)
-    except Exception:
-        unlink_pidfile()
-        raise
-    try:
+        _ = os.write(fd, pid_text)
         yield
     finally:
-        unlink_pidfile()
+        try:
+            unlink_pidfile()
+        finally:
+            os.close(fd)
 
 
 @contextmanager
