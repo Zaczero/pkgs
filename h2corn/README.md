@@ -188,7 +188,7 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [--host HOST] [-p PORT] [--bind ADDRESS]
+usage: h2corn [-h] [-c CONFIG] [--factory] [--host HOST] [-p PORT] [--bind ADDRESS]
               [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
               [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -234,6 +234,8 @@ options:
   -h, --help            show this help message and exit
   -c, --config CONFIG   Path to a TOML configuration file. [env:
                         H2CORN_CONFIG] (default: None)
+  --factory             Treat the target as a zero-argument callable that
+                        returns an ASGI application. (default: False)
   --host HOST           TCP host convenience override for a single listener.
                         When --port is omitted, the base configuration port
                         is reused.

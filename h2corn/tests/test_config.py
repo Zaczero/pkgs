@@ -280,23 +280,33 @@ def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) ->
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('port = 9010')
 
-    target, config = parse_cli(
+    target, config, factory = parse_cli(
         ['--config', str(config_path), 'example:app'],
         {'H2CORN_PORT': '9020'},
     )
 
     assert target == 'example:app'
     assert config.port == 9020
+    assert factory is False
 
 
 def test_parse_cli_accepts_websocket_message_size_inherit() -> None:
-    target, config = parse_cli(
+    target, config, factory = parse_cli(
         ['--websocket-max-message-size', 'inherit', 'example:app'],
         {},
     )
 
     assert target == 'example:app'
     assert config.websocket_max_message_size is None
+    assert factory is False
+
+
+def test_parse_cli_accepts_factory_flag() -> None:
+    target, config, factory = parse_cli(['--factory', 'example:create_app'], {})
+
+    assert target == 'example:create_app'
+    assert isinstance(config, Config)
+    assert factory is True
 
 
 def test_parse_cli_rejects_host_port_override_for_multi_bind_base(

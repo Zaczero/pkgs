@@ -103,6 +103,11 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help=f'Path to a TOML configuration file. [env: {CONFIG_PATH_ENV_VAR}]',
     )
     parser.add_argument(
+        '--factory',
+        action='store_true',
+        help='Treat the target as a zero-argument callable that returns an ASGI application.',
+    )
+    parser.add_argument(
         '--host',
         default=argparse.SUPPRESS,
         help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
@@ -147,7 +152,7 @@ def _apply_tcp_bind_sugar(
 def parse_cli(
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, Config]:
+) -> tuple[str, Config, bool]:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('-c', '--config', type=Path)
     pre_args, _ = pre_parser.parse_known_args(argv)
@@ -185,14 +190,14 @@ def parse_cli(
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
     _apply_tcp_bind_sugar(parser, args, base, values)
-    return args.target, Config(**values)
+    return args.target, Config(**values), args.factory
 
 
 def run_cli(
     serve: Callable[[ASGIApp, Config], None],
-    import_target: Callable[[str], ASGIApp],
+    import_target: Callable[..., ASGIApp],
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> None:
-    target, config = parse_cli(argv, env)
-    serve(import_target(target), config)
+    target, config, factory = parse_cli(argv, env)
+    serve(import_target(target, factory=factory), config)

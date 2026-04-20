@@ -105,7 +105,7 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     asyncio.run(Server(app, config).serve())
 
 
-def _import_target(target: str):
+def _import_target(target: str, *, factory: bool = False):
     import importlib
 
     module_name, _, attr = target.partition(':')
@@ -117,9 +117,15 @@ def _import_target(target: str):
         sys.path.insert(0, cwd)
 
     module = importlib.import_module(module_name)
-    app = getattr(module, attr)
-    if not callable(app):
+    target_obj = getattr(module, attr)
+    if not callable(target_obj):
         raise TypeError(f'import target {target!r} is not callable')
+    if not factory:
+        return target_obj
+
+    app = target_obj()
+    if not callable(app):
+        raise TypeError(f'import target {target!r} factory returned a non-callable')
     return app
 
 

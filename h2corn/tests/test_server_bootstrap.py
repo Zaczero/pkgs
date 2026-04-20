@@ -144,6 +144,50 @@ def test_import_target_requires_callable_attribute(
         _server._import_target(f'{module_name}:app')
 
 
+def test_import_target_calls_factory_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    module_name = 'demoapp_factory'
+    (tmp_path / f'{module_name}.py').write_text(
+        """
+def create_app():
+    async def app(scope, receive, send):
+        return None
+    return app
+"""
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    app = _server._import_target(f'{module_name}:create_app', factory=True)
+
+    assert callable(app)
+
+
+def test_import_target_requires_factory_result_to_be_callable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    module_name = 'demoapp_factory_value'
+    (tmp_path / f'{module_name}.py').write_text(
+        """
+def create_app():
+    return 1
+"""
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(
+        TypeError,
+        match=rf"import target '{module_name}:create_app' factory returned a non-callable",
+    ):
+        _server._import_target(f'{module_name}:create_app', factory=True)
+
+
 def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -397,11 +441,15 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
     )
     captured = {}
 
-    monkeypatch.setattr(_server, '_import_target', lambda _target: object())
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda _target, *, factory=False: ('factory', factory),
+    )
     monkeypatch.setattr(
         _server,
         'serve',
-        lambda _app, config=None: captured.setdefault('config', config),
+        lambda _app, config=None: captured.setdefault('result', (_app, config)),
     )
     monkeypatch.setattr(
         sys,
@@ -418,7 +466,9 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
 
     _server.main()
 
-    assert captured['config'].forwarded_allow_ips == ('10.0.0.1', 'unix')
+    app, config = captured['result']
+    assert app == ('factory', False)
+    assert config.forwarded_allow_ips == ('10.0.0.1', 'unix')
 
 
 def test_cli_repeated_bind_replaces_base_bind_values(
@@ -431,7 +481,11 @@ def test_cli_repeated_bind_replaces_base_bind_values(
     config_path.write_text('bind = ["127.0.0.1:9010"]')
     captured = {}
 
-    monkeypatch.setattr(_server, '_import_target', lambda _target: object())
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda _target, **_kwargs: object(),
+    )
     monkeypatch.setattr(
         _server,
         'serve',
@@ -476,7 +530,11 @@ access_log = false
     monkeypatch.setenv('H2CORN_PORT', '9020')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
-    monkeypatch.setattr(_server, '_import_target', lambda _target: object())
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda _target, **_kwargs: object(),
+    )
     monkeypatch.setattr(
         _server,
         'serve',
@@ -515,7 +573,11 @@ def test_cli_legacy_env_port_overrides_toml_listener(
     captured = {}
 
     monkeypatch.setenv('H2CORN_PORT', '9020')
-    monkeypatch.setattr(_server, '_import_target', lambda _target: object())
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda _target, **_kwargs: object(),
+    )
     monkeypatch.setattr(
         _server,
         'serve',
@@ -530,3 +592,28 @@ def test_cli_legacy_env_port_overrides_toml_listener(
     _server.main()
 
     assert captured['config'].port == 9020
+
+
+def test_cli_factory_flag_is_forwarded_to_import_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    captured = {}
+
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda target, *, factory=False: captured.setdefault('import', (target, factory)),
+    )
+    monkeypatch.setattr(
+        _server,
+        'serve',
+        lambda _app, config=None: captured.setdefault('serve', (_app, config)),
+    )
+    monkeypatch.setattr(sys, 'argv', ['h2corn', '--factory', 'example:create_app'])
+
+    _server.main()
+
+    assert captured['import'] == ('example:create_app', True)
+    assert captured['serve'][0] == ('example:create_app', True)
