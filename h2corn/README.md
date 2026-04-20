@@ -214,7 +214,7 @@ usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
               [--timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE]
               [--limit-concurrency LIMIT_CONCURRENCY]
               [--limit-connections LIMIT_CONNECTIONS]
-              [--runtime-threads RUNTIME_THREADS]
+              [--runtime-threads RUNTIME_THREADS] [--lifespan {auto,on,off}]
               [--timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP]
               [--timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN]
               [--websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE]
@@ -370,6 +370,9 @@ options:
   --runtime-threads RUNTIME_THREADS
                         Number of Tokio runtime worker threads per worker
                         process. [env: H2CORN_RUNTIME_THREADS] (default: 2)
+  --lifespan {auto,on,off}
+                        ASGI lifespan handling mode. [env: H2CORN_LIFESPAN]
+                        (default: auto)
   --timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP
                         Maximum time to wait for ASGI lifespan startup in
                         seconds. Use 0 to disable. [env:

@@ -80,6 +80,7 @@ class Server:
             await _serve_with_lifespan(
                 self.app,
                 _serve_app,
+                mode=self.config.lifespan,
                 startup_timeout=self.config.timeout_lifespan_startup,
                 shutdown_timeout=self.config.timeout_lifespan_shutdown,
             )

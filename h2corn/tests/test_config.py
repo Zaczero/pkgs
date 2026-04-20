@@ -48,6 +48,7 @@ max_requests = 11
 max_requests_jitter = 3
 timeout_worker_healthcheck = 4.5
 http1 = false
+lifespan = "on"
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1"]
 timeout_keep_alive = 1.5
@@ -82,6 +83,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.limit_concurrency == 9
     assert config.limit_connections == 11
     assert config.runtime_threads == 4
+    assert config.lifespan == 'on'
     assert config.timeout_lifespan_startup == 6.5
     assert config.timeout_lifespan_shutdown == 7.5
     assert config.websocket_per_message_deflate is False
@@ -121,6 +123,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_LIMIT_CONCURRENCY', '7')
     monkeypatch.setenv('H2CORN_LIMIT_CONNECTIONS', '9')
     monkeypatch.setenv('H2CORN_RUNTIME_THREADS', '5')
+    monkeypatch.setenv('H2CORN_LIFESPAN', 'off')
     monkeypatch.setenv('H2CORN_TIMEOUT_LIFESPAN_STARTUP', '5.5')
     monkeypatch.setenv('H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN', '6.5')
     monkeypatch.setenv('H2CORN_LIMIT_REQUEST_LINE', '4094')
@@ -153,6 +156,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.limit_concurrency == 7
     assert config.limit_connections == 9
     assert config.runtime_threads == 5
+    assert config.lifespan == 'off'
     assert config.timeout_lifespan_startup == 5.5
     assert config.timeout_lifespan_shutdown == 6.5
     assert config.limit_request_line == 4094

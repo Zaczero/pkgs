@@ -26,13 +26,18 @@ async def _serve_with_lifespan(
     app: ASGIApp,
     serve: Callable[[ASGIApp], Awaitable[None]],
     *,
+    mode: str = 'auto',
     startup_timeout: float | None = None,
     shutdown_timeout: float | None = None,
 ):
+    if mode == 'off':
+        await serve(app)
+        return
+
     lifespan = _LifespanRunner(app)
     try:
         await _await_with_timeout(
-            lifespan.startup(),
+            lifespan.startup(required=mode == 'on'),
             startup_timeout,
             'lifespan startup timed out',
         )
@@ -112,7 +117,7 @@ class _LifespanRunner:
 
         return event_task.result() if event_task in done else None
 
-    async def startup(self):
+    async def startup(self, *, required: bool):
         scope = {
             'type': 'lifespan',
             'asgi': {'version': '3.0', 'spec_version': '2.5'},
@@ -163,6 +168,8 @@ class _LifespanRunner:
             and not isinstance(exc, (AssertionError, KeyError, TypeError))
         ):
             raise exc
+        if required:
+            raise RuntimeError('lifespan startup is required but the app does not support it')
         return
 
     async def shutdown(self):

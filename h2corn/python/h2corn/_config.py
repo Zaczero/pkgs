@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from typing import Self
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
+LifespanMode = Literal['auto', 'on', 'off']
 _PROXY_PROTOCOL_MODES = get_args(ProxyProtocolMode)
+_LIFESPAN_MODES = get_args(LifespanMode)
 CONFIG_PATH_ENV_VAR = 'H2CORN_CONFIG'
 _OPTION_METADATA_KEY = 'h2corn_option'
 _H2_MIN_FRAME_SIZE = 16_384
@@ -200,6 +202,12 @@ def _sync_bind_convenience_fields(config: Config):
 def _normalize_proxy_protocol(value):
     if value not in _PROXY_PROTOCOL_MODES:
         raise ValueError(f'invalid proxy_protocol mode: {value!r}')
+    return value
+
+
+def _normalize_lifespan(value):
+    if value not in _LIFESPAN_MODES:
+        raise ValueError(f'invalid lifespan mode: {value!r}')
     return value
 
 
@@ -557,6 +565,13 @@ class Config:
         env_parse=int,
         normalize=_minimum('runtime_threads', 1),
         cli_type=int,
+    )
+    lifespan: LifespanMode = _option(
+        default='auto',
+        doc='ASGI lifespan handling mode.',
+        env_parse=_normalize_lifespan,
+        normalize=_normalize_lifespan,
+        cli_choices=_LIFESPAN_MODES,
     )
     timeout_lifespan_startup: float = _option(
         default=60.0,

@@ -36,6 +36,36 @@ async def test_lifespan_missing_protocol_is_treated_as_optional() -> None:
     assert served is True
 
 
+async def test_lifespan_can_be_disabled() -> None:
+    served = False
+
+    async def app(scope, _receive, _send):
+        raise AssertionError('lifespan scope should not be used when disabled')
+
+    async def serve(wrapped_app):
+        nonlocal served
+        served = True
+        assert wrapped_app is app
+
+    await _serve_with_lifespan(app, serve, mode='off')
+
+    assert served is True
+
+
+async def test_lifespan_on_requires_support() -> None:
+    async def app(scope, _receive, _send):
+        assert scope['type'] == 'lifespan'
+
+    async def serve(_app):
+        raise AssertionError('serve callback should not run without required lifespan')
+
+    with pytest.raises(
+        RuntimeError,
+        match='lifespan startup is required but the app does not support it',
+    ):
+        await _serve_with_lifespan(app, serve, mode='on')
+
+
 async def test_lifespan_state_is_copied_into_request_scopes() -> None:
     seen_states: list[dict[str, Any]] = []
 

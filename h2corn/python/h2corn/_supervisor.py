@@ -125,6 +125,7 @@ def _worker_entry(app: ASGIApp, config: Config, fds: tuple[int, ...]):
         _serve_with_lifespan(
             server.app,
             _serve_app,
+            mode=config.lifespan,
             startup_timeout=config.timeout_lifespan_startup,
             shutdown_timeout=config.timeout_lifespan_shutdown,
         )
