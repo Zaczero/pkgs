@@ -101,7 +101,7 @@ async def test_http1_keep_alive_reuses_connection() -> None:
     assert second[2] == b'/two'
 
 
-async def test_http1_keep_alive_request_head_still_honors_timeout_read() -> None:
+async def test_http1_keep_alive_request_head_still_honors_timeout_request_header() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': scope['path'].encode()})
@@ -109,7 +109,7 @@ async def test_http1_keep_alive_request_head_still_honors_timeout_read() -> None
     config = Config(
         port=find_free_port(),
         timeout_keep_alive=1.0,
-        timeout_read=0.05,
+        timeout_request_header=0.05,
     )
     async with running_server(app, config):
         reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
@@ -130,6 +130,57 @@ async def test_http1_keep_alive_request_head_still_honors_timeout_read() -> None
 
     assert first[0] == 200
     assert first[2] == b'/one'
+    assert closed == b''
+
+
+async def test_http1_first_request_head_timeout_is_idle_not_total() -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': scope['path'].encode()})
+
+    config = Config(port=find_free_port(), timeout_request_header=0.05)
+    async with running_server(app, config):
+        reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
+        try:
+            for part in (
+                b'GET /slow HTTP/1.1\r\nHo',
+                f'st: 127.0.0.1:{config.port}\r\nX-De'.encode(),
+                b'mo: works\r\n',
+                b'\r\n',
+            ):
+                writer.write(part)
+                await writer.drain()
+                await asyncio.sleep(0.03)
+            status, headers, body, trailers = await asyncio.wait_for(
+                read_http1_response(reader),
+                timeout=5,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert status == 200
+    assert headers[b'content-length'] == b'5'
+    assert body == b'/slow'
+    assert trailers == []
+
+
+async def test_http1_first_request_head_stall_honors_timeout_request_header() -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('stalled first request head should timeout before app dispatch')
+
+    config = Config(port=find_free_port(), timeout_request_header=0.05)
+    async with running_server(app, config):
+        reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
+        try:
+            writer.write(b'GET /slow HTTP/1.1\r\nHo')
+            await writer.drain()
+            await asyncio.sleep(0.2)
+            closed = await asyncio.wait_for(reader.read(1), timeout=1)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     assert closed == b''
 
 
@@ -283,6 +334,32 @@ async def test_http1_compat_keeps_prior_knowledge_h2() -> None:
     assert body == b'h2 still works'
 
 
+async def test_http1_accepts_registered_pri_method() -> None:
+    method = None
+
+    async def app(scope, receive, send):
+        nonlocal method
+        method = scope['method']
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'pri works'})
+
+    config = Config(port=find_free_port())
+    async with running_server(app, config):
+        status, headers, body, trailers = await asyncio.wait_for(
+            http1_request(
+                port=config.port,
+                request=f'PRI / HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n\r\n'.encode(),
+            ),
+            timeout=5,
+        )
+
+    assert method == 'PRI'
+    assert status == 200
+    assert headers[b'content-length'] == b'9'
+    assert body == b'pri works'
+    assert trailers == []
+
+
 async def test_http1_is_rejected_when_disabled() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -295,11 +372,18 @@ async def test_http1_is_rejected_when_disabled() -> None:
             f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n\r\n'.encode()
         )
         await writer.drain()
-        data = await asyncio.wait_for(reader.read(1024), timeout=5)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
+            payload = await asyncio.wait_for(
+                reader.readexactly(int.from_bytes(header[:3], 'big')),
+                timeout=5,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
-    assert data == b''
+    assert header[3] == 0x07
+    assert int.from_bytes(payload[4:8], 'big') == 0x01
 
 
 async def test_http1_head_response_suppresses_app_body() -> None:
@@ -734,6 +818,27 @@ async def test_http1_header_field_size_limit_returns_431() -> None:
                 port=config.port,
                 request=(
                     f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\nX-Long: 123456789\r\n\r\n'
+                ).encode(),
+            ),
+            timeout=5,
+        )
+
+    assert status == 431
+    assert body == b''
+
+
+async def test_http1_request_head_size_limit_returns_431() -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('request head limit should reject before the app runs')
+
+    config = Config(port=find_free_port(), limit_request_head_size=48)
+    async with running_server(app, config):
+        status, _headers, body, _trailers = await asyncio.wait_for(
+            http1_request(
+                port=config.port,
+                request=(
+                    f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n'
+                    'X-Long: 1234567890\r\n\r\n'
                 ).encode(),
             ),
             timeout=5,

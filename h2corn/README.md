@@ -188,23 +188,29 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [-b ADDRESS] [--host HOST] [-p PORT] [--fd FD]
-              [--uds UDS] [--uds-permissions UDS_PERMISSIONS]
-              [--backlog BACKLOG] [-w WORKERS] [--max-requests MAX_REQUESTS]
+usage: h2corn [-h] [-c CONFIG] [--host HOST] [-p PORT] [--bind ADDRESS]
+              [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
+              [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
               [--timeout-worker-healthcheck TIMEOUT_WORKER_HEALTHCHECK]
               [--http1 | --no-http1] [--access-log | --no-access-log]
               [-r ROOT_PATH] [--max-concurrent-streams MAX_CONCURRENT_STREAMS]
+              [--limit-request-head-size LIMIT_REQUEST_HEAD_SIZE]
               [--limit-request-line LIMIT_REQUEST_LINE]
               [--limit-request-fields LIMIT_REQUEST_FIELDS]
               [--limit-request-field-size LIMIT_REQUEST_FIELD_SIZE]
               [--h2-max-header-list-size H2_MAX_HEADER_LIST_SIZE]
+              [--h2-max-header-block-size H2_MAX_HEADER_BLOCK_SIZE]
+              [--h2-max-inbound-frame-size H2_MAX_INBOUND_FRAME_SIZE]
               [--max-request-body-size MAX_REQUEST_BODY_SIZE]
               [--timeout-handshake TIMEOUT_HANDSHAKE]
               [--timeout-graceful-shutdown TIMEOUT_GRACEFUL_SHUTDOWN]
               [--timeout-keep-alive TIMEOUT_KEEP_ALIVE]
-              [--timeout-read TIMEOUT_READ]
+              [--timeout-request-header TIMEOUT_REQUEST_HEADER]
+              [--timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE]
               [--limit-concurrency LIMIT_CONCURRENCY]
+              [--limit-connections LIMIT_CONNECTIONS]
+              [--runtime-threads RUNTIME_THREADS]
               [--timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP]
               [--timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN]
               [--websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE]
@@ -228,17 +234,16 @@ options:
   -h, --help            show this help message and exit
   -c, --config CONFIG   Path to a TOML configuration file. [env:
                         H2CORN_CONFIG] (default: None)
-  -b, --bind ADDRESS    The host and port to bind to, in HOST:PORT format.
-                        Overrides --host and --port. Also supports unix:
-                        socket paths. (default: None)
-  --host HOST           The IP address or hostname to bind. [env: H2CORN_HOST]
-                        (default: 127.0.0.1)
-  -p, --port PORT       The TCP port to listen on. [env: H2CORN_PORT]
-                        (default: 8000)
-  --fd FD               Adopt an already-bound listening socket by file
-                        descriptor. [env: H2CORN_FD] (default: None)
-  --uds UDS             Path to a Unix Domain Socket to bind. (Not supported
-                        on Windows). [env: H2CORN_UDS] (default: None)
+  --host HOST           TCP host convenience override for a single listener.
+                        When --port is omitted, the base configuration port
+                        is reused.
+  -p, --port PORT       TCP port convenience override for a single listener.
+                        When --host is omitted, the base configuration host
+                        is reused.
+  --bind ADDRESS        Listener addresses to bind. Repeat the flag to add
+                        more listeners. Supports HOST:PORT, [IPv6]:PORT,
+                        unix:PATH, and fd://N. [env: H2CORN_BIND] (default:
+                        ('127.0.0.1:8000',))
   --uds-permissions UDS_PERMISSIONS
                         Octal mask for Unix Domain Socket permissions. [env:
                         H2CORN_UDS_PERMISSIONS] (default: None)
@@ -259,7 +264,7 @@ options:
                         Maximum time between worker healthcheck heartbeats
                         before the supervisor replaces the worker. Use 0 to
                         disable. [env: H2CORN_TIMEOUT_WORKER_HEALTHCHECK]
-                        (default: 0.0)
+                        (default: 30.0)
   --http1, --no-http1   Whether HTTP/1.1 is supported. Intended for
                         development purposes only; disable in production.
                         [env: H2CORN_HTTP1] (default: True)
@@ -272,26 +277,39 @@ options:
   --max-concurrent-streams MAX_CONCURRENT_STREAMS
                         Maximum active HTTP/2 streams per connection. [env:
                         H2CORN_MAX_CONCURRENT_STREAMS] (default: 256)
+  --limit-request-head-size LIMIT_REQUEST_HEAD_SIZE
+                        Limit the total size of an HTTP/1.1 request head in
+                        bytes. Use 0 for no limit. [env:
+                        H2CORN_LIMIT_REQUEST_HEAD_SIZE] (default: 1048576)
   --limit-request-line LIMIT_REQUEST_LINE
                         The maximum size of the HTTP/1.1 request line in
                         bytes. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_LINE] (default: 0)
+                        H2CORN_LIMIT_REQUEST_LINE] (default: 16384)
   --limit-request-fields LIMIT_REQUEST_FIELDS
                         Limit the number of HTTP/1.1 header fields in a
                         request. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_FIELDS] (default: 0)
+                        H2CORN_LIMIT_REQUEST_FIELDS] (default: 100)
   --limit-request-field-size LIMIT_REQUEST_FIELD_SIZE
                         Limit the size of an individual HTTP/1.1 header field
                         in bytes. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_FIELD_SIZE] (default: 0)
+                        H2CORN_LIMIT_REQUEST_FIELD_SIZE] (default: 32768)
   --h2-max-header-list-size H2_MAX_HEADER_LIST_SIZE
                         Maximum decoded HTTP/2 header list size in bytes. Use
                         0 for no limit. [env: H2CORN_H2_MAX_HEADER_LIST_SIZE]
-                        (default: 0)
+                        (default: 1048576)
+  --h2-max-header-block-size H2_MAX_HEADER_BLOCK_SIZE
+                        Maximum compressed HTTP/2 header block size in bytes
+                        while collecting HEADERS and CONTINUATION frames. Use
+                        0 for no limit. [env: H2CORN_H2_MAX_HEADER_BLOCK_SIZE]
+                        (default: 1048576)
+  --h2-max-inbound-frame-size H2_MAX_INBOUND_FRAME_SIZE
+                        Maximum inbound HTTP/2 frame payload size to accept
+                        and advertise via SETTINGS_MAX_FRAME_SIZE. [env:
+                        H2CORN_H2_MAX_INBOUND_FRAME_SIZE] (default: 65536)
   --max-request-body-size MAX_REQUEST_BODY_SIZE
                         Maximum request body size in bytes. Use 0 for no
                         limit. [env: H2CORN_MAX_REQUEST_BODY_SIZE] (default:
-                        0)
+                        1073741824)
   --timeout-handshake TIMEOUT_HANDSHAKE
                         Time limit to establish a connection/handshake
                         (seconds). [env: H2CORN_TIMEOUT_HANDSHAKE] (default:
@@ -302,15 +320,26 @@ options:
                         (default: 30.0)
   --timeout-keep-alive TIMEOUT_KEEP_ALIVE
                         Idle keep-alive timeout in seconds. Use 0 to disable.
-                        [env: H2CORN_TIMEOUT_KEEP_ALIVE] (default: 5.0)
-  --timeout-read TIMEOUT_READ
-                        Timeout in seconds for reading an HTTP request head or
-                        body after the connection is established. Use 0 to
-                        disable. [env: H2CORN_TIMEOUT_READ] (default: 0.0)
+                        [env: H2CORN_TIMEOUT_KEEP_ALIVE] (default: 120.0)
+  --timeout-request-header TIMEOUT_REQUEST_HEADER
+                        Idle timeout in seconds while reading an HTTP request
+                        head or an HTTP/2 header block. Use 0 to disable.
+                        [env: H2CORN_TIMEOUT_REQUEST_HEADER] (default: 10.0)
+  --timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE
+                        Idle timeout in seconds while reading an HTTP request
+                        body. Use 0 to disable. [env:
+                        H2CORN_TIMEOUT_REQUEST_BODY_IDLE] (default: 60.0)
   --limit-concurrency LIMIT_CONCURRENCY
                         Maximum number of concurrent ASGI request/session
                         tasks per worker. Use 0 to disable. [env:
                         H2CORN_LIMIT_CONCURRENCY] (default: 0)
+  --limit-connections LIMIT_CONNECTIONS
+                        Maximum number of live client connections per worker.
+                        Use 0 to disable. [env: H2CORN_LIMIT_CONNECTIONS]
+                        (default: 0)
+  --runtime-threads RUNTIME_THREADS
+                        Number of Tokio runtime worker threads per worker
+                        process. [env: H2CORN_RUNTIME_THREADS] (default: 2)
   --timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP
                         Maximum time to wait for ASGI lifespan startup in
                         seconds. Use 0 to disable. [env:
@@ -321,10 +350,9 @@ options:
                         H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN] (default: 30.0)
   --websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE
                         Maximum WebSocket message size in bytes. Defaults to
-                        16 MiB. Set to `None` to inherit
-                        `max_request_body_size`. Use 0 for no limit. [env:
-                        H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE] (default:
-                        16777216)
+                        16 MiB. Use 'inherit' to follow
+                        `max_request_body_size`, or 0 for no limit. [env:
+                        H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE] (default: 16777216)
   --websocket-per-message-deflate, --no-websocket-per-message-deflate
                         Whether to negotiate permessage-deflate for WebSockets
                         when the client offers it. [env:
@@ -332,11 +360,11 @@ options:
   --websocket-ping-interval WEBSOCKET_PING_INTERVAL
                         Interval in seconds between server WebSocket ping
                         frames. Use 0 to disable. [env:
-                        H2CORN_WEBSOCKET_PING_INTERVAL] (default: 0.0)
+                        H2CORN_WEBSOCKET_PING_INTERVAL] (default: 60.0)
   --websocket-ping-timeout WEBSOCKET_PING_TIMEOUT
                         Time limit in seconds to wait for a pong after a
                         server WebSocket ping. Use 0 to disable. [env:
-                        H2CORN_WEBSOCKET_PING_TIMEOUT] (default: 0.0)
+                        H2CORN_WEBSOCKET_PING_TIMEOUT] (default: 30.0)
   --proxy-headers, --no-proxy-headers
                         Trust proxy headers (e.g., Forwarded, X-Forwarded-*)
                         if the client IP is in `forwarded_allow_ips`. [env:

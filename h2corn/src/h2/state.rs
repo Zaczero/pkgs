@@ -1,10 +1,12 @@
 use std::{
+    collections::VecDeque,
     collections::hash_map::Entry,
     sync::{Arc, atomic::AtomicU64},
     time::Instant,
 };
 
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant as TokioInstant;
 
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::frame::{self, StreamId, WindowIncrement};
@@ -26,6 +28,8 @@ pub(super) struct InboundStream {
     pub(super) receive_window: ReceiveWindowState,
     pub(super) state: ReceiveState,
     pub(super) body: RequestBodyState,
+    pub(super) pending_input: VecDeque<StreamInput>,
+    pub(super) last_input_read_at: TokioInstant,
 }
 
 #[derive(Debug)]
@@ -84,7 +88,7 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) pending_headers: Option<PendingHeaders>,
     pub(super) last_client_stream_id: Option<StreamId>,
     pub(super) connection_window: ReceiveWindowState,
-    pub(super) peer_max_frame_size: usize,
+    pub(super) local_max_frame_size: usize,
     pub(super) saw_client_settings: bool,
     pub(super) drain_state: ConnectionDrainState,
 }
@@ -146,6 +150,8 @@ impl InboundStream {
                 ReceiveState::Open
             },
             body: RequestBodyState::new(expected_content_length, body_bytes, max_request_body_size),
+            pending_input: VecDeque::new(),
+            last_input_read_at: TokioInstant::now(),
         }
     }
 
@@ -186,22 +192,20 @@ impl<R, W> H2ConnectionState<R, W> {
         writer: WriterState<W>,
         context: ConnectionContext,
         shutdown: watch::Receiver<ShutdownState>,
-        peer_max_frame_size: usize,
         drain_state: ConnectionDrainState,
     ) -> Self {
-        let max_concurrent_streams = context.config.http2.max_concurrent_streams;
         Self {
             reader,
             connection,
             writer,
-            context,
             shutdown,
             decoder: Decoder::new(frame::DEFAULT_HEADER_TABLE_SIZE),
-            streams: new_stream_map(max_concurrent_streams),
+            streams: new_stream_map(context.config.http2.max_concurrent_streams as usize),
             pending_headers: None,
             last_client_stream_id: None,
             connection_window: ReceiveWindowState::new(INITIAL_CONNECTION_WINDOW_SIZE),
-            peer_max_frame_size,
+            local_max_frame_size: context.config.http2.max_inbound_frame_size.get() as usize,
+            context,
             saw_client_settings: false,
             drain_state,
         }
@@ -211,11 +215,42 @@ impl<R, W> H2ConnectionState<R, W> {
         self.streams.len() + usize::from(self.pending_headers.is_some())
     }
 
-    pub(super) fn awaiting_request_input(&self) -> bool {
-        self.pending_headers.is_some()
-            || self.streams.values().any(|stream| {
-                stream.counts_toward_read_timeout && !stream.state.request_is_closed()
-            })
+    pub(super) fn next_request_input_deadline(
+        &self,
+        timeout_request_header: Option<std::time::Duration>,
+        timeout_request_body_idle: Option<std::time::Duration>,
+    ) -> Option<RequestInputDeadline> {
+        let header_deadline = match (self.pending_headers.as_ref(), timeout_request_header) {
+            (Some(pending), Some(timeout_duration)) => Some(RequestInputDeadline::Headers(
+                pending.stream_id,
+                pending.last_fragment_at + timeout_duration,
+            )),
+            _ => None,
+        };
+        let body_deadline = timeout_request_body_idle.and_then(|timeout_duration| {
+            self.streams
+                .iter()
+                .filter(|(_, stream)| {
+                    stream.counts_toward_read_timeout && !stream.state.request_is_closed()
+                })
+                .map(|(&stream_id, stream)| {
+                    RequestInputDeadline::Body(
+                        StreamId::new(stream_id).expect("stored stream id is non-zero"),
+                        stream.last_input_read_at + timeout_duration,
+                    )
+                })
+                .min_by_key(|deadline| deadline.instant())
+        });
+        match (header_deadline, body_deadline) {
+            (Some(header), Some(body)) => Some(if header.instant() <= body.instant() {
+                header
+            } else {
+                body
+            }),
+            (Some(header), None) => Some(header),
+            (None, Some(body)) => Some(body),
+            (None, None) => None,
+        }
     }
 
     pub(super) fn receive_state(&self, stream_id: StreamId) -> ReceiveState {
@@ -237,8 +272,7 @@ impl<R, W> H2ConnectionState<R, W> {
         &mut self,
         stream_id: StreamId,
     ) -> Option<RequestInputClose> {
-        let entry = self.streams.entry(stream_id.get());
-        match entry {
+        match self.streams.entry(stream_id.get()) {
             Entry::Occupied(mut entry) => {
                 let close = entry.get_mut().finish_request_input();
                 if matches!(
@@ -273,6 +307,20 @@ impl<R, W> H2ConnectionState<R, W> {
 
     pub(super) fn should_refuse_new_streams(&self) -> bool {
         self.drain_state != ConnectionDrainState::Accepting
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RequestInputDeadline {
+    Headers(StreamId, TokioInstant),
+    Body(StreamId, TokioInstant),
+}
+
+impl RequestInputDeadline {
+    pub(super) fn instant(self) -> TokioInstant {
+        match self {
+            Self::Headers(_, instant) | Self::Body(_, instant) => instant,
+        }
     }
 }
 

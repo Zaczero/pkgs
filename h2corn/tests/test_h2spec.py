@@ -15,7 +15,11 @@ async def test_h2spec_conformance() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'ok'})
 
-    config = Config(port=find_free_port())
+    config = Config(
+        port=find_free_port(),
+        http1=False,
+        h2_max_inbound_frame_size=16_384,
+    )
     async with running_server(app, config):
         process = await asyncio.create_subprocess_exec(
             'h2spec',

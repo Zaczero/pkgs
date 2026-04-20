@@ -7,6 +7,7 @@ import h2.config
 import h2.connection
 import h2.events
 from h2corn import Config, Server
+from h2corn._config import TcpBindSpec, UnixBindSpec, _parse_bind_spec
 
 
 async def open_h2_connection(
@@ -220,15 +221,7 @@ async def read_http1_response(
 async def running_server(app, config: Config):
     server = Server(app, config)
     task = asyncio.create_task(server.serve())
-    if config.uds is None:
-        await wait_for_port(config.port)
-    else:
-        for _ in range(200):
-            if config.uds.exists():
-                break
-            await asyncio.sleep(0.01)
-        else:
-            raise TimeoutError(f'unix socket {config.uds} did not appear in time')
+    await wait_for_config_binds(config)
     try:
         yield server
     finally:
@@ -241,6 +234,39 @@ async def running_server(app, config: Config):
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+async def wait_for_config_binds(config: Config, timeout: float = 5.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        pending_unix = []
+        pending_ports = []
+        for bind in config.bind:
+            spec = _parse_bind_spec(bind)
+            if isinstance(spec, TcpBindSpec):
+                if spec.port == 0:
+                    pending_ports = None
+                    break
+                pending_ports.append((spec.host, spec.port))
+            elif isinstance(spec, UnixBindSpec):
+                pending_unix.append(spec.path)
+        if pending_ports is not None and all(
+            _port_is_open(host, port) for host, port in pending_ports
+        ) and all(path.exists() for path in pending_unix):
+            return
+        if loop.time() >= deadline:
+            raise TimeoutError(f'timed out waiting for listeners {config.bind}')
+        await asyncio.sleep(0.01)
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.1)
+        if family == socket.AF_INET6:
+            return sock.connect_ex((host, port, 0, 0)) == 0
+        return sock.connect_ex((host, port)) == 0
 
 
 async def wait_for_port(port: int, timeout: float = 5.0) -> None:

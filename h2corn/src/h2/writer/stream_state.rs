@@ -3,6 +3,7 @@ use std::{collections::VecDeque, mem};
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
 use crate::frame::StreamId;
+use crate::h2::StreamMap;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::ResponseHeaders;
 use crate::smallvec_deque::SmallVecDeque;
@@ -234,7 +235,7 @@ impl PendingChunk {
 }
 
 pub(super) fn writer_stream(
-    streams: &mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &mut StreamMap<StreamWriteState>,
     stream_id: StreamId,
     initial_stream_send_window: i64,
 ) -> &mut StreamWriteState {

@@ -26,6 +26,7 @@ def _proxy_v2_prefix(
     server_host: str,
     client_port: int,
     server_port: int,
+    tlvs: bytes = b'',
 ) -> bytes:
     signature = b'\r\n\r\n\x00\r\nQUIT\n'
     version_command = bytes([0x21])
@@ -35,6 +36,7 @@ def _proxy_v2_prefix(
         + socket.inet_aton(server_host)
         + client_port.to_bytes(2, 'big')
         + server_port.to_bytes(2, 'big')
+        + tlvs
     )
     return (
         signature
@@ -410,6 +412,43 @@ async def test_proxy_headers_use_backend_facing_proto_and_host_tokens() -> None:
     assert body == b'https|example.com|8443'
 
 
+async def test_proxy_headers_use_backend_facing_port_and_prefix_tokens() -> None:
+    async def app(scope, receive, send):
+        payload = (
+            f'{scope["scheme"]}|{scope["server"][0]}|{scope["server"][1]}|'
+            f'{scope.get("root_path", "")}'
+        ).encode()
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': payload})
+
+    config = Config(
+        port=find_free_port(),
+        root_path='/root',
+        proxy_headers=True,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=config.port,
+                extra_headers=[
+                    (b'x-forwarded-proto', b'http, https'),
+                    (b'x-forwarded-host', b'attacker.example, example.com'),
+                    (b'x-forwarded-port', b'8080, 9443'),
+                    (b'x-forwarded-prefix', b'/ignored, /api'),
+                ],
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'https|example.com|9443|/api/root'
+
+
 async def test_http1_requires_proxy_header_when_proxy_protocol_is_configured() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -467,6 +506,31 @@ async def test_proxy_protocol_v1_rewrites_scope_from_trusted_peer() -> None:
 
     assert status == 200
     assert body == b'203.0.113.10|41234|198.51.100.20|8080'
+
+
+async def test_proxy_protocol_v1_rejects_overlong_header_line() -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('overlong proxy header should fail before request dispatch')
+
+    config = Config(
+        port=find_free_port(),
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v1',
+    )
+    async with running_server(app, config):
+        with pytest.raises((
+            ConnectionResetError,
+            BrokenPipeError,
+            RuntimeError,
+            OSError,
+        )):
+            await asyncio.wait_for(
+                h2_request(
+                    port=config.port,
+                    prefix=b'PROXY UNKNOWN ' + (b'x' * 128) + b'\r\n',
+                ),
+                timeout=5,
+            )
 
 
 async def test_proxy_protocol_v2_and_forwarded_headers_stack_cleanly() -> None:
@@ -544,6 +608,80 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
 
     assert status == 200
     assert body == f'203.0.113.10|0|127.0.0.1|{config.port}'.encode()
+
+
+async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listener() -> None:
+    async def app(scope, receive, send):
+        payload = (
+            f'{scope["client"][0]}|{scope["client"][1]}|'
+            f'{scope["server"][0]}|{scope["server"][1]}'
+        ).encode()
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': payload})
+
+    ports = (find_free_port(), find_free_port())
+    config = Config(
+        bind=tuple(f'127.0.0.1:{port}' for port in ports),
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=ports[1],
+                prefix=_proxy_v2_prefix(
+                    client_host='203.0.113.10',
+                    server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
+                    client_port=0,
+                    server_port=0,
+                ),
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == f'203.0.113.10|0|127.0.0.1|{ports[1]}'.encode()
+
+
+async def test_proxy_protocol_v2_ignores_trailing_tlvs() -> None:
+    async def app(scope, receive, send):
+        payload = (
+            f'{scope["client"][0]}|{scope["client"][1]}|'
+            f'{scope["server"][0]}|{scope["server"][1]}'
+        ).encode()
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': payload})
+
+    config = Config(
+        port=find_free_port(),
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=config.port,
+                prefix=_proxy_v2_prefix(
+                    client_host='203.0.113.10',
+                    server_host='198.51.100.20',
+                    client_port=41234,
+                    server_port=8080,
+                    tlvs=b'\x01\x00\x03abc',
+                ),
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'203.0.113.10|41234|198.51.100.20|8080'
 
 
 async def test_proxy_protocol_v1_requires_header_in_strict_mode() -> None:

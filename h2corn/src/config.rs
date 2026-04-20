@@ -1,8 +1,9 @@
+use crate::frame::DEFAULT_MAX_FRAME_SIZE;
 use crate::proxy::{ProxyProtocolMode, TrustedPeer};
 use bytes::Bytes;
 use parking_lot::RwLock;
 use std::{
-    num::{NonZeroU64, NonZeroUsize},
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     time::Duration,
 };
 
@@ -13,15 +14,30 @@ pub const PATHSEND_BUFFER_SIZE: usize = 128 * 1024;
 #[derive(Clone, Debug, Default)]
 pub struct Http1Config {
     pub enabled: bool,
+    pub limit_request_head_size: Option<NonZeroUsize>,
     pub limit_request_line: Option<NonZeroUsize>,
     pub limit_request_fields: Option<NonZeroUsize>,
     pub limit_request_field_size: Option<NonZeroUsize>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Http2Config {
-    pub max_concurrent_streams: usize,
+    pub max_concurrent_streams: u32,
     pub max_header_list_size: Option<NonZeroUsize>,
+    pub max_header_block_size: Option<NonZeroUsize>,
+    pub max_inbound_frame_size: NonZeroU32,
+}
+
+impl Default for Http2Config {
+    fn default() -> Self {
+        Self {
+            max_concurrent_streams: 0,
+            max_header_list_size: None,
+            max_header_block_size: None,
+            max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
+                .expect("default HTTP/2 frame size is non-zero"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -40,7 +56,7 @@ pub struct WebSocketConfig {
 }
 
 #[derive(Clone, Debug)]
-pub enum ServerBind {
+pub enum BindTarget {
     Tcp { host: Box<str>, port: u16 },
     Unix { path: Box<str> },
     Fd { fd: i64, is_unix: bool },
@@ -61,7 +77,7 @@ pub struct ResponseHeaderConfig {
 }
 
 pub struct ServerConfig {
-    pub bind: ServerBind,
+    pub binds: Box<[BindTarget]>,
     pub access_log: bool,
     pub root_path: Box<str>,
     pub http1: Http1Config,
@@ -69,9 +85,12 @@ pub struct ServerConfig {
     pub max_request_body_size: Option<NonZeroU64>,
     pub timeout_graceful_shutdown: Duration,
     pub timeout_keep_alive: Option<Duration>,
-    pub timeout_read: Option<Duration>,
-    pub limit_concurrency: Option<usize>,
-    pub max_requests: Option<u64>,
+    pub timeout_request_header: Option<Duration>,
+    pub timeout_request_body_idle: Option<Duration>,
+    pub limit_concurrency: Option<NonZeroUsize>,
+    pub limit_connections: Option<NonZeroUsize>,
+    pub max_requests: Option<NonZeroU64>,
+    pub runtime_threads: usize,
     pub websocket: WebSocketConfig,
     pub proxy: ProxyConfig,
     pub timeout_handshake: Duration,

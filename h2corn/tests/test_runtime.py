@@ -138,9 +138,10 @@ async def test_unix_socket_serving(tmp_path: Path) -> None:
         })
         await send({'type': 'http.response.body', 'body': b'uds'})
 
-    config = Config(uds=tmp_path / 'h2corn.sock')
+    socket_path = tmp_path / 'h2corn.sock'
+    config = Config(bind=(f'unix:{socket_path}',))
     async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(uds=config.uds), timeout=5)
+        status, body = await asyncio.wait_for(h2_request(uds=socket_path), timeout=5)
 
     assert status == 200
     assert body == b'uds'
@@ -151,11 +152,12 @@ async def test_unix_socket_cleanup_removes_owned_socket_path(tmp_path: Path) -> 
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    config = Config(uds=tmp_path / 'cleanup.sock')
+    socket_path = tmp_path / 'cleanup.sock'
+    config = Config(bind=(f'unix:{socket_path}',))
     async with running_server(app, config):
-        assert config.uds.exists()
+        assert socket_path.exists()
 
-    assert not config.uds.exists()
+    assert not socket_path.exists()
 
 
 async def test_unix_socket_path_rejects_non_socket_files(tmp_path: Path) -> None:
@@ -166,12 +168,31 @@ async def test_unix_socket_path_rejects_non_socket_files(tmp_path: Path) -> None
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    server = Server(app, Config(uds=path))
+    server = Server(app, Config(bind=(f'unix:{path}',)))
 
     with pytest.raises(OSError, match='not a socket'):
         await server.serve()
 
     assert path.read_text() == 'occupied'
+
+
+async def test_multi_bind_reports_actual_server_port_per_listener() -> None:
+    async def app(scope, receive, send):
+        server_port = scope['server'][1]
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': str(server_port).encode()})
+
+    ports = (find_free_port(), find_free_port())
+    config = Config(bind=tuple(f'127.0.0.1:{port}' for port in ports))
+    async with running_server(app, config):
+        for port in ports:
+            status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
+            assert status == 200
+            assert body == str(port).encode()
 
 
 @pytest.mark.parametrize('workers', [1, 2])
@@ -224,6 +245,39 @@ async def test_worker_supervisor_banner_reports_kernel_allocated_port(
         assert process.returncode is None
     finally:
         await _terminate_process(process)
+
+
+async def test_worker_supervisor_shutdown_is_not_blocked_by_limit_connections(
+    tmp_path: Path,
+) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='limit_connections_shutdown_app',
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'limit-connections'})
+        """,
+        workers=1,
+        extra_args=['--limit-connections', '1'],
+    )
+
+    reader = writer = None
+    try:
+        await wait_for_port(port)
+        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+        await asyncio.sleep(0.1)
+        process.terminate()
+        await asyncio.wait_for(process.wait(), timeout=5)
+        assert process.returncode is not None
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        elif reader is not None:
+            reader.feed_eof()
+        if process.returncode is None:
+            await _terminate_process(process)
 
 
 @pytest.mark.parametrize('workers', [1, 2])

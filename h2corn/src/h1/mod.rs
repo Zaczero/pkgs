@@ -159,10 +159,10 @@ where
 
 fn request_head_timeout(config: &ServerConfig, first_request: bool) -> Option<Duration> {
     if first_request {
-        return Some(config.timeout_handshake);
+        return config.timeout_request_header;
     }
 
-    match (config.timeout_keep_alive, config.timeout_read) {
+    match (config.timeout_keep_alive, config.timeout_request_header) {
         (Some(keep_alive), Some(read)) => Some(keep_alive.min(read)),
         (Some(keep_alive), None) => Some(keep_alive),
         (None, Some(read)) => Some(read),
@@ -388,7 +388,7 @@ where
                         input.body_bytes_read,
                         config.max_request_body_size.map(NonZeroU64::get),
                     ),
-                    config.timeout_read,
+                    config.timeout_request_body_idle,
                 );
                 tokio::try_join!(app_future.as_mut(), body_future)
             };
@@ -427,17 +427,26 @@ async fn read_request_body<R>(
     buffer: &mut BytesMut,
     tx: &mpsc::Sender<StreamInput>,
     mut body: RequestBodyState,
-    timeout_read: Option<std::time::Duration>,
+    timeout_request_body_idle: Option<std::time::Duration>,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     match body_kind {
         RequestBodyKind::ContentLength(len) => {
-            parse::read_fixed_body(reader, buffer, len.get(), tx, &mut body, timeout_read).await?;
+            parse::read_fixed_body(
+                reader,
+                buffer,
+                len.get(),
+                tx,
+                &mut body,
+                timeout_request_body_idle,
+            )
+            .await?;
         }
         RequestBodyKind::Chunked => {
-            parse::read_chunked_body(reader, buffer, tx, &mut body, timeout_read).await?;
+            parse::read_chunked_body(reader, buffer, tx, &mut body, timeout_request_body_idle)
+                .await?;
         }
         RequestBodyKind::None => {}
     }

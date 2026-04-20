@@ -1,8 +1,8 @@
 use std::{
     fmt::{self, Write as _},
-    hint::unreachable_unchecked,
     io::{Write, stderr as io_stderr},
     num::NonZeroU16,
+    str,
     sync::LazyLock,
     time::{Duration, Instant},
 };
@@ -13,7 +13,7 @@ use itoa::{Buffer as ItoaBuffer, Integer};
 use owo_colors::{OwoColorize, Stream, Style};
 use smallvec::SmallVec;
 
-use crate::config::{ServerBind, ServerConfig};
+use crate::config::{BindTarget, ServerConfig};
 use crate::error::H2CornError;
 use crate::hpack::BytesStr;
 use crate::http::app::{HttpRequestBody, run_asgi_http_request};
@@ -150,7 +150,7 @@ impl ClientLabel {
     fn as_str(&self) -> &str {
         // SAFETY: `ClientLabel::build` only writes ASCII via `fmt::Write`,
         // host strings, digits, and punctuation.
-        unsafe { std::str::from_utf8_unchecked(self.0.as_slice()) }
+        unsafe { str::from_utf8_unchecked(self.0.as_slice()) }
     }
 }
 
@@ -188,20 +188,16 @@ impl HttpAccessLogState {
         log_state: ResponseLogState,
         read_body_bytes: impl FnOnce() -> u64,
     ) {
-        let Some(state) = &self.0 else {
-            return;
-        };
-        let Some(status) = log_state.status else {
-            return;
-        };
-        emit_http_access_log(&HttpAccessLogEntry {
-            request: &state.request,
-            client_label: state.client_label.as_str(),
-            status: status.get(),
-            duration: state.started_at.elapsed(),
-            rx_bytes: read_body_bytes(),
-            tx_bytes: log_state.response_body_bytes,
-        });
+        if let (Some(state), Some(status)) = (&self.0, log_state.status) {
+            emit_http_access_log(&HttpAccessLogEntry {
+                request: &state.request,
+                client_label: state.client_label.as_str(),
+                status: status.get(),
+                duration: state.started_at.elapsed(),
+                rx_bytes: read_body_bytes(),
+                tx_bytes: log_state.response_body_bytes,
+            });
+        }
     }
 }
 
@@ -219,17 +215,16 @@ impl WebSocketAccessLogState {
     }
 
     pub(crate) fn emit_http_response(&self, status: HttpStatusCode, tx_bytes: u64) {
-        let Some(state) = &self.0 else {
-            return;
-        };
-        emit_http_access_log(&HttpAccessLogEntry {
-            request: &state.request,
-            client_label: state.client_label.as_str(),
-            status,
-            duration: state.started_at.elapsed(),
-            rx_bytes: 0,
-            tx_bytes,
-        });
+        if let Some(state) = &self.0 {
+            emit_http_access_log(&HttpAccessLogEntry {
+                request: &state.request,
+                client_label: state.client_label.as_str(),
+                status,
+                duration: state.started_at.elapsed(),
+                rx_bytes: 0,
+                tx_bytes,
+            });
+        }
     }
 
     pub(crate) fn emit_session(
@@ -239,17 +234,16 @@ impl WebSocketAccessLogState {
         rx_bytes: u64,
         tx_bytes: u64,
     ) {
-        let Some(state) = &self.0 else {
-            return;
-        };
-        emit_websocket_access_log(&WebSocketAccessLogEntry {
-            request: &state.request,
-            client_label: state.client_label.as_str(),
-            close_code,
-            duration,
-            rx_bytes,
-            tx_bytes,
-        });
+        if let Some(state) = &self.0 {
+            emit_websocket_access_log(&WebSocketAccessLogEntry {
+                request: &state.request,
+                client_label: state.client_label.as_str(),
+                close_code,
+                duration,
+                rx_bytes,
+                tx_bytes,
+            });
+        }
     }
 }
 
@@ -295,6 +289,9 @@ where
 }
 
 pub(crate) fn emit_banner(config: &ServerConfig) {
+    const LISTENING_PREFIX: &str = "Listening on ";
+    const LISTENING_INDENT: &str = "             ";
+
     let mut stderr = anstream::stderr().lock();
     let _ = writeln!(
         stderr,
@@ -305,11 +302,13 @@ pub(crate) fn emit_banner(config: &ServerConfig) {
         env!("CARGO_PKG_VERSION"),
     );
 
-    let _ = writeln!(
-        stderr,
-        "Listening on {}",
-        format_listen_target(config).if_supports_color(Stream::Stderr, |text| text.bold()),
-    );
+    let mut binds = config.binds.iter().map(format_listen_target);
+    if let Some(first) = binds.next() {
+        write_listen_target_line(&mut stderr, LISTENING_PREFIX, &first);
+        for bind in binds {
+            write_listen_target_line(&mut stderr, LISTENING_INDENT, &bind);
+        }
+    }
 
     if config.http1.enabled {
         let _ = writeln!(
@@ -319,6 +318,14 @@ pub(crate) fn emit_banner(config: &ServerConfig) {
     }
 
     let _ = writeln!(stderr);
+}
+
+fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
+    let _ = writeln!(
+        stderr,
+        "{prefix}{}",
+        bind.if_supports_color(Stream::Stderr, |text| text.bold()),
+    );
 }
 
 pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
@@ -383,13 +390,11 @@ pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
     }
 }
 
-fn format_listen_target(config: &ServerConfig) -> String {
-    match &config.bind {
-        ServerBind::Tcp { host, port } => {
-            format!("http://{}:{port}", HostDisplay(host.as_ref()))
-        }
-        ServerBind::Unix { path } => format!("unix:{path}"),
-        ServerBind::Fd { fd, .. } => format!("fd://{fd}"),
+fn format_listen_target(bind: &BindTarget) -> String {
+    match bind {
+        BindTarget::Tcp { host, port } => format!("http://{}:{port}", HostDisplay(host.as_ref())),
+        BindTarget::Unix { path } => format!("unix:{path}"),
+        BindTarget::Fd { fd, .. } => format!("fd://{fd}"),
     }
 }
 
@@ -597,9 +602,7 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &s
                 }
             }
             _ => {
-                // SAFETY: `precision` is computed just above as `0`, `1`, or
-                // `2`, and this branch is only reachable when `precision != 0`.
-                unsafe { unreachable_unchecked() }
+                unreachable!("precision is derived from the unit threshold")
             }
         }
     }
@@ -648,7 +651,7 @@ mod tests {
     };
     use crate::hpack::BytesStr;
     use crate::http::types::HttpVersion;
-    use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer};
+    use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
     use http::Method;
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
@@ -696,6 +699,10 @@ mod tests {
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
                 9000,
             )),
+            actual_server: Some(ServerAddr {
+                host: "::1".into(),
+                port: Some(8000),
+            }),
             proxy_headers_trusted: false,
             client: Some(ClientAddr {
                 host: "2001:db8::1".into(),

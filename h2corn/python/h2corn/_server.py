@@ -8,11 +8,13 @@ from typing import Literal
 from ._cli import run_cli
 from ._config import Config
 from ._lifespan import _cancel_task, _serve_with_lifespan
-from ._socket import _bound_socket
+from ._socket import _bound_sockets
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ._types import ASGIApp
 
 
@@ -31,23 +33,23 @@ class Server:
         """Signal the server to initiate a graceful restart-style shutdown."""
         self.shutdown('restart')
 
-    async def _serve_fd(
+    async def _serve_fds(
         self,
         app: ASGIApp,
-        fd: int,
-        retire_trigger=None,
-    ) -> None:
-        from ._lib import serve_fd
+        fds: list[int],
+        retire_trigger: Callable[[], None] | None = None,
+    ):
+        from ._lib import serve_fds
 
         if self._shutdown_future is None:
             self._shutdown_future = asyncio.get_running_loop().create_future()
 
-        async def _await_shutdown() -> str:
+        async def _await_shutdown():
             return await self._shutdown_future
 
         shutdown_task = asyncio.create_task(_await_shutdown())
         try:
-            await serve_fd(app, fd, self.config, shutdown_task, retire_trigger)
+            await serve_fds(app, fds, self.config, shutdown_task, retire_trigger)
         finally:
             await _cancel_task(shutdown_task)
 
@@ -62,14 +64,13 @@ class Server:
                 'Server.serve() is the in-process API and only supports workers=1'
             )
 
-        with _bound_socket(self.config) as sock:
+        with _bound_sockets(self.config) as socks:
             from ._lib import emit_banner
 
             emit_banner(self.config)
 
-            async def _serve_app(app: ASGIApp) -> None:
-                fd = sock.detach()
-                await self._serve_fd(app, fd)
+            async def _serve_app(app: ASGIApp):
+                await self._serve_fds(app, [sock.detach() for sock in socks])
 
             await _serve_with_lifespan(
                 self.app,
@@ -83,9 +84,9 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     """
     Primary entrypoint to start the server.
 
-    On Unix-like systems, if the configuration specifies multiple workers,
-    this launches a multiprocessing supervisor that supports zero-downtime
-    reloads and dynamic scaling.
+    On Unix-like systems, this runs through the multiprocessing supervisor,
+    even for `workers=1`, so signal handling, inherited listeners, and worker
+    lifecycle stay consistent with the CLI entrypoint.
 
     Available signals for dynamic control (Unix only):
     - `SIGHUP`: Reload workers.
@@ -104,20 +105,21 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     asyncio.run(Server(app, config).serve())
 
 
-def _import_target(target: str) -> ASGIApp:
+def _import_target(target: str):
     import importlib
 
     module_name, _, attr = target.partition(':')
     if not module_name or not attr:
-        raise ValueError('target must be module:app')
+        raise ValueError('target must be in module:app form')
 
-    if os.getcwd() not in sys.path:
-        sys.path.insert(0, os.getcwd())
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
     module = importlib.import_module(module_name)
     app = getattr(module, attr)
     if not callable(app):
-        raise TypeError(f'{target} is not callable')
+        raise TypeError(f'import target {target!r} is not callable')
     return app
 
 

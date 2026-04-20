@@ -41,8 +41,8 @@ pub(crate) fn prepare_request_execution<WebSocketMeta>(
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {
     let RequestLaunchPlan { route, input } = plan;
-    let input = prepare_request_input(input);
     let admission = try_acquire_request_admission(app)?;
+    let input = prepare_request_input(input);
     Some(RequestExecution {
         route,
         admission,

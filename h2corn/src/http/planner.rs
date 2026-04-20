@@ -106,7 +106,7 @@ mod tests {
     };
     use crate::ext::Protocol;
     use crate::hpack::BytesStr;
-    use crate::http::analysis::RequestHeaderAnalysis;
+    use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
         HttpVersion, RequestAuthority, RequestHead, RequestTarget, status_code,
     };
@@ -120,9 +120,9 @@ mod tests {
                 BytesStr::from_static("/demo"),
             ),
             headers: Vec::new(),
-            header_analysis: RequestHeaderAnalysis {
+            header_meta: RequestHeaderMeta {
                 content_length,
-                ..RequestHeaderAnalysis::default()
+                ..RequestHeaderMeta::default()
             },
         }
     }
@@ -138,7 +138,7 @@ mod tests {
                 BytesStr::from_static("/chat"),
             ),
             headers: Vec::new(),
-            header_analysis: RequestHeaderAnalysis::default(),
+            header_meta: RequestHeaderMeta::default(),
         }
     }
 
@@ -150,7 +150,7 @@ mod tests {
                 "example.com:443",
             ))),
             headers: Vec::new(),
-            header_analysis: RequestHeaderAnalysis::default(),
+            header_meta: RequestHeaderMeta::default(),
         }
     }
 

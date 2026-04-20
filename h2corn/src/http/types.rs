@@ -1,14 +1,16 @@
+use std::str;
+
 use bytes::Bytes;
 use http::Method;
 use pyo3::pybacked::PyBackedBytes;
 
 use crate::ext::Protocol;
+use crate::header_value::header_value_is_valid;
 use crate::hpack::BytesStr;
-use crate::http::analysis::RequestHeaderAnalysis;
 use crate::http::header::{
-    header_value_is_valid, protocol_is_websocket, request_header_name_needs_lowercase,
-    response_header_name_is_valid,
+    protocol_is_websocket, request_header_name_needs_lowercase, response_header_name_is_valid,
 };
+use crate::http::header_meta::RequestHeaderMeta;
 
 pub(crate) type RequestHeaders = Vec<(RequestHeaderName, RequestHeaderValue)>;
 pub(crate) type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
@@ -165,6 +167,15 @@ macro_rules! known_request_header_names {
                 }
             }
 
+            pub(crate) fn from_bytes_ignore_ascii_case(name: &[u8]) -> Option<Self> {
+                $(
+                    if name.eq_ignore_ascii_case($name) {
+                        return Some(Self::$variant);
+                    }
+                )+
+                None
+            }
+
             pub(crate) const fn as_bytes(self) -> &'static [u8] {
                 match self {
                     $(Self::$variant => $name,)+
@@ -173,7 +184,7 @@ macro_rules! known_request_header_names {
 
             pub(crate) fn as_str(self) -> &'static str {
                 // SAFETY: all names are ASCII byte literals.
-                unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+                unsafe { str::from_utf8_unchecked(self.as_bytes()) }
             }
         }
     };
@@ -212,7 +223,11 @@ impl RequestHeaderName {
     pub(crate) fn from_h1(head: &Bytes, name: &[u8]) -> Option<Self> {
         let needs_lowercase = request_header_name_needs_lowercase(name)?;
 
-        if !needs_lowercase && let Some(name) = KnownRequestHeaderName::from_bytes(name) {
+        if let Some(name) = if needs_lowercase {
+            KnownRequestHeaderName::from_bytes_ignore_ascii_case(name)
+        } else {
+            KnownRequestHeaderName::from_bytes(name)
+        } {
             return Some(Self::Known(name));
         }
 
@@ -436,7 +451,7 @@ pub(crate) struct RequestHead {
     pub method: Method,
     pub target: RequestTarget,
     pub headers: RequestHeaders,
-    pub header_analysis: RequestHeaderAnalysis,
+    pub header_meta: RequestHeaderMeta,
 }
 
 impl RequestHead {
@@ -465,19 +480,24 @@ impl RequestHead {
     }
 
     pub(crate) fn accepts_trailers(&self) -> bool {
-        self.header_analysis.accepts_trailers
+        self.header_meta.accepts_trailers
     }
 
     pub(crate) fn content_length(&self) -> Option<u64> {
-        self.header_analysis.content_length
+        self.header_meta.content_length
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::http::analysis::RequestHeaderAnalysis;
+    use bytes::Bytes;
 
-    use super::{HttpVersion, RequestAuthority, RequestHead, RequestTarget};
+    use crate::http::header_meta::RequestHeaderMeta;
+
+    use super::{
+        HttpVersion, KnownRequestHeaderName, RequestAuthority, RequestHead, RequestHeaderName,
+        RequestTarget,
+    };
     use crate::ext::Protocol;
     use crate::hpack::BytesStr;
     use http::Method;
@@ -538,7 +558,7 @@ mod tests {
                 BytesStr::from_static("/chat"),
             ),
             headers: Vec::new(),
-            header_analysis: RequestHeaderAnalysis::default(),
+            header_meta: RequestHeaderMeta::default(),
         };
 
         assert_eq!(request.scheme_str(), "https");
@@ -549,5 +569,19 @@ mod tests {
         assert!(request.is_connect());
         assert!(request.protocol_is_websocket());
         assert_eq!(request.log_target().as_str(), "/chat");
+    }
+
+    #[test]
+    fn from_h1_recognizes_known_headers_in_mixed_case() {
+        let head = Bytes::from_static(b"Host: example.com\r\n");
+
+        assert_eq!(
+            RequestHeaderName::from_h1(&head, b"Host"),
+            Some(RequestHeaderName::Known(KnownRequestHeaderName::Host))
+        );
+        assert_eq!(
+            RequestHeaderName::from_h1(&head, b"HOST"),
+            Some(RequestHeaderName::Known(KnownRequestHeaderName::Host))
+        );
     }
 }

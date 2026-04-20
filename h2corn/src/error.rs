@@ -96,6 +96,31 @@ pub enum ConfigError {
     InvalidTrustedProxyEntry { value: Box<str> },
     #[error("invalid trusted proxy CIDR prefix: {value}")]
     InvalidTrustedProxyCidrPrefix { value: Box<str> },
+    #[error("{name} must be a finite non-negative number")]
+    InvalidFiniteDuration { name: &'static str },
+    #[error("invalid proxy_protocol mode: {value:?}")]
+    InvalidProxyProtocolMode { value: Box<str> },
+    #[error("bind metadata length does not match configured listeners")]
+    BindMetadataLengthMismatch,
+    #[error("invalid response header {value:?}: expected 'name: value'")]
+    InvalidResponseHeaderFormat { value: Box<str> },
+    #[error("invalid response header name: {value:?}")]
+    InvalidResponseHeaderName { value: Box<str> },
+    #[error("invalid response header value for {name:?}")]
+    InvalidResponseHeaderValue { name: Box<str> },
+    #[error("invalid {kind} bind target {value:?}: {detail}")]
+    InvalidBindTarget {
+        kind: &'static str,
+        value: Box<str>,
+        detail: &'static str,
+    },
+    #[error(
+        "runtime_threads is process-global and was already initialized with {initialized_threads}; cannot change it to {worker_threads}"
+    )]
+    RuntimeThreadsAlreadyInitialized {
+        initialized_threads: usize,
+        worker_threads: usize,
+    },
 }
 
 impl ConfigError {
@@ -110,11 +135,59 @@ impl ConfigError {
             value: value.into(),
         }
     }
+
+    pub(crate) fn invalid_finite_duration(name: &'static str) -> Self {
+        Self::InvalidFiniteDuration { name }
+    }
+
+    pub(crate) fn invalid_proxy_protocol_mode(value: &str) -> Self {
+        Self::InvalidProxyProtocolMode {
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn invalid_response_header_format(value: &str) -> Self {
+        Self::InvalidResponseHeaderFormat {
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn invalid_response_header_name(value: &str) -> Self {
+        Self::InvalidResponseHeaderName {
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn invalid_response_header_value(name: &str) -> Self {
+        Self::InvalidResponseHeaderValue { name: name.into() }
+    }
+
+    pub(crate) fn invalid_bind_target(
+        kind: &'static str,
+        value: &str,
+        detail: &'static str,
+    ) -> Self {
+        Self::InvalidBindTarget {
+            kind,
+            value: value.into(),
+            detail,
+        }
+    }
+
+    pub(crate) fn runtime_threads_already_initialized(
+        initialized_threads: usize,
+        worker_threads: usize,
+    ) -> Self {
+        Self::RuntimeThreadsAlreadyInitialized {
+            initialized_threads,
+            worker_threads,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum AsgiError {
-    #[error("ASGI send called after close")]
+    #[error("ASGI send called after the stream closed")]
     SendAfterClose,
     #[error("{container} is missing required field: {field}")]
     MissingField {
@@ -150,12 +223,14 @@ impl AsgiError {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 pub enum Http1Error {
     #[error("h2c upgrade with a request body is unsupported")]
     H2cUpgradeWithRequestBody,
     #[error("HTTP/1.1 request head timed out")]
     RequestHeadTimedOut,
+    #[error("HTTP/1.1 request body timed out")]
+    RequestBodyTimedOut,
     #[error("connection closed while reading the HTTP/1.1 request head")]
     RequestHeadClosed,
     #[error("empty HTTP/1.1 request head")]
@@ -220,7 +295,7 @@ pub enum HttpResponseError {
         "http.response.trailers received before the response body completed with trailers enabled"
     )]
     TrailersBeforeBodyCompleted,
-    #[error("ASGI app returned before starting a response")]
+    #[error("ASGI app returned before starting the response")]
     AppReturnedWithoutStartingResponse,
     #[error("ASGI app returned before completing the response")]
     AppReturnedWithoutCompletingResponse,
@@ -362,7 +437,7 @@ impl H2Error {
 
 #[derive(Debug, Error)]
 pub enum PathsendError {
-    #[error("http.response.pathsend requires an absolute file path")]
+    #[error("http.response.pathsend requires an absolute path")]
     RequiresAbsoluteFilePath,
     #[error("http.response.pathsend failed for file {path}: {source}")]
     OpenFailed {

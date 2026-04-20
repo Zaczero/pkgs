@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::net::UnixListener as StdUnixListener;
 use std::{
     future::{Future, poll_fn, ready},
     io, net,
@@ -10,9 +12,7 @@ use pyo3_async_runtimes::TaskLocals;
 #[cfg(target_os = "linux")]
 use rustix::net::sockopt::set_tcp_quickack;
 use smallvec::SmallVec;
-use tokio::io::{AsyncRead, AsyncWrite};
-#[cfg(unix)]
-use tokio::net::unix::SocketAddr as UnixSocketAddr;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -20,40 +20,56 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-#[cfg(unix)]
-use crate::config::ServerBind;
-use crate::config::ServerConfig;
-use crate::error::{H2CornError, H2Error};
-use crate::frame::FrameReader;
+use crate::config::{BindTarget, ServerConfig};
+use crate::error::{ErrorExt, H2CornError, H2Error, ProxyError};
+use crate::frame::{self, ErrorCode, FrameReader};
 use crate::h1::{self, H1WriteTarget};
 use crate::h2::{self, H2WriteTarget};
 use crate::proxy::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
-    ProxyProtocolMode, TrustedPeer, peer_is_trusted, read_preamble_protocol, read_proxy_v1,
-    read_proxy_v2,
+    ProxyProtocolMode, ServerAddr, TrustedPeer, peer_is_trusted, read_preamble_protocol,
+    read_proxy_v1, read_proxy_v2,
 };
 use crate::runtime::{AppState, ConnectionContext, ShutdownKind, ShutdownState};
 
-trait AcceptSource {
-    type Connection;
-
-    fn poll_accept_item(&self, cx: &mut Context<'_>) -> Poll<io::Result<Self::Connection>>;
+enum ListenerSource {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix {
+        listener: UnixListener,
+        path: Option<Arc<str>>,
+    },
 }
 
-impl AcceptSource for TcpListener {
-    type Connection = (TcpStream, net::SocketAddr);
-
-    fn poll_accept_item(&self, cx: &mut Context<'_>) -> Poll<io::Result<Self::Connection>> {
-        self.poll_accept(cx)
-    }
+enum AcceptedConnection {
+    Tcp(TcpStream, net::SocketAddr),
+    #[cfg(unix)]
+    Unix {
+        stream: UnixStream,
+        path: Option<Arc<str>>,
+    },
 }
 
-#[cfg(unix)]
-impl AcceptSource for UnixListener {
-    type Connection = (UnixStream, UnixSocketAddr);
-
-    fn poll_accept_item(&self, cx: &mut Context<'_>) -> Poll<io::Result<Self::Connection>> {
-        self.poll_accept(cx)
+impl ListenerSource {
+    fn poll_accept_item(&self, cx: &mut Context<'_>) -> Poll<io::Result<AcceptedConnection>> {
+        match self {
+            Self::Tcp(listener) => match listener.poll_accept(cx) {
+                Poll::Ready(Ok((stream, peer))) => {
+                    Poll::Ready(Ok(AcceptedConnection::Tcp(stream, peer)))
+                }
+                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                Poll::Pending => Poll::Pending,
+            },
+            #[cfg(unix)]
+            Self::Unix { listener, path } => match listener.poll_accept(cx) {
+                Poll::Ready(Ok((stream, _))) => Poll::Ready(Ok(AcceptedConnection::Unix {
+                    stream,
+                    path: path.clone(),
+                })),
+                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                Poll::Pending => Poll::Pending,
+            },
+        }
     }
 }
 
@@ -126,34 +142,18 @@ macro_rules! serve_with_proxy_protocol {
     };
 }
 
-pub(crate) async fn serve_from_fd(
+pub(crate) async fn serve_from_fds(
     app: AppState,
-    fd: i64,
+    fds: Box<[i64]>,
     config: &'static ServerConfig,
     shutdown_trigger: Py<PyAny>,
 ) -> Result<(), H2CornError> {
-    #[cfg(unix)]
-    if matches!(
-        &config.bind,
-        ServerBind::Unix { .. } | ServerBind::Fd { is_unix: true, .. }
-    ) {
-        return serve_unix(adopt_unix_listener(fd)?, app, config, shutdown_trigger).await;
-    }
-
-    serve_tcp(adopt_tcp_listener(fd)?, app, config, shutdown_trigger).await
-}
-
-async fn serve_tcp(
-    listener: TcpListener,
-    app: AppState,
-    config: &'static ServerConfig,
-    shutdown_trigger: Py<PyAny>,
-) -> Result<(), H2CornError> {
+    let listeners = adopt_listeners(&config.binds, &fds)?;
     if config.http1.enabled {
         serve_with_proxy_protocol!(
             config.proxy.protocol,
-            serve_tcp_with_preamble,
-            listener,
+            serve_listeners,
+            listeners,
             app,
             config,
             shutdown_trigger,
@@ -162,8 +162,8 @@ async fn serve_tcp(
     } else {
         serve_with_proxy_protocol!(
             config.proxy.protocol,
-            serve_tcp_with_preamble,
-            listener,
+            serve_listeners,
+            listeners,
             app,
             config,
             shutdown_trigger,
@@ -178,7 +178,7 @@ fn adopt_unix_listener(fd: i64) -> io::Result<UnixListener> {
 
     // SAFETY: `fd` comes from the Python socket builder and ownership is
     // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd as RawFd) };
+    let listener = unsafe { StdUnixListener::from_raw_fd(fd as RawFd) };
     UnixListener::from_std(listener)
 }
 
@@ -208,117 +208,92 @@ fn configure_tcp_stream(stream: &TcpStream) {
     let _ = set_tcp_quickack(stream, true);
 }
 
-fn spawn_tcp_connection<P, const HTTP1: bool>(
+fn spawn_connection<P, const HTTP1: bool>(
     tasks: &mut JoinSet<()>,
     app: &AppState,
-    reader: tokio::net::tcp::OwnedReadHalf,
-    writer: tokio::net::tcp::OwnedWriteHalf,
     config: &'static ServerConfig,
-    actual_peer: ConnectionPeer,
+    accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
 ) where
     P: ConnectionPreamble,
 {
-    let app = Arc::clone(app);
-    tasks.spawn(async move {
-        let _ =
-            serve_connection::<_, _, P, HTTP1>(reader, writer, app, config, actual_peer, shutdown)
-                .await;
-    });
-}
-
-#[cfg(unix)]
-fn spawn_unix_connection<P, const HTTP1: bool>(
-    tasks: &mut JoinSet<()>,
-    app: &AppState,
-    reader: tokio::net::unix::OwnedReadHalf,
-    writer: tokio::net::unix::OwnedWriteHalf,
-    config: &'static ServerConfig,
-    shutdown: watch::Receiver<ShutdownState>,
-) where
-    P: ConnectionPreamble,
-{
-    let app = Arc::clone(app);
-    tasks.spawn(async move {
-        let _ = serve_connection::<_, _, P, HTTP1>(
-            reader,
-            writer,
-            app,
-            config,
-            ConnectionPeer::Unix,
-            shutdown,
-        )
-        .await;
-    });
-}
-
-fn serve_tcp_with_preamble<P, const HTTP1: bool>(
-    listener: TcpListener,
-    app: AppState,
-    config: &'static ServerConfig,
-    shutdown_trigger: Py<PyAny>,
-) -> impl Future<Output = Result<(), H2CornError>>
-where
-    P: ConnectionPreamble,
-{
-    serve_listener(
-        listener,
-        app.locals.clone(),
-        shutdown_trigger,
-        move |(stream, peer), shutdown, tasks| {
+    match accepted {
+        AcceptedConnection::Tcp(stream, peer) => {
             configure_tcp_stream(&stream);
+            let actual_server = stream.local_addr().ok().map(|addr| ServerAddr {
+                host: addr.ip().to_string().into(),
+                port: Some(addr.port()),
+            });
             let (reader, writer) = stream.into_split();
-            spawn_tcp_connection::<P, HTTP1>(
-                tasks,
-                &app,
-                reader,
-                writer,
-                config,
-                ConnectionPeer::Tcp(peer),
-                shutdown,
-            );
-        },
-    )
+            let app = Arc::clone(app);
+            tasks.spawn(async move {
+                let _ = serve_connection::<_, _, P, HTTP1>(
+                    reader,
+                    writer,
+                    app,
+                    config,
+                    ConnectionPeer::Tcp(peer),
+                    actual_server,
+                    shutdown,
+                )
+                .await;
+            });
+        }
+        #[cfg(unix)]
+        AcceptedConnection::Unix { stream, path } => {
+            let actual_server = path.map(|path| ServerAddr {
+                host: Box::from(path.as_ref()),
+                port: None,
+            });
+            let (reader, writer) = stream.into_split();
+            let app = Arc::clone(app);
+            tasks.spawn(async move {
+                let _ = serve_connection::<_, _, P, HTTP1>(
+                    reader,
+                    writer,
+                    app,
+                    config,
+                    ConnectionPeer::Unix,
+                    actual_server,
+                    shutdown,
+                )
+                .await;
+            });
+        }
+    }
 }
 
-async fn accept_batch<L>(listener: &L) -> io::Result<SmallVec<[L::Connection; 4]>>
-where
-    L: AcceptSource,
-{
+async fn accept_one(
+    listeners: &[ListenerSource],
+    start_index: usize,
+) -> io::Result<(usize, AcceptedConnection)> {
     poll_fn(|cx| {
-        let mut accepted = SmallVec::new();
-        loop {
-            match listener.poll_accept_item(cx) {
-                Poll::Ready(Ok(connection)) => accepted.push(connection),
-                Poll::Ready(Err(err)) => {
-                    if accepted.is_empty() {
-                        return Poll::Ready(Err(err));
-                    }
-                    return Poll::Ready(Ok(accepted));
+        for offset in 0..listeners.len() {
+            let index = (start_index + offset) % listeners.len();
+            match listeners[index].poll_accept_item(cx) {
+                Poll::Ready(Ok(connection)) => {
+                    return Poll::Ready(Ok(((index + 1) % listeners.len(), connection)));
                 }
-                Poll::Pending => {
-                    if accepted.is_empty() {
-                        return Poll::Pending;
-                    }
-                    return Poll::Ready(Ok(accepted));
-                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => {}
             }
         }
+        Poll::Pending
     })
     .await
 }
 
-async fn serve_listener<L, Spawn>(
-    listener: L,
-    locals: TaskLocals,
+async fn serve_listeners<P, const HTTP1: bool>(
+    listeners: Box<[ListenerSource]>,
+    app: AppState,
+    config: &'static ServerConfig,
     shutdown_trigger: Py<PyAny>,
-    mut spawn_connection: Spawn,
 ) -> Result<(), H2CornError>
 where
-    L: AcceptSource,
-    Spawn: FnMut(L::Connection, watch::Receiver<ShutdownState>, &mut JoinSet<()>),
+    P: ConnectionPreamble,
 {
-    let shutdown = shutdown_future(shutdown_trigger, locals.clone());
+    let mut accept_start = 0;
+    let shutdown = shutdown_future(shutdown_trigger, app.locals.clone());
     tokio::pin!(shutdown);
     let (shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
     let mut tasks = JoinSet::new();
@@ -332,84 +307,70 @@ where
             break;
         }
 
-        let accepted = tokio::select! {
+        let (next_accept_start, accepted) = tokio::select! {
             shutdown_kind = &mut shutdown => {
                 shutting_down = true;
                 let _ = shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
-            accepted = accept_batch(&listener) => accepted?,
+            accepted = accept_one(&listeners, accept_start),
+                if config.limit_connections.is_none_or(|limit| tasks.len() < limit.get()) => accepted?,
             joined = tasks.join_next(), if !tasks.is_empty() => {
                 let _ = joined;
                 continue;
             }
         };
+        accept_start = next_accept_start;
 
-        for connection in accepted {
-            spawn_connection(connection, shutdown_rx.clone(), &mut tasks);
-        }
+        spawn_connection::<P, HTTP1>(&mut tasks, &app, config, accepted, shutdown_rx.clone());
     }
 
     Ok(())
 }
 
-#[cfg(unix)]
-async fn serve_unix(
-    listener: UnixListener,
-    app: AppState,
-    config: &'static ServerConfig,
-    shutdown_trigger: Py<PyAny>,
-) -> Result<(), H2CornError> {
-    if config.http1.enabled {
-        serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_unix_with_preamble,
-            listener,
-            app,
-            config,
-            shutdown_trigger,
-            true
-        )
-    } else {
-        serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_unix_with_preamble,
-            listener,
-            app,
-            config,
-            shutdown_trigger,
-            false
-        )
+fn adopt_listeners(binds: &[BindTarget], fds: &[i64]) -> io::Result<Box<[ListenerSource]>> {
+    if binds.len() != fds.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "listener FD count does not match configured binds",
+        ));
     }
-}
-
-#[cfg(unix)]
-fn serve_unix_with_preamble<P, const HTTP1: bool>(
-    listener: UnixListener,
-    app: AppState,
-    config: &'static ServerConfig,
-    shutdown_trigger: Py<PyAny>,
-) -> impl Future<Output = Result<(), H2CornError>>
-where
-    P: ConnectionPreamble,
-{
-    serve_listener(
-        listener,
-        app.locals.clone(),
-        shutdown_trigger,
-        move |(stream, _), shutdown, tasks| {
-            let (reader, writer) = stream.into_split();
-            spawn_unix_connection::<P, HTTP1>(tasks, &app, reader, writer, config, shutdown);
-        },
-    )
+    let mut listeners = SmallVec::<[ListenerSource; 4]>::new();
+    for (bind, &fd) in binds.iter().zip(fds.iter()) {
+        match bind {
+            BindTarget::Tcp { .. } => listeners.push(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
+            #[cfg(unix)]
+            BindTarget::Unix { path } => listeners.push(ListenerSource::Unix {
+                listener: adopt_unix_listener(fd)?,
+                path: Some(Arc::from(path.as_ref())),
+            }),
+            #[cfg(unix)]
+            BindTarget::Fd { is_unix: true, .. } => listeners.push(ListenerSource::Unix {
+                listener: adopt_unix_listener(fd)?,
+                path: None,
+            }),
+            BindTarget::Fd { is_unix: false, .. } => {
+                listeners.push(ListenerSource::Tcp(adopt_tcp_listener(fd)?));
+            }
+            #[cfg(not(unix))]
+            BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unix listeners are not supported on this platform",
+                ));
+            }
+        }
+    }
+    Ok(listeners.into_vec().into_boxed_slice())
 }
 
 async fn serve_connection<R, W, P, const HTTP1: bool>(
     reader: R,
-    writer: W,
+    mut writer: W,
     app: AppState,
     config: &'static ServerConfig,
     actual_peer: ConnectionPeer,
+    actual_server: Option<ServerAddr>,
     shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
@@ -418,10 +379,9 @@ where
     P: ConnectionPreamble,
 {
     let mut reader = FrameReader::new(reader);
-    let mut info = ConnectionInfo::from_peer(
-        actual_peer,
-        config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer),
-    );
+    let proxy_headers_trusted =
+        config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
+    let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
 
     let connection_start = timeout(config.timeout_handshake, async {
         let proxy = P::read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers).await?;
@@ -429,7 +389,15 @@ where
         Ok::<_, H2CornError>(ConnectionStart { proxy, protocol })
     })
     .await
-    .map_err(|_| H2Error::ConnectionHandshakeTimedOut)??;
+    .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
+    let connection_start = match connection_start {
+        Ok(start) => start,
+        Err(H2CornError::Proxy(ProxyError::InvalidHttp2Preface)) => {
+            write_invalid_h2_preface_goaway(&mut writer).await?;
+            return ProxyError::InvalidHttp2Preface.err();
+        }
+        Err(err) => return Err(err),
+    };
     if let Some(proxy) = connection_start.proxy {
         info.apply_proxy_info(proxy);
     }
@@ -445,6 +413,17 @@ where
             h1::serve_connection(reader, buffer, writer, connection_ctx, shutdown).await
         }
     }
+}
+
+async fn write_invalid_h2_preface_goaway<W>(writer: &mut W) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut frame = bytes::BytesMut::with_capacity(frame::GOAWAY_FRAME_PREFIX_LEN);
+    frame::append_goaway(&mut frame, None, ErrorCode::PROTOCOL_ERROR, b"");
+    writer.write_all(frame.as_ref()).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn shutdown_future(trigger: Py<PyAny>, locals: TaskLocals) -> ShutdownKind {

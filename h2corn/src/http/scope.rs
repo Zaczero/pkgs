@@ -3,7 +3,6 @@ mod proxy;
 use std::borrow::Cow;
 
 use http::Method;
-use memchr::memchr;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple};
 use pyo3::{ffi, intern, prelude::*};
 
@@ -34,19 +33,23 @@ const HEX_NIBBLE_TABLE: [u8; 256] = {
 
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
-    let Some(first_escape) = memchr(b'%', bytes) else {
+    let mut first_escape = 0;
+    while first_escape < bytes.len() && bytes[first_escape] != b'%' {
+        first_escape += 1;
+    }
+    if first_escape == bytes.len() {
         return Cow::Borrowed(raw_path);
-    };
+    }
 
-    let mut out = Vec::with_capacity(bytes.len());
-    out.extend_from_slice(&bytes[..first_escape]);
+    let mut out = None::<Vec<u8>>;
     let mut index = first_escape;
-    let mut copied = first_escape;
+    let mut copied = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
             let high = HEX_NIBBLE_TABLE[usize::from(bytes[index + 1])];
             let low = HEX_NIBBLE_TABLE[usize::from(bytes[index + 2])];
             if high != INVALID_HEX && low != INVALID_HEX {
+                let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
                 out.extend_from_slice(&bytes[copied..index]);
                 out.push((high << 4) | low);
                 index += 3;
@@ -56,9 +59,12 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
         }
         index += 1;
     }
+    let Some(mut out) = out else {
+        return Cow::Borrowed(raw_path);
+    };
     out.extend_from_slice(&bytes[copied..]);
 
-    Cow::Owned(String::from_utf8(out).unwrap_or_else(|_| raw_path.to_owned()))
+    String::from_utf8(out).map_or_else(|_| Cow::Borrowed(raw_path), Cow::Owned)
 }
 
 pub(crate) fn build_http_scope<'py>(
@@ -142,10 +148,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     }))
 }
 
-fn http_scope_extensions<'py>(
-    py: Python<'py>,
-    accepts_trailers: bool,
-) -> PyResult<Bound<'py, PyDict>> {
+fn http_scope_extensions(py: Python<'_>, accepts_trailers: bool) -> PyResult<Bound<'_, PyDict>> {
     if accepts_trailers {
         py_cached_dict!(py, {
             "http.response.pathsend" => py_dict!(py, {}),
@@ -158,13 +161,13 @@ fn http_scope_extensions<'py>(
     }
 }
 
-fn websocket_scope_extensions<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+fn websocket_scope_extensions(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     py_cached_dict!(py, {
         "websocket.http.response" => py_dict!(py, {}),
     })
 }
 
-fn asgi_scope_dict<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     py_cached_dict!(py, {
         "version" => "3.0",
         "spec_version" => "2.5",
@@ -202,7 +205,7 @@ pub(crate) fn headers_to_python<'py>(
     }
 }
 
-fn scope_type_to_python<'py, const IS_HTTP: bool>(py: Python<'py>) -> Bound<'py, PyString> {
+fn scope_type_to_python<const IS_HTTP: bool>(py: Python<'_>) -> Bound<'_, PyString> {
     if IS_HTTP {
         intern!(py, "http").clone()
     } else {
@@ -297,7 +300,9 @@ fn method_to_python<'py>(py: Python<'py>, method: &Method) -> Bound<'py, PyStrin
 #[cfg(test)]
 mod tests {
     use std::{
+        borrow::Cow,
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        num::NonZeroU32,
         sync::Arc,
         time::Duration,
     };
@@ -307,16 +312,17 @@ mod tests {
     use pyo3::{PyResult, Python};
     use pyo3_async_runtimes::TaskLocals;
 
-    use super::build_http_scope;
+    use super::{build_http_scope, decode_path};
     use crate::config::{
-        Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerBind, ServerConfig,
+        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
         WebSocketConfig,
     };
+    use crate::frame::DEFAULT_MAX_FRAME_SIZE;
     use crate::hpack::BytesStr;
-    use crate::http::analysis::RequestHeaderAnalysis;
+    use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{HttpVersion, RequestHead, RequestTarget};
     use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
-    use crate::runtime::{ConnectionContext, RequestContext, SharedApp};
+    use crate::runtime::{ConnectionContext, RequestContext, SharedApp, ShutdownState};
 
     fn init_python() {
         Python::initialize();
@@ -324,10 +330,10 @@ mod tests {
 
     fn test_server_config() -> &'static ServerConfig {
         Box::leak(Box::new(ServerConfig {
-            bind: ServerBind::Tcp {
+            binds: Box::new([BindTarget::Tcp {
                 host: Box::from("127.0.0.1"),
                 port: 8000,
-            },
+            }]),
             access_log: false,
             root_path: Box::from(""),
             http1: Http1Config {
@@ -337,13 +343,19 @@ mod tests {
             http2: Http2Config {
                 max_concurrent_streams: 8,
                 max_header_list_size: None,
+                max_header_block_size: None,
+                max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
+                    .expect("default HTTP/2 frame size is non-zero"),
             },
             max_request_body_size: None,
             timeout_graceful_shutdown: Duration::from_secs(30),
             timeout_keep_alive: None,
-            timeout_read: None,
+            timeout_request_header: None,
+            timeout_request_body_idle: None,
             limit_concurrency: None,
+            limit_connections: None,
             max_requests: None,
+            runtime_threads: 2,
             websocket: WebSocketConfig::default(),
             proxy: ProxyConfig {
                 trust_headers: false,
@@ -364,10 +376,13 @@ mod tests {
         });
         let info = Arc::new(ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
+            Some(ServerAddr {
+                host: "127.0.0.1".into(),
+                port: Some(8000),
+            }),
             false,
         ));
-        let (_shutdown_tx, shutdown_rx) =
-            tokio::sync::watch::channel(crate::runtime::ShutdownState::Running);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(ShutdownState::Running);
         Ok(ConnectionContext::new(
             app,
             test_server_config(),
@@ -385,7 +400,7 @@ mod tests {
                 BytesStr::from_static("/"),
             ),
             headers: Vec::new(),
-            header_analysis: RequestHeaderAnalysis::default(),
+            header_meta: RequestHeaderMeta::default(),
         }
     }
 
@@ -456,5 +471,15 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn decode_path_keeps_borrowed_input_without_valid_percent_escapes() {
+        assert_eq!(decode_path("/demo%zz"), Cow::Borrowed("/demo%zz"));
+        assert_eq!(decode_path("/demo%"), Cow::Borrowed("/demo%"));
+        assert_eq!(
+            decode_path("/demo%2Fok"),
+            Cow::<'_, str>::Owned("/demo/ok".to_owned())
+        );
     }
 }

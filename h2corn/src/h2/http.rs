@@ -190,13 +190,12 @@ async fn handle_http_request(
         stream_id,
         response_log: ResponseLogState::default(),
     };
-    if task.request_body_rx.is_none() {
+    let Some(request_body_rx) = task.request_body_rx else {
         return run_no_body_http_request(task.ctx, task.admission, &mut transport).await;
-    }
+    };
     run_http_request(
         task.ctx,
-        task.request_body_rx
-            .map_or(HttpRequestBody::NoBody, HttpRequestBody::Stream),
+        HttpRequestBody::Stream(request_body_rx),
         task.admission,
         &mut transport,
         move || {
@@ -265,7 +264,7 @@ fn final_response_commands(
                 status,
                 headers,
                 end_stream: true,
-            })
+            });
         }
         FinalResponseBody::Bytes(body) => commands.push_back(WriterCommand::SendFinal {
             stream_id,
@@ -312,7 +311,7 @@ fn append_response_action(
                 status,
                 headers,
                 end_stream: false,
-            })
+            });
         }
         ResponseAction::Body(body) => commands.push_back(WriterCommand::SendData {
             stream_id,
@@ -329,7 +328,7 @@ fn append_response_action(
             end_stream: true,
         }),
         ResponseAction::FinishWithTrailers(headers) => {
-            commands.push_back(WriterCommand::SendTrailers { stream_id, headers })
+            commands.push_back(WriterCommand::SendTrailers { stream_id, headers });
         }
         ResponseAction::InternalError => commands.push_back(WriterCommand::SendHeaders {
             stream_id,

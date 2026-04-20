@@ -1,5 +1,7 @@
 use atoi_simd::parse_pos;
 use bytes::Bytes;
+use itoa::Buffer as ItoaBuffer;
+use memchr::memchr3;
 use std::{
     borrow::Cow,
     iter, str,
@@ -72,21 +74,40 @@ pub(crate) struct ConnectionHeaderTokens {
     pub http2_settings: bool,
 }
 
-pub(crate) fn first_csv_token(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    let end = find_byte(bytes, b',').unwrap_or(bytes.len());
-    value[..end].trim_ascii()
-}
-
 pub(crate) fn last_csv_token(value: &str) -> &str {
-    value.rsplit(',').next().map_or("", str::trim_ascii)
+    let bytes = value.as_bytes();
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut last_delimiter = None;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        let Some(offset) = memchr3(b'\\', b'"', b',', &bytes[index..]) else {
+            break;
+        };
+        let current = index + offset;
+        match bytes[current] {
+            b'\\' if in_quotes => escaped = true,
+            b'"' => in_quotes = !in_quotes,
+            b',' if !in_quotes => last_delimiter = Some(current),
+            _ => {}
+        }
+        index = current + 1;
+    }
+
+    last_delimiter.map_or(value.trim_ascii(), |index| value[index + 1..].trim_ascii())
 }
 
 pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     iter::from_fn(move || {
         let current = rest?;
-        if let Some(index) = find_byte(current, b',') {
+        if let Some(index) = current.iter().position(|&byte| byte == b',') {
             rest = Some(&current[index + 1..]);
             Some(&current[..index])
         } else {
@@ -195,7 +216,8 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
     }
 
     let mut seen = false;
-    let len_value = Bytes::from(len.to_string());
+    let mut len_buffer = ItoaBuffer::new();
+    let len_value = Bytes::copy_from_slice(len_buffer.format(len).as_bytes());
     headers.retain_mut(|(name, value)| {
         if name.as_bytes() != b"content-length" {
             return true;
@@ -337,12 +359,6 @@ pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     Some(needs_lowercase)
 }
 
-pub(crate) fn header_value_is_valid(value: &[u8]) -> bool {
-    value
-        .iter()
-        .all(|byte| *byte == b'\t' || (*byte >= 32 && *byte != 127))
-}
-
 pub(crate) fn response_header_name_is_valid(name: &[u8]) -> bool {
     !name.is_empty()
         && name.iter().all(|byte| {
@@ -426,6 +442,9 @@ pub(crate) fn normalize_scheme(scheme: &str) -> Cow<'_, str> {
 pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
     if let Some(value) = value.strip_prefix('[') {
         let (host, rest) = value.split_once(']')?;
+        if host.is_empty() {
+            return None;
+        }
         if rest.is_empty() {
             return Some((host, None));
         }
@@ -437,29 +456,31 @@ pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
 
     if let Some((host, port)) = value.rsplit_once(':')
         && !host.contains(':')
-        && let Ok(port) = parse_pos::<u16, false>(port.as_bytes())
     {
-        return Some((host, Some(port)));
+        if host.is_empty() {
+            return None;
+        }
+        return parse_pos::<u16, false>(port.as_bytes())
+            .ok()
+            .map(|port| (host, Some(port)));
     }
 
-    Some((value, None))
+    (!value.is_empty()).then_some((value, None))
 }
 
 fn normalize_forwarded_value(value: &str) -> &str {
     value.trim_ascii().trim_matches('"')
 }
 
-fn find_byte(value: &[u8], needle: u8) -> Option<usize> {
-    value.iter().position(|&byte| byte == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
 
+    use crate::header_value::header_value_is_valid;
+
     use super::{
         ResponseContentLength, civil_from_days, format_http_date, inspect_response_headers,
-        parse_content_length_header,
+        last_csv_token, parse_content_length_header, parse_host_port,
     };
     use crate::http::types::ResponseHeaders;
 
@@ -474,6 +495,54 @@ mod tests {
         assert_eq!(parse_content_length_header(b""), None);
         assert_eq!(parse_content_length_header(b"4x"), None);
         assert_eq!(parse_content_length_header(b"\xff"), None);
+    }
+
+    #[test]
+    fn header_value_validation_accepts_long_visible_ascii_and_rejects_controls() {
+        assert!(header_value_is_valid(
+            b"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/135.0 Safari/537.36"
+        ));
+        assert!(header_value_is_valid(
+            b"session=abc123; theme=light; csrftoken=def456; locale=en-US"
+        ));
+        assert!(header_value_is_valid(b"\tallowed-tab"));
+        assert!(!header_value_is_valid(b"abc\x7fxyz"));
+        assert!(!header_value_is_valid(b"line\nbreak"));
+    }
+
+    #[test]
+    fn last_csv_token_ignores_commas_inside_quotes() {
+        assert_eq!(last_csv_token("a, b"), "b");
+        assert_eq!(
+            last_csv_token("for=1.1.1.1;host=\"a,b\", for=2.2.2.2"),
+            "for=2.2.2.2"
+        );
+        assert_eq!(
+            last_csv_token("host=\"a,\\\"b\\\"\", proto=https"),
+            "proto=https"
+        );
+    }
+
+    #[test]
+    fn parse_host_port_rejects_empty_or_malformed_hosts() {
+        assert_eq!(parse_host_port(":443"), None);
+        assert_eq!(parse_host_port("example:"), None);
+        assert_eq!(parse_host_port("example:abc"), None);
+        assert_eq!(parse_host_port("[]:443"), None);
+    }
+
+    #[test]
+    fn parse_host_port_keeps_valid_host_forms() {
+        assert_eq!(parse_host_port("example.com"), Some(("example.com", None)));
+        assert_eq!(
+            parse_host_port("example.com:443"),
+            Some(("example.com", Some(443)))
+        );
+        assert_eq!(
+            parse_host_port("[2001:db8::1]:443"),
+            Some(("2001:db8::1", Some(443)))
+        );
+        assert_eq!(parse_host_port("2001:db8::1"), Some(("2001:db8::1", None)));
     }
 
     #[test]

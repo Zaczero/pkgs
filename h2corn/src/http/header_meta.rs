@@ -8,28 +8,6 @@ use crate::websocket::{
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum RequestBodyFraming {
-    #[default]
-    None,
-    ContentLength,
-    Chunked,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum HostHeaderSource {
-    #[default]
-    None,
-    Header,
-    Synthesized,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct HostHeaderAnalysis {
-    pub(crate) index: Option<usize>,
-    pub(crate) source: HostHeaderSource,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProxyHeaderSlots {
     pub(crate) forwarded: Option<usize>,
     pub(crate) x_forwarded_for: Option<usize>,
@@ -66,29 +44,34 @@ impl ProxyHeaderSlots {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct WebSocketRequestAnalysis {
+pub(crate) struct WebSocketHandshakeMeta {
     pub(crate) key: Option<[u8; WEBSOCKET_KEY_LEN]>,
-    pub(crate) meta: WebSocketRequestMeta,
+    pub(crate) key_duplicate: bool,
+    pub(crate) request: WebSocketRequestMeta,
     pub(crate) version_supported: bool,
 }
 
-impl WebSocketRequestAnalysis {
+impl WebSocketHandshakeMeta {
     pub(crate) fn observe(&mut self, name: KnownRequestHeaderName, value: &Bytes) {
         let value_bytes = value.as_ref();
         match name {
             KnownRequestHeaderName::SecWebSocketVersion => {
                 self.version_supported |= value_bytes == WEBSOCKET_VERSION;
             }
-            KnownRequestHeaderName::SecWebSocketKey if self.key.is_none() => {
-                if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes) {
+            KnownRequestHeaderName::SecWebSocketKey => {
+                if self.key.is_some() {
+                    self.key_duplicate = true;
+                } else if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes)
+                    && websocket_key_is_syntactically_valid(value_bytes)
+                {
                     self.key = Some(key);
                 }
             }
             KnownRequestHeaderName::SecWebSocketProtocol => {
-                push_requested_subprotocols(value, &mut self.meta);
+                push_requested_subprotocols(value, &mut self.request);
             }
             KnownRequestHeaderName::SecWebSocketExtensions => {
-                self.meta.per_message_deflate |=
+                self.request.per_message_deflate |=
                     websocket_requested_permessage_deflate(value_bytes);
             }
             _ => {}
@@ -96,15 +79,32 @@ impl WebSocketRequestAnalysis {
     }
 }
 
+fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
+    value.len() == WEBSOCKET_KEY_LEN
+        && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
+        && value[..WEBSOCKET_KEY_LEN - 2]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct RequestHeaderAnalysis {
-    pub(crate) body_framing: RequestBodyFraming,
+pub(crate) struct RequestHeaderMeta {
     pub(crate) accepts_trailers: bool,
     pub(crate) content_length: Option<u64>,
-    pub(crate) connection_close: bool,
-    pub(crate) websocket: WebSocketRequestAnalysis,
+    pub(crate) websocket: WebSocketHandshakeMeta,
     pub(crate) proxy_headers: ProxyHeaderSlots,
-    pub(crate) host_header: HostHeaderAnalysis,
+}
+
+impl RequestHeaderMeta {
+    pub(crate) fn observe_known_header(
+        &mut self,
+        known_name: KnownRequestHeaderName,
+        value: &Bytes,
+        index: usize,
+    ) {
+        self.websocket.observe(known_name, value);
+        self.proxy_headers.observe(known_name, index);
+    }
 }
 
 fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
@@ -129,7 +129,7 @@ fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
 mod tests {
     use bytes::Bytes;
 
-    use super::{ProxyHeaderSlots, WebSocketRequestAnalysis};
+    use super::{ProxyHeaderSlots, WebSocketHandshakeMeta};
     use crate::hpack::BytesStr;
     use crate::http::types::KnownRequestHeaderName;
     use crate::websocket::RequestedSubprotocols;
@@ -148,33 +148,33 @@ mod tests {
     }
 
     #[test]
-    fn websocket_analysis_parses_version_key_subprotocols_and_extensions() {
-        let mut analysis = WebSocketRequestAnalysis::default();
+    fn websocket_handshake_meta_parses_version_key_subprotocols_and_extensions() {
+        let mut meta = WebSocketHandshakeMeta::default();
 
-        analysis.observe(
+        meta.observe(
             KnownRequestHeaderName::SecWebSocketVersion,
             &Bytes::from_static(b"13"),
         );
-        analysis.observe(
+        meta.observe(
             KnownRequestHeaderName::SecWebSocketKey,
             &Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="),
         );
-        analysis.observe(
+        meta.observe(
             KnownRequestHeaderName::SecWebSocketProtocol,
             &Bytes::from_static(b"chat, superchat"),
         );
-        analysis.observe(
+        meta.observe(
             KnownRequestHeaderName::SecWebSocketExtensions,
             &Bytes::from_static(b"permessage-deflate"),
         );
 
-        assert!(analysis.version_supported);
-        assert_eq!(analysis.key, Some(*b"dGhlIHNhbXBsZSBub25jZQ=="));
+        assert!(meta.version_supported);
+        assert_eq!(meta.key, Some(*b"dGhlIHNhbXBsZSBub25jZQ=="));
         let expected: RequestedSubprotocols = smallvec::smallvec![
             BytesStr::from_static("chat"),
             BytesStr::from_static("superchat"),
         ];
-        assert_eq!(analysis.meta.requested_subprotocols, expected);
-        assert!(analysis.meta.per_message_deflate);
+        assert_eq!(meta.request.requested_subprotocols, expected);
+        assert!(meta.request.per_message_deflate);
     }
 }

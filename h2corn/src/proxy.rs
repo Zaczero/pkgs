@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str;
 
 use atoi_simd::parse_pos;
-use memchr::memmem;
+use memchr::memchr;
 use tokio::io::AsyncRead;
 use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
@@ -12,6 +12,7 @@ use crate::error::{ConfigError, ErrorExt, H2CornError, ProxyError};
 use crate::frame::{CONNECTION_PREFACE, FrameReader};
 
 const PROXY_V1_MAX_LEN: usize = 107;
+const HTTP2_PREFACE_LEAD: &[u8] = b"PRI * HTTP/2.0";
 const PROXY_V2_SIG: [u8; 12] = [
     0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a,
 ];
@@ -127,13 +128,18 @@ pub struct ProxyInfo {
 
 pub struct ConnectionInfo {
     pub actual_peer: ConnectionPeer,
+    pub actual_server: Option<ServerAddr>,
     pub proxy_headers_trusted: bool,
     pub client: Option<ClientAddr>,
     pub server: Option<ServerAddr>,
 }
 
 impl ConnectionInfo {
-    pub fn from_peer(actual_peer: ConnectionPeer, proxy_headers_trusted: bool) -> Self {
+    pub fn from_peer(
+        actual_peer: ConnectionPeer,
+        actual_server: Option<ServerAddr>,
+        proxy_headers_trusted: bool,
+    ) -> Self {
         Self {
             client: match &actual_peer {
                 ConnectionPeer::Tcp(peer) => Some(ClientAddr {
@@ -143,6 +149,7 @@ impl ConnectionInfo {
                 ConnectionPeer::Unix => None,
             },
             actual_peer,
+            actual_server,
             proxy_headers_trusted,
             server: None,
         }
@@ -235,11 +242,14 @@ where
         return ProxyError::ExpectedProxyV2HeaderBeforeHttp2Preface.err();
     }
 
-    reader.read_at_least(16).await?;
-    let header = Ref::<_, ProxyV2Header>::from_bytes(&reader.buffered()[..16])
-        .map_err(|_| ProxyError::InvalidProxyV2Header)?;
+    if !reader.read_at_least(size_of::<ProxyV2Header>()).await? {
+        return ProxyError::ClosedWhileReadingProxyV2Header.err();
+    }
+    let header =
+        Ref::<_, ProxyV2Header>::from_bytes(&reader.buffered()[..size_of::<ProxyV2Header>()])
+            .map_err(|_| ProxyError::InvalidProxyV2Header)?;
     let payload_len = usize::from(header.payload_len.get());
-    let total_len = 16 + payload_len;
+    let total_len = size_of::<ProxyV2Header>() + payload_len;
     if !reader.read_at_least(total_len).await? {
         return ProxyError::ClosedWhileReadingProxyV2Header.err();
     }
@@ -262,16 +272,20 @@ where
     }
 
     loop {
-        if let Some(end) = memmem::find(reader.buffered(), b"\r\n") {
+        if let Some(end) = find_crlf(reader.buffered()) {
             let line_len = end + 2;
+            if line_len > PROXY_V1_MAX_LEN {
+                return ProxyError::ProxyV1HeaderTooLong.err();
+            }
             let proxy = parse_proxy_v1(&reader.buffered()[..line_len])?;
             reader.consume(line_len);
             return Ok(proxy);
         }
-        if reader.buffered().len() > PROXY_V1_MAX_LEN {
+        let read_cap = PROXY_V1_MAX_LEN.saturating_sub(reader.buffered().len());
+        if read_cap == 0 {
             return ProxyError::ProxyV1HeaderTooLong.err();
         }
-        if !reader.read_at_least(reader.buffered().len() + 1).await? {
+        if !reader.read_more_capped(read_cap).await? {
             return ProxyError::ClosedWhileReadingProxyV1Header.err();
         }
     }
@@ -322,6 +336,8 @@ where
     if &reader.buffered()[..need] == CONNECTION_PREFACE {
         read_h2_preface(reader).await?;
         Ok(DetectedProtocol::Http2)
+    } else if reader.buffered().starts_with(HTTP2_PREFACE_LEAD) {
+        ProxyError::InvalidHttp2Preface.err()
     } else {
         Ok(DetectedProtocol::Http1)
     }
@@ -408,6 +424,18 @@ fn parse_proxy_v1(line: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     }))
 }
 
+fn find_crlf(buffer: &[u8]) -> Option<usize> {
+    let mut start = 0;
+    while let Some(offset) = memchr(b'\n', &buffer[start..]) {
+        let index = start + offset;
+        if index > 0 && buffer[index - 1] == b'\r' {
+            return Some(index - 1);
+        }
+        start = index + 1;
+    }
+    None
+}
+
 fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     let header = Ref::<_, ProxyV2Header>::from_bytes(
         frame
@@ -445,7 +473,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     match family {
         0x0 => Ok(None),
         0x1 => {
-            let addrs = Ref::<_, ProxyV2Ipv4Addrs>::from_bytes(payload)
+            let (addrs, _) = Ref::<_, ProxyV2Ipv4Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv4Payload)?;
             let server = IpAddr::V4(Ipv4Addr::from(addrs.server_ip));
             Ok(Some(ProxyInfo {
@@ -466,7 +494,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
             }))
         }
         0x2 => {
-            let addrs = Ref::<_, ProxyV2Ipv6Addrs>::from_bytes(payload)
+            let (addrs, _) = Ref::<_, ProxyV2Ipv6Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv6Payload)?;
             let server = IpAddr::V6(Ipv6Addr::from(addrs.server_ip));
             Ok(Some(ProxyInfo {
@@ -537,6 +565,11 @@ const fn prefix_to_mask_v6(prefix: u8) -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    use crate::error::H2CornError;
+    use crate::frame::FrameReader;
+
     use super::*;
 
     #[test]
@@ -610,5 +643,27 @@ mod tests {
                 port: Some(80),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn read_proxy_v2_rejects_truncated_header_after_signature() {
+        let (client, mut server) = duplex(64);
+        server.write_all(&PROXY_V2_SIG).await.unwrap();
+        server.write_all(&[0x21, 0x11, 0x00]).await.unwrap();
+        drop(server);
+
+        let mut reader = FrameReader::new(client);
+        let err = read_proxy_v2(
+            &mut reader,
+            &ConnectionPeer::Tcp("127.0.0.1:8080".parse().unwrap()),
+            &[TrustedPeer::Any],
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            H2CornError::Proxy(ProxyError::ClosedWhileReadingProxyV2Header)
+        ));
     }
 }

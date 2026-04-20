@@ -1,5 +1,3 @@
-use std::hint::unreachable_unchecked;
-
 use bytes::{Bytes, BytesMut};
 
 use super::super::deflate::PerMessageDeflateMode;
@@ -108,11 +106,7 @@ fn parse_frame_len(
             }
             Ok(Some((10, payload_len)))
         }
-        _ => {
-            // SAFETY: `PAYLOAD_LEN_MASK` keeps only the low 7 bits, so this
-            // match can only see values in `0..=127`.
-            unsafe { unreachable_unchecked() }
-        }
+        _ => unreachable!("payload length marker is masked to 7 bits"),
     }
 }
 
@@ -197,7 +191,7 @@ pub(crate) fn encode_close_frame_into(
     Ok(())
 }
 
-fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
+pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
     match code {
         close_code::NORMAL..=1003 | close_code::INVALID_FRAME_PAYLOAD_DATA..=1014 | 3000..=4999 => {
             Ok(())

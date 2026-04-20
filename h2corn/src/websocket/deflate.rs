@@ -3,11 +3,11 @@ use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, 
 use memchr::memchr;
 
 use crate::error::WebSocketProtocolError;
-use crate::http::header::split_commas_bytes;
 
 const PERMESSAGE_DEFLATE: &[u8] = b"permessage-deflate";
 const TAIL: &[u8; 4] = b"\x00\x00\xff\xff";
-const FLATE_GROWTH_SLACK: usize = 16;
+const FLATE_INITIAL_GROWTH_SLACK: usize = 16;
+const FLATE_MIN_GROWTH: usize = 256;
 
 pub(crate) const PERMESSAGE_DEFLATE_RESPONSE: &[u8] =
     b"permessage-deflate; server_no_context_takeover; client_no_context_takeover";
@@ -27,10 +27,10 @@ pub(crate) trait PerMessageDeflateMode {
         payload: &[u8],
     ) -> Result<Option<Bytes>, flate2::CompressError>;
 
-    fn decompress<const ENFORCE_MESSAGE_LIMIT: bool>(
+    fn decompress(
         inflater: &mut Self::Inflater,
         payload: &[u8],
-        max_message_size: usize,
+        max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError>;
 }
 
@@ -53,25 +53,29 @@ pub(crate) struct MessageInflater {
 }
 
 pub(crate) fn requested_by_client(value: &[u8]) -> bool {
-    split_commas_bytes(value).any(|extension| {
+    let mut rest = Some(value);
+    while let Some(current) = rest {
+        let (extension, next) = if let Some(index) = memchr(b',', current) {
+            (&current[..index], Some(&current[index + 1..]))
+        } else {
+            (current, None)
+        };
         let extension = extension.trim_ascii();
         let end = memchr(b';', extension).unwrap_or(extension.len());
-        extension[..end]
+        if extension[..end]
             .trim_ascii()
             .eq_ignore_ascii_case(PERMESSAGE_DEFLATE)
-    })
+        {
+            return true;
+        }
+        rest = next;
+    }
+    false
 }
 
-fn decompressed_capacity<const ENFORCE_MESSAGE_LIMIT: bool>(
-    payload_len: usize,
-    max_message_size: usize,
-) -> usize {
+fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
     let estimated = payload_len.saturating_mul(4).max(64);
-    if ENFORCE_MESSAGE_LIMIT {
-        estimated.min(max_message_size)
-    } else {
-        estimated
-    }
+    max_message_size.map_or(estimated, |limit| estimated.min(limit))
 }
 
 impl MessageDeflater {
@@ -92,7 +96,7 @@ impl MessageDeflater {
 
         self.compressor.reset();
         self.out.clear();
-        self.out.reserve(payload.len() + FLATE_GROWTH_SLACK);
+        self.out.reserve(payload.len() + FLATE_INITIAL_GROWTH_SLACK);
 
         loop {
             let before = self.compressor.total_out();
@@ -110,7 +114,7 @@ impl MessageDeflater {
             if self.compressor.total_in() as usize == payload.len() && status != Status::BufError {
                 break;
             }
-            self.out.reserve(FLATE_GROWTH_SLACK);
+            self.out.reserve(self.out.len().max(FLATE_MIN_GROWTH));
         }
 
         if self.out.ends_with(TAIL) {
@@ -137,18 +141,15 @@ impl MessageInflater {
         }
     }
 
-    pub(crate) fn decompress<const ENFORCE_MESSAGE_LIMIT: bool>(
+    pub(crate) fn decompress(
         &mut self,
         payload: &[u8],
-        max_message_size: usize,
+        max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
         self.decoder.reset(false);
         self.out.clear();
         self.out
-            .reserve(decompressed_capacity::<ENFORCE_MESSAGE_LIMIT>(
-                payload.len(),
-                max_message_size,
-            ));
+            .reserve(decompressed_capacity(payload.len(), max_message_size));
 
         let mut input = payload;
         let mut flushing_tail = false;
@@ -174,7 +175,7 @@ impl MessageInflater {
             unsafe {
                 self.out.set_len(self.out.len() + written);
             }
-            if ENFORCE_MESSAGE_LIMIT && self.out.len() > max_message_size {
+            if max_message_size.is_some_and(|limit| self.out.len() > limit) {
                 return Err(WebSocketProtocolError::MessageTooLarge);
             }
             let consumed = (self.decoder.total_in() - consumed_before) as usize;
@@ -189,7 +190,7 @@ impl MessageInflater {
                 input = TAIL;
                 flushing_tail = true;
             }
-            self.out.reserve(FLATE_GROWTH_SLACK);
+            self.out.reserve(self.out.len().max(FLATE_MIN_GROWTH));
         }
     }
 }
@@ -221,12 +222,12 @@ impl PerMessageDeflateMode for PerMessageDeflateEnabled {
         deflater.compress(payload)
     }
 
-    fn decompress<const ENFORCE_MESSAGE_LIMIT: bool>(
+    fn decompress(
         inflater: &mut Self::Inflater,
         payload: &[u8],
-        max_message_size: usize,
+        max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
-        inflater.decompress::<ENFORCE_MESSAGE_LIMIT>(payload, max_message_size)
+        inflater.decompress(payload, max_message_size)
     }
 }
 
@@ -244,11 +245,28 @@ impl PerMessageDeflateMode for PerMessageDeflateDisabled {
         Ok(None)
     }
 
-    fn decompress<const ENFORCE_MESSAGE_LIMIT: bool>(
+    fn decompress(
         _: &mut Self::Inflater,
         _: &[u8],
-        _: usize,
+        _: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
         Err(WebSocketProtocolError::ExtensionsNotNegotiated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_by_client;
+
+    #[test]
+    fn requested_by_client_matches_permessage_deflate_in_any_position() {
+        assert!(requested_by_client(b"permessage-deflate"));
+        assert!(requested_by_client(
+            b"foo, permessage-deflate; client_max_window_bits"
+        ));
+        assert!(requested_by_client(
+            b"x-webkit-deflate-frame, permessage-deflate; server_no_context_takeover"
+        ));
+        assert!(!requested_by_client(b"foo, bar"));
     }
 }

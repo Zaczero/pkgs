@@ -45,19 +45,11 @@ impl RequestBodyState {
         if let Some(access_log_bytes) = &self.access_log_bytes {
             access_log_bytes.fetch_add(chunk_len, Ordering::Relaxed);
         }
-        if self
-            .max_body_size
-            .is_some_and(|max_body_size| self.received_length > max_body_size)
-        {
-            return RequestBodyProgress::SizeLimitExceeded;
-        }
-        if self
-            .expected_length
-            .is_some_and(|expected_length| self.received_length > expected_length)
-        {
-            return RequestBodyProgress::ContentLengthExceeded;
-        }
-        RequestBodyProgress::Continue
+        self.classify_received_length(self.received_length)
+    }
+
+    pub(crate) fn preview_chunk(&self, chunk_len: u64) -> RequestBodyProgress {
+        self.classify_received_length(self.received_length.saturating_add(chunk_len))
     }
 
     pub(crate) fn finish(&self) -> RequestBodyFinish {
@@ -77,6 +69,22 @@ impl RequestBodyState {
 
     pub(crate) fn should_deliver(&self) -> bool {
         self.deliver_to_app
+    }
+
+    fn classify_received_length(&self, received_length: u64) -> RequestBodyProgress {
+        if self
+            .max_body_size
+            .is_some_and(|max_body_size| received_length > max_body_size)
+        {
+            return RequestBodyProgress::SizeLimitExceeded;
+        }
+        if self
+            .expected_length
+            .is_some_and(|expected_length| received_length > expected_length)
+        {
+            return RequestBodyProgress::ContentLengthExceeded;
+        }
+        RequestBodyProgress::Continue
     }
 }
 
@@ -125,5 +133,19 @@ mod tests {
         assert_eq!(state.record_chunk(4), RequestBodyProgress::Continue);
         assert_eq!(state.finish(), RequestBodyFinish::Complete);
         assert_eq!(access_log_bytes.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn preview_chunk_checks_limits_without_mutating_state() {
+        let mut state = RequestBodyState::new(Some(5), None, Some(6));
+
+        assert_eq!(state.record_chunk(3), RequestBodyProgress::Continue);
+        assert_eq!(state.preview_chunk(2), RequestBodyProgress::Continue);
+        assert_eq!(
+            state.preview_chunk(3),
+            RequestBodyProgress::ContentLengthExceeded
+        );
+        assert_eq!(state.record_chunk(2), RequestBodyProgress::Continue);
+        assert_eq!(state.finish(), RequestBodyFinish::Complete);
     }
 }

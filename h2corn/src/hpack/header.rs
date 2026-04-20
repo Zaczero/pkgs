@@ -1,11 +1,10 @@
-use std::fmt;
-use std::ops;
-use std::str;
+use std::{fmt, ops, str};
 
 use bytes::Bytes;
 use http::{Method, StatusCode};
 
 use crate::ext::Protocol;
+use crate::header_value::header_value_is_valid;
 
 use super::{DecoderError, NeedMore};
 
@@ -229,10 +228,4 @@ fn header_name_is_valid_h2(name: &[u8]) -> bool {
         && name
             .iter()
             .all(|byte| HEADER_NAME_VALID_H2[usize::from(*byte)] != 0)
-}
-
-fn header_value_is_valid(value: &[u8]) -> bool {
-    value
-        .iter()
-        .all(|byte| *byte == b'\t' || (*byte >= 32 && *byte != 127))
 }

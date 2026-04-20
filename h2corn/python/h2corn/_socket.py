@@ -8,17 +8,26 @@ import stat
 import sys
 from contextlib import contextmanager
 
+from ._config import (
+    Config,
+    FdBindSpec,
+    TcpBindSpec,
+    UnixBindSpec,
+    _format_tcp_bind,
+    _parse_bind_spec,
+    _sync_bind_convenience_fields,
+)
+
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
     from typing import Any
-
-    from ._config import Config
 
 
 @contextmanager
-def _swap_signal_handlers(handlers: Mapping[int, Any]) -> Iterator[None]:
+def _swap_signal_handlers(handlers: Mapping[int, Any]):
     previous = {sig: signal.signal(sig, handler) for sig, handler in handlers.items()}
     try:
         yield
@@ -27,15 +36,18 @@ def _swap_signal_handlers(handlers: Mapping[int, Any]) -> Iterator[None]:
             signal.signal(sig, handler)
 
 
-@contextmanager
-def _signal_wakeup_pipe() -> Iterator[int]:
-    if sys.platform != 'darwin':
-        read_fd, write_fd = os.pipe2(os.O_NONBLOCK)
-    else:
-        read_fd, write_fd = os.pipe()
-        for fd in (read_fd, write_fd):
-            os.set_blocking(fd, False)
+def _nonblocking_pipe():
+    if hasattr(os, 'pipe2'):
+        return os.pipe2(os.O_NONBLOCK)
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    os.set_blocking(write_fd, False)
+    return read_fd, write_fd
 
+
+@contextmanager
+def _signal_wakeup_pipe():
+    read_fd, write_fd = _nonblocking_pipe()
     previous = signal.set_wakeup_fd(write_fd, warn_on_full_buffer=False)
     try:
         yield read_fd
@@ -45,7 +57,7 @@ def _signal_wakeup_pipe() -> Iterator[int]:
         os.close(write_fd)
 
 
-def _drain_fd(fd: int) -> None:
+def _drain_fd(fd: int):
     try:
         while True:
             if not os.read(fd, io.DEFAULT_BUFFER_SIZE):
@@ -54,27 +66,39 @@ def _drain_fd(fd: int) -> None:
         return
 
 
-def _build_unix_socket(config: Config) -> socket.socket:
-    uds_path = config.uds
-    if uds_path is None:
-        raise ValueError('unix socket configuration is required')
+def _cleanup_bound_resources(
+    sockets: Sequence[socket.socket],
+    owned_socket_paths: Sequence[Path],
+):
+    for sock in sockets:
+        sock.close()
+    for path in owned_socket_paths:
+        try:
+            if stat.S_ISSOCK(os.lstat(path).st_mode):
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def _build_unix_socket(path: str | os.PathLike[str], config: Config):
+    uds_path = os.fspath(path)
     if sys.platform == 'win32':
         raise OSError('Unix sockets are not supported on Windows')
 
     try:
-        existing = uds_path.lstat()
+        existing = os.lstat(uds_path)
     except FileNotFoundError:
         existing = None
     if existing is not None:
         if not stat.S_ISSOCK(existing.st_mode):
             raise OSError(f'unix socket path exists and is not a socket: {uds_path}')
-        uds_path.unlink()
+        os.unlink(uds_path)
 
     sock = socket.socket(
         socket.AF_UNIX,
         socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
     )
-    sock.bind(os.fspath(uds_path))
+    sock.bind(uds_path)
     sock.listen(config.backlog)
     if config.uds_permissions is not None:
         os.chmod(uds_path, config.uds_permissions)
@@ -83,24 +107,13 @@ def _build_unix_socket(config: Config) -> socket.socket:
     return sock
 
 
-def _adopt_socket(config: Config) -> socket.socket:
-    if config.fd is None:
-        raise ValueError('inherited fd configuration is required')
-
-    sock = socket.socket(fileno=config.fd)
-    object.__setattr__(config, '_fd_is_unix', sock.family == socket.AF_UNIX)
+def _adopt_socket(fd: int):
+    sock = socket.socket(fileno=fd)
     sock.setblocking(False)
     return sock
 
 
-def _new_tcp_socket() -> socket.socket:
-    return socket.socket(
-        socket.AF_INET,
-        socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
-    )
-
-
-def _prepare_tcp_listener(sock: socket.socket) -> None:
+def _prepare_tcp_listener(sock: socket.socket):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_TCP, socket.TCP_FASTOPEN, 512)
     if sys.platform == 'linux':
@@ -110,40 +123,83 @@ def _prepare_tcp_listener(sock: socket.socket) -> None:
             pass
 
 
-def _finish_bound_socket(sock: socket.socket, backlog: int) -> socket.socket:
+def _finish_bound_socket(sock: socket.socket, backlog: int):
     sock.listen(backlog)
     if sys.platform != 'linux':
         sock.setblocking(False)
     return sock
 
 
-def _build_tcp_socket(config: Config) -> socket.socket:
-    sock = _new_tcp_socket()
-    _prepare_tcp_listener(sock)
-    sock.bind((config.host, config.port))
-    if config.port == 0:
-        object.__setattr__(config, 'port', sock.getsockname()[1])
-    return _finish_bound_socket(sock, config.backlog)
+def _build_tcp_socket(host: str, port: int, config: Config):
+    last_error = None
+    for family, _, _, _, sockaddr in socket.getaddrinfo(
+        host,
+        port,
+        type=socket.SOCK_STREAM,
+        flags=socket.AI_PASSIVE,
+    ):
+        sock = socket.socket(
+            family,
+            socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
+        )
+        try:
+            if family == socket.AF_INET6:
+                try:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                except OSError:
+                    pass
+            _prepare_tcp_listener(sock)
+            sock.bind(sockaddr)
+            return _finish_bound_socket(sock, config.backlog)
+        except OSError as exc:
+            sock.close()
+            last_error = exc
+    if last_error is None:
+        raise OSError(f'could not resolve bind address: {host!r}')
+    raise last_error
 
 
-def _build_socket(config: Config) -> socket.socket:
-    if config.fd is not None:
-        return _adopt_socket(config)
-    if config.uds is not None:
-        return _build_unix_socket(config)
-    return _build_tcp_socket(config)
+def _build_sockets(config: Config):
+    sockets: list[socket.socket] = []
+    resolved_binds: list[str] = []
+    owned_socket_paths: list[Path] = []
+    bind_fd_is_unix: list[bool] = []
+    shared_tcp_port: int | None = None
+    try:
+        for bind in config.bind:
+            match _parse_bind_spec(bind):
+                case TcpBindSpec(host, port):
+                    sock = _build_tcp_socket(host, shared_tcp_port or port, config)
+                    bound_port = sock.getsockname()[1]
+                    if port == 0 and shared_tcp_port is None:
+                        shared_tcp_port = bound_port
+                    sockets.append(sock)
+                    resolved_binds.append(_format_tcp_bind(host, bound_port))
+                    bind_fd_is_unix.append(False)
+                case UnixBindSpec(path):
+                    sockets.append(_build_unix_socket(path, config))
+                    resolved_binds.append(f'unix:{path}')
+                    owned_socket_paths.append(path)
+                    bind_fd_is_unix.append(False)
+                case FdBindSpec(fd):
+                    sock = _adopt_socket(fd)
+                    sockets.append(sock)
+                    resolved_binds.append(f'fd://{fd}')
+                    bind_fd_is_unix.append(sock.family == socket.AF_UNIX)
+    except Exception:
+        _cleanup_bound_resources(sockets, owned_socket_paths)
+        raise
+    object.__setattr__(config, 'bind', tuple(resolved_binds))
+    object.__setattr__(config, '_owned_socket_paths', tuple(owned_socket_paths))
+    object.__setattr__(config, '_bind_fd_is_unix', tuple(bind_fd_is_unix))
+    _sync_bind_convenience_fields(config)
+    return tuple(sockets)
 
 
 @contextmanager
-def _bound_socket(config: Config) -> Iterator[socket.socket]:
-    sock = _build_socket(config)
+def _bound_sockets(config: Config):
+    sockets = _build_sockets(config)
     try:
-        yield sock
+        yield sockets
     finally:
-        sock.close()
-        if config.fd is None and config.uds is not None:
-            try:
-                if stat.S_ISSOCK(config.uds.lstat().st_mode):
-                    config.uds.unlink()
-            except FileNotFoundError:
-                pass
+        _cleanup_bound_resources(sockets, config._owned_socket_paths)

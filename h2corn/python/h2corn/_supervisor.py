@@ -12,8 +12,9 @@ from collections import deque
 from dataclasses import replace
 
 from ._socket import (
-    _bound_socket,
+    _bound_sockets,
     _drain_fd,
+    _nonblocking_pipe,
     _signal_wakeup_pipe,
     _swap_signal_handlers,
 )
@@ -22,6 +23,7 @@ TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from collections.abc import Collection
+    from multiprocessing.process import BaseProcess
 
     from ._config import Config
     from ._types import ASGIApp
@@ -34,16 +36,16 @@ _CONTROL_RETIRE = b'R'
 _RESTART_SIGNAL = getattr(signal, 'SIGUSR1', signal.SIGTERM)
 
 
-def _log_line(message: str) -> None:
+def _log_line(message: str):
     sys.stderr.write(f'{message}\n')
     sys.stderr.flush()
 
 
 def _terminate_workers(
-    workers: Collection[multiprocessing.Process],
+    workers: Collection[BaseProcess],
     *,
     graceful_timeout: float,
-) -> None:
+):
     deadline = time.monotonic() + graceful_timeout
     for worker in workers:
         if worker.is_alive():
@@ -57,8 +59,8 @@ def _terminate_workers(
             worker.join()
 
 
-def _restart_worker(worker: multiprocessing.Process) -> None:
-    if not worker.is_alive():
+def _restart_worker(worker: BaseProcess):
+    if not worker.is_alive() or worker.pid is None:
         return
     try:
         os.kill(worker.pid, _RESTART_SIGNAL)
@@ -66,40 +68,32 @@ def _restart_worker(worker: multiprocessing.Process) -> None:
         worker.terminate()
 
 
-def _worker_entry(app: ASGIApp, config: Config, fd: int) -> None:
+def _clone_config(config: Config, /, **overrides):
+    cloned = replace(config, host=None, port=None, **overrides)
+    object.__setattr__(cloned, '_bind_fd_is_unix', config._bind_fd_is_unix)
+    return cloned
+
+
+def _worker_entry(app: ASGIApp, config: Config, fds: tuple[int, ...]):
     from ._server import Server
 
-    server = Server(app, replace(config, workers=1))
+    server = Server(app, _clone_config(config, workers=1))
+    control_write_fd = getattr(config, '_control_write_fd', None)
 
-    class _WorkerControl:
-        def __init__(self, write_fd: int | None) -> None:
-            self._write_fd = write_fd
+    def _send_control(message: bytes):
+        if control_write_fd is None:
+            return
+        try:
+            os.write(control_write_fd, message)
+        except OSError:
+            pass
 
-        def _send(self, message: bytes) -> None:
-            if self._write_fd is None:
-                return
-            try:
-                os.write(self._write_fd, message)
-            except OSError:
-                pass
-
-        def heartbeat(self) -> None:
-            self._send(_CONTROL_HEARTBEAT)
-
-        def retire(self) -> None:
-            self._send(_CONTROL_RETIRE)
-
-        def close(self) -> None:
-            if self._write_fd is not None:
-                os.close(self._write_fd)
-                self._write_fd = None
-
-    async def _heartbeat_loop(control: _WorkerControl, interval: float) -> None:
+    async def _heartbeat_loop(interval: float):
         while True:
-            control.heartbeat()
+            _send_control(_CONTROL_HEARTBEAT)
             await asyncio.sleep(interval)
 
-    async def _serve_app(app: ASGIApp) -> None:
+    async def _serve_app(app: ASGIApp):
         loop = asyncio.get_running_loop()
         try:
             loop.add_signal_handler(signal.SIGINT, server.shutdown)
@@ -108,22 +102,25 @@ def _worker_entry(app: ASGIApp, config: Config, fd: int) -> None:
                 loop.add_signal_handler(_RESTART_SIGNAL, server.restart)
         except NotImplementedError:
             pass
-        control = _WorkerControl(getattr(config, '_control_write_fd', None))
         heartbeat_task = None
         if config.timeout_worker_healthcheck > 0:
-            interval = min(config.timeout_worker_healthcheck / 2, 1.0)
-            heartbeat_task = asyncio.create_task(_heartbeat_loop(control, interval))
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_loop(config.timeout_worker_healthcheck / 3)
+            )
         try:
-            await server._serve_fd(
+            await server._serve_fds(
                 app,
-                fd,
-                control.retire if config.max_requests > 0 else None,
+                list(fds),
+                (lambda: _send_control(_CONTROL_RETIRE))
+                if config.max_requests > 0
+                else None,
             )
         finally:
             from ._lifespan import _cancel_task
 
             await _cancel_task(heartbeat_task)
-            control.close()
+            if control_write_fd is not None:
+                os.close(control_write_fd)
 
     from ._lifespan import _serve_with_lifespan
 
@@ -137,19 +134,20 @@ def _worker_entry(app: ASGIApp, config: Config, fd: int) -> None:
     )
 
 
-def _serve_supervisor(app: ASGIApp, config: Config) -> None:
+def _serve_supervisor(app: ASGIApp, config: Config):
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 
-    with _bound_socket(config) as sock:
+    with _bound_sockets(config) as socks:
         from ._lib import emit_banner
 
         emit_banner(config)
-        fd = sock.fileno()
-        workers: dict[int, multiprocessing.Process] = {}
+        fds = tuple(sock.fileno() for sock in socks)
+        workers: dict[int, BaseProcess] = {}
         worker_controls: dict[int, int] = {}
         control_workers: dict[int, int] = {}
         heartbeat_deadlines: dict[int, float] = {}
+        any_worker_became_healthy = False
         target_workers = config.workers
         stopping = False
         reload_requested = False
@@ -164,46 +162,41 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
         reload_queue: deque[int] = deque()
         selector = selectors.DefaultSelector()
 
-        def _active_workers() -> int:
+        def _active_workers():
             return len(workers) - len(expected_exits)
 
-        def _spawn_worker() -> None:
+        def _spawn_worker():
             control_read_fd = None
             if config.max_requests > 0 or config.timeout_worker_healthcheck > 0:
-                if hasattr(os, 'pipe2'):
-                    control_read_fd, control_write_fd = os.pipe2(os.O_NONBLOCK)
-                else:
-                    control_read_fd, control_write_fd = os.pipe()
-                    os.set_blocking(control_read_fd, False)
-                    os.set_blocking(control_write_fd, False)
+                control_read_fd, control_write_fd = _nonblocking_pipe()
             else:
                 control_write_fd = None
             worker_max_requests = config.max_requests
             if worker_max_requests > 0 and config.max_requests_jitter > 0:
                 worker_max_requests += random.randint(0, config.max_requests_jitter)
-            worker_config = replace(
-                config,
-                max_requests=worker_max_requests,
-            )
+            worker_config = _clone_config(config, max_requests=worker_max_requests)
             if control_write_fd is not None:
                 object.__setattr__(worker_config, '_control_write_fd', control_write_fd)
-            worker = ctx.Process(target=_worker_entry, args=(app, worker_config, fd))
+            worker = ctx.Process(target=_worker_entry, args=(app, worker_config, fds))
             worker.start()
+            assert worker.pid is not None
             if control_write_fd is not None:
                 os.close(control_write_fd)
+            sentinel = worker.sentinel
+            assert isinstance(sentinel, int)
             _log_line(f'Started worker [{worker.pid}]')
-            workers[worker.sentinel] = worker
-            selector.register(worker.sentinel, selectors.EVENT_READ)
+            workers[sentinel] = worker
+            selector.register(sentinel, selectors.EVENT_READ)
             if control_read_fd is not None:
-                worker_controls[worker.sentinel] = control_read_fd
-                control_workers[control_read_fd] = worker.sentinel
+                worker_controls[sentinel] = control_read_fd
+                control_workers[control_read_fd] = sentinel
                 selector.register(control_read_fd, selectors.EVENT_READ)
                 if config.timeout_worker_healthcheck > 0:
-                    heartbeat_deadlines[worker.sentinel] = (
+                    heartbeat_deadlines[sentinel] = (
                         time.monotonic() + config.timeout_worker_healthcheck
                     )
 
-        def _record_worker_failure(exitcode: int | None) -> None:
+        def _record_worker_failure(exitcode: int | None):
             nonlocal fatal_error, stopping, failure_backoff, respawn_at
             if stopping or exitcode in {None, 0, -signal.SIGINT, -signal.SIGTERM}:
                 return
@@ -213,11 +206,14 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 failure_times.popleft()
             respawn_at = now + failure_backoff
             failure_backoff = min(failure_backoff * 2, _WORKER_FAILURE_BACKOFF_MAX)
-            if len(failure_times) >= max(3, target_workers * 3):
+            if (
+                len(failure_times) >= max(3, target_workers * 3)
+                and not any_worker_became_healthy
+            ):
                 fatal_error = RuntimeError('worker crash loop detected')
                 stopping = True
 
-        def _retire_worker(worker: multiprocessing.Process, *, expected: bool) -> None:
+        def _retire_worker(worker: BaseProcess, *, expected: bool):
             sentinel = worker.sentinel
             expected_exits.discard(sentinel)
             reload_scheduled.discard(sentinel)
@@ -226,8 +222,8 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 selector.unregister(sentinel)
             except KeyError:
                 pass
-            if sentinel in worker_controls:
-                control_fd = worker_controls.pop(sentinel)
+            control_fd = worker_controls.pop(sentinel, None)
+            if control_fd is not None:
                 control_workers.pop(control_fd, None)
                 try:
                     selector.unregister(control_fd)
@@ -243,13 +239,14 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 _record_worker_failure(worker.exitcode)
             worker.close()
 
-        def _schedule_worker_retire(sentinel: int) -> None:
+        def _schedule_worker_retire(sentinel: int):
             if sentinel in expected_exits or sentinel in reload_scheduled:
                 return
             reload_scheduled.add(sentinel)
             reload_queue.append(sentinel)
 
-        def _drain_control_messages(control_fd: int) -> None:
+        def _drain_control_messages(control_fd: int):
+            nonlocal any_worker_became_healthy
             sentinel = control_workers.get(control_fd)
             if sentinel is None:
                 return
@@ -260,16 +257,18 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                     return
                 if not data:
                     return
-                for byte in data:
-                    if byte == _CONTROL_HEARTBEAT[0]:
-                        if config.timeout_worker_healthcheck > 0:
-                            heartbeat_deadlines[sentinel] = (
-                                time.monotonic() + config.timeout_worker_healthcheck
-                            )
-                    elif byte == _CONTROL_RETIRE[0]:
-                        _schedule_worker_retire(sentinel)
+                if (
+                    config.timeout_worker_healthcheck > 0
+                    and _CONTROL_HEARTBEAT[0] in data
+                ):
+                    heartbeat_deadlines[sentinel] = (
+                        time.monotonic() + config.timeout_worker_healthcheck
+                    )
+                    any_worker_became_healthy = True
+                if _CONTROL_RETIRE[0] in data:
+                    _schedule_worker_retire(sentinel)
 
-        def _check_worker_healthchecks() -> None:
+        def _check_worker_healthchecks():
             if config.timeout_worker_healthcheck <= 0:
                 return
             now = time.monotonic()
@@ -288,7 +287,7 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 if worker.is_alive():
                     worker.terminate()
 
-        def _request_scale_down() -> None:
+        def _request_scale_down():
             nonlocal shrink_requested
             for sentinel in reversed(workers):
                 if sentinel in expected_exits:
@@ -301,7 +300,7 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 return
             shrink_requested = 0
 
-        def _request_reload_retire() -> bool:
+        def _request_reload_retire():
             while reload_queue:
                 sentinel = reload_queue.popleft()
                 reload_scheduled.discard(sentinel)
@@ -315,7 +314,7 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 return True
             return False
 
-        def _reconcile() -> None:
+        def _reconcile():
             nonlocal failure_backoff, reload_requested, shrink_requested, respawn_at
             if reload_requested:
                 reload_requested = False
@@ -342,41 +341,37 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
             while _active_workers() < target_workers:
                 _spawn_worker()
 
-        def _wait_timeout() -> float | None:
-            timeout_seconds = None
+        def _wait_timeout():
             if reload_queue and (
                 _active_workers() <= target_workers or not expected_exits
             ):
                 return 0.0
+            timeout_seconds = []
             if (
                 not stopping
                 and respawn_at is not None
                 and _active_workers() < target_workers
             ):
-                timeout_seconds = max(0.0, respawn_at - time.monotonic())
+                timeout_seconds.append(max(0.0, respawn_at - time.monotonic()))
             if heartbeat_deadlines:
-                heartbeat_timeout = max(
-                    0.0, min(heartbeat_deadlines.values()) - time.monotonic()
+                timeout_seconds.append(
+                    max(0.0, min(heartbeat_deadlines.values()) - time.monotonic())
                 )
-                if timeout_seconds is None:
-                    timeout_seconds = heartbeat_timeout
-                else:
-                    timeout_seconds = min(timeout_seconds, heartbeat_timeout)
-            return timeout_seconds
+            return min(timeout_seconds, default=None)
 
-        def _handle_stop(*_: object) -> None:
+        def _handle_stop(*_):
             nonlocal stopping
             stopping = True
 
-        def _handle_reload(*_: object) -> None:
+        def _handle_reload(*_):
             nonlocal reload_requested
             reload_requested = True
 
-        def _handle_scale_up(*_: object) -> None:
+        def _handle_scale_up(*_):
             nonlocal target_workers
             target_workers += 1
 
-        def _handle_scale_down(*_: object) -> None:
+        def _handle_scale_down(*_):
             nonlocal target_workers, shrink_requested
             if target_workers > 1:
                 target_workers -= 1
@@ -398,22 +393,24 @@ def _serve_supervisor(app: ASGIApp, config: Config) -> None:
                 while not stopping:
                     ready = selector.select(_wait_timeout())
                     for key, _ in ready:
-                        sentinel = key.fileobj
-                        if sentinel == wakeup_fd:
+                        fileobj = key.fileobj
+                        if not isinstance(fileobj, int):
+                            continue
+                        if fileobj == wakeup_fd:
                             _drain_fd(wakeup_fd)
                             continue
-                        if sentinel in control_workers:
-                            _drain_control_messages(sentinel)
+                        if fileobj in control_workers:
+                            _drain_control_messages(fileobj)
                             continue
-                        worker = workers.pop(sentinel, None)
+                        worker = workers.pop(fileobj, None)
                         if worker is None:
                             try:
-                                selector.unregister(sentinel)
+                                selector.unregister(fileobj)
                             except KeyError:
                                 pass
                             continue
                         worker.join()
-                        _retire_worker(worker, expected=sentinel in expected_exits)
+                        _retire_worker(worker, expected=fileobj in expected_exits)
                     _check_worker_healthchecks()
                     _reconcile()
             finally:

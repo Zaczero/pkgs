@@ -2,10 +2,10 @@ use std::borrow::Cow;
 
 use atoi_simd::parse_pos;
 
-use crate::config::{ServerBind, ServerConfig};
+use crate::config::{BindTarget, ServerConfig};
 use crate::http::header::{
-    first_csv_token, header_value_text, last_csv_token, normalize_scheme, parse_forwarded_value,
-    parse_host_port, parse_x_forwarded_for_value,
+    header_value_text, last_csv_token, normalize_scheme, parse_forwarded_value, parse_host_port,
+    parse_x_forwarded_for_value,
 };
 use crate::http::types::{RequestHead, RequestHeaders};
 use crate::proxy::{ClientAddr, ConnectionInfo, ServerAddr};
@@ -31,10 +31,15 @@ fn default_server<'a>(
     info: &'a ConnectionInfo,
 ) -> (&'a str, Option<u16>) {
     info.server.as_ref().map_or_else(
-        || match &config.bind {
-            ServerBind::Tcp { host, port } => (host.as_ref(), Some(*port)),
-            ServerBind::Unix { path } => (path.as_ref(), None),
-            ServerBind::Fd { .. } => ("", None),
+        || {
+            info.actual_server.as_ref().map_or_else(
+                || match config.binds.first() {
+                    Some(BindTarget::Tcp { host, port }) => (host.as_ref(), Some(*port)),
+                    Some(BindTarget::Unix { path }) => (path.as_ref(), None),
+                    Some(BindTarget::Fd { .. }) | None => ("", None),
+                },
+                |server| (server.host.as_ref(), server.port),
+            )
         },
         |server| (server.host.as_ref(), server.port),
     )
@@ -115,7 +120,7 @@ pub(crate) fn resolve_scope_view<'a>(
         }
         if let Some(port) = proxy_headers
             .x_forwarded_port
-            .map(first_csv_token)
+            .map(last_csv_token)
             .and_then(|value| parse_pos::<u16, false>(value.as_bytes()).ok())
         {
             view.server.1 = Some(port);
@@ -124,7 +129,7 @@ pub(crate) fn resolve_scope_view<'a>(
 
     if let Some(prefix) = proxy_headers
         .x_forwarded_prefix
-        .map(first_csv_token)
+        .map(last_csv_token)
         .filter(|value| !value.is_empty())
     {
         view.root_path = join_root_path(prefix, config.root_path.as_ref());
@@ -179,7 +184,7 @@ struct ProxyHeaderView<'a> {
 
 fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     let headers = &request.headers;
-    let slots = &request.header_analysis.proxy_headers;
+    let slots = &request.header_meta.proxy_headers;
 
     ProxyHeaderView {
         forwarded: proxy_header_value(headers, slots.forwarded),

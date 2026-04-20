@@ -2,16 +2,14 @@ use std::num::NonZeroUsize;
 
 use bytes::{Bytes, BytesMut};
 use http::Method;
+use tokio::time::Instant;
 
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::ext::Protocol;
 use crate::frame::{self, ErrorCode, RawFrame, StreamId};
 use crate::hpack::{BytesStr, Decoder, DecoderError, Header};
-use crate::http::analysis::{
-    HostHeaderAnalysis, HostHeaderSource, ProxyHeaderSlots, RequestBodyFraming,
-    RequestHeaderAnalysis, WebSocketRequestAnalysis,
-};
 use crate::http::header::{header_is_single_token, parse_content_length_header};
+use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::types::{
     HttpStatusCode, HttpVersion, KnownRequestHeaderName, RequestAuthority, RequestHead,
     RequestHeaderName, RequestHeaderValue, RequestHeaders, RequestTarget, status_code,
@@ -24,6 +22,7 @@ pub(super) struct PendingHeaders {
     pub stream_id: StreamId,
     pub end_stream: bool,
     pub block: BytesMut,
+    pub last_fragment_at: Instant,
 }
 
 pub(super) struct HeaderBlockFragment {
@@ -136,21 +135,18 @@ pub(super) fn resolve_request_head(
     Ok(request)
 }
 
-struct RequestHeadBuilder<const ENFORCE_HEADER_LIST_LIMIT: bool> {
+struct RequestHeadBuilder {
     method: Option<Method>,
     scheme: Option<BytesStr>,
     authority: Option<BytesStr>,
     path: Option<BytesStr>,
     protocol: Option<Protocol>,
-    accepts_trailers: bool,
-    content_length: Option<u64>,
     regular_headers: RequestHeaders,
     section: HeaderSection,
     host_header_index: Option<usize>,
     header_list_size: usize,
-    max_header_list_size: usize,
-    proxy_headers: ProxyHeaderSlots,
-    websocket: WebSocketRequestAnalysis,
+    max_header_list_size: Option<NonZeroUsize>,
+    header_meta: RequestHeaderMeta,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -172,30 +168,27 @@ fn push_request_pseudo<T>(
     Ok(())
 }
 
-impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LIST_LIMIT> {
-    fn new(max_header_list_size: usize) -> Self {
+impl RequestHeadBuilder {
+    fn new(max_header_list_size: Option<NonZeroUsize>) -> Self {
         Self {
             method: None,
             scheme: None,
             authority: None,
             path: None,
             protocol: None,
-            accepts_trailers: false,
-            content_length: None,
             regular_headers: RequestHeaders::with_capacity(16),
             section: HeaderSection::default(),
             host_header_index: None,
             header_list_size: 0,
             max_header_list_size,
-            proxy_headers: ProxyHeaderSlots::default(),
-            websocket: WebSocketRequestAnalysis::default(),
+            header_meta: RequestHeaderMeta::default(),
         }
     }
 
     fn account_header_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
-        if ENFORCE_HEADER_LIST_LIMIT {
+        if let Some(max_header_list_size) = self.max_header_list_size {
             self.header_list_size = self.header_list_size.saturating_add(len);
-            if self.header_list_size > self.max_header_list_size {
+            if self.header_list_size > max_header_list_size.get() {
                 return Err(RequestHeadError::reject(
                     status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
                 ));
@@ -268,37 +261,30 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
                 if !header_is_single_token(value_bytes, b"trailers") {
                     return Err(());
                 }
-                self.accepts_trailers = true;
+                self.header_meta.accepts_trailers = true;
             }
             Some(KnownRequestHeaderName::ContentLength) => {
                 let parsed = parse_content_length_header(value_bytes).ok_or(())?;
                 if self
+                    .header_meta
                     .content_length
                     .is_some_and(|existing| existing != parsed)
                 {
                     return Err(());
                 }
-                self.content_length = Some(parsed);
+                self.header_meta.content_length = Some(parsed);
             }
             _ => {}
         }
         if let Some(known_name) = known_name {
-            self.websocket.observe(known_name, &value);
-            self.proxy_headers
-                .observe(known_name, self.regular_headers.len());
+            self.header_meta
+                .observe_known_header(known_name, &value, self.regular_headers.len());
         }
         if known_name == Some(KnownRequestHeaderName::Host) {
-            if self.host_header_index.is_some_and(|index| {
-                !self.regular_headers[index]
-                    .1
-                    .as_bytes()
-                    .eq_ignore_ascii_case(value_bytes)
-            }) {
+            if self.host_header_index.is_some() {
                 return Err(());
             }
-            if self.host_header_index.is_none() {
-                self.host_header_index = Some(self.regular_headers.len());
-            }
+            self.host_header_index = Some(self.regular_headers.len());
         }
         let name = RequestHeaderName::from_h2_validated(name);
         let value = RequestHeaderValue::from_h2_validated(value);
@@ -362,7 +348,6 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
                         )
                     })
                 });
-            let synthesized_host = host.is_some();
             if let Some(host) = host {
                 if self.regular_headers.is_empty() {
                     self.regular_headers.reserve(1);
@@ -371,66 +356,14 @@ impl<const ENFORCE_HEADER_LIST_LIMIT: bool> RequestHeadBuilder<ENFORCE_HEADER_LI
                     .push((KnownRequestHeaderName::Host.into(), host));
                 self.host_header_index = Some(index);
             }
-
-            let host_header = HostHeaderAnalysis {
-                index: self.host_header_index,
-                source: if synthesized_host {
-                    HostHeaderSource::Synthesized
-                } else if self.host_header_index.is_some() {
-                    HostHeaderSource::Header
-                } else {
-                    HostHeaderSource::None
-                },
-            };
-
-            return Ok(RequestHead {
-                http_version: HttpVersion::Http2,
-                method,
-                target,
-                headers: self.regular_headers,
-                header_analysis: RequestHeaderAnalysis {
-                    body_framing: if self.content_length.is_some() {
-                        RequestBodyFraming::ContentLength
-                    } else {
-                        RequestBodyFraming::None
-                    },
-                    accepts_trailers: self.accepts_trailers,
-                    content_length: self.content_length,
-                    connection_close: false,
-                    websocket: self.websocket,
-                    proxy_headers: self.proxy_headers,
-                    host_header,
-                },
-            });
         }
-
-        let host_header = HostHeaderAnalysis {
-            index: self.host_header_index,
-            source: if self.host_header_index.is_some() {
-                HostHeaderSource::Header
-            } else {
-                HostHeaderSource::None
-            },
-        };
 
         Ok(RequestHead {
             http_version: HttpVersion::Http2,
             method,
             target,
             headers: self.regular_headers,
-            header_analysis: RequestHeaderAnalysis {
-                body_framing: if self.content_length.is_some() {
-                    RequestBodyFraming::ContentLength
-                } else {
-                    RequestBodyFraming::None
-                },
-                accepts_trailers: self.accepts_trailers,
-                content_length: self.content_length,
-                connection_close: false,
-                websocket: self.websocket,
-                proxy_headers: self.proxy_headers,
-                host_header,
-            },
+            header_meta: self.header_meta,
         })
     }
 }
@@ -440,19 +373,7 @@ pub(super) fn decode_request_head(
     block: Bytes,
     max_header_list_size: Option<NonZeroUsize>,
 ) -> Result<RequestHead, RequestHeadError> {
-    if let Some(max_header_list_size) = max_header_list_size {
-        decode_request_head_with_mode::<true>(decoder, block, max_header_list_size.get())
-    } else {
-        decode_request_head_with_mode::<false>(decoder, block, 0)
-    }
-}
-
-fn decode_request_head_with_mode<const ENFORCE_HEADER_LIST_LIMIT: bool>(
-    decoder: &mut Decoder,
-    block: Bytes,
-    max_header_list_size: usize,
-) -> Result<RequestHead, RequestHeadError> {
-    let mut builder = RequestHeadBuilder::<ENFORCE_HEADER_LIST_LIMIT>::new(max_header_list_size);
+    let mut builder = RequestHeadBuilder::new(max_header_list_size);
     let mut bytes = block;
     decoder.decode_block(&mut bytes, |header| builder.push(header))?;
 
@@ -488,12 +409,15 @@ fn map_hpack_error(err: DecoderError) -> RequestHeadError {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use bytes::{Bytes, BytesMut};
     use http::Method;
 
-    use crate::hpack::{BytesStr, Encoder};
+    use crate::hpack::{BytesStr, Decoder, Encoder, Header};
+    use crate::http::types::status_code;
 
-    use super::{RequestHeadError, decode_request_head_with_mode};
+    use super::{RequestHeadError, decode_request_head};
 
     fn encode_request_block(headers: &[(&[u8], &[u8])]) -> Bytes {
         let mut encoder = Encoder::new();
@@ -524,13 +448,13 @@ mod tests {
             (b"x9", b"1"),
         ]);
 
-        let mut decoder = crate::hpack::Decoder::new(4096);
-        let result = decode_request_head_with_mode::<true>(&mut decoder, block, 90);
+        let mut decoder = Decoder::new(4096);
+        let result = decode_request_head(&mut decoder, block, NonZeroUsize::new(90));
 
         assert!(matches!(
             result,
             Err(RequestHeadError::Reject {
-                status: crate::http::types::status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                status: status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
             })
         ));
     }
@@ -543,14 +467,14 @@ mod tests {
             (b":authority", b"example.com"),
             (b":path", b"/"),
         ]);
-        let exact_received_size = crate::hpack::Header::Method(Method::GET).len()
-            + crate::hpack::Header::Scheme(BytesStr::from_static("http")).len()
-            + crate::hpack::Header::Authority(BytesStr::from_static("example.com")).len()
-            + crate::hpack::Header::Path(BytesStr::from_static("/")).len();
+        let exact_received_size = Header::Method(Method::GET).len()
+            + Header::Scheme(BytesStr::from_static("http")).len()
+            + Header::Authority(BytesStr::from_static("example.com")).len()
+            + Header::Path(BytesStr::from_static("/")).len();
 
-        let mut decoder = crate::hpack::Decoder::new(4096);
+        let mut decoder = Decoder::new(4096);
         let request =
-            decode_request_head_with_mode::<true>(&mut decoder, block, exact_received_size)
+            decode_request_head(&mut decoder, block, NonZeroUsize::new(exact_received_size))
                 .expect("received header list size should ignore synthesized host");
 
         assert_eq!(request.headers.len(), 1);

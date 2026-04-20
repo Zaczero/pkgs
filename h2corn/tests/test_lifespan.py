@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 import pytest
 from h2corn._lifespan import _serve_with_lifespan
@@ -36,7 +37,7 @@ async def test_lifespan_missing_protocol_is_treated_as_optional() -> None:
 
 
 async def test_lifespan_state_is_copied_into_request_scopes() -> None:
-    seen_states: list[dict[str, object]] = []
+    seen_states: list[dict[str, Any]] = []
 
     async def app(scope, receive, send):
         if scope['type'] == 'lifespan':
@@ -101,3 +102,42 @@ async def test_lifespan_shutdown_timeout_is_reported() -> None:
 
     with pytest.raises(RuntimeError, match='lifespan shutdown timed out'):
         await _serve_with_lifespan(app, serve, shutdown_timeout=0.01)
+
+
+async def test_lifespan_shutdown_failure_cleans_up_app_task() -> None:
+    app_task: asyncio.Task[Any] | None = None
+
+    async def app(scope, receive, send):
+        nonlocal app_task
+        app_task = asyncio.current_task()
+        assert scope['type'] == 'lifespan'
+        startup = await receive()
+        assert startup['type'] == 'lifespan.startup'
+        await send({'type': 'lifespan.startup.complete'})
+        shutdown = await receive()
+        assert shutdown['type'] == 'lifespan.shutdown'
+        await send({'type': 'lifespan.shutdown.failed', 'message': 'boom'})
+        await asyncio.sleep(10)
+
+    async def serve(_app):
+        return None
+
+    with pytest.raises(RuntimeError, match='lifespan shutdown failed: boom'):
+        await _serve_with_lifespan(app, serve)
+
+    assert app_task is not None
+    assert app_task.cancelled()
+
+
+async def test_lifespan_app_timeout_error_is_not_rewritten_as_server_timeout() -> None:
+    async def app(scope, receive, _send):
+        assert scope['type'] == 'lifespan'
+        startup = await receive()
+        assert startup['type'] == 'lifespan.startup'
+        raise TimeoutError('custom-timeout')
+
+    async def serve(_app):
+        return None
+
+    with pytest.raises(TimeoutError, match='custom-timeout'):
+        await _serve_with_lifespan(app, serve, startup_timeout=1.0)

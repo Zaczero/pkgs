@@ -853,7 +853,7 @@ async def test_http1_websocket_upgrade_round_trip() -> None:
     assert echoed == 'echo:hello'
 
 
-async def test_http1_websocket_idle_session_ignores_timeout_read() -> None:
+async def test_http1_websocket_idle_session_ignores_timeout_request_body_idle() -> None:
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -863,7 +863,7 @@ async def test_http1_websocket_idle_session_ignores_timeout_read() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port(), timeout_read=0.05)
+    config = Config(port=find_free_port(), timeout_request_body_idle=0.05)
     async with running_server(websocket_app, config):
         reader, writer, _ = await _http1_open_websocket_stream(
             port=config.port,
@@ -882,7 +882,7 @@ async def test_http1_websocket_idle_session_ignores_timeout_read() -> None:
     assert _decode_ws_close_payload(frames[1][1])[0] == 1000
 
 
-async def test_h2_websocket_idle_session_ignores_timeout_read() -> None:
+async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> None:
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -892,7 +892,7 @@ async def test_h2_websocket_idle_session_ignores_timeout_read() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port(), timeout_read=0.05)
+    config = Config(port=find_free_port(), timeout_request_body_idle=0.05)
     async with running_server(websocket_app, config):
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
             port=config.port,

@@ -99,3 +99,4 @@ impl fmt::Display for WebSocketDecodeError {
 pub(crate) use decode::WebSocketCodec;
 pub(crate) use frame::encode_close_frame_into;
 pub(crate) use frame::encode_frame_into;
+pub(crate) use frame::validate_close_code;

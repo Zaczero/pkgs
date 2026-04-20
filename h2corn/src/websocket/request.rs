@@ -29,8 +29,8 @@ impl HandshakeRejection {
 pub(crate) fn validate_websocket_request(
     request: &RequestHead,
 ) -> Result<WebSocketRequestMeta, HandshakeRejection> {
-    if request.header_analysis.websocket.version_supported {
-        Ok(request.header_analysis.websocket.meta.clone())
+    if request.header_meta.websocket.version_supported {
+        Ok(request.header_meta.websocket.request.clone())
     } else {
         Err(HandshakeRejection::unsupported_version())
     }

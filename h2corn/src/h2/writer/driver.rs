@@ -2,20 +2,23 @@ use std::{
     collections::{VecDeque, hash_map::Entry},
     future::Future,
     mem,
-    num::NonZeroU32,
+    num::NonZeroUsize,
     sync::Arc,
 };
+#[cfg(test)]
+use std::{num::NonZeroU32, time::Duration};
 
 use bytes::BytesMut;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::futures::Notified;
 
+use crate::bridge::PayloadBytes;
 #[cfg(test)]
-use crate::config::{Http2Config, ProxyConfig, ServerBind};
+use crate::config::{BindTarget, Http2Config, ProxyConfig};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE, ServerConfig};
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
-use crate::h2::new_stream_map;
+use crate::h2::{StreamMap, new_stream_map};
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
@@ -30,8 +33,8 @@ use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
 use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
 use super::{
-    FRAME_BUFFER_CAPACITY, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, H2_WRITER_BUFFER_CAPACITY,
-    H2WriteTarget, ResponseCloseBatch, WindowTarget, WriterCommand, WriterCommandBatch,
+    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, H2WriteTarget, ResponseCloseBatch,
+    WindowTarget, WriterCommand, WriterCommandBatch,
 };
 
 #[derive(Clone)]
@@ -45,7 +48,7 @@ pub(crate) struct WriterState<W> {
     writer: BufWriter<W>,
     frame_buf: BytesMut,
     config: &'static ServerConfig,
-    streams: crate::h2::StreamMap<StreamWriteState>,
+    streams: StreamMap<StreamWriteState>,
     ready_streams: VecDeque<u32>,
     response_closes: ResponseCloseBatch,
     connection_send_window: i64,
@@ -57,7 +60,7 @@ pub(crate) struct WriterState<W> {
 struct WriterSendParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
-    streams: &'a mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &'a mut StreamMap<StreamWriteState>,
     ready_streams: &'a mut VecDeque<u32>,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
@@ -69,7 +72,7 @@ struct WriterSendParts<'a, W> {
 struct WriterLoopParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
-    streams: &'a mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &'a mut StreamMap<StreamWriteState>,
     ready_streams: &'a mut VecDeque<u32>,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
@@ -103,7 +106,7 @@ impl<W> WriterSendParts<'_, W> {
 async fn force_reset_stream<W>(
     writer: &mut W,
     frame_buf: &mut BytesMut,
-    streams: &mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &mut StreamMap<StreamWriteState>,
     response_closes: &mut ResponseCloseBatch,
     stream_id: StreamId,
 ) -> Result<(), H2CornError>
@@ -119,7 +122,7 @@ where
 
 fn apply_peer_settings_to_writer(
     settings: PeerSettings,
-    streams: &mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &mut StreamMap<StreamWriteState>,
     initial_stream_send_window: &mut i64,
     peer_max_frame_size: &mut usize,
     header_state: &mut HeaderEncodeState,
@@ -131,7 +134,9 @@ fn apply_peer_settings_to_writer(
             stream.send_window += delta;
         }
     }
-    *peer_max_frame_size = settings.max_frame_size();
+    if let Some(size) = settings.max_frame_size {
+        *peer_max_frame_size = size.get() as usize;
+    }
     if let Some(size) = settings.header_table_size {
         header_state.update_max_size(size);
     }
@@ -228,7 +233,7 @@ where
 async fn handle_send_data<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
-    data: crate::bridge::PayloadBytes,
+    data: PayloadBytes,
     end_stream: bool,
 ) -> Result<(), H2CornError>
 where
@@ -259,7 +264,7 @@ async fn handle_send_final<W>(
     stream_id: StreamId,
     status: HttpStatusCode,
     headers: ResponseHeaders,
-    data: crate::bridge::PayloadBytes,
+    data: PayloadBytes,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
@@ -274,12 +279,9 @@ where
         )
         .is_some_and(|limit| data.len() <= limit)
     {
-        let block = match context.header_state.encode_response(status, &headers) {
-            Ok(block) => block,
-            Err(_) => {
-                notify_response_close(context.response_closes, stream_id);
-                return Ok(());
-            }
+        let Ok(block) = context.header_state.encode_response(status, &headers) else {
+            notify_response_close(context.response_closes, stream_id);
+            return Ok(());
         };
 
         if write_header_block(
@@ -545,7 +547,7 @@ pub(crate) async fn init_writer<W>(
 where
     W: H2WriteTarget,
 {
-    let ingress = WriterIngress::new(config.http2.max_concurrent_streams);
+    let ingress = WriterIngress::new(config.http2.max_concurrent_streams as usize);
     let connection = ConnectionHandle {
         ingress: Arc::clone(&ingress),
         config,
@@ -553,13 +555,16 @@ where
     let mut writer = BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer);
     let mut frame_buf = BytesMut::with_capacity(FRAME_BUFFER_CAPACITY);
     let initial_settings = Settings {
-        header_table_size: Some(frame::DEFAULT_HEADER_TABLE_SIZE),
+        header_table_size: Some(frame::DEFAULT_HEADER_TABLE_SIZE as u32),
         enable_push: Some(false),
         max_concurrent_streams: Some(config.http2.max_concurrent_streams),
         initial_window_size: Some(INITIAL_STREAM_WINDOW_SIZE),
-        max_frame_size: Some(
-            NonZeroU32::new(H2_OUTBOUND_DATA_FRAME_SIZE_TARGET as u32).expect("value is non-zero"),
-        ),
+        max_frame_size: Some(config.http2.max_inbound_frame_size),
+        max_header_list_size: config
+            .http2
+            .max_header_list_size
+            .map(NonZeroUsize::get)
+            .map(|value| value as u32),
         enable_connect_protocol: Some(true),
     };
     frame::append_settings(&mut frame_buf, initial_settings);
@@ -580,8 +585,8 @@ where
         writer,
         frame_buf,
         config,
-        streams: new_stream_map(config.http2.max_concurrent_streams),
-        ready_streams: VecDeque::with_capacity(config.http2.max_concurrent_streams),
+        streams: new_stream_map(config.http2.max_concurrent_streams as usize),
+        ready_streams: VecDeque::with_capacity(config.http2.max_concurrent_streams as usize),
         response_closes: ResponseCloseBatch::new(),
         connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
         initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
@@ -593,7 +598,9 @@ where
         if let Some(size) = settings.initial_window_size {
             writer_state.initial_stream_send_window = i64::from(size);
         }
-        writer_state.peer_max_frame_size = settings.max_frame_size();
+        if let Some(size) = settings.max_frame_size {
+            writer_state.peer_max_frame_size = size.get() as usize;
+        }
         if let Some(size) = settings.header_table_size {
             writer_state.header_state.update_max_size(size);
         }
@@ -645,7 +652,7 @@ impl ConnectionHandle {
     pub(crate) fn send_data(
         &self,
         stream_id: StreamId,
-        data: impl Into<crate::bridge::PayloadBytes>,
+        data: impl Into<PayloadBytes>,
         end_stream: bool,
     ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
         self.send_command(
@@ -686,40 +693,46 @@ where
 {
     #[cfg(test)]
     pub(crate) fn new_test(writer: W) -> Self {
-        let max_concurrent_streams = 8;
+        let max_concurrent_streams = 8_u32;
         Self {
-            ingress: WriterIngress::new(max_concurrent_streams),
+            ingress: WriterIngress::new(max_concurrent_streams as usize),
             writer: BufWriter::new(writer),
             frame_buf: BytesMut::with_capacity(FRAME_BUFFER_CAPACITY),
             config: Box::leak(Box::new(ServerConfig {
-                bind: ServerBind::Tcp {
+                binds: Box::new([BindTarget::Tcp {
                     host: Box::from("127.0.0.1"),
                     port: 8000,
-                },
+                }]),
                 access_log: false,
                 root_path: Box::from(""),
                 http1: Default::default(),
                 http2: Http2Config {
                     max_concurrent_streams,
                     max_header_list_size: None,
+                    max_header_block_size: None,
+                    max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
+                        .expect("default HTTP/2 frame size is non-zero"),
                 },
                 max_request_body_size: None,
-                timeout_graceful_shutdown: std::time::Duration::from_secs(30),
+                timeout_graceful_shutdown: Duration::from_secs(30),
                 timeout_keep_alive: None,
-                timeout_read: None,
+                timeout_request_header: None,
+                timeout_request_body_idle: None,
                 limit_concurrency: None,
+                limit_connections: None,
                 max_requests: None,
+                runtime_threads: 2,
                 websocket: Default::default(),
                 proxy: ProxyConfig {
                     trust_headers: false,
                     trusted_peers: Box::new([]),
                     protocol: ProxyProtocolMode::Off,
                 },
-                timeout_handshake: std::time::Duration::from_secs(5),
+                timeout_handshake: Duration::from_secs(5),
                 response_headers: Default::default(),
             })),
-            streams: new_stream_map(max_concurrent_streams),
-            ready_streams: VecDeque::with_capacity(max_concurrent_streams),
+            streams: new_stream_map(max_concurrent_streams as usize),
+            ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
             response_closes: ResponseCloseBatch::new(),
             connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
             initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),

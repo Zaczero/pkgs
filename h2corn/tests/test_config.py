@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from h2corn import Config
-from h2corn._cli import build_parser
+from h2corn._cli import build_parser, parse_cli
 from h2corn._config import config_options
 
 
@@ -13,12 +13,18 @@ from h2corn._config import config_options
     [
         ({'backlog': 0}, 'backlog'),
         ({'workers': 0}, 'workers'),
+        ({'runtime_threads': 0}, 'runtime_threads'),
         ({'limit_request_line': -1}, 'limit_request_line'),
+        ({'limit_request_head_size': -1}, 'limit_request_head_size'),
         ({'limit_request_fields': -1}, 'limit_request_fields'),
         ({'limit_request_field_size': -1}, 'limit_request_field_size'),
         ({'timeout_graceful_shutdown': -1}, 'timeout_graceful_shutdown'),
         ({'max_concurrent_streams': -1}, 'max_concurrent_streams'),
+        ({'max_concurrent_streams': 4_294_967_296}, 'max_concurrent_streams'),
         ({'h2_max_header_list_size': -1}, 'h2_max_header_list_size'),
+        ({'h2_max_header_list_size': 4_294_967_296}, 'h2_max_header_list_size'),
+        ({'h2_max_header_block_size': -1}, 'h2_max_header_block_size'),
+        ({'h2_max_inbound_frame_size': 16_383}, 'h2_max_inbound_frame_size'),
         ({'max_request_body_size': -1}, 'max_request_body_size'),
         ({'timeout_handshake': -1}, 'timeout_handshake'),
         ({'websocket_max_message_size': -1}, 'websocket_max_message_size'),
@@ -45,8 +51,11 @@ http1 = false
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1"]
 timeout_keep_alive = 1.5
-timeout_read = 2.5
+timeout_request_header = 2.5
+timeout_request_body_idle = 3.5
 limit_concurrency = 9
+limit_connections = 11
+runtime_threads = 4
 timeout_lifespan_startup = 6.5
 timeout_lifespan_shutdown = 7.5
 websocket_per_message_deflate = false
@@ -68,8 +77,11 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.http1 is False
     assert config.proxy_headers is True
     assert config.timeout_keep_alive == 1.5
-    assert config.timeout_read == 2.5
+    assert config.timeout_request_header == 2.5
+    assert config.timeout_request_body_idle == 3.5
     assert config.limit_concurrency == 9
+    assert config.limit_connections == 11
+    assert config.runtime_threads == 4
     assert config.timeout_lifespan_startup == 6.5
     assert config.timeout_lifespan_shutdown == 7.5
     assert config.websocket_per_message_deflate is False
@@ -78,6 +90,17 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.server_header is True
     assert config.date_header is False
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
+
+
+def test_config_from_toml_accepts_websocket_message_size_inherit(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'h2corn.toml'
+    config_path.write_text('websocket_max_message_size = "inherit"')
+
+    config = Config.from_toml(config_path)
+
+    assert config.websocket_max_message_size is None
 
 
 def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,8 +116,11 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_PROXY_PROTOCOL', 'v1')
     monkeypatch.setenv('H2CORN_TIMEOUT_HANDSHAKE', '3.5')
     monkeypatch.setenv('H2CORN_TIMEOUT_KEEP_ALIVE', '1.5')
-    monkeypatch.setenv('H2CORN_TIMEOUT_READ', '2.5')
+    monkeypatch.setenv('H2CORN_TIMEOUT_REQUEST_HEADER', '2.5')
+    monkeypatch.setenv('H2CORN_TIMEOUT_REQUEST_BODY_IDLE', '3.5')
     monkeypatch.setenv('H2CORN_LIMIT_CONCURRENCY', '7')
+    monkeypatch.setenv('H2CORN_LIMIT_CONNECTIONS', '9')
+    monkeypatch.setenv('H2CORN_RUNTIME_THREADS', '5')
     monkeypatch.setenv('H2CORN_TIMEOUT_LIFESPAN_STARTUP', '5.5')
     monkeypatch.setenv('H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN', '6.5')
     monkeypatch.setenv('H2CORN_LIMIT_REQUEST_LINE', '4094')
@@ -122,8 +148,11 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.proxy_protocol == 'v1'
     assert config.timeout_handshake == 3.5
     assert config.timeout_keep_alive == 1.5
-    assert config.timeout_read == 2.5
+    assert config.timeout_request_header == 2.5
+    assert config.timeout_request_body_idle == 3.5
     assert config.limit_concurrency == 7
+    assert config.limit_connections == 9
+    assert config.runtime_threads == 5
     assert config.timeout_lifespan_startup == 5.5
     assert config.timeout_lifespan_shutdown == 6.5
     assert config.limit_request_line == 4094
@@ -148,6 +177,23 @@ def test_config_from_env_applies_explicit_empty_values(
     assert config.forwarded_allow_ips == ()
 
 
+def test_config_from_env_accepts_csv_bind_values() -> None:
+    config = Config.from_env({'H2CORN_BIND': '127.0.0.1:9000,[::1]:9000'})
+
+    assert config.bind == ('127.0.0.1:9000', '[::1]:9000')
+
+
+def test_config_from_env_accepts_websocket_message_size_inherit() -> None:
+    config = Config.from_env({'H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE': 'inherit'})
+
+    assert config.websocket_max_message_size is None
+
+
+def test_config_rejects_empty_unix_bind_path() -> None:
+    with pytest.raises(ValueError, match='invalid unix bind target'):
+        Config(bind=('unix:',))
+
+
 def test_config_rejects_invalid_trusted_proxy_entry() -> None:
     with pytest.raises(ValueError, match='forwarded_allow_ips'):
         Config(forwarded_allow_ips=('example.invalid',))
@@ -157,6 +203,23 @@ def test_config_allows_empty_trusted_proxy_set() -> None:
     config = Config(forwarded_allow_ips=())
 
     assert config.forwarded_allow_ips == ()
+
+
+def test_config_normalizes_multiple_bind_entries() -> None:
+    config = Config(bind=['127.0.0.1:8000', '[::1]:8000', 'unix:/tmp/h2corn.sock'])
+
+    assert config.bind == (
+        '127.0.0.1:8000',
+        '[::1]:8000',
+        'unix:/tmp/h2corn.sock',
+    )
+    assert config.host is None
+    assert config.port is None
+
+
+def test_config_rejects_ping_timeout_without_interval() -> None:
+    with pytest.raises(ValueError, match='websocket_ping_timeout'):
+        Config(websocket_ping_interval=0.0, websocket_ping_timeout=1.0)
 
 
 def test_config_rejects_unknown_mapping_keys() -> None:
@@ -211,3 +274,52 @@ def test_cli_parser_defaults_and_flags_follow_config_option_schema() -> None:
             assert action.type == option.metadata.cli_type
             assert action.choices == option.metadata.cli_choices
             assert action.metavar == option.metadata.cli_metavar
+
+
+def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) -> None:
+    config_path = tmp_path / 'h2corn.toml'
+    config_path.write_text('port = 9010')
+
+    target, config = parse_cli(
+        ['--config', str(config_path), 'example:app'],
+        {'H2CORN_PORT': '9020'},
+    )
+
+    assert target == 'example:app'
+    assert config.port == 9020
+
+
+def test_parse_cli_accepts_websocket_message_size_inherit() -> None:
+    target, config = parse_cli(
+        ['--websocket-max-message-size', 'inherit', 'example:app'],
+        {},
+    )
+
+    assert target == 'example:app'
+    assert config.websocket_max_message_size is None
+
+
+def test_parse_cli_rejects_host_port_override_for_multi_bind_base(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'h2corn.toml'
+    config_path.write_text('bind = ["127.0.0.1:9010", "127.0.0.1:9011"]')
+
+    with pytest.raises(SystemExit):
+        parse_cli(
+            ['--config', str(config_path), '--port', '9020', 'example:app'],
+            {},
+        )
+
+
+def test_parse_cli_rejects_env_listener_convenience_override_for_multi_bind_base(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'h2corn.toml'
+    config_path.write_text('bind = ["127.0.0.1:9010", "127.0.0.1:9011"]')
+
+    with pytest.raises(SystemExit):
+        parse_cli(
+            ['--config', str(config_path), 'example:app'],
+            {'H2CORN_PORT': '9020'},
+        )

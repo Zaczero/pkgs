@@ -13,7 +13,7 @@ use self::handshake::{
     HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event, settle_app_task,
 };
 use super::app::start_websocket_app;
-use super::codec::{WebSocketCodec, encode_close_frame_into};
+use super::codec::{WebSocketCodec, encode_close_frame_into, validate_close_code};
 use super::request::{validate_accept_headers, validate_accepted_subprotocol};
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
 use crate::bridge::PayloadBytes;
@@ -58,11 +58,7 @@ impl PendingClose {
 
 impl AcceptedWebSocketState {
     pub(super) fn set_close_code(&mut self, code: WebSocketCloseCode) {
-        self.close_code = Some(unsafe {
-            // SAFETY: h2corn only stores real WebSocket close codes here,
-            // which are strictly positive.
-            NonZeroU16::new_unchecked(code)
-        });
+        self.close_code = NonZeroU16::new(code);
     }
 
     pub(crate) fn close_code_or(&self, fallback: WebSocketCloseCode) -> WebSocketCloseCode {
@@ -85,6 +81,7 @@ impl AcceptedWebSocketState {
         code: WebSocketCloseCode,
         reason: &str,
     ) -> Result<(), H2CornError> {
+        validate_close_code(code)?;
         if self.close_started() {
             self.set_close_code(code);
             return Ok(());
@@ -137,12 +134,12 @@ pub(crate) fn take_pending_close_frame(
     state: &mut AcceptedWebSocketState,
     frame_buf: &mut BytesMut,
 ) -> Result<Option<Bytes>, H2CornError> {
-    let Some(close) = state.take_pending_close() else {
-        return Ok(None);
-    };
-    encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
-    state.mark_close_sent();
-    Ok(Some(frame_buf.split().freeze()))
+    if let Some(close) = state.take_pending_close() {
+        encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
+        state.mark_close_sent();
+        return Ok(Some(frame_buf.split().freeze()));
+    }
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -397,5 +394,15 @@ mod tests {
         assert_eq!(state.close_state, CloseState::CloseSent);
         assert_eq!(frame.as_ref(), b"\x88\x05\x03\xe8bye");
         assert!(frame_buf.is_empty());
+    }
+
+    #[test]
+    fn queue_close_if_open_rejects_invalid_code_after_close_started() {
+        let mut state = AcceptedWebSocketState::default();
+
+        state.queue_close(1000, "bye").expect("close is queued");
+
+        assert!(state.queue_close_if_open(0, "").is_err());
+        assert_eq!(state.close_code_or(1001), 1000);
     }
 }

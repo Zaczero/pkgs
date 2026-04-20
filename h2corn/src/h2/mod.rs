@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
 
-use crate::async_util::{send_best_effort, send_with_backpressure};
+use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::frame::{
@@ -35,7 +35,7 @@ use request::{
 };
 use state::{
     ConnectionDrainState, H2ConnectionState, InboundStream, ReceiveState, RequestInputClose,
-    RequestSpawnContext,
+    RequestInputDeadline, RequestSpawnContext,
 };
 pub(crate) use writer::H2WriteTarget;
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
@@ -46,6 +46,75 @@ const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_STREAM_WINDOW_SIZE / 2;
 
 fn new_stream_map<T>(capacity: usize) -> StreamMap<T> {
     HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default())
+}
+
+fn queue_stream_input(stream: &mut InboundStream, value: StreamInput) {
+    let Some(tx) = stream.input.as_ref() else {
+        stream.body.stop_delivering();
+        return;
+    };
+    if !stream.pending_input.is_empty() {
+        stream.pending_input.push_back(value);
+        return;
+    }
+    match try_push(tx, value) {
+        TryPush::Sent => {}
+        TryPush::Full(value) => stream.pending_input.push_back(value),
+        TryPush::Closed(_) => {
+            stream.body.stop_delivering();
+            stream.input = None;
+        }
+    }
+}
+
+async fn flush_pending_stream_inputs<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+) -> Result<(), H2CornError>
+where
+    W: H2WriteTarget,
+{
+    let mut stream_updates = Vec::new();
+
+    for (&raw_stream_id, stream) in &mut state.streams {
+        let Some(tx) = stream.input.as_ref() else {
+            stream.pending_input.clear();
+            continue;
+        };
+        while let Some(value) = stream.pending_input.pop_front() {
+            match try_push(tx, value) {
+                TryPush::Sent => {}
+                TryPush::Full(value) => {
+                    stream.pending_input.push_front(value);
+                    break;
+                }
+                TryPush::Closed(_) => {
+                    stream.pending_input.clear();
+                    stream.body.stop_delivering();
+                    stream.input = None;
+                    break;
+                }
+            }
+        }
+        if stream.pending_input.is_empty()
+            && let Some(increment) = stream
+                .receive_window
+                .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
+        {
+            stream_updates.push((
+                StreamId::new(raw_stream_id).expect("stored stream id is non-zero"),
+                increment,
+            ));
+        }
+    }
+
+    for (stream_id, increment) in stream_updates {
+        state
+            .writer
+            .send_window_update(WindowTarget::Stream(stream_id), increment)
+            .await?;
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,9 +330,6 @@ where
         writer,
         context,
         shutdown,
-        peer_settings.map_or(frame::DEFAULT_MAX_FRAME_SIZE, |settings| {
-            settings.max_frame_size()
-        }),
         drain_state,
     ))
 }
@@ -447,7 +513,7 @@ where
         ReceiveState::Idle => {}
     }
 
-    if state.active_stream_count() >= state.context.config.http2.max_concurrent_streams {
+    if state.active_stream_count() >= state.context.config.http2.max_concurrent_streams as usize {
         state.last_client_stream_id = Some(stream_id);
         apply_peer_failure(
             &mut state.writer,
@@ -480,10 +546,26 @@ where
         )
         .await?;
     } else {
+        if state
+            .context
+            .config
+            .http2
+            .max_header_block_size
+            .is_some_and(|limit| fragment.block.len() > limit.get())
+        {
+            apply_peer_failure(
+                &mut state.writer,
+                state.last_client_stream_id,
+                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
+            )
+            .await?;
+            return Ok(());
+        }
         state.pending_headers = Some(PendingHeaders {
             stream_id,
             end_stream: fragment.end_stream,
             block: fragment.block.into(),
+            last_fragment_at: TokioInstant::now(),
         });
     }
 
@@ -518,6 +600,22 @@ where
     }
 
     pending.block.extend_from_slice(frame.payload.as_ref());
+    pending.last_fragment_at = TokioInstant::now();
+    if state
+        .context
+        .config
+        .http2
+        .max_header_block_size
+        .is_some_and(|limit| pending.block.len() > limit.get())
+    {
+        apply_peer_failure(
+            &mut state.writer,
+            state.last_client_stream_id,
+            H2PeerFailure::stream(pending.stream_id, ErrorCode::PROTOCOL_ERROR),
+        )
+        .await?;
+        return Ok(());
+    }
     if frame.header.flags.contains(FrameFlags::END_HEADERS) {
         start_request_stream_from_block(
             RequestStartContext {
@@ -546,17 +644,6 @@ where
 }
 
 async fn handle_data_frame<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    frame: RawFrame,
-) -> Result<(), H2CornError>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: H2WriteTarget,
-{
-    handle_data_frame_with_accounting(state, frame).await
-}
-
-async fn handle_data_frame_with_accounting<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
 ) -> Result<(), H2CornError>
@@ -621,9 +708,10 @@ where
         return Ok(());
     }
 
+    let flow_control_len = frame.header.len as u32;
     let data_len = data.len() as u32;
-    if state.connection_window.receive(data_len).is_err()
-        || stream.receive_window.receive(data_len).is_err()
+    if state.connection_window.receive(flow_control_len).is_err()
+        || stream.receive_window.receive(flow_control_len).is_err()
     {
         apply_peer_failure(
             &mut state.writer,
@@ -636,6 +724,8 @@ where
         .await?;
         return Ok(());
     }
+
+    stream.last_input_read_at = TokioInstant::now();
 
     if data_len != 0 {
         match stream.body.record_chunk(u64::from(data_len)) {
@@ -654,37 +744,29 @@ where
                 return Ok(());
             }
         }
-        let stream_window_update = stream
-            .receive_window
-            .take_update(STREAM_WINDOW_UPDATE_THRESHOLD);
         let forward_to_app = stream.body.should_deliver();
         if forward_to_app {
-            let Some(tx) = stream.input.as_ref() else {
-                stream.body.stop_delivering();
-                return Ok(());
-            };
-            if send_with_backpressure(tx, StreamInput::Data(data), || H2Error::StreamChannelClosed)
-                .await
-                .is_err()
-            {
-                stream.body.stop_delivering();
-            }
+            queue_stream_input(stream, StreamInput::Data(data));
         }
-        if let Some(increment) = state
-            .connection_window
-            .take_update(CONNECTION_WINDOW_UPDATE_THRESHOLD)
-        {
-            state
-                .writer
-                .send_window_update(WindowTarget::Connection, increment)
-                .await?;
-        }
-        if let Some(increment) = stream_window_update {
-            state
-                .writer
-                .send_window_update(WindowTarget::Stream(stream_id), increment)
-                .await?;
-        }
+    }
+    if let Some(increment) = state
+        .connection_window
+        .take_update(CONNECTION_WINDOW_UPDATE_THRESHOLD)
+    {
+        state
+            .writer
+            .send_window_update(WindowTarget::Connection, increment)
+            .await?;
+    }
+    if stream.pending_input.is_empty()
+        && let Some(increment) = stream
+            .receive_window
+            .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
+    {
+        state
+            .writer
+            .send_window_update(WindowTarget::Stream(stream_id), increment)
+            .await?;
     }
 
     if end_stream {
@@ -731,11 +813,23 @@ where
         let mut stop_after_flush = false;
         match ingest_connection_input(&mut state).await? {
             IngestEvent::Continue => {}
-            IngestEvent::PeerClosed
-            | IngestEvent::Deadline
-            | IngestEvent::KeepAliveTimeout
-            | IngestEvent::ReadTimeout => {
+            IngestEvent::PeerClosed | IngestEvent::Deadline | IngestEvent::KeepAliveTimeout => {
                 stop_after_flush = true;
+            }
+            IngestEvent::FrameLengthExceeded(error) => {
+                state
+                    .writer
+                    .goaway(
+                        state.last_client_stream_id,
+                        ErrorCode::FRAME_SIZE_ERROR,
+                        error.to_string().into_bytes(),
+                        true,
+                    )
+                    .await?;
+                stop_after_flush = true;
+            }
+            IngestEvent::RequestInputTimeout(deadline) => {
+                handle_request_input_timeout(&mut state, deadline).await?;
             }
             IngestEvent::ShutdownChanged => {
                 if state.shutdown.borrow().kind().is_some() {
@@ -775,14 +869,68 @@ where
     Ok(())
 }
 
+async fn handle_request_input_timeout<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+    deadline: RequestInputDeadline,
+) -> Result<(), H2CornError>
+where
+    W: H2WriteTarget,
+{
+    match deadline {
+        RequestInputDeadline::Headers(stream_id, _) => {
+            if state
+                .pending_headers
+                .as_ref()
+                .is_some_and(|pending| pending.stream_id == stream_id)
+            {
+                state.pending_headers = None;
+                state
+                    .writer
+                    .reset_stream(stream_id, ErrorCode::CANCEL)
+                    .await?;
+            }
+        }
+        RequestInputDeadline::Body(stream_id, _) => {
+            if let Some(stream) = state.streams.get_mut(&stream_id.get())
+                && !stream.state.request_is_closed()
+            {
+                if let Some(tx) = stream.input.take() {
+                    send_best_effort(&tx, StreamInput::Reset(ErrorCode::CANCEL)).await;
+                }
+                stream.pending_input.clear();
+                state
+                    .writer
+                    .reset_stream(stream_id, ErrorCode::CANCEL)
+                    .await?;
+                state.remove_stream(stream_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 enum IngestEvent {
     Continue,
     ShutdownChanged,
     Frame(RawFrame),
+    FrameLengthExceeded(H2Error),
     PeerClosed,
     Deadline,
     KeepAliveTimeout,
-    ReadTimeout,
+    RequestInputTimeout(RequestInputDeadline),
+}
+
+fn map_frame_ingest_result(
+    frame: Result<Option<RawFrame>, H2CornError>,
+) -> Result<IngestEvent, H2CornError> {
+    match frame {
+        Ok(Some(frame)) => Ok(IngestEvent::Frame(frame)),
+        Ok(None) => Ok(IngestEvent::PeerClosed),
+        Err(H2CornError::H2(error @ H2Error::FrameLengthExceedsPeerMax { .. })) => {
+            Ok(IngestEvent::FrameLengthExceeded(error))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn ingest_connection_input<R, W>(
@@ -792,6 +940,10 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
 {
+    if state.writer.has_queued_app_writes().await {
+        return Ok(IngestEvent::Continue);
+    }
+
     let continue_writing = state.writer.has_ready_streams();
     let outbound_notified = state.writer.outbound_notified();
     tokio::pin!(outbound_notified);
@@ -799,11 +951,10 @@ where
         .then_some(state.context.config.timeout_keep_alive)
         .flatten()
         .map(|timeout_duration| TokioInstant::now() + timeout_duration);
-    let read_deadline = state
-        .awaiting_request_input()
-        .then_some(state.context.config.timeout_read)
-        .flatten()
-        .map(|timeout_duration| TokioInstant::now() + timeout_duration);
+    let request_input_deadline = state.next_request_input_deadline(
+        state.context.config.timeout_request_header,
+        state.context.config.timeout_request_body_idle,
+    );
     let keep_alive_timeout = async {
         if let Some(deadline) = keep_alive_deadline {
             sleep_until(deadline).await;
@@ -811,40 +962,31 @@ where
             pending::<()>().await;
         }
     };
-    let read_timeout = async {
-        if let Some(deadline) = read_deadline {
-            sleep_until(deadline).await;
+    let request_input_timeout = async {
+        if let Some(deadline) = request_input_deadline {
+            sleep_until(deadline.instant()).await;
         } else {
             pending::<()>().await;
         }
     };
 
-    if state.writer.has_queued_app_writes().await {
-        return Ok(IngestEvent::Continue);
-    }
-
-    if let Some(deadline) = state.drain_state.deadline() {
-        tokio::select! {
-            _ = sleep_until(TokioInstant::from_std(deadline)) => Ok(IngestEvent::Deadline),
-            _ = keep_alive_timeout, if keep_alive_deadline.is_some() => Ok(IngestEvent::KeepAliveTimeout),
-            _ = read_timeout, if read_deadline.is_some() => Ok(IngestEvent::ReadTimeout),
-            _ = &mut outbound_notified => Ok(IngestEvent::Continue),
-            _ = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
-            frame = state.reader.read_frame(frame::MAX_FRAME_SIZE_UPPER_BOUND) => {
-                Ok(frame?.map_or(IngestEvent::PeerClosed, IngestEvent::Frame))
-            },
-        }
-    } else {
-        tokio::select! {
-            _ = state.shutdown.changed() => Ok(IngestEvent::ShutdownChanged),
-            _ = keep_alive_timeout, if keep_alive_deadline.is_some() => Ok(IngestEvent::KeepAliveTimeout),
-            _ = read_timeout, if read_deadline.is_some() => Ok(IngestEvent::ReadTimeout),
-            _ = &mut outbound_notified => Ok(IngestEvent::Continue),
-            _ = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
-            frame = state.reader.read_frame(frame::MAX_FRAME_SIZE_UPPER_BOUND) => {
-                Ok(frame?.map_or(IngestEvent::PeerClosed, IngestEvent::Frame))
-            },
-        }
+    let drain_deadline = state.drain_state.deadline();
+    tokio::select! {
+        _ = async {
+            if let Some(deadline) = drain_deadline {
+                sleep_until(TokioInstant::from_std(deadline)).await;
+            } else {
+                pending::<()>().await;
+            }
+        } => Ok(IngestEvent::Deadline),
+        _ = state.shutdown.changed(), if drain_deadline.is_none() => Ok(IngestEvent::ShutdownChanged),
+        _ = keep_alive_timeout, if keep_alive_deadline.is_some() => Ok(IngestEvent::KeepAliveTimeout),
+        _ = request_input_timeout, if request_input_deadline.is_some() => Ok(IngestEvent::RequestInputTimeout(
+            request_input_deadline.expect("timeout is only polled when present"),
+        )),
+        _ = &mut outbound_notified => Ok(IngestEvent::Continue),
+        _ = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
+        frame = state.reader.read_frame(state.local_max_frame_size) => map_frame_ingest_result(frame),
     }
 }
 
@@ -855,9 +997,11 @@ where
     W: H2WriteTarget,
 {
     apply_writer_response_closes(state).await;
+    flush_pending_stream_inputs(state).await?;
 
     if state.writer.drain_app_writes().await? {
         apply_writer_response_closes(state).await;
+        flush_pending_stream_inputs(state).await?;
     }
 
     if state.writer.has_ready_streams() {
@@ -881,7 +1025,7 @@ where
 {
     apply_writer_response_closes(state).await;
 
-    if frame.header.len > state.peer_max_frame_size {
+    if frame.header.len > state.local_max_frame_size {
         let error_code = ErrorCode::FRAME_SIZE_ERROR;
         if frame.header.stream_id.is_none()
             || matches!(
@@ -991,7 +1135,6 @@ where
                     return Ok(false);
                 }
             };
-            state.peer_max_frame_size = settings.max_frame_size();
             state.writer.send_settings_ack().await?;
             state.writer.update_peer_settings(settings).await?;
         }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 HeaderPair = tuple[bytes, bytes]
 Headers = Sequence[HeaderPair]
@@ -14,8 +14,8 @@ class ASGIVersions(TypedDict):
     spec_version: str
 
 
-class HTTPScope(TypedDict, total=False):
-    type: str
+class HTTPScope(TypedDict):
+    type: Literal['http']
     asgi: ASGIVersions
     http_version: str
     method: str
@@ -25,14 +25,14 @@ class HTTPScope(TypedDict, total=False):
     query_string: bytes
     root_path: str
     headers: Headers
-    client: tuple[str, int] | None
-    server: tuple[str, int | None] | None
-    state: State
-    extensions: Extensions
+    client: NotRequired[tuple[str, int] | None]
+    server: NotRequired[tuple[str, int | None] | None]
+    state: NotRequired[State]
+    extensions: NotRequired[Extensions]
 
 
-class WebSocketScope(TypedDict, total=False):
-    type: str
+class WebSocketScope(TypedDict):
+    type: Literal['websocket']
     asgi: ASGIVersions
     http_version: str
     scheme: str
@@ -41,17 +41,17 @@ class WebSocketScope(TypedDict, total=False):
     query_string: bytes
     root_path: str
     headers: Headers
-    client: tuple[str, int] | None
-    server: tuple[str, int | None] | None
+    client: NotRequired[tuple[str, int] | None]
+    server: NotRequired[tuple[str, int | None] | None]
     subprotocols: list[str]
-    state: State
-    extensions: Extensions
+    state: NotRequired[State]
+    extensions: NotRequired[Extensions]
 
 
-class LifespanScope(TypedDict, total=False):
-    type: str
+class LifespanScope(TypedDict):
+    type: Literal['lifespan']
     asgi: ASGIVersions
-    state: State
+    state: NotRequired[State]
 
 
 Scope = HTTPScope | WebSocketScope | LifespanScope

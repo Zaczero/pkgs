@@ -3,56 +3,87 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import os
-from dataclasses import replace
+from dataclasses import MISSING
 from pathlib import Path
 
-from ._config import CONFIG_PATH_ENV_VAR, Config, _env_values, config_options
+from ._config import (
+    _CONVENIENCE_KEYS,
+    _DEFAULT_BIND,
+    CONFIG_PATH_ENV_VAR,
+    Config,
+    _bind_from_convenience,
+    _env_values,
+    config_options,
+)
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
+    from typing import Any
 
     from ._types import ASGIApp
 
 
 class _AppendConfigValue(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ):
         current = getattr(namespace, self.dest, ())
-        items = list(current)
+        items: list[str]
+        if self.dest == 'bind' and isinstance(current, tuple):
+            items = []
+        elif isinstance(current, tuple | list):
+            items = [str(item) for item in current]
+        else:
+            items = []
+        if not isinstance(values, str):
+            raise TypeError(f'{self.dest} values must be strings')
         items.append(values)
         setattr(namespace, self.dest, items)
 
 
-def _add_config_arguments(parser: argparse.ArgumentParser, base: Config) -> None:
+def _add_config_arguments(parser: argparse.ArgumentParser, base: Config):
     for option in config_options():
-        kwargs: dict[str, object] = {
+        kwargs: dict[str, Any] = {
             'default': getattr(base, option.name),
             'dest': option.name,
             'help': option.help_text(),
         }
-        if option.metadata.cli_action == 'bool':
-            kwargs['action'] = argparse.BooleanOptionalAction
-        elif option.metadata.cli_action == 'append':
-            kwargs['action'] = _AppendConfigValue
-            if option.metadata.cli_type is not None:
-                kwargs['type'] = option.metadata.cli_type
-            if option.metadata.cli_metavar is not None:
-                kwargs['metavar'] = option.metadata.cli_metavar
-        else:
-            if option.metadata.cli_type is not None:
-                kwargs['type'] = option.metadata.cli_type
-            if option.metadata.cli_choices is not None:
-                kwargs['choices'] = option.metadata.cli_choices
-            if option.metadata.cli_metavar is not None:
-                kwargs['metavar'] = option.metadata.cli_metavar
+        match option.metadata.cli_action:
+            case 'bool':
+                kwargs['action'] = argparse.BooleanOptionalAction
+            case 'append':
+                kwargs['action'] = _AppendConfigValue
+                kwargs |= {
+                    key: value
+                    for key, value in (
+                        ('type', option.metadata.cli_type),
+                        ('metavar', option.metadata.cli_metavar),
+                    )
+                    if value is not None
+                }
+            case _:
+                kwargs |= {
+                    key: value
+                    for key, value in (
+                        ('type', option.metadata.cli_type),
+                        ('choices', option.metadata.cli_choices),
+                        ('metavar', option.metadata.cli_metavar),
+                    )
+                    if value is not None
+                }
         parser.add_argument(*option.cli_flags, **kwargs)
 
 
 def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentParser:
     try:
         version = importlib.metadata.version('h2corn')
-    except Exception:
+    except importlib.metadata.PackageNotFoundError:
         version = 'unknown'
 
     parser = argparse.ArgumentParser(
@@ -72,72 +103,88 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help=f'Path to a TOML configuration file. [env: {CONFIG_PATH_ENV_VAR}]',
     )
     parser.add_argument(
-        '-b',
-        '--bind',
-        metavar='ADDRESS',
-        help='The host and port to bind to, in HOST:PORT format. Overrides --host and --port. Also supports unix: socket paths.',
+        '--host',
+        default=argparse.SUPPRESS,
+        help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
+    )
+    parser.add_argument(
+        '-p',
+        '--port',
+        type=int,
+        default=argparse.SUPPRESS,
+        help='TCP port convenience override for a single listener. When --host is omitted, the base configuration host is reused.',
     )
     _add_config_arguments(parser, base)
     return parser
 
 
-def _apply_bind_overrides(
+def _apply_tcp_bind_sugar(
     parser: argparse.ArgumentParser,
-    values: dict[str, object],
-    bind: str | None,
-) -> None:
-    if not bind:
+    args: argparse.Namespace,
+    base: Config,
+    values: dict[str, Any],
+):
+    cli_bind = getattr(args, 'bind', None)
+    host = getattr(args, 'host', MISSING)
+    port = getattr(args, 'port', MISSING)
+    if isinstance(cli_bind, list):
+        if host is not MISSING or port is not MISSING:
+            parser.error('--bind cannot be combined with --host or --port')
+        values['bind'] = tuple(cli_bind)
         return
-    if bind.startswith('fd://'):
-        values['fd'] = int(bind[5:])
-        values['uds'] = None
+    if host is MISSING and port is MISSING:
         return
-    if bind.startswith('unix:'):
-        values['uds'] = Path(bind[5:])
-        values['fd'] = None
-        return
-    if ':' not in bind:
-        values['host'] = bind
-        values['fd'] = None
-        values['uds'] = None
-        return
-
-    if bind.startswith('['):
-        host, _, port = bind[1:].rpartition(']:')
-    else:
-        host, _, port = bind.rpartition(':')
-    values['host'] = host
-    values['fd'] = None
-    values['uds'] = None
-    try:
-        values['port'] = int(port)
-    except ValueError:
-        parser.error(f'invalid port in --bind: {port}')
+    if base.host is None or base.port is None:
+        parser.error('--host/--port require a single TCP listener base configuration')
+    bind = _bind_from_convenience(
+        base.host if host is MISSING else host,
+        base.port if port is MISSING else port,
+    )
+    assert bind is not None
+    values['bind'] = bind
 
 
 def parse_cli(
     argv: Sequence[str] | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, Config]:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('-c', '--config', type=Path)
     pre_args, _ = pre_parser.parse_known_args(argv)
 
-    env = env or os.environ
+    if env is None:
+        env = os.environ
     config_path = pre_args.config
     if config_path is None and (raw := env.get(CONFIG_PATH_ENV_VAR)):
         config_path = Path(raw)
-    base = Config.from_toml(config_path) if config_path is not None else Config()
-    env_values = _env_values(env)
-    if env_values:
-        base = replace(base, **env_values)
+    try:
+        base = Config.from_toml(config_path) if config_path is not None else Config()
+        env_values = _env_values(env)
+        if env_values:
+            values = {
+                option.name: env_values.get(option.name, getattr(base, option.name))
+                for option in config_options()
+            }
+            if _CONVENIENCE_KEYS & env_values.keys():
+                if base.host is None or base.port is None:
+                    raise ValueError(
+                        'host/port environment overrides require a single configured TCP listener'
+                    )
+                values['bind'] = _DEFAULT_BIND
+                values |= {
+                    key: env_values.get(key, getattr(base, key))
+                    for key in _CONVENIENCE_KEYS
+                }
+            base = Config(**values)
+    except ValueError as exc:
+        pre_parser.error(str(exc))
     parser = build_parser(base, config_path)
     args = parser.parse_args(argv)
     if args.target is None:
         parser.error('target is required')
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
-    _apply_bind_overrides(parser, values, args.bind)
+    _apply_tcp_bind_sugar(parser, args, base, values)
     return args.target, Config(**values)
 
 
@@ -145,7 +192,7 @@ def run_cli(
     serve: Callable[[ASGIApp, Config], None],
     import_target: Callable[[str], ASGIApp],
     argv: Sequence[str] | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     target, config = parse_cli(argv, env)
     serve(import_target(target), config)

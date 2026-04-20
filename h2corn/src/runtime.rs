@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    num::NonZeroU64,
     pin::Pin,
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -71,7 +72,7 @@ pub(crate) struct ConnectionScopeCache {
 
 pub(crate) struct RuntimeLimits {
     concurrency: Option<Arc<Semaphore>>,
-    max_requests: Option<u64>,
+    max_requests: Option<NonZeroU64>,
     completed_tasks: AtomicU64,
     retire_requested: AtomicBool,
     retire_trigger: Option<Py<PyAny>>,
@@ -88,7 +89,7 @@ impl RuntimeLimits {
         Some(Self {
             concurrency: config
                 .limit_concurrency
-                .map(|limit| Arc::new(Semaphore::new(limit))),
+                .map(|limit| Arc::new(Semaphore::new(limit.get()))),
             max_requests: config.max_requests,
             completed_tasks: AtomicU64::new(0),
             retire_requested: AtomicBool::new(false),
@@ -97,21 +98,19 @@ impl RuntimeLimits {
     }
 
     fn on_task_complete(&self) {
-        let Some(limit) = self.max_requests else {
-            return;
-        };
-        if self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1 < limit {
-            return;
+        if let Some(limit) = self.max_requests {
+            if self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1 < limit.get() {
+                return;
+            }
+            if self.retire_requested.swap(true, Ordering::Relaxed) {
+                return;
+            }
+            if let Some(trigger) = self.retire_trigger.as_ref() {
+                Python::attach(|py| {
+                    let _ = trigger.call0(py);
+                });
+            }
         }
-        if self.retire_requested.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        let Some(trigger) = self.retire_trigger.as_ref() else {
-            return;
-        };
-        Python::attach(|py| {
-            let _ = trigger.call0(py);
-        });
     }
 }
 
@@ -144,7 +143,7 @@ pub(crate) fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdm
     };
     Some(RequestAdmission {
         permit,
-        limits: Some(Arc::clone(limits)),
+        limits: limits.max_requests.map(|_| Arc::clone(limits)),
     })
 }
 

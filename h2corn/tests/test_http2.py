@@ -304,7 +304,7 @@ async def test_lifespan_startup_failure_is_reported() -> None:
         async def __aenter__(self) -> None:
             raise RuntimeError('boom')
 
-        async def __aexit__(self, *_: object) -> bool:
+        async def __aexit__(self, *_):
             return False
 
     def lifespan(app: FastAPI) -> FailingLifespan:

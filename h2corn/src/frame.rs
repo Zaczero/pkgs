@@ -108,6 +108,7 @@ impl ErrorCode {
     pub const STREAM_CLOSED: Self = Self(0x5);
     pub const FRAME_SIZE_ERROR: Self = Self(0x6);
     pub const REFUSED_STREAM: Self = Self(0x7);
+    pub const CANCEL: Self = Self(0x8);
     pub const COMPRESSION_ERROR: Self = Self(0x9);
 
     pub const fn new(value: u32) -> Self {
@@ -135,6 +136,7 @@ impl SettingId {
     pub const MAX_CONCURRENT_STREAMS: Self = Self(0x03);
     pub const INITIAL_WINDOW_SIZE: Self = Self(0x04);
     pub const MAX_FRAME_SIZE: Self = Self(0x05);
+    pub const MAX_HEADER_LIST_SIZE: Self = Self(0x06);
     pub const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
 
     pub const fn new(bits: u16) -> Self {
@@ -171,31 +173,30 @@ const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settings {
-    pub header_table_size: Option<usize>,
+    pub header_table_size: Option<u32>,
     pub enable_push: Option<bool>,
-    pub max_concurrent_streams: Option<usize>,
+    pub max_concurrent_streams: Option<u32>,
     pub initial_window_size: Option<u32>,
     pub max_frame_size: Option<NonZeroU32>,
+    pub max_header_list_size: Option<u32>,
     pub enable_connect_protocol: Option<bool>,
 }
 
 impl Settings {
     pub fn iter(self) -> impl Iterator<Item = (SettingId, u32)> {
         [
-            (
-                SettingId::HEADER_TABLE_SIZE,
-                self.header_table_size.map(|value| value as u32),
-            ),
+            (SettingId::HEADER_TABLE_SIZE, self.header_table_size),
             (SettingId::ENABLE_PUSH, self.enable_push.map(u32::from)),
             (
                 SettingId::MAX_CONCURRENT_STREAMS,
-                self.max_concurrent_streams.map(|value| value as u32),
+                self.max_concurrent_streams,
             ),
             (SettingId::INITIAL_WINDOW_SIZE, self.initial_window_size),
             (
                 SettingId::MAX_FRAME_SIZE,
                 self.max_frame_size.map(NonZeroU32::get),
             ),
+            (SettingId::MAX_HEADER_LIST_SIZE, self.max_header_list_size),
             (
                 SettingId::ENABLE_CONNECT_PROTOCOL,
                 self.enable_connect_protocol.map(u32::from),
@@ -207,19 +208,20 @@ impl Settings {
 
     pub(crate) fn apply_wire_pair(&mut self, id: SettingId, value: u32) -> Result<(), H2CornError> {
         match id {
-            SettingId::HEADER_TABLE_SIZE => self.header_table_size = Some(value as usize),
+            SettingId::HEADER_TABLE_SIZE => self.header_table_size = Some(value),
             SettingId::ENABLE_PUSH => {
                 if value > 1 {
                     return H2Error::SettingsEnablePushInvalid.err();
                 }
                 self.enable_push = Some(value != 0);
             }
-            SettingId::MAX_CONCURRENT_STREAMS => self.max_concurrent_streams = Some(value as usize),
+            SettingId::MAX_CONCURRENT_STREAMS => self.max_concurrent_streams = Some(value),
             SettingId::INITIAL_WINDOW_SIZE => self.initial_window_size = Some(value),
             SettingId::MAX_FRAME_SIZE => {
                 self.max_frame_size =
                     Some(NonZeroU32::new(value).ok_or(H2Error::SettingsMaxFrameSizeInvalid)?);
             }
+            SettingId::MAX_HEADER_LIST_SIZE => self.max_header_list_size = Some(value),
             SettingId::ENABLE_CONNECT_PROTOCOL => {
                 if value > 1 {
                     return H2Error::SettingsEnableConnectProtocolInvalid.err();
@@ -237,13 +239,6 @@ pub struct PeerSettings {
     pub header_table_size: Option<usize>,
     pub initial_window_size: Option<u32>,
     pub max_frame_size: Option<NonZeroU32>,
-}
-
-impl PeerSettings {
-    pub fn max_frame_size(self) -> usize {
-        self.max_frame_size
-            .map_or(DEFAULT_MAX_FRAME_SIZE, |size| size.get() as usize)
-    }
 }
 
 impl TryFrom<Settings> for PeerSettings {
@@ -264,7 +259,7 @@ impl TryFrom<Settings> for PeerSettings {
         }
 
         Ok(Self {
-            header_table_size: settings.header_table_size,
+            header_table_size: settings.header_table_size.map(|value| value as usize),
             initial_window_size: settings.initial_window_size,
             max_frame_size: settings.max_frame_size,
         })
@@ -272,7 +267,7 @@ impl TryFrom<Settings> for PeerSettings {
 }
 
 #[derive(Debug)]
-pub struct FrameReader<R> {
+pub(crate) struct FrameReader<R> {
     reader: R,
     buffer: BytesMut,
 }
@@ -281,18 +276,18 @@ impl<R> FrameReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    pub fn new(reader: R) -> Self {
+    pub(crate) fn new(reader: R) -> Self {
         Self {
             reader,
             buffer: BytesMut::with_capacity(64 * 1024),
         }
     }
 
-    pub fn with_buffer(reader: R, buffer: BytesMut) -> Self {
+    pub(crate) fn with_buffer(reader: R, buffer: BytesMut) -> Self {
         Self { reader, buffer }
     }
 
-    pub async fn read_at_least(&mut self, len: usize) -> Result<bool, H2CornError> {
+    pub(crate) async fn read_at_least(&mut self, len: usize) -> Result<bool, H2CornError> {
         while self.buffer.len() < len {
             self.buffer.reserve(len - self.buffer.len());
 
@@ -304,19 +299,27 @@ where
         Ok(true)
     }
 
-    pub fn buffered(&self) -> &[u8] {
+    pub(crate) async fn read_more_capped(&mut self, max_bytes: usize) -> Result<bool, H2CornError> {
+        debug_assert!(max_bytes != 0);
+        self.buffer.reserve(max_bytes);
+        let mut limited = (&mut self.reader).take(max_bytes as u64);
+        let read = limited.read_buf(&mut self.buffer).await?;
+        Ok(read != 0)
+    }
+
+    pub(crate) fn buffered(&self) -> &[u8] {
         self.buffer.as_ref()
     }
 
-    pub fn consume(&mut self, len: usize) {
+    pub(crate) fn consume(&mut self, len: usize) {
         self.buffer.advance(len);
     }
 
-    pub fn into_parts(self) -> (R, BytesMut) {
+    pub(crate) fn into_parts(self) -> (R, BytesMut) {
         (self.reader, self.buffer)
     }
 
-    pub async fn read_frame(
+    pub(crate) async fn read_frame(
         &mut self,
         max_frame_size: usize,
     ) -> Result<Option<RawFrame>, H2CornError> {
@@ -520,6 +523,18 @@ pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2C
 mod tests {
     use super::*;
 
+    fn parse_wire_settings(bytes: &[u8]) -> Vec<(u16, u32)> {
+        bytes
+            .chunks_exact(size_of::<WireSetting>())
+            .map(|entry| {
+                (
+                    u16::from_be_bytes([entry[0], entry[1]]),
+                    u32::from_be_bytes([entry[2], entry[3], entry[4], entry[5]]),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn settings_zero_values_round_trip() {
         let settings = Settings {
@@ -528,6 +543,7 @@ mod tests {
             max_concurrent_streams: Some(0),
             initial_window_size: Some(0),
             max_frame_size: Some(NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32).unwrap()),
+            max_header_list_size: Some(0),
             enable_connect_protocol: Some(true),
         };
         let mut frame = BytesMut::new();
@@ -545,6 +561,30 @@ mod tests {
         let parsed = parse_settings(&raw).unwrap();
         assert_eq!(parsed.header_table_size, Some(0));
         assert_eq!(parsed.initial_window_size, Some(0));
+    }
+
+    #[test]
+    fn append_settings_preserves_full_u32_values() {
+        let settings = Settings {
+            header_table_size: Some(u32::MAX),
+            enable_push: None,
+            max_concurrent_streams: Some(u32::MAX),
+            initial_window_size: None,
+            max_frame_size: None,
+            max_header_list_size: Some(u32::MAX),
+            enable_connect_protocol: None,
+        };
+        let mut frame = BytesMut::new();
+        append_settings(&mut frame, settings);
+
+        assert_eq!(
+            parse_wire_settings(&frame[FRAME_HEADER_LEN..]),
+            vec![
+                (SettingId::HEADER_TABLE_SIZE.bits(), u32::MAX),
+                (SettingId::MAX_CONCURRENT_STREAMS.bits(), u32::MAX),
+                (SettingId::MAX_HEADER_LIST_SIZE.bits(), u32::MAX),
+            ],
+        );
     }
 
     #[test]

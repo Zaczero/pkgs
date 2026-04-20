@@ -4,7 +4,7 @@ use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::frame::StreamId;
-use crate::h2::new_stream_map;
+use crate::h2::{StreamMap, new_stream_map};
 use crate::smallvec_deque::SmallVecDeque;
 
 use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
@@ -28,7 +28,7 @@ struct PendingAppWrites {
 struct WriterIngressQueue {
     closed: bool,
     ready_streams: VecDeque<u32>,
-    streams: crate::h2::StreamMap<PendingAppWrites>,
+    streams: StreamMap<PendingAppWrites>,
 }
 
 pub(super) struct WriterIngress {

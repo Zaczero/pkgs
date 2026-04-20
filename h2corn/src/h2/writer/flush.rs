@@ -17,6 +17,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, FrameFlags, FrameHeader, FrameType, StreamId};
+use crate::h2::StreamMap;
 #[cfg(test)]
 use crate::h2::new_stream_map;
 use crate::http::pathsend::PathStreamer;
@@ -337,7 +338,7 @@ where
 
 pub(crate) async fn flush_pending_data<W>(
     writer: &mut BufWriter<W>,
-    streams: &mut crate::h2::StreamMap<StreamWriteState>,
+    streams: &mut StreamMap<StreamWriteState>,
     ready_streams: &mut VecDeque<u32>,
     connection_send_window: &mut i64,
     peer_max_frame_size: usize,

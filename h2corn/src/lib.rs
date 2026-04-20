@@ -11,6 +11,7 @@ mod ext;
 mod frame;
 mod h1;
 mod h2;
+mod header_value;
 mod hpack;
 mod http;
 mod proxy;
@@ -23,24 +24,21 @@ mod websocket;
 
 use bytes::Bytes;
 use config::{
-    Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerBind, ServerConfig,
+    BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
     WebSocketConfig,
 };
-use error::IntoPyResult;
+use error::{ConfigError, IntoPyResult, into_pyerr};
+use header_value::header_value_is_valid;
 use parking_lot::RwLock;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
-use pyo3::{
-    conversion::FromPyObjectOwned, exceptions::PyValueError, prelude::*, sync::OnceExt,
-    types::PyAnyMethods,
-};
+use pyo3::{conversion::FromPyObjectOwned, prelude::*, sync::OnceExt, types::PyAnyMethods};
 use pyo3_async_runtimes::tokio::{
     future_into_py_with_locals, get_current_locals, init as init_tokio,
 };
 use smallvec::SmallVec;
 use std::{
-    num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
-    sync::{Arc, Once},
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+    sync::{Arc, Once, OnceLock},
     time::Duration,
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
@@ -50,11 +48,9 @@ use crate::runtime::SharedApp;
 const TOKIO_EVENT_INTERVAL: u32 = 31;
 const TOKIO_GLOBAL_QUEUE_INTERVAL: u32 = 31;
 
-fn finite_duration(name: &str, seconds: f64) -> PyResult<Duration> {
+fn finite_duration(name: &'static str, seconds: f64) -> PyResult<Duration> {
     if !seconds.is_finite() || seconds < 0.0 {
-        return Err(PyValueError::new_err(format!(
-            "{name} must be a finite non-negative number",
-        )));
+        return Err(into_pyerr(ConfigError::invalid_finite_duration(name)));
     }
     Ok(Duration::from_secs_f64(seconds))
 }
@@ -105,9 +101,7 @@ impl<'py> PyConfig<'py> {
             "off" => Ok(ProxyProtocolMode::Off),
             "v1" => Ok(ProxyProtocolMode::V1),
             "v2" => Ok(ProxyProtocolMode::V2),
-            value => Err(PyValueError::new_err(format!(
-                "invalid proxy_protocol mode: {value}",
-            ))),
+            value => Err(into_pyerr(ConfigError::invalid_proxy_protocol_mode(value))),
         }
     }
 
@@ -136,31 +130,24 @@ impl<'py> PyConfig<'py> {
         }))
     }
 
-    fn bind(&self) -> PyResult<ServerBind> {
-        if let Some(fd) = self.get::<Option<i64>>("fd")? {
-            return Ok(ServerBind::Fd {
-                fd,
-                is_unix: self.get::<Option<bool>>("_fd_is_unix")?.unwrap_or(false),
-            });
+    fn binds(&self) -> PyResult<Box<[BindTarget]>> {
+        let raw_binds = self.get::<Vec<String>>("bind")?;
+        let fd_is_unix = self.get::<Vec<bool>>("_bind_fd_is_unix")?;
+        if raw_binds.len() != fd_is_unix.len() {
+            return Err(into_pyerr(ConfigError::BindMetadataLengthMismatch));
         }
-        if let Some(path) = self.get::<Option<PathBuf>>("uds")? {
-            return Ok(ServerBind::Unix {
-                path: Box::from(
-                    path.to_str()
-                        .ok_or_else(|| PyValueError::new_err("uds must be a valid UTF-8 path"))?,
-                ),
-            });
-        }
-
-        Ok(ServerBind::Tcp {
-            host: self.boxed_str("host")?,
-            port: self.get("port")?,
-        })
+        raw_binds
+            .iter()
+            .zip(fd_is_unix)
+            .map(|(raw, is_unix)| parse_bind_target(raw, is_unix))
+            .collect::<PyResult<Vec<_>>>()
+            .map(Vec::into_boxed_slice)
     }
 
     fn http1(&self) -> PyResult<Http1Config> {
         Ok(Http1Config {
             enabled: self.get("http1")?,
+            limit_request_head_size: self.nonzero_usize("limit_request_head_size")?,
             limit_request_line: self.nonzero_usize("limit_request_line")?,
             limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             limit_request_field_size: self.nonzero_usize("limit_request_field_size")?,
@@ -170,7 +157,12 @@ impl<'py> PyConfig<'py> {
     fn http2(&self) -> PyResult<Http2Config> {
         Ok(Http2Config {
             max_concurrent_streams: self.get("max_concurrent_streams")?,
-            max_header_list_size: self.nonzero_usize("h2_max_header_list_size")?,
+            max_header_list_size: self
+                .get::<Option<u32>>("h2_max_header_list_size")?
+                .and_then(|value| NonZeroUsize::new(value as usize)),
+            max_header_block_size: self.nonzero_usize("h2_max_header_block_size")?,
+            max_inbound_frame_size: NonZeroU32::new(self.get("h2_max_inbound_frame_size")?)
+                .expect("configured inbound frame size is non-zero"),
         })
     }
 
@@ -196,21 +188,17 @@ impl<'py> PyConfig<'py> {
         let mut headers = Vec::with_capacity(raw_headers.len());
         for raw in raw_headers {
             let Some((name, value)) = raw.split_once(':') else {
-                return Err(PyValueError::new_err(format!(
-                    "invalid response header {raw:?}: expected `name: value`",
+                return Err(into_pyerr(ConfigError::invalid_response_header_format(
+                    &raw,
                 )));
             };
             let name = name.trim();
             let value = value.trim();
             if !http::header::response_header_name_is_valid(name.as_bytes()) {
-                return Err(PyValueError::new_err(format!(
-                    "invalid response header name {name:?}",
-                )));
+                return Err(into_pyerr(ConfigError::invalid_response_header_name(name)));
             }
-            if !http::header::header_value_is_valid(value.as_bytes()) {
-                return Err(PyValueError::new_err(format!(
-                    "invalid response header value for {name:?}",
-                )));
+            if !header_value_is_valid(value.as_bytes()) {
+                return Err(into_pyerr(ConfigError::invalid_response_header_value(name)));
             }
             headers.push((
                 Bytes::copy_from_slice(name.as_bytes()),
@@ -229,7 +217,7 @@ impl<'py> PyConfig<'py> {
         let max_request_body_size = self.nonzero_u64("max_request_body_size")?;
 
         Ok(ServerConfig {
-            bind: self.bind()?,
+            binds: self.binds()?,
             access_log: self.get("access_log")?,
             root_path: self.boxed_str("root_path")?,
             http1: self.http1()?,
@@ -237,11 +225,12 @@ impl<'py> PyConfig<'py> {
             max_request_body_size,
             timeout_graceful_shutdown: self.duration("timeout_graceful_shutdown")?,
             timeout_keep_alive: self.optional_duration("timeout_keep_alive")?,
-            timeout_read: self.optional_duration("timeout_read")?,
-            limit_concurrency: self
-                .nonzero_usize("limit_concurrency")?
-                .map(NonZeroUsize::get),
-            max_requests: self.nonzero_u64("max_requests")?.map(NonZeroU64::get),
+            timeout_request_header: self.optional_duration("timeout_request_header")?,
+            timeout_request_body_idle: self.optional_duration("timeout_request_body_idle")?,
+            limit_concurrency: self.nonzero_usize("limit_concurrency")?,
+            limit_connections: self.nonzero_usize("limit_connections")?,
+            max_requests: self.nonzero_u64("max_requests")?,
+            runtime_threads: self.get("runtime_threads")?,
             websocket: self.websocket(max_request_body_size)?,
             proxy: self.proxy()?,
             timeout_handshake: self.duration("timeout_handshake")?,
@@ -250,17 +239,94 @@ impl<'py> PyConfig<'py> {
     }
 }
 
-fn init_tokio_runtime(py: Python<'_>) {
+fn parse_bind_target(raw: &str, fd_is_unix: bool) -> PyResult<BindTarget> {
+    if let Some(path) = raw.strip_prefix("unix:") {
+        if path.is_empty() {
+            return Err(into_pyerr(ConfigError::invalid_bind_target(
+                "unix",
+                raw,
+                "path must not be empty",
+            )));
+        }
+        return Ok(BindTarget::Unix {
+            path: Box::from(path),
+        });
+    }
+    if let Some(fd) = raw.strip_prefix("fd://") {
+        let fd = fd.parse::<i64>().map_err(|_| {
+            into_pyerr(ConfigError::invalid_bind_target("fd", raw, "invalid value"))
+        })?;
+        if fd < 0 {
+            return Err(into_pyerr(ConfigError::invalid_bind_target(
+                "fd",
+                raw,
+                "must be non-negative",
+            )));
+        }
+        return Ok(BindTarget::Fd {
+            fd,
+            is_unix: fd_is_unix,
+        });
+    }
+    let (host, port) = if let Some(rest) = raw.strip_prefix('[') {
+        let (host, port) = rest.rsplit_once("]:").ok_or_else(|| {
+            into_pyerr(ConfigError::invalid_bind_target(
+                "TCP",
+                raw,
+                "expected host:port",
+            ))
+        })?;
+        (host, port)
+    } else {
+        raw.rsplit_once(':').ok_or_else(|| {
+            into_pyerr(ConfigError::invalid_bind_target(
+                "TCP",
+                raw,
+                "expected host:port",
+            ))
+        })?
+    };
+    if host.is_empty() {
+        return Err(into_pyerr(ConfigError::invalid_bind_target(
+            "TCP",
+            raw,
+            "host must not be empty",
+        )));
+    }
+    Ok(BindTarget::Tcp {
+        host: Box::from(host),
+        port: port.parse::<u16>().map_err(|_| {
+            into_pyerr(ConfigError::invalid_bind_target("TCP", raw, "invalid port"))
+        })?,
+    })
+}
+
+fn init_tokio_runtime(py: Python<'_>, worker_threads: usize) -> PyResult<()> {
     static TOKIO_INIT: Once = Once::new();
+    static TOKIO_WORKER_THREADS: OnceLock<usize> = OnceLock::new();
+
+    if let Some(initialized_threads) = TOKIO_WORKER_THREADS.get() {
+        if *initialized_threads != worker_threads {
+            return Err(into_pyerr(
+                ConfigError::runtime_threads_already_initialized(
+                    *initialized_threads,
+                    worker_threads,
+                ),
+            ));
+        }
+    } else {
+        let _ = TOKIO_WORKER_THREADS.set(worker_threads);
+    }
 
     TOKIO_INIT.call_once_py_attached(py, || {
         let mut builder = TokioRuntimeBuilder::new_multi_thread();
-        builder.worker_threads(2);
+        builder.worker_threads(worker_threads);
         builder.event_interval(TOKIO_EVENT_INTERVAL);
         builder.global_queue_interval(TOKIO_GLOBAL_QUEUE_INTERVAL);
         builder.enable_all();
         init_tokio(builder);
     });
+    Ok(())
 }
 
 #[pyfunction]
@@ -271,16 +337,17 @@ fn emit_banner(config: &Bound<'_, PyAny>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn serve_fd<'py>(
+fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
-    fd: i64,
+    fds: Vec<i64>,
     config: &Bound<'py, PyAny>,
     shutdown_trigger: Py<PyAny>,
     retire_trigger: Option<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    init_tokio_runtime(py);
-    let config: &'static ServerConfig = Box::leak(Box::new(PyConfig(config).server_config()?));
+    let config = PyConfig(config).server_config()?;
+    init_tokio_runtime(py, config.runtime_threads)?;
+    let config: &'static ServerConfig = Box::leak(Box::new(config));
 
     let locals = get_current_locals(py)?;
     let limits = runtime::RuntimeLimits::new(config, retire_trigger).map(Arc::new);
@@ -290,7 +357,7 @@ fn serve_fd<'py>(
         limits,
     });
     future_into_py_with_locals(py, locals, async move {
-        server::serve_from_fd(app, fd, config, shutdown_trigger)
+        server::serve_from_fds(app, fds.into_boxed_slice(), config, shutdown_trigger)
             .await
             .into_pyresult()?;
         Python::attach(|py| Ok(py.None()))
@@ -301,7 +368,7 @@ fn serve_fd<'py>(
 #[pyo3(name = "_lib")]
 fn h2corn_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_banner, m)?)?;
-    m.add_function(wrap_pyfunction!(serve_fd, m)?)?;
+    m.add_function(wrap_pyfunction!(serve_fds, m)?)?;
     Ok(())
 }
 
@@ -327,30 +394,33 @@ mod tests {
                 .expect("stub class is created");
             let config = cls.call0().expect("stub config is instantiated");
 
-            config.setattr("uds", py.None()).unwrap();
-            config.setattr("fd", py.None()).unwrap();
-            config.setattr("_fd_is_unix", py.None()).unwrap();
-            config.setattr("host", "127.0.0.9").unwrap();
-            config.setattr("port", 48_123).unwrap();
+            config.setattr("bind", ("127.0.0.9:48123",)).unwrap();
+            config.setattr("_bind_fd_is_unix", (false,)).unwrap();
             config.setattr("max_requests", 41).unwrap();
             config.setattr("max_requests_jitter", 7).unwrap();
             config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
             config.setattr("access_log", false).unwrap();
             config.setattr("root_path", "/api").unwrap();
             config.setattr("http1", false).unwrap();
+            config.setattr("limit_request_head_size", 8_193).unwrap();
             config.setattr("limit_request_line", 4_097).unwrap();
             config.setattr("limit_request_fields", 17).unwrap();
             config.setattr("limit_request_field_size", 211).unwrap();
             config.setattr("max_concurrent_streams", 321).unwrap();
             config.setattr("h2_max_header_list_size", 65_432).unwrap();
+            config.setattr("h2_max_header_block_size", 76_543).unwrap();
+            config.setattr("h2_max_inbound_frame_size", 65_536).unwrap();
             config.setattr("max_request_body_size", 987_654).unwrap();
             config.setattr("timeout_handshake", 1.25).unwrap();
             config.setattr("timeout_graceful_shutdown", 12.5).unwrap();
             config.setattr("timeout_keep_alive", 2.5).unwrap();
-            config.setattr("timeout_read", 4.5).unwrap();
+            config.setattr("timeout_request_header", 4.5).unwrap();
+            config.setattr("timeout_request_body_idle", 5.5).unwrap();
             config.setattr("timeout_lifespan_startup", 6.5).unwrap();
             config.setattr("timeout_lifespan_shutdown", 8.5).unwrap();
             config.setattr("limit_concurrency", 23).unwrap();
+            config.setattr("limit_connections", 29).unwrap();
+            config.setattr("runtime_threads", 7).unwrap();
             config
                 .setattr("websocket_max_message_size", 54_321)
                 .unwrap();
@@ -374,19 +444,24 @@ mod tests {
                 .server_config()
                 .expect("config extraction succeeds");
 
-            match extracted.bind {
-                ServerBind::Tcp { host, port } => {
+            match &extracted.binds[..] {
+                [BindTarget::Tcp { host, port }] => {
                     assert_eq!(host.as_ref(), "127.0.0.9");
-                    assert_eq!(port, 48_123);
+                    assert_eq!(*port, 48_123);
                 }
-                ServerBind::Unix { .. } | ServerBind::Fd { .. } => {
-                    panic!("expected TCP bind")
-                }
+                _ => panic!("expected one TCP bind"),
             }
             assert!(!extracted.access_log);
             assert_eq!(extracted.root_path.as_ref(), "/api");
 
             assert!(!extracted.http1.enabled);
+            assert_eq!(
+                extracted
+                    .http1
+                    .limit_request_head_size
+                    .map(NonZeroUsize::get),
+                Some(8_193),
+            );
             assert_eq!(
                 extracted.http1.limit_request_line.map(NonZeroUsize::get),
                 Some(4_097),
@@ -408,6 +483,11 @@ mod tests {
                 extracted.http2.max_header_list_size.map(NonZeroUsize::get),
                 Some(65_432),
             );
+            assert_eq!(
+                extracted.http2.max_header_block_size.map(NonZeroUsize::get),
+                Some(76_543),
+            );
+            assert_eq!(extracted.http2.max_inbound_frame_size.get(), 65_536);
 
             assert_eq!(
                 extracted.max_request_body_size.map(NonZeroU64::get),
@@ -422,9 +502,18 @@ mod tests {
                 extracted.timeout_keep_alive,
                 Some(Duration::from_secs_f64(2.5))
             );
-            assert_eq!(extracted.timeout_read, Some(Duration::from_secs_f64(4.5)));
-            assert_eq!(extracted.limit_concurrency, Some(23));
-            assert_eq!(extracted.max_requests, Some(41));
+            assert_eq!(
+                extracted.timeout_request_header,
+                Some(Duration::from_secs_f64(4.5))
+            );
+            assert_eq!(
+                extracted.timeout_request_body_idle,
+                Some(Duration::from_secs_f64(5.5))
+            );
+            assert_eq!(extracted.limit_concurrency.map(NonZeroUsize::get), Some(23));
+            assert_eq!(extracted.limit_connections.map(NonZeroUsize::get), Some(29));
+            assert_eq!(extracted.max_requests.map(NonZeroU64::get), Some(41));
+            assert_eq!(extracted.runtime_threads, 7);
 
             assert_eq!(
                 extracted
@@ -464,6 +553,15 @@ mod tests {
                 extracted.proxy.trusted_peers[2],
                 TrustedPeer::Unix
             ));
+        });
+    }
+
+    #[test]
+    fn parse_bind_target_rejects_empty_unix_path_and_negative_fd() {
+        Python::attach(|_| {
+            assert!(parse_bind_target("unix:", false).is_err());
+            assert!(parse_bind_target("fd://-1", false).is_err());
+            assert!(parse_bind_target(":8080", false).is_err());
         });
     }
 }
