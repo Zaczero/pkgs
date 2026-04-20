@@ -1,4 +1,5 @@
 import io
+import os
 import socket
 import sys
 from pathlib import Path
@@ -232,6 +233,45 @@ def test_drop_process_privileges_sets_groups_before_ids(
         ('setgid', (1001,)),
         ('setuid', (1000,)),
     ]
+
+
+def test_pidfile_writes_and_cleans_up_regular_file(tmp_path: Path) -> None:
+    from h2corn import _server
+
+    pid_path = tmp_path / 'h2corn.pid'
+
+    with _server._pidfile(Config(pid=pid_path)):
+        assert pid_path.read_text() == f'{os.getpid()}\n'
+
+    assert not pid_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='symlink semantics differ')
+def test_pidfile_rejects_preexisting_symlink(tmp_path: Path) -> None:
+    from h2corn import _server
+
+    pid_path = tmp_path / 'h2corn.pid'
+    victim = tmp_path / 'victim.txt'
+    victim.write_text('SECRET\n')
+    pid_path.symlink_to(victim)
+
+    with pytest.raises(OSError), _server._pidfile(Config(pid=pid_path)):
+        pass
+
+    assert victim.read_text() == 'SECRET\n'
+    assert pid_path.is_symlink()
+
+
+def test_pidfile_cleanup_keeps_replaced_path(tmp_path: Path) -> None:
+    from h2corn import _server
+
+    pid_path = tmp_path / 'h2corn.pid'
+
+    with _server._pidfile(Config(pid=pid_path)):
+        pid_path.unlink()
+        pid_path.write_text('replacement\n')
+
+    assert pid_path.read_text() == 'replacement\n'
 
 
 def test_import_target_requires_module_app_form() -> None:

@@ -40,15 +40,38 @@ def _pidfile(config: Config):
         return
 
     pid_text = f'{os.getpid()}\n'
-    path.write_text(pid_text)
-    try:
-        yield
-    finally:
+
+    fd = os.open(
+        path,
+        (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, 'O_CLOEXEC', 0)
+            | getattr(os, 'O_NOFOLLOW', 0)
+        ),
+        0o666,
+    )
+    created = os.fstat(fd)
+
+    def unlink_pidfile():
         try:
-            if path.read_text() == pid_text:
+            current = os.lstat(path)
+            if os.path.samestat(created, current):
                 path.unlink()
         except OSError:
             pass
+
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            _ = handle.write(pid_text)
+    except Exception:
+        unlink_pidfile()
+        raise
+    try:
+        yield
+    finally:
+        unlink_pidfile()
 
 
 @contextmanager
@@ -180,10 +203,13 @@ class Server:
             )
 
         identity = _resolve_process_identity(self.config)
-        with _process_umask(self.config), _bound_sockets(
-            self.config,
-            socket_owner=(identity.uid, identity.gid),
-        ) as socks:
+        with (
+            _process_umask(self.config),
+            _bound_sockets(
+                self.config,
+                socket_owner=(identity.uid, identity.gid),
+            ) as socks,
+        ):
             _drop_process_privileges(identity)
             with _pidfile(self.config):
                 from ._lib import emit_banner
