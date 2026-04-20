@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from typing import Any
 
-    from ._types import ASGIApp
-
 _DEFAULT_RELOAD_INCLUDE_PATTERNS = ('*.py',)
 _DEFAULT_RELOAD_EXCLUDE_PATTERNS = ('.*', '.py[cod]', '.sw.*', '~*')
 _TomlLiteralValue = None | bool | str | int | float | tuple[object, ...] | list[object]
@@ -449,8 +447,7 @@ def parse_cli(
 
 
 def run_cli(
-    serve: Callable[[ASGIApp, Config], None],
-    import_target: Callable[[ImportSettings], ASGIApp],
+    serve: Callable[[ImportSettings, Config], None],
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> None:
@@ -473,4 +470,4 @@ def run_cli(
             env=env,
         )
         return
-    serve(import_target(import_settings), config)
+    serve(import_settings, config)

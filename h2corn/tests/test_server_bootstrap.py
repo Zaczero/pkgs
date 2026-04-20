@@ -235,6 +235,91 @@ def test_drop_process_privileges_sets_groups_before_ids(
     ]
 
 
+def test_serve_cli_target_defers_import_when_privilege_drop_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    captured = {}
+    imported = False
+
+    def _import_target(_import_settings):
+        nonlocal imported
+        imported = True
+        return object()
+
+    monkeypatch.setattr(_server.sys, 'platform', 'linux')
+    monkeypatch.setattr(_server, '_import_target', _import_target)
+
+    from h2corn import _supervisor
+
+    monkeypatch.setattr(
+        _supervisor,
+        '_serve_supervisor',
+        lambda app, config: captured.setdefault('supervisor', (app, config)),
+    )
+
+    import_settings = ImportSettings(target='example:app')
+    config = Config(user='www-data')
+
+    _server._serve_cli_target(import_settings, config)
+
+    assert imported is False
+    assert captured['supervisor'] == (import_settings, config)
+
+
+def test_worker_entry_imports_after_privilege_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server, _supervisor
+    from h2corn._cli import ImportSettings
+
+    order: list[str] = []
+    captured = {}
+
+    async def imported_app(_scope, _receive, _send):
+        return None
+
+    monkeypatch.setattr(
+        _server,
+        '_drop_process_privileges',
+        lambda _identity: order.append('drop'),
+    )
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda _import_settings: order.append('import') or imported_app,
+    )
+
+    class FakeServer:
+        def __init__(self, app, config):
+            captured['app'] = app
+            self.app = app
+            self.config = config
+
+        async def _serve_fds(self, *_args, **_kwargs):
+            return None
+
+        def shutdown(self, kind='stop'):
+            return None
+
+        def restart(self):
+            return None
+
+    async def _serve_with_lifespan(_app, _serve, **_kwargs):
+        return None
+
+    monkeypatch.setattr(_server, 'Server', FakeServer)
+    monkeypatch.setattr(_supervisor, '_serve_with_lifespan', _serve_with_lifespan)
+
+    import_settings = ImportSettings(target='example:app')
+    _supervisor._worker_entry(import_settings, Config(), (), object())
+
+    assert order == ['drop', 'import']
+    assert captured['app'] is imported_app
+
+
 def test_pidfile_writes_and_cleans_up_regular_file(tmp_path: Path) -> None:
     from h2corn import _server
 

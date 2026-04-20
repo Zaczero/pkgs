@@ -11,6 +11,8 @@ import time
 from collections import deque
 from dataclasses import replace
 
+from ._cli import ImportSettings
+from ._lifespan import _cancel_task, _serve_with_lifespan
 from ._socket import (
     _bound_sockets,
     _drain_fd,
@@ -75,14 +77,16 @@ def _clone_config(config: Config, /, **overrides):
 
 
 def _worker_entry(
-    app: ASGIApp,
+    app: ASGIApp | ImportSettings,
     config: Config,
     fds: tuple[int, ...],
     identity,
 ):
-    from ._server import Server, _drop_process_privileges
+    from ._server import Server, _drop_process_privileges, _import_target
 
     _drop_process_privileges(identity)
+    if isinstance(app, ImportSettings):
+        app = _import_target(app)
     server = Server(app, _clone_config(config, workers=1))
     control_write_fd = config._control_write_fd
 
@@ -119,13 +123,9 @@ def _worker_entry(
                 else None,
             )
         finally:
-            from ._lifespan import _cancel_task
-
             await _cancel_task(heartbeat_task)
             if control_write_fd is not None:
                 os.close(control_write_fd)
-
-    from ._lifespan import _serve_with_lifespan
 
     asyncio.run(
         _serve_with_lifespan(
@@ -138,7 +138,7 @@ def _worker_entry(
     )
 
 
-def _serve_supervisor(app: ASGIApp, config: Config):
+def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 

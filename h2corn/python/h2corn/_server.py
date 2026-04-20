@@ -254,6 +254,17 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     asyncio.run(Server(app, config).serve())
 
 
+def _serve_cli_target(import_settings: ImportSettings, config: Config) -> None:
+    if sys.platform != 'win32' and (config.user is not None or config.group is not None):
+        from ._supervisor import _serve_supervisor
+
+        with _process_umask(config), _pidfile(config):
+            _serve_supervisor(import_settings, config)
+        return
+
+    serve(_import_target(import_settings), config)
+
+
 def _load_env_file(path: Path):
     with path.open(encoding='utf-8') as handle:
         for number, raw_line in enumerate(handle, start=1):
@@ -322,7 +333,7 @@ def _import_target(import_settings: ImportSettings):
 
 
 def main() -> None:
-    run_cli(serve, _import_target)
+    run_cli(_serve_cli_target)
 
 
 if __name__ == '__main__':
