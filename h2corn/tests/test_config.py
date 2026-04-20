@@ -384,6 +384,82 @@ def test_parse_cli_accepts_print_config_without_target() -> None:
     assert isinstance(config, Config)
 
 
+def test_parse_cli_accepts_reload_flag() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--reload', 'example:app'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(reload=True)
+    assert import_settings == ImportSettings(target='example:app')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_reload_dirs() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--reload', '--reload-dir', 'src', '--reload-dir', 'locale', 'example:app'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(
+        reload=True,
+        reload_dirs=(Path('src').resolve(), Path('locale').resolve()),
+    )
+    assert import_settings == ImportSettings(target='example:app')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_rejects_reload_with_multiple_workers() -> None:
+    with pytest.raises(SystemExit):
+        parse_cli(['--reload', '--workers', '2', 'example:app'], {})
+
+
+def test_parse_cli_rejects_reload_with_check_config() -> None:
+    with pytest.raises(SystemExit):
+        parse_cli(['--reload', '--check-config', 'example:app'], {})
+
+
+def test_parse_cli_accepts_reload_patterns() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        [
+            '--reload',
+            '--reload-include',
+            '*.mo',
+            '--reload-exclude',
+            'tests',
+            '--reload-exclude',
+            'scripts',
+            'example:app',
+        ],
+        {},
+    )
+
+    assert cli_settings == CliSettings(
+        reload=True,
+        reload_includes=('*.py', '*.mo'),
+        reload_excludes=(
+            '.*',
+            '.py[cod]',
+            '.sw.*',
+            '~*',
+            'tests',
+            'scripts',
+        ),
+    )
+    assert import_settings == ImportSettings(target='example:app')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_rejects_reload_patterns_without_reload() -> None:
+    with pytest.raises(SystemExit):
+        parse_cli(['--reload-exclude', 'tests', 'example:app'], {})
+
+
+def test_parse_cli_rejects_reload_dirs_without_reload() -> None:
+    with pytest.raises(SystemExit):
+        parse_cli(['--reload-dir', 'src', 'example:app'], {})
+
+
 def test_parse_cli_rejects_host_port_override_for_multi_bind_base(
     tmp_path: Path,
 ) -> None:

@@ -33,7 +33,7 @@ _WORKER_FAILURE_BACKOFF_INITIAL = 0.1
 _WORKER_FAILURE_BACKOFF_MAX = 1.0
 _CONTROL_HEARTBEAT = b'H'
 _CONTROL_RETIRE = b'R'
-_RESTART_SIGNAL = getattr(signal, 'SIGUSR1', signal.SIGTERM)
+_RESTART_SIGNAL = signal.SIGUSR1
 
 
 def _log_line(message: str):
@@ -78,7 +78,7 @@ def _worker_entry(app: ASGIApp, config: Config, fds: tuple[int, ...]):
     from ._server import Server
 
     server = Server(app, _clone_config(config, workers=1))
-    control_write_fd = getattr(config, '_control_write_fd', None)
+    control_write_fd = config._control_write_fd
 
     def _send_control(message: bytes):
         if control_write_fd is None:
@@ -95,18 +95,15 @@ def _worker_entry(app: ASGIApp, config: Config, fds: tuple[int, ...]):
 
     async def _serve_app(app: ASGIApp):
         loop = asyncio.get_running_loop()
-        try:
-            loop.add_signal_handler(signal.SIGINT, server.shutdown)
-            loop.add_signal_handler(signal.SIGTERM, server.shutdown)
-            if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
-                loop.add_signal_handler(_RESTART_SIGNAL, server.restart)
-        except NotImplementedError:
-            pass
-        heartbeat_task = None
-        if config.timeout_worker_healthcheck > 0:
-            heartbeat_task = asyncio.create_task(
-                _heartbeat_loop(config.timeout_worker_healthcheck / 3)
-            )
+        loop.add_signal_handler(signal.SIGINT, server.shutdown)
+        loop.add_signal_handler(signal.SIGTERM, server.shutdown)
+        if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
+            loop.add_signal_handler(_RESTART_SIGNAL, server.restart)
+        heartbeat_task = (
+            asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
+            if config.timeout_worker_healthcheck > 0
+            else None
+        )
         try:
             await server._serve_fds(
                 app,

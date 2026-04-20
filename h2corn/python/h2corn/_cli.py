@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
     from ._types import ASGIApp
 
+_DEFAULT_RELOAD_INCLUDE_PATTERNS = ('*.py',)
+_DEFAULT_RELOAD_EXCLUDE_PATTERNS = ('.*', '.py[cod]', '.sw.*', '~*')
+
 
 @dataclass(frozen=True, slots=True)
 class ImportSettings:
@@ -38,6 +41,10 @@ class ImportSettings:
 class CliSettings:
     check_config: bool = False
     print_config: bool = False
+    reload: bool = False
+    reload_dirs: tuple[Path, ...] = ()
+    reload_includes: tuple[str, ...] = _DEFAULT_RELOAD_INCLUDE_PATTERNS
+    reload_excludes: tuple[str, ...] = _DEFAULT_RELOAD_EXCLUDE_PATTERNS
 
 
 class _AppendConfigValue(argparse.Action):
@@ -165,6 +172,32 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help='Print the fully resolved configuration, then exit without importing the target or starting the server.',
     )
     parser.add_argument(
+        '--reload',
+        action='store_true',
+        help='Restart the server when watched Python files change. Development only.',
+    )
+    parser.add_argument(
+        '--reload-dir',
+        action=_AppendConfigValue,
+        default=(),
+        help='Directory to watch for reload. Repeat the flag to add more directories. Overrides the default watch root.',
+        metavar='DIR',
+    )
+    parser.add_argument(
+        '--reload-include',
+        action=_AppendConfigValue,
+        default=_DEFAULT_RELOAD_INCLUDE_PATTERNS,
+        help='Glob pattern for files that should trigger reload. Repeat the flag to add more patterns.',
+        metavar='PATTERN',
+    )
+    parser.add_argument(
+        '--reload-exclude',
+        action=_AppendConfigValue,
+        default=_DEFAULT_RELOAD_EXCLUDE_PATTERNS,
+        help='Glob pattern for files or directories that should be ignored by reload. Repeat the flag to add more patterns.',
+        metavar='PATTERN',
+    )
+    parser.add_argument(
         '--factory',
         action='store_true',
         help='Treat the target as a zero-argument callable that returns an ASGI application.',
@@ -264,10 +297,25 @@ def parse_cli(
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
     _apply_tcp_bind_sugar(parser, args, base, values)
+    config = Config(**values)
+    if args.reload and (args.check_config or args.print_config):
+        parser.error('--reload cannot be combined with --check-config or --print-config')
+    if (
+        args.reload_dir
+        or args.reload_include != _DEFAULT_RELOAD_INCLUDE_PATTERNS
+        or args.reload_exclude != _DEFAULT_RELOAD_EXCLUDE_PATTERNS
+    ) and not args.reload:
+        parser.error('--reload-dir, --reload-include, and --reload-exclude require --reload')
+    if args.reload and config.workers != 1:
+        parser.error('--reload requires workers=1')
     return (
         CliSettings(
             check_config=args.check_config,
             print_config=args.print_config,
+            reload=args.reload,
+            reload_dirs=tuple(Path(item).resolve() for item in args.reload_dir),
+            reload_includes=tuple(args.reload_include),
+            reload_excludes=tuple(args.reload_exclude),
         ),
         ImportSettings(
             target='' if args.target is None else args.target,
@@ -275,7 +323,7 @@ def parse_cli(
             app_dir=None if args.app_dir is None else args.app_dir.resolve(),
             env_file=None if args.env_file is None else args.env_file.resolve(),
         ),
-        Config(**values),
+        config,
     )
 
 
@@ -290,5 +338,18 @@ def run_cli(
         _print_config(config)
         return
     if cli_settings.check_config:
+        return
+    if cli_settings.reload:
+        from ._reload import _serve_with_reload
+
+        _serve_with_reload(
+            import_settings,
+            config,
+            reload_dirs=cli_settings.reload_dirs,
+            reload_includes=cli_settings.reload_includes,
+            reload_excludes=cli_settings.reload_excludes,
+            argv=argv,
+            env=env,
+        )
         return
     serve(import_target(import_settings), config)

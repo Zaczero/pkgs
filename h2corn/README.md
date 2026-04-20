@@ -188,9 +188,11 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--factory]
-              [--app-dir APP_DIR] [--env-file ENV_FILE] [--host HOST]
-              [-p PORT] [--bind ADDRESS]
+usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
+              [--reload-dir DIR] [--reload-include PATTERN]
+              [--reload-exclude PATTERN] [--factory] [--app-dir APP_DIR]
+              [--env-file ENV_FILE] [--host HOST] [-p PORT]
+              [--bind ADDRESS]
               [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
               [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -241,6 +243,21 @@ options:
   --print-config        Print the fully resolved configuration, then exit
                         without importing the target or starting the server.
                         (default: False)
+  --reload              Restart the server when watched Python files change.
+                        Development only. Requires workers=1. (default:
+                        False)
+  --reload-dir DIR      Directory to watch for reload. Repeat the flag to add
+                        more directories. Overrides the default watch root.
+                        (default: ())
+  --reload-include PATTERN
+                        Glob pattern for files that should trigger reload.
+                        Repeat the flag to add more patterns. (default:
+                        ('*.py',))
+  --reload-exclude PATTERN
+                        Glob pattern for files or directories that should be
+                        ignored by reload. Repeat the flag to add more
+                        patterns. (default: ('.*', '.py[cod]', '.sw.*',
+                        '~*'))
   --factory             Treat the target as a zero-argument callable that
                         returns an ASGI application. (default: False)
   --app-dir APP_DIR     Import the target module from this directory instead

@@ -55,6 +55,31 @@ async def _wait_for_h2_success(
         return
 
 
+async def _wait_for_h2_body(
+    *,
+    port: int,
+    body: bytes,
+    timeout: float = 5.0,
+) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            status, response_body = await h2_request(port=port)
+        except Exception:
+            if loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
+            continue
+        if status == 200 and response_body == body:
+            return
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f'timed out waiting for body {body!r}, got status={status} body={response_body!r}'
+            )
+        await asyncio.sleep(0.05)
+
+
 async def _wait_for_listening_port(
     process: asyncio.subprocess.Process,
     *,
@@ -403,6 +428,45 @@ async def test_worker_supervisor_replaces_worker_after_healthcheck_timeout(
 
         next_pid = await _wait_for_pid_change(port=port, previous_pid=body, timeout=10)
         assert next_pid != body
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+async def test_reload_restarts_server_after_python_source_change(
+    tmp_path: Path,
+) -> None:
+    module_name = 'reload_app'
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name=module_name,
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'v1'})
+        """,
+        workers=1,
+        extra_args=['--reload', '--app-dir', str(tmp_path)],
+    )
+    module_path = tmp_path / f'{module_name}.py'
+
+    try:
+        await wait_for_port(port)
+        await _wait_for_h2_success(port=port, body=b'v1')
+
+        module_path.write_text(
+            textwrap.dedent(
+                """
+                async def app(scope, receive, send):
+                    await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+                    await send({'type': 'http.response.body', 'body': b'v2'})
+                """
+            ).strip()
+            + '\n'
+        )
+        os.utime(module_path, None)
+
+        await _wait_for_h2_body(port=port, body=b'v2', timeout=10)
         assert process.returncode is None
     finally:
         await _terminate_process(process)
