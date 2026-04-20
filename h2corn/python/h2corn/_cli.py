@@ -30,6 +30,7 @@ class ImportSettings:
     target: str
     factory: bool = False
     app_dir: Path | None = None
+    env_file: Path | None = None
 
 
 class _AppendConfigValue(argparse.Action):
@@ -121,6 +122,12 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help='Import the target module from this directory instead of the current working directory.',
     )
     parser.add_argument(
+        '--env-file',
+        type=Path,
+        default=None,
+        help='Load application environment variables from this file before importing the target.',
+    )
+    parser.add_argument(
         '--host',
         default=argparse.SUPPRESS,
         help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
@@ -208,6 +215,7 @@ def parse_cli(
             target=args.target,
             factory=args.factory,
             app_dir=None if args.app_dir is None else args.app_dir.resolve(),
+            env_file=None if args.env_file is None else args.env_file.resolve(),
         ),
         Config(**values),
     )

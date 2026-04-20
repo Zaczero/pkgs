@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from typing import Literal
 
@@ -14,8 +15,12 @@ TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from ._types import ASGIApp
+
+
+_ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 
 class Server:
@@ -105,6 +110,41 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     asyncio.run(Server(app, config).serve())
 
 
+def _load_env_file(path: Path):
+    with path.open(encoding='utf-8') as handle:
+        for number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('export '):
+                line = line[7:].lstrip()
+
+            key, sep, value = line.partition('=')
+            key = key.strip()
+            if not sep or not _ENV_KEY_PATTERN.fullmatch(key):
+                raise ValueError(f'invalid env file entry at {path}:{number}')
+
+            value = value.strip()
+            if value[:1] in {'"', "'"}:
+                if value[-1:] != value[:1]:
+                    raise ValueError(f'invalid quoted env value at {path}:{number}')
+                try:
+                    import ast
+
+                    parsed = ast.literal_eval(value)
+                except (SyntaxError, ValueError) as exc:
+                    raise ValueError(
+                        f'invalid quoted env value at {path}:{number}'
+                    ) from exc
+                if not isinstance(parsed, str):
+                    raise ValueError(f'invalid quoted env value at {path}:{number}')
+                value = parsed
+            elif ' #' in value:
+                value = value.split(' #', 1)[0].rstrip()
+
+            os.environ.setdefault(key, value)
+
+
 def _import_target(import_settings: ImportSettings):
     import importlib
 
@@ -113,7 +153,14 @@ def _import_target(import_settings: ImportSettings):
     if not module_name or not attr:
         raise ValueError('target must be in module:app form')
 
-    import_dir = os.getcwd() if import_settings.app_dir is None else os.fspath(import_settings.app_dir)
+    if import_settings.env_file is not None:
+        _load_env_file(import_settings.env_file)
+
+    import_dir = (
+        os.getcwd()
+        if import_settings.app_dir is None
+        else os.fspath(import_settings.app_dir)
+    )
     if import_dir not in sys.path:
         sys.path.insert(0, import_dir)
 

@@ -220,6 +220,76 @@ async def app(scope, receive, send):
     assert callable(app)
 
 
+def test_import_target_loads_env_file_before_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    app_dir = tmp_path / 'src'
+    app_dir.mkdir()
+    env_file = tmp_path / '.env'
+    env_file.write_text('DEMO_APP_VALUE=loaded\n')
+    (app_dir / 'demoapp_from_env.py').write_text(
+        """
+import os
+
+async def app(scope, receive, send):
+    return None
+
+app.loaded = os.environ['DEMO_APP_VALUE']
+"""
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('DEMO_APP_VALUE', raising=False)
+
+    app = _server._import_target(
+        ImportSettings(
+            target='demoapp_from_env:app',
+            app_dir=app_dir,
+            env_file=env_file,
+        )
+    )
+
+    assert app.loaded == 'loaded'
+
+
+def test_import_target_env_file_does_not_override_existing_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    app_dir = tmp_path / 'src'
+    app_dir.mkdir()
+    env_file = tmp_path / '.env'
+    env_file.write_text('DEMO_APP_VALUE=loaded\n')
+    (app_dir / 'demoapp_existing_env.py').write_text(
+        """
+import os
+
+async def app(scope, receive, send):
+    return None
+
+app.loaded = os.environ['DEMO_APP_VALUE']
+"""
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('DEMO_APP_VALUE', 'existing')
+
+    app = _server._import_target(
+        ImportSettings(
+            target='demoapp_existing_env:app',
+            app_dir=app_dir,
+            env_file=env_file,
+        )
+    )
+
+    assert app.loaded == 'existing'
+
+
 def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -693,4 +763,41 @@ def test_cli_app_dir_is_forwarded_to_import_target(
     assert captured['serve'][0] == ImportSettings(
         target='example:app',
         app_dir=(tmp_path / 'src').resolve(),
+    )
+
+
+def test_cli_env_file_is_forwarded_to_import_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    captured = {}
+
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda import_settings: captured.setdefault('import', import_settings),
+    )
+    monkeypatch.setattr(
+        _server,
+        'serve',
+        lambda _app, config=None: captured.setdefault('serve', (_app, config)),
+    )
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['h2corn', '--env-file', str(tmp_path / '.env'), 'example:app'],
+    )
+
+    _server.main()
+
+    assert captured['import'] == ImportSettings(
+        target='example:app',
+        env_file=(tmp_path / '.env').resolve(),
+    )
+    assert captured['serve'][0] == ImportSettings(
+        target='example:app',
+        env_file=(tmp_path / '.env').resolve(),
     )

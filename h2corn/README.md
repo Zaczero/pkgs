@@ -188,8 +188,8 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [--factory] [--app-dir APP_DIR] [--host HOST]
-              [-p PORT] [--bind ADDRESS]
+usage: h2corn [-h] [-c CONFIG] [--factory] [--app-dir APP_DIR]
+              [--env-file ENV_FILE] [--host HOST] [-p PORT] [--bind ADDRESS]
               [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
               [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -239,6 +239,8 @@ options:
                         returns an ASGI application. (default: False)
   --app-dir APP_DIR     Import the target module from this directory instead
                         of the current working directory. (default: None)
+  --env-file ENV_FILE   Load application environment variables from this file
+                        before importing the target. (default: None)
   --host HOST           TCP host convenience override for a single listener.
                         When --port is omitted, the base configuration port
                         is reused.

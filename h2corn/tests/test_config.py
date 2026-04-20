@@ -319,6 +319,19 @@ def test_parse_cli_accepts_app_dir() -> None:
     assert isinstance(config, Config)
 
 
+def test_parse_cli_accepts_env_file() -> None:
+    import_settings, config = parse_cli(
+        ['--env-file', '.env', 'example:app'],
+        {},
+    )
+
+    assert import_settings == ImportSettings(
+        target='example:app',
+        env_file=Path('.env').resolve(),
+    )
+    assert isinstance(config, Config)
+
+
 def test_parse_cli_rejects_host_port_override_for_multi_bind_base(
     tmp_path: Path,
 ) -> None:
