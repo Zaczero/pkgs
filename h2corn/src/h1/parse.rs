@@ -39,6 +39,30 @@ const LINE_TERMINATOR: &[u8; 2] = b"\r\n";
 const CHUNK_BUFFER_SIZE: usize = 8192;
 const MAX_CHUNK_SIZE_LINE_BYTES: usize = 16 * 1024;
 const MAX_TRAILER_SECTION_BYTES: usize = 64 * 1024;
+const INVALID_HEX_DIGIT: u8 = 0xFF;
+const HEX_DIGIT_TABLE: [u8; 256] = {
+    let mut table = [INVALID_HEX_DIGIT; 256];
+
+    let mut byte = b'0';
+    while byte <= b'9' {
+        table[byte as usize] = byte - b'0';
+        byte += 1;
+    }
+
+    let mut byte = b'a';
+    while byte <= b'f' {
+        table[byte as usize] = byte - b'a' + 10;
+        byte += 1;
+    }
+
+    let mut byte = b'A';
+    while byte <= b'F' {
+        table[byte as usize] = byte - b'A' + 10;
+        byte += 1;
+    }
+
+    table
+};
 static HEADER_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
     LazyLock::new(|| memmem::Finder::new(HEADER_TERMINATOR));
 static LINE_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
@@ -712,14 +736,28 @@ fn parse_request_target<'a>(
 }
 
 fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
-    let line = line.trim_ascii();
-    let size = if let Some(end) = line.iter().position(|&byte| byte == b';') {
-        &line[..end]
-    } else {
-        line
-    };
-    let size = str::from_utf8(size).map_err(|_| Http1Error::InvalidChunkSize)?;
-    usize::from_str_radix(size, 16).map_err(|_| Http1Error::InvalidChunkSize.into_error())
+    let mut value = 0usize;
+    let mut saw_digit = false;
+
+    for &byte in line.trim_ascii() {
+        if byte == b';' {
+            break;
+        }
+        let digit = HEX_DIGIT_TABLE[byte as usize];
+        if digit == INVALID_HEX_DIGIT {
+            return Http1Error::InvalidChunkSize.err();
+        }
+        value = value
+            .checked_mul(16)
+            .and_then(|value| value.checked_add(usize::from(digit)))
+            .ok_or(Http1Error::InvalidChunkSize)?;
+        saw_digit = true;
+    }
+
+    if !saw_digit {
+        return Http1Error::InvalidChunkSize.err();
+    }
+    Ok(value)
 }
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {
@@ -811,7 +849,8 @@ mod tests {
 
     use super::{
         MAX_CHUNK_SIZE_LINE_BYTES, MAX_TRAILER_SECTION_BYTES, drain_chunked_trailers,
-        parse_http2_settings, read_chunk_size_line, read_chunked_body, read_request,
+        parse_chunk_size, parse_http2_settings, read_chunk_size_line, read_chunked_body,
+        read_request,
     };
     use crate::config::{BindTarget, Http1Config, Http2Config, ProxyConfig, ServerConfig};
     use crate::error::{H2CornError, Http1Error};
@@ -1213,5 +1252,28 @@ mod tests {
         ));
         assert!(rx.try_recv().is_err());
         assert_eq!(&buffer[..], b"hello\r\n");
+    }
+
+    #[test]
+    fn parse_chunk_size_accepts_hex_extensions_and_whitespace() {
+        assert_eq!(parse_chunk_size(b"1a").unwrap(), 0x1a);
+        assert_eq!(parse_chunk_size(b"1A;foo=bar").unwrap(), 0x1a);
+        assert_eq!(parse_chunk_size(b" \t1A\r").unwrap(), 0x1a);
+    }
+
+    #[test]
+    fn parse_chunk_size_rejects_empty_and_invalid_values() {
+        assert!(matches!(
+            parse_chunk_size(b""),
+            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+        ));
+        assert!(matches!(
+            parse_chunk_size(b";foo=bar"),
+            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+        ));
+        assert!(matches!(
+            parse_chunk_size(b"1 g"),
+            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+        ));
     }
 }
