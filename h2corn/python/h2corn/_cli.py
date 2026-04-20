@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import os
+import sys
 from dataclasses import MISSING, dataclass
 from pathlib import Path
 
@@ -31,6 +32,12 @@ class ImportSettings:
     factory: bool = False
     app_dir: Path | None = None
     env_file: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CliSettings:
+    check_config: bool = False
+    print_config: bool = False
 
 
 class _AppendConfigValue(argparse.Action):
@@ -88,6 +95,43 @@ def _add_config_arguments(parser: argparse.ArgumentParser, base: Config):
         parser.add_argument(*option.cli_flags, **kwargs)
 
 
+def _toml_literal(value: object) -> str:
+    match value:
+        case None:
+            return 'null'
+        case True:
+            return 'true'
+        case False:
+            return 'false'
+        case str():
+            escaped = (
+                value.replace('\\', '\\\\')
+                .replace('"', '\\"')
+                .replace('\b', '\\b')
+                .replace('\f', '\\f')
+                .replace('\n', '\\n')
+                .replace('\r', '\\r')
+                .replace('\t', '\\t')
+            )
+            return f'"{escaped}"'
+        case int() | float():
+            return str(value)
+        case tuple() | list():
+            return f"[{', '.join(_toml_literal(item) for item in value)}]"
+        case _:
+            raise TypeError(f'unsupported config value type: {type(value).__name__}')
+
+
+def _print_config(config: Config):
+    sys.stdout.write(
+        '\n'.join(
+            f'{option.toml_key} = {_toml_literal(getattr(config, option.name))}'
+            for option in config_options()
+        )
+        + '\n'
+    )
+
+
 def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentParser:
     try:
         version = importlib.metadata.version('h2corn')
@@ -109,6 +153,16 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         type=Path,
         default=config_path,
         help=f'Path to a TOML configuration file. [env: {CONFIG_PATH_ENV_VAR}]',
+    )
+    parser.add_argument(
+        '--check-config',
+        action='store_true',
+        help='Validate configuration, then exit without importing the target or starting the server.',
+    )
+    parser.add_argument(
+        '--print-config',
+        action='store_true',
+        help='Print the fully resolved configuration, then exit without importing the target or starting the server.',
     )
     parser.add_argument(
         '--factory',
@@ -172,7 +226,7 @@ def _apply_tcp_bind_sugar(
 def parse_cli(
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
-) -> tuple[ImportSettings, Config]:
+) -> tuple[CliSettings, ImportSettings, Config]:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('-c', '--config', type=Path)
     pre_args, _ = pre_parser.parse_known_args(argv)
@@ -205,14 +259,18 @@ def parse_cli(
         pre_parser.error(str(exc))
     parser = build_parser(base, config_path)
     args = parser.parse_args(argv)
-    if args.target is None:
+    if args.target is None and not (args.check_config or args.print_config):
         parser.error('target is required')
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
     _apply_tcp_bind_sugar(parser, args, base, values)
     return (
+        CliSettings(
+            check_config=args.check_config,
+            print_config=args.print_config,
+        ),
         ImportSettings(
-            target=args.target,
+            target='' if args.target is None else args.target,
             factory=args.factory,
             app_dir=None if args.app_dir is None else args.app_dir.resolve(),
             env_file=None if args.env_file is None else args.env_file.resolve(),
@@ -227,5 +285,10 @@ def run_cli(
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> None:
-    import_settings, config = parse_cli(argv, env)
+    cli_settings, import_settings, config = parse_cli(argv, env)
+    if cli_settings.print_config:
+        _print_config(config)
+        return
+    if cli_settings.check_config:
+        return
     serve(import_target(import_settings), config)

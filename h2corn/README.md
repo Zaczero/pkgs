@@ -188,8 +188,9 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [--factory] [--app-dir APP_DIR]
-              [--env-file ENV_FILE] [--host HOST] [-p PORT] [--bind ADDRESS]
+usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--factory]
+              [--app-dir APP_DIR] [--env-file ENV_FILE] [--host HOST]
+              [-p PORT] [--bind ADDRESS]
               [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
               [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -235,6 +236,11 @@ options:
   -h, --help            show this help message and exit
   -c, --config CONFIG   Path to a TOML configuration file. [env:
                         H2CORN_CONFIG] (default: None)
+  --check-config        Validate configuration, then exit without importing
+                        the target or starting the server. (default: False)
+  --print-config        Print the fully resolved configuration, then exit
+                        without importing the target or starting the server.
+                        (default: False)
   --factory             Treat the target as a zero-argument callable that
                         returns an ASGI application. (default: False)
   --app-dir APP_DIR     Import the target module from this directory instead

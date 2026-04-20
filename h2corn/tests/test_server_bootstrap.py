@@ -1,3 +1,4 @@
+import io
 import socket
 import sys
 from pathlib import Path
@@ -801,3 +802,121 @@ def test_cli_env_file_is_forwarded_to_import_target(
         target='example:app',
         env_file=(tmp_path / '.env').resolve(),
     )
+
+
+def test_cli_check_config_exits_before_import_and_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    imported = False
+    served = False
+
+    def _import_target(_import_settings):
+        nonlocal imported
+        imported = True
+        return object()
+
+    def _serve(_app, config=None):
+        nonlocal served
+        served = True
+
+    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'serve', _serve)
+    monkeypatch.setattr(sys, 'argv', ['h2corn', '--check-config', 'example:app'])
+
+    _server.main()
+
+    assert imported is False
+    assert served is False
+
+
+def test_cli_check_config_works_without_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    imported = False
+    served = False
+
+    def _import_target(_import_settings):
+        nonlocal imported
+        imported = True
+        return object()
+
+    def _serve(_app, config=None):
+        nonlocal served
+        served = True
+
+    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'serve', _serve)
+    monkeypatch.setattr(sys, 'argv', ['h2corn', '--check-config'])
+
+    _server.main()
+
+    assert imported is False
+    assert served is False
+
+
+def test_cli_print_config_exits_before_import_and_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    imported = False
+    served = False
+    stdout = io.StringIO()
+
+    def _import_target(_import_settings):
+        nonlocal imported
+        imported = True
+        return object()
+
+    def _serve(_app, config=None):
+        nonlocal served
+        served = True
+
+    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'serve', _serve)
+    monkeypatch.setattr(sys, 'stdout', stdout)
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['h2corn', '--print-config', '--workers', '2', 'example:app'],
+    )
+
+    _server.main()
+
+    assert imported is False
+    assert served is False
+    assert 'workers = 2' in stdout.getvalue()
+
+
+def test_cli_print_config_works_without_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    imported = False
+    served = False
+    stdout = io.StringIO()
+
+    def _import_target(_import_settings):
+        nonlocal imported
+        imported = True
+        return object()
+
+    def _serve(_app, config=None):
+        nonlocal served
+        served = True
+
+    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'serve', _serve)
+    monkeypatch.setattr(sys, 'stdout', stdout)
+    monkeypatch.setattr(sys, 'argv', ['h2corn', '--print-config'])
+
+    _server.main()
+
+    assert imported is False
+    assert served is False
+    assert 'workers = 1' in stdout.getvalue()

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from h2corn import Config
-from h2corn._cli import ImportSettings, build_parser, parse_cli
+from h2corn._cli import CliSettings, ImportSettings, build_parser, parse_cli
 from h2corn._config import config_options
 
 
@@ -280,38 +280,45 @@ def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) ->
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('port = 9010')
 
-    import_settings, config = parse_cli(
+    cli_settings, import_settings, config = parse_cli(
         ['--config', str(config_path), 'example:app'],
         {'H2CORN_PORT': '9020'},
     )
 
+    assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
     assert config.port == 9020
 
 
 def test_parse_cli_accepts_websocket_message_size_inherit() -> None:
-    import_settings, config = parse_cli(
+    cli_settings, import_settings, config = parse_cli(
         ['--websocket-max-message-size', 'inherit', 'example:app'],
         {},
     )
 
+    assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
     assert config.websocket_max_message_size is None
 
 
 def test_parse_cli_accepts_factory_flag() -> None:
-    import_settings, config = parse_cli(['--factory', 'example:create_app'], {})
+    cli_settings, import_settings, config = parse_cli(
+        ['--factory', 'example:create_app'],
+        {},
+    )
 
+    assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:create_app', factory=True)
     assert isinstance(config, Config)
 
 
 def test_parse_cli_accepts_app_dir() -> None:
-    import_settings, config = parse_cli(
+    cli_settings, import_settings, config = parse_cli(
         ['--app-dir', 'src', 'example:app'],
         {},
     )
 
+    assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(
         target='example:app',
         app_dir=Path('src').resolve(),
@@ -320,15 +327,60 @@ def test_parse_cli_accepts_app_dir() -> None:
 
 
 def test_parse_cli_accepts_env_file() -> None:
-    import_settings, config = parse_cli(
+    cli_settings, import_settings, config = parse_cli(
         ['--env-file', '.env', 'example:app'],
         {},
     )
 
+    assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(
         target='example:app',
         env_file=Path('.env').resolve(),
     )
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_check_config_flag() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--check-config', 'example:app'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(check_config=True)
+    assert import_settings == ImportSettings(target='example:app')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_print_config_flag() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--print-config', 'example:app'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(print_config=True)
+    assert import_settings == ImportSettings(target='example:app')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_check_config_without_target() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--check-config'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(check_config=True)
+    assert import_settings == ImportSettings(target='')
+    assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_print_config_without_target() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--print-config'],
+        {},
+    )
+
+    assert cli_settings == CliSettings(print_config=True)
+    assert import_settings == ImportSettings(target='')
     assert isinstance(config, Config)
 
 
