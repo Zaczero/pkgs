@@ -99,6 +99,14 @@ def _normalize_forwarded_allow_ips(value):
     )
 
 
+def _optional_path(value):
+    if value is None or isinstance(value, Path):
+        return value
+    if isinstance(value, str | os.PathLike):
+        return Path(value)
+    raise TypeError('expected a path or None')
+
+
 @dataclass(frozen=True, slots=True)
 class TcpBindSpec:
     host: str
@@ -399,6 +407,13 @@ class Config:
         env_parse=int,
         normalize=_minimum('backlog', 1),
         cli_type=int,
+    )
+    pid: Path | None = _option(
+        default=None,
+        doc='Write the server process PID to this file.',
+        env_parse=Path,
+        normalize=_optional_path,
+        cli_type=Path,
     )
     workers: int = _option(
         default=1,

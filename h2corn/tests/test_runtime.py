@@ -220,6 +220,23 @@ async def test_multi_bind_reports_actual_server_port_per_listener() -> None:
             assert body == str(port).encode()
 
 
+async def test_server_serve_writes_and_cleans_up_pid_file(tmp_path: Path) -> None:
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': b'pid'})
+
+    pid_path = tmp_path / 'h2corn.pid'
+    config = Config(pid=pid_path, port=find_free_port())
+    async with running_server(app, config):
+        assert pid_path.read_text() == f'{os.getpid()}\n'
+
+    assert not pid_path.exists()
+
+
 @pytest.mark.parametrize('workers', [1, 2])
 async def test_worker_supervisor_serves_requests(tmp_path: Path, workers: int) -> None:
     process, port = await _spawn_server_process(
@@ -270,6 +287,34 @@ async def test_worker_supervisor_banner_reports_kernel_allocated_port(
         assert process.returncode is None
     finally:
         await _terminate_process(process)
+
+
+async def test_worker_supervisor_writes_and_cleans_up_pid_file(
+    tmp_path: Path,
+) -> None:
+    pid_path = tmp_path / 'h2corn.pid'
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='pidfile_app',
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'pidfile'})
+        """,
+        workers=1,
+        extra_args=['--pid', str(pid_path)],
+    )
+
+    try:
+        await wait_for_port(port)
+        assert pid_path.read_text() == f'{process.pid}\n'
+        status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
+        assert status == 200
+        assert body == b'pidfile'
+    finally:
+        await _terminate_process(process)
+
+    assert not pid_path.exists()
 
 
 async def test_worker_supervisor_shutdown_is_not_blocked_by_limit_connections(

@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import sys
+from contextlib import contextmanager
 from typing import Literal
 
 from ._cli import ImportSettings, run_cli
@@ -21,6 +22,25 @@ if TYPE_CHECKING:
 
 
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
+
+
+@contextmanager
+def _pidfile(config: Config):
+    path = config.pid
+    if path is None:
+        yield
+        return
+
+    pid_text = f'{os.getpid()}\n'
+    path.write_text(pid_text)
+    try:
+        yield
+    finally:
+        try:
+            if path.read_text() == pid_text:
+                path.unlink()
+        except OSError:
+            pass
 
 
 class Server:
@@ -69,7 +89,7 @@ class Server:
                 'Server.serve() is the in-process API and only supports workers=1'
             )
 
-        with _bound_sockets(self.config) as socks:
+        with _pidfile(self.config), _bound_sockets(self.config) as socks:
             from ._lib import emit_banner
 
             emit_banner(self.config)
@@ -105,7 +125,8 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     if sys.platform != 'win32':
         from ._supervisor import _serve_supervisor
 
-        _serve_supervisor(app, config)
+        with _pidfile(config):
+            _serve_supervisor(app, config)
         return
 
     asyncio.run(Server(app, config).serve())

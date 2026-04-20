@@ -191,8 +191,8 @@ Configuration precedence is:
 usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
               [--reload-dir DIR] [--reload-include PATTERN]
               [--reload-exclude PATTERN] [--factory] [--app-dir APP_DIR]
-              [--env-file ENV_FILE] [--host HOST] [-p PORT]
-              [--bind ADDRESS]
+              [--env-file ENV_FILE] [--host HOST] [-p PORT] [--bind ADDRESS]
+              [--pid PID]
               [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
               [-w WORKERS] [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -270,6 +270,8 @@ options:
   -p, --port PORT       TCP port convenience override for a single listener.
                         When --host is omitted, the base configuration host
                         is reused.
+  --pid PID             Write the server process PID to this file. [env:
+                        H2CORN_PID] (default: None)
   --bind ADDRESS        Listener addresses to bind. Repeat the flag to add
                         more listeners. Supports HOST:PORT, [IPv6]:PORT,
                         unix:PATH, and fd://N. [env: H2CORN_BIND] (default:

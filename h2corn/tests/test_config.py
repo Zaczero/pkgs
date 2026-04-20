@@ -49,6 +49,7 @@ max_requests_jitter = 3
 timeout_worker_healthcheck = 4.5
 http1 = false
 lifespan = "on"
+pid = "server.pid"
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1"]
 timeout_keep_alive = 1.5
@@ -76,6 +77,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.max_requests_jitter == 3
     assert config.timeout_worker_healthcheck == 4.5
     assert config.http1 is False
+    assert config.pid == Path('server.pid')
     assert config.proxy_headers is True
     assert config.timeout_keep_alive == 1.5
     assert config.timeout_request_header == 2.5
@@ -112,6 +114,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_MAX_REQUESTS_JITTER', '2')
     monkeypatch.setenv('H2CORN_TIMEOUT_WORKER_HEALTHCHECK', '3.5')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
+    monkeypatch.setenv('H2CORN_PID', 'server.pid')
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
     monkeypatch.setenv('H2CORN_PROXY_HEADERS', 'true')
     monkeypatch.setenv('H2CORN_FORWARDED_ALLOW_IPS', '127.0.0.1,unix')
@@ -145,6 +148,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.max_requests_jitter == 2
     assert config.timeout_worker_healthcheck == 3.5
     assert config.http1 is False
+    assert config.pid == Path('server.pid')
     assert config.access_log is False
     assert config.proxy_headers is True
     assert config.forwarded_allow_ips == ('127.0.0.1', 'unix')
@@ -411,6 +415,17 @@ def test_parse_cli_accepts_reload_dirs() -> None:
     )
     assert import_settings == ImportSettings(target='example:app')
     assert isinstance(config, Config)
+
+
+def test_parse_cli_accepts_pid_path() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        ['--pid', 'server.pid', 'example:app'],
+        {},
+    )
+
+    assert cli_settings == CliSettings()
+    assert import_settings == ImportSettings(target='example:app')
+    assert config.pid == Path('server.pid')
 
 
 def test_parse_cli_rejects_reload_with_multiple_workers() -> None:
