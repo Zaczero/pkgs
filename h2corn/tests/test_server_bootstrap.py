@@ -122,9 +122,10 @@ def test_build_socket_sets_nonblocking_after_creation_off_linux(
 
 def test_import_target_requires_module_app_form() -> None:
     from h2corn import _server
+    from h2corn._cli import ImportSettings
 
     with pytest.raises(ValueError, match='module:app form'):
-        _server._import_target('demoapp')
+        _server._import_target(ImportSettings(target='demoapp'))
 
 
 def test_import_target_requires_callable_attribute(
@@ -132,6 +133,7 @@ def test_import_target_requires_callable_attribute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _server
+    from h2corn._cli import ImportSettings
 
     module_name = 'demoapp_not_callable'
     (tmp_path / f'{module_name}.py').write_text('app = 1\n')
@@ -141,7 +143,7 @@ def test_import_target_requires_callable_attribute(
         TypeError,
         match=rf"import target '{module_name}:app' is not callable",
     ):
-        _server._import_target(f'{module_name}:app')
+        _server._import_target(ImportSettings(target=f'{module_name}:app'))
 
 
 def test_import_target_calls_factory_when_requested(
@@ -149,6 +151,7 @@ def test_import_target_calls_factory_when_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _server
+    from h2corn._cli import ImportSettings
 
     module_name = 'demoapp_factory'
     (tmp_path / f'{module_name}.py').write_text(
@@ -161,7 +164,9 @@ def create_app():
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    app = _server._import_target(f'{module_name}:create_app', factory=True)
+    app = _server._import_target(
+        ImportSettings(target=f'{module_name}:create_app', factory=True)
+    )
 
     assert callable(app)
 
@@ -171,6 +176,7 @@ def test_import_target_requires_factory_result_to_be_callable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _server
+    from h2corn._cli import ImportSettings
 
     module_name = 'demoapp_factory_value'
     (tmp_path / f'{module_name}.py').write_text(
@@ -185,7 +191,33 @@ def create_app():
         TypeError,
         match=rf"import target '{module_name}:create_app' factory returned a non-callable",
     ):
-        _server._import_target(f'{module_name}:create_app', factory=True)
+        _server._import_target(
+            ImportSettings(target=f'{module_name}:create_app', factory=True)
+        )
+
+
+def test_import_target_uses_app_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    app_dir = tmp_path / 'src'
+    app_dir.mkdir()
+    (app_dir / 'demoapp_in_app_dir.py').write_text(
+        """
+async def app(scope, receive, send):
+    return None
+"""
+    )
+    monkeypatch.chdir(tmp_path)
+
+    app = _server._import_target(
+        ImportSettings(target='demoapp_in_app_dir:app', app_dir=app_dir)
+    )
+
+    assert callable(app)
 
 
 def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
@@ -444,7 +476,7 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
     monkeypatch.setattr(
         _server,
         '_import_target',
-        lambda _target, *, factory=False: ('factory', factory),
+        lambda import_settings: import_settings,
     )
     monkeypatch.setattr(
         _server,
@@ -467,7 +499,8 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
     _server.main()
 
     app, config = captured['result']
-    assert app == ('factory', False)
+    assert app.target == 'example:app'
+    assert app.factory is False
     assert config.forwarded_allow_ips == ('10.0.0.1', 'unix')
 
 
@@ -484,7 +517,7 @@ def test_cli_repeated_bind_replaces_base_bind_values(
     monkeypatch.setattr(
         _server,
         '_import_target',
-        lambda _target, **_kwargs: object(),
+        lambda _import_settings: object(),
     )
     monkeypatch.setattr(
         _server,
@@ -533,7 +566,7 @@ access_log = false
     monkeypatch.setattr(
         _server,
         '_import_target',
-        lambda _target, **_kwargs: object(),
+        lambda _import_settings: object(),
     )
     monkeypatch.setattr(
         _server,
@@ -576,7 +609,7 @@ def test_cli_legacy_env_port_overrides_toml_listener(
     monkeypatch.setattr(
         _server,
         '_import_target',
-        lambda _target, **_kwargs: object(),
+        lambda _import_settings: object(),
     )
     monkeypatch.setattr(
         _server,
@@ -598,13 +631,14 @@ def test_cli_factory_flag_is_forwarded_to_import_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _server
+    from h2corn._cli import ImportSettings
 
     captured = {}
 
     monkeypatch.setattr(
         _server,
         '_import_target',
-        lambda target, *, factory=False: captured.setdefault('import', (target, factory)),
+        lambda import_settings: captured.setdefault('import', import_settings),
     )
     monkeypatch.setattr(
         _server,
@@ -615,5 +649,48 @@ def test_cli_factory_flag_is_forwarded_to_import_target(
 
     _server.main()
 
-    assert captured['import'] == ('example:create_app', True)
-    assert captured['serve'][0] == ('example:create_app', True)
+    assert captured['import'] == ImportSettings(
+        target='example:create_app',
+        factory=True,
+    )
+    assert captured['serve'][0] == ImportSettings(
+        target='example:create_app',
+        factory=True,
+    )
+
+
+def test_cli_app_dir_is_forwarded_to_import_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    captured = {}
+
+    monkeypatch.setattr(
+        _server,
+        '_import_target',
+        lambda import_settings: captured.setdefault('import', import_settings),
+    )
+    monkeypatch.setattr(
+        _server,
+        'serve',
+        lambda _app, config=None: captured.setdefault('serve', (_app, config)),
+    )
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['h2corn', '--app-dir', str(tmp_path / 'src'), 'example:app'],
+    )
+
+    _server.main()
+
+    assert captured['import'] == ImportSettings(
+        target='example:app',
+        app_dir=(tmp_path / 'src').resolve(),
+    )
+    assert captured['serve'][0] == ImportSettings(
+        target='example:app',
+        app_dir=(tmp_path / 'src').resolve(),
+    )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import os
-from dataclasses import MISSING
+from dataclasses import MISSING, dataclass
 from pathlib import Path
 
 from ._config import (
@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ._types import ASGIApp
+
+
+@dataclass(frozen=True, slots=True)
+class ImportSettings:
+    target: str
+    factory: bool = False
+    app_dir: Path | None = None
 
 
 class _AppendConfigValue(argparse.Action):
@@ -108,6 +115,12 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help='Treat the target as a zero-argument callable that returns an ASGI application.',
     )
     parser.add_argument(
+        '--app-dir',
+        type=Path,
+        default=None,
+        help='Import the target module from this directory instead of the current working directory.',
+    )
+    parser.add_argument(
         '--host',
         default=argparse.SUPPRESS,
         help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
@@ -152,7 +165,7 @@ def _apply_tcp_bind_sugar(
 def parse_cli(
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, Config, bool]:
+) -> tuple[ImportSettings, Config]:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('-c', '--config', type=Path)
     pre_args, _ = pre_parser.parse_known_args(argv)
@@ -190,14 +203,21 @@ def parse_cli(
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
     _apply_tcp_bind_sugar(parser, args, base, values)
-    return args.target, Config(**values), args.factory
+    return (
+        ImportSettings(
+            target=args.target,
+            factory=args.factory,
+            app_dir=None if args.app_dir is None else args.app_dir.resolve(),
+        ),
+        Config(**values),
+    )
 
 
 def run_cli(
     serve: Callable[[ASGIApp, Config], None],
-    import_target: Callable[..., ASGIApp],
+    import_target: Callable[[ImportSettings], ASGIApp],
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> None:
-    target, config, factory = parse_cli(argv, env)
-    serve(import_target(target, factory=factory), config)
+    import_settings, config = parse_cli(argv, env)
+    serve(import_target(import_settings), config)

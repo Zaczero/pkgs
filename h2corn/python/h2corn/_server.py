@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Literal
 
-from ._cli import run_cli
+from ._cli import ImportSettings, run_cli
 from ._config import Config
 from ._lifespan import _cancel_task, _serve_with_lifespan
 from ._socket import _bound_sockets
@@ -105,22 +105,23 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     asyncio.run(Server(app, config).serve())
 
 
-def _import_target(target: str, *, factory: bool = False):
+def _import_target(import_settings: ImportSettings):
     import importlib
 
+    target = import_settings.target
     module_name, _, attr = target.partition(':')
     if not module_name or not attr:
         raise ValueError('target must be in module:app form')
 
-    cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
+    import_dir = os.getcwd() if import_settings.app_dir is None else os.fspath(import_settings.app_dir)
+    if import_dir not in sys.path:
+        sys.path.insert(0, import_dir)
 
     module = importlib.import_module(module_name)
     target_obj = getattr(module, attr)
     if not callable(target_obj):
         raise TypeError(f'import target {target!r} is not callable')
-    if not factory:
+    if not import_settings.factory:
         return target_obj
 
     app = target_obj()
