@@ -188,17 +188,21 @@ Configuration precedence is:
 <summary>CLI and environment reference (`h2corn --help`)</summary>
 
 ```text
-usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
-              [--reload-dir DIR] [--reload-include PATTERN]
-              [--reload-exclude PATTERN] [--factory] [--app-dir APP_DIR]
-              [--env-file ENV_FILE] [--host HOST] [-p PORT] [--bind ADDRESS]
-              [--pid PID]
-              [--uds-permissions UDS_PERMISSIONS] [--backlog BACKLOG]
-              [-w WORKERS] [--max-requests MAX_REQUESTS]
+usage: h2corn [-h] [-c CONFIG] [--version] [--check-config] [--print-config]
+              [--factory] [--app-dir APP_DIR] [--env-file ENV_FILE]
+              [-r ROOT_PATH] [--lifespan {auto,on,off}]
+              [--timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP]
+              [--timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN]
+              [--reload] [--reload-dir DIR] [--reload-include PATTERN]
+              [--reload-exclude PATTERN] [--host HOST] [-p PORT]
+              [--bind ADDRESS] [--uds-permissions UDS_PERMISSIONS]
+              [--backlog BACKLOG] [--pid PID] [-u USER] [-g GROUP] [-m UMASK]
+              [-w WORKERS] [--runtime-threads RUNTIME_THREADS]
+              [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
               [--timeout-worker-healthcheck TIMEOUT_WORKER_HEALTHCHECK]
               [--http1 | --no-http1] [--access-log | --no-access-log]
-              [-r ROOT_PATH] [--max-concurrent-streams MAX_CONCURRENT_STREAMS]
+              [--max-concurrent-streams MAX_CONCURRENT_STREAMS]
               [--limit-request-head-size LIMIT_REQUEST_HEAD_SIZE]
               [--limit-request-line LIMIT_REQUEST_LINE]
               [--limit-request-fields LIMIT_REQUEST_FIELDS]
@@ -207,16 +211,13 @@ usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
               [--h2-max-header-block-size H2_MAX_HEADER_BLOCK_SIZE]
               [--h2-max-inbound-frame-size H2_MAX_INBOUND_FRAME_SIZE]
               [--max-request-body-size MAX_REQUEST_BODY_SIZE]
+              [--limit-concurrency LIMIT_CONCURRENCY]
+              [--limit-connections LIMIT_CONNECTIONS]
               [--timeout-handshake TIMEOUT_HANDSHAKE]
               [--timeout-graceful-shutdown TIMEOUT_GRACEFUL_SHUTDOWN]
               [--timeout-keep-alive TIMEOUT_KEEP_ALIVE]
               [--timeout-request-header TIMEOUT_REQUEST_HEADER]
               [--timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE]
-              [--limit-concurrency LIMIT_CONCURRENCY]
-              [--limit-connections LIMIT_CONNECTIONS]
-              [--runtime-threads RUNTIME_THREADS] [--lifespan {auto,on,off}]
-              [--timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP]
-              [--timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN]
               [--websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE]
               [--websocket-per-message-deflate | --no-websocket-per-message-deflate]
               [--websocket-ping-interval WEBSOCKET_PING_INTERVAL]
@@ -228,7 +229,7 @@ usage: h2corn [-h] [-c CONFIG] [--check-config] [--print-config] [--reload]
               [--date-header | --no-date-header] [--header HEADER]
               [target]
 
-High-performance HTTP/2 cleartext ASGI server (v1.0.0)
+High-performance HTTP/2 cleartext ASGI server (v1.2.0)
 
 positional arguments:
   target                The ASGI application to run, e.g., module:app.
@@ -238,14 +239,38 @@ options:
   -h, --help            show this help message and exit
   -c, --config CONFIG   Path to a TOML configuration file. [env:
                         H2CORN_CONFIG] (default: None)
+  --version             show program's version number and exit
   --check-config        Validate configuration, then exit without importing
                         the target or starting the server. (default: False)
   --print-config        Print the fully resolved configuration, then exit
                         without importing the target or starting the server.
                         (default: False)
+
+Application:
+  --factory             Treat the target as a zero-argument callable that
+                        returns an ASGI application. (default: False)
+  --app-dir APP_DIR     Import the target module from this directory instead
+                        of the current working directory. (default: None)
+  --env-file ENV_FILE   Load application environment variables from this file
+                        before importing the target. (default: None)
+  -r, --root-path ROOT_PATH
+                        ASGI root path (to mount the application at a
+                        subpath). [env: H2CORN_ROOT_PATH] (default: )
+  --lifespan {auto,on,off}
+                        ASGI lifespan handling mode. [env: H2CORN_LIFESPAN]
+                        (default: auto)
+  --timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP
+                        Maximum time to wait for ASGI lifespan startup in
+                        seconds. Use 0 to disable. [env:
+                        H2CORN_TIMEOUT_LIFESPAN_STARTUP] (default: 60.0)
+  --timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN
+                        Maximum time to wait for ASGI lifespan shutdown in
+                        seconds. Use 0 to disable. [env:
+                        H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN] (default: 30.0)
+
+Development:
   --reload              Restart the server when watched Python files change.
-                        Development only. Requires workers=1. (default:
-                        False)
+                        Development only. (default: False)
   --reload-dir DIR      Directory to watch for reload. Repeat the flag to add
                         more directories. Overrides the default watch root.
                         (default: ())
@@ -256,22 +281,15 @@ options:
   --reload-exclude PATTERN
                         Glob pattern for files or directories that should be
                         ignored by reload. Repeat the flag to add more
-                        patterns. (default: ('.*', '.py[cod]', '.sw.*',
-                        '~*'))
-  --factory             Treat the target as a zero-argument callable that
-                        returns an ASGI application. (default: False)
-  --app-dir APP_DIR     Import the target module from this directory instead
-                        of the current working directory. (default: None)
-  --env-file ENV_FILE   Load application environment variables from this file
-                        before importing the target. (default: None)
+                        patterns. (default: ('.*', '.py[cod]', '.sw.*', '~*'))
+
+Socket Binding:
   --host HOST           TCP host convenience override for a single listener.
-                        When --port is omitted, the base configuration port
-                        is reused.
+                        When --port is omitted, the base configuration port is
+                        reused.
   -p, --port PORT       TCP port convenience override for a single listener.
-                        When --host is omitted, the base configuration host
-                        is reused.
-  --pid PID             Write the server process PID to this file. [env:
-                        H2CORN_PID] (default: None)
+                        When --host is omitted, the base configuration host is
+                        reused.
   --bind ADDRESS        Listener addresses to bind. Repeat the flag to add
                         more listeners. Supports HOST:PORT, [IPv6]:PORT,
                         unix:PATH, and fd://N. [env: H2CORN_BIND] (default:
@@ -281,9 +299,25 @@ options:
                         H2CORN_UDS_PERMISSIONS] (default: None)
   --backlog BACKLOG     The maximum number of queued connections allowed on
                         the socket. [env: H2CORN_BACKLOG] (default: 1024)
+
+Process and Workers:
+  --pid PID             Write the server process PID to this file. [env:
+                        H2CORN_PID] (default: None)
+  -u, --user USER       User name or numeric UID for worker processes and
+                        created Unix sockets. [env: H2CORN_USER] (default:
+                        None)
+  -g, --group GROUP     Group name or numeric GID for worker processes and
+                        created Unix sockets. [env: H2CORN_GROUP] (default:
+                        None)
+  -m, --umask UMASK     Octal process umask to apply before creating files and
+                        sockets. Leave unset to preserve the inherited umask.
+                        [env: H2CORN_UMASK] (default: None)
   -w, --workers WORKERS
                         The number of child worker processes to spawn. [env:
                         H2CORN_WORKERS] (default: 1)
+  --runtime-threads RUNTIME_THREADS
+                        Number of Tokio runtime worker threads per worker
+                        process. [env: H2CORN_RUNTIME_THREADS] (default: 2)
   --max-requests MAX_REQUESTS
                         Maximum number of requests or WebSocket sessions a
                         worker should complete before retiring. Use 0 to
@@ -297,15 +331,14 @@ options:
                         before the supervisor replaces the worker. Use 0 to
                         disable. [env: H2CORN_TIMEOUT_WORKER_HEALTHCHECK]
                         (default: 30.0)
+
+HTTP and Resource Limits:
   --http1, --no-http1   Whether HTTP/1.1 is supported. Intended for
                         development purposes only; disable in production.
                         [env: H2CORN_HTTP1] (default: True)
   --access-log, --no-access-log
                         Whether requests should be logged to stderr. [env:
                         H2CORN_ACCESS_LOG] (default: True)
-  -r, --root-path ROOT_PATH
-                        ASGI root path (to mount the application at a
-                        subpath). [env: H2CORN_ROOT_PATH] (default: )
   --max-concurrent-streams MAX_CONCURRENT_STREAMS
                         Maximum active HTTP/2 streams per connection. [env:
                         H2CORN_MAX_CONCURRENT_STREAMS] (default: 256)
@@ -342,6 +375,16 @@ options:
                         Maximum request body size in bytes. Use 0 for no
                         limit. [env: H2CORN_MAX_REQUEST_BODY_SIZE] (default:
                         1073741824)
+  --limit-concurrency LIMIT_CONCURRENCY
+                        Maximum number of concurrent ASGI request/session
+                        tasks per worker. Use 0 to disable. [env:
+                        H2CORN_LIMIT_CONCURRENCY] (default: 0)
+  --limit-connections LIMIT_CONNECTIONS
+                        Maximum number of live client connections per worker.
+                        Use 0 to disable. [env: H2CORN_LIMIT_CONNECTIONS]
+                        (default: 0)
+
+Timeouts:
   --timeout-handshake TIMEOUT_HANDSHAKE
                         Time limit to establish a connection/handshake
                         (seconds). [env: H2CORN_TIMEOUT_HANDSHAKE] (default:
@@ -361,28 +404,8 @@ options:
                         Idle timeout in seconds while reading an HTTP request
                         body. Use 0 to disable. [env:
                         H2CORN_TIMEOUT_REQUEST_BODY_IDLE] (default: 60.0)
-  --limit-concurrency LIMIT_CONCURRENCY
-                        Maximum number of concurrent ASGI request/session
-                        tasks per worker. Use 0 to disable. [env:
-                        H2CORN_LIMIT_CONCURRENCY] (default: 0)
-  --limit-connections LIMIT_CONNECTIONS
-                        Maximum number of live client connections per worker.
-                        Use 0 to disable. [env: H2CORN_LIMIT_CONNECTIONS]
-                        (default: 0)
-  --runtime-threads RUNTIME_THREADS
-                        Number of Tokio runtime worker threads per worker
-                        process. [env: H2CORN_RUNTIME_THREADS] (default: 2)
-  --lifespan {auto,on,off}
-                        ASGI lifespan handling mode. [env: H2CORN_LIFESPAN]
-                        (default: auto)
-  --timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP
-                        Maximum time to wait for ASGI lifespan startup in
-                        seconds. Use 0 to disable. [env:
-                        H2CORN_TIMEOUT_LIFESPAN_STARTUP] (default: 60.0)
-  --timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN
-                        Maximum time to wait for ASGI lifespan shutdown in
-                        seconds. Use 0 to disable. [env:
-                        H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN] (default: 30.0)
+
+WebSocket:
   --websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE
                         Maximum WebSocket message size in bytes. Defaults to
                         16 MiB. Use 'inherit' to follow
@@ -400,6 +423,8 @@ options:
                         Time limit in seconds to wait for a pong after a
                         server WebSocket ping. Use 0 to disable. [env:
                         H2CORN_WEBSOCKET_PING_TIMEOUT] (default: 30.0)
+
+Proxy and Response Headers:
   --proxy-headers, --no-proxy-headers
                         Trust proxy headers (e.g., Forwarded, X-Forwarded-*)
                         if the client IP is in `forwarded_allow_ips`. [env:

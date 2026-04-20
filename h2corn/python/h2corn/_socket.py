@@ -7,6 +7,7 @@ import socket
 import stat
 import sys
 from contextlib import contextmanager
+from typing import assert_never
 
 from ._config import (
     Config,
@@ -80,7 +81,13 @@ def _cleanup_bound_resources(
             pass
 
 
-def _build_unix_socket(path: str | os.PathLike[str], config: Config):
+def _build_unix_socket(
+    path: str | os.PathLike[str],
+    config: Config,
+    *,
+    owner_uid: int | None = None,
+    owner_gid: int | None = None,
+):
     uds_path = os.fspath(path)
     if sys.platform == 'win32':
         raise OSError('Unix sockets are not supported on Windows')
@@ -99,6 +106,12 @@ def _build_unix_socket(path: str | os.PathLike[str], config: Config):
         socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
     )
     sock.bind(uds_path)
+    if owner_uid is not None or owner_gid is not None:
+        os.chown(
+            uds_path,
+            -1 if owner_uid is None else owner_uid,
+            -1 if owner_gid is None else owner_gid,
+        )
     sock.listen(config.backlog)
     if config.uds_permissions is not None:
         os.chmod(uds_path, config.uds_permissions)
@@ -159,15 +172,21 @@ def _build_tcp_socket(host: str, port: int, config: Config):
     raise last_error
 
 
-def _build_sockets(config: Config):
+def _build_sockets(
+    config: Config,
+    *,
+    socket_owner: tuple[int | None, int | None] = (None, None),
+):
     sockets: list[socket.socket] = []
     resolved_binds: list[str] = []
     owned_socket_paths: list[Path] = []
     bind_fd_is_unix: list[bool] = []
     shared_tcp_port: int | None = None
+    owner_uid, owner_gid = socket_owner
     try:
         for bind in config.bind:
-            match _parse_bind_spec(bind):
+            spec: TcpBindSpec | UnixBindSpec | FdBindSpec = _parse_bind_spec(bind)
+            match spec:
                 case TcpBindSpec(host, port):
                     sock = _build_tcp_socket(host, shared_tcp_port or port, config)
                     bound_port = sock.getsockname()[1]
@@ -177,7 +196,14 @@ def _build_sockets(config: Config):
                     resolved_binds.append(_format_tcp_bind(host, bound_port))
                     bind_fd_is_unix.append(False)
                 case UnixBindSpec(path):
-                    sockets.append(_build_unix_socket(path, config))
+                    sockets.append(
+                        _build_unix_socket(
+                            path,
+                            config,
+                            owner_uid=owner_uid,
+                            owner_gid=owner_gid,
+                        )
+                    )
                     resolved_binds.append(f'unix:{path}')
                     owned_socket_paths.append(path)
                     bind_fd_is_unix.append(False)
@@ -186,20 +212,25 @@ def _build_sockets(config: Config):
                     sockets.append(sock)
                     resolved_binds.append(f'fd://{fd}')
                     bind_fd_is_unix.append(sock.family == socket.AF_UNIX)
+                case bind_spec:
+                    assert_never(bind_spec)
     except Exception:
         _cleanup_bound_resources(sockets, owned_socket_paths)
         raise
     object.__setattr__(config, 'bind', tuple(resolved_binds))
-    object.__setattr__(config, '_owned_socket_paths', tuple(owned_socket_paths))
     object.__setattr__(config, '_bind_fd_is_unix', tuple(bind_fd_is_unix))
     _sync_bind_convenience_fields(config)
-    return tuple(sockets)
+    return tuple(sockets), tuple(owned_socket_paths)
 
 
 @contextmanager
-def _bound_sockets(config: Config):
-    sockets = _build_sockets(config)
+def _bound_sockets(
+    config: Config,
+    *,
+    socket_owner: tuple[int | None, int | None] = (None, None),
+):
+    sockets, owned_socket_paths = _build_sockets(config, socket_owner=socket_owner)
     try:
         yield sockets
     finally:
-        _cleanup_bound_resources(sockets, config._owned_socket_paths)
+        _cleanup_bound_resources(sockets, owned_socket_paths)

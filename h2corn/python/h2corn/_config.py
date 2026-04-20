@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import MISSING, dataclass, field, fields
 from functools import cache
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any, Literal, assert_never, get_args
 
 TYPE_CHECKING = False
 
@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
 LifespanMode = Literal['auto', 'on', 'off']
+_CliAction = Literal['bool', 'append']
+_StringCollection = tuple[object, ...] | list[object] | set[object] | frozenset[object]
+_StringTupleValue = str | _StringCollection | None
+_PathValue = str | os.PathLike[str] | Path | None
+_PrincipalValue = str | int | None
+_BindValue = str | _StringCollection | None
 _PROXY_PROTOCOL_MODES = get_args(ProxyProtocolMode)
 _LIFESPAN_MODES = get_args(LifespanMode)
 CONFIG_PATH_ENV_VAR = 'H2CORN_CONFIG'
@@ -83,14 +89,14 @@ def _invalid_bind_target(kind: str, value: str, detail: str):
     return ValueError(f'invalid {kind} bind target {value!r}: {detail}')
 
 
-def _normalize_str_tuple(value):
+def _normalize_str_tuple(value: _StringTupleValue):
     if value is None:
         return ()
     if isinstance(value, str):
         return _parse_csv_tuple(value)
     if isinstance(value, tuple | list | set | frozenset):
         return tuple(str(item) for item in value)
-    raise TypeError('expected a string or an iterable of strings')
+    assert_never(value)
 
 
 def _normalize_forwarded_allow_ips(value):
@@ -99,12 +105,29 @@ def _normalize_forwarded_allow_ips(value):
     )
 
 
-def _optional_path(value):
+def _optional_path(value: _PathValue):
     if value is None or isinstance(value, Path):
         return value
     if isinstance(value, str | os.PathLike):
         return Path(value)
-    raise TypeError('expected a path or None')
+    assert_never(value)
+
+
+def _optional_principal(name: str):
+    def normalize(value: _PrincipalValue):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError(f'{name} must be non-negative')
+            return value
+        if isinstance(value, str):
+            if not value:
+                raise ValueError(f'{name} must not be empty')
+            return int(value) if value.isdecimal() else value
+        assert_never(value)
+
+    return normalize
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +183,7 @@ def _format_tcp_bind(host: str, port: int):
     return f'{host}:{port}'
 
 
-def _normalize_bind_specs(value):
+def _normalize_bind_specs(value: _BindValue):
     if value is None:
         return _DEFAULT_BIND
     if isinstance(value, str):
@@ -168,13 +191,14 @@ def _normalize_bind_specs(value):
     elif isinstance(value, tuple | list | set | frozenset):
         items = tuple(item for item in (str(item).strip() for item in value) if item)
     else:
-        raise TypeError('bind must be a string or an iterable of bind addresses')
+        assert_never(value)
     if not items:
         raise ValueError('bind must contain at least one entry')
     normalized = []
     tcp_ports: set[int] = set()
     for item in items:
-        match _parse_bind_spec(item):
+        spec: BindSpec = _parse_bind_spec(item)
+        match spec:
             case TcpBindSpec(host, port):
                 normalized.append(_format_tcp_bind(host, port))
                 tcp_ports.add(port)
@@ -182,6 +206,8 @@ def _normalize_bind_specs(value):
                 normalized.append(f'unix:{path}')
             case FdBindSpec(fd):
                 normalized.append(f'fd://{fd}')
+            case bind_spec:
+                assert_never(bind_spec)
     if 0 in tcp_ports and len(tcp_ports) > 1:
         raise ValueError('bind cannot mix port 0 with explicit ports')
     return tuple(normalized)
@@ -268,6 +294,19 @@ def _optional_non_negative(name: str):
     return validate
 
 
+def _optional_octal_mask(name: str):
+    def normalize(value: int | None):
+        if value is None:
+            return None
+        if value < 0:
+            raise ValueError(f'{name} must be non-negative')
+        if value > 0o777:
+            raise ValueError(f'{name} must be at most 0o777')
+        return value
+
+    return normalize
+
+
 @dataclass(frozen=True, slots=True)
 class OptionMetadata:
     doc: str
@@ -275,7 +314,7 @@ class OptionMetadata:
     normalize: _Normalize = _identity
     cli_flags: tuple[str, ...] = ()
     cli_type: _Parse | None = None
-    cli_action: str | None = None
+    cli_action: _CliAction | None = None
     cli_choices: tuple[str, ...] | None = None
     cli_metavar: str | None = None
     toml_key: str | None = None
@@ -312,11 +351,11 @@ def _option(
     normalize: _Normalize = _identity,
     cli_flags: tuple[str, ...] = (),
     cli_type: _Parse | None = None,
-    cli_action: str | None = None,
+    cli_action: _CliAction | None = None,
     cli_choices: tuple[str, ...] | None = None,
     cli_metavar: str | None = None,
     toml_key: str | None = None,
-) -> Any:
+):
     metadata = {
         _OPTION_METADATA_KEY: OptionMetadata(
             doc=doc,
@@ -414,6 +453,30 @@ class Config:
         env_parse=Path,
         normalize=_optional_path,
         cli_type=Path,
+    )
+    user: str | int | None = _option(
+        default=None,
+        doc='User name or numeric UID for worker processes and created Unix sockets.',
+        env_parse=str,
+        normalize=_optional_principal('user'),
+        cli_flags=('-u', '--user'),
+        cli_type=str,
+    )
+    group: str | int | None = _option(
+        default=None,
+        doc='Group name or numeric GID for worker processes and created Unix sockets.',
+        env_parse=str,
+        normalize=_optional_principal('group'),
+        cli_flags=('-g', '--group'),
+        cli_type=str,
+    )
+    umask: int | None = _option(
+        default=None,
+        doc='Octal process umask to apply before creating files and sockets. Leave unset to preserve the inherited umask.',
+        env_parse=_parse_octal,
+        normalize=_optional_octal_mask('umask'),
+        cli_flags=('-m', '--umask'),
+        cli_type=_parse_octal,
     )
     workers: int = _option(
         default=1,
@@ -684,12 +747,6 @@ class Config:
     )
     port: int | None = field(
         default=None,
-        repr=False,
-        compare=False,
-    )
-    _owned_socket_paths: tuple[Path, ...] = field(
-        default=(),
-        init=False,
         repr=False,
         compare=False,
     )

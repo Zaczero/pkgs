@@ -40,19 +40,7 @@ async def _wait_for_h2_success(
     body: bytes,
     timeout: float = 5.0,
 ) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        try:
-            status, response_body = await h2_request(port=port)
-        except Exception:
-            if loop.time() >= deadline:
-                raise
-            await asyncio.sleep(0.05)
-            continue
-        assert status == 200
-        assert response_body == body
-        return
+    await _wait_for_h2_body(port=port, body=body, timeout=timeout)
 
 
 async def _wait_for_h2_body(
@@ -97,6 +85,16 @@ async def _wait_for_listening_port(
                 return int(match.group(1))
 
     return await asyncio.wait_for(_read_port(), timeout=timeout)
+
+
+async def _collect_lines(
+    stream: asyncio.StreamReader | None,
+    lines: list[bytes],
+) -> None:
+    if stream is None:
+        return
+    while line := await stream.readline():
+        lines.append(line)
 
 
 async def _spawn_server_process(
@@ -185,6 +183,19 @@ async def test_unix_socket_cleanup_removes_owned_socket_path(tmp_path: Path) -> 
     assert not socket_path.exists()
 
 
+async def test_unix_socket_umask_limits_created_mode(tmp_path: Path) -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    socket_path = tmp_path / 'umask.sock'
+    config = Config(bind=(f'unix:{socket_path}',), umask=0o077)
+    async with running_server(app, config):
+        assert socket_path.stat().st_mode & 0o077 == 0
+
+    assert not socket_path.exists()
+
+
 async def test_unix_socket_path_rejects_non_socket_files(tmp_path: Path) -> None:
     path = tmp_path / 'not-a-socket'
     path.write_text('occupied')
@@ -255,6 +266,31 @@ async def test_worker_supervisor_serves_requests(tmp_path: Path, workers: int) -
         status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
         assert status == 200
         assert body == b'supervisor'
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+async def test_worker_supervisor_serves_requests_with_current_user_and_group(
+    tmp_path: Path,
+) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='supervisor_identity_app',
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'supervisor-identity'})
+        """,
+        workers=1,
+        extra_args=['--user', str(os.getuid()), '--group', str(os.getgid())],
+    )
+
+    try:
+        await wait_for_port(port)
+        status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
+        assert status == 200
+        assert body == b'supervisor-identity'
         assert process.returncode is None
     finally:
         await _terminate_process(process)
@@ -515,3 +551,64 @@ async def test_reload_restarts_server_after_python_source_change(
         assert process.returncode is None
     finally:
         await _terminate_process(process)
+
+
+async def test_reload_coalesces_bursty_writes_into_one_restart(
+    tmp_path: Path,
+) -> None:
+    module_name = 'reload_coalesce_app'
+    stderr_lines: list[bytes] = []
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name=module_name,
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'v1'})
+        """,
+        workers=1,
+        extra_args=['--reload', '--app-dir', str(tmp_path)],
+        stderr=asyncio.subprocess.PIPE,
+    )
+    module_path = tmp_path / f'{module_name}.py'
+    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
+
+    try:
+        await wait_for_port(port)
+        await _wait_for_h2_success(port=port, body=b'v1')
+
+        module_path.write_text(
+            textwrap.dedent(
+                """
+                async def app(scope, receive, send):
+                    await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+                    await send({'type': 'http.response.body', 'body': b'v2'})
+                """
+            ).strip()
+            + '\n'
+        )
+        os.utime(module_path, None)
+        await asyncio.sleep(0.02)
+        module_path.write_text(
+            textwrap.dedent(
+                """
+                async def app(scope, receive, send):
+                    await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+                    await send({'type': 'http.response.body', 'body': b'v3'})
+                """
+            ).strip()
+            + '\n'
+        )
+        os.utime(module_path, None)
+
+        await _wait_for_h2_body(port=port, body=b'v3', timeout=10)
+        await asyncio.sleep(0.3)
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+        await stderr_task
+
+    assert (
+        sum(b'Reload change detected:' in line for line in stderr_lines)
+        + sum(b'Reload changes detected:' in line for line in stderr_lines)
+    ) == 1

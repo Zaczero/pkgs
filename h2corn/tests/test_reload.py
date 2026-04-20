@@ -1,11 +1,17 @@
 from pathlib import Path
 
+import h2corn._reload as reload_module
 from h2corn._cli import ImportSettings
 from h2corn._reload import (
+    _INOTIFY_DIR_REBUILD_MASK,
+    _INOTIFY_EVENT,
+    _INOTIFY_ISDIR,
     _changed_paths,
-    _python_file_snapshot,
+    _child_argv,
+    _InotifyNotifier,
     _reload_change_message,
     _watch_dirs,
+    _watch_file_snapshot,
 )
 
 
@@ -15,7 +21,7 @@ def test_reload_snapshot_respects_include_patterns(tmp_path: Path) -> None:
     python_file.write_text('value = 1\n')
     other_file.write_text('catalog')
 
-    snapshot = _python_file_snapshot((tmp_path,), ('*.py',), ())
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ())
 
     assert python_file in snapshot
     assert other_file not in snapshot
@@ -27,7 +33,7 @@ def test_reload_snapshot_ignores_hidden_files_by_default(tmp_path: Path) -> None
     visible.write_text('value = 1\n')
     hidden.write_text('value = 2\n')
 
-    snapshot = _python_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
 
     assert visible in snapshot
     assert hidden not in snapshot
@@ -39,7 +45,7 @@ def test_reload_snapshot_matches_relative_path_include_patterns(tmp_path: Path) 
     catalog = locale_dir / 'messages.mo'
     catalog.write_text('catalog')
 
-    snapshot = _python_file_snapshot((tmp_path,), ('locale/**/*.mo',), ())
+    snapshot = _watch_file_snapshot((tmp_path,), ('locale/**/*.mo',), ())
 
     assert catalog in snapshot
 
@@ -52,7 +58,7 @@ def test_reload_snapshot_respects_exclude_patterns(tmp_path: Path) -> None:
     included.write_text('value = 1\n')
     excluded.write_text('value = 2\n')
 
-    snapshot = _python_file_snapshot((tmp_path,), ('*.py',), ('tests',))
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ('tests',))
 
     assert included in snapshot
     assert excluded not in snapshot
@@ -64,7 +70,7 @@ def test_reload_snapshot_ignores_dunder_pypackages_dir_by_default(tmp_path: Path
     generated = package_dir / 'generated.py'
     generated.write_text('value = 1\n')
 
-    snapshot = _python_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
 
     assert generated not in snapshot
 
@@ -81,6 +87,24 @@ def test_reload_dirs_override_default_watch_root(tmp_path: Path) -> None:
     )
 
     assert watch_dirs == (watched.resolve(),)
+
+
+def test_child_argv_strips_reload_parent_flags() -> None:
+    child_argv = _child_argv(
+        [
+            '--reload',
+            '--reload-dir',
+            'src',
+            '--reload-include=*.mo',
+            '--reload-exclude',
+            'tests',
+            '--workers',
+            '1',
+            'example:app',
+        ]
+    )
+
+    assert child_argv == ['--workers', '1', 'example:app']
 
 
 def test_changed_paths_detects_modified_added_and_removed_files(tmp_path: Path) -> None:
@@ -116,3 +140,43 @@ def test_reload_change_message_summarizes_many_paths(tmp_path: Path, monkeypatch
     message = _reload_change_message(changed)
 
     assert message == 'Reload changes detected: file0.py (+4 more); restarting'
+
+
+def test_inotify_consume_skips_rebuild_for_file_events(monkeypatch) -> None:
+    notifier = object.__new__(_InotifyNotifier)
+    notifier._fd = 1
+
+    chunks = iter([
+        _INOTIFY_EVENT.pack(1, 0x0000_0008, 0, 0),
+        BlockingIOError(),
+    ])
+
+    def fake_read(_fd: int, _size: int):
+        chunk = next(chunks)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
+
+    monkeypatch.setattr(reload_module.os, 'read', fake_read)
+
+    assert notifier.consume() is False
+
+
+def test_inotify_consume_rebuilds_for_directory_topology_events(monkeypatch) -> None:
+    notifier = object.__new__(_InotifyNotifier)
+    notifier._fd = 1
+
+    chunks = iter([
+        _INOTIFY_EVENT.pack(1, _INOTIFY_ISDIR | _INOTIFY_DIR_REBUILD_MASK, 0, 0),
+        BlockingIOError(),
+    ])
+
+    def fake_read(_fd: int, _size: int):
+        chunk = next(chunks)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
+
+    monkeypatch.setattr(reload_module.os, 'read', fake_read)
+
+    assert notifier.consume() is True

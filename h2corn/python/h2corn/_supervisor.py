@@ -74,9 +74,15 @@ def _clone_config(config: Config, /, **overrides):
     return cloned
 
 
-def _worker_entry(app: ASGIApp, config: Config, fds: tuple[int, ...]):
-    from ._server import Server
+def _worker_entry(
+    app: ASGIApp,
+    config: Config,
+    fds: tuple[int, ...],
+    identity,
+):
+    from ._server import Server, _drop_process_privileges
 
+    _drop_process_privileges(identity)
     server = Server(app, _clone_config(config, workers=1))
     control_write_fd = config._control_write_fd
 
@@ -136,7 +142,10 @@ def _serve_supervisor(app: ASGIApp, config: Config):
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 
-    with _bound_sockets(config) as socks:
+    from ._server import _resolve_process_identity
+
+    identity = _resolve_process_identity(config)
+    with _bound_sockets(config, socket_owner=(identity.uid, identity.gid)) as socks:
         from ._lib import emit_banner
 
         emit_banner(config)
@@ -175,7 +184,10 @@ def _serve_supervisor(app: ASGIApp, config: Config):
             worker_config = _clone_config(config, max_requests=worker_max_requests)
             if control_write_fd is not None:
                 object.__setattr__(worker_config, '_control_write_fd', control_write_fd)
-            worker = ctx.Process(target=_worker_entry, args=(app, worker_config, fds))
+            worker = ctx.Process(
+                target=_worker_entry,
+                args=(app, worker_config, fds, identity),
+            )
             worker.start()
             assert worker.pid is not None
             if control_write_fd is not None:

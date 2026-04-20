@@ -2,6 +2,7 @@ import io
 import socket
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -57,7 +58,7 @@ def test_build_socket_sets_tcp_defer_accept_for_tcp_on_linux(
         lambda *args: calls.append(('socket', args)) or _recording_socket(calls),
     )
 
-    _socket._build_sockets(config)[0]
+    _socket._build_sockets(config)[0][0]
 
     assert calls[0] == (
         'socket',
@@ -91,7 +92,7 @@ def test_build_socket_ignores_tcp_defer_accept_failures(
         lambda *_args: _recording_socket(calls, fail_tcp_defer_accept=True),
     )
 
-    _socket._build_sockets(config)[0]
+    _socket._build_sockets(config)[0][0]
 
     assert ('setsockopt', (_socket.socket.IPPROTO_TCP, 9, 1)) in calls
     assert ('listen', (config.backlog,)) in calls
@@ -114,11 +115,123 @@ def test_build_socket_sets_nonblocking_after_creation_off_linux(
         lambda *args: calls.append(('socket', args)) or _recording_socket(calls),
     )
 
-    _socket._build_sockets(config)[0]
+    _socket._build_sockets(config)[0][0]
 
     assert calls[0] == ('socket', (_socket.socket.AF_INET, _socket.socket.SOCK_STREAM))
     assert ('setblocking', (False,)) in calls
     assert ('listen', (config.backlog,)) in calls
+
+
+def test_build_unix_socket_applies_owner_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from h2corn import _socket
+
+    socket_path = tmp_path / 'h2corn.sock'
+    config = Config(bind=(f'unix:{socket_path}',))
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        _socket.socket,
+        'socket',
+        lambda *_args: _recording_socket(calls),
+    )
+    monkeypatch.setattr(
+        _socket.os,
+        'lstat',
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(
+        _socket.os,
+        'chown',
+        lambda *args: calls.append(('chown', args)),
+    )
+
+    _socket._build_unix_socket(
+        socket_path,
+        config,
+        owner_uid=1000,
+        owner_gid=1001,
+    )
+
+    assert ('chown', (str(socket_path), 1000, 1001)) in calls
+
+
+def test_resolve_process_identity_uses_user_primary_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    monkeypatch.setattr(_server.sys, 'platform', 'linux')
+    monkeypatch.setitem(
+        sys.modules,
+        'pwd',
+        SimpleNamespace(
+            getpwnam=lambda value: SimpleNamespace(
+                pw_name=value,
+                pw_uid=1000,
+                pw_gid=1001,
+            ),
+            getpwuid=lambda value: SimpleNamespace(
+                pw_name='www-data',
+                pw_uid=value,
+                pw_gid=1001,
+            ),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        'grp',
+        SimpleNamespace(
+            getgrnam=lambda _value: SimpleNamespace(gr_gid=2001),
+            getgrgid=lambda value: SimpleNamespace(gr_gid=value),
+        ),
+    )
+
+    identity = _server._resolve_process_identity(Config(user='www-data'))
+
+    assert identity == _server._ProcessIdentity(
+        uid=1000,
+        gid=1001,
+        username='www-data',
+    )
+
+
+def test_drop_process_privileges_sets_groups_before_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+
+    calls = []
+    monkeypatch.setattr(_server.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(_server.os, 'getegid', lambda: 0)
+    monkeypatch.setattr(
+        _server.os,
+        'initgroups',
+        lambda *args: calls.append(('initgroups', args)),
+    )
+    monkeypatch.setattr(
+        _server.os,
+        'setgid',
+        lambda *args: calls.append(('setgid', args)),
+    )
+    monkeypatch.setattr(
+        _server.os,
+        'setuid',
+        lambda *args: calls.append(('setuid', args)),
+    )
+
+    _server._drop_process_privileges(
+        _server._ProcessIdentity(uid=1000, gid=1001, username='www-data')
+    )
+
+    assert calls == [
+        ('initgroups', ('www-data', 1001)),
+        ('setgid', (1001,)),
+        ('setuid', (1000,)),
+    ]
 
 
 def test_import_target_requires_module_app_form() -> None:
@@ -221,6 +334,43 @@ async def app(scope, receive, send):
     assert callable(app)
 
 
+def test_import_target_moves_app_dir_to_sys_path_front(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    app_dir = tmp_path / 'src'
+    shadow_dir = tmp_path / 'shadow'
+    app_dir.mkdir()
+    shadow_dir.mkdir()
+    (app_dir / 'demoapp_precedence.py').write_text(
+        """
+async def app(scope, receive, send):
+    return None
+
+app.source = 'app-dir'
+"""
+    )
+    (shadow_dir / 'demoapp_precedence.py').write_text(
+        """
+async def app(scope, receive, send):
+    return None
+
+app.source = 'shadow'
+"""
+    )
+    monkeypatch.setattr(sys, 'path', [str(shadow_dir), str(app_dir), *sys.path])
+    monkeypatch.chdir(tmp_path)
+
+    app = _server._import_target(
+        ImportSettings(target='demoapp_precedence:app', app_dir=app_dir)
+    )
+
+    assert app.source == 'app-dir'
+
+
 def test_import_target_loads_env_file_before_import(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -306,7 +456,7 @@ def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
         lambda *_args: _recording_socket(calls, bound_port=54_321),
     )
 
-    _socket._build_sockets(config)[0]
+    _socket._build_sockets(config)[0][0]
 
     assert ('bind', (('127.0.0.1', 0),)) in calls
     assert config.port == 54_321
@@ -361,7 +511,7 @@ def test_build_sockets_reuses_kernel_allocated_port_across_tcp_zero_binds(
     )
     monkeypatch.setattr(_socket.socket, 'socket', lambda family, *_args: FakeSocket(family))
 
-    sockets = _socket._build_sockets(config)
+    sockets, _owned_socket_paths = _socket._build_sockets(config)
 
     assert len(sockets) == 2
     assert ('bind', (('127.0.0.1', 0),)) in calls
@@ -405,7 +555,7 @@ def test_build_sockets_records_fd_listener_family(
 
     monkeypatch.setattr(_socket.socket, 'socket', fake_socket)
 
-    sockets = _socket._build_sockets(config)
+    sockets, _owned_socket_paths = _socket._build_sockets(config)
 
     assert len(sockets) == 1
     assert config.bind == ('fd://7',)

@@ -14,6 +14,10 @@ from h2corn._config import config_options
         ({'backlog': 0}, 'backlog'),
         ({'workers': 0}, 'workers'),
         ({'runtime_threads': 0}, 'runtime_threads'),
+        ({'user': ''}, 'user'),
+        ({'group': ''}, 'group'),
+        ({'umask': -1}, 'umask'),
+        ({'umask': 0o1000}, 'umask'),
         ({'limit_request_line': -1}, 'limit_request_line'),
         ({'limit_request_head_size': -1}, 'limit_request_head_size'),
         ({'limit_request_fields': -1}, 'limit_request_fields'),
@@ -50,6 +54,9 @@ timeout_worker_healthcheck = 4.5
 http1 = false
 lifespan = "on"
 pid = "server.pid"
+user = "www-data"
+group = "www-data"
+umask = "027"
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1"]
 timeout_keep_alive = 1.5
@@ -78,6 +85,9 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.timeout_worker_healthcheck == 4.5
     assert config.http1 is False
     assert config.pid == Path('server.pid')
+    assert config.user == 'www-data'
+    assert config.group == 'www-data'
+    assert config.umask == 0o27
     assert config.proxy_headers is True
     assert config.timeout_keep_alive == 1.5
     assert config.timeout_request_header == 2.5
@@ -115,6 +125,9 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_TIMEOUT_WORKER_HEALTHCHECK', '3.5')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
     monkeypatch.setenv('H2CORN_PID', 'server.pid')
+    monkeypatch.setenv('H2CORN_USER', 'www-data')
+    monkeypatch.setenv('H2CORN_GROUP', 'www-data')
+    monkeypatch.setenv('H2CORN_UMASK', '027')
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
     monkeypatch.setenv('H2CORN_PROXY_HEADERS', 'true')
     monkeypatch.setenv('H2CORN_FORWARDED_ALLOW_IPS', '127.0.0.1,unix')
@@ -149,6 +162,9 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.timeout_worker_healthcheck == 3.5
     assert config.http1 is False
     assert config.pid == Path('server.pid')
+    assert config.user == 'www-data'
+    assert config.group == 'www-data'
+    assert config.umask == 0o27
     assert config.access_log is False
     assert config.proxy_headers is True
     assert config.forwarded_allow_ips == ('127.0.0.1', 'unix')
@@ -228,6 +244,13 @@ def test_config_normalizes_multiple_bind_entries() -> None:
 def test_config_rejects_ping_timeout_without_interval() -> None:
     with pytest.raises(ValueError, match='websocket_ping_timeout'):
         Config(websocket_ping_interval=0.0, websocket_ping_timeout=1.0)
+
+
+def test_config_normalizes_numeric_user_and_group_strings() -> None:
+    config = Config(user='1000', group='1001')
+
+    assert config.user == 1000
+    assert config.group == 1001
 
 
 def test_config_rejects_unknown_mapping_keys() -> None:
@@ -381,6 +404,14 @@ def test_parse_cli_accepts_check_config_without_target() -> None:
     assert isinstance(config, Config)
 
 
+def test_parse_cli_version_exits_without_target(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        parse_cli(['--version'], {})
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.startswith('h2corn ')
+
+
 def test_parse_cli_accepts_print_config_without_target() -> None:
     cli_settings, import_settings, config = parse_cli(
         ['--print-config'],
@@ -426,6 +457,27 @@ def test_parse_cli_accepts_pid_path() -> None:
     assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
     assert config.pid == Path('server.pid')
+
+
+def test_parse_cli_accepts_user_group_and_umask() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        [
+            '--user',
+            'www-data',
+            '--group',
+            'www-data',
+            '--umask',
+            '027',
+            'example:app',
+        ],
+        {},
+    )
+
+    assert cli_settings == CliSettings()
+    assert import_settings == ImportSettings(target='example:app')
+    assert config.user == 'www-data'
+    assert config.group == 'www-data'
+    assert config.umask == 0o27
 
 
 def test_parse_cli_rejects_reload_with_multiple_workers() -> None:

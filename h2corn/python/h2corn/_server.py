@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Literal
 
 from ._cli import ImportSettings, run_cli
@@ -24,6 +25,13 @@ if TYPE_CHECKING:
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 
+@dataclass(frozen=True, slots=True)
+class _ProcessIdentity:
+    uid: int | None = None
+    gid: int | None = None
+    username: str | None = None
+
+
 @contextmanager
 def _pidfile(config: Config):
     path = config.pid
@@ -41,6 +49,88 @@ def _pidfile(config: Config):
                 path.unlink()
         except OSError:
             pass
+
+
+@contextmanager
+def _process_umask(config: Config):
+    if config.umask is None:
+        yield
+        return
+
+    previous = os.umask(config.umask)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def _resolve_process_identity(config: Config):
+    if sys.platform == 'win32':
+        if config.user is None and config.group is None:
+            return _ProcessIdentity()
+        raise NotImplementedError('user and group are supported only on Unix')
+
+    import grp
+    import pwd
+
+    uid = gid = None
+    username = None
+    primary_gid = None
+    user = config.user
+    group = config.group
+
+    if isinstance(user, int):
+        uid = user
+        try:
+            passwd = pwd.getpwuid(uid)
+        except KeyError:
+            passwd = None
+        else:
+            username = passwd.pw_name
+            primary_gid = passwd.pw_gid
+    elif isinstance(user, str):
+        try:
+            passwd = pwd.getpwnam(user)
+        except KeyError as exc:
+            raise ValueError(f'unknown user: {user!r}') from exc
+        uid = passwd.pw_uid
+        username = passwd.pw_name
+        primary_gid = passwd.pw_gid
+
+    if isinstance(group, int):
+        gid = group
+    elif isinstance(group, str):
+        try:
+            gid = grp.getgrnam(group).gr_gid
+        except KeyError as exc:
+            raise ValueError(f'unknown group: {group!r}') from exc
+    elif primary_gid is not None:
+        gid = primary_gid
+
+    if config.user is not None and uid is not None and gid is None:
+        raise ValueError(
+            'group is required when user does not resolve to a primary group'
+        )
+
+    return _ProcessIdentity(uid=uid, gid=gid, username=username)
+
+
+def _drop_process_privileges(identity: _ProcessIdentity):
+    if identity.uid is None and identity.gid is None:
+        return
+
+    if identity.uid is not None and identity.username is not None and os.geteuid() == 0:
+        os.initgroups(
+            identity.username,
+            os.getegid() if identity.gid is None else identity.gid,
+        )
+    elif identity.gid is not None and hasattr(os, 'setgroups') and os.geteuid() == 0:
+        os.setgroups([identity.gid])
+
+    if identity.gid is not None and os.getegid() != identity.gid:
+        os.setgid(identity.gid)
+    if identity.uid is not None and os.geteuid() != identity.uid:
+        os.setuid(identity.uid)
 
 
 class Server:
@@ -89,21 +179,27 @@ class Server:
                 'Server.serve() is the in-process API and only supports workers=1'
             )
 
-        with _pidfile(self.config), _bound_sockets(self.config) as socks:
-            from ._lib import emit_banner
+        identity = _resolve_process_identity(self.config)
+        with _process_umask(self.config), _bound_sockets(
+            self.config,
+            socket_owner=(identity.uid, identity.gid),
+        ) as socks:
+            _drop_process_privileges(identity)
+            with _pidfile(self.config):
+                from ._lib import emit_banner
 
-            emit_banner(self.config)
+                emit_banner(self.config)
 
-            async def _serve_app(app: ASGIApp):
-                await self._serve_fds(app, [sock.detach() for sock in socks])
+                async def _serve_app(app: ASGIApp):
+                    await self._serve_fds(app, [sock.detach() for sock in socks])
 
-            await _serve_with_lifespan(
-                self.app,
-                _serve_app,
-                mode=self.config.lifespan,
-                startup_timeout=self.config.timeout_lifespan_startup,
-                shutdown_timeout=self.config.timeout_lifespan_shutdown,
-            )
+                await _serve_with_lifespan(
+                    self.app,
+                    _serve_app,
+                    mode=self.config.lifespan,
+                    startup_timeout=self.config.timeout_lifespan_startup,
+                    shutdown_timeout=self.config.timeout_lifespan_shutdown,
+                )
 
 
 def serve(app: ASGIApp, config: Config | None = None) -> None:
@@ -125,7 +221,7 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     if sys.platform != 'win32':
         from ._supervisor import _serve_supervisor
 
-        with _pidfile(config):
+        with _process_umask(config), _pidfile(config):
             _serve_supervisor(app, config)
         return
 
@@ -183,8 +279,8 @@ def _import_target(import_settings: ImportSettings):
         if import_settings.app_dir is None
         else os.fspath(import_settings.app_dir)
     )
-    if import_dir not in sys.path:
-        sys.path.insert(0, import_dir)
+    sys.path[:] = [entry for entry in sys.path if entry != import_dir]
+    sys.path.insert(0, import_dir)
 
     module = importlib.import_module(module_name)
     target_obj = getattr(module, attr)

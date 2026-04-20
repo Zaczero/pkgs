@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from ._config import LifespanMode
     from ._types import ASGIApp, Message, State
 
 
@@ -26,7 +27,7 @@ async def _serve_with_lifespan(
     app: ASGIApp,
     serve: Callable[[ASGIApp], Awaitable[None]],
     *,
-    mode: str = 'auto',
+    mode: LifespanMode = 'auto',
     startup_timeout: float | None = None,
     shutdown_timeout: float | None = None,
 ):
