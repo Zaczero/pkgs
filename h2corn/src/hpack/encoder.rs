@@ -285,7 +285,7 @@ fn encode_string(value: &[u8], dst: &mut BytesMut) {
     let huffman_len = huffman::encoded_len(value);
     if huffman_len < value.len() {
         encode_int(huffman_len, 7, 0x80, dst);
-        huffman::encode(value, dst);
+        huffman::encode_with_len(value, huffman_len, dst);
         return;
     }
 

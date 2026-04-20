@@ -195,9 +195,13 @@ impl WebSocketCodec {
         }
 
         match opcode {
-            OPCODE_CONTINUATION => {
-                self.decode_continuation::<M>(inflater, fin, compressed, payload, max_message_size)
-            }
+            OPCODE_CONTINUATION => self.decode_continuation::<M>(
+                inflater,
+                fin,
+                compressed,
+                payload.as_ref(),
+                max_message_size,
+            ),
             OPCODE_TEXT | OPCODE_BINARY => self.decode_data_frame::<M>(
                 inflater,
                 opcode,
@@ -331,7 +335,7 @@ impl WebSocketCodec {
         inflater: &mut M::Inflater,
         fin: bool,
         compressed: bool,
-        payload: Bytes,
+        payload: &[u8],
         max_message_size: Option<usize>,
     ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
         if compressed {
@@ -355,15 +359,18 @@ impl WebSocketCodec {
                 compressed: is_compressed,
                 compressed_len,
             } => {
-                data.extend_from_slice(payload.as_ref());
-                let len = data.len();
-                *compressed_len = compressed_len.saturating_add(payload.len());
-                if !*is_compressed && max_message_size.is_some_and(|limit| len > limit) {
+                let next_len = data.len().saturating_add(payload.len());
+                let next_compressed_len = compressed_len.saturating_add(payload.len());
+                if !*is_compressed && max_message_size.is_some_and(|limit| next_len > limit) {
                     return Err(WebSocketDecodeError::message_too_large());
                 }
-                if *is_compressed && max_message_size.is_some_and(|limit| *compressed_len > limit) {
+                if *is_compressed
+                    && max_message_size.is_some_and(|limit| next_compressed_len > limit)
+                {
                     return Err(WebSocketDecodeError::message_too_large());
                 }
+                data.extend_from_slice(payload);
+                *compressed_len = next_compressed_len;
             }
         }
         if !fin {
@@ -407,9 +414,10 @@ mod tests {
         super::{
             super::deflate::{PerMessageDeflateEnabled, PerMessageDeflateMode},
             CLIENT_FRAME_PREFIX_MAX_LEN, FIN_MASK, INLINE_PAYLOAD_LEN_MAX, MASK_FLAG,
-            PAYLOAD_LEN_U16_MARKER, PAYLOAD_LEN_U64_MARKER, RSV1_MASK, close_code,
+            OPCODE_CONTINUATION, PAYLOAD_LEN_U16_MARKER, PAYLOAD_LEN_U64_MARKER, RSV1_MASK,
+            close_code,
         },
-        DecodedFrame, OPCODE_BINARY, OPCODE_TEXT, WebSocketCodec,
+        DecodedFrame, FragmentState, OPCODE_BINARY, OPCODE_TEXT, WebSocketCodec,
     };
 
     fn encode_masked_client_frame(opcode: u8, payload: &[u8], fin: bool) -> Vec<u8> {
@@ -590,5 +598,30 @@ mod tests {
             .expect_err("compressed fragments beyond the limit should fail");
 
         assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+    }
+
+    #[test]
+    fn websocket_codec_rejects_fragmented_uncompressed_message_over_limit_before_copying() {
+        let mut codec = WebSocketCodec::with_options(BytesMut::new(), NonZeroUsize::new(8));
+
+        codec
+            .buffer
+            .extend_from_slice(&encode_masked_client_frame(OPCODE_TEXT, b"abcd", false));
+        assert!(codec.decode_next().unwrap().is_none());
+
+        codec.buffer.extend_from_slice(&encode_masked_client_frame(
+            OPCODE_CONTINUATION,
+            b"efghi",
+            true,
+        ));
+        let err = codec
+            .decode_next()
+            .expect_err("uncompressed fragments beyond the limit should fail");
+
+        assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+        match &codec.fragmented {
+            FragmentState::Text { data, .. } => assert_eq!(data.len(), 4),
+            _ => panic!("expected fragmented text state to remain unchanged"),
+        }
     }
 }

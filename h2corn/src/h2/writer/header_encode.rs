@@ -127,7 +127,7 @@ fn encode_header_block(
     if let Some(status) = status {
         encode_status_header(encoder, out, status)?;
     }
-    encode_header_fields(encoder, out, headers)?;
+    encode_header_fields(encoder, out, headers);
     Ok(out.split().freeze())
 }
 
@@ -160,13 +160,8 @@ fn status_to_bytes(status: HttpStatusCode) -> [u8; 3] {
     ]
 }
 
-fn encode_header_fields(
-    encoder: &mut Encoder,
-    out: &mut BytesMut,
-    headers: &ResponseHeaders,
-) -> Result<(), H2CornError> {
+fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &ResponseHeaders) {
     for (name, value) in headers {
         encoder.encode_field_bytes(name.as_bytes(), value.as_bytes(), out);
     }
-    Ok(())
 }

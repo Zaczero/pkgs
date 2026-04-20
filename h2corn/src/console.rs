@@ -255,11 +255,8 @@ pub(crate) struct ResponseLogState {
 
 impl ResponseLogState {
     pub(crate) fn started(&mut self, status: HttpStatusCode) {
-        self.status = Some(unsafe {
-            // SAFETY: h2corn only records real HTTP status codes here, which
-            // are strictly positive.
-            NonZeroU16::new_unchecked(status)
-        });
+        self.status =
+            Some(NonZeroU16::new(status).expect("response status codes are always non-zero"));
     }
 
     pub(crate) fn sent_body(&mut self, len: usize) {

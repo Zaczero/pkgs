@@ -51,8 +51,13 @@ pub fn encoded_len(src: &[u8]) -> usize {
     (bit_len + 7) >> 3
 }
 
+#[cfg(test)]
 pub fn encode(src: &[u8], dst: &mut BytesMut) {
-    dst.reserve(encoded_len(src));
+    encode_with_len(src, encoded_len(src), dst);
+}
+
+pub fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
+    dst.reserve(encoded_len);
 
     let mut bits: u64 = 0;
     let mut bits_left = 40;
@@ -111,6 +116,18 @@ mod test {
         encode(data, &mut dst);
 
         assert_eq!(encoded_len(data), dst.len());
+    }
+
+    #[test]
+    fn encode_with_len_matches_encode() {
+        let data = b"custom-header-value";
+        let mut encoded = BytesMut::new();
+        let mut encoded_with_len = BytesMut::new();
+
+        encode(data, &mut encoded);
+        encode_with_len(data, encoded_len(data), &mut encoded_with_len);
+
+        assert_eq!(encoded, encoded_with_len);
     }
 
     #[test]
