@@ -95,7 +95,7 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ inputs.package }} -> target
+          workspaces: ${{ env.PACKAGE }} -> target
 
       - name: Test Rust
         shell: bash
@@ -124,10 +124,10 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-          cache-suffix: ${{ inputs.package }}-py${{ matrix.python-version }}
+          cache-suffix: ${{ env.PACKAGE }}-py${{ matrix.python-version }}
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-          working-directory: ${{ inputs.package }}
+          working-directory: ${{ env.PACKAGE }}
 
       - name: Install Python
         shell: bash
@@ -143,10 +143,10 @@ jobs:
         if: needs.resolve.outputs.is-rusty == 'true'
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ inputs.package }} -> target
+          workspaces: ${{ env.PACKAGE }} -> target
 
       - name: Install h2spec
-        if: inputs.package == 'h2corn'
+        if: env.PACKAGE == 'h2corn'
         shell: bash
         run: |
           set -euo pipefail
@@ -180,7 +180,7 @@ jobs:
             pyproject.toml
             uv.lock
           enable-cache: true
-          working-directory: ${{ inputs.package }}
+          working-directory: ${{ env.PACKAGE }}
 
       - name: Rewrite README for PyPI
         shell: bash
@@ -192,7 +192,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: dist-${{ inputs.package }}-ubuntu-latest
+          name: dist-${{ env.PACKAGE }}-ubuntu-latest
           path: dist
 
   build-rusty:
@@ -204,6 +204,7 @@ jobs:
         runner: [ ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15-intel, macos-15 ]
     runs-on: ${{ matrix.runner }}
     env:
+      PACKAGE: ${{ inputs.package }}
       CIBW_ARCHS_WINDOWS: "AMD64"
       CIBW_BUILD_VERBOSITY: "1"
       CIBW_ENABLE: "cpython-freethreading pypy"
@@ -229,7 +230,7 @@ jobs:
             pyproject.toml
             uv.lock
           enable-cache: true
-          working-directory: ${{ inputs.package }}
+          working-directory: ${{ env.PACKAGE }}
 
       - name: Rewrite README for PyPI
         shell: bash
@@ -245,12 +246,10 @@ jobs:
         if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ inputs.package }} -> target
+          workspaces: ${{ env.PACKAGE }} -> target
 
       - name: Build wheels
         shell: bash
-        env:
-          PACKAGE: ${{ inputs.package }}
         run: |
           uv tool run \
             --from "cibuildwheel==3.4.1" cibuildwheel \
@@ -260,11 +259,9 @@ jobs:
       - name: Build sdist
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
-        env:
-          PACKAGE: ${{ inputs.package }}
         run: uv build --sdist -o dist "$PACKAGE"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: dist-${{ inputs.package }}-${{ matrix.runner }}
+          name: dist-${{ env.PACKAGE }}-${{ matrix.runner }}
           path: dist
