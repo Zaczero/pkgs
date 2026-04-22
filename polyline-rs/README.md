@@ -1,6 +1,6 @@
 # polyline-rs
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/polyline-rs)](https://pypi.org/project/polyline-rs)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/polyline-rs)](https://pypi.org/p/polyline-rs)
 
 Fast Google Encoded Polyline encoding & decoding in Rust with Python bindings. Library with out-of-the-box support for both (lat, lon) and (lon, lat) coordinates.
 

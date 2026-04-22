@@ -1,6 +1,6 @@
 # sizestr
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/sizestr)](https://pypi.org/project/sizestr)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/sizestr)](https://pypi.org/p/sizestr)
 
 Simple and fast formatting of sizes for Python.
 

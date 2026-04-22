@@ -1,6 +1,6 @@
 # osm-shortlink
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/osm-shortlink)](https://pypi.org/project/osm-shortlink)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/osm-shortlink)](https://pypi.org/p/osm-shortlink)
 
 Fast and correct OpenStreetMap shortlink encoder and decoder implementation in Rust with Python bindings. Shortlinks allow you to represent a location on the map with a short code.
 

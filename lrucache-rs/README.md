@@ -1,6 +1,6 @@
 # lrucache-rs
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/project/lrucache-rs)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/p/lrucache-rs)
 
 An efficient LRU cache written in Rust with Python bindings. Unlike other LRU cache implementations, this one behaves like a Python dictionary and does not wrap around a function.
 

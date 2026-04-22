@@ -30,8 +30,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/Zaczero/h2corn"
-Issues = "https://github.com/Zaczero/h2corn/issues"
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/h2corn"
 
 [project.scripts]
 h2corn = "h2corn._server:main"

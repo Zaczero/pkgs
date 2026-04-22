@@ -1,6 +1,6 @@
 # githead
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/githead)](https://pypi.org/project/githead)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/githead)](https://pypi.org/p/githead)
 
 Simple utility for getting the current git commit hash (HEAD).
 

@@ -1,6 +1,6 @@
 # ZID
 
-[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/zid)](https://pypi.org/project/zid)
+[![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/zid)](https://pypi.org/p/zid)
 
 **zid** is a unique identifier with nice properties:
 
