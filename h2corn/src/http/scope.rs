@@ -362,6 +362,7 @@ mod tests {
                 trusted_peers: Box::new([]),
                 protocol: ProxyProtocolMode::Off,
             },
+            tls: None,
             timeout_handshake: Duration::from_secs(5),
             response_headers: ResponseHeaderConfig::default(),
         }))

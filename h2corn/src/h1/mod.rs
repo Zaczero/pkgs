@@ -79,6 +79,7 @@ pub(crate) async fn serve_connection<R, W>(
     mut buffer: BytesMut,
     writer: W,
     connection: ConnectionContext,
+    secure: bool,
     mut shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
@@ -105,6 +106,7 @@ where
                 &mut buffer,
                 &mut writer,
                 connection.config,
+                secure,
                 request_head_timeout(connection.config, first_request),
             ) => parsed,
         }?;

@@ -209,6 +209,9 @@ def _build_sockets(
                     bind_fd_is_unix.append(False)
                 case FdBindSpec(fd):
                     sock = _adopt_socket(fd)
+                    if config.certfile is not None and sock.family == socket.AF_UNIX:
+                        sock.close()
+                        raise OSError('TLS is supported only on TCP listeners')
                     sockets.append(sock)
                     resolved_binds.append(f'fd://{fd}')
                     bind_fd_is_unix.append(sock.family == socket.AF_UNIX)

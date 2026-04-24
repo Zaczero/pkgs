@@ -1,8 +1,9 @@
 """
-High-performance ASGI server optimized for use behind a trusted reverse proxy.
+High-performance HTTP/2 ASGI server for
+FastAPI, Starlette, and similar apps.
 
-h2corn prioritizes raw throughput and ASGI standard compatibility. By design,
-it delegates TLS termination and edge security to a trusted proxy layer.
+h2corn is optimized for h2c behind a trusted reverse proxy,
+with optional direct TLS support for TCP deployments.
 """
 
 from ._config import Config, ProxyProtocolMode

@@ -38,6 +38,12 @@ _BINDING_CONFIG_OPTIONS = (
     'uds_permissions',
     'backlog',
 )
+_TLS_CONFIG_OPTIONS = (
+    'certfile',
+    'keyfile',
+    'ca_certs',
+    'cert_reqs',
+)
 _PROCESS_CONFIG_OPTIONS = (
     'pid',
     'user',
@@ -216,7 +222,7 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
 
     parser = argparse.ArgumentParser(
         prog='h2corn',
-        description=f'High-performance HTTP/2 cleartext ASGI server (v{version})',
+        description=f'High-performance HTTP/2 ASGI server (v{version})',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -314,6 +320,9 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help='TCP port convenience override for a single listener. When --host is omitted, the base configuration host is reused.',
     )
     _add_named_config_arguments(binding, base, option_map, _BINDING_CONFIG_OPTIONS)
+
+    tls = parser.add_argument_group('TLS')
+    _add_named_config_arguments(tls, base, option_map, _TLS_CONFIG_OPTIONS)
 
     process = parser.add_argument_group('Process and Workers')
     _add_named_config_arguments(process, base, option_map, _PROCESS_CONFIG_OPTIONS)
@@ -456,6 +465,9 @@ def run_cli(
         _print_config(config)
         return
     if cli_settings.check_config:
+        from ._lib import validate_config
+
+        validate_config(config)
         return
     if cli_settings.reload:
         from ._reload import _serve_with_reload

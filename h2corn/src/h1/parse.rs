@@ -261,6 +261,7 @@ pub(super) async fn read_request<R, W>(
     buffer: &mut BytesMut,
     writer: &mut BufWriter<W>,
     config: &ServerConfig,
+    secure: bool,
     timeout_duration: Option<Duration>,
 ) -> Result<Option<ParsedRequest>, H2CornError>
 where
@@ -367,7 +368,7 @@ where
         writer.flush().await?;
     }
 
-    let mut scheme = BytesStr::from_static("http");
+    let mut scheme = BytesStr::from_static(if secure { "https" } else { "http" });
     let request_target = match parse_request_target(
         target,
         &mut header_state.headers,
@@ -894,6 +895,7 @@ mod tests {
                 trusted_peers: Box::new([]),
                 protocol: ProxyProtocolMode::Off,
             },
+            tls: None,
             timeout_handshake: Duration::from_secs(5),
             response_headers: Default::default(),
         }))
@@ -918,6 +920,7 @@ mod tests {
             &mut BytesMut::new(),
             &mut writer,
             test_server_config(),
+            false,
             None,
         )
         .await;

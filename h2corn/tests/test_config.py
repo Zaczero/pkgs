@@ -54,6 +54,10 @@ timeout_worker_healthcheck = 4.5
 http1 = false
 lifespan = "on"
 pid = "server.pid"
+certfile = "server.crt"
+keyfile = "server.key"
+ca_certs = "clients.pem"
+cert_reqs = "optional"
 user = "www-data"
 group = "www-data"
 umask = "027"
@@ -85,6 +89,10 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.timeout_worker_healthcheck == 4.5
     assert config.http1 is False
     assert config.pid == Path('server.pid')
+    assert config.certfile == Path('server.crt')
+    assert config.keyfile == Path('server.key')
+    assert config.ca_certs == Path('clients.pem')
+    assert config.cert_reqs == 'optional'
     assert config.user == 'www-data'
     assert config.group == 'www-data'
     assert config.umask == 0o27
@@ -125,6 +133,10 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_TIMEOUT_WORKER_HEALTHCHECK', '3.5')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
     monkeypatch.setenv('H2CORN_PID', 'server.pid')
+    monkeypatch.setenv('H2CORN_CERTFILE', 'server.crt')
+    monkeypatch.setenv('H2CORN_KEYFILE', 'server.key')
+    monkeypatch.setenv('H2CORN_CA_CERTS', 'clients.pem')
+    monkeypatch.setenv('H2CORN_CERT_REQS', 'required')
     monkeypatch.setenv('H2CORN_USER', 'www-data')
     monkeypatch.setenv('H2CORN_GROUP', 'www-data')
     monkeypatch.setenv('H2CORN_UMASK', '027')
@@ -162,6 +174,10 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.timeout_worker_healthcheck == 3.5
     assert config.http1 is False
     assert config.pid == Path('server.pid')
+    assert config.certfile == Path('server.crt')
+    assert config.keyfile == Path('server.key')
+    assert config.ca_certs == Path('clients.pem')
+    assert config.cert_reqs == 'required'
     assert config.user == 'www-data'
     assert config.group == 'www-data'
     assert config.umask == 0o27
@@ -216,6 +232,59 @@ def test_config_from_env_accepts_websocket_message_size_inherit() -> None:
 def test_config_rejects_empty_unix_bind_path() -> None:
     with pytest.raises(ValueError, match='invalid unix bind target'):
         Config(bind=('unix:',))
+
+
+def test_config_rejects_partial_tls_keypair() -> None:
+    with pytest.raises(ValueError, match='certfile and keyfile'):
+        Config(certfile='server.crt')
+
+
+def test_config_rejects_tls_on_unix_listener() -> None:
+    with pytest.raises(ValueError, match='TLS is supported only on TCP'):
+        Config(
+            bind=('unix:/tmp/h2corn.sock',),
+            certfile='server.crt',
+            keyfile='server.key',
+        )
+
+
+def test_config_rejects_mtls_without_ca_bundle() -> None:
+    with pytest.raises(ValueError, match='requires ca_certs'):
+        Config(cert_reqs='required')
+
+
+def test_config_rejects_mtls_without_tls_keypair() -> None:
+    with pytest.raises(ValueError, match='requires certfile and keyfile'):
+        Config(ca_certs='clients.pem', cert_reqs='required')
+
+
+def test_config_rejects_unused_ca_bundle() -> None:
+    with pytest.raises(ValueError, match='ca_certs requires cert_reqs'):
+        Config(ca_certs='clients.pem')
+
+
+def test_parse_cli_accepts_tls_options() -> None:
+    cli_settings, import_settings, config = parse_cli(
+        [
+            '--certfile',
+            'server.crt',
+            '--keyfile',
+            'server.key',
+            '--ca-certs',
+            'clients.pem',
+            '--cert-reqs',
+            'optional',
+            'example:app',
+        ],
+        {},
+    )
+
+    assert cli_settings == CliSettings()
+    assert import_settings == ImportSettings(target='example:app')
+    assert config.certfile == Path('server.crt')
+    assert config.keyfile == Path('server.key')
+    assert config.ca_certs == Path('clients.pem')
+    assert config.cert_reqs == 'optional'
 
 
 def test_config_rejects_invalid_trusted_proxy_entry() -> None:

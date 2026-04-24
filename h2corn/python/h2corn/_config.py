@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
 LifespanMode = Literal['auto', 'on', 'off']
+CertReqsMode = Literal['none', 'optional', 'required']
 _CliAction = Literal['bool', 'append']
 _StringCollection = tuple[object, ...] | list[object] | set[object] | frozenset[object]
 _StringTupleValue = str | _StringCollection | None
@@ -25,6 +26,7 @@ _PrincipalValue = str | int | None
 _BindValue = str | _StringCollection | None
 _PROXY_PROTOCOL_MODES = get_args(ProxyProtocolMode)
 _LIFESPAN_MODES = get_args(LifespanMode)
+_CERT_REQS_MODES = get_args(CertReqsMode)
 CONFIG_PATH_ENV_VAR = 'H2CORN_CONFIG'
 _OPTION_METADATA_KEY = 'h2corn_option'
 _H2_MIN_FRAME_SIZE = 16_384
@@ -245,6 +247,12 @@ def _normalize_lifespan(value):
     return value
 
 
+def _normalize_cert_reqs(value):
+    if value not in _CERT_REQS_MODES:
+        raise ValueError(f'invalid cert_reqs mode: {value!r}')
+    return value
+
+
 def _minimum(name: str, minimum: int):
     def normalize(value: int):
         if value < minimum:
@@ -446,6 +454,34 @@ class Config:
         env_parse=int,
         normalize=_minimum('backlog', 1),
         cli_type=int,
+    )
+    certfile: Path | None = _option(
+        default=None,
+        doc='PEM certificate chain file for direct TLS.',
+        env_parse=Path,
+        normalize=_optional_path,
+        cli_type=Path,
+    )
+    keyfile: Path | None = _option(
+        default=None,
+        doc='PEM private key file for direct TLS. Encrypted keys are not supported.',
+        env_parse=Path,
+        normalize=_optional_path,
+        cli_type=Path,
+    )
+    ca_certs: Path | None = _option(
+        default=None,
+        doc='PEM CA bundle used to verify client certificates for direct TLS.',
+        env_parse=Path,
+        normalize=_optional_path,
+        cli_type=Path,
+    )
+    cert_reqs: CertReqsMode = _option(
+        default='none',
+        doc='Client certificate verification mode for direct TLS.',
+        env_parse=_normalize_cert_reqs,
+        normalize=_normalize_cert_reqs,
+        cli_choices=_CERT_REQS_MODES,
     )
     pid: Path | None = _option(
         default=None,
@@ -767,6 +803,20 @@ class Config:
                 raise ValueError('bind cannot be combined with host or port')
             object.__setattr__(self, 'bind', convenience_bind)
         _sync_bind_convenience_fields(self)
+        tls_enabled = self.certfile is not None or self.keyfile is not None
+        if tls_enabled and (self.certfile is None or self.keyfile is None):
+            raise ValueError('certfile and keyfile must be configured together')
+        if self.ca_certs is not None and self.cert_reqs == 'none':
+            raise ValueError('ca_certs requires cert_reqs to be optional or required')
+        if self.cert_reqs != 'none' and self.ca_certs is None:
+            raise ValueError('cert_reqs optional/required requires ca_certs')
+        if (self.ca_certs is not None or self.cert_reqs != 'none') and not tls_enabled:
+            raise ValueError('client certificate verification requires certfile and keyfile')
+        if tls_enabled:
+            for bind in self.bind:
+                match _parse_bind_spec(bind):
+                    case UnixBindSpec():
+                        raise ValueError('TLS is supported only on TCP listeners')
         if self.websocket_ping_timeout > 0 and self.websocket_ping_interval == 0:
             raise ValueError('websocket_ping_timeout requires websocket_ping_interval')
 

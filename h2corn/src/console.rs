@@ -1,6 +1,6 @@
 use std::{
     fmt::{self, Write as _},
-    io::{Write, stderr as io_stderr},
+    io::{self, Write},
     num::NonZeroU16,
     str,
     sync::LazyLock,
@@ -28,7 +28,7 @@ const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
 const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
-    let choice = AutoStream::choice(&io_stderr());
+    let choice = AutoStream::choice(&io::stderr());
     if choice == ColorChoice::Never {
         AccessLogMode::Plain
     } else {
@@ -292,14 +292,17 @@ pub(crate) fn emit_banner(config: &ServerConfig) {
     let mut stderr = anstream::stderr().lock();
     let _ = writeln!(
         stderr,
-        "{} v{} • HTTP/2 cleartext ASGI",
+        "{} v{} • HTTP/2 ASGI",
         "h2corn".if_supports_color(Stream::Stderr, |text| {
             text.style(Style::new().bold().cyan())
         }),
         env!("CARGO_PKG_VERSION"),
     );
 
-    let mut binds = config.binds.iter().map(format_listen_target);
+    let mut binds = config
+        .binds
+        .iter()
+        .map(|bind| format_listen_target(bind, config.tls.is_some()));
     if let Some(first) = binds.next() {
         write_listen_target_line(&mut stderr, LISTENING_PREFIX, &first);
         for bind in binds {
@@ -342,7 +345,7 @@ pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
             );
         }
         AccessLogMode::Styled(choice) => {
-            let mut stderr = AutoStream::new(io_stderr(), choice).lock();
+            let mut stderr = AutoStream::new(io::stderr(), choice).lock();
             emit_styled_access_log(
                 &mut stderr,
                 entry.client_label,
@@ -373,7 +376,7 @@ pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
             );
         }
         AccessLogMode::Styled(choice) => {
-            let mut stderr = AutoStream::new(io_stderr(), choice).lock();
+            let mut stderr = AutoStream::new(io::stderr(), choice).lock();
             emit_styled_access_log(
                 &mut stderr,
                 entry.client_label,
@@ -387,9 +390,13 @@ pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
     }
 }
 
-fn format_listen_target(bind: &BindTarget) -> String {
+fn format_listen_target(bind: &BindTarget, tls: bool) -> String {
     match bind {
-        BindTarget::Tcp { host, port } => format!("http://{}:{port}", HostDisplay(host.as_ref())),
+        BindTarget::Tcp { host, port } => format!(
+            "{}://{}:{port}",
+            if tls { "https" } else { "http" },
+            HostDisplay(host.as_ref())
+        ),
         BindTarget::Unix { path } => format!("unix:{path}"),
         BindTarget::Fd { fd, .. } => format!("fd://{fd}"),
     }
@@ -416,7 +423,7 @@ fn emit_plain_access_log<T>(
         code,
         IoSummaryDisplay(io_summary),
     );
-    let mut stderr = io_stderr().lock();
+    let mut stderr = io::stderr().lock();
     let _ = stderr.write_all(&line);
 }
 

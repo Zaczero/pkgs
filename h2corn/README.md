@@ -1,6 +1,6 @@
 # h2corn
 
-`h2corn` is a high-performance ASGI server for FastAPI, Starlette, and similar applications running behind a reverse proxy, with HTTP/2 cleartext (`h2c`) used on the connection from the proxy to the application server.
+`h2corn` is a high-performance HTTP/2 ASGI server for FastAPI, Starlette, and similar applications. It is optimized for `h2c` behind a trusted reverse proxy, with optional direct TLS support.
 
 ## Why h2corn
 
@@ -8,12 +8,13 @@
 - Higher throughput and lower latency
 - Lower resource use from a Rust implementation
 - Compatible with FastAPI, Starlette, and other ASGI 3 applications
+- Direct TLS with secure TLS 1.2+ defaults
 - RFC 8441 WebSockets over HTTP/2
 - Multi-worker supervision with graceful shutdown, reload, live scaling, worker recycling, and health checks
 
-The central design choice is simple: keep the connection from the reverse proxy to the application server on HTTP/2 instead of translating requests back to HTTP/1.1 before they reach the application.
+The central design choice is simple: keep application traffic on HTTP/2 instead of translating requests back to HTTP/1.1 before they reach the ASGI application.
 
-Keeping the internal connection on a modern protocol (HTTP/2 or HTTP/3) avoids the downgrade that can reintroduce HTTP/1.1 framing ambiguities and connection-reuse problems. A good deal of the published request-smuggling and desynchronization work focuses on exactly those downgrade paths; PortSwigger's material on [HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading), [HTTP request smuggling](https://portswigger.net/web-security/request-smuggling), and [browser-powered desync attacks](https://portswigger.net/research/browser-powered-desync-attacks) is a useful reference.
+Behind a proxy, keeping the internal connection on a modern protocol (HTTP/2 or HTTP/3) avoids the downgrade that can reintroduce HTTP/1.1 framing ambiguities and connection-reuse problems. A good deal of the published request-smuggling and desynchronization work focuses on exactly those downgrade paths; PortSwigger's material on [HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading), [HTTP request smuggling](https://portswigger.net/web-security/request-smuggling), and [browser-powered desync attacks](https://portswigger.net/research/browser-powered-desync-attacks) is a useful reference.
 
 Among popular Python ASGI servers, Hypercorn is the closest comparison because it also supports HTTP/2. Uvicorn and Gunicorn are familiar migration points, but they are built around a different deployment model and with different performance characteristics.
 
@@ -53,8 +54,8 @@ h2corn example:app
 Startup output:
 
 ```text
-h2corn v1.0.0 • HTTP/2 cleartext ASGI
-Listening on 127.0.0.1:8000
+h2corn v1.0.0 • HTTP/2 ASGI
+Listening on http://127.0.0.1:8000
 HTTP/1 compatibility is enabled; disable with --no-http1
 
 Started worker [12345]
@@ -75,15 +76,38 @@ h2corn example:app \
 
 Why keep HTTP/1.1 at all?
 
-Because browsers generally do not speak cleartext `h2c`. Without a reverse proxy and TLS in front, a browser cannot talk directly to an `h2c`-only server. HTTP/1.1 is therefore kept for development and local testing. In production, the intended protocol remains `h2c`.
+Because browsers generally do not speak cleartext `h2c`. Without a reverse proxy and TLS in front, a browser cannot talk directly to an `h2c`-only server. HTTP/1.1 is therefore kept for development and local testing. In production, the intended reverse-proxy protocol remains `h2c`.
+
+## Direct TLS
+
+Direct TLS is opt-in for TCP listeners. Configure a certificate chain and private key:
+
+```bash
+h2corn example:app \
+  --bind 0.0.0.0:8443 \
+  --certfile /etc/ssl/example/fullchain.pem \
+  --keyfile /etc/ssl/example/privkey.pem
+```
+
+TLS uses Rustls with TLS 1.2 and TLS 1.3 only. `h2corn` advertises `h2,http/1.1` by default, or only `h2` when `--no-http1` is set. OpenSSL cipher strings, legacy TLS versions, and encrypted private-key files are intentionally not supported.
+
+For client certificate verification, add a CA bundle and choose whether client certificates are optional or required:
+
+```bash
+h2corn example:app \
+  --certfile /etc/ssl/example/fullchain.pem \
+  --keyfile /etc/ssl/example/privkey.pem \
+  --ca-certs /etc/ssl/example/client-ca.pem \
+  --cert-reqs required
+```
 
 ## Running behind a proxy
 
-The intended deployment shape is:
+The recommended production deployment shape is:
 
 `browser/client -> trusted reverse proxy -> h2corn application`
 
-The proxy handles TLS termination, browser-facing protocol negotiation, and public-edge hardening. `h2corn` then handles the application side of the connection.
+The proxy handles browser-facing protocol negotiation, TLS termination, and public-edge hardening. `h2corn` then handles the application side of the connection over `h2c`.
 
 ### Proxy headers and PROXY protocol
 
@@ -196,7 +220,9 @@ usage: h2corn [-h] [-c CONFIG] [--version] [--check-config] [--print-config]
               [--reload] [--reload-dir DIR] [--reload-include PATTERN]
               [--reload-exclude PATTERN] [--host HOST] [-p PORT]
               [--bind ADDRESS] [--uds-permissions UDS_PERMISSIONS]
-              [--backlog BACKLOG] [--pid PID] [-u USER] [-g GROUP] [-m UMASK]
+              [--backlog BACKLOG] [--certfile CERTFILE] [--keyfile KEYFILE]
+              [--ca-certs CA_CERTS] [--cert-reqs {none,optional,required}]
+              [--pid PID] [-u USER] [-g GROUP] [-m UMASK]
               [-w WORKERS] [--runtime-threads RUNTIME_THREADS]
               [--max-requests MAX_REQUESTS]
               [--max-requests-jitter MAX_REQUESTS_JITTER]
@@ -229,7 +255,7 @@ usage: h2corn [-h] [-c CONFIG] [--version] [--check-config] [--print-config]
               [--date-header | --no-date-header] [--header HEADER]
               [target]
 
-High-performance HTTP/2 cleartext ASGI server (v1.2.0)
+High-performance HTTP/2 ASGI server (v1.2.0)
 
 positional arguments:
   target                The ASGI application to run, e.g., module:app.
@@ -299,6 +325,18 @@ Socket Binding:
                         H2CORN_UDS_PERMISSIONS] (default: None)
   --backlog BACKLOG     The maximum number of queued connections allowed on
                         the socket. [env: H2CORN_BACKLOG] (default: 1024)
+
+TLS:
+  --certfile CERTFILE   PEM certificate chain file for direct TLS. [env:
+                        H2CORN_CERTFILE] (default: None)
+  --keyfile KEYFILE     PEM private key file for direct TLS. Encrypted keys
+                        are not supported. [env: H2CORN_KEYFILE] (default:
+                        None)
+  --ca-certs CA_CERTS   PEM CA bundle used to verify client certificates for
+                        direct TLS. [env: H2CORN_CA_CERTS] (default: None)
+  --cert-reqs {none,optional,required}
+                        Client certificate verification mode for direct TLS.
+                        [env: H2CORN_CERT_REQS] (default: none)
 
 Process and Workers:
   --pid PID             Write the server process PID to this file. [env:

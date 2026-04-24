@@ -1,12 +1,12 @@
 [project]
 name = "h2corn"
 dynamic = ["version"]
-description = "High-performance HTTP/2 cleartext ASGI server"
+description = "High-performance HTTP/2 ASGI server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
-keywords = ["asgi", "fastapi", "h2c", "http", "http2", "server", "starlette", "websocket"]
+keywords = ["asgi", "fastapi", "h2c", "http", "http2", "server", "starlette", "tls", "websocket"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Framework :: AsyncIO",

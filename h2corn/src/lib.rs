@@ -20,24 +20,29 @@ mod runtime;
 mod sendfile;
 mod server;
 mod smallvec_deque;
+mod tls;
 mod websocket;
 
 use bytes::Bytes;
 use config::{
-    BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
-    WebSocketConfig,
+    BindTarget, ClientCertMode, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig,
+    ServerConfig, TlsConfig, WebSocketConfig,
 };
 use error::{ConfigError, IntoPyResult, into_pyerr};
 use header_value::header_value_is_valid;
 use parking_lot::RwLock;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
-use pyo3::{conversion::FromPyObjectOwned, prelude::*, sync::OnceExt, types::PyAnyMethods};
+use pyo3::{
+    conversion::FromPyObjectOwned, exceptions::PyValueError, prelude::*, sync::OnceExt,
+    types::PyAnyMethods,
+};
 use pyo3_async_runtimes::tokio::{
     future_into_py_with_locals, get_current_locals, init as init_tokio,
 };
 use smallvec::SmallVec;
 use std::{
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+    path::PathBuf,
     sync::{Arc, Once, OnceLock},
     time::Duration,
 };
@@ -105,6 +110,27 @@ impl<'py> PyConfig<'py> {
         }
     }
 
+    fn cert_reqs(&self) -> PyResult<ClientCertMode> {
+        match self.attr("cert_reqs")?.extract::<&str>()? {
+            "none" => Ok(ClientCertMode::None),
+            "optional" => Ok(ClientCertMode::Optional),
+            "required" => Ok(ClientCertMode::Required),
+            value => Err(PyValueError::new_err(format!(
+                "invalid cert_reqs mode: {value:?}"
+            ))),
+        }
+    }
+
+    fn optional_path(&self, name: &str) -> PyResult<Option<PathBuf>> {
+        let value = self.attr(name)?;
+        if value.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(PathBuf::from(
+            value.call_method0("__fspath__")?.extract::<String>()?,
+        )))
+    }
+
     fn trusted_peers(&self) -> PyResult<Box<[TrustedPeer]>> {
         let peers = self
             .attr("forwarded_allow_ips")?
@@ -132,7 +158,10 @@ impl<'py> PyConfig<'py> {
 
     fn binds(&self) -> PyResult<Box<[BindTarget]>> {
         let raw_binds = self.get::<Vec<String>>("bind")?;
-        let fd_is_unix = self.get::<Vec<bool>>("_bind_fd_is_unix")?;
+        let mut fd_is_unix = self.get::<Vec<bool>>("_bind_fd_is_unix")?;
+        if fd_is_unix.is_empty() {
+            fd_is_unix.resize(raw_binds.len(), false);
+        }
         if raw_binds.len() != fd_is_unix.len() {
             return Err(into_pyerr(ConfigError::BindMetadataLengthMismatch));
         }
@@ -213,14 +242,63 @@ impl<'py> PyConfig<'py> {
         })
     }
 
+    fn tls(&self, http1: bool, binds: &[BindTarget]) -> PyResult<Option<TlsConfig>> {
+        let certfile = self.optional_path("certfile")?;
+        let keyfile = self.optional_path("keyfile")?;
+        let ca_certs = self.optional_path("ca_certs")?;
+        let cert_reqs = self.cert_reqs()?;
+        let (certfile, keyfile) = match (certfile, keyfile) {
+            (None, None) => {
+                if ca_certs.is_some() || cert_reqs != ClientCertMode::None {
+                    return Err(PyValueError::new_err(
+                        "client certificate verification requires certfile and keyfile",
+                    ));
+                }
+                return Ok(None);
+            }
+            (Some(certfile), Some(keyfile)) => (certfile, keyfile),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "certfile and keyfile must be configured together",
+                ));
+            }
+        };
+        if ca_certs.is_some() && cert_reqs == ClientCertMode::None {
+            return Err(PyValueError::new_err(
+                "ca_certs requires cert_reqs to be optional or required",
+            ));
+        }
+        if cert_reqs != ClientCertMode::None && ca_certs.is_none() {
+            return Err(PyValueError::new_err(
+                "cert_reqs optional/required requires ca_certs",
+            ));
+        }
+        if binds.iter().any(|bind| {
+            matches!(
+                bind,
+                BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. }
+            )
+        }) {
+            return Err(PyValueError::new_err(
+                "TLS is supported only on TCP listeners",
+            ));
+        }
+        tls::build_tls_config(&certfile, &keyfile, ca_certs.as_deref(), cert_reqs, http1)
+            .map(Some)
+            .map_err(Into::into)
+    }
+
     fn server_config(&self) -> PyResult<ServerConfig> {
         let max_request_body_size = self.nonzero_u64("max_request_body_size")?;
+        let binds = self.binds()?;
+        let http1 = self.http1()?;
+        let tls = self.tls(http1.enabled, &binds)?;
 
         Ok(ServerConfig {
-            binds: self.binds()?,
+            binds,
             access_log: self.get("access_log")?,
             root_path: self.boxed_str("root_path")?,
-            http1: self.http1()?,
+            http1,
             http2: self.http2()?,
             max_request_body_size,
             timeout_graceful_shutdown: self.duration("timeout_graceful_shutdown")?,
@@ -233,6 +311,7 @@ impl<'py> PyConfig<'py> {
             runtime_threads: self.get("runtime_threads")?,
             websocket: self.websocket(max_request_body_size)?,
             proxy: self.proxy()?,
+            tls,
             timeout_handshake: self.duration("timeout_handshake")?,
             response_headers: self.response_headers()?,
         })
@@ -337,6 +416,12 @@ fn emit_banner(config: &Bound<'_, PyAny>) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn validate_config(config: &Bound<'_, PyAny>) -> PyResult<()> {
+    let _ = PyConfig(config).server_config()?;
+    Ok(())
+}
+
+#[pyfunction]
 fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
@@ -368,6 +453,7 @@ fn serve_fds<'py>(
 #[pyo3(name = "_lib")]
 fn h2corn_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_banner, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_config, m)?)?;
     m.add_function(wrap_pyfunction!(serve_fds, m)?)?;
     Ok(())
 }
@@ -434,6 +520,10 @@ mod tests {
                 .setattr("forwarded_allow_ips", ("127.0.0.1", "10.0.0.0/8", "unix"))
                 .unwrap();
             config.setattr("proxy_protocol", "v2").unwrap();
+            config.setattr("certfile", py.None()).unwrap();
+            config.setattr("keyfile", py.None()).unwrap();
+            config.setattr("ca_certs", py.None()).unwrap();
+            config.setattr("cert_reqs", "none").unwrap();
             config.setattr("server_header", true).unwrap();
             config.setattr("date_header", false).unwrap();
             config

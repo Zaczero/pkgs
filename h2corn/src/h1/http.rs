@@ -52,9 +52,8 @@ impl H1WriteTarget for UnixOwnedWriteHalf {
     async fn send_file_body(
         writer: &mut BufWriter<Self>,
         file: &mut File,
-        len: usize,
+        _len: usize,
     ) -> io::Result<()> {
-        let _ = len;
         writer.flush().await?;
         copy(file, writer.get_mut()).await?;
         Ok(())

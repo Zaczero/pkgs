@@ -6,6 +6,7 @@ use std::{
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     time::Duration,
 };
+use tokio_rustls::TlsAcceptor;
 
 pub const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 16 << 20;
 pub const INITIAL_STREAM_WINDOW_SIZE: u32 = 16 << 20;
@@ -45,6 +46,18 @@ pub struct ProxyConfig {
     pub trust_headers: bool,
     pub trusted_peers: Box<[TrustedPeer]>,
     pub protocol: ProxyProtocolMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientCertMode {
+    None,
+    Optional,
+    Required,
+}
+
+#[derive(Clone)]
+pub struct TlsConfig {
+    pub acceptor: TlsAcceptor,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,6 +106,7 @@ pub struct ServerConfig {
     pub runtime_threads: usize,
     pub websocket: WebSocketConfig,
     pub proxy: ProxyConfig,
+    pub tls: Option<TlsConfig>,
     pub timeout_handshake: Duration,
     pub response_headers: ResponseHeaderConfig,
 }
