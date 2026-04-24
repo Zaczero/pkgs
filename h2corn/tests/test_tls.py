@@ -11,6 +11,8 @@ from h2corn import Config
 
 from tests._support import (
     find_free_port,
+    proxy_v1_prefix,
+    proxy_v2_prefix,
     read_h2_response,
     read_http1_response,
     running_server,
@@ -169,6 +171,59 @@ async def tls_http1_request(config: Config, context: ssl.SSLContext) -> bytes:
     return body
 
 
+async def open_prefixed_tls_connection(
+    config: Config,
+    context: ssl.SSLContext,
+    *,
+    prefix: bytes = b'',
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
+    if prefix:
+        writer.write(prefix)
+        await writer.drain()
+    await writer.start_tls(context, server_hostname='localhost')
+    return reader, writer
+
+
+async def tls_h2_request(
+    config: Config,
+    context: ssl.SSLContext,
+    *,
+    prefix: bytes = b'',
+    path: str = '/',
+) -> tuple[int, bytes]:
+    reader, writer = await open_prefixed_tls_connection(
+        config,
+        context,
+        prefix=prefix,
+    )
+    assert writer.get_extra_info('ssl_object').selected_alpn_protocol() == 'h2'
+    conn = h2.connection.H2Connection(
+        config=h2.config.H2Configuration(
+            client_side=True,
+            header_encoding=None,
+        )
+    )
+    conn.initiate_connection()
+    stream_id = conn.get_next_available_stream_id()
+    headers = [
+        (b':method', b'GET'),
+        (b':scheme', b'https'),
+        (b':authority', f'127.0.0.1:{config.port}'.encode()),
+        (b':path', path.encode()),
+    ]
+    conn.send_headers(stream_id, headers, end_stream=True)
+    writer.write(conn.data_to_send())
+    await writer.drain()
+    try:
+        status, body, _ = await read_h2_response(reader, writer, conn, stream_id)
+        return status, body
+    finally:
+        writer.close()
+        with suppress(ConnectionResetError, ssl.SSLError):
+            await writer.wait_closed()
+
+
 async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
     certfile, keyfile = write_self_signed_cert(tmp_path)
 
@@ -218,6 +273,229 @@ async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
 
     assert status == 200
     assert body == b'https'
+
+
+@pytest.mark.parametrize('proxy_protocol', ['v1', 'v2'])
+async def test_tls_proxy_protocol_rewrites_h2_scope(
+    tmp_path: Path,
+    proxy_protocol: str,
+) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        payload = (
+            f'{scope["scheme"]}|{scope["client"][0]}|{scope["client"][1]}|'
+            f'{scope["server"][0]}|{scope["server"][1]}'
+        ).encode()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': payload})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+        proxy_protocol=proxy_protocol,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    prefix_args = {
+        'client_host': '203.0.113.10',
+        'server_host': '198.51.100.20',
+        'client_port': 41234,
+        'server_port': 8443,
+    }
+    prefix = (
+        proxy_v1_prefix(**prefix_args)
+        if proxy_protocol == 'v1'
+        else proxy_v2_prefix(**prefix_args)
+    )
+    context = client_context(certfile, alpn=['h2'])
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            tls_h2_request(config, context, prefix=prefix),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'https|203.0.113.10|41234|198.51.100.20|8443'
+
+
+async def test_tls_without_http1_rejects_http1_alpn_client(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        raise AssertionError('request should not reach the ASGI app')
+
+    config = Config(
+        port=find_free_port(),
+        http1=False,
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['http/1.1'])
+    async with running_server(app, config):
+        try:
+            reader, writer = await open_prefixed_tls_connection(config, context)
+        except (ConnectionResetError, ssl.SSLError):
+            return
+        assert writer.get_extra_info('ssl_object').selected_alpn_protocol() is None
+        writer.write(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
+        await writer.drain()
+        with suppress(ConnectionResetError):
+            assert await asyncio.wait_for(reader.read(1), timeout=5) == b''
+        writer.close()
+        with suppress(ConnectionResetError, ssl.SSLError):
+            await writer.wait_closed()
+
+
+async def test_tls_without_http1_accepts_h2_when_client_also_offers_http1(
+    tmp_path: Path,
+) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': scope['scheme'].encode()})
+
+    config = Config(
+        port=find_free_port(),
+        http1=False,
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['http/1.1', 'h2'])
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            tls_h2_request(config, context),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'https'
+
+
+async def test_tls_http1_websocket_scope_uses_wss(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+    state = {}
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'websocket'
+        state['scheme'] = scope['scheme']
+        assert await receive() == {'type': 'websocket.connect'}
+        await send({'type': 'websocket.close'})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['http/1.1'])
+    async with running_server(app, config):
+        reader, writer = await open_prefixed_tls_connection(config, context)
+        writer.write(
+            b'GET /ws HTTP/1.1\r\n'
+            b'Host: localhost\r\n'
+            b'Connection: Upgrade\r\n'
+            b'Upgrade: websocket\r\n'
+            b'Sec-WebSocket-Version: 13\r\n'
+            b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+            b'\r\n'
+        )
+        await writer.drain()
+        status, _, body, _ = await read_http1_response(reader)
+        writer.close()
+        with suppress(ConnectionResetError, ssl.SSLError):
+            await writer.wait_closed()
+
+    assert state == {'scheme': 'wss'}
+    assert status == 403
+    assert body == b''
+
+
+async def test_tls_http2_websocket_scope_uses_wss(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+    state = {}
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'websocket'
+        state['scheme'] = scope['scheme']
+        state['http_version'] = scope['http_version']
+        assert await receive() == {'type': 'websocket.connect'}
+        await send({'type': 'websocket.close'})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['h2'])
+    async with running_server(app, config):
+        reader, writer = await open_prefixed_tls_connection(config, context)
+        assert writer.get_extra_info('ssl_object').selected_alpn_protocol() == 'h2'
+        conn = h2.connection.H2Connection(
+            config=h2.config.H2Configuration(
+                client_side=True,
+                header_encoding=None,
+            )
+        )
+        conn.initiate_connection()
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'CONNECT'),
+                (b':protocol', b'websocket'),
+                (b':scheme', b'https'),
+                (b':authority', b'localhost'),
+                (b':path', b'/ws'),
+                (b'sec-websocket-version', b'13'),
+            ],
+            end_stream=False,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        status, body, _ = await read_h2_response(reader, writer, conn, stream_id)
+        writer.close()
+        with suppress(ConnectionResetError, ssl.SSLError):
+            await writer.wait_closed()
+
+    assert state == {'scheme': 'wss', 'http_version': '2'}
+    assert status == 403
+    assert body == b''
+
+
+async def test_tls_http2_pathsend_streams_file(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+    file_path = tmp_path / 'payload.bin'
+    payload = (b'tls-h2-pathsend-' * 3000)[:30000]
+    file_path.write_bytes(payload)
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'application/octet-stream'),
+                (b'content-length', str(len(payload)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.pathsend', 'path': str(file_path)})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['h2'])
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            tls_h2_request(config, context, path='/download'),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == payload
 
 
 async def test_tls_http1_fallback_without_alpn(tmp_path: Path) -> None:

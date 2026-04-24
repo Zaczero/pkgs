@@ -1,50 +1,17 @@
 import asyncio
-import socket
 
 import pytest
 from h2corn import Config
 
-from tests._support import find_free_port, h2_request, running_server
+from tests._support import (
+    find_free_port,
+    h2_request,
+    proxy_v1_prefix,
+    proxy_v2_prefix,
+    running_server,
+)
 
 pytestmark = pytest.mark.asyncio
-
-
-def _proxy_v1_prefix(
-    *,
-    transport: str = 'TCP4',
-    client_host: str,
-    server_host: str,
-    client_port: int,
-    server_port: int,
-) -> bytes:
-    return f'PROXY {transport} {client_host} {server_host} {client_port} {server_port}\r\n'.encode()
-
-
-def _proxy_v2_prefix(
-    *,
-    client_host: str,
-    server_host: str,
-    client_port: int,
-    server_port: int,
-    tlvs: bytes = b'',
-) -> bytes:
-    signature = b'\r\n\r\n\x00\r\nQUIT\n'
-    version_command = bytes([0x21])
-    family_protocol = bytes([0x11])
-    payload = (
-        socket.inet_aton(client_host)
-        + socket.inet_aton(server_host)
-        + client_port.to_bytes(2, 'big')
-        + server_port.to_bytes(2, 'big')
-        + tlvs
-    )
-    return (
-        signature
-        + version_command
-        + family_protocol
-        + len(payload).to_bytes(2, 'big')
-        + payload
-    )
 
 
 async def test_proxy_headers_rewrite_scope_from_trusted_peer() -> None:
@@ -494,7 +461,7 @@ async def test_proxy_protocol_v1_rewrites_scope_from_trusted_peer() -> None:
         status, body = await asyncio.wait_for(
             h2_request(
                 port=config.port,
-                prefix=_proxy_v1_prefix(
+                prefix=proxy_v1_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
                     client_port=41234,
@@ -556,7 +523,7 @@ async def test_proxy_protocol_v2_and_forwarded_headers_stack_cleanly() -> None:
         status, body = await asyncio.wait_for(
             h2_request(
                 port=config.port,
-                prefix=_proxy_v2_prefix(
+                prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
                     client_port=41234,
@@ -596,7 +563,7 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
         status, body = await asyncio.wait_for(
             h2_request(
                 port=config.port,
-                prefix=_proxy_v2_prefix(
+                prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
                     client_port=0,
@@ -633,7 +600,7 @@ async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listene
         status, body = await asyncio.wait_for(
             h2_request(
                 port=ports[1],
-                prefix=_proxy_v2_prefix(
+                prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
                     client_port=0,
@@ -669,7 +636,7 @@ async def test_proxy_protocol_v2_ignores_trailing_tlvs() -> None:
         status, body = await asyncio.wait_for(
             h2_request(
                 port=config.port,
-                prefix=_proxy_v2_prefix(
+                prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
                     client_port=41234,
@@ -724,7 +691,7 @@ async def test_proxy_protocol_v1_rejects_address_family_mismatch() -> None:
             await asyncio.wait_for(
                 h2_request(
                     port=config.port,
-                    prefix=_proxy_v1_prefix(
+                    prefix=proxy_v1_prefix(
                         transport='TCP4',
                         client_host='2001:db8::1',
                         server_host='198.51.100.20',
@@ -756,7 +723,7 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
             await asyncio.wait_for(
                 h2_request(
                     port=config.port,
-                    prefix=_proxy_v1_prefix(
+                    prefix=proxy_v1_prefix(
                         client_host='203.0.113.10',
                         server_host='198.51.100.20',
                         client_port=41234,

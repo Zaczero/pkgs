@@ -88,6 +88,41 @@ def find_free_port() -> int:
         sock.close()
 
 
+def proxy_v1_prefix(
+    *,
+    transport: str = 'TCP4',
+    client_host: str,
+    server_host: str,
+    client_port: int,
+    server_port: int,
+) -> bytes:
+    return f'PROXY {transport} {client_host} {server_host} {client_port} {server_port}\r\n'.encode()
+
+
+def proxy_v2_prefix(
+    *,
+    client_host: str,
+    server_host: str,
+    client_port: int,
+    server_port: int,
+    tlvs: bytes = b'',
+) -> bytes:
+    payload = (
+        socket.inet_aton(client_host)
+        + socket.inet_aton(server_host)
+        + client_port.to_bytes(2, 'big')
+        + server_port.to_bytes(2, 'big')
+        + tlvs
+    )
+    return (
+        b'\r\n\r\n\x00\r\nQUIT\n'
+        + bytes([0x21])
+        + bytes([0x11])
+        + len(payload).to_bytes(2, 'big')
+        + payload
+    )
+
+
 async def h2_request_details(
     *,
     host: str = '127.0.0.1',

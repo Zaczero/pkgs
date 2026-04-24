@@ -48,10 +48,8 @@ struct PrefixedIo {
 
 impl PrefixedIo {
     fn new(stream: TcpStream, prefix: BytesMut) -> Self {
-        Self {
-            stream,
-            prefix: Some(prefix),
-        }
+        let prefix = (!prefix.is_empty()).then_some(prefix);
+        Self { stream, prefix }
     }
 }
 
@@ -62,16 +60,13 @@ impl AsyncRead for PrefixedIo {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         if let Some(prefix) = self.prefix.as_mut() {
-            if !prefix.is_empty() {
-                let len = buf.remaining().min(prefix.len());
-                buf.put_slice(&prefix[..len]);
-                prefix.advance(len);
-                if prefix.is_empty() {
-                    self.prefix = None;
-                }
-                return Poll::Ready(Ok(()));
+            let len = buf.remaining().min(prefix.len());
+            buf.put_slice(&prefix[..len]);
+            prefix.advance(len);
+            if prefix.is_empty() {
+                self.prefix = None;
             }
-            self.prefix = None;
+            return Poll::Ready(Ok(()));
         }
         Pin::new(&mut self.stream).poll_read(cx, buf)
     }

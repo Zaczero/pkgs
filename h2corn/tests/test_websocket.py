@@ -199,6 +199,7 @@ async def _http1_websocket_handshake(
     version: str = '13',
     subprotocol: str | None = None,
     extensions: str | None = None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[int, dict[bytes, bytes], bytes]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
     key_header = '' if key is None else f'Sec-WebSocket-Key: {key}\r\n'
@@ -207,6 +208,10 @@ async def _http1_websocket_handshake(
     )
     extensions_header = (
         '' if extensions is None else f'Sec-WebSocket-Extensions: {extensions}\r\n'
+    )
+    extra_header_lines = ''.join(
+        f'{name.decode("ascii")}: {value.decode("ascii")}\r\n'
+        for name, value in extra_headers or ()
     )
     writer.write(
         (
@@ -218,6 +223,7 @@ async def _http1_websocket_handshake(
             f'{subprotocol_header}'
             f'{extensions_header}'
             f'{key_header}'
+            f'{extra_header_lines}'
             '\r\n'
         ).encode()
     )
@@ -322,6 +328,7 @@ def _send_h2_websocket_headers(
     version: str | None = '13',
     subprotocol: str | None = None,
     extensions: str | None = None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> int:
     stream_id = conn.get_next_available_stream_id()
     headers = [
@@ -337,6 +344,8 @@ def _send_h2_websocket_headers(
         headers.append((b'sec-websocket-protocol', subprotocol.encode()))
     if extensions is not None:
         headers.append((b'sec-websocket-extensions', extensions.encode()))
+    if extra_headers is not None:
+        headers.extend(extra_headers)
 
     conn.send_headers(stream_id, headers, end_stream=False)
     writer.write(conn.data_to_send())
@@ -421,6 +430,7 @@ async def _h2_websocket_handshake(
     version: str | None = '13',
     subprotocol: str | None = None,
     extensions: str | None = None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[int, dict[bytes, bytes], bytes]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
     stream_id = _send_h2_websocket_headers(
@@ -431,6 +441,7 @@ async def _h2_websocket_handshake(
         version=version,
         subprotocol=subprotocol,
         extensions=extensions,
+        extra_headers=extra_headers,
     )
     await writer.drain()
 
@@ -980,6 +991,60 @@ async def test_http1_websocket_scope_omits_empty_subprotocols() -> None:
     assert status == 403
     assert body == b''
     assert b'upgrade' not in headers
+
+
+@pytest.mark.parametrize(
+    ('handshake', 'expected_status'),
+    [
+        (_h2_websocket_handshake, 403),
+        (_http1_websocket_handshake, 403),
+    ],
+)
+async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
+    handshake,
+    expected_status: int,
+) -> None:
+    state = {}
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'websocket'
+        state['scheme'] = scope['scheme']
+        state['client'] = scope['client']
+        state['server'] = scope['server']
+        state['root_path'] = scope.get('root_path', '')
+        assert await receive() == {'type': 'websocket.connect'}
+        await send({'type': 'websocket.close'})
+
+    config = Config(
+        port=find_free_port(),
+        root_path='/root',
+        proxy_headers=True,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    async with running_server(app, config):
+        status, headers, body = await asyncio.wait_for(
+            handshake(
+                port=config.port,
+                path='/ws',
+                extra_headers=[
+                    (
+                        b'forwarded',
+                        b'for=203.0.113.10;proto=https;host=example.com:9443',
+                    ),
+                    (b'x-forwarded-prefix', b'/api'),
+                ],
+            ),
+            timeout=5,
+        )
+
+    assert status == expected_status
+    assert body == b''
+    assert b'upgrade' not in headers
+    assert state['scheme'] == 'wss'
+    assert state['client'][0] == '203.0.113.10'
+    assert isinstance(state['client'][1], int)
+    assert state['server'] == ('example.com', 9443)
+    assert state['root_path'] == '/api/root'
 
 
 async def test_http1_websocket_invalid_version_is_rejected_with_426() -> None:
