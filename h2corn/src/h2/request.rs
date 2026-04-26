@@ -147,6 +147,7 @@ struct RequestHeadBuilder {
     header_list_size: usize,
     max_header_list_size: Option<NonZeroUsize>,
     header_meta: RequestHeaderMeta,
+    secure: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -169,7 +170,7 @@ fn push_request_pseudo<T>(
 }
 
 impl RequestHeadBuilder {
-    fn new(max_header_list_size: Option<NonZeroUsize>) -> Self {
+    fn new(max_header_list_size: Option<NonZeroUsize>, secure: bool) -> Self {
         Self {
             method: None,
             scheme: None,
@@ -182,6 +183,7 @@ impl RequestHeadBuilder {
             header_list_size: 0,
             max_header_list_size,
             header_meta: RequestHeaderMeta::default(),
+            secure,
         }
     }
 
@@ -298,6 +300,7 @@ impl RequestHeadBuilder {
             (false, None) => {
                 let scheme = self.scheme.take().ok_or(())?;
                 let path = self.path.take().ok_or(())?;
+                let scheme = self.resolve_scheme(scheme);
                 if matches!(scheme.as_str(), "http" | "https") && path.is_empty() {
                     return Err(());
                 }
@@ -313,6 +316,7 @@ impl RequestHeadBuilder {
             (true, Some(protocol)) => {
                 let scheme = self.scheme.take().ok_or(())?;
                 let path = self.path.take().ok_or(())?;
+                let scheme = self.resolve_scheme(scheme);
                 if matches!(scheme.as_str(), "http" | "https") && path.is_empty() {
                     return Err(());
                 }
@@ -366,14 +370,23 @@ impl RequestHeadBuilder {
             header_meta: self.header_meta,
         })
     }
+
+    fn resolve_scheme(&self, scheme: BytesStr) -> BytesStr {
+        if self.secure {
+            BytesStr::from_static("https")
+        } else {
+            scheme
+        }
+    }
 }
 
 pub(super) fn decode_request_head(
     decoder: &mut Decoder,
     block: Bytes,
     max_header_list_size: Option<NonZeroUsize>,
+    secure: bool,
 ) -> Result<RequestHead, RequestHeadError> {
-    let mut builder = RequestHeadBuilder::new(max_header_list_size);
+    let mut builder = RequestHeadBuilder::new(max_header_list_size, secure);
     let mut bytes = block;
     decoder.decode_block(&mut bytes, |header| builder.push(header))?;
 
@@ -449,7 +462,7 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let result = decode_request_head(&mut decoder, block, NonZeroUsize::new(90));
+        let result = decode_request_head(&mut decoder, block, NonZeroUsize::new(90), false);
 
         assert!(matches!(
             result,
@@ -473,12 +486,48 @@ mod tests {
             + Header::Path(BytesStr::from_static("/")).len();
 
         let mut decoder = Decoder::new(4096);
-        let request =
-            decode_request_head(&mut decoder, block, NonZeroUsize::new(exact_received_size))
-                .expect("received header list size should ignore synthesized host");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            NonZeroUsize::new(exact_received_size),
+            false,
+        )
+        .expect("received header list size should ignore synthesized host");
 
         assert_eq!(request.headers.len(), 1);
         assert_eq!(request.headers[0].0.as_str(), "host");
         assert_eq!(request.headers[0].1.as_bytes(), b"example.com");
+    }
+
+    #[test]
+    fn secure_connection_overrides_http2_scheme() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(&mut decoder, block, None, true)
+            .expect("valid HTTP/2 request should decode");
+
+        assert_eq!(request.scheme_str(), "https");
+    }
+
+    #[test]
+    fn cleartext_connection_preserves_http2_scheme() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"https"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(&mut decoder, block, None, false)
+            .expect("valid HTTP/2 request should decode");
+
+        assert_eq!(request.scheme_str(), "https");
     }
 }

@@ -191,6 +191,8 @@ async def tls_h2_request(
     *,
     prefix: bytes = b'',
     path: str = '/',
+    scheme: bytes = b'https',
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[int, bytes]:
     reader, writer = await open_prefixed_tls_connection(
         config,
@@ -208,10 +210,12 @@ async def tls_h2_request(
     stream_id = conn.get_next_available_stream_id()
     headers = [
         (b':method', b'GET'),
-        (b':scheme', b'https'),
+        (b':scheme', scheme),
         (b':authority', f'127.0.0.1:{config.port}'.encode()),
         (b':path', path.encode()),
     ]
+    if extra_headers is not None:
+        headers.extend(extra_headers)
     conn.send_headers(stream_id, headers, end_stream=True)
     writer.write(conn.data_to_send())
     await writer.drain()
@@ -273,6 +277,63 @@ async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
 
     assert status == 200
     assert body == b'https'
+
+
+async def test_tls_http2_overrides_spoofed_scheme(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': scope['scheme'].encode()})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['h2'])
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            tls_h2_request(config, context, scheme=b'http'),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'https'
+
+
+async def test_tls_http2_trusted_forwarded_proto_overrides_tls_scheme(
+    tmp_path: Path,
+) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        payload = f'{scope["scheme"]}|{scope["server"][0]}|{scope["server"][1]}'
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': payload.encode()})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+        proxy_headers=True,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    context = client_context(certfile, alpn=['h2'])
+    async with running_server(app, config):
+        status, body = await asyncio.wait_for(
+            tls_h2_request(
+                config,
+                context,
+                extra_headers=[(b'forwarded', b'proto=http;host=example.com')],
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'http|example.com|80'
 
 
 @pytest.mark.parametrize('proxy_protocol', ['v1', 'v2'])
@@ -413,7 +474,11 @@ async def test_tls_http1_websocket_scope_uses_wss(tmp_path: Path) -> None:
     assert body == b''
 
 
-async def test_tls_http2_websocket_scope_uses_wss(tmp_path: Path) -> None:
+@pytest.mark.parametrize('scheme', [b'https', b'http'])
+async def test_tls_http2_websocket_scope_uses_wss(
+    tmp_path: Path,
+    scheme: bytes,
+) -> None:
     certfile, keyfile = write_self_signed_cert(tmp_path)
     state = {}
 
@@ -446,7 +511,7 @@ async def test_tls_http2_websocket_scope_uses_wss(tmp_path: Path) -> None:
             [
                 (b':method', b'CONNECT'),
                 (b':protocol', b'websocket'),
-                (b':scheme', b'https'),
+                (b':scheme', scheme),
                 (b':authority', b'localhost'),
                 (b':path', b'/ws'),
                 (b'sec-websocket-version', b'13'),

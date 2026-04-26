@@ -263,6 +263,7 @@ pub(crate) async fn serve_h2_upgraded_connection<R, W>(
     reader: R,
     writer: W,
     connection: ConnectionContext,
+    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
     upgraded: UpgradedH2Request,
 ) -> Result<(), H2CornError>
@@ -278,8 +279,15 @@ where
     .await
     .map_err(|_| H2Error::ConnectionHandshakeTimedOut)??;
     let peer_settings = upgraded.peer_settings;
-    let mut connection =
-        start_h2_connection(reader, writer, connection, shutdown, Some(peer_settings)).await?;
+    let mut connection = start_h2_connection(
+        reader,
+        writer,
+        connection,
+        secure,
+        shutdown,
+        Some(peer_settings),
+    )
+    .await?;
     seed_upgraded_request(&mut connection, upgraded.request, upgraded.body).await?;
     run_h2_connection(Box::new(connection)).await
 }
@@ -295,13 +303,14 @@ pub(crate) async fn serve_connection<R, W>(
     reader: frame::FrameReader<R>,
     writer: W,
     context: ConnectionContext,
+    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
 {
-    let state = start_h2_connection(reader, writer, context, shutdown, None).await?;
+    let state = start_h2_connection(reader, writer, context, secure, shutdown, None).await?;
     run_h2_connection(Box::new(state)).await
 }
 
@@ -309,6 +318,7 @@ async fn start_h2_connection<R, W>(
     reader: frame::FrameReader<R>,
     writer: W,
     context: ConnectionContext,
+    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
     peer_settings: Option<PeerSettings>,
 ) -> Result<H2ConnectionState<R, W>, H2CornError>
@@ -329,6 +339,7 @@ where
         connection,
         writer,
         context,
+        secure,
         shutdown,
         drain_state,
     ))
@@ -542,6 +553,7 @@ where
                 &mut state.decoder,
                 fragment.block,
                 state.context.config.http2.max_header_list_size,
+                state.secure,
             ),
         )
         .await?;
@@ -633,6 +645,7 @@ where
                 &mut state.decoder,
                 pending.block.freeze(),
                 state.context.config.http2.max_header_list_size,
+                state.secure,
             ),
         )
         .await?;

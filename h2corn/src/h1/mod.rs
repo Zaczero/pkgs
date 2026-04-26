@@ -65,6 +65,7 @@ enum ConnectionPersistence {
 
 struct H1UpgradeContext {
     connection: ConnectionContext,
+    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
 }
 
@@ -147,6 +148,7 @@ where
                     writer,
                     H1UpgradeContext {
                         connection,
+                        secure,
                         shutdown,
                     },
                 )
@@ -263,12 +265,14 @@ where
     write_h2c_upgrade_response(&mut writer, context.connection.config).await?;
     let H1UpgradeContext {
         connection,
+        secure,
         shutdown,
     } = context;
     serve_h2_upgraded_connection(
         reader,
         writer.into_inner(),
         connection,
+        secure,
         shutdown,
         UpgradedH2Request {
             buffer,

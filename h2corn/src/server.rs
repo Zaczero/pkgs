@@ -620,7 +620,7 @@ where
 {
     match protocol {
         DetectedProtocol::Http2 => {
-            h2::serve_connection(reader, writer, connection_ctx, shutdown).await
+            h2::serve_connection(reader, writer, connection_ctx, secure, shutdown).await
         }
         DetectedProtocol::Http1 => {
             let (reader, buffer) = reader.into_parts();

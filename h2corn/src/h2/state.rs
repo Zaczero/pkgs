@@ -82,6 +82,7 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) connection: ConnectionHandle,
     pub(super) writer: WriterState<W>,
     pub(super) context: ConnectionContext,
+    pub(super) secure: bool,
     pub(super) shutdown: watch::Receiver<ShutdownState>,
     pub(super) decoder: Decoder,
     pub(super) streams: StreamMap<InboundStream>,
@@ -191,6 +192,7 @@ impl<R, W> H2ConnectionState<R, W> {
         connection: ConnectionHandle,
         writer: WriterState<W>,
         context: ConnectionContext,
+        secure: bool,
         shutdown: watch::Receiver<ShutdownState>,
         drain_state: ConnectionDrainState,
     ) -> Self {
@@ -206,6 +208,7 @@ impl<R, W> H2ConnectionState<R, W> {
             connection_window: ReceiveWindowState::new(INITIAL_CONNECTION_WINDOW_SIZE),
             local_max_frame_size: context.config.http2.max_inbound_frame_size.get() as usize,
             context,
+            secure,
             saw_client_settings: false,
             drain_state,
         }
