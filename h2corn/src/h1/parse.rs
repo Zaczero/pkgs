@@ -368,11 +368,10 @@ where
         writer.flush().await?;
     }
 
-    let mut scheme = BytesStr::from_static(if secure { "https" } else { "http" });
+    let scheme = BytesStr::from_static(if secure { "https" } else { "http" });
     let request_target = match parse_request_target(
         target,
         &mut header_state.headers,
-        &mut scheme,
         header_state.host_header_index,
     ) {
         Ok(request_target) => request_target,
@@ -599,9 +598,9 @@ where
             return Http1Error::ChunkedBodyClosed.err();
         }
     };
-    let mut line = buffer.split_to(line_end + 2);
-    line.truncate(line_end);
-    parse_chunk_size(&line)
+    let size = parse_chunk_size(&buffer[..line_end])?;
+    buffer.advance(line_end + LINE_TERMINATOR.len());
+    Ok(size)
 }
 
 async fn consume_chunk_crlf<R>(
@@ -696,7 +695,6 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
 fn parse_request_target<'a>(
     target: &'a [u8],
     headers: &mut RequestHeaders,
-    scheme: &mut BytesStr,
     host_header_index: Option<usize>,
 ) -> Result<ParsedRequestTarget<'a>, H2CornError> {
     match target {
@@ -708,13 +706,6 @@ fn parse_request_target<'a>(
         .map_err(|_| Http1Error::RequestTargetNotUtf8)?
         .parse::<Uri>()
         .map_err(|_| Http1Error::InvalidAbsoluteFormTarget)?;
-    if let Some(value) = uri.scheme_str() {
-        *scheme = match value {
-            "http" => BytesStr::from_static("http"),
-            "https" => BytesStr::from_static("https"),
-            _ => BytesStr::from(value),
-        };
-    }
     if let Some(host_header_index) = host_header_index
         && let Some(authority) = uri.authority()
         && !headers[host_header_index]

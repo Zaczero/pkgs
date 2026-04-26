@@ -1,6 +1,7 @@
 mod buffered;
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -101,6 +102,19 @@ where
     F: Future<Output = Result<(), H2CornError>> + Send,
 {
     let RunningHttpRequest { state, app_task } = started;
+    tokio::pin!(app_task);
+    drive_pinned_http_request(state, app_task.as_mut(), transport).await
+}
+
+pub(crate) async fn drive_pinned_http_request<T, F>(
+    state: HttpRequestState,
+    app_task: Pin<&mut F>,
+    transport: &mut T,
+) -> Result<(), H2CornError>
+where
+    T: HttpResponseTransport,
+    F: Future<Output = Result<(), H2CornError>> + Send,
+{
     let HttpRequestState {
         mut response,
         mut send_buffer,
@@ -145,15 +159,13 @@ async fn drive_response<T, F>(
     response: &mut ResponseController,
     send_buffer: &mut HttpSendBuffer,
     actions: &mut ResponseActions,
-    app_task: F,
+    mut app_task: Pin<&mut F>,
     transport: &mut T,
 ) -> Result<(), H2CornError>
 where
     T: HttpResponseTransport,
     F: Future<Output = Result<(), H2CornError>> + Send,
 {
-    tokio::pin!(app_task);
-
     loop {
         if response.is_complete() {
             break;
@@ -168,7 +180,7 @@ where
                     return finalize_response(response, transport, actions, Err(err)).await;
                 }
             }
-            app_result = &mut app_task => {
+            app_result = app_task.as_mut() => {
                 return finish_response(response, send_buffer, actions, app_result, transport).await;
             }
         }

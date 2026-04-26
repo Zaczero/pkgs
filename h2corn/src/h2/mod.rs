@@ -6,6 +6,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use nohash_hasher::BuildNoHashHasher;
+use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
@@ -73,7 +74,7 @@ async fn flush_pending_stream_inputs<R, W>(
 where
     W: H2WriteTarget,
 {
-    let mut stream_updates = Vec::new();
+    let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
 
     for (&raw_stream_id, stream) in &mut state.streams {
         let Some(tx) = stream.input.as_ref() else {
@@ -422,7 +423,7 @@ where
         return Ok(());
     }
 
-    let fragment = match parse_header_block_fragment(&frame) {
+    let fragment = match parse_header_block_fragment(frame) {
         Ok(fragment) => fragment,
         Err(err) => {
             apply_peer_failure(
@@ -664,7 +665,8 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: H2WriteTarget,
 {
-    let (data, end_stream) = match parse_data_payload(&frame) {
+    let header = frame.header;
+    let (data, end_stream) = match parse_data_payload(frame.payload, header.flags) {
         Ok(parsed) => parsed,
         Err(err) => {
             apply_peer_failure(
@@ -676,7 +678,7 @@ where
             return Ok(());
         }
     };
-    let Some(stream_id) = frame.header.stream_id else {
+    let Some(stream_id) = header.stream_id else {
         apply_peer_failure(
             &mut state.writer,
             state.last_client_stream_id,
@@ -721,7 +723,7 @@ where
         return Ok(());
     }
 
-    let flow_control_len = frame.header.len as u32;
+    let flow_control_len = header.len as u32;
     let data_len = data.len() as u32;
     if state.connection_window.receive(flow_control_len).is_err()
         || stream.receive_window.receive(flow_control_len).is_err()
@@ -1350,14 +1352,14 @@ where
     Ok(false)
 }
 
-fn parse_data_payload(frame: &RawFrame) -> Result<(Bytes, bool), H2CornError> {
+fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool), H2CornError> {
     let mut start = 0;
-    let mut end = frame.payload.len();
-    if frame.header.flags.contains(FrameFlags::PADDED) {
-        if frame.payload.is_empty() {
+    let mut end = payload.len();
+    if flags.contains(FrameFlags::PADDED) {
+        if payload.is_empty() {
             return H2Error::DataPaddedMissingPadding.err();
         }
-        let pad_len = usize::from(frame.payload[0]);
+        let pad_len = usize::from(payload[0]);
         start += 1;
         if pad_len > end.saturating_sub(start) {
             return H2Error::DataPaddingExceedsPayload.err();
@@ -1365,8 +1367,12 @@ fn parse_data_payload(frame: &RawFrame) -> Result<(Bytes, bool), H2CornError> {
         end -= pad_len;
     }
     Ok((
-        frame.payload.slice(start..end),
-        frame.header.flags.contains(FrameFlags::END_STREAM),
+        if start == 0 && end == payload.len() {
+            payload
+        } else {
+            payload.slice(start..end)
+        },
+        flags.contains(FrameFlags::END_STREAM),
     ))
 }
 

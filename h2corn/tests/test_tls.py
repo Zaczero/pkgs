@@ -154,14 +154,19 @@ def client_context(
     return context
 
 
-async def tls_http1_request(config: Config, context: ssl.SSLContext) -> bytes:
+async def tls_http1_request(
+    config: Config,
+    context: ssl.SSLContext,
+    *,
+    request: bytes = b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n',
+) -> bytes:
     reader, writer = await asyncio.open_connection(
         '127.0.0.1',
         config.port,
         ssl=context,
         server_hostname='localhost',
     )
-    writer.write(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
+    writer.write(request)
     await writer.drain()
     status, _, body, _ = await read_http1_response(reader)
     writer.close()
@@ -334,6 +339,37 @@ async def test_tls_http2_trusted_forwarded_proto_overrides_tls_scheme(
 
     assert status == 200
     assert body == b'http|example.com|80'
+
+
+async def test_tls_http1_absolute_form_preserves_tls_scheme(tmp_path: Path) -> None:
+    certfile, keyfile = write_self_signed_cert(tmp_path)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        body = (
+            f'{scope["scheme"]}|{scope["path"]}|'
+            f'{scope["query_string"].decode()}'
+        ).encode()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(
+        port=find_free_port(),
+        certfile=certfile,
+        keyfile=keyfile,
+    )
+    context = client_context(certfile, alpn=['http/1.1'])
+    async with running_server(app, config):
+        body = await asyncio.wait_for(
+            tls_http1_request(
+                config,
+                context,
+                request=b'GET http://localhost/absolute?x=1 HTTP/1.1\r\n\r\n',
+            ),
+            timeout=5,
+        )
+
+    assert body == b'https|/absolute|x=1'
 
 
 @pytest.mark.parametrize('proxy_protocol', ['v1', 'v2'])

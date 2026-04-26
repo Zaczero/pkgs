@@ -8,12 +8,13 @@ use bytes::{BufMut, BytesMut};
 const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
 const ERROR: u8 = 4;
+const MIN_CODE_BITS: usize = 5;
 
 pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
 
-    buf.reserve(src.len().saturating_mul(2));
+    buf.reserve(src.len().saturating_mul(8).div_ceil(MIN_CODE_BITS));
 
     for &byte in src {
         let (next, symbol, flags) = DECODE_TABLE[state][usize::from(byte >> 4)];
@@ -116,6 +117,18 @@ mod test {
         encode(data, &mut dst);
 
         assert_eq!(encoded_len(data), dst.len());
+    }
+
+    #[test]
+    fn decode_reserve_bound_matches_shortest_code() {
+        assert_eq!(
+            ENCODE_TABLE
+                .iter()
+                .map(|(code_bits, _)| *code_bits)
+                .min()
+                .unwrap(),
+            MIN_CODE_BITS
+        );
     }
 
     #[test]

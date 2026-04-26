@@ -174,11 +174,12 @@ impl ResponseController {
         }
 
         if final_chunk && !started.expects_trailers && !started.saw_body {
-            self.state = complete_response(
-                actions,
-                &mut started,
-                actions::FinalResponseBody::Bytes(body),
-            );
+            let body = if body.is_empty() {
+                actions::FinalResponseBody::Empty
+            } else {
+                actions::FinalResponseBody::Bytes(body)
+            };
+            self.state = complete_response(actions, &mut started, body);
             return Ok(());
         }
 

@@ -20,7 +20,7 @@ use crate::console::{HttpAccessLogState, ResponseLogState, run_http_request};
 use crate::error::H2CornError;
 use crate::frame::{ErrorCode, StreamId};
 use crate::http::app::{
-    HttpRequestBody, RunningHttpRequest, drive_http_request, start_asgi_http_request,
+    HttpRequestBody, RunningHttpRequest, drive_pinned_http_request, start_asgi_http_request,
     try_complete_http_request,
 };
 use crate::http::execution::{RequestExecution, RequestInputChannels, prepare_request_execution};
@@ -232,12 +232,10 @@ async fn run_no_body_http_request(
     };
 
     let RunningHttpRequest { state, app_task } = started;
-    let mut app_task = Box::pin(app_task);
+    tokio::pin!(app_task);
     let result = match poll_app_task_once(app_task.as_mut()) {
         Poll::Ready(app_result) => try_complete_http_request(state, transport, app_result).await,
-        Poll::Pending => {
-            drive_http_request(RunningHttpRequest { state, app_task }, transport).await
-        }
+        Poll::Pending => drive_pinned_http_request(state, app_task.as_mut(), transport).await,
     };
     access_log.emit_http_response(transport.response_log_state(), || 0);
     result

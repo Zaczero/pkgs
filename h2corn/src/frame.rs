@@ -279,7 +279,7 @@ where
     pub(crate) fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: BytesMut::with_capacity(64 * 1024),
+            buffer: BytesMut::with_capacity(DEFAULT_MAX_FRAME_SIZE + FRAME_HEADER_LEN),
         }
     }
 

@@ -72,37 +72,43 @@ impl From<DecoderError> for RequestHeadError {
 }
 
 pub(super) fn parse_header_block_fragment(
-    frame: &RawFrame,
+    frame: RawFrame,
 ) -> Result<HeaderBlockFragment, H2CornError> {
-    let payload = frame.payload.as_ref();
+    let header = frame.header;
+    let payload = frame.payload;
+    let payload_bytes = payload.as_ref();
     let mut payload_offset = 0;
-    let padded = frame.header.flags.contains(frame::FrameFlags::PADDED);
-    let priority = frame.header.flags.contains(frame::FrameFlags::PRIORITY);
+    let padded = header.flags.contains(frame::FrameFlags::PADDED);
+    let priority = header.flags.contains(frame::FrameFlags::PRIORITY);
     let priority_offset = usize::from(padded);
 
     if padded {
-        if payload.is_empty() {
+        if payload_bytes.is_empty() {
             return H2Error::HeadersPaddedMissingPadLength.err();
         }
         payload_offset += 1;
     }
 
     if priority {
-        if payload.len() < payload_offset + 5 {
+        if payload_bytes.len() < payload_offset + 5 {
             return H2Error::HeadersPriorityTooShort.err();
         }
         payload_offset += 5;
     }
 
-    let pad_len = if padded { usize::from(payload[0]) } else { 0 };
-    if payload.len() < payload_offset + pad_len {
+    let pad_len = if padded {
+        usize::from(payload_bytes[0])
+    } else {
+        0
+    };
+    if payload_bytes.len() < payload_offset + pad_len {
         return H2Error::HeadersPaddingExceedsPayload.err();
     }
-    let block_end = payload.len() - pad_len;
+    let block_end = payload_bytes.len() - pad_len;
 
     let stream_dependency = if priority {
         Some(PriorityDependency::from_wire(u32::from_be_bytes(
-            payload[priority_offset..priority_offset + 4]
+            payload_bytes[priority_offset..priority_offset + 4]
                 .try_into()
                 .expect("payload length is validated"),
         )))
@@ -111,9 +117,13 @@ pub(super) fn parse_header_block_fragment(
     };
 
     Ok(HeaderBlockFragment {
-        block: frame.payload.slice(payload_offset..block_end),
-        end_headers: frame.header.flags.contains(frame::FrameFlags::END_HEADERS),
-        end_stream: frame.header.flags.contains(frame::FrameFlags::END_STREAM),
+        block: if payload_offset == 0 && block_end == payload.len() {
+            payload
+        } else {
+            payload.slice(payload_offset..block_end)
+        },
+        end_headers: header.flags.contains(frame::FrameFlags::END_HEADERS),
+        end_stream: header.flags.contains(frame::FrameFlags::END_STREAM),
         stream_dependency,
     })
 }

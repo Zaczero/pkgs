@@ -28,7 +28,7 @@ where
 {
     if let HttpEventEffect::PathSend(path) = handle_http_event_sync(controller, actions, event)? {
         let (file, len) =
-            http::pathsend::open_pathsend_file(&path, controller.pathsend_len_hint()).await?;
+            http::pathsend::open_pathsend_file(path, controller.pathsend_len_hint()).await?;
         controller.handle_pathsend(actions, file, len)?;
     }
     transport.apply_response_actions(actions).await

@@ -47,6 +47,32 @@ async def test_http1_request_round_trip() -> None:
     assert trailers == []
 
 
+async def test_http1_absolute_form_preserves_cleartext_scheme() -> None:
+    async def app(scope, receive, send):
+        assert scope['type'] == 'http'
+        body = (
+            f'{scope["scheme"]}|{scope["path"]}|'
+            f'{scope["query_string"].decode()}'
+        ).encode()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(port=find_free_port())
+    async with running_server(app, config):
+        status, headers, body, trailers = await asyncio.wait_for(
+            http1_request(
+                port=config.port,
+                request=b'GET https://example.com/absolute?x=1 HTTP/1.1\r\n\r\n',
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert headers[b'content-length'] == b'18'
+    assert body == b'http|/absolute|x=1'
+    assert trailers == []
+
+
 async def test_http1_response_defaults_apply_to_normal_app_responses() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
