@@ -427,9 +427,7 @@ def _spawn_reload_child(args: list[str], env: Mapping[str, str] | None):
     pycache_dir = Path(tempfile.mkdtemp(prefix='h2corn-reload-pyc-'))
     child_env['PYTHONPYCACHEPREFIX'] = os.fspath(pycache_dir)
     return (
-        subprocess.Popen(
-            [sys.executable, '-m', 'h2corn._server', *args], env=child_env
-        ),
+        subprocess.Popen([sys.executable, '-m', 'h2corn', *args], env=child_env),
         pycache_dir,
     )
 

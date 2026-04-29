@@ -107,6 +107,47 @@ def test_child_argv_strips_reload_parent_flags() -> None:
     assert child_argv == ['--workers', '1', 'example:app']
 
 
+def test_spawn_reload_child_uses_package_module_entrypoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    pycache_dir = tmp_path / 'pycache'
+
+    class FakeProcess:
+        pass
+
+    def popen(args, env):
+        captured['args'] = args
+        captured['env'] = env
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        reload_module.tempfile,
+        'mkdtemp',
+        lambda **_kwargs: pycache_dir,
+    )
+    monkeypatch.setattr(reload_module.subprocess, 'Popen', popen)
+
+    process, returned_pycache_dir = reload_module._spawn_reload_child(
+        ['example:app', '--port', '8000'],
+        {'H2CORN_TEST': '1'},
+    )
+
+    assert isinstance(process, FakeProcess)
+    assert returned_pycache_dir == pycache_dir
+    assert captured['args'] == [
+        reload_module.sys.executable,
+        '-m',
+        'h2corn',
+        'example:app',
+        '--port',
+        '8000',
+    ]
+    assert captured['env']['H2CORN_TEST'] == '1'
+    assert captured['env']['PYTHONPYCACHEPREFIX'] == str(pycache_dir)
+
+
 def test_changed_paths_detects_modified_added_and_removed_files(tmp_path: Path) -> None:
     modified = tmp_path / 'modified.py'
     removed = tmp_path / 'removed.py'

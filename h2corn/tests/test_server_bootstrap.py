@@ -1,6 +1,7 @@
 import io
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,42 @@ from typing import Any
 
 import pytest
 from h2corn import Config
+
+
+def test_python_m_h2corn_runs_cli_without_target() -> None:
+    result = subprocess.run(
+        [sys.executable, '-Werror', '-m', 'h2corn', '--check-config'],
+        check=False,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert 'RuntimeWarning' not in result.stderr
+
+
+def test_python_m_h2corn_accepts_target_before_arguments() -> None:
+    result = subprocess.run(
+        [sys.executable, '-Werror', '-m', 'h2corn', 'example:app', '--check-config'],
+        check=False,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert 'RuntimeWarning' not in result.stderr
+
+
+def test_python_m_h2corn_server_runs_without_runpy_warning() -> None:
+    result = subprocess.run(
+        [sys.executable, '-Werror', '-m', 'h2corn._server', '--check-config'],
+        check=False,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert 'RuntimeWarning' not in result.stderr
 
 
 def _recording_socket(
