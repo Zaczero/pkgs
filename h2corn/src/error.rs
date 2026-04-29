@@ -437,8 +437,6 @@ impl H2Error {
 
 #[derive(Debug, Error)]
 pub enum PathsendError {
-    #[error("http.response.pathsend requires an absolute path")]
-    RequiresAbsoluteFilePath,
     #[error("http.response.pathsend failed for file {path}: {source}")]
     OpenFailed {
         path: Box<str>,
@@ -456,10 +454,7 @@ impl PathsendError {
     }
 
     fn failure_domain(&self) -> FailureDomain {
-        match self {
-            Self::RequiresAbsoluteFilePath => FailureDomain::AppContract,
-            Self::OpenFailed { .. } => FailureDomain::TransportIo,
-        }
+        FailureDomain::TransportIo
     }
 }
 

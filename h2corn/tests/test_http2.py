@@ -787,6 +787,33 @@ async def test_starlette_file_response_uses_pathsend(tmp_path: Path) -> None:
     assert body == payload
 
 
+async def test_starlette_file_response_accepts_relative_pathsend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / 'relative-file-response.txt'
+    payload = b'hello from relative file response'
+    file_path.write_bytes(payload)
+    monkeypatch.chdir(tmp_path)
+    relative_path = Path(file_path.name)
+
+    fastapi_app = FastAPI()
+
+    @fastapi_app.get('/download')
+    async def download() -> FileResponse:
+        return FileResponse(relative_path)
+
+    config = Config(port=find_free_port())
+    async with running_server(fastapi_app, config):
+        status, body = await asyncio.wait_for(
+            h2_request(port=config.port, path='/download'),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == payload
+
+
 async def test_starlette_head_file_response_keeps_empty_body(tmp_path: Path) -> None:
     file_path = tmp_path / 'head.txt'
     file_path.write_bytes(b'head body should stay hidden')

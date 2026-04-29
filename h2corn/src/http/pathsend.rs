@@ -8,7 +8,7 @@ use tokio::io::AsyncReadExt;
 use tokio::task::spawn_blocking;
 
 use crate::config::PATHSEND_BUFFER_SIZE;
-use crate::error::{ErrorExt, H2CornError, PathsendError};
+use crate::error::{H2CornError, PathsendError};
 
 #[derive(Debug)]
 pub struct PathStreamer {
@@ -94,10 +94,6 @@ pub(crate) async fn open_pathsend_file(
     path: PathBuf,
     len_hint: Option<usize>,
 ) -> Result<(File, usize), H2CornError> {
-    if !path.is_absolute() {
-        return PathsendError::RequiresAbsoluteFilePath.err();
-    }
-
     let (file, len) = spawn_blocking(move || {
         let pathsend_io_error = |err| PathsendError::open_failed(&path, err);
         let file = SyncFile::open(&path).map_err(pathsend_io_error)?;
