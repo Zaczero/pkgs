@@ -1,4 +1,10 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
@@ -33,6 +39,7 @@ struct WriterIngressQueue {
 
 pub(super) struct WriterIngress {
     queue: Mutex<WriterIngressQueue>,
+    has_pending: AtomicBool,
     pub(super) notify: Notify,
     permits: Arc<Semaphore>,
 }
@@ -47,8 +54,9 @@ impl WriterIngressQueue {
         }
     }
 
-    fn drain_ready(&mut self) -> DrainedIngressWrites {
-        let mut drained = Vec::with_capacity(self.ready_streams.len());
+    fn drain_ready_into(&mut self, drained: &mut DrainedIngressWrites) {
+        drained.clear();
+        drained.reserve(self.ready_streams.len());
 
         while let Some(stream_id_raw) = self.ready_streams.pop_front() {
             let Some(stream) = self.streams.remove(&stream_id_raw) else {
@@ -60,8 +68,6 @@ impl WriterIngressQueue {
             let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
             drained.push((stream_id, stream.commands));
         }
-
-        drained
     }
 
     fn restore_drained(&mut self, drained: DrainedIngressWrites) {
@@ -105,6 +111,7 @@ impl WriterIngress {
                 ready_streams: VecDeque::with_capacity(max_concurrent_streams),
                 streams: new_stream_map(max_concurrent_streams),
             }),
+            has_pending: AtomicBool::new(false),
             notify: Notify::new(),
             permits: Arc::new(Semaphore::new(WRITER_CHANNEL_CAPACITY)),
         })
@@ -148,13 +155,17 @@ impl WriterIngress {
                 _permit: permit,
             },
         );
+        self.has_pending.store(true, Ordering::Release);
         drop(queue);
         self.notify.notify_one();
         Ok(())
     }
 
-    pub(super) async fn drain(&self) -> DrainedIngressWrites {
-        self.queue.lock().await.drain_ready()
+    pub(super) async fn drain_into(&self, drained: &mut DrainedIngressWrites) {
+        let mut queue = self.queue.lock().await;
+        queue.drain_ready_into(drained);
+        self.has_pending
+            .store(queue.has_pending(), Ordering::Release);
     }
 
     pub(super) async fn restore_drained(&self, drained: DrainedIngressWrites) {
@@ -162,11 +173,14 @@ impl WriterIngress {
             return;
         }
 
-        self.queue.lock().await.restore_drained(drained);
+        let mut queue = self.queue.lock().await;
+        queue.restore_drained(drained);
+        self.has_pending
+            .store(queue.has_pending(), Ordering::Release);
     }
 
-    pub(super) async fn has_pending(&self) -> bool {
-        self.queue.lock().await.has_pending()
+    pub(super) fn has_pending(&self) -> bool {
+        self.has_pending.load(Ordering::Acquire)
     }
 
     pub(super) async fn drop_stream(&self, stream_id: StreamId) {
@@ -175,5 +189,6 @@ impl WriterIngress {
 
     pub(super) async fn close(&self) {
         self.queue.lock().await.close();
+        self.has_pending.store(false, Ordering::Release);
     }
 }

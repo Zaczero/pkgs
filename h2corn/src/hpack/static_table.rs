@@ -45,29 +45,41 @@ impl StaticFieldEntry {
 }
 
 macro_rules! static_field_data {
-    ($(($index:literal, $name:literal, $value:literal $(, $flag:ident)*),)+) => {
+    ($($first:literal => { $(($index:literal, $name:literal, $value:literal $(, $flag:ident)*),)+ }),+ $(,)?) => {
+        const _: () = {
+            $($(
+                assert!(!$name.is_empty());
+                assert!($name[0] == $first);
+            )+)+
+        };
+
         fn get_field(index: usize) -> Header {
             match index {
-                $(
+                $($(
                     $index => Header::Field {
                         name: BytesStr::from_static_bytes($name),
                         value: Bytes::from_static($value),
                     },
-                )+
+                )+)+
                 _ => unreachable!(),
             }
         }
 
         pub(crate) fn field_index_entry(name: &[u8]) -> Option<StaticFieldEntry> {
-            match name {
-                $($name => Some(StaticFieldEntry::new($index).with_value($value)$(.$flag())*),)+
+            match name.first().copied() {
+                $(
+                Some($first) => match name {
+                    $($name => Some(StaticFieldEntry::new($index).with_value($value)$(.$flag())*),)+
+                    _ => None,
+                },
+                )+
                 _ => None,
             }
         }
 
         fn field_name(index: usize) -> OwnedName {
             match index {
-                $($index => OwnedName::Field(BytesStr::from_static_bytes($name)),)+
+                $($($index => OwnedName::Field(BytesStr::from_static_bytes($name)),)+)+
                 _ => unreachable!(),
             }
         }
@@ -75,53 +87,85 @@ macro_rules! static_field_data {
 }
 
 static_field_data! {
-    (15, b"accept-charset", b""),
-    (16, b"accept-encoding", b"gzip, deflate"),
-    (17, b"accept-language", b""),
-    (18, b"accept-ranges", b""),
-    (19, b"accept", b""),
-    (20, b"access-control-allow-origin", b""),
-    (21, b"age", b"", skip_value_index),
-    (22, b"allow", b""),
-    (23, b"authorization", b"", skip_value_index, never_index),
-    (24, b"cache-control", b""),
-    (25, b"content-disposition", b""),
-    (26, b"content-encoding", b""),
-    (27, b"content-language", b""),
-    (28, b"content-length", b"", skip_value_index),
-    (29, b"content-location", b""),
-    (30, b"content-range", b""),
-    (31, b"content-type", b""),
-    (32, b"cookie", b"", skip_value_index),
-    (33, b"date", b""),
-    (34, b"etag", b"", skip_value_index),
-    (35, b"expect", b""),
-    (36, b"expires", b""),
-    (37, b"from", b""),
-    (38, b"host", b""),
-    (39, b"if-match", b""),
-    (40, b"if-modified-since", b"", skip_value_index),
-    (41, b"if-none-match", b"", skip_value_index),
-    (42, b"if-range", b""),
-    (43, b"if-unmodified-since", b""),
-    (44, b"last-modified", b""),
-    (45, b"link", b""),
-    (46, b"location", b"", skip_value_index),
-    (47, b"max-forwards", b""),
-    (48, b"proxy-authenticate", b""),
-    (49, b"proxy-authorization", b"", never_index),
-    (50, b"range", b""),
-    (51, b"referer", b""),
-    (52, b"refresh", b""),
-    (53, b"retry-after", b""),
-    (54, b"server", b""),
-    (55, b"set-cookie", b"", skip_value_index, never_index),
-    (56, b"strict-transport-security", b""),
-    (57, b"transfer-encoding", b""),
-    (58, b"user-agent", b""),
-    (59, b"vary", b""),
-    (60, b"via", b""),
-    (61, b"www-authenticate", b""),
+    b'a' => {
+        (15, b"accept-charset", b""),
+        (16, b"accept-encoding", b"gzip, deflate"),
+        (17, b"accept-language", b""),
+        (18, b"accept-ranges", b""),
+        (19, b"accept", b""),
+        (20, b"access-control-allow-origin", b""),
+        (21, b"age", b"", skip_value_index),
+        (22, b"allow", b""),
+        (23, b"authorization", b"", skip_value_index, never_index),
+    },
+    b'c' => {
+        (24, b"cache-control", b""),
+        (25, b"content-disposition", b""),
+        (26, b"content-encoding", b""),
+        (27, b"content-language", b""),
+        (28, b"content-length", b"", skip_value_index),
+        (29, b"content-location", b""),
+        (30, b"content-range", b""),
+        (31, b"content-type", b""),
+        (32, b"cookie", b"", skip_value_index),
+    },
+    b'd' => {
+        (33, b"date", b""),
+    },
+    b'e' => {
+        (34, b"etag", b"", skip_value_index),
+        (35, b"expect", b""),
+        (36, b"expires", b""),
+    },
+    b'f' => {
+        (37, b"from", b""),
+    },
+    b'h' => {
+        (38, b"host", b""),
+    },
+    b'i' => {
+        (39, b"if-match", b""),
+        (40, b"if-modified-since", b"", skip_value_index),
+        (41, b"if-none-match", b"", skip_value_index),
+        (42, b"if-range", b""),
+        (43, b"if-unmodified-since", b""),
+    },
+    b'l' => {
+        (44, b"last-modified", b""),
+        (45, b"link", b""),
+        (46, b"location", b"", skip_value_index),
+    },
+    b'm' => {
+        (47, b"max-forwards", b""),
+    },
+    b'p' => {
+        (48, b"proxy-authenticate", b""),
+        (49, b"proxy-authorization", b"", never_index),
+    },
+    b'r' => {
+        (50, b"range", b""),
+        (51, b"referer", b""),
+        (52, b"refresh", b""),
+        (53, b"retry-after", b""),
+    },
+    b's' => {
+        (54, b"server", b""),
+        (55, b"set-cookie", b"", skip_value_index, never_index),
+        (56, b"strict-transport-security", b""),
+    },
+    b't' => {
+        (57, b"transfer-encoding", b""),
+    },
+    b'u' => {
+        (58, b"user-agent", b""),
+    },
+    b'v' => {
+        (59, b"vary", b""),
+        (60, b"via", b""),
+    },
+    b'w' => {
+        (61, b"www-authenticate", b""),
+    },
 }
 
 pub(crate) fn get(index: usize) -> Header {

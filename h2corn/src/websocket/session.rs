@@ -13,12 +13,14 @@ use self::handshake::{
     HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event, settle_app_task,
 };
 use super::app::start_websocket_app;
-use super::codec::{WebSocketCodec, encode_close_frame_into, validate_close_code};
+use super::codec::{
+    MAX_CLOSE_REASON_LEN, WebSocketCodec, encode_close_frame_into, validate_close_code,
+};
 use super::request::{validate_accept_headers, validate_accepted_subprotocol};
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
 use crate::bridge::PayloadBytes;
 use crate::console::WebSocketAccessLogState;
-use crate::error::{H2CornError, WebSocketError};
+use crate::error::{ErrorExt, H2CornError, WebSocketError};
 use crate::hpack::BytesStr;
 use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
@@ -39,8 +41,10 @@ pub(crate) struct PendingClose {
 
 impl PendingClose {
     fn new(code: WebSocketCloseCode, reason: &str) -> Result<Self, H2CornError> {
-        let mut frame = BytesMut::new();
-        encode_close_frame_into(code, reason, &mut frame)?;
+        validate_close_code(code)?;
+        if reason.len() > MAX_CLOSE_REASON_LEN {
+            return WebSocketError::CloseReasonTooLong.err();
+        }
         Ok(Self {
             code,
             reason: reason.into(),

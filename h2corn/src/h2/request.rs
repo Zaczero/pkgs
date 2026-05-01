@@ -298,7 +298,7 @@ impl RequestHeadBuilder {
             }
             self.host_header_index = Some(self.regular_headers.len());
         }
-        let name = RequestHeaderName::from_h2_validated(name);
+        let name = known_name.map_or(RequestHeaderName::Other(name), RequestHeaderName::Known);
         let value = RequestHeaderValue::from_h2_validated(value);
         self.regular_headers.push((name, value));
         Ok(())

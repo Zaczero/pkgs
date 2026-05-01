@@ -1,7 +1,7 @@
 use atoi_simd::parse_pos;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
-use memchr::memchr3;
+use memchr::{memchr, memchr3};
 use std::{
     borrow::Cow,
     iter, str,
@@ -10,6 +10,7 @@ use std::{
 
 use crate::config::{CachedDateValue, ServerConfig};
 use crate::ext::Protocol;
+use crate::http::digits;
 use crate::http::types::{RequestHeaderValue, ResponseHeaders};
 use crate::proxy::trusted_host_matches;
 
@@ -24,7 +25,6 @@ const MONTHS: [[u8; 3]; 12] = [
     *b"Jan", *b"Feb", *b"Mar", *b"Apr", *b"May", *b"Jun", *b"Jul", *b"Aug", *b"Sep", *b"Oct",
     *b"Nov", *b"Dec",
 ];
-const DIGIT_PAIRS: [u8; 200] = digit_pairs();
 const HEADER_NAME_TABLE: [u8; 256] = {
     let mut table = [0; 256];
 
@@ -55,17 +55,6 @@ const HEADER_NAME_TABLE: [u8; 256] = {
 
     table
 };
-
-const fn digit_pairs() -> [u8; 200] {
-    let mut out = [0; 200];
-    let mut value = 0;
-    while value < 100 {
-        out[value * 2] = b'0' + (value / 10) as u8;
-        out[value * 2 + 1] = b'0' + (value % 10) as u8;
-        value += 1;
-    }
-    out
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConnectionHeaderTokens {
@@ -107,7 +96,12 @@ pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     iter::from_fn(move || {
         let current = rest?;
-        if let Some(index) = current.iter().position(|&byte| byte == b',') {
+        let comma = if current.len() <= 16 {
+            current.iter().position(|&byte| byte == b',')
+        } else {
+            memchr(b',', current)
+        };
+        if let Some(index) = comma {
             rest = Some(&current[index + 1..]);
             Some(&current[..index])
         } else {
@@ -167,38 +161,34 @@ enum ResponseContentLength {
 pub(crate) struct ResponseHeaderScan {
     pub has_server: bool,
     pub has_date: bool,
-    content_length: ResponseContentLength,
+    content_length: Option<ResponseContentLength>,
 }
 
 impl ResponseHeaderScan {
     pub(crate) fn content_length(self) -> Option<usize> {
-        match self.content_length {
+        match self
+            .content_length
+            .expect("response content-length must be scanned before reading")
+        {
             ResponseContentLength::Valid(len) => Some(len),
             ResponseContentLength::Missing | ResponseContentLength::NeedsRewrite => None,
         }
     }
+
+    pub(crate) fn ensure_content_length_scanned(&mut self, headers: &ResponseHeaders) {
+        if self.content_length.is_none() {
+            self.content_length = Some(inspect_response_content_length(headers));
+        }
+    }
 }
 
-pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
     let mut scan = ResponseHeaderScan::default();
 
-    for (name, value) in headers {
+    for (name, _) in headers {
         match name.as_bytes() {
             b"server" => scan.has_server = true,
             b"date" => scan.has_date = true,
-            b"content-length" => {
-                scan.content_length = match scan.content_length {
-                    ResponseContentLength::Missing => parse_content_length_header(value.as_bytes())
-                        .and_then(|len| usize::try_from(len).ok())
-                        .map_or(
-                            ResponseContentLength::NeedsRewrite,
-                            ResponseContentLength::Valid,
-                        ),
-                    ResponseContentLength::Valid(_) | ResponseContentLength::NeedsRewrite => {
-                        ResponseContentLength::NeedsRewrite
-                    }
-                };
-            }
             _ => {}
         }
     }
@@ -206,18 +196,64 @@ pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHea
     scan
 }
 
+pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+    let mut scan = inspect_response_default_headers(headers);
+    scan.ensure_content_length_scanned(headers);
+    scan
+}
+
+fn inspect_response_content_length(headers: &ResponseHeaders) -> ResponseContentLength {
+    let mut content_length = ResponseContentLength::Missing;
+
+    for (name, value) in headers {
+        if name.as_bytes() != b"content-length" {
+            continue;
+        }
+        content_length = match content_length {
+            ResponseContentLength::Missing => parse_content_length_header(value.as_bytes())
+                .and_then(|len| usize::try_from(len).ok())
+                .map_or(
+                    ResponseContentLength::NeedsRewrite,
+                    ResponseContentLength::Valid,
+                ),
+            ResponseContentLength::Valid(_) | ResponseContentLength::NeedsRewrite => {
+                ResponseContentLength::NeedsRewrite
+            }
+        };
+    }
+
+    content_length
+}
+
 pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
     headers: &mut ResponseHeaders,
     scan: &mut ResponseHeaderScan,
     len: usize,
 ) {
-    if scan.content_length == ResponseContentLength::Valid(len) {
+    let content_length = scan
+        .content_length
+        .expect("response content-length must be scanned before canonicalizing");
+    if content_length == ResponseContentLength::Valid(len) {
+        return;
+    }
+
+    let len_value = if len == 0 {
+        Bytes::from_static(b"0")
+    } else {
+        let mut len_buffer = ItoaBuffer::new();
+        Bytes::copy_from_slice(len_buffer.format(len).as_bytes())
+    };
+
+    if content_length == ResponseContentLength::Missing {
+        headers.push((
+            Bytes::from_static(b"content-length").into(),
+            len_value.into(),
+        ));
+        scan.content_length = Some(ResponseContentLength::Valid(len));
         return;
     }
 
     let mut seen = false;
-    let mut len_buffer = ItoaBuffer::new();
-    let len_value = Bytes::copy_from_slice(len_buffer.format(len).as_bytes());
     headers.retain_mut(|(name, value)| {
         if name.as_bytes() != b"content-length" {
             return true;
@@ -229,13 +265,8 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
         seen = true;
         true
     });
-    if !seen {
-        headers.push((
-            Bytes::from_static(b"content-length").into(),
-            len_value.into(),
-        ));
-    }
-    scan.content_length = ResponseContentLength::Valid(len);
+    debug_assert!(seen);
+    scan.content_length = Some(ResponseContentLength::Valid(len));
 }
 
 fn cached_date_value(config: &ServerConfig) -> Bytes {
@@ -274,19 +305,13 @@ fn write_http_date(out: &mut [u8; 29], unix_seconds: u64) {
     debug_assert!(year < 10_000);
 
     out[..3].copy_from_slice(&WEEKDAYS[(days + 4).rem_euclid(7) as usize]);
-    copy_digit_pair(&mut out[5..7], day as usize);
+    out[5..7].copy_from_slice(&digits::two_digit_bytes(day as usize));
     out[8..11].copy_from_slice(&MONTHS[(month - 1) as usize]);
-    copy_digit_pair(&mut out[12..14], (year / 100) as usize);
-    copy_digit_pair(&mut out[14..16], (year % 100) as usize);
-    copy_digit_pair(&mut out[17..19], hour);
-    copy_digit_pair(&mut out[20..22], minute);
-    copy_digit_pair(&mut out[23..25], second);
-}
-
-fn copy_digit_pair(dst: &mut [u8], value: usize) {
-    debug_assert!(value < 100);
-    let offset = value * 2;
-    dst.copy_from_slice(&DIGIT_PAIRS[offset..offset + 2]);
+    out[12..14].copy_from_slice(&digits::two_digit_bytes((year / 100) as usize));
+    out[14..16].copy_from_slice(&digits::two_digit_bytes((year % 100) as usize));
+    out[17..19].copy_from_slice(&digits::two_digit_bytes(hour));
+    out[20..22].copy_from_slice(&digits::two_digit_bytes(minute));
+    out[23..25].copy_from_slice(&digits::two_digit_bytes(second));
 }
 
 fn civil_from_days(days: i64) -> (u32, u32, u32) {
@@ -359,12 +384,19 @@ pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     Some(needs_lowercase)
 }
 
-pub(crate) fn response_header_name_is_valid(name: &[u8]) -> bool {
-    !name.is_empty()
-        && name.iter().all(|byte| {
-            let flags = HEADER_NAME_TABLE[usize::from(*byte)];
-            flags & HEADER_NAME_VALID != 0 && flags & HEADER_NAME_UPPER == 0
-        })
+pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    for &byte in name {
+        let flags = HEADER_NAME_TABLE[usize::from(byte)];
+        if flags & HEADER_NAME_VALID == 0 || flags & HEADER_NAME_UPPER != 0 {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub(crate) fn protocol_is_websocket(protocol: &Protocol) -> bool {
@@ -566,7 +598,7 @@ mod tests {
 
         assert!(scan.has_server);
         assert!(scan.has_date);
-        assert_eq!(scan.content_length, ResponseContentLength::Valid(42));
+        assert_eq!(scan.content_length, Some(ResponseContentLength::Valid(42)));
         assert_eq!(scan.content_length(), Some(42));
     }
 
@@ -585,7 +617,10 @@ mod tests {
 
         let scan = inspect_response_headers(&headers);
 
-        assert_eq!(scan.content_length, ResponseContentLength::NeedsRewrite);
+        assert_eq!(
+            scan.content_length,
+            Some(ResponseContentLength::NeedsRewrite)
+        );
         assert_eq!(scan.content_length(), None);
     }
 
@@ -598,7 +633,10 @@ mod tests {
 
         let scan = inspect_response_headers(&headers);
 
-        assert_eq!(scan.content_length, ResponseContentLength::NeedsRewrite);
+        assert_eq!(
+            scan.content_length,
+            Some(ResponseContentLength::NeedsRewrite)
+        );
         assert_eq!(scan.content_length(), None);
     }
 

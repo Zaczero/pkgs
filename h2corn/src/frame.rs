@@ -169,6 +169,8 @@ struct WireSetting {
     value: U32,
 }
 
+pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
+
 const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -485,21 +487,8 @@ pub fn append_goaway(
     dst.extend_from_slice(debug);
 }
 
-pub fn parse_settings(frame: &RawFrame) -> Result<PeerSettings, H2CornError> {
-    if frame.header.stream_id.is_some() {
-        return H2Error::SettingsMustUseStreamZero.err();
-    }
-    if frame.header.flags.contains(FrameFlags::ACK) {
-        if !frame.payload.is_empty() {
-            return H2Error::SettingsAckPayloadNotEmpty.err();
-        }
-        return Ok(PeerSettings::default());
-    }
-    parse_settings_payload(frame.payload.as_ref())
-}
-
 pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
-    if !payload.len().is_multiple_of(size_of::<WireSetting>()) {
+    if !payload.len().is_multiple_of(SETTING_ENTRY_LEN) {
         return H2Error::SettingsPayloadLengthInvalid.err();
     }
 
@@ -509,7 +498,7 @@ pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2C
     let entries = unsafe {
         slice::from_raw_parts(
             payload.as_ptr().cast::<WireSetting>(),
-            payload.len() / size_of::<WireSetting>(),
+            payload.len() / SETTING_ENTRY_LEN,
         )
     };
     let mut settings = Settings::default();
@@ -525,7 +514,7 @@ mod tests {
 
     fn parse_wire_settings(bytes: &[u8]) -> Vec<(u16, u32)> {
         bytes
-            .chunks_exact(size_of::<WireSetting>())
+            .chunks_exact(SETTING_ENTRY_LEN)
             .map(|entry| {
                 (
                     u16::from_be_bytes([entry[0], entry[1]]),
@@ -549,16 +538,7 @@ mod tests {
         let mut frame = BytesMut::new();
         append_settings(&mut frame, settings);
 
-        let raw = RawFrame {
-            header: FrameHeader {
-                len: frame.len() - 9,
-                frame_type: FrameType::SETTINGS,
-                flags: FrameFlags::EMPTY,
-                stream_id: None,
-            },
-            payload: Bytes::copy_from_slice(&frame[9..]),
-        };
-        let parsed = parse_settings(&raw).unwrap();
+        let parsed = parse_settings_payload(&frame[FRAME_HEADER_LEN..]).unwrap();
         assert_eq!(parsed.header_table_size, Some(0));
         assert_eq!(parsed.initial_window_size, Some(0));
     }

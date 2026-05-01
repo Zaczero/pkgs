@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 
 use crate::smallvec_deque::SmallVecDeque;
 
-use super::mask::copy_masked_into;
+use super::mask::apply_websocket_mask_phase;
 
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {
@@ -75,29 +75,24 @@ impl<const N: usize> SegmentCursor<N> {
         let mut out = BytesMut::with_capacity(len);
         let mut remaining = len;
         let mut phase = 0;
+        self.len -= len;
         while remaining != 0 {
-            let take = {
-                let front = self
-                    .segments
-                    .front()
-                    .expect("segmented websocket input remains available while draining");
-                let available = &front[self.offset..];
-                let take = min(available.len(), remaining);
-                let start = out.len();
-                phase = copy_masked_into(
-                    &mut out.spare_capacity_mut()[..take],
-                    &available[..take],
-                    mask,
-                    phase,
-                );
-                // SAFETY: `copy_masked_into` initializes exactly `take` bytes.
-                unsafe {
-                    out.set_len(start + take);
-                }
-                take
-            };
-            self.skip(take);
+            let front = self
+                .segments
+                .front()
+                .expect("segmented websocket input remains available while draining");
+            let available = &front[self.offset..];
+            let take = min(available.len(), remaining);
+            let start = out.len();
+            out.extend_from_slice(&available[..take]);
+            phase = apply_websocket_mask_phase(&mut out[start..start + take], mask, phase);
             remaining -= take;
+            if take == available.len() {
+                self.segments.pop_front();
+                self.offset = 0;
+            } else {
+                self.offset += take;
+            }
         }
         out.freeze()
     }

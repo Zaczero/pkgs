@@ -1,20 +1,35 @@
 use std::str;
 
 use bytes::Bytes;
-use http::Method;
+use http::{Method, method::InvalidMethod};
 use pyo3::pybacked::PyBackedBytes;
 
 use crate::ext::Protocol;
 use crate::header_value::header_value_is_valid;
 use crate::hpack::BytesStr;
 use crate::http::header::{
-    protocol_is_websocket, request_header_name_needs_lowercase, response_header_name_is_valid,
+    lowercase_header_name_is_valid, protocol_is_websocket, request_header_name_needs_lowercase,
 };
 use crate::http::header_meta::RequestHeaderMeta;
 
 pub(crate) type RequestHeaders = Vec<(RequestHeaderName, RequestHeaderValue)>;
 pub(crate) type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
 pub(crate) type HttpStatusCode = u16;
+
+pub(crate) fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
+    match value {
+        b"GET" => Ok(Method::GET),
+        b"POST" => Ok(Method::POST),
+        b"HEAD" => Ok(Method::HEAD),
+        b"PUT" => Ok(Method::PUT),
+        b"DELETE" => Ok(Method::DELETE),
+        b"PATCH" => Ok(Method::PATCH),
+        b"OPTIONS" => Ok(Method::OPTIONS),
+        b"TRACE" => Ok(Method::TRACE),
+        b"CONNECT" => Ok(Method::CONNECT),
+        method => Method::from_bytes(method),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RequestAuthority(BytesStr);
@@ -153,32 +168,46 @@ impl RequestTarget {
 }
 
 macro_rules! known_request_header_names {
-    ($(($variant:ident, $name:literal)),+ $(,)?) => {
+    ($($first:literal => { $(($variant:ident, $name:literal)),+ $(,)? }),+ $(,)?) => {
+        const _: () = {
+            $($(
+                assert!(!$name.is_empty());
+                assert!($name[0] == $first);
+            )+)+
+        };
+
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub(crate) enum KnownRequestHeaderName {
-            $($variant),+
+            $($($variant),+),+
         }
 
         impl KnownRequestHeaderName {
             pub(crate) fn from_bytes(name: &[u8]) -> Option<Self> {
                 match name {
-                    $($name => Some(Self::$variant),)+
+                    $($($name => Some(Self::$variant),)+)+
                     _ => None,
                 }
             }
 
             pub(crate) fn from_bytes_ignore_ascii_case(name: &[u8]) -> Option<Self> {
-                $(
-                    if name.eq_ignore_ascii_case($name) {
-                        return Some(Self::$variant);
+                match name.first().map(u8::to_ascii_lowercase) {
+                    $(
+                    Some($first) => {
+                        $(
+                        if name.eq_ignore_ascii_case($name) {
+                            return Some(Self::$variant);
+                        }
+                        )+
+                        None
                     }
-                )+
-                None
+                    )+
+                    _ => None,
+                }
             }
 
             pub(crate) const fn as_bytes(self) -> &'static [u8] {
                 match self {
-                    $(Self::$variant => $name,)+
+                    $($(Self::$variant => $name,)+)+
                 }
             }
 
@@ -191,26 +220,46 @@ macro_rules! known_request_header_names {
 }
 
 known_request_header_names! {
-    (Host, b"host"),
-    (Connection, b"connection"),
-    (ProxyConnection, b"proxy-connection"),
-    (KeepAlive, b"keep-alive"),
-    (Upgrade, b"upgrade"),
-    (Te, b"te"),
-    (ContentLength, b"content-length"),
-    (TransferEncoding, b"transfer-encoding"),
-    (Expect, b"expect"),
-    (Http2Settings, b"http2-settings"),
-    (Forwarded, b"forwarded"),
-    (XForwardedFor, b"x-forwarded-for"),
-    (XForwardedProto, b"x-forwarded-proto"),
-    (XForwardedHost, b"x-forwarded-host"),
-    (XForwardedPort, b"x-forwarded-port"),
-    (XForwardedPrefix, b"x-forwarded-prefix"),
-    (SecWebSocketVersion, b"sec-websocket-version"),
-    (SecWebSocketKey, b"sec-websocket-key"),
-    (SecWebSocketProtocol, b"sec-websocket-protocol"),
-    (SecWebSocketExtensions, b"sec-websocket-extensions"),
+    b'c' => {
+        (Connection, b"connection"),
+        (ContentLength, b"content-length"),
+    },
+    b'e' => {
+        (Expect, b"expect"),
+    },
+    b'f' => {
+        (Forwarded, b"forwarded"),
+    },
+    b'h' => {
+        (Host, b"host"),
+        (Http2Settings, b"http2-settings"),
+    },
+    b'k' => {
+        (KeepAlive, b"keep-alive"),
+    },
+    b'p' => {
+        (ProxyConnection, b"proxy-connection"),
+    },
+    b's' => {
+        (SecWebSocketVersion, b"sec-websocket-version"),
+        (SecWebSocketKey, b"sec-websocket-key"),
+        (SecWebSocketProtocol, b"sec-websocket-protocol"),
+        (SecWebSocketExtensions, b"sec-websocket-extensions"),
+    },
+    b't' => {
+        (Te, b"te"),
+        (TransferEncoding, b"transfer-encoding"),
+    },
+    b'u' => {
+        (Upgrade, b"upgrade"),
+    },
+    b'x' => {
+        (XForwardedFor, b"x-forwarded-for"),
+        (XForwardedProto, b"x-forwarded-proto"),
+        (XForwardedHost, b"x-forwarded-host"),
+        (XForwardedPort, b"x-forwarded-port"),
+        (XForwardedPrefix, b"x-forwarded-prefix"),
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -236,33 +285,16 @@ impl RequestHeaderName {
         } else {
             head.slice_ref(name)
         };
-        let bytes = BytesStr::try_from(bytes).expect("validated header names are valid UTF-8");
-        if let Some(name) = KnownRequestHeaderName::from_bytes(bytes.as_ref()) {
-            Some(Self::Known(name))
-        } else {
-            Some(Self::Other(bytes))
-        }
-    }
-
-    pub(crate) fn from_h2_validated(name: BytesStr) -> Self {
-        if let Some(known) = KnownRequestHeaderName::from_bytes(name.as_ref()) {
-            Self::Known(known)
-        } else {
-            Self::Other(name)
-        }
+        // SAFETY: `request_header_name_needs_lowercase` accepted `name`, and
+        // lowercasing preserves the HTTP token byte set.
+        let bytes = unsafe { BytesStr::from_validated_ascii(bytes) };
+        Some(Self::Other(bytes))
     }
 
     pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Known(name) => name.as_str(),
             Self::Other(name) => name.as_str(),
-        }
-    }
-
-    pub(crate) fn known(&self) -> Option<KnownRequestHeaderName> {
-        match self {
-            Self::Known(name) => Some(*name),
-            Self::Other(_) => None,
         }
     }
 }
@@ -363,7 +395,7 @@ pub(crate) struct ResponseHeaderName(HeaderBytes);
 
 impl ResponseHeaderName {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
-        response_header_name_is_valid(value.as_ref()).then_some(Self(value.into()))
+        lowercase_header_name_is_valid(value.as_ref()).then_some(Self(value.into()))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -379,7 +411,7 @@ impl AsRef<[u8]> for ResponseHeaderName {
 
 impl From<Bytes> for ResponseHeaderName {
     fn from(value: Bytes) -> Self {
-        assert!(response_header_name_is_valid(value.as_ref()));
+        assert!(lowercase_header_name_is_valid(value.as_ref()));
         Self(value.into())
     }
 }
@@ -438,11 +470,11 @@ pub(crate) mod status_code {
     pub(crate) const NOT_FOUND: HttpStatusCode = 404;
     pub(crate) const PAYLOAD_TOO_LARGE: HttpStatusCode = 413;
     pub(crate) const URI_TOO_LONG: HttpStatusCode = 414;
-    pub(crate) const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
     pub(crate) const UPGRADE_REQUIRED: HttpStatusCode = 426;
     pub(crate) const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode = 431;
     pub(crate) const INTERNAL_SERVER_ERROR: HttpStatusCode = 500;
     pub(crate) const NOT_IMPLEMENTED: HttpStatusCode = 501;
+    pub(crate) const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
 }
 
 #[derive(Clone, Debug)]
@@ -582,6 +614,16 @@ mod tests {
         assert_eq!(
             RequestHeaderName::from_h1(&head, b"HOST"),
             Some(RequestHeaderName::Known(KnownRequestHeaderName::Host))
+        );
+    }
+
+    #[test]
+    fn from_h1_lowercases_unknown_mixed_case_headers() {
+        let head = Bytes::from_static(b"X-Demo: value\r\n");
+
+        assert_eq!(
+            RequestHeaderName::from_h1(&head, b"X-Demo").map(|name| name.as_str().to_owned()),
+            Some("x-demo".to_owned())
         );
     }
 }

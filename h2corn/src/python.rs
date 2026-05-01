@@ -235,10 +235,10 @@ pub(crate) use py_static_key;
 
 macro_rules! py_dict_slots {
     () => {
-        0usize
+        0_usize
     };
     ($key:literal => $value:expr $(, $($rest:tt)*)?) => {
-        1usize + $crate::python::py_dict_slots!($($($rest)*)?)
+        1_usize + $crate::python::py_dict_slots!($($($rest)*)?)
     };
     (if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {
         $crate::python::py_dict_slots!($($body)*)
@@ -399,6 +399,27 @@ macro_rules! py_match_cached_bytes {
                 },
             )*
             _ => $crate::python::PyBytes::new($py, value.as_bytes()),
+        }
+    }};
+    (
+        $py:expr,
+        $value:expr,
+        {
+            $($pattern:pat => $value_text:literal,)*
+        }
+    ) => {{
+        match $value {
+            $(
+                $pattern => {
+                    static CACHED: $crate::python::PyOnceLock<
+                        $crate::python::Py<$crate::python::PyBytes>,
+                    > = $crate::python::PyOnceLock::new();
+                    CACHED
+                        .get_or_init($py, || $crate::python::PyBytes::new($py, $value_text).unbind())
+                        .bind($py)
+                        .clone()
+                },
+            )*
         }
     }};
     (

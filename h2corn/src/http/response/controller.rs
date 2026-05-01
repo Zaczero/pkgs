@@ -50,7 +50,7 @@ impl StartedResponse {
         }
     }
 
-    fn pathsend_len_hint(&self) -> Option<usize> {
+    fn pathsend_len_hint(&mut self) -> Option<usize> {
         self.start.content_length_hint()
     }
 }
@@ -115,8 +115,8 @@ impl ResponseController {
         }
     }
 
-    pub(crate) fn pathsend_len_hint(&self) -> Option<usize> {
-        match &self.state {
+    pub(crate) fn pathsend_len_hint(&mut self) -> Option<usize> {
+        match &mut self.state {
             ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
                 started.pathsend_len_hint()
             }

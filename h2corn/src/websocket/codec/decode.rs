@@ -7,7 +7,7 @@ use super::super::deflate::PerMessageDeflateDisabled;
 use super::super::deflate::PerMessageDeflateMode;
 use super::cursor::SegmentCursor;
 use super::frame::{decode_control_frame, parse_frame_header};
-use super::mask::apply_websocket_mask;
+use super::mask::apply_websocket_mask_phase;
 use super::{
     CLIENT_FRAME_PREFIX_MAX_LEN, CLIENT_MASK_LEN, DecodedFrame, OPCODE_BINARY, OPCODE_CLOSE,
     OPCODE_CONTINUATION, OPCODE_TEXT, SEGMENT_INLINE_CAPACITY, WebSocketDecodeError,
@@ -219,9 +219,11 @@ impl WebSocketCodec {
     fn take_buffered_payload(&mut self, needed: usize, header_len: usize) -> Bytes {
         let mut frame = self.buffer.split_to(needed);
         frame.advance(header_len);
+        // SAFETY: `needed` includes `CLIENT_MASK_LEN` bytes after the parsed
+        // header, and `[u8; 4]` has byte alignment.
         let mask = unsafe { *frame.as_ptr().cast::<[u8; 4]>() };
         frame.advance(CLIENT_MASK_LEN);
-        apply_websocket_mask(frame.as_mut(), mask);
+        apply_websocket_mask_phase(frame.as_mut(), mask, 0);
         frame.freeze()
     }
 

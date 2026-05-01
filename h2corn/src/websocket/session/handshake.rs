@@ -263,7 +263,6 @@ mod tests {
         PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendState,
     };
     use crate::error::{H2CornError, HttpResponseError};
-    use crate::hpack::BytesStr;
     use crate::http::response::FinalResponseBody;
     use crate::http::types::{ResponseHeaders, status_code};
     use crate::runtime::RequestAdmission;
@@ -355,7 +354,7 @@ mod tests {
 
         RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Vec::<BytesStr>::new().into(),
+            requested_subprotocols: Default::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -401,7 +400,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Vec::<BytesStr>::new().into(),
+            requested_subprotocols: Default::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -433,7 +432,7 @@ mod tests {
         let (send_state, send_buffer) = WebSocketSendState::new();
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Vec::<BytesStr>::new().into(),
+            requested_subprotocols: Default::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -472,7 +471,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Vec::<BytesStr>::new().into(),
+            requested_subprotocols: Default::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -521,7 +520,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Vec::<BytesStr>::new().into(),
+            requested_subprotocols: Default::default(),
             send_state,
             send_buffer,
             send_rx,

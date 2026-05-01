@@ -50,6 +50,7 @@ pub(crate) struct WriterState<W> {
     config: &'static ServerConfig,
     streams: StreamMap<StreamWriteState>,
     ready_streams: VecDeque<u32>,
+    drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
     response_closes: ResponseCloseBatch,
     connection_send_window: i64,
     initial_stream_send_window: i64,
@@ -168,7 +169,7 @@ where
         context.writer,
         stream_id,
         end_stream,
-        block.as_ref(),
+        block,
         context.peer_max_frame_size,
     )
     .await
@@ -288,7 +289,7 @@ where
             context.writer,
             stream_id,
             false,
-            block.as_ref(),
+            block,
             context.peer_max_frame_size,
         )
         .await
@@ -587,6 +588,7 @@ where
         config,
         streams: new_stream_map(config.http2.max_concurrent_streams as usize),
         ready_streams: VecDeque::with_capacity(config.http2.max_concurrent_streams as usize),
+        drained_app_writes: Vec::with_capacity(config.http2.max_concurrent_streams as usize),
         response_closes: ResponseCloseBatch::new(),
         connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
         initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
@@ -734,6 +736,7 @@ where
             })),
             streams: new_stream_map(max_concurrent_streams as usize),
             ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
+            drained_app_writes: Vec::with_capacity(max_concurrent_streams as usize),
             response_closes: ResponseCloseBatch::new(),
             connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
             initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
@@ -767,8 +770,10 @@ where
     }
 
     pub(crate) async fn drain_app_writes(&mut self) -> Result<bool, H2CornError> {
-        let mut drained = self.ingress.drain().await;
+        let mut drained = mem::take(&mut self.drained_app_writes);
+        self.ingress.drain_into(&mut drained).await;
         if drained.is_empty() {
+            self.drained_app_writes = drained;
             return Ok(false);
         }
 
@@ -786,12 +791,16 @@ where
                         }
                         let remainder = drained.split_off(index);
                         self.ingress.restore_drained(remainder).await;
+                        drained.clear();
+                        self.drained_app_writes = drained;
                         return Ok(true);
                     }
                 }
             }
         }
 
+        drained.clear();
+        self.drained_app_writes = drained;
         Ok(true)
     }
 
@@ -803,8 +812,8 @@ where
         !self.writer.buffer().is_empty()
     }
 
-    pub(crate) async fn has_queued_app_writes(&self) -> bool {
-        self.ingress.has_pending().await
+    pub(crate) fn has_queued_app_writes(&self) -> bool {
+        self.ingress.has_pending()
     }
 
     pub(crate) fn outbound_notified(&self) -> Notified<'_> {

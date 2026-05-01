@@ -117,12 +117,20 @@ impl Encoder {
     pub fn encode_field_bytes(&mut self, name: &[u8], value: &[u8], dst: &mut BytesMut) {
         let static_name = static_table::field_index_entry(name);
 
-        if let Some(index) = static_name
-            .filter(|entry| entry.exact_value == value)
-            .map(|entry| entry.index)
-        {
-            self.encode_indexed(index, dst);
-            return;
+        if let Some(entry) = static_name {
+            if entry.exact_value == value {
+                self.encode_indexed(entry.index, dst);
+                return;
+            }
+            if entry.skip_value_index || entry.never_index {
+                let mode = if entry.never_index {
+                    LiteralMode::NeverIndexed
+                } else {
+                    LiteralMode::WithoutIndexing
+                };
+                encode_literal(LiteralName::Indexed(entry.index), value, mode, dst);
+                return;
+            }
         }
         let (exact_index, dynamic_name_index) = self.table.find(name, value);
         if let Some(index) = exact_index {
@@ -329,6 +337,21 @@ mod test {
         encoder.begin_block(&mut dst);
         encoder.encode_field_bytes(b"x-h2corn-test", b"value", &mut dst);
         assert_eq!(&dst[..], &[0xbe]);
+    }
+
+    #[test]
+    fn skipped_static_header_is_not_dynamic_indexed() {
+        let mut encoder = Encoder::new();
+        let mut dst = BytesMut::new();
+
+        encoder.begin_block(&mut dst);
+        encoder.encode_field_bytes(b"content-length", b"7", &mut dst);
+        assert_eq!(&dst[..], &[0x0f, 13, 1, b'7']);
+
+        dst.clear();
+        encoder.begin_block(&mut dst);
+        encoder.encode_field_bytes(b"content-length", b"7", &mut dst);
+        assert_eq!(&dst[..], &[0x0f, 13, 1, b'7']);
     }
 
     #[test]

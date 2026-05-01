@@ -9,15 +9,14 @@ use crate::bridge::{
     WebSocketOutboundEvent, WebSocketSendBuffer, WebSocketSendState,
 };
 use crate::error::H2CornError;
-use crate::hpack::BytesStr;
 use crate::http::scope::build_websocket_scope;
 use crate::runtime::{RequestAdmission, start_app_call};
 
-use super::session::WebSocketContext;
+use super::{RequestedSubprotocols, session::WebSocketContext};
 
 pub(super) struct RunningWebSocketApp {
     pub(super) recv_tx: mpsc::Sender<WebSocketInboundEvent>,
-    pub(super) requested_subprotocols: Arc<[BytesStr]>,
+    pub(super) requested_subprotocols: RequestedSubprotocols,
     pub(super) send_state: WebSocketSendState,
     pub(super) send_buffer: WebSocketSendBuffer,
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
@@ -36,8 +35,8 @@ pub(super) fn start_websocket_app(
     let (recv_tx, recv_rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
     let (send_tx, send_rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
     let (send_state, send_buffer) = WebSocketSendState::new();
-    let requested_subprotocols: Arc<[BytesStr]> = meta.requested_subprotocols.into_vec().into();
-    let scope_subprotocols = Arc::clone(&requested_subprotocols);
+    let requested_subprotocols = meta.requested_subprotocols;
+    let scope_subprotocols = requested_subprotocols.clone();
     let app = Arc::clone(&ctx.connection.app);
     let task_send_state = send_state.clone();
 

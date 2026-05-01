@@ -5,6 +5,8 @@ use http::{Method, StatusCode};
 
 use crate::ext::Protocol;
 use crate::header_value::header_value_is_valid;
+use crate::http::header::lowercase_header_name_is_valid;
+use crate::http::types::parse_request_method;
 
 use super::{DecoderError, NeedMore};
 
@@ -35,31 +37,6 @@ pub enum OwnedName {
 #[derive(Clone, Eq, PartialEq, Hash, Default)]
 pub struct BytesStr(Bytes);
 
-const HEADER_NAME_VALID_H2: [u8; 256] = {
-    let mut table = [0; 256];
-
-    let mut byte = b'0';
-    while byte <= b'9' {
-        table[byte as usize] = 1;
-        byte += 1;
-    }
-
-    let mut byte = b'a';
-    while byte <= b'z' {
-        table[byte as usize] = 1;
-        byte += 1;
-    }
-
-    let bytes = b"!#$%&'*+-.^_`|~";
-    let mut index = 0;
-    while index < bytes.len() {
-        table[bytes[index] as usize] = 1;
-        index += 1;
-    }
-
-    table
-};
-
 pub fn len(name: &BytesStr, value: &Bytes) -> usize {
     32 + name.len() + value.len()
 }
@@ -76,7 +53,7 @@ impl Header {
                     Ok(Header::Authority(value))
                 }
                 b"method" => {
-                    let method = Method::from_bytes(&value)?;
+                    let method = parse_request_method(&value)?;
                     Ok(Header::Method(method))
                 }
                 b"scheme" => {
@@ -99,12 +76,16 @@ impl Header {
             }
         } else {
             // HTTP/2 requires lower case header names
-            if !header_name_is_valid_h2(name.as_ref()) || !header_value_is_valid(value.as_ref()) {
+            if !lowercase_header_name_is_valid(name.as_ref())
+                || !header_value_is_valid(value.as_ref())
+            {
                 return Err(DecoderError::InvalidUtf8);
             }
 
             Ok(Header::Field {
-                name: BytesStr::try_from(name).expect("validated lower-case names are UTF-8"),
+                // SAFETY: `lowercase_header_name_is_valid` accepted `name`, and
+                // HTTP header name bytes are restricted to ASCII token bytes.
+                name: unsafe { BytesStr::from_validated_ascii(name) },
                 value,
             })
         }
@@ -145,7 +126,7 @@ impl OwnedName {
                 Ok(Header::Field { name, value })
             }
             Self::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
-            Self::Method => Ok(Header::Method(Method::from_bytes(&value)?)),
+            Self::Method => Ok(Header::Method(parse_request_method(&value)?)),
             Self::Scheme => Ok(Header::Scheme(BytesStr::try_from(value)?)),
             Self::Path => Ok(Header::Path(BytesStr::try_from(value)?)),
             Self::Protocol => Ok(Header::Protocol(Protocol::try_from(value)?)),
@@ -163,6 +144,16 @@ impl BytesStr {
 
     pub(crate) const fn from_static(value: &'static str) -> Self {
         Self::from_static_bytes(value.as_bytes())
+    }
+
+    pub(crate) unsafe fn from_validated_ascii(value: Bytes) -> Self {
+        debug_assert!(value.iter().all(u8::is_ascii));
+        Self(value)
+    }
+
+    pub(crate) unsafe fn from_validated_utf8(value: Bytes) -> Self {
+        debug_assert!(str::from_utf8(value.as_ref()).is_ok());
+        Self(value)
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -221,11 +212,4 @@ impl fmt::Debug for BytesStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
-}
-
-fn header_name_is_valid_h2(name: &[u8]) -> bool {
-    !name.is_empty()
-        && name
-            .iter()
-            .all(|byte| HEADER_NAME_VALID_H2[usize::from(*byte)] != 0)
 }

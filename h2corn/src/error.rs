@@ -668,12 +668,10 @@ impl WebSocketProtocolError {
 }
 
 pub(crate) trait ErrorExt: Into<H2CornError> + Sized {
-    #[inline]
     fn into_error(self) -> H2CornError {
         self.into()
     }
 
-    #[inline]
     fn err<T>(self) -> Result<T, H2CornError> {
         Err(self.into_error())
     }

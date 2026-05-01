@@ -1,9 +1,10 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use tokio::io::AsyncWrite;
 
 use crate::error::{ErrorExt, H2CornError, HttpResponseError};
 use crate::frame::{FrameFlags, FrameHeader, FrameType, StreamId};
 use crate::hpack::Encoder;
+use crate::http::digits;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 
 use super::ENCODED_HEADER_BLOCK_CAPACITY;
@@ -26,19 +27,21 @@ impl HeaderEncodeState {
         &mut self,
         status: HttpStatusCode,
         headers: &ResponseHeaders,
-    ) -> Result<Bytes, H2CornError> {
+    ) -> Result<&[u8], H2CornError> {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
-        encode_header_block(&mut self.encoder, &mut self.block, Some(status), headers)
+        encode_header_block(&mut self.encoder, &mut self.block, Some(status), headers)?;
+        Ok(self.block.as_ref())
     }
 
     pub(super) fn encode_trailers(
         &mut self,
         headers: &ResponseHeaders,
-    ) -> Result<Bytes, H2CornError> {
+    ) -> Result<&[u8], H2CornError> {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
-        encode_header_block(&mut self.encoder, &mut self.block, None, headers)
+        encode_header_block(&mut self.encoder, &mut self.block, None, headers)?;
+        Ok(self.block.as_ref())
     }
 
     pub(super) fn update_max_size(&mut self, size: usize) {
@@ -123,12 +126,12 @@ fn encode_header_block(
     out: &mut BytesMut,
     status: Option<u16>,
     headers: &ResponseHeaders,
-) -> Result<Bytes, H2CornError> {
+) -> Result<(), H2CornError> {
     if let Some(status) = status {
         encode_status_header(encoder, out, status)?;
     }
     encode_header_fields(encoder, out, headers);
-    Ok(out.split().freeze())
+    Ok(())
 }
 
 fn encode_status_header(
@@ -137,14 +140,14 @@ fn encode_status_header(
     status: HttpStatusCode,
 ) -> Result<(), H2CornError> {
     match status {
-        status_code::OK => encoder.encode_indexed(8, out),
-        status_code::NO_CONTENT => encoder.encode_indexed(9, out),
-        status_code::PARTIAL_CONTENT => encoder.encode_indexed(10, out),
-        status_code::NOT_MODIFIED => encoder.encode_indexed(11, out),
-        status_code::BAD_REQUEST => encoder.encode_indexed(12, out),
-        status_code::NOT_FOUND => encoder.encode_indexed(13, out),
-        status_code::INTERNAL_SERVER_ERROR => encoder.encode_indexed(14, out),
-        100..=999 => encoder.encode_indexed_name_bytes(8, &status_to_bytes(status), out),
+        status_code::OK => out.extend_from_slice(&[0x88]),
+        status_code::NO_CONTENT => out.extend_from_slice(&[0x89]),
+        status_code::PARTIAL_CONTENT => out.extend_from_slice(&[0x8a]),
+        status_code::NOT_MODIFIED => out.extend_from_slice(&[0x8b]),
+        status_code::BAD_REQUEST => out.extend_from_slice(&[0x8c]),
+        status_code::NOT_FOUND => out.extend_from_slice(&[0x8d]),
+        status_code::INTERNAL_SERVER_ERROR => out.extend_from_slice(&[0x8e]),
+        100..=999 => encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status), out),
         _ => {
             return HttpResponseError::StatusMustBeThreeDigitCode.err();
         }
@@ -152,16 +155,44 @@ fn encode_status_header(
     Ok(())
 }
 
-fn status_to_bytes(status: HttpStatusCode) -> [u8; 3] {
-    [
-        b'0' + ((status / 100) % 10) as u8,
-        b'0' + ((status / 10) % 10) as u8,
-        b'0' + (status % 10) as u8,
-    ]
-}
-
 fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &ResponseHeaders) {
     for (name, value) in headers {
         encoder.encode_field_bytes(name.as_bytes(), value.as_bytes(), out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HeaderEncodeState;
+    use crate::http::types::{ResponseHeaders, status_code};
+
+    #[test]
+    fn response_encode_reuses_header_block_buffer() {
+        let mut state = HeaderEncodeState::new();
+        let initial_capacity = state.block.capacity();
+
+        let first_len = state
+            .encode_response(status_code::OK, &ResponseHeaders::new())
+            .unwrap()
+            .len();
+        let second_len = state
+            .encode_response(status_code::OK, &ResponseHeaders::new())
+            .unwrap()
+            .len();
+
+        assert_ne!(first_len, 0);
+        assert_eq!(second_len, first_len);
+        assert_eq!(state.block.capacity(), initial_capacity);
+    }
+
+    #[test]
+    fn common_status_uses_static_table_index() {
+        let mut state = HeaderEncodeState::new();
+
+        let block = state
+            .encode_response(status_code::NOT_FOUND, &ResponseHeaders::new())
+            .unwrap();
+
+        assert_eq!(block, &[0x8d]);
     }
 }

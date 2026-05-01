@@ -15,12 +15,12 @@ use tokio::time::{Duration, timeout};
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
-use crate::frame::{PeerSettings, parse_settings_payload};
+use crate::frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::hpack::BytesStr;
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::types::{
     HttpVersion, KnownRequestHeaderName, RequestHead, RequestHeaderName, RequestHeaderValue,
-    RequestHeaders, RequestTarget as DomainRequestTarget, status_code,
+    RequestHeaders, RequestTarget as DomainRequestTarget, parse_request_method, status_code,
 };
 use crate::http::{
     body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState},
@@ -174,11 +174,7 @@ impl HeaderParseState {
         let Some(colon) = memchr(b':', line) else {
             return Http1Error::MalformedHeaderLine.err();
         };
-        let raw_name = &line[..colon];
-        if raw_name.trim_ascii().len() != raw_name.len() {
-            return Http1Error::MalformedHeaderLine.err();
-        }
-        let name = raw_name;
+        let name = &line[..colon];
         let value = line[colon + 1..].trim_ascii();
         let header_name =
             RequestHeaderName::from_h1(head, name).ok_or(Http1Error::InvalidHeaderName)?;
@@ -186,7 +182,10 @@ impl HeaderParseState {
             RequestHeaderValue::from_h1(head, value).ok_or(Http1Error::InvalidHeaderValue)?;
         let value = header_value.as_bytes();
 
-        let known_name = header_name.known();
+        let known_name = match &header_name {
+            RequestHeaderName::Known(name) => Some(*name),
+            RequestHeaderName::Other(_) => None,
+        };
         if let Some(known_name) = known_name {
             self.header_meta.observe_known_header(
                 known_name,
@@ -684,7 +683,7 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
         return Http1Error::InvalidRequestLine.err();
     };
     let method =
-        Method::from_bytes(&line[..first_space]).map_err(|_| Http1Error::InvalidRequestMethod)?;
+        parse_request_method(&line[..first_space]).map_err(|_| Http1Error::InvalidRequestMethod)?;
     Ok((
         method,
         &line[first_space + 1..second_space],
@@ -728,7 +727,7 @@ fn parse_request_target<'a>(
 }
 
 fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
-    let mut value = 0usize;
+    let mut value = 0_usize;
     let mut saw_digit = false;
 
     for &byte in line.trim_ascii() {
@@ -740,7 +739,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
             return Http1Error::InvalidChunkSize.err();
         }
         value = value
-            .checked_mul(16)
+            .checked_shl(4)
             .and_then(|value| value.checked_add(usize::from(digit)))
             .ok_or(Http1Error::InvalidChunkSize)?;
         saw_digit = true;
@@ -754,7 +753,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {
     let decoded = base64url_decode(value.trim_ascii())?;
-    if !decoded.len().is_multiple_of(6) {
+    if !decoded.len().is_multiple_of(SETTING_ENTRY_LEN) {
         return Http1Error::InvalidHttp2SettingsPayloadLength.err();
     }
     parse_settings_payload(decoded.as_ref())
@@ -834,6 +833,7 @@ pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
+    use http::Method;
     use std::{num::NonZeroU32, time::Duration};
     use tokio::io::{AsyncWriteExt, BufWriter, duplex};
     use tokio::spawn;
@@ -961,6 +961,17 @@ mod tests {
         let encoded = base64url_encode(&[0x00, 0x05, 0x00, 0x00, 0x00, 0x00]);
         let err = parse_http2_settings(&encoded).unwrap_err();
         assert_eq!(err.to_string(), "invalid SETTINGS_MAX_FRAME_SIZE value");
+    }
+
+    #[tokio::test]
+    async fn read_request_accepts_extension_method() {
+        let parsed =
+            parse_test_request(b"PROPFIND /items HTTP/1.1\r\nHost: example.com\r\n\r\n").await;
+
+        assert_eq!(
+            parsed.request.method,
+            Method::from_bytes(b"PROPFIND").expect("extension method is valid")
+        );
     }
 
     #[tokio::test]

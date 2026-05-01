@@ -3,7 +3,7 @@ mod table;
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 
 const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
@@ -22,7 +22,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> 
             return Err(DecoderError::InvalidHuffmanCode);
         }
         if flags & DECODED != 0 {
-            buf.put_u8(symbol);
+            buf.extend_from_slice(&[symbol]);
         }
         state = usize::from(next);
 
@@ -31,7 +31,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> 
             return Err(DecoderError::InvalidHuffmanCode);
         }
         if flags & DECODED != 0 {
-            buf.put_u8(symbol);
+            buf.extend_from_slice(&[symbol]);
         }
         state = usize::from(next);
         maybe_eos = flags & MAYBE_EOS != 0;
@@ -69,7 +69,7 @@ pub fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
         bits_left -= code_bits;
 
         while bits_left <= 32 {
-            dst.put_u8((bits >> 32) as u8);
+            dst.extend_from_slice(&[(bits >> 32) as u8]);
             bits <<= 8;
             bits_left += 8;
         }
@@ -77,7 +77,7 @@ pub fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
 
     if bits_left != 40 {
         bits |= (1 << bits_left) - 1;
-        dst.put_u8((bits >> 32) as u8);
+        dst.extend_from_slice(&[(bits >> 32) as u8]);
     }
 }
 

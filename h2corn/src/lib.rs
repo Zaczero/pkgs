@@ -223,7 +223,7 @@ impl<'py> PyConfig<'py> {
             };
             let name = name.trim();
             let value = value.trim();
-            if !http::header::response_header_name_is_valid(name.as_bytes()) {
+            if !http::header::lowercase_header_name_is_valid(name.as_bytes()) {
                 return Err(into_pyerr(ConfigError::invalid_response_header_name(name)));
             }
             if !header_value_is_valid(value.as_bytes()) {

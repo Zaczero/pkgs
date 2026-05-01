@@ -955,7 +955,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
 {
-    if state.writer.has_queued_app_writes().await {
+    if state.writer.has_queued_app_writes() {
         return Ok(IngestEvent::Continue);
     }
 
@@ -1129,7 +1129,7 @@ where
                 }
                 return Ok(false);
             }
-            if !frame.payload.len().is_multiple_of(6) {
+            if !frame.payload.len().is_multiple_of(frame::SETTING_ENTRY_LEN) {
                 apply_peer_failure(
                     &mut state.writer,
                     state.last_client_stream_id,
@@ -1138,7 +1138,7 @@ where
                 .await?;
                 return Ok(false);
             }
-            let settings = match frame::parse_settings(&frame) {
+            let settings = match frame::parse_settings_payload(frame.payload.as_ref()) {
                 Ok(settings) => settings,
                 Err(err) => {
                     apply_peer_failure(

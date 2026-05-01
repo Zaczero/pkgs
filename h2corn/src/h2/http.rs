@@ -247,14 +247,14 @@ struct H2HttpTransport<'a> {
     response_log: ResponseLogState,
 }
 
-fn final_response_commands(
+fn push_final_response_commands(
     stream_id: StreamId,
+    commands: &mut WriterCommandBatch,
     mut start: ResponseStart,
     body: FinalResponseBody,
-) -> WriterCommandBatch {
+) {
     start.canonicalize_known_length(body.len());
     let (status, headers) = start.into_status_headers();
-    let mut commands = WriterCommandBatch::new();
     match body {
         FinalResponseBody::Empty | FinalResponseBody::Suppressed { .. } => {
             commands.push_back(WriterCommand::SendHeaders {
@@ -283,7 +283,6 @@ fn final_response_commands(
             });
         }
     }
-    commands
 }
 
 fn append_response_action(
@@ -296,10 +295,7 @@ fn append_response_action(
         ResponseAction::Final { start, body } => {
             let mut start = start;
             start.apply_default_headers(config);
-            let mut batch = final_response_commands(stream_id, start, body);
-            while let Some(command) = batch.pop_front() {
-                commands.push_back(command);
-            }
+            push_final_response_commands(stream_id, commands, start, body);
         }
         ResponseAction::Start { mut start } => {
             start.apply_default_headers(config);
@@ -371,7 +367,8 @@ pub(super) async fn send_final_response(
 ) -> Result<(), H2CornError> {
     let mut start = ResponseStart::new(status, headers);
     start.apply_default_headers(connection.config());
-    let commands = final_response_commands(stream_id, start, body);
+    let mut commands = WriterCommandBatch::new();
+    push_final_response_commands(stream_id, &mut commands, start, body);
     connection.send_commands(stream_id, commands).await
 }
 
@@ -445,6 +442,10 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
         &mut self,
         actions: &mut ResponseActions,
     ) -> Result<(), H2CornError> {
+        if actions.is_empty() {
+            return Ok(());
+        }
+
         let mut commands = WriterCommandBatch::new();
 
         for action in actions.drain(..) {
@@ -472,7 +473,9 @@ mod tests {
 
     use tokio::fs::File;
 
-    use super::{FinalResponseBody, WriterCommand, final_response_commands};
+    use super::{
+        FinalResponseBody, WriterCommand, WriterCommandBatch, push_final_response_commands,
+    };
     use crate::frame::StreamId;
     use crate::http::header::inspect_response_headers;
     use crate::http::response::ResponseStart;
@@ -490,8 +493,10 @@ mod tests {
         fs::write(&path, b"x").unwrap();
         let file = File::from_std(fs::File::open(&path).unwrap());
 
-        let mut commands = final_response_commands(
+        let mut commands = WriterCommandBatch::new();
+        push_final_response_commands(
             StreamId::new(1).unwrap(),
+            &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
             FinalResponseBody::File { file, len: 1 },
         );
@@ -523,8 +528,10 @@ mod tests {
 
     #[test]
     fn empty_final_response_keeps_single_end_stream_headers_command() {
-        let mut commands = final_response_commands(
+        let mut commands = WriterCommandBatch::new();
+        push_final_response_commands(
             StreamId::new(1).unwrap(),
+            &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
             FinalResponseBody::Empty,
         );

@@ -17,66 +17,12 @@ pub(crate) struct ProxyHeaderSlots {
     pub(crate) x_forwarded_prefix: Option<usize>,
 }
 
-impl ProxyHeaderSlots {
-    pub(crate) fn observe(&mut self, name: KnownRequestHeaderName, index: usize) {
-        match name {
-            KnownRequestHeaderName::Forwarded => {
-                self.forwarded = Some(index);
-            }
-            KnownRequestHeaderName::XForwardedFor => {
-                self.x_forwarded_for = Some(index);
-            }
-            KnownRequestHeaderName::XForwardedProto => {
-                self.x_forwarded_proto = Some(index);
-            }
-            KnownRequestHeaderName::XForwardedHost => {
-                self.x_forwarded_host = Some(index);
-            }
-            KnownRequestHeaderName::XForwardedPort => {
-                self.x_forwarded_port = Some(index);
-            }
-            KnownRequestHeaderName::XForwardedPrefix => {
-                self.x_forwarded_prefix = Some(index);
-            }
-            _ => {}
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WebSocketHandshakeMeta {
     pub(crate) key: Option<[u8; WEBSOCKET_KEY_LEN]>,
     pub(crate) key_duplicate: bool,
     pub(crate) request: WebSocketRequestMeta,
     pub(crate) version_supported: bool,
-}
-
-impl WebSocketHandshakeMeta {
-    pub(crate) fn observe(&mut self, name: KnownRequestHeaderName, value: &Bytes) {
-        let value_bytes = value.as_ref();
-        match name {
-            KnownRequestHeaderName::SecWebSocketVersion => {
-                self.version_supported |= value_bytes == WEBSOCKET_VERSION;
-            }
-            KnownRequestHeaderName::SecWebSocketKey => {
-                if self.key.is_some() {
-                    self.key_duplicate = true;
-                } else if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes)
-                    && websocket_key_is_syntactically_valid(value_bytes)
-                {
-                    self.key = Some(key);
-                }
-            }
-            KnownRequestHeaderName::SecWebSocketProtocol => {
-                push_requested_subprotocols(value, &mut self.request);
-            }
-            KnownRequestHeaderName::SecWebSocketExtensions => {
-                self.request.per_message_deflate |=
-                    websocket_requested_permessage_deflate(value_bytes);
-            }
-            _ => {}
-        }
-    }
 }
 
 fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
@@ -102,8 +48,47 @@ impl RequestHeaderMeta {
         value: &Bytes,
         index: usize,
     ) {
-        self.websocket.observe(known_name, value);
-        self.proxy_headers.observe(known_name, index);
+        let value_bytes = value.as_ref();
+        match known_name {
+            KnownRequestHeaderName::Forwarded => {
+                self.proxy_headers.forwarded = Some(index);
+            }
+            KnownRequestHeaderName::XForwardedFor => {
+                self.proxy_headers.x_forwarded_for = Some(index);
+            }
+            KnownRequestHeaderName::XForwardedProto => {
+                self.proxy_headers.x_forwarded_proto = Some(index);
+            }
+            KnownRequestHeaderName::XForwardedHost => {
+                self.proxy_headers.x_forwarded_host = Some(index);
+            }
+            KnownRequestHeaderName::XForwardedPort => {
+                self.proxy_headers.x_forwarded_port = Some(index);
+            }
+            KnownRequestHeaderName::XForwardedPrefix => {
+                self.proxy_headers.x_forwarded_prefix = Some(index);
+            }
+            KnownRequestHeaderName::SecWebSocketVersion => {
+                self.websocket.version_supported |= value_bytes == WEBSOCKET_VERSION;
+            }
+            KnownRequestHeaderName::SecWebSocketKey => {
+                if self.websocket.key.is_some() {
+                    self.websocket.key_duplicate = true;
+                } else if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes)
+                    && websocket_key_is_syntactically_valid(value_bytes)
+                {
+                    self.websocket.key = Some(key);
+                }
+            }
+            KnownRequestHeaderName::SecWebSocketProtocol => {
+                push_requested_subprotocols(value, &mut self.websocket.request);
+            }
+            KnownRequestHeaderName::SecWebSocketExtensions => {
+                self.websocket.request.per_message_deflate |=
+                    websocket_requested_permessage_deflate(value_bytes);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -119,8 +104,10 @@ fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
             .map(|item| item.trim_ascii())
             .filter(|item| !item.is_empty())
             .map(|item| {
-                BytesStr::try_from(value.slice_ref(item))
-                    .expect("validated websocket subprotocol is UTF-8")
+                let bytes = value.slice_ref(item);
+                // SAFETY: the complete header value was validated as UTF-8, and
+                // this slice is borrowed from that same value on byte boundaries.
+                unsafe { BytesStr::from_validated_utf8(bytes) }
             }),
     );
 }
@@ -129,19 +116,19 @@ fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
 mod tests {
     use bytes::Bytes;
 
-    use super::{ProxyHeaderSlots, WebSocketHandshakeMeta};
+    use super::RequestHeaderMeta;
     use crate::hpack::BytesStr;
     use crate::http::types::KnownRequestHeaderName;
     use crate::websocket::RequestedSubprotocols;
 
     #[test]
     fn proxy_header_slots_keep_the_last_match() {
-        let mut slots = ProxyHeaderSlots::default();
-
-        slots.observe(KnownRequestHeaderName::Forwarded, 2);
-        slots.observe(KnownRequestHeaderName::Forwarded, 9);
-        slots.observe(KnownRequestHeaderName::XForwardedProto, 4);
-        slots.observe(KnownRequestHeaderName::XForwardedProto, 7);
+        let mut meta = RequestHeaderMeta::default();
+        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 2);
+        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 9);
+        meta.observe_known_header(KnownRequestHeaderName::XForwardedProto, &Bytes::new(), 4);
+        meta.observe_known_header(KnownRequestHeaderName::XForwardedProto, &Bytes::new(), 7);
+        let slots = meta.proxy_headers;
 
         assert_eq!(slots.forwarded, Some(9));
         assert_eq!(slots.x_forwarded_proto, Some(7));
@@ -149,32 +136,36 @@ mod tests {
 
     #[test]
     fn websocket_handshake_meta_parses_version_key_subprotocols_and_extensions() {
-        let mut meta = WebSocketHandshakeMeta::default();
+        let mut meta = RequestHeaderMeta::default();
 
-        meta.observe(
+        meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketVersion,
             &Bytes::from_static(b"13"),
+            0,
         );
-        meta.observe(
+        meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketKey,
             &Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="),
+            1,
         );
-        meta.observe(
+        meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketProtocol,
             &Bytes::from_static(b"chat, superchat"),
+            2,
         );
-        meta.observe(
+        meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketExtensions,
             &Bytes::from_static(b"permessage-deflate"),
+            3,
         );
 
-        assert!(meta.version_supported);
-        assert_eq!(meta.key, Some(*b"dGhlIHNhbXBsZSBub25jZQ=="));
+        assert!(meta.websocket.version_supported);
+        assert_eq!(meta.websocket.key, Some(*b"dGhlIHNhbXBsZSBub25jZQ=="));
         let expected: RequestedSubprotocols = smallvec::smallvec![
             BytesStr::from_static("chat"),
             BytesStr::from_static("superchat"),
         ];
-        assert_eq!(meta.request.requested_subprotocols, expected);
-        assert!(meta.request.per_message_deflate);
+        assert_eq!(meta.websocket.request.requested_subprotocols, expected);
+        assert!(meta.websocket.request.per_message_deflate);
     }
 }

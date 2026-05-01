@@ -3,11 +3,12 @@ mod proxy;
 use std::borrow::Cow;
 
 use http::Method;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple};
+use memchr::memchr;
+use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use pyo3::{ffi, intern, prelude::*};
 
 use crate::hpack::BytesStr;
-use crate::http::types::{HttpVersion, RequestHeaders};
+use crate::http::types::{HttpVersion, KnownRequestHeaderName, RequestHeaderName, RequestHeaders};
 use crate::python::{py_cached_dict, py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
 pub(crate) use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
@@ -33,13 +34,21 @@ const HEX_NIBBLE_TABLE: [u8; 256] = {
 
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
-    let mut first_escape = 0;
-    while first_escape < bytes.len() && bytes[first_escape] != b'%' {
-        first_escape += 1;
-    }
-    if first_escape == bytes.len() {
-        return Cow::Borrowed(raw_path);
-    }
+    let first_escape = if bytes.len() <= 16 {
+        let mut index = 0;
+        while index < bytes.len() && bytes[index] != b'%' {
+            index += 1;
+        }
+        if index == bytes.len() {
+            return Cow::Borrowed(raw_path);
+        }
+        index
+    } else {
+        let Some(index) = memchr(b'%', bytes) else {
+            return Cow::Borrowed(raw_path);
+        };
+        index
+    };
 
     let mut out = None::<Vec<u8>>;
     let mut index = first_escape;
@@ -178,22 +187,26 @@ pub(crate) fn headers_to_python<'py>(
     py: Python<'py>,
     headers: &RequestHeaders,
 ) -> PyResult<Bound<'py, PyList>> {
-    // SAFETY: the GIL is held by `py`; the list is allocated to the exact final
-    // length; each slot is written exactly once with a freshly owned tuple
-    // reference; and `PyTuple::new` fully initializes each tuple before the
-    // tuple pointer is transferred into the list.
+    // SAFETY: the GIL is held by `py`; the list and each tuple are allocated to
+    // their exact final length; each slot is written exactly once with a fresh
+    // owned reference; and ownership is transferred immediately to the
+    // containing Python object.
     unsafe {
         let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(headers.len().cast_signed()))?
             .cast_into_unchecked::<PyList>();
 
         for (index, header) in headers.iter().enumerate() {
-            let tuple = PyTuple::new(
-                py,
-                [
-                    header_name_to_python(py, header.0.as_str()).into_any(),
-                    PyBytes::new(py, header.1.as_bytes()).into_any(),
-                ],
-            )?;
+            let tuple = Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(2))?;
+            ffi::PyTuple_SET_ITEM(
+                tuple.as_ptr(),
+                0,
+                header_name_to_python(py, &header.0).unbind().into_ptr(),
+            );
+            ffi::PyTuple_SET_ITEM(
+                tuple.as_ptr(),
+                1,
+                PyBytes::new(py, header.1.as_bytes()).unbind().into_ptr(),
+            );
             ffi::PyList_SET_ITEM(
                 list.as_ptr(),
                 index.cast_signed(),
@@ -213,34 +226,42 @@ fn scope_type_to_python<const IS_HTTP: bool>(py: Python<'_>) -> Bound<'_, PyStri
     }
 }
 
-fn header_name_to_python<'py>(py: Python<'py>, name: &str) -> Bound<'py, PyBytes> {
+fn header_name_to_python<'py>(py: Python<'py>, name: &RequestHeaderName) -> Bound<'py, PyBytes> {
+    match name {
+        RequestHeaderName::Known(name) => known_header_name_to_python(py, *name),
+        RequestHeaderName::Other(name) => PyBytes::new(py, name.as_ref()),
+    }
+}
+
+fn known_header_name_to_python<'py>(
+    py: Python<'py>,
+    name: KnownRequestHeaderName,
+) -> Bound<'py, PyBytes> {
     py_match_cached_bytes!(
         py,
         name,
-        [
-            "accept-encoding",
-            "accept-language",
-            "accept",
-            "authorization",
-            "cache-control",
-            "connection",
-            "content-length",
-            "content-type",
-            "cookie",
-            "forwarded",
-            "host",
-            "sec-websocket-extensions",
-            "sec-websocket-key",
-            "sec-websocket-protocol",
-            "sec-websocket-version",
-            "upgrade",
-            "user-agent",
-            "x-forwarded-for",
-            "x-forwarded-host",
-            "x-forwarded-port",
-            "x-forwarded-prefix",
-            "x-forwarded-proto",
-        ]
+        {
+            KnownRequestHeaderName::Host => b"host",
+            KnownRequestHeaderName::Connection => b"connection",
+            KnownRequestHeaderName::ProxyConnection => b"proxy-connection",
+            KnownRequestHeaderName::KeepAlive => b"keep-alive",
+            KnownRequestHeaderName::Upgrade => b"upgrade",
+            KnownRequestHeaderName::Te => b"te",
+            KnownRequestHeaderName::ContentLength => b"content-length",
+            KnownRequestHeaderName::TransferEncoding => b"transfer-encoding",
+            KnownRequestHeaderName::Expect => b"expect",
+            KnownRequestHeaderName::Http2Settings => b"http2-settings",
+            KnownRequestHeaderName::Forwarded => b"forwarded",
+            KnownRequestHeaderName::XForwardedFor => b"x-forwarded-for",
+            KnownRequestHeaderName::XForwardedProto => b"x-forwarded-proto",
+            KnownRequestHeaderName::XForwardedHost => b"x-forwarded-host",
+            KnownRequestHeaderName::XForwardedPort => b"x-forwarded-port",
+            KnownRequestHeaderName::XForwardedPrefix => b"x-forwarded-prefix",
+            KnownRequestHeaderName::SecWebSocketVersion => b"sec-websocket-version",
+            KnownRequestHeaderName::SecWebSocketKey => b"sec-websocket-key",
+            KnownRequestHeaderName::SecWebSocketProtocol => b"sec-websocket-protocol",
+            KnownRequestHeaderName::SecWebSocketExtensions => b"sec-websocket-extensions",
+        }
     )
 }
 

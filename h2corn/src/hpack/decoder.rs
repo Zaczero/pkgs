@@ -18,7 +18,6 @@ pub struct Decoder {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DecoderError {
     InvalidRepresentation,
-    InvalidIntegerPrefix,
     InvalidTableIndex,
     InvalidHuffmanCode,
     InvalidUtf8,
@@ -273,9 +272,7 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
     const VARINT_MASK: u8 = 0b0111_1111;
     const VARINT_FLAG: u8 = 0b1000_0000;
 
-    if !(1..=8).contains(&PREFIX_SIZE) {
-        return Err(DecoderError::InvalidIntegerPrefix);
-    }
+    debug_assert!((1..=8).contains(&PREFIX_SIZE));
     if !buf.has_remaining() {
         return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
     }

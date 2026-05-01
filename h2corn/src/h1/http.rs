@@ -15,6 +15,7 @@ use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 use crate::console::ResponseLogState;
 use crate::error::H2CornError;
+use crate::http::digits;
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseStart};
@@ -107,7 +108,6 @@ where
         ) {
             self.response_log.sent_body(body.len());
         }
-        start.canonicalize_known_length(body.len());
         start.apply_default_headers(self.config);
         let (status, headers) = start.into_status_headers();
         write_final_response(self.writer, status, headers, body, self.close_after).await
@@ -381,14 +381,43 @@ pub(super) fn append_header_lines(dst: &mut ResponseBuf, headers: &ResponseHeade
 
 fn append_status_line(dst: &mut ResponseBuf, status: HttpStatusCode) {
     dst.extend_from_slice(b"HTTP/1.1 ");
-    append_decimal_usize(dst, usize::from(status));
+    append_status_code(dst, status);
     dst.push(b' ');
-    if let Ok(status_code) = StandardStatusCode::from_u16(status)
-        && let Some(reason) = status_code.canonical_reason()
-    {
+    if let Some(reason) = reason_phrase(status) {
         dst.extend_from_slice(reason.as_bytes());
     }
     dst.extend_from_slice(b"\r\n");
+}
+
+fn reason_phrase(status: HttpStatusCode) -> Option<&'static str> {
+    match status {
+        status_code::SWITCHING_PROTOCOLS => Some("Switching Protocols"),
+        status_code::OK => Some("OK"),
+        status_code::NO_CONTENT => Some("No Content"),
+        status_code::PARTIAL_CONTENT => Some("Partial Content"),
+        status_code::NOT_MODIFIED => Some("Not Modified"),
+        status_code::BAD_REQUEST => Some("Bad Request"),
+        status_code::FORBIDDEN => Some("Forbidden"),
+        status_code::NOT_FOUND => Some("Not Found"),
+        status_code::PAYLOAD_TOO_LARGE => Some("Payload Too Large"),
+        status_code::URI_TOO_LONG => Some("URI Too Long"),
+        status_code::UPGRADE_REQUIRED => Some("Upgrade Required"),
+        status_code::REQUEST_HEADER_FIELDS_TOO_LARGE => Some("Request Header Fields Too Large"),
+        status_code::INTERNAL_SERVER_ERROR => Some("Internal Server Error"),
+        status_code::NOT_IMPLEMENTED => Some("Not Implemented"),
+        status_code::SERVICE_UNAVAILABLE => Some("Service Unavailable"),
+        _ => StandardStatusCode::from_u16(status)
+            .ok()
+            .and_then(|status_code| status_code.canonical_reason()),
+    }
+}
+
+fn append_status_code(dst: &mut ResponseBuf, status: HttpStatusCode) {
+    if (100..=999).contains(&status) {
+        dst.extend_from_slice(&digits::three_digit_bytes(status));
+    } else {
+        append_decimal_usize(dst, usize::from(status));
+    }
 }
 
 fn append_response_headers(
@@ -410,6 +439,23 @@ fn append_response_headers(
         dst.extend_from_slice(b"Connection: close\r\n");
     }
     dst.extend_from_slice(b"\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reason_phrase;
+    use crate::http::types::status_code;
+
+    #[test]
+    fn reason_phrase_keeps_common_fast_path_and_fallback() {
+        assert_eq!(reason_phrase(status_code::OK), Some("OK"));
+        assert_eq!(
+            reason_phrase(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE),
+            Some("Request Header Fields Too Large")
+        );
+        assert_eq!(reason_phrase(418), Some("I'm a teapot"));
+        assert_eq!(reason_phrase(999), None);
+    }
 }
 
 fn append_header_line(dst: &mut ResponseBuf, name: &[u8], value: &[u8]) {

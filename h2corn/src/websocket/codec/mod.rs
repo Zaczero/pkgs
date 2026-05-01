@@ -10,7 +10,7 @@ mod decode;
 mod frame;
 mod mask;
 
-const MAX_CLOSE_REASON_LEN: usize = 123;
+pub(crate) const MAX_CLOSE_REASON_LEN: usize = 123;
 const FIN_MASK: u8 = 0x80;
 const RSV1_MASK: u8 = 0x40;
 const RSV23_MASK: u8 = 0x30;

@@ -312,8 +312,9 @@ where
 
         let remaining = streamer.remaining();
         let chunk_len = context.next_body_write_len(limit, remaining.len());
-        let end_stream =
-            streamer.end_stream && streamer.is_drained() && chunk_len == remaining.len();
+        let end_stream = streamer.end_stream
+            && streamer.sendfile_remaining_len() == 0
+            && chunk_len == remaining.len();
         write_data_chunk(
             context.writer,
             stream_id,
@@ -393,8 +394,7 @@ where
         stream.restore_body(body);
         if let Some(trailers) = stream.take_trailers_if_body_idle() {
             let block = header_state.encode_trailers(&trailers)?;
-            write_header_block(writer, stream_id, true, block.as_ref(), peer_max_frame_size)
-                .await?;
+            write_header_block(writer, stream_id, true, block, peer_max_frame_size).await?;
             stream.finish(stream_id, response_closes);
         }
 
@@ -558,6 +558,86 @@ mod tests {
         }
 
         stream_ids
+    }
+
+    fn parse_data_frames(bytes: &[u8]) -> Vec<(usize, u8, u32)> {
+        let mut cursor = 0;
+        let mut frames = Vec::new();
+
+        while cursor + 9 <= bytes.len() {
+            let len = ((bytes[cursor] as usize) << 16)
+                | ((bytes[cursor + 1] as usize) << 8)
+                | bytes[cursor + 2] as usize;
+            let frame_type = bytes[cursor + 3];
+            let flags = bytes[cursor + 4];
+            let stream_id = u32::from_be_bytes([
+                bytes[cursor + 5],
+                bytes[cursor + 6],
+                bytes[cursor + 7],
+                bytes[cursor + 8],
+            ]) & frame::STREAM_ID_MASK;
+
+            if frame_type == 0 {
+                frames.push((len, flags, stream_id));
+            }
+
+            cursor += 9 + len;
+        }
+
+        frames
+    }
+
+    #[tokio::test]
+    async fn pathsend_final_buffered_chunk_carries_end_stream() {
+        let stream_id = StreamId::new(1).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("h2corn-flush-pathsend-{}", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let file = File::open(&path).await.unwrap();
+
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let stream = writer_stream(
+            &mut streams,
+            stream_id,
+            i64::from(INITIAL_STREAM_WINDOW_SIZE),
+        );
+        stream.open_response(false).unwrap();
+        stream
+            .queue_path(PathStreamer::new(file, b"abc".len(), true))
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let recording = RecordingWriter::default();
+        let mut writer = BufWriter::new(recording);
+
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            INITIAL_STREAM_WINDOW_SIZE as usize,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        let frames = parse_data_frames(&writer.get_ref().bytes);
+        assert_eq!(
+            frames,
+            vec![(b"abc".len(), FrameFlags::END_STREAM.bits(), stream_id.get())]
+        );
+        assert!(ready_streams.is_empty());
+        assert!(streams.is_empty());
+        assert_eq!(response_closes.as_slice(), &[stream_id]);
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

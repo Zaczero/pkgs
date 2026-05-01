@@ -7,7 +7,7 @@ use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 use crate::http::header::{
     ResponseHeaderScan, apply_default_response_headers_with_scan,
-    canonicalize_fixed_length_response_headers_with_scan, inspect_response_headers,
+    canonicalize_fixed_length_response_headers_with_scan, inspect_response_default_headers,
 };
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 
@@ -38,7 +38,7 @@ pub(crate) struct ResponseStart {
 
 impl ResponseStart {
     pub(crate) fn new(status: HttpStatusCode, headers: ResponseHeaders) -> Self {
-        let scan = inspect_response_headers(&headers);
+        let scan = inspect_response_default_headers(&headers);
         Self {
             status,
             headers,
@@ -50,7 +50,8 @@ impl ResponseStart {
         self.status
     }
 
-    pub(crate) fn content_length_hint(&self) -> Option<usize> {
+    pub(crate) fn content_length_hint(&mut self) -> Option<usize> {
+        self.scan.ensure_content_length_scanned(&self.headers);
         self.scan.content_length()
     }
 
@@ -59,6 +60,7 @@ impl ResponseStart {
     }
 
     pub(crate) fn canonicalize_known_length(&mut self, len: usize) {
+        self.scan.ensure_content_length_scanned(&self.headers);
         canonicalize_fixed_length_response_headers_with_scan(
             &mut self.headers,
             &mut self.scan,
@@ -110,7 +112,7 @@ mod tests {
 
     #[test]
     fn response_start_keeps_content_length_hint() {
-        let start = ResponseStart::new(
+        let mut start = ResponseStart::new(
             200,
             vec![(
                 Bytes::from_static(b"content-length").into(),
@@ -150,6 +152,25 @@ mod tests {
                 .filter(|(name, _)| name.as_bytes() == b"content-length")
                 .count(),
             1,
+        );
+    }
+
+    #[test]
+    fn response_start_adds_missing_content_length() {
+        let mut start = ResponseStart::new(
+            200,
+            vec![(
+                Bytes::from_static(b"content-type").into(),
+                Bytes::from_static(b"text/plain").into(),
+            )],
+        );
+
+        start.canonicalize_known_length(5);
+        let (_, headers) = start.into_status_headers();
+
+        assert_eq!(
+            http::header::inspect_response_headers(&headers).content_length(),
+            Some(5)
         );
     }
 }
