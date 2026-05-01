@@ -44,7 +44,7 @@ pub(super) struct StreamWriteState {
 }
 
 impl StreamWriteState {
-    pub(super) fn new(initial_window: i64) -> Self {
+    pub(super) const fn new(initial_window: i64) -> Self {
         Self {
             send_window: initial_window,
             scheduled: false,
@@ -67,7 +67,7 @@ impl StreamWriteState {
         Ok(())
     }
 
-    pub(super) fn is_closed(&self) -> bool {
+    pub(super) const fn is_closed(&self) -> bool {
         matches!(self.response, ResponseWriteState::Closed)
     }
 
@@ -115,7 +115,7 @@ impl StreamWriteState {
         }
     }
 
-    pub(super) fn take_trailers_if_body_idle(&mut self) -> Option<ResponseHeaders> {
+    pub(super) const fn take_trailers_if_body_idle(&mut self) -> Option<ResponseHeaders> {
         match &mut self.response {
             ResponseWriteState::Open { body, trailers } if body.is_idle() => trailers.take(),
             ResponseWriteState::Open { .. }
@@ -198,7 +198,7 @@ impl StreamWriteState {
 }
 
 impl StreamBodyState {
-    pub(super) fn is_idle(&self) -> bool {
+    pub(super) const fn is_idle(&self) -> bool {
         matches!(self, Self::Idle)
     }
 
@@ -225,7 +225,7 @@ impl PendingChunk {
         &self.bytes.as_ref()[self.offset..]
     }
 
-    pub(super) fn consume(&mut self, len: usize) {
+    pub(super) const fn consume(&mut self, len: usize) {
         self.offset += len;
     }
 

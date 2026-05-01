@@ -1,10 +1,10 @@
 include!(concat!(env!("OUT_DIR"), "/srgb_tables.rs"));
 
-pub(crate) fn srgb_u8_to_linear(v: u8) -> f32 {
+pub const fn srgb_u8_to_linear(v: u8) -> f32 {
     SRGB_U8_TO_LINEAR[v as usize]
 }
 
-pub(crate) fn linear_to_srgb_u8(v: f32) -> u8 {
+pub fn linear_to_srgb_u8(v: f32) -> u8 {
     if v <= 0.0 {
         return 0;
     }
@@ -18,6 +18,6 @@ pub(crate) fn linear_to_srgb_u8(v: f32) -> u8 {
     // visually indistinguishable for BlurHash previews, but not byte-identical
     // to reference implementations.
     let len = LINEAR_TO_SRGB_U8.len();
-    let idx = ((v * (len as f32 - 1.0)) + 0.5) as usize;
+    let idx = v.mul_add(len as f32 - 1.0, 0.5) as usize;
     LINEAR_TO_SRGB_U8[idx.min(len - 1)]
 }

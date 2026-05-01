@@ -42,7 +42,7 @@ pub fn len(name: &BytesStr, value: &Bytes) -> usize {
 }
 
 impl Header {
-    pub fn new(name: Bytes, value: Bytes) -> Result<Header, DecoderError> {
+    pub fn new(name: Bytes, value: Bytes) -> Result<Self, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
@@ -50,27 +50,27 @@ impl Header {
             match name {
                 b"authority" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Authority(value))
+                    Ok(Self::Authority(value))
                 }
                 b"method" => {
                     let method = parse_request_method(&value)?;
-                    Ok(Header::Method(method))
+                    Ok(Self::Method(method))
                 }
                 b"scheme" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Scheme(value))
+                    Ok(Self::Scheme(value))
                 }
                 b"path" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Path(value))
+                    Ok(Self::Path(value))
                 }
                 b"protocol" => {
                     let value = Protocol::try_from(value)?;
-                    Ok(Header::Protocol(value))
+                    Ok(Self::Protocol(value))
                 }
                 b"status" => {
                     let status = StatusCode::from_bytes(&value)?;
-                    Ok(Header::Status(status))
+                    Ok(Self::Status(status))
                 }
                 _ => Err(DecoderError::InvalidPseudoheader),
             }
@@ -82,7 +82,7 @@ impl Header {
                 return Err(DecoderError::InvalidUtf8);
             }
 
-            Ok(Header::Field {
+            Ok(Self::Field {
                 // SAFETY: `lowercase_header_name_is_valid` accepted `name`, and
                 // HTTP header name bytes are restricted to ASCII token bytes.
                 name: unsafe { BytesStr::from_validated_ascii(name) },
@@ -93,25 +93,25 @@ impl Header {
 
     pub fn len(&self) -> usize {
         match self {
-            Header::Field { name, value } => len(name, value),
-            Header::Authority(v) => 32 + 10 + v.len(),
-            Header::Method(v) => 32 + 7 + v.as_ref().len(),
-            Header::Scheme(v) => 32 + 7 + v.len(),
-            Header::Path(v) => 32 + 5 + v.len(),
-            Header::Protocol(v) => 32 + 9 + v.as_str().len(),
-            Header::Status(_) => 32 + 7 + 3,
+            Self::Field { name, value } => len(name, value),
+            Self::Authority(v) => 32 + 10 + v.len(),
+            Self::Method(v) => 32 + 7 + v.as_ref().len(),
+            Self::Scheme(v) => 32 + 7 + v.len(),
+            Self::Path(v) => 32 + 5 + v.len(),
+            Self::Protocol(v) => 32 + 9 + v.as_str().len(),
+            Self::Status(_) => 32 + 7 + 3,
         }
     }
 
     pub fn owned_name(&self) -> OwnedName {
         match self {
-            Header::Field { name, .. } => OwnedName::Field(name.clone()),
-            Header::Authority(..) => OwnedName::Authority,
-            Header::Method(..) => OwnedName::Method,
-            Header::Scheme(..) => OwnedName::Scheme,
-            Header::Path(..) => OwnedName::Path,
-            Header::Protocol(..) => OwnedName::Protocol,
-            Header::Status(..) => OwnedName::Status,
+            Self::Field { name, .. } => OwnedName::Field(name.clone()),
+            Self::Authority(..) => OwnedName::Authority,
+            Self::Method(..) => OwnedName::Method,
+            Self::Scheme(..) => OwnedName::Scheme,
+            Self::Path(..) => OwnedName::Path,
+            Self::Protocol(..) => OwnedName::Protocol,
+            Self::Status(..) => OwnedName::Status,
         }
     }
 }
@@ -139,7 +139,7 @@ impl OwnedName {
 
 impl BytesStr {
     pub(crate) const fn from_static_bytes(value: &'static [u8]) -> Self {
-        BytesStr(Bytes::from_static(value))
+        Self(Bytes::from_static(value))
     }
 
     pub(crate) const fn from_static(value: &'static str) -> Self {
@@ -189,13 +189,13 @@ impl AsRef<str> for BytesStr {
 
 impl From<&str> for BytesStr {
     fn from(value: &str) -> Self {
-        BytesStr(Bytes::copy_from_slice(value.as_bytes()))
+        Self(Bytes::copy_from_slice(value.as_bytes()))
     }
 }
 
 impl From<String> for BytesStr {
     fn from(value: String) -> Self {
-        BytesStr(Bytes::from(value))
+        Self(Bytes::from(value))
     }
 }
 
@@ -204,7 +204,7 @@ impl TryFrom<Bytes> for BytesStr {
 
     fn try_from(bytes: Bytes) -> Result<Self, Self::Error> {
         str::from_utf8(bytes.as_ref())?;
-        Ok(BytesStr(bytes))
+        Ok(Self(bytes))
     }
 }
 

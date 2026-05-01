@@ -2,6 +2,7 @@
 #![feature(portable_simd)]
 
 mod base83;
+pub(crate) mod color;
 mod cos;
 mod decode;
 mod encode;

@@ -64,7 +64,7 @@ pub enum TrustedPeer {
 }
 
 impl TrustedPeer {
-    fn matches_unix(&self) -> bool {
+    const fn matches_unix(&self) -> bool {
         matches!(self, Self::Any | Self::Unix)
     }
 
@@ -141,6 +141,9 @@ impl ConnectionInfo {
         proxy_headers_trusted: bool,
     ) -> Self {
         Self {
+            actual_peer,
+            actual_server,
+            proxy_headers_trusted,
             client: match &actual_peer {
                 ConnectionPeer::Tcp(peer) => Some(ClientAddr {
                     host: peer.ip().to_string().into(),
@@ -148,9 +151,6 @@ impl ConnectionInfo {
                 }),
                 ConnectionPeer::Unix => None,
             },
-            actual_peer,
-            actual_server,
-            proxy_headers_trusted,
             server: None,
         }
     }
@@ -229,7 +229,7 @@ where
     Ok(())
 }
 
-pub(crate) async fn read_proxy_v2<R>(
+pub async fn read_proxy_v2<R>(
     reader: &mut FrameReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
@@ -258,7 +258,7 @@ where
     Ok(proxy)
 }
 
-pub(crate) async fn read_proxy_v1<R>(
+pub async fn read_proxy_v1<R>(
     reader: &mut FrameReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
@@ -291,7 +291,7 @@ where
     }
 }
 
-pub(crate) async fn read_preamble_protocol<R, const HTTP1: bool>(
+pub async fn read_preamble_protocol<R, const HTTP1: bool>(
     reader: &mut FrameReader<R>,
 ) -> Result<DetectedProtocol, H2CornError>
 where

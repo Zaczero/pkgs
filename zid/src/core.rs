@@ -1,6 +1,6 @@
-use std::hint;
 use rand::RngCore;
 use std::cell::UnsafeCell;
+use std::hint;
 use std::hint::{likely, unlikely};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,7 +50,7 @@ fn time() -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn make_zid(time: u64, sequence: u16) -> u64 {
+const fn make_zid(time: u64, sequence: u16) -> u64 {
     (time << 16) | (sequence as u64)
 }
 
@@ -65,7 +65,7 @@ fn random_start_seq(max_start: u16) -> u16 {
     }
 }
 
-pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
+pub fn reserve_sequences(additional: u16) -> (u64, u16) {
     let now = time();
     let max_start = u16::MAX - additional;
     loop {
@@ -75,9 +75,7 @@ pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
 
         let mut zid_time = last_time.max(now);
 
-        let start_seq = if zid_time != last_time {
-            random_start_seq(max_start)
-        } else {
+        let start_seq = if zid_time == last_time {
             match last_seq.checked_add(1) {
                 Some(next_seq) if next_seq <= max_start => next_seq,
                 _ => {
@@ -85,6 +83,8 @@ pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
                     random_start_seq(max_start)
                 }
             }
+        } else {
+            random_start_seq(max_start)
         };
 
         let end_seq = (u32::from(start_seq) + u32::from(additional)) as u16;
@@ -101,15 +101,15 @@ pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
     }
 }
 
-pub(crate) fn zid() -> u64 {
+pub fn zid() -> u64 {
     let (time, seq) = reserve_sequences(0);
     make_zid(time, seq)
 }
 
-pub(crate) fn zid_from_time_and_sequence(time: u64, sequence: u16) -> u64 {
+pub const fn zid_from_time_and_sequence(time: u64, sequence: u16) -> u64 {
     make_zid(time, sequence)
 }
 
-pub(crate) fn parse_zid_timestamp(zid: u64) -> u64 {
+pub const fn parse_zid_timestamp(zid: u64) -> u64 {
     zid >> 16
 }

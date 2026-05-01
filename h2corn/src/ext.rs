@@ -9,7 +9,7 @@ use crate::hpack::BytesStr;
 ///
 /// [Extended CONNECT Protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Protocol(BytesStr);
+pub struct Protocol(BytesStr);
 
 impl Protocol {
     /// Returns a str representation of the header.

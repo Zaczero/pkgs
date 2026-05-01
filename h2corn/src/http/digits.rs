@@ -9,13 +9,13 @@ const DIGIT_PAIRS: [u8; 200] = {
     out
 };
 
-pub(crate) fn two_digit_bytes(value: usize) -> [u8; 2] {
+pub fn two_digit_bytes(value: usize) -> [u8; 2] {
     debug_assert!(value < 100);
     let offset = value * 2;
     [DIGIT_PAIRS[offset], DIGIT_PAIRS[offset + 1]]
 }
 
-pub(crate) fn three_digit_bytes(value: u16) -> [u8; 3] {
+pub fn three_digit_bytes(value: u16) -> [u8; 3] {
     debug_assert!((100..=999).contains(&value));
     let suffix = two_digit_bytes(usize::from(value % 100));
     [b'0' + (value / 100) as u8, suffix[0], suffix[1]]

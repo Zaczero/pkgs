@@ -57,13 +57,13 @@ const HEADER_NAME_TABLE: [u8; 256] = {
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ConnectionHeaderTokens {
+pub struct ConnectionHeaderTokens {
     pub close: bool,
     pub upgrade: bool,
     pub http2_settings: bool,
 }
 
-pub(crate) fn last_csv_token(value: &str) -> &str {
+pub fn last_csv_token(value: &str) -> &str {
     let bytes = value.as_bytes();
     let mut in_quotes = false;
     let mut escaped = false;
@@ -89,10 +89,13 @@ pub(crate) fn last_csv_token(value: &str) -> &str {
         index = current + 1;
     }
 
-    last_delimiter.map_or(value.trim_ascii(), |index| value[index + 1..].trim_ascii())
+    last_delimiter.map_or_else(
+        || value.trim_ascii(),
+        |index| value[index + 1..].trim_ascii(),
+    )
 }
 
-pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     iter::from_fn(move || {
         let current = rest?;
@@ -111,14 +114,14 @@ pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-pub(crate) fn header_contains_token(value: &[u8], token: &[u8]) -> bool {
+pub fn header_contains_token(value: &[u8], token: &[u8]) -> bool {
     split_commas_bytes(value).any(|current| current.trim_ascii().eq_ignore_ascii_case(token))
 }
 
-pub(crate) fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTokens {
+pub fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTokens {
     let mut tokens = ConnectionHeaderTokens::default();
 
-    for current in split_commas_bytes(value).map(|current| current.trim_ascii()) {
+    for current in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
         tokens.close |= current.eq_ignore_ascii_case(b"close");
         tokens.upgrade |= current.eq_ignore_ascii_case(b"upgrade");
         tokens.http2_settings |= current.eq_ignore_ascii_case(b"http2-settings");
@@ -130,7 +133,7 @@ pub(crate) fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTo
     tokens
 }
 
-pub(crate) fn header_is_single_token(value: &[u8], token: &[u8]) -> bool {
+pub fn header_is_single_token(value: &[u8], token: &[u8]) -> bool {
     let mut found = None;
     for current in split_commas_bytes(value) {
         let current = current.trim_ascii();
@@ -145,7 +148,7 @@ pub(crate) fn header_is_single_token(value: &[u8], token: &[u8]) -> bool {
     found.is_some_and(|current| current.eq_ignore_ascii_case(token))
 }
 
-pub(crate) fn parse_content_length_header(value: &[u8]) -> Option<u64> {
+pub fn parse_content_length_header(value: &[u8]) -> Option<u64> {
     parse_pos::<u64, false>(value.trim_ascii()).ok()
 }
 
@@ -158,14 +161,14 @@ enum ResponseContentLength {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ResponseHeaderScan {
+pub struct ResponseHeaderScan {
     pub has_server: bool,
     pub has_date: bool,
     content_length: Option<ResponseContentLength>,
 }
 
 impl ResponseHeaderScan {
-    pub(crate) fn content_length(self) -> Option<usize> {
+    pub(crate) const fn content_length(self) -> Option<usize> {
         match self
             .content_length
             .expect("response content-length must be scanned before reading")
@@ -182,7 +185,7 @@ impl ResponseHeaderScan {
     }
 }
 
-pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+pub fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
     let mut scan = ResponseHeaderScan::default();
 
     for (name, _) in headers {
@@ -196,7 +199,7 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
     scan
 }
 
-pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+pub fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
     let mut scan = inspect_response_default_headers(headers);
     scan.ensure_content_length_scanned(headers);
     scan
@@ -225,7 +228,7 @@ fn inspect_response_content_length(headers: &ResponseHeaders) -> ResponseContent
     content_length
 }
 
-pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
+pub fn canonicalize_fixed_length_response_headers_with_scan(
     headers: &mut ResponseHeaders,
     scan: &mut ResponseHeaderScan,
     len: usize,
@@ -333,7 +336,7 @@ fn civil_from_days(days: i64) -> (u32, u32, u32) {
     (year as u32, month as u32, day as u32)
 }
 
-pub(crate) fn apply_default_response_headers_with_scan(
+pub fn apply_default_response_headers_with_scan(
     headers: &mut ResponseHeaders,
     scan: &mut ResponseHeaderScan,
     config: &ServerConfig,
@@ -358,17 +361,17 @@ pub(crate) fn apply_default_response_headers_with_scan(
         ));
         scan.has_date = true;
     }
-    for (name, value) in defaults.extra_headers.iter() {
+    for (name, value) in &defaults.extra_headers {
         headers.push((Bytes::clone(name).into(), Bytes::clone(value).into()));
     }
 }
 
-pub(crate) fn apply_default_response_headers(headers: &mut ResponseHeaders, config: &ServerConfig) {
+pub fn apply_default_response_headers(headers: &mut ResponseHeaders, config: &ServerConfig) {
     let mut scan = inspect_response_headers(headers);
     apply_default_response_headers_with_scan(headers, &mut scan, config);
 }
 
-pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
+pub fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     if name.is_empty() {
         return None;
     }
@@ -384,7 +387,7 @@ pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     Some(needs_lowercase)
 }
 
-pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
+pub fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     if name.is_empty() {
         return false;
     }
@@ -399,23 +402,23 @@ pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     true
 }
 
-pub(crate) fn protocol_is_websocket(protocol: &Protocol) -> bool {
+pub fn protocol_is_websocket(protocol: &Protocol) -> bool {
     protocol.as_str() == "websocket"
 }
 
 #[derive(Debug)]
-pub(crate) struct ForwardedView<'a> {
+pub struct ForwardedView<'a> {
     pub(crate) client_host: Option<&'a str>,
     pub(crate) proto: Option<&'a str>,
     pub(crate) host: Option<(&'a str, Option<u16>)>,
 }
 
-pub(crate) fn header_value_text(value: &RequestHeaderValue) -> Option<&str> {
+pub fn header_value_text(value: &RequestHeaderValue) -> Option<&str> {
     let value = str::from_utf8(value.as_bytes()).ok()?.trim_ascii();
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
+pub fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
     let value = last_csv_token(value);
     let mut client_host = None;
     let mut proto = None;
@@ -443,10 +446,7 @@ pub(crate) fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
     })
 }
 
-pub(crate) fn parse_x_forwarded_for_value<'a>(
-    value: &'a str,
-    config: &ServerConfig,
-) -> Option<&'a str> {
+pub fn parse_x_forwarded_for_value<'a>(value: &'a str, config: &ServerConfig) -> Option<&'a str> {
     let mut furthest_host = None;
 
     for host in value.rsplit(',').map(normalize_forwarded_value) {
@@ -463,7 +463,7 @@ pub(crate) fn parse_x_forwarded_for_value<'a>(
     furthest_host
 }
 
-pub(crate) fn normalize_scheme(scheme: &str) -> Cow<'_, str> {
+pub fn normalize_scheme(scheme: &str) -> Cow<'_, str> {
     if !scheme.as_bytes().iter().any(u8::is_ascii_uppercase) {
         return Cow::Borrowed(scheme);
     }
@@ -471,7 +471,7 @@ pub(crate) fn normalize_scheme(scheme: &str) -> Cow<'_, str> {
     Cow::Owned(scheme.to_ascii_lowercase())
 }
 
-pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
+pub fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
     if let Some(value) = value.strip_prefix('[') {
         let (host, rest) = value.split_once(']')?;
         if host.is_empty() {

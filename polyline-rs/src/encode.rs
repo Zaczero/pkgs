@@ -33,16 +33,13 @@ fn encode_value(out: &mut Vec<u8>, delta: i32) {
     }
 }
 
-pub(crate) fn encode<const LATLON: bool>(
+pub fn encode<const LATLON: bool>(
     coordinates: &Bound<'_, PyAny>,
     precision: i32,
 ) -> PyResult<String> {
     let scale = 10_f64.powi(precision);
 
-    let capacity = match coordinates.len() {
-        Ok(n) => n * 12,
-        Err(_) => 0,
-    };
+    let capacity = coordinates.len().map_or(0, |n| n * 12);
     let mut out = Vec::with_capacity(capacity);
     let mut last_lat = 0;
     let mut last_lon = 0;

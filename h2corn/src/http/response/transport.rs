@@ -4,7 +4,7 @@ use crate::console::ResponseLogState;
 use crate::error::H2CornError;
 use crate::http::types::ResponseHeaders;
 
-pub(crate) trait HttpResponseTransport {
+pub trait HttpResponseTransport {
     async fn send_final_response(
         &mut self,
         start: ResponseStart,

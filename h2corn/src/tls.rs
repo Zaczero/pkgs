@@ -14,10 +14,10 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::config::{ClientCertMode, TlsConfig};
 
-pub(crate) const ALPN_H2: &[u8] = b"h2";
-pub(crate) const ALPN_HTTP1: &[u8] = b"http/1.1";
+pub const ALPN_H2: &[u8] = b"h2";
+pub const ALPN_HTTP1: &[u8] = b"http/1.1";
 
-pub(crate) fn build_tls_config(
+pub fn build_tls_config(
     certfile: &Path,
     keyfile: &Path,
     ca_certs: Option<&Path>,

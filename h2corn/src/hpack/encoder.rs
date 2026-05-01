@@ -38,7 +38,7 @@ enum LiteralMode {
 }
 
 impl LiteralMode {
-    fn prefix(self) -> (u8, u8) {
+    const fn prefix(self) -> (u8, u8) {
         match self {
             Self::IncrementalIndexing => (6, 0x40),
             Self::WithoutIndexing => (4, 0x00),
@@ -54,11 +54,11 @@ enum LiteralName<'a> {
 }
 
 impl Encoder {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::with_max_size(DEFAULT_HEADER_TABLE_SIZE)
     }
 
-    fn with_max_size(max_size: usize) -> Self {
+    const fn with_max_size(max_size: usize) -> Self {
         Self {
             table: DynamicTable::new(max_size),
             committed_max_size: max_size,
@@ -165,7 +165,7 @@ impl Default for Encoder {
 }
 
 impl DynamicTable {
-    fn new(max_size: usize) -> Self {
+    const fn new(max_size: usize) -> Self {
         Self {
             entries: Vec::new(),
             start: 0,
@@ -262,7 +262,7 @@ fn should_index_header(
     size <= max_size && size.saturating_mul(4) <= max_size.saturating_mul(3)
 }
 
-fn dynamic_entry_size(name_len: usize, value_len: usize) -> usize {
+const fn dynamic_entry_size(name_len: usize, value_len: usize) -> usize {
     32 + name_len + value_len
 }
 

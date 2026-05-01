@@ -8,7 +8,7 @@ use crate::websocket::{
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ProxyHeaderSlots {
+pub struct ProxyHeaderSlots {
     pub(crate) forwarded: Option<usize>,
     pub(crate) x_forwarded_for: Option<usize>,
     pub(crate) x_forwarded_proto: Option<usize>,
@@ -18,7 +18,7 @@ pub(crate) struct ProxyHeaderSlots {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct WebSocketHandshakeMeta {
+pub struct WebSocketHandshakeMeta {
     pub(crate) key: Option<[u8; WEBSOCKET_KEY_LEN]>,
     pub(crate) key_duplicate: bool,
     pub(crate) request: WebSocketRequestMeta,
@@ -34,7 +34,7 @@ fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct RequestHeaderMeta {
+pub struct RequestHeaderMeta {
     pub(crate) accepts_trailers: bool,
     pub(crate) content_length: Option<u64>,
     pub(crate) websocket: WebSocketHandshakeMeta,
@@ -101,7 +101,7 @@ fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
         value
             .as_ref()
             .split(|&byte| byte == b',')
-            .map(|item| item.trim_ascii())
+            .map(<[u8]>::trim_ascii)
             .filter(|item| !item.is_empty())
             .map(|item| {
                 let bytes = value.slice_ref(item);

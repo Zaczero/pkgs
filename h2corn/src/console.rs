@@ -49,7 +49,7 @@ enum RequestSummaryKind {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct AccessLogRequest {
+pub struct AccessLogRequest {
     method: Method,
     path_and_query: BytesStr,
     http_version: HttpVersion,
@@ -66,7 +66,7 @@ impl AccessLogRequest {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct HttpAccessLogEntry<'a> {
+pub struct HttpAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
     pub status: HttpStatusCode,
@@ -76,7 +76,7 @@ pub(crate) struct HttpAccessLogEntry<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct WebSocketAccessLogEntry<'a> {
+pub struct WebSocketAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
     pub close_code: WebSocketCloseCode,
@@ -170,7 +170,7 @@ impl ActiveAccessLog {
     }
 }
 
-pub(crate) struct HttpAccessLogState(Option<ActiveAccessLog>);
+pub struct HttpAccessLogState(Option<ActiveAccessLog>);
 
 impl HttpAccessLogState {
     pub(crate) fn new(ctx: &RequestContext) -> Self {
@@ -201,7 +201,7 @@ impl HttpAccessLogState {
     }
 }
 
-pub(crate) struct WebSocketAccessLogState(Option<ActiveAccessLog>);
+pub struct WebSocketAccessLogState(Option<ActiveAccessLog>);
 
 impl WebSocketAccessLogState {
     pub(crate) fn new(ctx: &RequestContext) -> Self {
@@ -248,27 +248,27 @@ impl WebSocketAccessLogState {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ResponseLogState {
+pub struct ResponseLogState {
     pub(crate) status: Option<NonZeroU16>,
     pub(crate) response_body_bytes: u64,
 }
 
 impl ResponseLogState {
-    pub(crate) fn started(&mut self, status: HttpStatusCode) {
+    pub(crate) const fn started(&mut self, status: HttpStatusCode) {
         self.status =
             Some(NonZeroU16::new(status).expect("response status codes are always non-zero"));
     }
 
-    pub(crate) fn sent_body(&mut self, len: usize) {
+    pub(crate) const fn sent_body(&mut self, len: usize) {
         self.response_body_bytes = self.response_body_bytes.saturating_add(len as u64);
     }
 
-    pub(crate) fn internal_error(&mut self) {
+    pub(crate) const fn internal_error(&mut self) {
         self.started(status_code::INTERNAL_SERVER_ERROR);
     }
 }
 
-pub(crate) async fn run_http_request<T, F>(
+pub async fn run_http_request<T, F>(
     ctx: RequestContext,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -285,7 +285,7 @@ where
     result
 }
 
-pub(crate) fn emit_banner(config: &ServerConfig) {
+pub fn emit_banner(config: &ServerConfig) {
     const LISTENING_PREFIX: &str = "Listening on ";
     const LISTENING_INDENT: &str = "             ";
 
@@ -328,7 +328,7 @@ fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
     );
 }
 
-pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
+pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
     let io_summary = AccessLogIoSummary {
         duration: entry.duration,
         rx_bytes: entry.rx_bytes,
@@ -359,7 +359,7 @@ pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
     }
 }
 
-pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
+pub fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
     let io_summary = AccessLogIoSummary {
         duration: entry.duration,
         rx_bytes: entry.rx_bytes,
@@ -624,7 +624,7 @@ fn write_two_digits(out: &mut impl fmt::Write, value: u8) -> fmt::Result {
     out.write_char(char::from(b'0' + value % 10))
 }
 
-fn status_style(status: HttpStatusCode) -> Style {
+const fn status_style(status: HttpStatusCode) -> Style {
     let style = Style::new();
     match status {
         200..=299 => style.green(),
@@ -635,7 +635,7 @@ fn status_style(status: HttpStatusCode) -> Style {
     }
 }
 
-fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
+const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
     let style = Style::new();
     match close_code {
         close_code::NORMAL => style.green(),
@@ -733,11 +733,11 @@ mod tests {
             "1m05s"
         );
         assert_eq!(
-            render(|out| append_duration_to(out, Duration::from_secs(7_380))),
+            render(|out| append_duration_to(out, Duration::from_mins(123))),
             "2h03m"
         );
         assert_eq!(
-            render(|out| append_duration_to(out, Duration::from_secs(187_200))),
+            render(|out| append_duration_to(out, Duration::from_hours(52))),
             "2d04h"
         );
     }

@@ -83,13 +83,13 @@ impl ReceiveStateMachine for HttpReceiveState {
 }
 
 #[pyclass(frozen, freelist = 256)]
-pub(crate) struct PyHttpReceive {
+pub struct PyHttpReceive {
     locals: TaskLocals,
     kind: HttpReceiveKind,
 }
 
 impl PyHttpReceive {
-    pub(crate) fn new_no_body(locals: TaskLocals) -> Self {
+    pub(crate) const fn new_no_body(locals: TaskLocals) -> Self {
         Self {
             locals,
             kind: HttpReceiveKind::NoBody(AtomicBool::new(false)),
@@ -106,7 +106,7 @@ impl PyHttpReceive {
         }
     }
 
-    pub(crate) fn new_single(locals: TaskLocals, body: Bytes) -> Self {
+    pub(crate) const fn new_single(locals: TaskLocals, body: Bytes) -> Self {
         Self {
             locals,
             kind: HttpReceiveKind::Single(Mutex::new(Some(body))),
@@ -144,13 +144,13 @@ impl PyHttpReceive {
 }
 
 #[pyclass(frozen, freelist = 256)]
-pub(crate) struct PyHttpSend {
+pub struct PyHttpSend {
     locals: TaskLocals,
     state: HttpSendState,
 }
 
 impl PyHttpSend {
-    pub(crate) fn new(locals: TaskLocals, state: HttpSendState) -> Self {
+    pub(crate) const fn new(locals: TaskLocals, state: HttpSendState) -> Self {
         Self { locals, state }
     }
 }

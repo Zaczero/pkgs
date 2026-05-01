@@ -28,9 +28,9 @@ const H2_WRITER_BUFFER_CAPACITY: usize = 64 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
-pub(crate) type WriterCommandBatch = SmallVecDeque<WriterCommand, 3>;
+pub type WriterCommandBatch = SmallVecDeque<WriterCommand, 3>;
 
-pub(crate) trait H2WriteTarget: AsyncWrite + Unpin + Send + 'static {
+pub trait H2WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
     const SUPPORTS_SENDFILE: bool;
 
     async fn write_file_chunk(
@@ -76,13 +76,13 @@ impl H2WriteTarget for UnixOwnedWriteHalf {
 }
 
 #[derive(Debug)]
-pub(crate) enum WindowTarget {
+pub enum WindowTarget {
     Connection,
     Stream(StreamId),
 }
 
 #[derive(Debug)]
-pub(crate) enum WriterCommand {
+pub enum WriterCommand {
     SendHeaders {
         stream_id: StreamId,
         status: HttpStatusCode,
@@ -135,4 +135,4 @@ pub(crate) enum WriterCommand {
     },
 }
 
-pub(crate) use self::driver::{ConnectionHandle, WriterState, init_writer};
+pub use self::driver::{ConnectionHandle, WriterState, init_writer};

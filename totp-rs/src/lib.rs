@@ -80,7 +80,6 @@ fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> PyResult<i
 
 #[pyfunction]
 #[pyo3(signature = (secret, *, digits = 6, algorithm = "sha1", time = None, time_window = None, step_seconds = 30, t0 = 0))]
-#[allow(clippy::too_many_arguments)]
 fn totp_generate(
     py: Python<'_>,
     secret: &Bound<'_, PyAny>,
@@ -102,7 +101,7 @@ fn totp_generate(
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
     let secret = parse_secret_from_py(secret)?;
-    let modulus = NonZeroU32::new(10_u32.pow(digits as u32)).expect("pow() result is >= 10");
+    let modulus = NonZeroU32::new(10_u32.pow(u32::from(digits))).expect("pow() result is >= 10");
 
     let code = totp_code(secret.as_ref(), counter, modulus, algorithm);
 
@@ -111,7 +110,6 @@ fn totp_generate(
 
 #[pyfunction]
 #[pyo3(signature = (secret, code, *, digits = 6, algorithm = "sha1", time = None, time_window = None, step_seconds = 30, t0 = 0, window = 1))]
-#[allow(clippy::too_many_arguments)]
 fn totp_verify(
     secret: &Bound<'_, PyAny>,
     code: &Bound<'_, PyAny>,
@@ -133,7 +131,7 @@ fn totp_verify(
     let counter = resolve_counter(time, time_window, step_seconds, t0)
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
-    let modulus = NonZeroU32::new(10_u32.pow(digits as u32)).expect("pow() result is >= 10");
+    let modulus = NonZeroU32::new(10_u32.pow(u32::from(digits))).expect("pow() result is >= 10");
     let Some(code) = parse_code_py(code, digits, modulus) else {
         return Ok(false);
     };

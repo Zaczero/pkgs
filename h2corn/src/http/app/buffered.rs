@@ -11,11 +11,11 @@ enum HttpSendMode {
 }
 
 #[derive(Clone)]
-pub(crate) struct HttpSendState {
+pub struct HttpSendState {
     shared: Arc<BufferedState<HttpSendMode, HttpOutboundEvent, 2>>,
 }
 
-pub(crate) struct HttpSendBuffer {
+pub struct HttpSendBuffer {
     shared: Arc<BufferedState<HttpSendMode, HttpOutboundEvent, 2>>,
     stream_rx: Option<mpsc::Receiver<HttpOutboundEvent>>,
 }

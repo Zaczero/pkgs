@@ -9,10 +9,10 @@ const TAIL: &[u8; 4] = b"\x00\x00\xff\xff";
 const FLATE_INITIAL_GROWTH_SLACK: usize = 16;
 const FLATE_MIN_GROWTH: usize = 256;
 
-pub(crate) const PERMESSAGE_DEFLATE_RESPONSE: &[u8] =
+pub const PERMESSAGE_DEFLATE_RESPONSE: &[u8] =
     b"permessage-deflate; server_no_context_takeover; client_no_context_takeover";
 
-pub(crate) trait PerMessageDeflateMode {
+pub trait PerMessageDeflateMode {
     type Inflater;
     type Deflater;
 
@@ -35,31 +35,29 @@ pub(crate) trait PerMessageDeflateMode {
 }
 
 #[derive(Debug)]
-pub(crate) struct PerMessageDeflateEnabled;
+pub struct PerMessageDeflateEnabled;
 
 #[derive(Debug)]
-pub(crate) struct PerMessageDeflateDisabled;
+pub struct PerMessageDeflateDisabled;
 
 #[derive(Debug)]
-pub(crate) struct MessageDeflater {
+pub struct MessageDeflater {
     compressor: Compress,
     out: BytesMut,
 }
 
 #[derive(Debug)]
-pub(crate) struct MessageInflater {
+pub struct MessageInflater {
     decoder: Decompress,
     out: BytesMut,
 }
 
-pub(crate) fn requested_by_client(value: &[u8]) -> bool {
+pub fn requested_by_client(value: &[u8]) -> bool {
     let mut rest = Some(value);
     while let Some(current) = rest {
-        let (extension, next) = if let Some(index) = memchr(b',', current) {
+        let (extension, next) = memchr(b',', current).map_or((current, None), |index| {
             (&current[..index], Some(&current[index + 1..]))
-        } else {
-            (current, None)
-        };
+        });
         let extension = extension.trim_ascii();
         let end = memchr(b';', extension).unwrap_or(extension.len());
         if extension[..end]
@@ -241,12 +239,12 @@ impl PerMessageDeflateMode for PerMessageDeflateDisabled {
 
     fn new_deflater() -> Self::Deflater {}
 
-    fn compress(_: &mut Self::Deflater, _: &[u8]) -> Result<Option<Bytes>, flate2::CompressError> {
+    fn compress((): &mut Self::Deflater, _: &[u8]) -> Result<Option<Bytes>, flate2::CompressError> {
         Ok(None)
     }
 
     fn decompress(
-        _: &mut Self::Inflater,
+        (): &mut Self::Inflater,
         _: &[u8],
         _: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {

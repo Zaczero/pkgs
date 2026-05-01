@@ -4,20 +4,20 @@ use std::sync::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RequestBodyProgress {
+pub enum RequestBodyProgress {
     Continue,
     SizeLimitExceeded,
     ContentLengthExceeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RequestBodyFinish {
+pub enum RequestBodyFinish {
     Complete,
     ContentLengthMismatch,
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestBodyState {
+pub struct RequestBodyState {
     expected_length: Option<u64>,
     received_length: u64,
     access_log_bytes: Option<Arc<AtomicU64>>,
@@ -26,7 +26,7 @@ pub(crate) struct RequestBodyState {
 }
 
 impl RequestBodyState {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         expected_length: Option<u64>,
         access_log_bytes: Option<Arc<AtomicU64>>,
         max_body_size: Option<u64>,
@@ -63,11 +63,11 @@ impl RequestBodyState {
         }
     }
 
-    pub(crate) fn stop_delivering(&mut self) {
+    pub(crate) const fn stop_delivering(&mut self) {
         self.deliver_to_app = false;
     }
 
-    pub(crate) fn should_deliver(&self) -> bool {
+    pub(crate) const fn should_deliver(&self) -> bool {
         self.deliver_to_app
     }
 

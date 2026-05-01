@@ -24,10 +24,11 @@ use crate::http::planner::{
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::http::{app::HttpRequestBody, body::RequestBodyState, response::HttpResponseTransport};
 use crate::runtime::{
-    ConnectionContext, RequestContext, ShutdownState, StreamInput, try_acquire_request_admission,
+    ConnectionContext, RequestAdmission, RequestContext, ShutdownState, StreamInput,
+    try_acquire_request_admission,
 };
 use crate::websocket::{HandshakeRejection, WebSocketContext, WebSocketKey, WebSocketRequestMeta};
-pub(crate) use http::H1WriteTarget;
+pub use http::H1WriteTarget;
 use parse::read_request;
 
 struct ParsedRequest {
@@ -75,7 +76,7 @@ struct H1Io<'a, R, W> {
     writer: &'a mut BufWriter<W>,
 }
 
-pub(crate) async fn serve_connection<R, W>(
+pub async fn serve_connection<R, W>(
     mut reader: R,
     mut buffer: BytesMut,
     writer: W,
@@ -347,69 +348,99 @@ where
             Ok(persistence)
         }
         RequestInputPlan::Stream { count_body_bytes } => {
-            if let Some(body) = take_buffered_request_body(body_kind, buffer)? {
-                let read_body_bytes = body.len() as u64;
-                run_http_request(
-                    ctx,
-                    HttpRequestBody::Single(body),
-                    admission,
-                    &mut transport,
-                    move || read_body_bytes,
-                )
-                .await?;
-                return Ok(persistence);
-            }
-
-            let input = prepare_request_input(RequestInputPlan::Stream { count_body_bytes });
-            let access_log_body_bytes = input.body_bytes_read.clone();
-            let tx = input
-                .tx
-                .expect("streaming request inputs always allocate a send channel");
-            let request_body_rx = input
-                .rx
-                .expect("streaming request inputs always allocate a receive channel");
-
-            let result = {
-                let mut app_future = Box::pin(run_http_request(
-                    ctx,
-                    HttpRequestBody::Stream(request_body_rx),
-                    admission,
-                    &mut transport,
-                    move || {
-                        access_log_body_bytes
-                            .as_ref()
-                            .map_or(0, |bytes| bytes.load(Ordering::Relaxed))
-                    },
-                ));
-                let body_future = read_request_body(
-                    body_kind,
-                    reader,
-                    buffer,
-                    &tx,
-                    RequestBodyState::new(
-                        match body_kind {
-                            RequestBodyKind::ContentLength(len) => Some(len.get()),
-                            RequestBodyKind::Chunked | RequestBodyKind::None => None,
-                        },
-                        input.body_bytes_read,
-                        config.max_request_body_size.map(NonZeroU64::get),
-                    ),
-                    config.timeout_request_body_idle,
-                );
-                tokio::try_join!(app_future.as_mut(), body_future)
-            };
-            match result {
-                Ok(((), ())) => Ok(persistence),
-                Err(H2CornError::Http1(Http1Error::RequestBodyLimitExceeded))
-                    if transport.response_log_state().status.is_none() =>
-                {
-                    write_empty_response(writer, config, status_code::PAYLOAD_TOO_LARGE, true)
-                        .await?;
-                    Ok(ConnectionPersistence::Close)
-                }
-                Err(err) => Err(err),
-            }
+            handle_streaming_http_request(
+                ctx,
+                body_kind,
+                count_body_bytes,
+                admission,
+                &mut transport,
+                H1BodyReadParts { reader, buffer },
+            )
+            .await?;
+            Ok(persistence)
         }
+    }
+}
+
+struct H1BodyReadParts<'a, R> {
+    reader: &'a mut R,
+    buffer: &'a mut BytesMut,
+}
+
+async fn handle_streaming_http_request<R, W>(
+    ctx: RequestContext,
+    body_kind: RequestBodyKind,
+    count_body_bytes: bool,
+    admission: RequestAdmission,
+    transport: &mut H1HttpTransport<'_, W>,
+    read_parts: H1BodyReadParts<'_, R>,
+) -> Result<(), H2CornError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: H1WriteTarget,
+{
+    let config = ctx.connection.config;
+    let H1BodyReadParts { reader, buffer } = read_parts;
+    if let Some(body) = take_buffered_request_body(body_kind, buffer)? {
+        let read_body_bytes = body.len() as u64;
+        return run_http_request(
+            ctx,
+            HttpRequestBody::Single(body),
+            admission,
+            transport,
+            move || read_body_bytes,
+        )
+        .await;
+    }
+
+    let input = prepare_request_input(RequestInputPlan::Stream { count_body_bytes });
+    let access_log_body_bytes = input.body_bytes_read.clone();
+    let tx = input
+        .tx
+        .expect("streaming request inputs always allocate a send channel");
+    let request_body_rx = input
+        .rx
+        .expect("streaming request inputs always allocate a receive channel");
+
+    let result = {
+        let mut app_future = Box::pin(run_http_request(
+            ctx,
+            HttpRequestBody::Stream(request_body_rx),
+            admission,
+            transport,
+            move || {
+                access_log_body_bytes
+                    .as_ref()
+                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed))
+            },
+        ));
+        let body_future = read_request_body(
+            body_kind,
+            reader,
+            buffer,
+            &tx,
+            RequestBodyState::new(
+                match body_kind {
+                    RequestBodyKind::ContentLength(len) => Some(len.get()),
+                    RequestBodyKind::Chunked | RequestBodyKind::None => None,
+                },
+                input.body_bytes_read,
+                config.max_request_body_size.map(NonZeroU64::get),
+            ),
+            config.timeout_request_body_idle,
+        );
+        tokio::try_join!(app_future.as_mut(), body_future)
+    };
+    match result {
+        Ok(((), ())) => Ok(()),
+        Err(H2CornError::Http1(Http1Error::RequestBodyLimitExceeded))
+            if transport.response_log_state().status.is_none() =>
+        {
+            transport
+                .write_empty_response(status_code::PAYLOAD_TOO_LARGE, true)
+                .await
+        }
+        Err(err) => Err(err),
     }
 }
 

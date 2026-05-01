@@ -262,7 +262,7 @@ fn websocket_accept(key: &WebSocketKey) -> [u8; WEBSOCKET_ACCEPT_LEN] {
 
 fn compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
     let mut words = block;
-    let [mut a, mut b, mut c, mut d, mut e] = *state;
+    let [mut h0, mut h1, mut h2, mut h3, mut h4] = *state;
 
     for index in 0..80 {
         let word = if index < 16 {
@@ -276,33 +276,33 @@ fn compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
             words[index & 15] = word;
             word
         };
-        let (f, k) = match index {
-            0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
-            20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
-            40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
-            _ => (b ^ c ^ d, 0xCA62_C1D6),
+        let (mix, round_constant) = match index {
+            0..=19 => ((h1 & h2) | ((!h1) & h3), 0x5A82_7999),
+            20..=39 => (h1 ^ h2 ^ h3, 0x6ED9_EBA1),
+            40..=59 => ((h1 & h2) | (h1 & h3) | (h2 & h3), 0x8F1B_BCDC),
+            _ => (h1 ^ h2 ^ h3, 0xCA62_C1D6),
         };
-        let temp = a
+        let temp = h0
             .rotate_left(5)
-            .wrapping_add(f)
-            .wrapping_add(e)
-            .wrapping_add(k)
+            .wrapping_add(mix)
+            .wrapping_add(h4)
+            .wrapping_add(round_constant)
             .wrapping_add(word);
-        e = d;
-        d = c;
-        c = b.rotate_left(30);
-        b = a;
-        a = temp;
+        h4 = h3;
+        h3 = h2;
+        h2 = h1.rotate_left(30);
+        h1 = h0;
+        h0 = temp;
     }
 
-    state[0] = state[0].wrapping_add(a);
-    state[1] = state[1].wrapping_add(b);
-    state[2] = state[2].wrapping_add(c);
-    state[3] = state[3].wrapping_add(d);
-    state[4] = state[4].wrapping_add(e);
+    state[0] = state[0].wrapping_add(h0);
+    state[1] = state[1].wrapping_add(h1);
+    state[2] = state[2].wrapping_add(h2);
+    state[3] = state[3].wrapping_add(h3);
+    state[4] = state[4].wrapping_add(h4);
 }
 
-fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
+const fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     [
         B64_TABLE[(b0 >> 2) as usize],
         B64_TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
@@ -311,7 +311,7 @@ fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     ]
 }
 
-fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
+const fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
     [
         B64_TABLE[(b0 >> 2) as usize],
         B64_TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],

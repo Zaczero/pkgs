@@ -19,27 +19,22 @@ fn dynamic_truncate(digest: &[u8]) -> u32 {
 
 fn totp_code_with<M: Mac + KeyInit>(
     secret: &[u8],
-    counter_bytes: &[u8; 8],
+    counter_bytes: [u8; 8],
     modulus: NonZeroU32,
 ) -> u32 {
     let mut mac = <M as KeyInit>::new_from_slice(secret).expect("HMAC accepts any key size");
-    mac.update(counter_bytes);
+    mac.update(&counter_bytes);
     let digest = mac.finalize().into_bytes();
     let truncated = dynamic_truncate(&digest);
     truncated % modulus
 }
 
-pub(crate) fn totp_code(
-    secret: &[u8],
-    counter: i64,
-    modulus: NonZeroU32,
-    algorithm: Algorithm,
-) -> u32 {
+pub fn totp_code(secret: &[u8], counter: i64, modulus: NonZeroU32, algorithm: Algorithm) -> u32 {
     let counter_bytes = counter.to_be_bytes();
     match algorithm {
-        Algorithm::Sha1 => totp_code_with::<Hmac<Sha1>>(secret, &counter_bytes, modulus),
-        Algorithm::Sha256 => totp_code_with::<Hmac<Sha256>>(secret, &counter_bytes, modulus),
-        Algorithm::Sha512 => totp_code_with::<Hmac<Sha512>>(secret, &counter_bytes, modulus),
+        Algorithm::Sha1 => totp_code_with::<Hmac<Sha1>>(secret, counter_bytes, modulus),
+        Algorithm::Sha256 => totp_code_with::<Hmac<Sha256>>(secret, counter_bytes, modulus),
+        Algorithm::Sha512 => totp_code_with::<Hmac<Sha512>>(secret, counter_bytes, modulus),
     }
 }
 
@@ -75,7 +70,7 @@ fn verify_with_mac<M: Mac + FixedOutputReset>(
         return true;
     }
 
-    for offset in 1..=window as i64 {
+    for offset in 1..=i64::from(window) {
         if matches(counter - offset) {
             return true;
         }
@@ -87,7 +82,7 @@ fn verify_with_mac<M: Mac + FixedOutputReset>(
     false
 }
 
-pub(crate) fn verify(
+pub fn verify(
     secret: &[u8],
     counter: i64,
     window: u8,

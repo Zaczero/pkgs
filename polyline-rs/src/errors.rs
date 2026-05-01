@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     CoordinateMustContain2Values { index: usize },
 }
 

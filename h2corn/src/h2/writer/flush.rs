@@ -82,7 +82,7 @@ struct FlushBodyParts<'a, W> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FlushPassResult {
+pub enum FlushPassResult {
     Continue,
     ConnectionBlocked,
 }
@@ -94,7 +94,7 @@ impl<W> FlushBodyParts<'_, W> {
         chunk_len
     }
 
-    fn budget_exhausted(&self) -> bool {
+    const fn budget_exhausted(&self) -> bool {
         self.stream_budget == 0
     }
 }
@@ -337,7 +337,7 @@ where
     }
 }
 
-pub(crate) async fn flush_pending_data<W>(
+pub async fn flush_pending_data<W>(
     writer: &mut BufWriter<W>,
     streams: &mut StreamMap<StreamWriteState>,
     ready_streams: &mut VecDeque<u32>,
@@ -360,6 +360,7 @@ where
         let Some(stream_id_raw) = ready_streams.pop_front() else {
             break;
         };
+        // SAFETY: ready_streams only stores ids produced from existing StreamId values.
         let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
         let Some(stream) = streams.get_mut(&stream_id_raw) else {
             continue;
@@ -480,10 +481,7 @@ where
     Ok(())
 }
 
-pub(crate) async fn write_frame_buf<W>(
-    writer: &mut W,
-    frame_buf: &mut BytesMut,
-) -> Result<(), H2CornError>
+pub async fn write_frame_buf<W>(writer: &mut W, frame_buf: &mut BytesMut) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {

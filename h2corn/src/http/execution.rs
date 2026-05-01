@@ -6,19 +6,19 @@ use crate::bridge::ASGI_QUEUE_CAPACITY;
 use crate::http::planner::{RequestInputPlan, RequestLaunchPlan, RequestRoute};
 use crate::runtime::{AppState, RequestAdmission, StreamInput, try_acquire_request_admission};
 
-pub(crate) struct RequestInputChannels {
+pub struct RequestInputChannels {
     pub(crate) tx: Option<mpsc::Sender<StreamInput>>,
     pub(crate) rx: Option<mpsc::Receiver<StreamInput>>,
     pub(crate) body_bytes_read: Option<Arc<AtomicU64>>,
 }
 
-pub(crate) struct RequestExecution<WebSocketMeta> {
+pub struct RequestExecution<WebSocketMeta> {
     pub(crate) route: RequestRoute<WebSocketMeta>,
     pub(crate) admission: RequestAdmission,
     pub(crate) input: RequestInputChannels,
 }
 
-pub(crate) fn prepare_request_input(input: RequestInputPlan) -> RequestInputChannels {
+pub fn prepare_request_input(input: RequestInputPlan) -> RequestInputChannels {
     match input {
         RequestInputPlan::None => RequestInputChannels {
             tx: None,
@@ -36,7 +36,7 @@ pub(crate) fn prepare_request_input(input: RequestInputPlan) -> RequestInputChan
     }
 }
 
-pub(crate) fn prepare_request_execution<WebSocketMeta>(
+pub fn prepare_request_execution<WebSocketMeta>(
     app: &AppState,
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {
@@ -55,7 +55,7 @@ mod tests {
     use super::{RequestInputChannels, prepare_request_input};
     use crate::http::planner::RequestInputPlan;
 
-    fn assert_empty_input(input: RequestInputChannels) {
+    fn assert_empty_input(input: &RequestInputChannels) {
         assert!(input.tx.is_none());
         assert!(input.rx.is_none());
         assert!(input.body_bytes_read.is_none());
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn no_body_http_requests_do_not_allocate_channels() {
-        assert_empty_input(prepare_request_input(RequestInputPlan::None));
+        assert_empty_input(&prepare_request_input(RequestInputPlan::None));
     }
 
     #[test]

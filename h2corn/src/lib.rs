@@ -465,193 +465,225 @@ mod tests {
         time::Duration,
     };
 
-    use pyo3::types::{PyDict, PyModule, PyTuple};
+    use pyo3::types::{PyAny, PyDict, PyModule, PyTuple};
 
     use super::*;
     use crate::proxy::{Cidr, TrustedPeer};
 
+    fn config_stub(py: Python<'_>) -> Bound<'_, PyAny> {
+        let builtins = PyModule::import(py, "builtins").expect("builtins imports");
+        let ty = builtins.getattr("type").expect("type builtin exists");
+        let cls = ty
+            .call1(("ConfigStub", PyTuple::empty(py), PyDict::new(py)))
+            .expect("stub class is created");
+        cls.call0().expect("stub config is instantiated")
+    }
+
+    fn set_core_options(config: &Bound<'_, PyAny>) {
+        config.setattr("bind", ("127.0.0.9:48123",)).unwrap();
+        config.setattr("_bind_fd_is_unix", (false,)).unwrap();
+        config.setattr("max_requests", 41).unwrap();
+        config.setattr("max_requests_jitter", 7).unwrap();
+        config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
+        config.setattr("access_log", false).unwrap();
+        config.setattr("root_path", "/api").unwrap();
+        config.setattr("max_request_body_size", 987_654).unwrap();
+        config.setattr("runtime_threads", 7).unwrap();
+    }
+
+    fn set_http_options(config: &Bound<'_, PyAny>) {
+        config.setattr("http1", false).unwrap();
+        config.setattr("limit_request_head_size", 8_193).unwrap();
+        config.setattr("limit_request_line", 4_097).unwrap();
+        config.setattr("limit_request_fields", 17).unwrap();
+        config.setattr("limit_request_field_size", 211).unwrap();
+        config.setattr("max_concurrent_streams", 321).unwrap();
+        config.setattr("h2_max_header_list_size", 65_432).unwrap();
+        config.setattr("h2_max_header_block_size", 76_543).unwrap();
+        config
+            .setattr("h2_max_inbound_frame_size", 0x0001_0000)
+            .unwrap();
+    }
+
+    fn set_timeout_and_limit_options(config: &Bound<'_, PyAny>) {
+        config.setattr("timeout_handshake", 1.25).unwrap();
+        config.setattr("timeout_graceful_shutdown", 12.5).unwrap();
+        config.setattr("timeout_keep_alive", 2.5).unwrap();
+        config.setattr("timeout_request_header", 4.5).unwrap();
+        config.setattr("timeout_request_body_idle", 5.5).unwrap();
+        config.setattr("timeout_lifespan_startup", 6.5).unwrap();
+        config.setattr("timeout_lifespan_shutdown", 8.5).unwrap();
+        config.setattr("limit_concurrency", 23).unwrap();
+        config.setattr("limit_connections", 29).unwrap();
+    }
+
+    fn set_websocket_and_proxy_options(config: &Bound<'_, PyAny>, py: Python<'_>) {
+        config
+            .setattr("websocket_max_message_size", 54_321)
+            .unwrap();
+        config
+            .setattr("websocket_per_message_deflate", false)
+            .unwrap();
+        config.setattr("websocket_ping_interval", 9.5).unwrap();
+        config.setattr("websocket_ping_timeout", 11.5).unwrap();
+        config.setattr("proxy_headers", true).unwrap();
+        config
+            .setattr("forwarded_allow_ips", ("127.0.0.1", "10.0.0.0/8", "unix"))
+            .unwrap();
+        config.setattr("proxy_protocol", "v2").unwrap();
+        config.setattr("certfile", py.None()).unwrap();
+        config.setattr("keyfile", py.None()).unwrap();
+        config.setattr("ca_certs", py.None()).unwrap();
+        config.setattr("cert_reqs", "none").unwrap();
+        config.setattr("server_header", true).unwrap();
+        config.setattr("date_header", false).unwrap();
+        config
+            .setattr("response_headers", ("x-demo: 1", "x-extra: 2"))
+            .unwrap();
+    }
+
+    fn assert_core_config(extracted: &ServerConfig) {
+        match &extracted.binds[..] {
+            [BindTarget::Tcp { host, port }] => {
+                assert_eq!(host.as_ref(), "127.0.0.9");
+                assert_eq!(*port, 48_123);
+            }
+            _ => panic!("expected one TCP bind"),
+        }
+        assert!(!extracted.access_log);
+        assert_eq!(extracted.root_path.as_ref(), "/api");
+        assert_eq!(
+            extracted.max_request_body_size.map(NonZeroU64::get),
+            Some(987_654)
+        );
+        assert_eq!(extracted.max_requests.map(NonZeroU64::get), Some(41));
+        assert_eq!(extracted.runtime_threads, 7);
+    }
+
+    fn assert_http_config(extracted: &ServerConfig) {
+        assert!(!extracted.http1.enabled);
+        assert_eq!(
+            extracted
+                .http1
+                .limit_request_head_size
+                .map(NonZeroUsize::get),
+            Some(8_193),
+        );
+        assert_eq!(
+            extracted.http1.limit_request_line.map(NonZeroUsize::get),
+            Some(4_097),
+        );
+        assert_eq!(
+            extracted.http1.limit_request_fields.map(NonZeroUsize::get),
+            Some(17),
+        );
+        assert_eq!(
+            extracted
+                .http1
+                .limit_request_field_size
+                .map(NonZeroUsize::get),
+            Some(211),
+        );
+        assert_eq!(extracted.http2.max_concurrent_streams, 321);
+        assert_eq!(
+            extracted.http2.max_header_list_size.map(NonZeroUsize::get),
+            Some(65_432),
+        );
+        assert_eq!(
+            extracted.http2.max_header_block_size.map(NonZeroUsize::get),
+            Some(76_543),
+        );
+        assert_eq!(extracted.http2.max_inbound_frame_size.get(), 0x0001_0000);
+    }
+
+    fn assert_timeout_and_limit_config(extracted: &ServerConfig) {
+        assert_eq!(extracted.timeout_handshake, Duration::from_secs_f64(1.25));
+        assert_eq!(
+            extracted.timeout_graceful_shutdown,
+            Duration::from_secs_f64(12.5),
+        );
+        assert_eq!(
+            extracted.timeout_keep_alive,
+            Some(Duration::from_secs_f64(2.5))
+        );
+        assert_eq!(
+            extracted.timeout_request_header,
+            Some(Duration::from_secs_f64(4.5))
+        );
+        assert_eq!(
+            extracted.timeout_request_body_idle,
+            Some(Duration::from_secs_f64(5.5))
+        );
+        assert_eq!(extracted.limit_concurrency.map(NonZeroUsize::get), Some(23));
+        assert_eq!(extracted.limit_connections.map(NonZeroUsize::get), Some(29));
+    }
+
+    fn assert_websocket_and_proxy_config(extracted: &ServerConfig) {
+        assert_eq!(
+            extracted
+                .websocket
+                .message_size_limit
+                .map(NonZeroUsize::get),
+            Some(54_321),
+        );
+        assert!(!extracted.websocket.per_message_deflate);
+        assert_eq!(
+            extracted.websocket.ping_interval,
+            Some(Duration::from_secs_f64(9.5)),
+        );
+        assert_eq!(
+            extracted.websocket.ping_timeout,
+            Some(Duration::from_secs_f64(11.5)),
+        );
+        assert!(extracted.proxy.trust_headers);
+        assert_eq!(extracted.proxy.protocol, ProxyProtocolMode::V2);
+        assert_eq!(extracted.proxy.trusted_peers.len(), 3);
+        assert!(extracted.response_headers.server_header);
+        assert!(!extracted.response_headers.date_header);
+        assert_eq!(extracted.response_headers.extra_headers.len(), 2);
+        assert!(matches!(
+            extracted.proxy.trusted_peers[0],
+            TrustedPeer::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        ));
+        assert!(matches!(
+            extracted.proxy.trusted_peers[1],
+            TrustedPeer::Cidr(Cidr::V4 {
+                network: 0x0A00_0000,
+                mask: 0xFF00_0000,
+            })
+        ));
+        assert!(matches!(
+            extracted.proxy.trusted_peers[2],
+            TrustedPeer::Unix
+        ));
+    }
+
     #[test]
     fn extract_server_config_matches_python_stub() {
         Python::attach(|py| {
-            let builtins = PyModule::import(py, "builtins").expect("builtins imports");
-            let ty = builtins.getattr("type").expect("type builtin exists");
-            let cls = ty
-                .call1(("ConfigStub", PyTuple::empty(py), PyDict::new(py)))
-                .expect("stub class is created");
-            let config = cls.call0().expect("stub config is instantiated");
-
-            config.setattr("bind", ("127.0.0.9:48123",)).unwrap();
-            config.setattr("_bind_fd_is_unix", (false,)).unwrap();
-            config.setattr("max_requests", 41).unwrap();
-            config.setattr("max_requests_jitter", 7).unwrap();
-            config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
-            config.setattr("access_log", false).unwrap();
-            config.setattr("root_path", "/api").unwrap();
-            config.setattr("http1", false).unwrap();
-            config.setattr("limit_request_head_size", 8_193).unwrap();
-            config.setattr("limit_request_line", 4_097).unwrap();
-            config.setattr("limit_request_fields", 17).unwrap();
-            config.setattr("limit_request_field_size", 211).unwrap();
-            config.setattr("max_concurrent_streams", 321).unwrap();
-            config.setattr("h2_max_header_list_size", 65_432).unwrap();
-            config.setattr("h2_max_header_block_size", 76_543).unwrap();
-            config.setattr("h2_max_inbound_frame_size", 65_536).unwrap();
-            config.setattr("max_request_body_size", 987_654).unwrap();
-            config.setattr("timeout_handshake", 1.25).unwrap();
-            config.setattr("timeout_graceful_shutdown", 12.5).unwrap();
-            config.setattr("timeout_keep_alive", 2.5).unwrap();
-            config.setattr("timeout_request_header", 4.5).unwrap();
-            config.setattr("timeout_request_body_idle", 5.5).unwrap();
-            config.setattr("timeout_lifespan_startup", 6.5).unwrap();
-            config.setattr("timeout_lifespan_shutdown", 8.5).unwrap();
-            config.setattr("limit_concurrency", 23).unwrap();
-            config.setattr("limit_connections", 29).unwrap();
-            config.setattr("runtime_threads", 7).unwrap();
-            config
-                .setattr("websocket_max_message_size", 54_321)
-                .unwrap();
-            config
-                .setattr("websocket_per_message_deflate", false)
-                .unwrap();
-            config.setattr("websocket_ping_interval", 9.5).unwrap();
-            config.setattr("websocket_ping_timeout", 11.5).unwrap();
-            config.setattr("proxy_headers", true).unwrap();
-            config
-                .setattr("forwarded_allow_ips", ("127.0.0.1", "10.0.0.0/8", "unix"))
-                .unwrap();
-            config.setattr("proxy_protocol", "v2").unwrap();
-            config.setattr("certfile", py.None()).unwrap();
-            config.setattr("keyfile", py.None()).unwrap();
-            config.setattr("ca_certs", py.None()).unwrap();
-            config.setattr("cert_reqs", "none").unwrap();
-            config.setattr("server_header", true).unwrap();
-            config.setattr("date_header", false).unwrap();
-            config
-                .setattr("response_headers", ("x-demo: 1", "x-extra: 2"))
-                .unwrap();
+            let config = config_stub(py);
+            set_core_options(&config);
+            set_http_options(&config);
+            set_timeout_and_limit_options(&config);
+            set_websocket_and_proxy_options(&config, py);
 
             let extracted = PyConfig(&config)
                 .server_config()
                 .expect("config extraction succeeds");
 
-            match &extracted.binds[..] {
-                [BindTarget::Tcp { host, port }] => {
-                    assert_eq!(host.as_ref(), "127.0.0.9");
-                    assert_eq!(*port, 48_123);
-                }
-                _ => panic!("expected one TCP bind"),
-            }
-            assert!(!extracted.access_log);
-            assert_eq!(extracted.root_path.as_ref(), "/api");
-
-            assert!(!extracted.http1.enabled);
-            assert_eq!(
-                extracted
-                    .http1
-                    .limit_request_head_size
-                    .map(NonZeroUsize::get),
-                Some(8_193),
-            );
-            assert_eq!(
-                extracted.http1.limit_request_line.map(NonZeroUsize::get),
-                Some(4_097),
-            );
-            assert_eq!(
-                extracted.http1.limit_request_fields.map(NonZeroUsize::get),
-                Some(17),
-            );
-            assert_eq!(
-                extracted
-                    .http1
-                    .limit_request_field_size
-                    .map(NonZeroUsize::get),
-                Some(211),
-            );
-
-            assert_eq!(extracted.http2.max_concurrent_streams, 321);
-            assert_eq!(
-                extracted.http2.max_header_list_size.map(NonZeroUsize::get),
-                Some(65_432),
-            );
-            assert_eq!(
-                extracted.http2.max_header_block_size.map(NonZeroUsize::get),
-                Some(76_543),
-            );
-            assert_eq!(extracted.http2.max_inbound_frame_size.get(), 65_536);
-
-            assert_eq!(
-                extracted.max_request_body_size.map(NonZeroU64::get),
-                Some(987_654),
-            );
-            assert_eq!(extracted.timeout_handshake, Duration::from_secs_f64(1.25));
-            assert_eq!(
-                extracted.timeout_graceful_shutdown,
-                Duration::from_secs_f64(12.5),
-            );
-            assert_eq!(
-                extracted.timeout_keep_alive,
-                Some(Duration::from_secs_f64(2.5))
-            );
-            assert_eq!(
-                extracted.timeout_request_header,
-                Some(Duration::from_secs_f64(4.5))
-            );
-            assert_eq!(
-                extracted.timeout_request_body_idle,
-                Some(Duration::from_secs_f64(5.5))
-            );
-            assert_eq!(extracted.limit_concurrency.map(NonZeroUsize::get), Some(23));
-            assert_eq!(extracted.limit_connections.map(NonZeroUsize::get), Some(29));
-            assert_eq!(extracted.max_requests.map(NonZeroU64::get), Some(41));
-            assert_eq!(extracted.runtime_threads, 7);
-
-            assert_eq!(
-                extracted
-                    .websocket
-                    .message_size_limit
-                    .map(NonZeroUsize::get),
-                Some(54_321),
-            );
-            assert!(!extracted.websocket.per_message_deflate);
-            assert_eq!(
-                extracted.websocket.ping_interval,
-                Some(Duration::from_secs_f64(9.5)),
-            );
-            assert_eq!(
-                extracted.websocket.ping_timeout,
-                Some(Duration::from_secs_f64(11.5)),
-            );
-
-            assert!(extracted.proxy.trust_headers);
-            assert_eq!(extracted.proxy.protocol, ProxyProtocolMode::V2);
-            assert_eq!(extracted.proxy.trusted_peers.len(), 3);
-            assert!(extracted.response_headers.server_header);
-            assert!(!extracted.response_headers.date_header);
-            assert_eq!(extracted.response_headers.extra_headers.len(), 2);
-            assert!(matches!(
-                extracted.proxy.trusted_peers[0],
-                TrustedPeer::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST))
-            ));
-            assert!(matches!(
-                extracted.proxy.trusted_peers[1],
-                TrustedPeer::Cidr(Cidr::V4 {
-                    network: 0x0A00_0000,
-                    mask: 0xFF00_0000,
-                })
-            ));
-            assert!(matches!(
-                extracted.proxy.trusted_peers[2],
-                TrustedPeer::Unix
-            ));
+            assert_core_config(&extracted);
+            assert_http_config(&extracted);
+            assert_timeout_and_limit_config(&extracted);
+            assert_websocket_and_proxy_config(&extracted);
         });
     }
 
     #[test]
     fn parse_bind_target_rejects_empty_unix_path_and_negative_fd() {
         Python::attach(|_| {
-            assert!(parse_bind_target("unix:", false).is_err());
-            assert!(parse_bind_target("fd://-1", false).is_err());
-            assert!(parse_bind_target(":8080", false).is_err());
+            parse_bind_target("unix:", false).unwrap_err();
+            parse_bind_target("fd://-1", false).unwrap_err();
+            parse_bind_target(":8080", false).unwrap_err();
         });
     }
 }

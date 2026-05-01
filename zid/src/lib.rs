@@ -37,6 +37,10 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
 }
 
 #[pyfunction]
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "PyO3 exports this function through a runtime wrapper"
+)]
 fn parse_zid_timestamp(zid: u64) -> u64 {
     core::parse_zid_timestamp(zid)
 }

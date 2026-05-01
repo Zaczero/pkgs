@@ -2,12 +2,12 @@ use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     MaxsizeMustBePositive,
 }
 
 impl Error {
-    pub(crate) fn message(&self) -> Cow<'static, str> {
+    pub(crate) const fn message(&self) -> Cow<'static, str> {
         Cow::Borrowed("maxsize must be positive")
     }
 }

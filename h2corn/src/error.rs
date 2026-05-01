@@ -34,7 +34,7 @@ pub enum H2CornError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FailureDomain {
+pub enum FailureDomain {
     Configuration,
     PeerProtocol,
     TransportIo,
@@ -43,7 +43,7 @@ pub(crate) enum FailureDomain {
 }
 
 impl H2CornError {
-    pub(crate) fn failure_domain(&self) -> FailureDomain {
+    pub(crate) const fn failure_domain(&self) -> FailureDomain {
         match self {
             Self::Io(_) => FailureDomain::TransportIo,
             Self::Join(_) => FailureDomain::InternalInvariant,
@@ -57,7 +57,7 @@ impl H2CornError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AsgiContainer {
+pub enum AsgiContainer {
     Message,
     HttpResponseStart,
     HttpResponsePathsend,
@@ -76,7 +76,7 @@ impl fmt::Display for AsgiContainer {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AsgiChannel {
+pub enum AsgiChannel {
     Http,
     WebSocket,
 }
@@ -136,7 +136,7 @@ impl ConfigError {
         }
     }
 
-    pub(crate) fn invalid_finite_duration(name: &'static str) -> Self {
+    pub(crate) const fn invalid_finite_duration(name: &'static str) -> Self {
         Self::InvalidFiniteDuration { name }
     }
 
@@ -174,7 +174,7 @@ impl ConfigError {
         }
     }
 
-    pub(crate) fn runtime_threads_already_initialized(
+    pub(crate) const fn runtime_threads_already_initialized(
         initialized_threads: usize,
         worker_threads: usize,
     ) -> Self {
@@ -204,7 +204,7 @@ pub enum AsgiError {
 }
 
 impl AsgiError {
-    pub(crate) fn missing_field(container: AsgiContainer, field: &'static str) -> Self {
+    pub(crate) const fn missing_field(container: AsgiContainer, field: &'static str) -> Self {
         Self::MissingField { container, field }
     }
 
@@ -421,7 +421,10 @@ pub enum H2Error {
 }
 
 impl H2Error {
-    pub(crate) fn frame_length_exceeds_peer_max(payload_len: usize, max_frame_size: usize) -> Self {
+    pub(crate) const fn frame_length_exceeds_peer_max(
+        payload_len: usize,
+        max_frame_size: usize,
+    ) -> Self {
         Self::FrameLengthExceedsPeerMax {
             payload_len,
             max_frame_size,
@@ -453,7 +456,7 @@ impl PathsendError {
         }
     }
 
-    fn failure_domain(&self) -> FailureDomain {
+    const fn failure_domain(&self) -> FailureDomain {
         FailureDomain::TransportIo
     }
 }
@@ -546,7 +549,7 @@ pub enum WebSocketError {
 }
 
 impl WebSocketError {
-    pub(crate) fn receive_channel_closed(frame_kind: WebSocketFrameKind) -> Self {
+    pub(crate) const fn receive_channel_closed(frame_kind: WebSocketFrameKind) -> Self {
         Self::ReceiveChannelClosed { frame_kind }
     }
 
@@ -569,7 +572,7 @@ impl WebSocketError {
         Self::unexpected_event(WebSocketEventContext::DuringDenialResponse, event)
     }
 
-    fn failure_domain(&self) -> FailureDomain {
+    const fn failure_domain(&self) -> FailureDomain {
         match self {
             Self::Protocol(_) => FailureDomain::PeerProtocol,
             Self::HandshakeTimedOut
@@ -588,7 +591,7 @@ impl WebSocketError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WebSocketFrameKind {
+pub enum WebSocketFrameKind {
     Text,
     Binary,
 }
@@ -603,7 +606,7 @@ impl fmt::Display for WebSocketFrameKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WebSocketEventContext {
+pub enum WebSocketEventContext {
     BeforeHandshake,
     AfterAccept,
     DuringDenialResponse,
@@ -667,7 +670,7 @@ impl WebSocketProtocolError {
     }
 }
 
-pub(crate) trait ErrorExt: Into<H2CornError> + Sized {
+pub trait ErrorExt: Into<H2CornError> + Sized {
     fn into_error(self) -> H2CornError {
         self.into()
     }
@@ -679,7 +682,7 @@ pub(crate) trait ErrorExt: Into<H2CornError> + Sized {
 
 impl<E> ErrorExt for E where E: Into<H2CornError> {}
 
-pub(crate) fn into_pyerr<E>(err: E) -> PyErr
+pub fn into_pyerr<E>(err: E) -> PyErr
 where
     E: Into<H2CornError>,
 {

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     InvalidRGBBufferLength { expected: usize, got: usize },
     BlurhashMalformed { index: usize },
     BlurhashLengthMismatch { expected: usize, got: usize },

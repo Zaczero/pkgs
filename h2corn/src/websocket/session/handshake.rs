@@ -266,6 +266,7 @@ mod tests {
     use crate::http::response::FinalResponseBody;
     use crate::http::types::{ResponseHeaders, status_code};
     use crate::runtime::RequestAdmission;
+    use crate::websocket::RequestedSubprotocols;
     use crate::websocket::app::RunningWebSocketApp;
 
     #[derive(Default)]
@@ -354,7 +355,7 @@ mod tests {
 
         RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Default::default(),
+            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -383,6 +384,7 @@ mod tests {
 
         running_app.app_task.abort();
         let _ = (&mut running_app.app_task).await;
+        drop(running_app);
     }
 
     #[tokio::test]
@@ -400,7 +402,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Default::default(),
+            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -432,7 +434,7 @@ mod tests {
         let (send_state, send_buffer) = WebSocketSendState::new();
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Default::default(),
+            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -471,7 +473,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Default::default(),
+            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -502,6 +504,7 @@ mod tests {
             ]
         );
         assert_eq!(transport.body_chunks, [Bytes::from_static(b"denied")]);
+        drop(running_app);
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -520,7 +523,7 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: Default::default(),
+            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -543,5 +546,6 @@ mod tests {
         drop(future);
         running_app.app_task.abort();
         let _ = (&mut running_app.app_task).await;
+        drop(running_app);
     }
 }

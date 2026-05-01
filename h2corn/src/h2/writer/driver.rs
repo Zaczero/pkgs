@@ -14,7 +14,9 @@ use tokio::sync::futures::Notified;
 
 use crate::bridge::PayloadBytes;
 #[cfg(test)]
-use crate::config::{BindTarget, Http2Config, ProxyConfig};
+use crate::config::{
+    BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, WebSocketConfig,
+};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE, ServerConfig};
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
@@ -38,12 +40,12 @@ use super::{
 };
 
 #[derive(Clone)]
-pub(crate) struct ConnectionHandle {
+pub struct ConnectionHandle {
     ingress: Arc<WriterIngress>,
     config: &'static ServerConfig,
 }
 
-pub(crate) struct WriterState<W> {
+pub struct WriterState<W> {
     ingress: Arc<WriterIngress>,
     writer: BufWriter<W>,
     frame_buf: BytesMut,
@@ -83,7 +85,7 @@ struct WriterLoopParts<'a, W> {
 }
 
 impl<W> WriterLoopParts<'_, W> {
-    fn send_context(&mut self) -> WriterSendParts<'_, W> {
+    const fn send_context(&mut self) -> WriterSendParts<'_, W> {
         WriterSendParts {
             writer: self.writer,
             frame_buf: self.frame_buf,
@@ -364,6 +366,126 @@ where
     Ok(())
 }
 
+async fn handle_grant_stream_window<W>(
+    context: &mut WriterLoopParts<'_, W>,
+    stream_id: StreamId,
+    increment: i64,
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let stream_key = stream_id.get();
+    let overflow = match context.streams.entry(stream_key) {
+        Entry::Occupied(mut entry) => {
+            let stream = entry.get_mut();
+            if stream.send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+                true
+            } else {
+                stream.send_window += increment;
+                if stream.has_pending_output() && !stream.is_closed() {
+                    stream.schedule(context.ready_streams, stream_id, false);
+                }
+                false
+            }
+        }
+        Entry::Vacant(entry) => {
+            let stream = entry.insert(StreamWriteState::new(*context.initial_stream_send_window));
+            if stream.send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+                true
+            } else {
+                stream.send_window += increment;
+                false
+            }
+        }
+    };
+    if overflow {
+        context.streams.remove(&stream_key);
+        frame::append_rst_stream(context.frame_buf, stream_id, ErrorCode::FLOW_CONTROL_ERROR);
+        write_frame_buf(context.writer, context.frame_buf).await?;
+        notify_response_close(context.response_closes, stream_id);
+    }
+    Ok(())
+}
+
+async fn handle_grant_connection_window<W>(
+    context: &mut WriterLoopParts<'_, W>,
+    increment: i64,
+) -> Result<bool, H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if *context.connection_send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+        frame::append_goaway(
+            context.frame_buf,
+            None,
+            ErrorCode::FLOW_CONTROL_ERROR,
+            b"connection flow-control window overflow",
+        );
+        write_frame_buf(context.writer, context.frame_buf).await?;
+        context.writer.flush().await?;
+        return Ok(true);
+    }
+    *context.connection_send_window += increment;
+    Ok(false)
+}
+
+async fn handle_grant_send_window<W>(
+    context: &mut WriterLoopParts<'_, W>,
+    target: WindowTarget,
+    increment: WindowIncrement,
+) -> Result<bool, H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let increment = std::num::NonZeroI64::from(increment).get();
+    match target {
+        WindowTarget::Stream(stream_id) => {
+            handle_grant_stream_window(context, stream_id, increment).await?;
+            Ok(false)
+        }
+        WindowTarget::Connection => handle_grant_connection_window(context, increment).await,
+    }
+}
+
+async fn flush_buffered_writer_output<W>(
+    context: &mut WriterLoopParts<'_, W>,
+) -> Result<(), H2CornError>
+where
+    W: H2WriteTarget,
+{
+    let _ = flush_pending_data(
+        context.writer,
+        context.streams,
+        context.ready_streams,
+        context.connection_send_window,
+        *context.peer_max_frame_size,
+        context.header_state,
+        context.response_closes,
+    )
+    .await?;
+    context.writer.flush().await?;
+    Ok(())
+}
+
+async fn send_window_update<W>(
+    context: &mut WriterLoopParts<'_, W>,
+    target: WindowTarget,
+    increment: WindowIncrement,
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    frame::append_window_update(
+        context.frame_buf,
+        match target {
+            WindowTarget::Connection => None,
+            WindowTarget::Stream(stream_id) => Some(stream_id),
+        },
+        increment,
+    );
+    write_frame_buf(context.writer, context.frame_buf).await
+}
+
 async fn process_writer_command<W>(
     context: &mut WriterLoopParts<'_, W>,
     command: WriterCommand,
@@ -423,17 +545,7 @@ where
             handle_send_path(&mut send, stream_id, streamer).await?;
         }
         WriterCommand::FlushBufferedOutput => {
-            let _ = flush_pending_data(
-                context.writer,
-                context.streams,
-                context.ready_streams,
-                context.connection_send_window,
-                *context.peer_max_frame_size,
-                context.header_state,
-                context.response_closes,
-            )
-            .await?;
-            context.writer.flush().await?;
+            flush_buffered_writer_output(context).await?;
             return Ok(true);
         }
         WriterCommand::SendReset {
@@ -446,77 +558,12 @@ where
             context.streams.remove(&stream_id.get());
         }
         WriterCommand::GrantSendWindow { target, increment } => {
-            let increment = i64::from(increment.get());
-            match target {
-                WindowTarget::Stream(stream_id) => {
-                    let stream_key = stream_id.get();
-                    let overflow = match context.streams.entry(stream_key) {
-                        Entry::Occupied(mut entry) => {
-                            let stream = entry.get_mut();
-                            if stream.send_window
-                                > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment
-                            {
-                                true
-                            } else {
-                                stream.send_window += increment;
-                                if stream.has_pending_output() && !stream.is_closed() {
-                                    stream.schedule(context.ready_streams, stream_id, false);
-                                }
-                                false
-                            }
-                        }
-                        Entry::Vacant(entry) => {
-                            let stream = entry
-                                .insert(StreamWriteState::new(*context.initial_stream_send_window));
-                            if stream.send_window
-                                > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment
-                            {
-                                true
-                            } else {
-                                stream.send_window += increment;
-                                false
-                            }
-                        }
-                    };
-                    if overflow {
-                        context.streams.remove(&stream_key);
-                        frame::append_rst_stream(
-                            context.frame_buf,
-                            stream_id,
-                            ErrorCode::FLOW_CONTROL_ERROR,
-                        );
-                        write_frame_buf(context.writer, context.frame_buf).await?;
-                        notify_response_close(context.response_closes, stream_id);
-                    }
-                }
-                WindowTarget::Connection => {
-                    if *context.connection_send_window
-                        > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment
-                    {
-                        frame::append_goaway(
-                            context.frame_buf,
-                            None,
-                            ErrorCode::FLOW_CONTROL_ERROR,
-                            b"connection flow-control window overflow",
-                        );
-                        write_frame_buf(context.writer, context.frame_buf).await?;
-                        context.writer.flush().await?;
-                        return Ok(true);
-                    }
-                    *context.connection_send_window += increment;
-                }
+            if handle_grant_send_window(context, target, increment).await? {
+                return Ok(true);
             }
         }
         WriterCommand::SendWindowUpdate { target, increment } => {
-            frame::append_window_update(
-                context.frame_buf,
-                match target {
-                    WindowTarget::Connection => None,
-                    WindowTarget::Stream(stream_id) => Some(stream_id),
-                },
-                increment,
-            );
-            write_frame_buf(context.writer, context.frame_buf).await?;
+            send_window_update(context, target, increment).await?;
         }
         WriterCommand::PingAck(payload) => {
             frame::append_ping_ack(context.frame_buf, payload);
@@ -540,7 +587,11 @@ where
     Ok(false)
 }
 
-pub(crate) async fn init_writer<W>(
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "writer ingress is intentionally kept with the initialized writer state"
+)]
+pub async fn init_writer<W>(
     writer: W,
     config: &'static ServerConfig,
     initial_peer_settings: Option<PeerSettings>,
@@ -549,10 +600,6 @@ where
     W: H2WriteTarget,
 {
     let ingress = WriterIngress::new(config.http2.max_concurrent_streams as usize);
-    let connection = ConnectionHandle {
-        ingress: Arc::clone(&ingress),
-        config,
-    };
     let mut writer = BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer);
     let mut frame_buf = BytesMut::with_capacity(FRAME_BUFFER_CAPACITY);
     let initial_settings = Settings {
@@ -608,6 +655,10 @@ where
         }
     }
 
+    let connection = ConnectionHandle {
+        ingress: Arc::clone(&writer_state.ingress),
+        config,
+    };
     Ok((writer_state, connection))
 }
 
@@ -628,7 +679,7 @@ impl ConnectionHandle {
         self.ingress.enqueue_batch(stream_id, commands)
     }
 
-    pub(crate) fn config(&self) -> &'static ServerConfig {
+    pub(crate) const fn config(&self) -> &'static ServerConfig {
         self.config
     }
 
@@ -707,7 +758,7 @@ where
                 }]),
                 access_log: false,
                 root_path: Box::from(""),
-                http1: Default::default(),
+                http1: Http1Config::default(),
                 http2: Http2Config {
                     max_concurrent_streams,
                     max_header_list_size: None,
@@ -724,7 +775,7 @@ where
                 limit_connections: None,
                 max_requests: None,
                 runtime_threads: 2,
-                websocket: Default::default(),
+                websocket: WebSocketConfig::default(),
                 proxy: ProxyConfig {
                     trust_headers: false,
                     trusted_peers: Box::new([]),
@@ -732,7 +783,7 @@ where
                 },
                 tls: None,
                 timeout_handshake: Duration::from_secs(5),
-                response_headers: Default::default(),
+                response_headers: ResponseHeaderConfig::default(),
             })),
             streams: new_stream_map(max_concurrent_streams as usize),
             ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
@@ -750,7 +801,7 @@ where
         self.writer.get_ref()
     }
 
-    fn command_context(&mut self) -> WriterLoopParts<'_, W> {
+    const fn command_context(&mut self) -> WriterLoopParts<'_, W> {
         WriterLoopParts {
             writer: &mut self.writer,
             frame_buf: &mut self.frame_buf,

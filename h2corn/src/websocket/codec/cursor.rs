@@ -14,7 +14,7 @@ pub(super) struct SegmentCursor<const N: usize> {
 }
 
 impl<const N: usize> SegmentCursor<N> {
-    pub(super) fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         self.len
     }
 

@@ -6,9 +6,9 @@ use std::borrow::Cow;
 use crate::base32::decode_base32_secret;
 use crate::errors::Error;
 
-pub(crate) type SecretBytes<'a> = Cow<'a, [u8]>;
+pub type SecretBytes<'a> = Cow<'a, [u8]>;
 
-pub(crate) fn parse_secret_from_py<'a>(secret: &'a Bound<'_, PyAny>) -> PyResult<SecretBytes<'a>> {
+pub fn parse_secret_from_py<'a>(secret: &'a Bound<'_, PyAny>) -> PyResult<SecretBytes<'a>> {
     if let Ok(value) = secret.cast::<PyBytes>() {
         return Ok(Cow::Borrowed(value.as_bytes()));
     }

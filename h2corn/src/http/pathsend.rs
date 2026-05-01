@@ -22,7 +22,7 @@ pub struct PathStreamer {
 }
 
 impl PathStreamer {
-    pub fn new(file: File, len: usize, end_stream: bool) -> Self {
+    pub const fn new(file: File, len: usize, end_stream: bool) -> Self {
         Self {
             file,
             buffer: None,
@@ -54,7 +54,7 @@ impl PathStreamer {
         Ok(())
     }
 
-    pub fn is_drained(&self) -> bool {
+    pub const fn is_drained(&self) -> bool {
         self.offset == self.filled && self.remaining_len == 0
     }
 
@@ -64,7 +64,7 @@ impl PathStreamer {
             .map_or(&[], |buffer| &buffer[self.offset..self.filled])
     }
 
-    pub fn consume(&mut self, len: usize) {
+    pub const fn consume(&mut self, len: usize) {
         self.offset += len;
         if self.offset == self.filled {
             self.offset = 0;
@@ -72,15 +72,15 @@ impl PathStreamer {
         }
     }
 
-    pub fn needs_fill(&self) -> bool {
+    pub const fn needs_fill(&self) -> bool {
         self.offset == self.filled && self.remaining_len != 0
     }
 
-    pub fn sendfile_remaining_len(&self) -> usize {
+    pub const fn sendfile_remaining_len(&self) -> usize {
         self.remaining_len
     }
 
-    pub fn sendfile_parts(&mut self) -> (&mut File, &mut u64) {
+    pub const fn sendfile_parts(&mut self) -> (&mut File, &mut u64) {
         (&mut self.file, &mut self.next_file_offset)
     }
 
@@ -90,7 +90,7 @@ impl PathStreamer {
     }
 }
 
-pub(crate) async fn open_pathsend_file(
+pub async fn open_pathsend_file(
     path: PathBuf,
     len_hint: Option<usize>,
 ) -> Result<(File, usize), H2CornError> {

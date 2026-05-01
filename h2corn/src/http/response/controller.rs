@@ -55,7 +55,7 @@ impl StartedResponse {
     }
 }
 
-pub(crate) struct ResponseController {
+pub struct ResponseController {
     head_only: bool,
     supports_response_trailers: bool,
     state: ResponseState,
@@ -93,7 +93,7 @@ fn complete_or_wait_for_trailers(
 }
 
 impl ResponseController {
-    pub(crate) fn new(head_only: bool, supports_response_trailers: bool) -> Self {
+    pub(crate) const fn new(head_only: bool, supports_response_trailers: bool) -> Self {
         Self {
             head_only,
             supports_response_trailers,
@@ -101,11 +101,11 @@ impl ResponseController {
         }
     }
 
-    pub(crate) fn is_complete(&self) -> bool {
+    pub(crate) const fn is_complete(&self) -> bool {
         matches!(self.state, ResponseState::Complete)
     }
 
-    pub(crate) fn needs_live_stream(&self) -> bool {
+    pub(crate) const fn needs_live_stream(&self) -> bool {
         match &self.state {
             ResponseState::StartedStreaming(_) | ResponseState::WaitingForTrailers { .. } => true,
             ResponseState::WaitingForStart

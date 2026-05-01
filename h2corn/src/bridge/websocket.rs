@@ -18,15 +18,15 @@ use super::{
 };
 
 #[derive(Clone)]
-pub(crate) struct WebSocketSendState {
+pub struct WebSocketSendState {
     shared: Arc<BufferedState<WebSocketSendMode, WebSocketOutboundEvent, 2>>,
 }
 
-pub(crate) struct WebSocketSendBuffer {
+pub struct WebSocketSendBuffer {
     shared: Arc<BufferedState<WebSocketSendMode, WebSocketOutboundEvent, 2>>,
 }
 
-pub(crate) enum WebSocketSendDisposition {
+pub enum WebSocketSendDisposition {
     Buffered,
     Forward(WebSocketOutboundEvent),
     Closed,
@@ -92,7 +92,7 @@ impl WebSocketSendBuffer {
 
     pub(crate) fn take_ready(&self) -> Option<WebSocketOutboundEvent> {
         let mut inner = self.shared.lock();
-        match &mut inner.state {
+        let event = match &mut inner.state {
             WebSocketSendMode::Handshake => inner.queue.pop_front(),
             WebSocketSendMode::AcceptedDrain => {
                 let event = inner.queue.pop_front()?;
@@ -102,7 +102,9 @@ impl WebSocketSendBuffer {
                 Some(event)
             }
             WebSocketSendMode::Streaming | WebSocketSendMode::Closed => None,
-        }
+        };
+        drop(inner);
+        event
     }
 
     pub(crate) async fn wait_ready(&self) {
@@ -124,7 +126,7 @@ enum WebSocketReceivePhase {
 }
 
 impl WebSocketReceiveState {
-    fn terminal_disconnect(&mut self) -> WebSocketInboundEvent {
+    const fn terminal_disconnect(&mut self) -> WebSocketInboundEvent {
         self.phase = WebSocketReceivePhase::Disconnected;
         WebSocketInboundEvent::Disconnect {
             code: 1005,
@@ -132,7 +134,7 @@ impl WebSocketReceiveState {
         }
     }
 
-    fn finalize_event(&mut self, event: WebSocketInboundEvent) -> WebSocketInboundEvent {
+    const fn finalize_event(&mut self, event: WebSocketInboundEvent) -> WebSocketInboundEvent {
         if matches!(event, WebSocketInboundEvent::Disconnect { .. }) {
             self.phase = WebSocketReceivePhase::Disconnected;
         }
@@ -175,7 +177,7 @@ impl ReceiveStateMachine for WebSocketReceiveState {
 }
 
 #[pyclass(frozen, freelist = 256)]
-pub(crate) struct PyWebSocketReceive {
+pub struct PyWebSocketReceive {
     locals: TaskLocals,
     state: Arc<AsyncMutex<WebSocketReceiveState>>,
 }
@@ -203,14 +205,14 @@ impl PyWebSocketReceive {
 }
 
 #[pyclass(frozen, freelist = 256)]
-pub(crate) struct PyWebSocketSend {
+pub struct PyWebSocketSend {
     locals: TaskLocals,
     state: WebSocketSendState,
     tx: mpsc::Sender<WebSocketOutboundEvent>,
 }
 
 impl PyWebSocketSend {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         locals: TaskLocals,
         state: WebSocketSendState,
         tx: mpsc::Sender<WebSocketOutboundEvent>,

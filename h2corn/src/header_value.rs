@@ -5,7 +5,7 @@ use std::simd::{
 
 const SIMD_WIDTH: usize = 32;
 
-pub(crate) fn header_value_is_valid(value: &[u8]) -> bool {
+pub fn header_value_is_valid(value: &[u8]) -> bool {
     if value.len() < SIMD_WIDTH {
         return header_value_is_valid_scalar(value);
     }

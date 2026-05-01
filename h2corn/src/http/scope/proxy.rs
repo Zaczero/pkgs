@@ -11,7 +11,7 @@ use crate::http::types::{RequestHead, RequestHeaders};
 use crate::proxy::{ClientAddr, ConnectionInfo, ServerAddr};
 
 #[derive(Clone, Debug)]
-pub(crate) struct ScopeView<'a> {
+pub struct ScopeView<'a> {
     pub scheme: Cow<'a, str>,
     pub client: Option<(&'a str, u16)>,
     pub server: (&'a str, Option<u16>),
@@ -19,7 +19,7 @@ pub(crate) struct ScopeView<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ScopeOverrides {
+pub struct ScopeOverrides {
     pub(crate) scheme: Option<Box<str>>,
     pub(crate) client: Option<ClientAddr>,
     pub(crate) server: Option<ServerAddr>,
@@ -51,7 +51,7 @@ fn default_client(info: &ConnectionInfo) -> Option<(&str, u16)> {
         .map(|client| (client.host.as_ref(), client.port))
 }
 
-pub(crate) fn resolve_scope_view<'a>(
+pub fn resolve_scope_view<'a>(
     request: &'a RequestHead,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
@@ -82,7 +82,7 @@ pub(crate) fn resolve_scope_view<'a>(
             if let Some((host, port)) = forwarded.host {
                 view.server = (
                     host,
-                    port.or(default_port_for_scheme(&view.scheme))
+                    port.or_else(|| default_port_for_scheme(&view.scheme))
                         .or(view.server.1),
                 );
             }
@@ -114,7 +114,7 @@ pub(crate) fn resolve_scope_view<'a>(
         {
             view.server = (
                 host,
-                port.or(default_port_for_scheme(&view.scheme))
+                port.or_else(|| default_port_for_scheme(&view.scheme))
                     .or(view.server.1),
             );
         }
@@ -138,7 +138,7 @@ pub(crate) fn resolve_scope_view<'a>(
     view
 }
 
-pub(crate) fn resolve_scope_overrides(
+pub fn resolve_scope_overrides(
     request: &RequestHead,
     config: &ServerConfig,
     info: &ConnectionInfo,
@@ -202,7 +202,7 @@ fn proxy_header_value(headers: &RequestHeaders, index: Option<usize>) -> Option<
         .and_then(|(_, value)| header_value_text(value))
 }
 
-pub(crate) fn scope_view_from_parts<'a>(
+pub fn scope_view_from_parts<'a>(
     scheme: &'a str,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
@@ -218,16 +218,14 @@ pub(crate) fn scope_view_from_parts<'a>(
             .as_ref()
             .map(|client| (client.host.as_ref(), client.port))
             .or_else(|| default_client(info)),
-        server: overrides
-            .server
-            .as_ref()
-            .map_or(default_server(config, info), |server| {
-                (server.host.as_ref(), server.port)
-            }),
+        server: overrides.server.as_ref().map_or_else(
+            || default_server(config, info),
+            |server| (server.host.as_ref(), server.port),
+        ),
         root_path: overrides
             .root_path
             .as_deref()
-            .map_or(Cow::Borrowed(config.root_path.as_ref()), Cow::Borrowed),
+            .map_or_else(|| Cow::Borrowed(config.root_path.as_ref()), Cow::Borrowed),
     }
 }
 

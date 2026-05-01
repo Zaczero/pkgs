@@ -23,30 +23,30 @@ use crate::http::{
 };
 use crate::proxy::ConnectionInfo;
 
-pub(crate) struct SharedApp {
+pub struct SharedApp {
     pub app: Py<PyAny>,
     pub locals: TaskLocals,
     pub limits: Option<Arc<RuntimeLimits>>,
 }
 
-pub(crate) type AppState = Arc<SharedApp>;
+pub type AppState = Arc<SharedApp>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ShutdownKind {
+pub enum ShutdownKind {
     #[default]
     Stop,
     Restart,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ShutdownState {
+pub enum ShutdownState {
     #[default]
     Running,
     Graceful(ShutdownKind),
 }
 
 impl ShutdownState {
-    pub(crate) fn kind(self) -> Option<ShutdownKind> {
+    pub(crate) const fn kind(self) -> Option<ShutdownKind> {
         match self {
             Self::Running => None,
             Self::Graceful(kind) => Some(kind),
@@ -65,12 +65,12 @@ impl ShutdownKind {
 }
 
 #[derive(Default)]
-pub(crate) struct ConnectionScopeCache {
+pub struct ConnectionScopeCache {
     default_server: OnceLock<Py<PyAny>>,
     default_client: OnceLock<Option<Py<PyAny>>>,
 }
 
-pub(crate) struct RuntimeLimits {
+pub struct RuntimeLimits {
     concurrency: Option<Arc<Semaphore>>,
     max_requests: Option<NonZeroU64>,
     completed_tasks: AtomicU64,
@@ -115,7 +115,7 @@ impl RuntimeLimits {
 }
 
 #[derive(Default)]
-pub(crate) struct RequestAdmission {
+pub struct RequestAdmission {
     permit: Option<OwnedSemaphorePermit>,
     limits: Option<Arc<RuntimeLimits>>,
 }
@@ -129,7 +129,7 @@ impl Drop for RequestAdmission {
     }
 }
 
-pub(crate) fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
+pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
             permit: None,
@@ -148,7 +148,7 @@ pub(crate) fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdm
 }
 
 #[derive(Clone)]
-pub(crate) struct ConnectionContext {
+pub struct ConnectionContext {
     pub app: AppState,
     pub config: &'static ServerConfig,
     pub info: Arc<ConnectionInfo>,
@@ -215,7 +215,7 @@ impl ConnectionContext {
     }
 }
 
-pub(crate) struct RequestContext {
+pub struct RequestContext {
     pub connection: ConnectionContext,
     pub request: RequestHead,
     pub(crate) scope_overrides: ScopeOverrides,
@@ -234,7 +234,7 @@ impl RequestContext {
 }
 
 #[derive(Debug)]
-pub(crate) enum StreamInput {
+pub enum StreamInput {
     Data(Bytes),
     EndStream,
     Reset(ErrorCode),
@@ -261,7 +261,7 @@ where
     }
 }
 
-pub(crate) fn start_app_call<B>(
+pub fn start_app_call<B>(
     app: &AppState,
     build_args: B,
 ) -> Result<impl Future<Output = Result<(), H2CornError>> + use<B>, H2CornError>

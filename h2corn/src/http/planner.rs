@@ -3,38 +3,38 @@ use std::num::NonZeroU64;
 use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RequestRoute<WebSocketMeta> {
+pub enum RequestRoute<WebSocketMeta> {
     Http,
     WebSocket(WebSocketMeta),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RequestInputPlan {
+pub enum RequestInputPlan {
     None,
     Stream { count_body_bytes: bool },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RequestLaunchPlan<WebSocketMeta> {
+pub struct RequestLaunchPlan<WebSocketMeta> {
     pub(crate) route: RequestRoute<WebSocketMeta>,
     pub(crate) input: RequestInputPlan,
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestRejection {
+pub struct RequestRejection {
     pub(crate) status: HttpStatusCode,
     pub(crate) headers: ResponseHeaders,
 }
 
 impl RequestRejection {
-    pub(crate) fn payload_too_large() -> Self {
+    pub(crate) const fn payload_too_large() -> Self {
         Self {
             status: status_code::PAYLOAD_TOO_LARGE,
             headers: ResponseHeaders::new(),
         }
     }
 
-    pub(crate) fn not_implemented() -> Self {
+    pub(crate) const fn not_implemented() -> Self {
         Self {
             status: status_code::NOT_IMPLEMENTED,
             headers: ResponseHeaders::new(),
@@ -42,7 +42,7 @@ impl RequestRejection {
     }
 }
 
-pub(crate) fn reject_oversized_request(
+pub fn reject_oversized_request(
     request: &RequestHead,
     max_request_body_size: Option<NonZeroU64>,
 ) -> Result<(), RequestRejection> {
@@ -57,7 +57,7 @@ pub(crate) fn reject_oversized_request(
     }
 }
 
-pub(crate) fn plan_request_input<WebSocketMeta>(
+pub const fn plan_request_input<WebSocketMeta>(
     route: &RequestRoute<WebSocketMeta>,
     input_finished: bool,
     access_log: bool,
@@ -73,7 +73,7 @@ pub(crate) fn plan_request_input<WebSocketMeta>(
     }
 }
 
-pub(crate) fn plan_request<WebSocketMeta>(
+pub fn plan_request<WebSocketMeta>(
     request: &RequestHead,
     websocket: Option<Result<WebSocketMeta, RequestRejection>>,
     input_finished: bool,
@@ -89,10 +89,8 @@ pub(crate) fn plan_request<WebSocketMeta>(
         None => RequestRoute::Http,
     };
 
-    Ok(RequestLaunchPlan {
-        input: plan_request_input(&route, input_finished, access_log),
-        route,
-    })
+    let input = plan_request_input(&route, input_finished, access_log);
+    Ok(RequestLaunchPlan { route, input })
 }
 
 #[cfg(test)]

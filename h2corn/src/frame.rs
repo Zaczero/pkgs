@@ -17,9 +17,9 @@ pub type StreamId = NonZeroU32;
 pub type WindowIncrement = NonZeroU32;
 
 pub const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
-pub const DEFAULT_WINDOW_SIZE: u32 = 65_535;
-pub const DEFAULT_MAX_FRAME_SIZE: usize = 16_384;
-pub const MAX_FRAME_SIZE_UPPER_BOUND: usize = 16_777_215;
+pub const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 0x4000;
+pub const MAX_FRAME_SIZE_UPPER_BOUND: usize = 0x00FF_FFFF;
 pub const MAX_FLOW_CONTROL_WINDOW: u32 = (1 << 31) - 1;
 pub const CONNECTION_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub const STREAM_ID_MASK: u32 = 0x7fff_ffff;
@@ -169,7 +169,7 @@ struct WireSetting {
     value: U32,
 }
 
-pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
+pub const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
 
 const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 
@@ -269,7 +269,7 @@ impl TryFrom<Settings> for PeerSettings {
 }
 
 #[derive(Debug)]
-pub(crate) struct FrameReader<R> {
+pub struct FrameReader<R> {
     reader: R,
     buffer: BytesMut,
 }
@@ -285,7 +285,7 @@ where
         }
     }
 
-    pub(crate) fn with_buffer(reader: R, buffer: BytesMut) -> Self {
+    pub(crate) const fn with_buffer(reader: R, buffer: BytesMut) -> Self {
         Self { reader, buffer }
     }
 
@@ -487,7 +487,7 @@ pub fn append_goaway(
     dst.extend_from_slice(debug);
 }
 
-pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
+pub fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
     if !payload.len().is_multiple_of(SETTING_ENTRY_LEN) {
         return H2Error::SettingsPayloadLengthInvalid.err();
     }
@@ -502,7 +502,7 @@ pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2C
         )
     };
     let mut settings = Settings::default();
-    for entry in entries.iter() {
+    for entry in entries {
         settings.apply_wire_pair(SettingId::new(entry.id.get()), entry.value.get())?;
     }
     PeerSettings::try_from(settings)
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn encode_frame_header_uses_usize_length() {
         let encoded = encode_frame_header(FrameHeader {
-            len: 16_384,
+            len: 0x4000,
             frame_type: FrameType::DATA,
             flags: FrameFlags::EMPTY,
             stream_id: Some(StreamId::new(1).unwrap()),
@@ -582,7 +582,7 @@ mod tests {
     fn append_goaway_writes_unknown_error_code() {
         let mut frame = BytesMut::new();
         append_goaway(&mut frame, None, ErrorCode::new(0xfeed_beef), b"debug");
-        assert_eq!(&frame[13..17], &0xfeed_beefu32.to_be_bytes());
+        assert_eq!(&frame[13..17], &0xfeed_beef_u32.to_be_bytes());
     }
 
     #[test]

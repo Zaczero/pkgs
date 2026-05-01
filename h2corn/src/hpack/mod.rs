@@ -1,7 +1,7 @@
 mod decoder;
 mod encoder;
-pub(crate) mod header;
-pub(crate) mod huffman;
+pub mod header;
+pub mod huffman;
 mod static_table;
 
 pub use self::decoder::{Decoder, DecoderError, NeedMore};

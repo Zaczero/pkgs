@@ -2,9 +2,10 @@ use nohash_hasher::BuildNoHashHasher;
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::Mutex;
 use pyo3::{
+    Bound, Py,
     exceptions::{PyKeyError, PyValueError},
     prelude::*,
-    types::{PyIterator, PyTuple, PyType},
+    types::{PyAny, PyIterator, PyTuple, PyType},
 };
 use std::num::NonZeroUsize;
 
@@ -12,7 +13,7 @@ use crate::errors::Error;
 use crate::key::PyObjectWrapper;
 
 #[pyclass]
-pub(crate) struct LRUCache {
+pub struct LRUCache {
     maxsize: NonZeroUsize,
     cache: Mutex<OrderedHashMap<PyObjectWrapper, Py<PyAny>, BuildNoHashHasher<PyObjectWrapper>>>,
 }
@@ -35,18 +36,14 @@ impl LRUCache {
 #[pymethods]
 impl LRUCache {
     #[classmethod]
-    fn __class_getitem__(
-        cls: &Bound<'_, PyType>,
-        _item: &Bound<'_, PyAny>,
-    ) -> PyResult<Py<PyType>> {
-        Ok(cls.clone().unbind())
+    fn __class_getitem__(cls: &Bound<'_, PyType>, _item: &Bound<'_, PyAny>) -> Py<PyType> {
+        cls.clone().unbind()
     }
 
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
-        let maxsize = NonZeroUsize::new(maxsize).ok_or_else(|| {
-            PyValueError::new_err(Error::MaxsizeMustBePositive.message())
-        })?;
+        let maxsize = NonZeroUsize::new(maxsize)
+            .ok_or_else(|| PyValueError::new_err(Error::MaxsizeMustBePositive.message()))?;
 
         Ok(Self {
             maxsize,
@@ -69,6 +66,7 @@ impl LRUCache {
     fn __iter__<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyIterator>> {
         let cache = self.cache.lock();
         let tuple = PyTuple::new(py, cache.keys().map(|key| key.obj.clone_ref(py)))?;
+        drop(cache);
         PyIterator::from_object(tuple.as_any())
     }
 
@@ -79,6 +77,7 @@ impl LRUCache {
         if cache.len() > self.maxsize.get() {
             cache.pop_front();
         }
+        drop(cache);
         Ok(())
     }
 
@@ -95,6 +94,7 @@ impl LRUCache {
 
         let result = value.clone_ref(py);
         cache.move_to_back(&cache_key);
+        drop(cache);
         Ok(result)
     }
 
@@ -115,11 +115,13 @@ impl LRUCache {
         let cache_key = Self::wrap_key(py, key)?;
         let mut cache = self.cache.lock();
         let Some(value) = cache.get(&cache_key) else {
+            drop(cache);
             return Ok(default.unwrap_or_else(|| py.None()));
         };
 
         let result = value.clone_ref(py);
         cache.move_to_back(&cache_key);
+        drop(cache);
         Ok(result)
     }
 }

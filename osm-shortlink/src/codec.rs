@@ -6,7 +6,7 @@ use crate::constants::{
 };
 
 fn interleave_bits(x: u32, y: u32) -> u64 {
-    let mut v = u64x2::from_array([x as u64, y as u64]);
+    let mut v = u64x2::from_array([u64::from(x), u64::from(y)]);
     v = (v | (v << 16)) & u64x2::splat(0x0000_FFFF_0000_FFFF);
     v = (v | (v << 8)) & u64x2::splat(0x00FF_00FF_00FF_00FF);
     v = (v | (v << 4)) & u64x2::splat(0x0F0F_0F0F_0F0F_0F0F);
@@ -16,39 +16,39 @@ fn interleave_bits(x: u32, y: u32) -> u64 {
     (sx << 1) | sy
 }
 
-pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> String {
+pub fn encode(lon: f64, lat: f64, zoom: u8) -> String {
     // how many 180° half-turns (parity decides whether lon flips by 180°)
-    let t = lat + 90.0;
-    let half_turns = (t / 180.0).floor() as i64;
+    let normalized_lat = lat + 90.0;
+    let half_turns = (normalized_lat / 180.0).floor() as i64;
     let parity = (half_turns & 1) as f64;
 
-    let x = ((lon + 180.0 + 180.0 * parity).rem_euclid(360.0) * X_SCALE) as u32;
-    let y = ((180.0 - (t.rem_euclid(360.0) - 180.0).abs()) * Y_SCALE) as u32;
-    let c = interleave_bits(x, y);
+    let encoded_x = (180.0_f64.mul_add(parity, lon + 180.0).rem_euclid(360.0) * X_SCALE) as u32;
+    let encoded_y = ((180.0 - (normalized_lat.rem_euclid(360.0) - 180.0).abs()) * Y_SCALE) as u32;
+    let cell = interleave_bits(encoded_x, encoded_y);
 
-    let n = zoom + 8;
-    let r = (n % 3) as usize;
-    let d = n.div_ceil(3) as usize;
+    let bit_count = zoom + 8;
+    let padding = (bit_count % 3) as usize;
+    let digit_count = bit_count.div_ceil(3) as usize;
 
-    let mut out = String::with_capacity(d + r);
+    let mut out = String::with_capacity(digit_count + padding);
 
-    for i in 0..d {
+    for i in 0..digit_count {
         let shift = 58 - (i as u32 * 6);
-        let digit = ((c >> shift) & 0x3F) as usize;
+        let digit = ((cell >> shift) & 0x3F) as usize;
         out.push(CHARSET[digit] as char);
     }
-    for _ in 0..r {
+    for _ in 0..padding {
         out.push('-');
     }
 
     out
 }
 
-pub(crate) fn decode(s: &str) -> (f64, f64, u8) {
+pub fn decode(s: &str) -> (f64, f64, u8) {
     let mut x = 0;
     let mut y = 0;
     let mut z = 0;
-    let mut offsets = 0u8;
+    let mut offsets = 0_u8;
 
     for c in s.bytes() {
         let packed = DECODE_LUT[c as usize];
@@ -60,8 +60,8 @@ pub(crate) fn decode(s: &str) -> (f64, f64, u8) {
             continue;
         }
 
-        x = (x << 3) | (packed & 0b111) as u32;
-        y = (y << 3) | (packed >> 3) as u32;
+        x = (x << 3) | u32::from(packed & 0b111);
+        y = (y << 3) | u32::from(packed >> 3);
         z += 3;
     }
 
@@ -72,8 +72,8 @@ pub(crate) fn decode(s: &str) -> (f64, f64, u8) {
     z -= (3 - offsets) % 3;
 
     (
-        (x as f64 * X_SCALE_INV) - 180.0,
-        (y as f64 * Y_SCALE_INV) - 90.0,
+        (f64::from(x) * X_SCALE_INV) - 180.0,
+        (f64::from(y) * Y_SCALE_INV) - 90.0,
         z,
     )
 }

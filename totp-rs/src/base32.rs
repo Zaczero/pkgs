@@ -37,12 +37,12 @@ const fn build_decode_lut() -> [u8; 256] {
 
 const DECODE_LUT: [u8; 256] = build_decode_lut();
 
-pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
+pub fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
     let bytes = encoded.as_bytes();
 
     let mut out = Vec::with_capacity(bytes.len() * 5 / 8);
     let mut acc = 0;
-    let mut bits = 0u8;
+    let mut bits = 0_u8;
 
     for (index, &b) in bytes.iter().enumerate() {
         let v = DECODE_LUT[b as usize];
@@ -53,7 +53,7 @@ pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
             continue;
         }
 
-        acc = (acc << 5) | (v as u32);
+        acc = (acc << 5) | u32::from(v);
         bits += 5;
 
         while bits >= 8 {

@@ -25,7 +25,7 @@ fn decode_next_value(cursor: &mut &[u8]) -> Option<i32> {
     Some(zigzag_decode(value))
 }
 
-pub(crate) fn decode<'py, const LATLON: bool>(
+pub fn decode<'py, const LATLON: bool>(
     py: Python<'py>,
     line: &str,
     precision: i32,
@@ -44,8 +44,8 @@ pub(crate) fn decode<'py, const LATLON: bool>(
         last_lat += dlat;
         last_lon += dlon;
 
-        let lat = last_lat as f64 * inv_scale;
-        let lon = last_lon as f64 * inv_scale;
+        let lat = f64::from(last_lat) * inv_scale;
+        let lon = f64::from(last_lon) * inv_scale;
         out.append(if LATLON { (lat, lon) } else { (lon, lat) })?;
     }
 

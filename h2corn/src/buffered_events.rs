@@ -1,15 +1,15 @@
 use parking_lot::Mutex;
-pub(crate) use parking_lot::MutexGuard;
+pub use parking_lot::MutexGuard;
 use tokio::sync::Notify;
 
 use crate::smallvec_deque::SmallVecDeque;
 
-pub(crate) struct BufferedStateInner<S, T, const N: usize> {
+pub struct BufferedStateInner<S, T, const N: usize> {
     pub(crate) state: S,
     pub(crate) queue: SmallVecDeque<T, N>,
 }
 
-pub(crate) struct BufferedState<S, T, const N: usize> {
+pub struct BufferedState<S, T, const N: usize> {
     inner: Mutex<BufferedStateInner<S, T, N>>,
     ready: Notify,
 }

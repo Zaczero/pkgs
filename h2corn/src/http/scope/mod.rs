@@ -11,7 +11,7 @@ use crate::hpack::BytesStr;
 use crate::http::types::{HttpVersion, KnownRequestHeaderName, RequestHeaderName, RequestHeaders};
 use crate::python::{py_cached_dict, py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
-pub(crate) use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+pub use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 
 const INVALID_HEX: u8 = u8::MAX;
 const HEX_NIBBLE_TABLE: [u8; 256] = {
@@ -76,7 +76,7 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     String::from_utf8(out).map_or_else(|_| Cow::Borrowed(raw_path), Cow::Owned)
 }
 
-pub(crate) fn build_http_scope<'py>(
+pub fn build_http_scope<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -88,7 +88,7 @@ pub(crate) fn build_http_scope<'py>(
     )
 }
 
-pub(crate) fn build_websocket_scope<'py>(
+pub fn build_websocket_scope<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
     requested_subprotocols: &[BytesStr],
@@ -183,7 +183,7 @@ fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     })
 }
 
-pub(crate) fn headers_to_python<'py>(
+pub fn headers_to_python<'py>(
     py: Python<'py>,
     headers: &RequestHeaders,
 ) -> PyResult<Bound<'py, PyList>> {
@@ -233,10 +233,7 @@ fn header_name_to_python<'py>(py: Python<'py>, name: &RequestHeaderName) -> Boun
     }
 }
 
-fn known_header_name_to_python<'py>(
-    py: Python<'py>,
-    name: KnownRequestHeaderName,
-) -> Bound<'py, PyBytes> {
+fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> Bound<'_, PyBytes> {
     py_match_cached_bytes!(
         py,
         name,
@@ -332,6 +329,7 @@ mod tests {
     use pyo3::types::{PyAnyMethods, PyDictMethods};
     use pyo3::{PyResult, Python};
     use pyo3_async_runtimes::TaskLocals;
+    use tokio::sync::watch;
 
     use super::{build_http_scope, decode_path};
     use crate::config::{
@@ -389,7 +387,7 @@ mod tests {
         }))
     }
 
-    fn test_connection(py: Python<'_>) -> PyResult<ConnectionContext> {
+    fn test_connection(py: Python<'_>) -> ConnectionContext {
         let locals = TaskLocals::new(py.None().into_bound(py));
         let app = Arc::new(SharedApp {
             app: py.None(),
@@ -404,13 +402,8 @@ mod tests {
             }),
             false,
         ));
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(ShutdownState::Running);
-        Ok(ConnectionContext::new(
-            app,
-            test_server_config(),
-            info,
-            shutdown_rx,
-        ))
+        let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
+        ConnectionContext::new(app, test_server_config(), info, shutdown_rx)
     }
 
     fn test_request() -> RequestHead {
@@ -430,7 +423,7 @@ mod tests {
     fn http_scope_omits_empty_root_path_and_reuses_default_endpoint_objects() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py)?;
+            let connection = test_connection(py);
             let scope_one =
                 build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
             let scope_two = build_http_scope(py, &RequestContext::new(connection, test_request()))?;
@@ -460,7 +453,7 @@ mod tests {
     fn http_scope_uses_overridden_endpoints_instead_of_cached_defaults() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py)?;
+            let connection = test_connection(py);
             let default_scope =
                 build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
 

@@ -107,7 +107,7 @@ impl Decoder {
         })
     }
 
-    fn begin_block(&mut self) {
+    const fn begin_block(&mut self) {
         if let Some(size) = self.max_size_update.take() {
             self.last_max_update = size;
         }
@@ -303,7 +303,7 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
 }
 
 impl Table {
-    fn new(max_size: usize) -> Self {
+    const fn new(max_size: usize) -> Self {
         Self {
             entries: Vec::new(),
             start: 0,
@@ -392,31 +392,31 @@ impl Table {
 
 impl From<Utf8Error> for DecoderError {
     fn from(_: Utf8Error) -> Self {
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderValue> for DecoderError {
     fn from(_: header::InvalidHeaderValue) -> Self {
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderName> for DecoderError {
     fn from(_: header::InvalidHeaderName) -> Self {
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<method::InvalidMethod> for DecoderError {
     fn from(_: method::InvalidMethod) -> Self {
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<status::InvalidStatusCode> for DecoderError {
     fn from(_: status::InvalidStatusCode) -> Self {
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 

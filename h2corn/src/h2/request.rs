@@ -47,20 +47,20 @@ pub(super) enum RequestHeadError {
 }
 
 impl RequestHeadError {
-    fn compression(error: H2Error) -> Self {
+    const fn compression(error: H2Error) -> Self {
         Self::Connection {
             error_code: ErrorCode::COMPRESSION_ERROR,
             error,
         }
     }
 
-    pub fn stream_protocol() -> Self {
+    pub const fn stream_protocol() -> Self {
         Self::Stream {
             error_code: ErrorCode::PROTOCOL_ERROR,
         }
     }
 
-    pub fn reject(status: HttpStatusCode) -> Self {
+    pub const fn reject(status: HttpStatusCode) -> Self {
         Self::Reject { status }
     }
 }
@@ -106,15 +106,13 @@ pub(super) fn parse_header_block_fragment(
     }
     let block_end = payload_bytes.len() - pad_len;
 
-    let stream_dependency = if priority {
-        Some(PriorityDependency::from_wire(u32::from_be_bytes(
+    let stream_dependency = priority.then(|| {
+        PriorityDependency::from_wire(u32::from_be_bytes(
             payload_bytes[priority_offset..priority_offset + 4]
                 .try_into()
                 .expect("payload length is validated"),
-        )))
-    } else {
-        None
-    };
+        ))
+    });
 
     Ok(HeaderBlockFragment {
         block: if payload_offset == 0 && block_end == payload.len() {
@@ -197,7 +195,7 @@ impl RequestHeadBuilder {
         }
     }
 
-    fn account_header_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
+    const fn account_header_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
         if let Some(max_header_list_size) = self.max_header_list_size {
             self.header_list_size = self.header_list_size.saturating_add(len);
             if self.header_list_size > max_header_list_size.get() {

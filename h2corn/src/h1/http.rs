@@ -26,7 +26,7 @@ const RESPONSE_BUF_CAPACITY: usize = 512;
 
 type ResponseBuf = SmallVec<[u8; RESPONSE_BUF_CAPACITY]>;
 
-pub(crate) trait H1WriteTarget: AsyncWrite + Unpin + Send + 'static {
+pub trait H1WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
     async fn send_file_body(
         writer: &mut BufWriter<Self>,
         file: &mut File,
@@ -89,6 +89,14 @@ where
             close_after,
             response_log: ResponseLogState::default(),
         }
+    }
+
+    pub(super) async fn write_empty_response(
+        &mut self,
+        status: HttpStatusCode,
+        close_after: bool,
+    ) -> Result<(), H2CornError> {
+        write_empty_response(self.writer, self.config, status, close_after).await
     }
 }
 
@@ -441,23 +449,6 @@ fn append_response_headers(
     dst.extend_from_slice(b"\r\n");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::reason_phrase;
-    use crate::http::types::status_code;
-
-    #[test]
-    fn reason_phrase_keeps_common_fast_path_and_fallback() {
-        assert_eq!(reason_phrase(status_code::OK), Some("OK"));
-        assert_eq!(
-            reason_phrase(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE),
-            Some("Request Header Fields Too Large")
-        );
-        assert_eq!(reason_phrase(418), Some("I'm a teapot"));
-        assert_eq!(reason_phrase(999), None);
-    }
-}
-
 fn append_header_line(dst: &mut ResponseBuf, name: &[u8], value: &[u8]) {
     dst.extend_from_slice(name);
     dst.extend_from_slice(b": ");
@@ -494,5 +485,22 @@ fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
         if value == 0 {
             return &buf[cursor..];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reason_phrase;
+    use crate::http::types::status_code;
+
+    #[test]
+    fn reason_phrase_keeps_common_fast_path_and_fallback() {
+        assert_eq!(reason_phrase(status_code::OK), Some("OK"));
+        assert_eq!(
+            reason_phrase(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE),
+            Some("Request Header Fields Too Large")
+        );
+        assert_eq!(reason_phrase(418), Some("I'm a teapot"));
+        assert_eq!(reason_phrase(999), None);
     }
 }

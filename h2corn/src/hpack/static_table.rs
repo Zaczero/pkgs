@@ -6,12 +6,12 @@ use super::{
     header::{BytesStr, OwnedName},
 };
 
-pub(crate) const STATIC_TABLE_LEN: usize = 61;
-pub(crate) const DYNAMIC_INDEX_OFFSET: usize = STATIC_TABLE_LEN + 1;
+pub const STATIC_TABLE_LEN: usize = 61;
+pub const DYNAMIC_INDEX_OFFSET: usize = STATIC_TABLE_LEN + 1;
 const EMPTY_VALUE: &[u8] = b"";
 
 #[derive(Clone, Copy)]
-pub(crate) struct StaticFieldEntry {
+pub struct StaticFieldEntry {
     pub index: usize,
     pub exact_value: &'static [u8],
     pub skip_value_index: bool,
@@ -65,7 +65,7 @@ macro_rules! static_field_data {
             }
         }
 
-        pub(crate) fn field_index_entry(name: &[u8]) -> Option<StaticFieldEntry> {
+        pub fn field_index_entry(name: &[u8]) -> Option<StaticFieldEntry> {
             match name.first().copied() {
                 $(
                 Some($first) => match name {
@@ -168,7 +168,7 @@ static_field_data! {
     },
 }
 
-pub(crate) fn get(index: usize) -> Header {
+pub fn get(index: usize) -> Header {
     match index {
         1 => Header::Authority(BytesStr::from_static_bytes(b"")),
         2 => Header::Method(Method::GET),
@@ -189,7 +189,7 @@ pub(crate) fn get(index: usize) -> Header {
     }
 }
 
-pub(crate) fn name(index: usize) -> OwnedName {
+pub fn name(index: usize) -> OwnedName {
     match index {
         1 => OwnedName::Authority,
         2 | 3 => OwnedName::Method,
@@ -202,7 +202,7 @@ pub(crate) fn name(index: usize) -> OwnedName {
 }
 
 #[cfg(test)]
-pub(crate) fn status_index(status: u16) -> Option<usize> {
+pub const fn status_index(status: u16) -> Option<usize> {
     match status {
         200 => Some(8),
         204 => Some(9),
@@ -216,7 +216,7 @@ pub(crate) fn status_index(status: u16) -> Option<usize> {
 }
 
 #[cfg(test)]
-pub(crate) fn exact_index(header: &Header) -> Option<usize> {
+pub fn exact_index(header: &Header) -> Option<usize> {
     match header {
         Header::Field { name, value } => {
             field_exact_index_bytes(name.as_str().as_bytes(), value.as_ref())
@@ -240,7 +240,7 @@ pub(crate) fn exact_index(header: &Header) -> Option<usize> {
 }
 
 #[cfg(test)]
-pub(crate) fn field_exact_index_bytes(name: &[u8], value: &[u8]) -> Option<usize> {
+pub fn field_exact_index_bytes(name: &[u8], value: &[u8]) -> Option<usize> {
     let entry = field_index_entry(name)?;
     (entry.exact_value == value).then_some(entry.index)
 }

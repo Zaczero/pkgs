@@ -238,7 +238,7 @@ macro_rules! serve_with_proxy_protocol {
     };
 }
 
-pub(crate) async fn serve_from_fds(
+pub async fn serve_from_fds(
     app: AppState,
     fds: Box<[i64]>,
     config: &'static ServerConfig,

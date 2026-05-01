@@ -18,26 +18,26 @@ use crate::http::scope::build_http_scope;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 
 use self::buffered::HttpSendBuffer;
-pub(crate) use buffered::HttpSendState;
+pub use buffered::HttpSendState;
 
-pub(crate) enum HttpRequestBody {
+pub enum HttpRequestBody {
     NoBody,
     Single(Bytes),
     Stream(mpsc::Receiver<StreamInput>),
 }
 
-pub(crate) struct HttpRequestState {
+pub struct HttpRequestState {
     response: ResponseController,
     send_buffer: HttpSendBuffer,
     _admission: RequestAdmission,
 }
 
-pub(crate) struct RunningHttpRequest<F> {
+pub struct RunningHttpRequest<F> {
     pub(crate) state: HttpRequestState,
     pub(crate) app_task: F,
 }
 
-pub(crate) fn start_asgi_http_request(
+pub fn start_asgi_http_request(
     ctx: RequestContext,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -73,7 +73,7 @@ pub(crate) fn start_asgi_http_request(
     })
 }
 
-pub(crate) async fn run_asgi_http_request<T>(
+pub async fn run_asgi_http_request<T>(
     ctx: RequestContext,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -93,7 +93,7 @@ where
     drive_http_request(started, transport).await
 }
 
-pub(crate) async fn drive_http_request<T, F>(
+pub async fn drive_http_request<T, F>(
     started: RunningHttpRequest<F>,
     transport: &mut T,
 ) -> Result<(), H2CornError>
@@ -106,7 +106,7 @@ where
     drive_pinned_http_request(state, app_task.as_mut(), transport).await
 }
 
-pub(crate) async fn drive_pinned_http_request<T, F>(
+pub async fn drive_pinned_http_request<T, F>(
     state: HttpRequestState,
     app_task: Pin<&mut F>,
     transport: &mut T,
@@ -131,7 +131,7 @@ where
     .await
 }
 
-pub(crate) async fn try_complete_http_request<T>(
+pub async fn try_complete_http_request<T>(
     state: HttpRequestState,
     transport: &mut T,
     app_result: Result<(), H2CornError>,

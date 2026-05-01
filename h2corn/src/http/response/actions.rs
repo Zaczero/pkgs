@@ -12,7 +12,7 @@ use crate::http::header::{
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 
 #[derive(Debug)]
-pub(crate) enum FinalResponseBody {
+pub enum FinalResponseBody {
     Empty,
     Bytes(PayloadBytes),
     File { file: File, len: usize },
@@ -30,7 +30,7 @@ impl FinalResponseBody {
 }
 
 #[derive(Debug)]
-pub(crate) struct ResponseStart {
+pub struct ResponseStart {
     status: HttpStatusCode,
     headers: ResponseHeaders,
     scan: ResponseHeaderScan,
@@ -46,7 +46,7 @@ impl ResponseStart {
         }
     }
 
-    pub(crate) fn status(&self) -> HttpStatusCode {
+    pub(crate) const fn status(&self) -> HttpStatusCode {
         self.status
     }
 
@@ -82,7 +82,7 @@ impl ResponseStart {
 }
 
 #[derive(Debug)]
-pub(crate) enum ResponseAction {
+pub enum ResponseAction {
     Final {
         start: ResponseStart,
         body: FinalResponseBody,
@@ -101,7 +101,7 @@ pub(crate) enum ResponseAction {
     AbortIncomplete,
 }
 
-pub(crate) type ResponseActions = SmallVec<[ResponseAction; 2]>;
+pub type ResponseActions = SmallVec<[ResponseAction; 2]>;
 
 #[cfg(test)]
 mod tests {

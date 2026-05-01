@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     InvalidSecretChar { index: usize },
     InvalidSecretType,
     DigitsOutOfRange { digits: u8 },

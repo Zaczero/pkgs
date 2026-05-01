@@ -52,7 +52,7 @@ impl ReceiveState {
         self == Self::Idle
     }
 
-    pub(super) fn request_is_closed(self) -> bool {
+    pub(super) const fn request_is_closed(self) -> bool {
         matches!(self, Self::RequestClosed | Self::Closed)
     }
 }
@@ -64,7 +64,7 @@ pub(super) enum ConnectionDrainState {
 }
 
 impl ConnectionDrainState {
-    pub(super) fn deadline(self) -> Option<Instant> {
+    pub(super) const fn deadline(self) -> Option<Instant> {
         match self {
             Self::Accepting => None,
             Self::Draining { deadline } => deadline,
@@ -127,7 +127,7 @@ impl ReceiveWindowState {
         let increment = WindowIncrement::new(self.pending_update)
             .expect("pending window update is only incremented by positive DATA lengths");
         self.pending_update = 0;
-        self.recv_window += i64::from(increment.get());
+        self.recv_window += std::num::NonZeroI64::from(increment).get();
         Some(increment)
     }
 }
@@ -196,19 +196,21 @@ impl<R, W> H2ConnectionState<R, W> {
         shutdown: watch::Receiver<ShutdownState>,
         drain_state: ConnectionDrainState,
     ) -> Self {
+        let stream_capacity = context.config.http2.max_concurrent_streams as usize;
+        let local_max_frame_size = context.config.http2.max_inbound_frame_size.get() as usize;
         Self {
             reader,
             connection,
             writer,
+            context,
+            secure,
             shutdown,
             decoder: Decoder::new(frame::DEFAULT_HEADER_TABLE_SIZE),
-            streams: new_stream_map(context.config.http2.max_concurrent_streams as usize),
+            streams: new_stream_map(stream_capacity),
             pending_headers: None,
             last_client_stream_id: None,
             connection_window: ReceiveWindowState::new(INITIAL_CONNECTION_WINDOW_SIZE),
-            local_max_frame_size: context.config.http2.max_inbound_frame_size.get() as usize,
-            context,
-            secure,
+            local_max_frame_size,
             saw_client_settings: false,
             drain_state,
         }
@@ -320,7 +322,7 @@ pub(super) enum RequestInputDeadline {
 }
 
 impl RequestInputDeadline {
-    pub(super) fn instant(self) -> TokioInstant {
+    pub(super) const fn instant(self) -> TokioInstant {
         match self {
             Self::Headers(_, instant) | Self::Body(_, instant) => instant,
         }

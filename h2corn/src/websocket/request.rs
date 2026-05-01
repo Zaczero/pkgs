@@ -8,7 +8,7 @@ use crate::websocket::{
     WebSocketRequestMeta,
 };
 
-pub(crate) struct HandshakeRejection {
+pub struct HandshakeRejection {
     pub status: HttpStatusCode,
     pub headers: ResponseHeaders,
 }
@@ -25,8 +25,7 @@ impl HandshakeRejection {
     }
 }
 
-#[allow(clippy::result_large_err)]
-pub(crate) fn validate_websocket_request(
+pub fn validate_websocket_request(
     request: &RequestHead,
 ) -> Result<WebSocketRequestMeta, HandshakeRejection> {
     if request.header_meta.websocket.version_supported {
@@ -36,7 +35,7 @@ pub(crate) fn validate_websocket_request(
     }
 }
 
-pub(crate) fn validate_accept_headers(headers: &ResponseHeaders) -> Result<(), H2CornError> {
+pub fn validate_accept_headers(headers: &ResponseHeaders) -> Result<(), H2CornError> {
     for (name, _) in headers {
         let name = name.as_bytes();
         if name.starts_with(b":")
@@ -49,7 +48,7 @@ pub(crate) fn validate_accept_headers(headers: &ResponseHeaders) -> Result<(), H
     Ok(())
 }
 
-pub(crate) fn validate_accepted_subprotocol(
+pub fn validate_accepted_subprotocol(
     requested_subprotocols: &[BytesStr],
     subprotocol: Option<&str>,
 ) -> Result<(), H2CornError> {

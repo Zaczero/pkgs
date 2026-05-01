@@ -2,7 +2,7 @@ use nohash_hasher::IsEnabled;
 use pyo3::prelude::*;
 use std::hash::{Hash, Hasher};
 
-pub(crate) struct PyObjectWrapper {
+pub struct PyObjectWrapper {
     pub(crate) hash: isize,
     pub(crate) obj: Py<PyAny>,
 }

@@ -10,7 +10,7 @@ mod decode;
 mod frame;
 mod mask;
 
-pub(crate) const MAX_CLOSE_REASON_LEN: usize = 123;
+pub const MAX_CLOSE_REASON_LEN: usize = 123;
 const FIN_MASK: u8 = 0x80;
 const RSV1_MASK: u8 = 0x40;
 const RSV23_MASK: u8 = 0x30;
@@ -33,24 +33,24 @@ const OPCODE_CLOSE: u8 = 0x8;
 const OPCODE_PING: u8 = 0x9;
 const OPCODE_PONG: u8 = 0xA;
 
-pub(crate) type WebSocketCloseCode = u16;
+pub type WebSocketCloseCode = u16;
 
-pub(crate) mod close_code {
+pub mod close_code {
     use super::WebSocketCloseCode;
 
-    pub(crate) const NORMAL: WebSocketCloseCode = 1000;
-    pub(crate) const GOING_AWAY: WebSocketCloseCode = 1001;
-    pub(crate) const PROTOCOL_ERROR: WebSocketCloseCode = 1002;
-    pub(crate) const MESSAGE_TOO_BIG: WebSocketCloseCode = 1009;
-    pub(crate) const NO_STATUS_RECEIVED: WebSocketCloseCode = 1005;
-    pub(crate) const ABNORMAL_CLOSURE: WebSocketCloseCode = 1006;
-    pub(crate) const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode = 1007;
-    pub(crate) const INTERNAL_ERROR: WebSocketCloseCode = 1011;
-    pub(crate) const SERVICE_RESTART: WebSocketCloseCode = 1012;
+    pub const NORMAL: WebSocketCloseCode = 1000;
+    pub const GOING_AWAY: WebSocketCloseCode = 1001;
+    pub const PROTOCOL_ERROR: WebSocketCloseCode = 1002;
+    pub const MESSAGE_TOO_BIG: WebSocketCloseCode = 1009;
+    pub const NO_STATUS_RECEIVED: WebSocketCloseCode = 1005;
+    pub const ABNORMAL_CLOSURE: WebSocketCloseCode = 1006;
+    pub const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode = 1007;
+    pub const INTERNAL_ERROR: WebSocketCloseCode = 1011;
+    pub const SERVICE_RESTART: WebSocketCloseCode = 1012;
 }
 
 #[derive(Debug)]
-pub(crate) enum DecodedFrame {
+pub enum DecodedFrame {
     Text(BytesStr),
     Binary(Bytes),
     Ping(Bytes),
@@ -62,13 +62,13 @@ pub(crate) enum DecodedFrame {
 }
 
 #[derive(Debug)]
-pub(crate) struct WebSocketDecodeError {
+pub struct WebSocketDecodeError {
     pub(crate) close_code: WebSocketCloseCode,
     pub(crate) error: WebSocketProtocolError,
 }
 
 impl WebSocketDecodeError {
-    pub(crate) fn protocol(error: WebSocketProtocolError) -> Self {
+    pub(crate) const fn protocol(error: WebSocketProtocolError) -> Self {
         Self {
             close_code: close_code::PROTOCOL_ERROR,
             error,
@@ -82,7 +82,7 @@ impl WebSocketDecodeError {
         }
     }
 
-    pub(crate) fn message_too_large() -> Self {
+    pub(crate) const fn message_too_large() -> Self {
         Self {
             close_code: close_code::MESSAGE_TOO_BIG,
             error: WebSocketProtocolError::MessageTooLarge,
@@ -96,7 +96,7 @@ impl fmt::Display for WebSocketDecodeError {
     }
 }
 
-pub(crate) use decode::WebSocketCodec;
-pub(crate) use frame::encode_close_frame_into;
-pub(crate) use frame::encode_frame_into;
-pub(crate) use frame::validate_close_code;
+pub use decode::WebSocketCodec;
+pub use frame::encode_close_frame_into;
+pub use frame::encode_frame_into;
+pub use frame::validate_close_code;

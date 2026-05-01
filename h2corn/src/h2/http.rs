@@ -222,16 +222,15 @@ async fn run_no_body_http_request(
     transport: &mut H2HttpTransport<'_>,
 ) -> Result<(), H2CornError> {
     let access_log = HttpAccessLogState::new(&ctx);
-    let started = match start_asgi_http_request(ctx, HttpRequestBody::NoBody, admission) {
-        Ok(started) => started,
-        Err(err) => {
-            transport.send_internal_error_response().await?;
-            access_log.emit_http_response(transport.response_log_state(), || 0);
-            return Err(err);
-        }
-    };
-
-    let RunningHttpRequest { state, app_task } = started;
+    let RunningHttpRequest { state, app_task } =
+        match start_asgi_http_request(ctx, HttpRequestBody::NoBody, admission) {
+            Ok(started) => started,
+            Err(err) => {
+                transport.send_internal_error_response().await?;
+                access_log.emit_http_response(transport.response_log_state(), || 0);
+                return Err(err);
+            }
+        };
     tokio::pin!(app_task);
     let result = match poll_app_task_once(app_task.as_mut()) {
         Poll::Ready(app_result) => try_complete_http_request(state, transport, app_result).await,

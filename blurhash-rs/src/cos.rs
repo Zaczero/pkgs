@@ -10,9 +10,9 @@ type CacheKey = (usize, usize);
 type CosAxisCache = ArrayVec<(CacheKey, Rc<[f32]>), 32>;
 type CosAxisSimd4Cache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
 
-pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
+pub fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
-    let mut out = vec![0.0f32; len * components];
+    let mut out = vec![0.0_f32; len * components];
     for p in 0..len {
         let p_f = p as f32;
         let row = &mut out[p * components..(p + 1) * components];
@@ -31,7 +31,7 @@ thread_local! {
     static COS_AXIS_SIMD4_CACHE: RefCell<CosAxisSimd4Cache> = RefCell::new(ArrayVec::new());
 }
 
-pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
+pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     let key = (len, components);
     COS_AXIS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -52,7 +52,7 @@ pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     })
 }
 
-pub(crate) fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
+pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
     let key = (len, components);
     COS_AXIS_SIMD4_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -76,7 +76,7 @@ pub(crate) fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
             for block in 0..blocks {
                 let start = block * 4;
                 let lanes = (components - start).min(4);
-                let mut v = [0.0f32; 4];
+                let mut v = [0.0_f32; 4];
                 for (lane, slot) in v.iter_mut().enumerate().take(lanes) {
                     let c = start + lane;
                     *slot = (PI * p_f * (c as f32) / len_f).cos();

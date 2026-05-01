@@ -12,7 +12,11 @@ use tokio::io::copy;
 use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
 
 #[cfg(target_os = "linux")]
-pub(crate) async fn sendfile_all_tcp(
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "signature matches the portable fallback and call sites that advance the offset"
+)]
+pub async fn sendfile_all_tcp(
     writer: &mut BufWriter<TcpOwnedWriteHalf>,
     file: &mut File,
     offset: &mut u64,

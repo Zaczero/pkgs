@@ -2,13 +2,13 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 
 use crate::error::{ErrorExt, H2CornError};
 
-pub(crate) enum TryPush<T> {
+pub enum TryPush<T> {
     Sent,
     Full(T),
     Closed(T),
 }
 
-pub(crate) fn try_push<T>(tx: &mpsc::Sender<T>, value: T) -> TryPush<T> {
+pub fn try_push<T>(tx: &mpsc::Sender<T>, value: T) -> TryPush<T> {
     match tx.try_send(value) {
         Ok(()) => TryPush::Sent,
         Err(TrySendError::Full(value)) => TryPush::Full(value),
@@ -16,7 +16,7 @@ pub(crate) fn try_push<T>(tx: &mpsc::Sender<T>, value: T) -> TryPush<T> {
     }
 }
 
-pub(crate) async fn send_with_backpressure<T, F, E>(
+pub async fn send_with_backpressure<T, F, E>(
     tx: &mpsc::Sender<T>,
     value: T,
     closed_error: F,
@@ -35,7 +35,7 @@ where
     }
 }
 
-pub(crate) async fn send_if_open<T>(tx: &mpsc::Sender<T>, value: T) -> bool {
+pub async fn send_if_open<T>(tx: &mpsc::Sender<T>, value: T) -> bool {
     match try_push(tx, value) {
         TryPush::Sent => true,
         TryPush::Full(value) => tx.send(value).await.is_ok(),
@@ -43,7 +43,7 @@ pub(crate) async fn send_if_open<T>(tx: &mpsc::Sender<T>, value: T) -> bool {
     }
 }
 
-pub(crate) async fn send_best_effort<T>(tx: &mpsc::Sender<T>, value: T) {
+pub async fn send_best_effort<T>(tx: &mpsc::Sender<T>, value: T) {
     match try_push(tx, value) {
         TryPush::Sent | TryPush::Closed(_) => {}
         TryPush::Full(value) => {

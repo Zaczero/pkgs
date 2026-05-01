@@ -1,19 +1,24 @@
 use std::hint::unlikely;
 use std::num::NonZeroUsize;
-use std::simd::Simd;
 
 use crate::base83;
+use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, row_vectors};
 use crate::cos;
 use crate::errors::Error;
 use crate::srgb;
 
-type V4 = Simd<f32, 4>;
+struct ComponentGrid {
+    x_components: usize,
+    y_components: usize,
+    blocks: usize,
+    vectors: ComponentVectors,
+}
 
 fn sign_pow_05(v: f32) -> f32 {
     v.signum() * v.abs().sqrt()
 }
 
-pub(crate) fn encode_rgb(
+pub fn encode_rgb(
     rgb: &[u8],
     width: usize,
     height: usize,
@@ -55,17 +60,22 @@ fn encode_rgb_impl(
     let height = height.get();
     let x_components = x_components as usize;
     let y_components = y_components as usize;
-    let num_components = x_components * y_components;
+    let mut factors = accumulate_factors(rgb, width, height, x_components, y_components);
+    scale_factors(&mut factors, width, height);
+    encode_factors(&factors)
+}
 
+fn accumulate_factors(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    x_components: usize,
+    y_components: usize,
+) -> ComponentGrid {
     let blocks = x_components.div_ceil(4);
-
     let cos_y = cos::cos_axis_cached(height, y_components);
     let cos_x_simd = cos::cos_axis_simd4_cached(width, x_components);
-
-    let zero = V4::splat(0.0);
-    let mut factors_r = [zero; 27];
-    let mut factors_g = [zero; 27];
-    let mut factors_b = [zero; 27];
+    let mut factors = component_vectors();
 
     // Separable basis:
     //
@@ -73,9 +83,7 @@ fn encode_rgb_impl(
     //
     // This computes all coefficients in a single image scan.
     for y in 0..height {
-        let mut row_r = [zero; 3];
-        let mut row_g = [zero; 3];
-        let mut row_b = [zero; 3];
+        let mut row = row_vectors();
 
         let mut pixel = y * width * 3;
         for x in 0..width {
@@ -90,56 +98,68 @@ fn encode_rgb_impl(
 
             let base = x * blocks;
             let bases = &cos_x_simd[base..base + blocks];
-            for k in 0..blocks {
-                let basis_x = bases[k];
-                row_r[k] += basis_x * r_v;
-                row_g[k] += basis_x * g_v;
-                row_b[k] += basis_x * b_v;
+            for (k, &basis_x) in bases.iter().enumerate() {
+                row[RED][k] += basis_x * r_v;
+                row[GREEN][k] += basis_x * g_v;
+                row[BLUE][k] += basis_x * b_v;
             }
         }
 
         let cos_y_row = &cos_y[y * y_components..(y + 1) * y_components];
-        for (j, &cosy) in cos_y_row.iter().enumerate() {
-            let cosy = V4::splat(cosy);
+        for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
+            let cos_y_vector = V4::splat(cos_y_value);
             let base = j * blocks;
-            for k in 0..blocks {
-                let idx = base + k;
-                factors_r[idx] += row_r[k] * cosy;
-                factors_g[idx] += row_g[k] * cosy;
-                factors_b[idx] += row_b[k] * cosy;
+            for channel in [RED, GREEN, BLUE] {
+                for (factor, &row_slot) in factors[channel][base..base + blocks]
+                    .iter_mut()
+                    .zip(&row[channel][..blocks])
+                {
+                    *factor += row_slot * cos_y_vector;
+                }
             }
         }
     }
 
-    let inv_wh = 1.0f32 / (width * height) as f32;
+    ComponentGrid {
+        x_components,
+        y_components,
+        blocks,
+        vectors: factors,
+    }
+}
+
+fn scale_factors(factors: &mut ComponentGrid, width: usize, height: usize) {
+    let inv_wh = 1.0_f32 / (width * height) as f32;
     let scale_ac = inv_wh * 2.0;
-    for j in 0..y_components {
-        let base = j * blocks;
-        for block in 0..blocks {
+    for j in 0..factors.y_components {
+        let base = j * factors.blocks;
+        for block in 0..factors.blocks {
             let scale = if unlikely(j == 0 && block == 0) {
                 V4::from_array([inv_wh, scale_ac, scale_ac, scale_ac])
             } else {
                 V4::splat(scale_ac)
             };
             let idx = base + block;
-            factors_r[idx] *= scale;
-            factors_g[idx] *= scale;
-            factors_b[idx] *= scale;
+            factors.vectors[RED][idx] *= scale;
+            factors.vectors[GREEN][idx] *= scale;
+            factors.vectors[BLUE][idx] *= scale;
         }
     }
+}
 
-    let mut maximum_value = 0.0f32;
-    for j in 0..y_components {
-        let base = j * blocks;
-        for block in 0..blocks {
+fn max_ac_value(factors: &ComponentGrid) -> f32 {
+    let mut maximum_value = 0.0_f32;
+    for j in 0..factors.y_components {
+        let base = j * factors.blocks;
+        for block in 0..factors.blocks {
             let idx = base + block;
-            let r = factors_r[idx].to_array();
-            let g = factors_g[idx].to_array();
-            let b = factors_b[idx].to_array();
+            let r = factors.vectors[RED][idx].to_array();
+            let g = factors.vectors[GREEN][idx].to_array();
+            let b = factors.vectors[BLUE][idx].to_array();
 
-            let start_lane = if j == 0 && block == 0 { 1 } else { 0 };
-            let lanes = if block + 1 == blocks {
-                x_components - block * 4
+            let start_lane = usize::from(j == 0 && block == 0);
+            let lanes = if block + 1 == factors.blocks {
+                factors.x_components - block * 4
             } else {
                 4
             };
@@ -149,9 +169,14 @@ fn encode_rgb_impl(
             }
         }
     }
+    maximum_value
+}
 
+fn encode_factors(factors: &ComponentGrid) -> String {
+    let num_components = factors.x_components * factors.y_components;
+    let maximum_value = max_ac_value(factors);
     let (quantised_max_value, maximum_value) = if num_components > 1 {
-        let quantised = ((maximum_value * 166.0 - 0.5).floor() as i32).clamp(0, 82) as u32;
+        let quantised = (maximum_value.mul_add(166.0, -0.5).floor() as i32).clamp(0, 82) as u32;
         (quantised, (quantised as f32 + 1.0) / 166.0)
     } else {
         (0, 1.0)
@@ -160,35 +185,35 @@ fn encode_rgb_impl(
     let total_len = 1 + 1 + 4 + 2 * (num_components - 1);
     let mut out = Vec::with_capacity(total_len);
 
-    let size_flag = ((x_components - 1) + (y_components - 1) * 9) as u32;
+    let size_flag = ((factors.x_components - 1) + (factors.y_components - 1) * 9) as u32;
     base83::push_base83(&mut out, size_flag, 1);
     base83::push_base83(&mut out, quantised_max_value, 1);
 
-    let dc_r = factors_r[0].to_array()[0];
-    let dc_g = factors_g[0].to_array()[0];
-    let dc_b = factors_b[0].to_array()[0];
-    let dc_value = ((srgb::linear_to_srgb_u8(dc_r) as u32) << 16)
-        | ((srgb::linear_to_srgb_u8(dc_g) as u32) << 8)
-        | (srgb::linear_to_srgb_u8(dc_b) as u32);
+    let dc_r = factors.vectors[RED][0].to_array()[0];
+    let dc_g = factors.vectors[GREEN][0].to_array()[0];
+    let dc_b = factors.vectors[BLUE][0].to_array()[0];
+    let dc_value = (u32::from(srgb::linear_to_srgb_u8(dc_r)) << 16)
+        | (u32::from(srgb::linear_to_srgb_u8(dc_g)) << 8)
+        | u32::from(srgb::linear_to_srgb_u8(dc_b));
     base83::push_base83(&mut out, dc_value, 4);
 
-    for j in 0..y_components {
-        for i in 0..x_components {
+    for j in 0..factors.y_components {
+        for i in 0..factors.x_components {
             if j == 0 && i == 0 {
                 continue;
             }
 
             let block = i / 4;
             let lane = i % 4;
-            let idx = j * blocks + block;
+            let idx = j * factors.blocks + block;
 
-            let r = factors_r[idx].to_array()[lane] / maximum_value;
-            let g = factors_g[idx].to_array()[lane] / maximum_value;
-            let b = factors_b[idx].to_array()[lane] / maximum_value;
+            let r = factors.vectors[RED][idx].to_array()[lane] / maximum_value;
+            let g = factors.vectors[GREEN][idx].to_array()[lane] / maximum_value;
+            let b = factors.vectors[BLUE][idx].to_array()[lane] / maximum_value;
 
-            let quant_r = (sign_pow_05(r) * 9.0 + 9.5).floor() as i32;
-            let quant_g = (sign_pow_05(g) * 9.0 + 9.5).floor() as i32;
-            let quant_b = (sign_pow_05(b) * 9.0 + 9.5).floor() as i32;
+            let quant_r = sign_pow_05(r).mul_add(9.0, 9.5).floor() as i32;
+            let quant_g = sign_pow_05(g).mul_add(9.0, 9.5).floor() as i32;
+            let quant_b = sign_pow_05(b).mul_add(9.0, 9.5).floor() as i32;
 
             let quant_r = quant_r.clamp(0, 18) as u32;
             let quant_g = quant_g.clamp(0, 18) as u32;

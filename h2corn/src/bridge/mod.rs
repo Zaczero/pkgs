@@ -28,12 +28,10 @@ use crate::http::types::{
 use crate::python::{StaticPyKey, py_dict};
 use crate::websocket::WebSocketCloseCode;
 
-pub(crate) use http::{PyHttpReceive, PyHttpSend};
+pub use http::{PyHttpReceive, PyHttpSend};
 #[cfg(test)]
-pub(crate) use websocket::WebSocketSendDisposition;
-pub(crate) use websocket::{
-    PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState,
-};
+pub use websocket::WebSocketSendDisposition;
+pub use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
 
 pub const ASGI_QUEUE_CAPACITY: usize = 32;
 
@@ -55,7 +53,6 @@ pub enum WebSocketInboundEvent {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum HttpOutboundEvent {
     Start {
         status: HttpStatusCode,
@@ -76,7 +73,6 @@ pub enum HttpOutboundEvent {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum WebSocketOutboundEvent {
     Accept {
         subprotocol: Option<PyBackedStr>,
@@ -99,7 +95,7 @@ pub enum WebSocketOutboundEvent {
 }
 
 #[derive(Debug)]
-pub(crate) enum PayloadBytes {
+pub enum PayloadBytes {
     Rust(Bytes),
     Python(PyBackedBytes),
 }
@@ -205,11 +201,10 @@ impl<'py> AsgiMessage<'py> {
 
     fn bool_or_false(value: Option<Bound<'py, PyAny>>) -> Result<bool, H2CornError> {
         value.map_or(Ok(false), |value| {
-            if let Ok(value) = cast_exact_first::<PyBool>(&value) {
-                Ok(value.is_true())
-            } else {
-                value.extract::<bool>().map_err(H2CornError::from)
-            }
+            cast_exact_first::<PyBool>(&value).map_or_else(
+                |_| value.extract::<bool>().map_err(H2CornError::from),
+                |value| Ok(value.is_true()),
+            )
         })
     }
 
@@ -313,11 +308,11 @@ impl ReadyAwaitable {
         self.result = None;
     }
 
-    fn __await__(self_: Py<Self>) -> Py<Self> {
+    const fn __await__(self_: Py<Self>) -> Py<Self> {
         self_
     }
 
-    fn __iter__(self_: Py<Self>) -> Py<Self> {
+    const fn __iter__(self_: Py<Self>) -> Py<Self> {
         self_
     }
 
@@ -326,7 +321,7 @@ impl ReadyAwaitable {
     }
 }
 
-pub(super) fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
+pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
     Ok(Py::new(
         py,
         ReadyAwaitable {
@@ -337,7 +332,7 @@ pub(super) fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bou
     .into_any())
 }
 
-pub(super) fn buffered_or_send<'py, T: Send + 'static>(
+pub fn buffered_or_send<'py, T: Send + 'static>(
     py: Python<'py>,
     locals: &TaskLocals,
     forwarded: Option<(mpsc::Sender<T>, T)>,
@@ -348,7 +343,7 @@ pub(super) fn buffered_or_send<'py, T: Send + 'static>(
     )
 }
 
-pub(super) trait ReceiveStateMachine: Send + 'static {
+pub trait ReceiveStateMachine: Send + 'static {
     type Event: Send + 'static;
 
     fn try_next(&mut self) -> Option<Self::Event>;
@@ -356,7 +351,7 @@ pub(super) trait ReceiveStateMachine: Send + 'static {
     fn next(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
 }
 
-pub(super) fn receive_or_await<'py, S>(
+pub fn receive_or_await<'py, S>(
     py: Python<'py>,
     locals: &TaskLocals,
     state: &Arc<Mutex<S>>,
@@ -379,10 +374,7 @@ where
     })
 }
 
-pub(super) fn build_http_inbound_event(
-    py: Python<'_>,
-    event: HttpInboundEvent,
-) -> PyResult<Py<PyAny>> {
+pub fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyResult<Py<PyAny>> {
     let dict = match event {
         HttpInboundEvent::Request { body, more_body } => py_dict!(py, {
             "type" => "http.request",
@@ -400,7 +392,7 @@ pub(super) fn build_http_inbound_event(
     Ok(dict.into_any().unbind())
 }
 
-pub(super) fn build_websocket_inbound_event(
+pub fn build_websocket_inbound_event(
     py: Python<'_>,
     event: WebSocketInboundEvent,
 ) -> PyResult<Py<PyAny>> {
@@ -496,27 +488,31 @@ fn parse_response_header(
     name: PyBackedBytes,
     value: PyBackedBytes,
 ) -> Result<ParsedHeaderPair, H2CornError> {
-    let name = ResponseHeaderName::from_python(name).ok_or(H2CornError::from(
-        HttpResponseError::InvalidResponseHeaderName,
-    ))?;
-    let value = ResponseHeaderValue::from_python(value).ok_or(H2CornError::from(
-        HttpResponseError::InvalidResponseHeaderValue,
-    ))?;
+    let name = ResponseHeaderName::from_python(name)
+        .ok_or_else(|| H2CornError::from(HttpResponseError::InvalidResponseHeaderName))?;
+    let value = ResponseHeaderValue::from_python(value)
+        .ok_or_else(|| H2CornError::from(HttpResponseError::InvalidResponseHeaderValue))?;
     Ok((name, value))
 }
 
 fn extract_payload_bytes(value: &Bound<'_, PyAny>) -> Result<PayloadBytes, H2CornError> {
-    if let Ok(bytes) = cast_exact_first::<PyBytes>(value) {
-        Ok(PayloadBytes::from(PyBackedBytes::from(bytes.to_owned())))
-    } else if let Ok(bytearray) = cast_exact_first::<PyByteArray>(value) {
-        Ok(PayloadBytes::from(PyBackedBytes::from(
-            bytearray.to_owned(),
-        )))
-    } else {
-        Err(H2CornError::from(PyTypeError::new_err(
-            "expected bytes or bytearray for ASGI body bytes",
-        )))
-    }
+    cast_exact_first::<PyBytes>(value).map_or_else(
+        |_| {
+            cast_exact_first::<PyByteArray>(value).map_or_else(
+                |_| {
+                    Err(H2CornError::from(PyTypeError::new_err(
+                        "expected bytes or bytearray for ASGI body bytes",
+                    )))
+                },
+                |bytearray| {
+                    Ok(PayloadBytes::from(PyBackedBytes::from(
+                        bytearray.to_owned(),
+                    )))
+                },
+            )
+        },
+        |bytes| Ok(PayloadBytes::from(PyBackedBytes::from(bytes.to_owned()))),
+    )
 }
 
 fn extract_backed_str(value: &Bound<'_, PyAny>) -> Result<PyBackedStr, H2CornError> {
@@ -538,7 +534,7 @@ where
         .map_err(H2CornError::from)
 }
 
-pub(super) fn try_send_or_await<'py, T: Send + 'static>(
+pub fn try_send_or_await<'py, T: Send + 'static>(
     py: Python<'py>,
     locals: &TaskLocals,
     tx: &mpsc::Sender<T>,
@@ -560,7 +556,7 @@ pub(super) fn try_send_or_await<'py, T: Send + 'static>(
     }
 }
 
-pub(super) fn parse_http_outbound_event(
+pub fn parse_http_outbound_event(
     message: &Bound<'_, PyDict>,
 ) -> Result<HttpOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
@@ -596,7 +592,7 @@ pub(super) fn parse_http_outbound_event(
     }
 }
 
-pub(super) fn parse_websocket_outbound_event(
+pub fn parse_websocket_outbound_event(
     message: &Bound<'_, PyDict>,
 ) -> Result<WebSocketOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;

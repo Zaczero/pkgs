@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{actions, controller, transport};
 use crate::{bridge, error, http};
 
-pub(crate) async fn finalize_response<T>(
+pub async fn finalize_response<T>(
     controller: &mut controller::ResponseController,
     transport: &mut T,
     actions: &mut actions::ResponseActions,
@@ -17,7 +17,7 @@ where
     final_result
 }
 
-pub(crate) async fn apply_http_event<T>(
+pub async fn apply_http_event<T>(
     controller: &mut controller::ResponseController,
     transport: &mut T,
     actions: &mut actions::ResponseActions,

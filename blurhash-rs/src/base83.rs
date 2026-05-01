@@ -18,7 +18,7 @@ const fn build_decode_table() -> [u8; 256] {
 const DECODE: [u8; 256] = build_decode_table();
 
 const fn build_pow83_table() -> [u32; 5] {
-    let mut out = [0u32; 5];
+    let mut out = [0_u32; 5];
     out[0] = 1;
     let mut i = 1;
     while i < out.len() {
@@ -30,7 +30,7 @@ const fn build_pow83_table() -> [u32; 5] {
 
 const POW83: [u32; 5] = build_pow83_table();
 
-pub(crate) fn decode_byte(b: u8) -> Option<u8> {
+pub const fn decode_byte(b: u8) -> Option<u8> {
     let v = DECODE[b as usize];
     if unlikely(v == INVALID) {
         None
@@ -39,16 +39,16 @@ pub(crate) fn decode_byte(b: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn decode_u32(bytes: &[u8]) -> Option<u32> {
+pub fn decode_u32(bytes: &[u8]) -> Option<u32> {
     let mut value = 0;
     for &b in bytes {
-        let digit = decode_byte(b)? as u32;
+        let digit = u32::from(decode_byte(b)?);
         value = value * 83 + digit;
     }
     Some(value)
 }
 
-pub(crate) fn push_base83(out: &mut Vec<u8>, value: u32, length: usize) {
+pub fn push_base83(out: &mut Vec<u8>, value: u32, length: usize) {
     let mut i = length;
     while i > 0 {
         i -= 1;

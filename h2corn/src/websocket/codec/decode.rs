@@ -16,7 +16,7 @@ use crate::error::WebSocketProtocolError;
 use crate::hpack::BytesStr;
 
 #[derive(Debug, Default)]
-pub(crate) struct WebSocketCodec {
+pub struct WebSocketCodec {
     pub(crate) buffer: BytesMut,
     segmented: SegmentCursor<SEGMENT_INLINE_CAPACITY>,
     fragmented: FragmentState,
@@ -438,7 +438,7 @@ mod tests {
         out.push(first);
         match payload.len() {
             len if len <= INLINE_PAYLOAD_LEN_MAX => out.push(MASK_FLAG | len as u8),
-            len if len < 65_536 => {
+            len if len < 0x0001_0000 => {
                 out.push(MASK_FLAG | PAYLOAD_LEN_U16_MARKER);
                 out.extend_from_slice(&(len as u16).to_be_bytes());
             }

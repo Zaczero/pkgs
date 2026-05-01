@@ -4,7 +4,7 @@ use std::fmt;
 use crate::constants::MAX_ZIDS_AT_ONCE;
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     TooManyZIDsAtOnce { attempted: usize },
 }
 

@@ -75,7 +75,7 @@ struct BufferedTerminatorFinder<'a> {
 }
 
 impl<'a> BufferedTerminatorFinder<'a> {
-    fn new(finder: &'a memmem::Finder<'static>, needle_len: usize) -> Self {
+    const fn new(finder: &'a memmem::Finder<'static>, needle_len: usize) -> Self {
         Self {
             finder,
             search_start: 0,
@@ -92,7 +92,7 @@ impl<'a> BufferedTerminatorFinder<'a> {
         None
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.search_start = 0;
     }
 }
@@ -116,14 +116,24 @@ fn head_lines(head: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
+#[derive(Default)]
+struct ConnectionHeaderFlags {
+    close: bool,
+    upgrade: bool,
+    http2_settings: bool,
+}
+
+#[derive(Default)]
+struct UpgradeHeaderFlags {
+    websocket: bool,
+    h2c: bool,
+}
+
 struct HeaderParseState {
     headers: RequestHeaders,
     host_header_index: Option<usize>,
-    connection_close: bool,
-    connection_upgrade: bool,
-    connection_http2_settings: bool,
-    upgrade_websocket: bool,
-    upgrade_h2c: bool,
+    connection: ConnectionHeaderFlags,
+    upgrade: UpgradeHeaderFlags,
     body_kind: RequestBodyKind,
     expect_continue: bool,
     http2_settings: Option<PeerSettings>,
@@ -137,16 +147,19 @@ enum ParsedRequestTarget<'a> {
     Asterisk,
 }
 
+struct RequestLineParts<'a> {
+    method: Method,
+    target: &'a [u8],
+    websocket_method_supported: bool,
+}
+
 impl HeaderParseState {
     fn new() -> Self {
         Self {
             headers: RequestHeaders::with_capacity(16),
             host_header_index: None,
-            connection_close: false,
-            connection_upgrade: false,
-            connection_http2_settings: false,
-            upgrade_websocket: false,
-            upgrade_h2c: false,
+            connection: ConnectionHeaderFlags::default(),
+            upgrade: UpgradeHeaderFlags::default(),
             body_kind: RequestBodyKind::None,
             expect_continue: false,
             http2_settings: None,
@@ -203,13 +216,13 @@ impl HeaderParseState {
             }
             Some(KnownRequestHeaderName::Connection) => {
                 let tokens = parse_connection_header_tokens(value);
-                self.connection_close |= tokens.close;
-                self.connection_upgrade |= tokens.upgrade;
-                self.connection_http2_settings |= tokens.http2_settings;
+                self.connection.close |= tokens.close;
+                self.connection.upgrade |= tokens.upgrade;
+                self.connection.http2_settings |= tokens.http2_settings;
             }
             Some(KnownRequestHeaderName::Upgrade) => {
-                self.upgrade_websocket |= value.eq_ignore_ascii_case(b"websocket");
-                self.upgrade_h2c |= value.eq_ignore_ascii_case(b"h2c");
+                self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
+                self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
             }
             Some(KnownRequestHeaderName::Te) => {
                 self.header_meta.accepts_trailers |= header_contains_token(value, b"trailers");
@@ -255,23 +268,18 @@ impl HeaderParseState {
     }
 }
 
-pub(super) async fn read_request<R, W>(
+async fn read_request_head<R, W>(
     reader: &mut R,
     buffer: &mut BytesMut,
     writer: &mut BufWriter<W>,
     config: &ServerConfig,
-    secure: bool,
     timeout_duration: Option<Duration>,
-) -> Result<Option<ParsedRequest>, H2CornError>
+    limit_request_head_size: Option<usize>,
+) -> Result<Option<Bytes>, H2CornError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let http1 = &config.http1;
-    let limit_request_head_size = http1.limit_request_head_size.map(NonZeroUsize::get);
-    let limit_request_line = http1.limit_request_line.map(NonZeroUsize::get);
-    let limit_request_fields = http1.limit_request_fields.map(NonZeroUsize::get);
-    let limit_request_field_size = http1.limit_request_field_size.map(NonZeroUsize::get);
     let mut header_search =
         BufferedTerminatorFinder::new(&HEADER_TERMINATOR_FINDER, HEADER_TERMINATOR.len());
     let header_len = loop {
@@ -317,17 +325,23 @@ where
 
     let mut head = buffer.split_to(header_len + HEADER_TERMINATOR.len());
     head.truncate(header_len);
-    let head = head.freeze();
-    let mut lines = head_lines(head.as_ref());
-    let Some(request_line) = lines.next() else {
-        return Http1Error::EmptyRequestHead.err();
-    };
+    Ok(Some(head.freeze()))
+}
+
+async fn parse_request_line_or_reject<'a, W>(
+    request_line: &'a [u8],
+    writer: &mut BufWriter<W>,
+    config: &ServerConfig,
+    limit_request_line: Option<usize>,
+) -> Result<Option<RequestLineParts<'a>>, H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
     if limit_request_line.is_some_and(|limit| request_line.len() > limit) {
         write_empty_response(writer, config, status_code::URI_TOO_LONG, true).await?;
         return Ok(None);
     }
     let (method, target, version) = parse_request_line(request_line)?;
-    let websocket_method_supported = method == Method::GET;
     match version {
         b"HTTP/1.1" => {}
         [b'H', b'T', b'T', b'P', b'/', b'1', b'.', ..] => {
@@ -339,9 +353,26 @@ where
             return Ok(None);
         }
     }
+    let websocket_method_supported = method == Method::GET;
+    Ok(Some(RequestLineParts {
+        method,
+        target,
+        websocket_method_supported,
+    }))
+}
 
+async fn parse_headers_or_reject<W>(
+    lines: impl Iterator<Item = &'_ [u8]>,
+    head: &Bytes,
+    writer: &mut BufWriter<W>,
+    config: &ServerConfig,
+    limit_request_fields: Option<usize>,
+    limit_request_field_size: Option<usize>,
+) -> Result<Option<HeaderParseState>, H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
     let mut header_state = HeaderParseState::new();
-
     for line in lines {
         if line.is_empty() {
             continue;
@@ -356,20 +387,28 @@ where
             .await?;
             return Ok(None);
         }
-        if header_state.push_header(&head, line).is_err() {
+        if header_state.push_header(head, line).is_err() {
             write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
             return Ok(None);
         }
     }
+    Ok(Some(header_state))
+}
 
-    if header_state.expect_continue && header_state.body_kind != RequestBodyKind::None {
-        writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
-        writer.flush().await?;
-    }
-
+async fn parsed_request_from_head<W>(
+    head: &Bytes,
+    line: RequestLineParts<'_>,
+    mut header_state: HeaderParseState,
+    writer: &mut BufWriter<W>,
+    config: &ServerConfig,
+    secure: bool,
+) -> Result<Option<ParsedRequest>, H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
     let scheme = BytesStr::from_static(if secure { "https" } else { "http" });
     let request_target = match parse_request_target(
-        target,
+        line.target,
         &mut header_state.headers,
         header_state.host_header_index,
     ) {
@@ -396,14 +435,10 @@ where
             }),
         ParsedRequestTarget::Asterisk => BytesStr::from_static("*"),
     };
-    let target = DomainRequestTarget::normal(scheme, path_and_query);
     let HeaderParseState {
         headers,
-        connection_close,
-        connection_upgrade,
-        connection_http2_settings,
-        upgrade_websocket,
-        upgrade_h2c,
+        connection,
+        upgrade,
         body_kind,
         http2_settings,
         header_meta,
@@ -411,19 +446,18 @@ where
     } = header_state;
     let request = RequestHead {
         http_version: HttpVersion::Http1_1,
-        method,
-        target,
+        method: line.method,
+        target: DomainRequestTarget::normal(scheme, path_and_query),
         headers,
         header_meta,
     };
 
-    let websocket_requested = upgrade_websocket && connection_upgrade;
-
+    let websocket_requested = upgrade.websocket && connection.upgrade;
     let upgrade = if websocket_requested {
         let websocket = &request.header_meta.websocket;
         if !websocket.version_supported {
             UpgradeRequest::WebSocketUnsupportedVersion
-        } else if websocket_method_supported
+        } else if line.websocket_method_supported
             && !websocket.key_duplicate
             && let Some(key) = websocket.key
         {
@@ -435,9 +469,9 @@ where
             UpgradeRequest::WebSocketBadRequest
         }
     } else if let Some(settings) = http2_settings
-        && upgrade_h2c
-        && connection_upgrade
-        && connection_http2_settings
+        && upgrade.h2c
+        && connection.upgrade
+        && connection.http2_settings
     {
         UpgradeRequest::H2c { settings }
     } else {
@@ -448,12 +482,72 @@ where
         request,
         upgrade,
         body_kind,
-        persistence: if connection_close {
+        persistence: if connection.close {
             ConnectionPersistence::Close
         } else {
             ConnectionPersistence::KeepAlive
         },
     }))
+}
+
+pub(super) async fn read_request<R, W>(
+    reader: &mut R,
+    buffer: &mut BytesMut,
+    writer: &mut BufWriter<W>,
+    config: &ServerConfig,
+    secure: bool,
+    timeout_duration: Option<Duration>,
+) -> Result<Option<ParsedRequest>, H2CornError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let http1 = &config.http1;
+    let limit_request_head_size = http1.limit_request_head_size.map(NonZeroUsize::get);
+    let limit_request_line = http1.limit_request_line.map(NonZeroUsize::get);
+    let limit_request_fields = http1.limit_request_fields.map(NonZeroUsize::get);
+    let limit_request_field_size = http1.limit_request_field_size.map(NonZeroUsize::get);
+
+    let Some(head) = read_request_head(
+        reader,
+        buffer,
+        writer,
+        config,
+        timeout_duration,
+        limit_request_head_size,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let mut lines = head_lines(head.as_ref());
+    let Some(request_line) = lines.next() else {
+        return Http1Error::EmptyRequestHead.err();
+    };
+    let Some(line) =
+        parse_request_line_or_reject(request_line, writer, config, limit_request_line).await?
+    else {
+        return Ok(None);
+    };
+    let Some(header_state) = parse_headers_or_reject(
+        lines,
+        &head,
+        writer,
+        config,
+        limit_request_fields,
+        limit_request_field_size,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    if header_state.expect_continue && header_state.body_kind != RequestBodyKind::None {
+        writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+        writer.flush().await?;
+    }
+
+    parsed_request_from_head(&head, line, header_state, writer, config, secure).await
 }
 
 pub(super) async fn read_fixed_body<R>(
@@ -880,7 +974,7 @@ mod tests {
             limit_connections: None,
             max_requests: None,
             runtime_threads: 2,
-            websocket: Default::default(),
+            websocket: crate::config::WebSocketConfig::default(),
             proxy: ProxyConfig {
                 trust_headers: false,
                 trusted_peers: Box::new([]),
@@ -888,7 +982,7 @@ mod tests {
             },
             tls: None,
             timeout_handshake: Duration::from_secs(5),
-            response_headers: Default::default(),
+            response_headers: crate::config::ResponseHeaderConfig::default(),
         }))
     }
 
@@ -1163,7 +1257,7 @@ mod tests {
             StreamInput::Data(chunk) => assert_eq!(chunk.as_ref(), b"abc"),
             _ => panic!("expected body data event"),
         }
-        assert!(rx.try_recv().is_err());
+        rx.try_recv().unwrap_err();
     }
 
     #[tokio::test]
@@ -1184,17 +1278,15 @@ mod tests {
             .expect("chunk extensions and trailers are accepted");
         writer.await.expect("writer task finishes");
 
-        let first = match rx.try_recv().expect("first body chunk exists") {
-            StreamInput::Data(chunk) => chunk,
-            _ => panic!("expected first body chunk"),
+        let StreamInput::Data(first) = rx.try_recv().expect("first body chunk exists") else {
+            panic!("expected first body chunk");
         };
-        let second = match rx.try_recv().expect("second body chunk exists") {
-            StreamInput::Data(chunk) => chunk,
-            _ => panic!("expected second body chunk"),
+        let StreamInput::Data(second) = rx.try_recv().expect("second body chunk exists") else {
+            panic!("expected second body chunk");
         };
         assert_eq!(first.as_ref(), b"abc");
         assert_eq!(second.as_ref(), b"defg");
-        assert!(rx.try_recv().is_err());
+        rx.try_recv().unwrap_err();
     }
 
     #[tokio::test]
@@ -1255,7 +1347,7 @@ mod tests {
             err,
             H2CornError::Http1(Http1Error::RequestBodyLimitExceeded)
         ));
-        assert!(rx.try_recv().is_err());
+        rx.try_recv().unwrap_err();
         assert_eq!(&buffer[..], b"hello\r\n");
     }
 

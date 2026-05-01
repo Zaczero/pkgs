@@ -46,11 +46,19 @@ pub(super) struct WriterIngress {
 
 impl WriterIngressQueue {
     fn enqueue_batch(&mut self, stream_id: StreamId, batch: QueuedCommandBatch) {
-        let stream = self.streams.entry(stream_id.get()).or_default();
-        stream.commands.push_back(batch);
-        if !stream.enqueued {
-            stream.enqueued = true;
-            self.ready_streams.push_back(stream_id.get());
+        let stream_id_raw = stream_id.get();
+        let newly_enqueued = {
+            let stream = self.streams.entry(stream_id_raw).or_default();
+            stream.commands.push_back(batch);
+            if stream.enqueued {
+                false
+            } else {
+                stream.enqueued = true;
+                true
+            }
+        };
+        if newly_enqueued {
+            self.ready_streams.push_back(stream_id_raw);
         }
     }
 
@@ -65,6 +73,7 @@ impl WriterIngressQueue {
             if stream.commands.is_empty() {
                 continue;
             }
+            // SAFETY: ready_streams only stores ids enqueued from validated StreamId values.
             let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
             drained.push((stream_id, stream.commands));
         }
@@ -76,14 +85,22 @@ impl WriterIngressQueue {
                 continue;
             }
 
-            let stream = self.streams.entry(stream_id.get()).or_default();
-            while let Some(existing) = stream.commands.pop_front() {
-                commands.push_back(existing);
-            }
-            stream.commands = commands;
-            if !stream.enqueued {
-                stream.enqueued = true;
-                self.ready_streams.push_back(stream_id.get());
+            let stream_id_raw = stream_id.get();
+            let newly_enqueued = {
+                let stream = self.streams.entry(stream_id_raw).or_default();
+                while let Some(existing) = stream.commands.pop_front() {
+                    commands.push_back(existing);
+                }
+                stream.commands = commands;
+                if stream.enqueued {
+                    false
+                } else {
+                    stream.enqueued = true;
+                    true
+                }
+            };
+            if newly_enqueued {
+                self.ready_streams.push_back(stream_id_raw);
             }
         }
     }
@@ -166,6 +183,7 @@ impl WriterIngress {
         queue.drain_ready_into(drained);
         self.has_pending
             .store(queue.has_pending(), Ordering::Release);
+        drop(queue);
     }
 
     pub(super) async fn restore_drained(&self, drained: DrainedIngressWrites) {
@@ -177,6 +195,7 @@ impl WriterIngress {
         queue.restore_drained(drained);
         self.has_pending
             .store(queue.has_pending(), Ordering::Release);
+        drop(queue);
     }
 
     pub(super) fn has_pending(&self) -> bool {
@@ -184,11 +203,15 @@ impl WriterIngress {
     }
 
     pub(super) async fn drop_stream(&self, stream_id: StreamId) {
-        self.queue.lock().await.drop_stream(stream_id);
+        let mut queue = self.queue.lock().await;
+        queue.drop_stream(stream_id);
+        drop(queue);
     }
 
     pub(super) async fn close(&self) {
-        self.queue.lock().await.close();
+        let mut queue = self.queue.lock().await;
+        queue.close();
+        drop(queue);
         self.has_pending.store(false, Ordering::Release);
     }
 }

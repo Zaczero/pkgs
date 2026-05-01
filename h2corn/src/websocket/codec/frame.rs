@@ -99,7 +99,7 @@ fn parse_frame_len(
             let payload_len = usize::try_from(raw).map_err(|_| {
                 WebSocketDecodeError::protocol(WebSocketProtocolError::FrameTooLarge)
             })?;
-            if payload_len < 65_536 {
+            if payload_len < 0x0001_0000 {
                 return Err(WebSocketDecodeError::protocol(
                     WebSocketProtocolError::NonCanonical64BitLengthEncoding,
                 ));
@@ -154,13 +154,13 @@ pub(super) fn decode_control_frame(
     }
 }
 
-pub(crate) fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut BytesMut) {
+pub fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut BytesMut) {
     out.clear();
     out.reserve(payload.len() + FRAME_HEADER_MAX_LEN);
     out.extend_from_slice(&[FIN_MASK | opcode | if compressed { RSV1_MASK } else { 0x00 }]);
     match payload.len() {
         len if len <= INLINE_PAYLOAD_LEN_MAX => out.extend_from_slice(&[len as u8]),
-        len if len < 65_536 => {
+        len if len < 0x0001_0000 => {
             out.extend_from_slice(&[PAYLOAD_LEN_U16_MARKER]);
             out.extend_from_slice(&(len as u16).to_be_bytes());
         }
@@ -172,7 +172,7 @@ pub(crate) fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, ou
     out.extend_from_slice(payload);
 }
 
-pub(crate) fn encode_close_frame_into(
+pub fn encode_close_frame_into(
     code: WebSocketCloseCode,
     reason: &str,
     out: &mut BytesMut,
@@ -191,7 +191,7 @@ pub(crate) fn encode_close_frame_into(
     Ok(())
 }
 
-pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
+pub fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
     match code {
         close_code::NORMAL..=1003 | close_code::INVALID_FRAME_PAYLOAD_DATA..=1014 | 3000..=4999 => {
             Ok(())
