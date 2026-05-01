@@ -31,6 +31,7 @@ fn separated_hex_u32(value: u32) -> String {
 }
 
 fn main() {
+    pyo3_build_config::use_pyo3_cfgs();
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));

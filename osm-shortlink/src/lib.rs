@@ -17,7 +17,7 @@ fn shortlink_decode(s: &str) -> (f64, f64, u8) {
     codec::decode(s)
 }
 
-#[pymodule(gil_used = false)]
+#[pymodule]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shortlink_encode, m)?)?;

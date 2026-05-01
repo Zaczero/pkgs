@@ -148,7 +148,7 @@ fn totp_verify(
     ))
 }
 
-#[pymodule(gil_used = false)]
+#[pymodule]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(totp_time_window, m)?)?;

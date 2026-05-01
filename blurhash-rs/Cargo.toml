@@ -9,7 +9,10 @@ name = "blurhash_rs"
 
 [dependencies]
 arrayvec = "0.7.6"
-pyo3 = { version = "0.28.3", features = ["extension-module"] }
+pyo3 = "0.28.3"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
 
 [lints]
 workspace = true

@@ -51,7 +51,6 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-features = ["pyo3/extension-module"]
 module-name = "blurhash_rs._lib"
 python-source = "python"
 

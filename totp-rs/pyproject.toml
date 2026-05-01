@@ -40,7 +40,7 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+bindings = "pyo3"
 module-name = "totp_rs._lib"
 python-source = "python"
 

@@ -41,7 +41,7 @@ fn decode_latlon<'py>(
     decode::<true>(py, polyline.trim(), precision)
 }
 
-#[pymodule(gil_used = false)]
+#[pymodule]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encode_lonlat, m)?)?;

@@ -45,7 +45,7 @@ fn parse_zid_timestamp(zid: u64) -> u64 {
     core::parse_zid_timestamp(zid)
 }
 
-#[pymodule(gil_used = false)]
+#[pymodule]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zid, m)?)?;

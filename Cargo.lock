@@ -123,6 +123,7 @@ version = "1.0.0"
 dependencies = [
  "arrayvec",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -465,6 +466,7 @@ dependencies = [
  "ordered_hash_map",
  "parking_lot",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -526,6 +528,7 @@ name = "osm_shortlink"
 version = "1.4.1"
 dependencies = [
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -572,6 +575,7 @@ name = "polyline_rs"
 version = "1.3.0"
 dependencies = [
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -959,6 +963,7 @@ version = "1.0.0"
 dependencies = [
  "hmac",
  "pyo3",
+ "pyo3-build-config",
  "sha1",
  "sha2",
  "subtle",
@@ -1134,6 +1139,7 @@ name = "zid"
 version = "1.5.0"
 dependencies = [
  "pyo3",
+ "pyo3-build-config",
  "rand",
 ]
 

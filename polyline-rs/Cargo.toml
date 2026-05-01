@@ -8,7 +8,10 @@ crate-type = ["cdylib"]
 name = "polyline_rs"
 
 [dependencies]
-pyo3 = { version = "0.28.3", features = ["extension-module"] }
+pyo3 = "0.28.3"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
 
 [lints]
 workspace = true
