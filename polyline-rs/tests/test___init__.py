@@ -56,3 +56,20 @@ def test_encode_decode(coords, precision, expected):
         decoded == pytest.approx(coord, abs=0.1**precision)
         for decoded, coord in zip(decode_lonlat(expected, precision), coords_lonlat)
     )
+
+
+@pytest.mark.parametrize(
+    'polyline',
+    [
+        '\x01',
+        '\x7f',
+        '~' * 8,
+        '_',
+        '?',
+    ],
+)
+def test_decode_rejects_malformed_input(polyline):
+    with pytest.raises(ValueError, match='Invalid polyline'):
+        decode_latlon(polyline)
+    with pytest.raises(ValueError, match='Invalid polyline'):
+        decode_lonlat(polyline)
