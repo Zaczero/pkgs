@@ -7,7 +7,7 @@ use crate::errors::Error;
 use crate::zigzag::zigzag_decode;
 
 const MAX_CHUNK: u8 = CHUNK_MASK | CONTINUATION_BIT;
-const MAX_SHIFT: u32 = u32::BITS - CHUNK_BITS;
+const MAX_SHIFT: u32 = u32::BITS - 2;
 
 struct DecodeCursor<'a> {
     bytes: &'a [u8],
@@ -34,33 +34,31 @@ fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, Error> {
     let mut shift = 0;
 
     loop {
-        let Some(&byte) = cursor.bytes.get(cursor.index) else {
+        if cursor.index == cursor.bytes.len() {
             return Err(Error::UnterminatedPolylineValue { index: start });
-        };
+        }
+        let byte = cursor.bytes[cursor.index];
         cursor.index += 1;
 
-        let Some(b) = byte.checked_sub(ASCII_OFFSET).filter(|&b| b <= MAX_CHUNK) else {
+        let b = byte.wrapping_sub(ASCII_OFFSET);
+        if b > MAX_CHUNK {
             return Err(Error::InvalidPolylineByte {
                 index: cursor.index - 1,
                 byte,
             });
-        };
+        }
 
-        if shift > MAX_SHIFT {
+        if shift == MAX_SHIFT && b > 0b11 {
             return Err(Error::PolylineValueOverflow { index: start });
         }
 
-        let chunk = u32::from(b & CHUNK_MASK);
-        if shift == MAX_SHIFT && chunk > 0b11 {
-            return Err(Error::PolylineValueOverflow { index: start });
-        }
-
-        value |= chunk << shift;
-        shift += CHUNK_BITS;
+        value |= u32::from(b & CHUNK_MASK) << shift;
 
         if (b & CONTINUATION_BIT) == 0 {
             break;
         }
+
+        shift += CHUNK_BITS;
     }
 
     Ok(zigzag_decode(value))

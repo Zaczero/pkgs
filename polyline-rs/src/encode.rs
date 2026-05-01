@@ -20,17 +20,12 @@ fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, 
 
 fn encode_value(out: &mut Vec<u8>, delta: i32) {
     let mut value = zigzag_encode(delta);
-    loop {
-        let mut chunk = (value as u8) & CHUNK_MASK;
-        value >>= CHUNK_BITS;
-        if value != 0 {
-            chunk |= CONTINUATION_BIT;
-        }
+    while value >= u32::from(CONTINUATION_BIT) {
+        let chunk = ((value as u8) & CHUNK_MASK) | CONTINUATION_BIT;
         out.push(chunk + ASCII_OFFSET);
-        if value == 0 {
-            break;
-        }
+        value >>= CHUNK_BITS;
     }
+    out.push(value as u8 + ASCII_OFFSET);
 }
 
 pub fn encode<const LATLON: bool>(
