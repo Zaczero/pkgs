@@ -197,16 +197,23 @@ pub fn headers_to_python<'py>(
 
         for (index, header) in headers.iter().enumerate() {
             let tuple = Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(2))?;
-            ffi::PyTuple_SET_ITEM(
-                tuple.as_ptr(),
-                0,
-                header_name_to_python(py, &header.0).unbind().into_ptr(),
-            );
-            ffi::PyTuple_SET_ITEM(
-                tuple.as_ptr(),
-                1,
-                PyBytes::new(py, header.1.as_bytes()).unbind().into_ptr(),
-            );
+
+            let name = header_name_to_python(py, &header.0).unbind().into_ptr();
+            #[cfg(PyPy)]
+            if ffi::PyTuple_SetItem(tuple.as_ptr(), 0, name) != 0 {
+                return Err(PyErr::fetch(py));
+            }
+            #[cfg(not(PyPy))]
+            ffi::PyTuple_SET_ITEM(tuple.as_ptr(), 0, name);
+
+            let value = PyBytes::new(py, header.1.as_bytes()).unbind().into_ptr();
+            #[cfg(PyPy)]
+            if ffi::PyTuple_SetItem(tuple.as_ptr(), 1, value) != 0 {
+                return Err(PyErr::fetch(py));
+            }
+            #[cfg(not(PyPy))]
+            ffi::PyTuple_SET_ITEM(tuple.as_ptr(), 1, value);
+
             ffi::PyList_SET_ITEM(
                 list.as_ptr(),
                 index.cast_signed(),
