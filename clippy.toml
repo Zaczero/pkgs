@@ -1,0 +1,4 @@
+absolute-paths-allowed-crates = ["std", "core", "alloc"]
+absolute-paths-max-segments = 3
+avoid-breaking-exported-api = false
+check-inconsistent-struct-field-initializers = true

@@ -95,14 +95,21 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ env.PACKAGE }} -> target
+          workspaces: . -> target
 
-      - name: Test Rust
+      - name: Test Rust debug
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
           cargo test
+
+      - name: Test Rust release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          cargo test --release
 
   test:
     needs: resolve
@@ -143,7 +150,7 @@ jobs:
         if: needs.resolve.outputs.is-rusty == 'true'
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ env.PACKAGE }} -> target
+          workspaces: . -> target
 
       - name: Install h2spec
         if: env.PACKAGE == 'h2corn'
@@ -246,7 +253,7 @@ jobs:
         if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: ${{ env.PACKAGE }} -> target
+          workspaces: . -> target
 
       - name: Build wheels
         shell: bash
