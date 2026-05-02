@@ -894,3 +894,42 @@ async def test_http1_content_length_limit_returns_413() -> None:
 
     assert status == 413
     assert body == b''
+
+
+async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> None:
+    seen = []
+
+    async def app(scope, receive, send):
+        seen.append((scope['method'], scope['path']))
+        await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': scope['path'].encode()})
+
+    config = Config(port=find_free_port(), max_request_body_size=4)
+    async with running_server(app, config):
+        reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
+        try:
+            writer.write(
+                (
+                    f'POST /first HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n'
+                    'Transfer-Encoding: chunked\r\n\r\n'
+                    '2a\r\n'
+                    f'GET /smuggled HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n\r\n'
+                    '0\r\n\r\n'
+                ).encode()
+            )
+            await writer.drain()
+            status, headers, body, _trailers = await asyncio.wait_for(
+                read_http1_response(reader),
+                timeout=5,
+            )
+            trailing = await asyncio.wait_for(reader.read(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert status == 413
+    assert headers[b'connection'] == b'close'
+    assert body == b''
+    assert trailing == b''
+    assert seen == [('POST', '/first')]

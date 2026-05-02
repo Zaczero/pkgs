@@ -351,13 +351,13 @@ where
             handle_streaming_http_request(
                 ctx,
                 body_kind,
+                persistence,
                 count_body_bytes,
                 admission,
                 &mut transport,
                 H1BodyReadParts { reader, buffer },
             )
-            .await?;
-            Ok(persistence)
+            .await
         }
     }
 }
@@ -370,11 +370,12 @@ struct H1BodyReadParts<'a, R> {
 async fn handle_streaming_http_request<R, W>(
     ctx: RequestContext,
     body_kind: RequestBodyKind,
+    persistence: ConnectionPersistence,
     count_body_bytes: bool,
     admission: RequestAdmission,
     transport: &mut H1HttpTransport<'_, W>,
     read_parts: H1BodyReadParts<'_, R>,
-) -> Result<(), H2CornError>
+) -> Result<ConnectionPersistence, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: H1WriteTarget,
@@ -383,14 +384,15 @@ where
     let H1BodyReadParts { reader, buffer } = read_parts;
     if let Some(body) = take_buffered_request_body(body_kind, buffer)? {
         let read_body_bytes = body.len() as u64;
-        return run_http_request(
+        run_http_request(
             ctx,
             HttpRequestBody::Single(body),
             admission,
             transport,
             move || read_body_bytes,
         )
-        .await;
+        .await?;
+        return Ok(persistence);
     }
 
     let input = prepare_request_input(RequestInputPlan::Stream { count_body_bytes });
@@ -432,13 +434,14 @@ where
         tokio::try_join!(app_future.as_mut(), body_future)
     };
     match result {
-        Ok(((), ())) => Ok(()),
+        Ok(((), ())) => Ok(persistence),
         Err(H2CornError::Http1(Http1Error::RequestBodyLimitExceeded))
             if transport.response_log_state().status.is_none() =>
         {
             transport
                 .write_empty_response(status_code::PAYLOAD_TOO_LARGE, true)
-                .await
+                .await?;
+            Ok(ConnectionPersistence::Close)
         }
         Err(err) => Err(err),
     }
