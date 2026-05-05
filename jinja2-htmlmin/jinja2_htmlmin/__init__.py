@@ -36,7 +36,7 @@ if TYPE_CHECKING:
         cls: type[HTMLMinParser]
 
 
-__version__ = '1.0.1'
+__version__ = '1.1.0'
 
 
 def _make_placeholder_prefix(source: str) -> str:
