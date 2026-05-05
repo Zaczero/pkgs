@@ -1,7 +1,9 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT};
+use crate::constants::{
+    ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, scale_for_precision,
+};
 use crate::errors::Error;
 use crate::zigzag::zigzag_encode;
 
@@ -32,7 +34,7 @@ pub fn encode<const LATLON: bool>(
     coordinates: &Bound<'_, PyAny>,
     precision: i32,
 ) -> PyResult<String> {
-    let scale = 10_f64.powi(precision);
+    let scale = scale_for_precision(precision);
 
     let capacity = coordinates.len().map_or(0, |n| n * 12);
     let mut out = Vec::with_capacity(capacity);

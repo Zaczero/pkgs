@@ -2,6 +2,7 @@
 // `websocket::codec::mask`.
 #![feature(portable_simd)]
 
+mod ascii;
 mod async_util;
 mod bridge;
 mod buffered_events;

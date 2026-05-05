@@ -7,14 +7,13 @@ use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
 
+use crate::ascii;
 use crate::config::{CachedDateValue, ServerConfig};
 use crate::ext::Protocol;
 use crate::http::digits;
 use crate::http::types::{RequestHeaderValue, ResponseHeaders};
 use crate::proxy::trusted_host_matches;
 
-const HEADER_NAME_VALID: u8 = 1;
-const HEADER_NAME_UPPER: u8 = 2;
 const SECONDS_PER_DAY: u64 = 86_400;
 const HTTP_DATE_TEMPLATE: [u8; 29] = *b"Thu, 01 Jan 1970 00:00:00 GMT";
 const WEEKDAYS: [[u8; 3]; 7] = [
@@ -24,37 +23,6 @@ const MONTHS: [[u8; 3]; 12] = [
     *b"Jan", *b"Feb", *b"Mar", *b"Apr", *b"May", *b"Jun", *b"Jul", *b"Aug", *b"Sep", *b"Oct",
     *b"Nov", *b"Dec",
 ];
-const HEADER_NAME_TABLE: [u8; 256] = {
-    let mut table = [0; 256];
-
-    let mut byte = b'0';
-    while byte <= b'9' {
-        table[byte as usize] = HEADER_NAME_VALID;
-        byte += 1;
-    }
-
-    let mut byte = b'a';
-    while byte <= b'z' {
-        table[byte as usize] = HEADER_NAME_VALID;
-        byte += 1;
-    }
-
-    let mut byte = b'A';
-    while byte <= b'Z' {
-        table[byte as usize] = HEADER_NAME_VALID | HEADER_NAME_UPPER;
-        byte += 1;
-    }
-
-    let bytes = b"!#$%&'*+-.^_`|~";
-    let mut index = 0;
-    while index < bytes.len() {
-        table[bytes[index] as usize] = HEADER_NAME_VALID;
-        index += 1;
-    }
-
-    table
-};
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConnectionHeaderTokens {
     pub close: bool,
@@ -384,11 +352,11 @@ pub fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
 
     let mut needs_lowercase = false;
     for byte in name {
-        let flags = HEADER_NAME_TABLE[usize::from(*byte)];
-        if flags & HEADER_NAME_VALID == 0 {
+        let flags = ascii::HEADER_NAME_FLAGS[usize::from(*byte)];
+        if flags & ascii::HEADER_NAME_VALID == 0 {
             return None;
         }
-        needs_lowercase |= flags & HEADER_NAME_UPPER != 0;
+        needs_lowercase |= flags & ascii::HEADER_NAME_UPPER != 0;
     }
     Some(needs_lowercase)
 }
@@ -399,8 +367,8 @@ pub fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     }
 
     for &byte in name {
-        let flags = HEADER_NAME_TABLE[usize::from(byte)];
-        if flags & HEADER_NAME_VALID == 0 || flags & HEADER_NAME_UPPER != 0 {
+        let flags = ascii::HEADER_NAME_FLAGS[usize::from(byte)];
+        if flags & ascii::HEADER_NAME_VALID == 0 || flags & ascii::HEADER_NAME_UPPER != 0 {
             return false;
         }
     }

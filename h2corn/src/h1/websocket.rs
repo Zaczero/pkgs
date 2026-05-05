@@ -1,6 +1,35 @@
 mod accept {
     pub(super) const LEN: usize = 28;
-    pub(super) const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    pub(super) const GUID: &[u8; 36] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    pub(super) const INPUT_LEN: usize = crate::websocket::WEBSOCKET_KEY_LEN + GUID.len();
+    pub(super) const INITIAL_STATE: [u32; 5] = [
+        0x6745_2301_u32,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    pub(super) const FIRST_BLOCK_TEMPLATE: [u32; 16] = {
+        let mut block = [0; 16];
+        let mut index = 0;
+        while index < GUID.len() / 4 {
+            let offset = index * 4;
+            block[crate::websocket::WEBSOCKET_KEY_LEN / 4 + index] = u32::from_be_bytes([
+                GUID[offset],
+                GUID[offset + 1],
+                GUID[offset + 2],
+                GUID[offset + 3],
+            ]);
+            index += 1;
+        }
+        block[15] = 0x8000_0000;
+        block
+    };
+    pub(super) const SECOND_BLOCK: [u32; 16] = {
+        let mut block = [0; 16];
+        block[15] = (INPUT_LEN as u32) << 3;
+        block
+    };
 }
 
 mod b64 {
@@ -225,32 +254,15 @@ where
 }
 
 fn websocket_accept(key: &WebSocketKey) -> [u8; accept::LEN] {
-    const INPUT_LEN: usize = WEBSOCKET_KEY_LEN + accept::GUID.len();
-    let mut state = [
-        0x6745_2301_u32,
-        0xEFCD_AB89,
-        0x98BA_DCFE,
-        0x1032_5476,
-        0xC3D2_E1F0,
-    ];
-
-    let mut first = [0_u32; 16];
+    let mut state = accept::INITIAL_STATE;
+    let mut first = accept::FIRST_BLOCK_TEMPLATE;
     let (key_words, remainder) = key.as_chunks::<4>();
     debug_assert!(remainder.is_empty());
     for (dst, word) in first[..6].iter_mut().zip(key_words) {
         *dst = u32::from_be_bytes(*word);
     }
-    let (guid_words, remainder) = accept::GUID.as_chunks::<4>();
-    debug_assert!(remainder.is_empty());
-    for (dst, word) in first[6..15].iter_mut().zip(guid_words) {
-        *dst = u32::from_be_bytes(*word);
-    }
-    first[15] = 0x8000_0000;
     compress_sha1_block(&mut state, first);
-
-    let mut second = [0_u32; 16];
-    second[15] = (INPUT_LEN as u32) << 3;
-    compress_sha1_block(&mut state, second);
+    compress_sha1_block(&mut state, accept::SECOND_BLOCK);
 
     let [w0, w1, w2, w3, w4] = state;
     let mut out = [0_u8; accept::LEN];

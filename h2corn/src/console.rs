@@ -25,6 +25,9 @@ use crate::websocket::{WebSocketCloseCode, close_code};
 const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
 const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
+const DECIMAL_FACTORS: [u128; 3] = power_table(10);
+const BYTE_SCALES: [u128; 5] = power_table(1024);
+const BYTE_UNITS: [&str; 5] = ["b", "kib", "mib", "gib", "tib"];
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
     let choice = AutoStream::choice(&io::stderr());
     if choice == ColorChoice::Never {
@@ -556,21 +559,27 @@ fn write_duration_to(out: &mut impl fmt::Write, duration: Duration) -> fmt::Resu
     write_scaled_to(out, duration.as_millis(), 1_000, "s")
 }
 
-fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
-    const UNITS: [&str; 5] = ["b", "kib", "mib", "gib", "tib"];
+const fn power_table<const N: usize>(base: u128) -> [u128; N] {
+    let mut table = [1; N];
+    let mut index = 1;
+    while index < table.len() {
+        table[index] = table[index - 1] * base;
+        index += 1;
+    }
+    table
+}
 
+fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
     if bytes < 1024 {
         write_integer(out, bytes)?;
         return out.write_char('b');
     }
 
     let mut unit = 0;
-    let mut scale = 1_u128;
-    while unit < UNITS.len() - 1 && u128::from(bytes) >= scale * 1024 {
-        scale *= 1024;
+    while unit + 1 < BYTE_SCALES.len() && u128::from(bytes) >= BYTE_SCALES[unit + 1] {
         unit += 1;
     }
-    write_scaled_to(out, u128::from(bytes), scale, UNITS[unit])
+    write_scaled_to(out, u128::from(bytes), BYTE_SCALES[unit], BYTE_UNITS[unit])
 }
 
 fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &str) -> fmt::Result {
@@ -583,7 +592,7 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &s
         2
     };
 
-    let factor = 10_u128.pow(precision as u32);
+    let factor = DECIMAL_FACTORS[precision];
     let scaled = (value * factor + (scale / 2)) / scale;
     let integer = scaled / factor;
     let fractional = scaled % factor;

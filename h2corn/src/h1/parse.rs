@@ -11,6 +11,7 @@ use tokio::time::{Duration, timeout};
 
 use super::http::write_empty_response;
 use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, UpgradeRequest};
+use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
@@ -33,30 +34,6 @@ const LINE_TERMINATOR: &[u8; 2] = b"\r\n";
 const CHUNK_BUFFER_SIZE: usize = 8192;
 const MAX_CHUNK_SIZE_LINE_BYTES: usize = 16 * 1024;
 const MAX_TRAILER_SECTION_BYTES: usize = 64 * 1024;
-const INVALID_HEX_DIGIT: u8 = 0xFF;
-const HEX_DIGIT_TABLE: [u8; 256] = {
-    let mut table = [INVALID_HEX_DIGIT; 256];
-
-    let mut byte = b'0';
-    while byte <= b'9' {
-        table[byte as usize] = byte - b'0';
-        byte += 1;
-    }
-
-    let mut byte = b'a';
-    while byte <= b'f' {
-        table[byte as usize] = byte - b'a' + 10;
-        byte += 1;
-    }
-
-    let mut byte = b'A';
-    while byte <= b'F' {
-        table[byte as usize] = byte - b'A' + 10;
-        byte += 1;
-    }
-
-    table
-};
 static HEADER_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
     LazyLock::new(|| memmem::Finder::new(HEADER_TERMINATOR));
 static LINE_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
@@ -822,8 +799,8 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
         if byte == b';' {
             break;
         }
-        let digit = HEX_DIGIT_TABLE[byte as usize];
-        if digit == INVALID_HEX_DIGIT {
+        let digit = ascii::HEX_VALUE[usize::from(byte)];
+        if digit == ascii::INVALID_VALUE {
             return Http1Error::InvalidChunkSize.err();
         }
         value = value
@@ -885,16 +862,10 @@ pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
     let mut block = [0_u8; 4];
     let mut used = 0;
     for &byte in src {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            _ => {
-                return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
-            },
-        };
+        let value = ascii::BASE64URL_VALUE[usize::from(byte)];
+        if value == ascii::INVALID_VALUE {
+            return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
+        }
         block[used] = value;
         used += 1;
         if used == 4 {

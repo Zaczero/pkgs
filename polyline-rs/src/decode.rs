@@ -2,7 +2,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyListMethods};
 
-use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT};
+use crate::constants::{
+    ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, inv_scale_for_precision,
+};
 use crate::errors::Error;
 use crate::zigzag::zigzag_decode;
 
@@ -69,7 +71,7 @@ pub fn decode<'py, const LATLON: bool>(
     line: &str,
     precision: i32,
 ) -> PyResult<Bound<'py, PyList>> {
-    let inv_scale = 10_f64.powi(-precision);
+    let inv_scale = inv_scale_for_precision(precision);
 
     let mut cursor = DecodeCursor::new(line.as_bytes());
     let mut last_lat = 0_i32;

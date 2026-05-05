@@ -5,16 +5,26 @@ use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, ro
 use crate::errors::Error;
 use crate::{base83, cos, srgb};
 
+const AC_DECODE_SCALE: [f32; 19] = {
+    let mut table = [0.0; 19];
+    let mut quant = 0;
+    while quant < table.len() {
+        let scaled = (quant as f32 - 9.0) / 9.0;
+        table[quant] = if scaled < 0.0 {
+            -(scaled * scaled)
+        } else {
+            scaled * scaled
+        };
+        quant += 1;
+    }
+    table
+};
+
 struct DecodeLayout {
     num_x: usize,
     num_y: usize,
     num_components: usize,
     max_value: f32,
-}
-
-fn sign_pow_2(v: f32) -> f32 {
-    let abs = v.abs();
-    v.signum() * abs * abs
 }
 
 pub fn decode_rgb_into(
@@ -109,17 +119,17 @@ fn decode_component_vectors(
             return Err(Error::BlurhashMalformed { index: start });
         };
 
-        let quant_r = (value / (19 * 19)) as i32;
-        let quant_g = ((value / 19) % 19) as i32;
-        let quant_b = (value % 19) as i32;
+        let quant_r = (value / (19 * 19)) as usize;
+        let quant_g = ((value / 19) % 19) as usize;
+        let quant_b = (value % 19) as usize;
 
         let i = idx % layout.num_x;
         let slot = (idx / layout.num_x) * blocks + (i / 4);
         let lane = i % 4;
 
-        let r = sign_pow_2((quant_r as f32 - 9.0) / 9.0) * layout.max_value;
-        let g = sign_pow_2((quant_g as f32 - 9.0) / 9.0) * layout.max_value;
-        let b = sign_pow_2((quant_b as f32 - 9.0) / 9.0) * layout.max_value;
+        let r = AC_DECODE_SCALE[quant_r] * layout.max_value;
+        let g = AC_DECODE_SCALE[quant_g] * layout.max_value;
+        let b = AC_DECODE_SCALE[quant_b] * layout.max_value;
 
         colors[RED][slot].as_mut_array()[lane] = r;
         colors[GREEN][slot].as_mut_array()[lane] = g;

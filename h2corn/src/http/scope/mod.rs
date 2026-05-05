@@ -9,29 +9,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use pyo3::{ffi, intern};
 
+use crate::ascii;
 use crate::hpack::BytesStr;
 use crate::http::types::{HttpVersion, KnownRequestHeaderName, RequestHeaderName, RequestHeaders};
 use crate::python::{py_cached_dict, py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
-
-const INVALID_HEX: u8 = u8::MAX;
-const HEX_NIBBLE_TABLE: [u8; 256] = {
-    let mut table = [INVALID_HEX; 256];
-    let mut digit = 0;
-    while digit < 10 {
-        table[b'0' as usize + digit] = digit as u8;
-        digit += 1;
-    }
-
-    let mut digit = 0;
-    while digit < 6 {
-        table[b'a' as usize + digit] = digit as u8 + 10;
-        table[b'A' as usize + digit] = digit as u8 + 10;
-        digit += 1;
-    }
-
-    table
-};
 
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
@@ -56,9 +38,9 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let mut copied = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let high = HEX_NIBBLE_TABLE[usize::from(bytes[index + 1])];
-            let low = HEX_NIBBLE_TABLE[usize::from(bytes[index + 2])];
-            if high != INVALID_HEX && low != INVALID_HEX {
+            let high = ascii::HEX_VALUE[usize::from(bytes[index + 1])];
+            let low = ascii::HEX_VALUE[usize::from(bytes[index + 2])];
+            if high != ascii::INVALID_VALUE && low != ascii::INVALID_VALUE {
                 let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
                 out.extend_from_slice(&bytes[copied..index]);
                 out.push((high << 4) | low);

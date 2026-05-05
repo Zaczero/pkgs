@@ -1,5 +1,6 @@
 use bytes::Bytes;
 
+use crate::ascii;
 use crate::hpack::BytesStr;
 use crate::http::types::KnownRequestHeaderName;
 use crate::websocket::{
@@ -89,7 +90,7 @@ fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
         && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
         && value[..WEBSOCKET_KEY_LEN - 2]
             .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
+            .all(|byte| ascii::is_base64(*byte))
 }
 
 fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {

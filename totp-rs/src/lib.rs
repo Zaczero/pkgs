@@ -21,6 +21,27 @@ use crate::secret::parse_secret_from_py;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
 
+const MODULUS_BY_DIGITS: [NonZeroU32; 10] = {
+    let mut table = [NonZeroU32::MIN; 10];
+    let mut value = 1;
+    let mut digits = 0;
+    while digits < table.len() {
+        table[digits] = match NonZeroU32::new(value) {
+            Some(value) => value,
+            None => panic!("decimal modulus must be non-zero"),
+        };
+        digits += 1;
+        if digits < table.len() {
+            value *= 10;
+        }
+    }
+    table
+};
+
+const fn modulus_for_digits(digits: u8) -> NonZeroU32 {
+    MODULUS_BY_DIGITS[digits as usize]
+}
+
 fn format_code_py(py: Python<'_>, mut code: u32, digits: u8) -> Py<PyString> {
     let mut buf = [b'0'; 9];
 
@@ -101,7 +122,7 @@ fn totp_generate(
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
     let secret = parse_secret_from_py(secret)?;
-    let modulus = NonZeroU32::new(10_u32.pow(u32::from(digits))).expect("pow() result is >= 10");
+    let modulus = modulus_for_digits(digits);
 
     let code = totp_code(secret.as_ref(), counter, modulus, algorithm);
 
@@ -131,7 +152,7 @@ fn totp_verify(
     let counter = resolve_counter(time, time_window, step_seconds, t0)
         .map_err(|err| PyValueError::new_err(err.message()))?;
 
-    let modulus = NonZeroU32::new(10_u32.pow(u32::from(digits))).expect("pow() result is >= 10");
+    let modulus = modulus_for_digits(digits);
     let Some(code) = parse_code_py(code, digits, modulus) else {
         return Ok(false);
     };
