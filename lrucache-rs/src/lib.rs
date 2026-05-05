@@ -1,6 +1,5 @@
 mod cache;
-mod errors;
-mod key;
+mod store;
 
 use crate::cache::LRUCache;
 use pyo3::prelude::*;

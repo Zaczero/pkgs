@@ -1,40 +1,51 @@
-use nohash_hasher::BuildNoHashHasher;
-use ordered_hash_map::OrderedHashMap;
-use parking_lot::Mutex;
-use pyo3::{
-    Bound, Py,
-    exceptions::{PyKeyError, PyValueError},
-    prelude::*,
-    types::{PyAny, PyIterator, PyTuple, PyType},
-};
+//! `LRUCache` pyclass: a dict-like LRU cache backed by [`crate::store::Store`].
+//!
+//! ## Concurrency model
+//!
+//! The class is `frozen`, so `PyO3` methods take `&self` and synchronisation lives in a single
+//! [`parking_lot::Mutex`] over the inner store. On the GIL-enabled build the GIL serialises
+//! Python code, so contention is rare. On the free-threaded build, multiple Rust threads can call
+//! methods concurrently and the mutex is the source of truth.
+//!
+//! [`MutexExt::lock_py_attached`] is used so that, when waiting on a contended mutex, the calling
+//! thread temporarily detaches from the Python interpreter; this avoids the classic GIL/mutex
+//! interleaving deadlock when another thread holds the mutex while waiting on the GC.
+//!
+//! ## Reentrancy contract
+//!
+//! User-supplied `__hash__` runs *before* the lock is acquired, so it is free to do anything. A
+//! user-supplied `__eq__` runs from inside the lookup closure while the lock is held; it must not
+//! recurse into this same cache instance, which would self-deadlock the thread. This matches the
+//! contract of `dict` in `CPython` and is documented in the public API.
+//!
+//! ## Hash protocol
+//!
+//! `__hash__` is invoked exactly once per call (via `PyObject_Hash`). The resulting `Py_hash_t` is
+//! stored in the entry alongside the key, so subsequent lookups for the same stored key never
+//! re-hash. Collision handling uses `PyObject_RichCompareBool(_, _, Py_EQ)`: it has `CPython`'s
+//! pointer-equality fast path built in, so equal Python object pointers short-circuit before the
+//! Python-level `__eq__` is ever called.
+
 use std::num::NonZeroUsize;
 
-use crate::errors::Error;
-use crate::key::PyObjectWrapper;
+use parking_lot::Mutex;
+use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::sync::MutexExt;
+use pyo3::types::{PyAny, PyTuple, PyType};
+use pyo3::{Py, ffi, prelude::*};
 
-#[pyclass]
+use crate::store::{MAX_CAPACITY, Store};
+
+#[pyclass(frozen, module = "lrucache_rs._lib")]
 pub struct LRUCache {
+    inner: Mutex<Store>,
+    /// Stored alongside `inner` so it can be read without taking the lock.
     maxsize: NonZeroUsize,
-    cache: Mutex<OrderedHashMap<PyObjectWrapper, Py<PyAny>, BuildNoHashHasher<PyObjectWrapper>>>,
-}
-
-impl LRUCache {
-    fn wrap_key(py: Python<'_>, key: Py<PyAny>) -> PyResult<PyObjectWrapper> {
-        Ok(PyObjectWrapper {
-            hash: key.bind(py).hash()?,
-            obj: key,
-        })
-    }
-
-    fn key_repr_or_fallback(py: Python<'_>, key: &Py<PyAny>) -> String {
-        key.bind(py)
-            .repr()
-            .map_or_else(|_| String::from("key not found"), |s| s.to_string())
-    }
 }
 
 #[pymethods]
 impl LRUCache {
+    /// Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at runtime.
     #[classmethod]
     fn __class_getitem__(cls: &Bound<'_, PyType>, _item: &Bound<'_, PyAny>) -> Py<PyType> {
         cls.clone().unbind()
@@ -43,85 +54,173 @@ impl LRUCache {
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
         let maxsize = NonZeroUsize::new(maxsize)
-            .ok_or_else(|| PyValueError::new_err(Error::MaxsizeMustBePositive.message()))?;
-
+            .ok_or_else(|| PyValueError::new_err("maxsize must be positive"))?;
+        if maxsize.get() > MAX_CAPACITY {
+            return Err(PyValueError::new_err(format!(
+                "maxsize must be <= {MAX_CAPACITY}",
+            )));
+        }
         Ok(Self {
+            inner: Mutex::new(Store::new(maxsize)),
             maxsize,
-            cache: Mutex::new(OrderedHashMap::with_capacity_and_hasher(
-                maxsize.get(),
-                BuildNoHashHasher::default(),
-            )),
         })
     }
 
-    fn __len__(&self) -> usize {
-        self.cache.lock().len()
+    fn __len__(&self, py: Python<'_>) -> usize {
+        self.inner.lock_py_attached(py).len()
     }
 
-    fn __contains__(&self, py: Python, key: Py<PyAny>) -> PyResult<bool> {
-        let key = Self::wrap_key(py, key)?;
-        Ok(self.cache.lock().contains_key(&key))
+    fn __contains__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let hash = key.hash()?;
+        let guard = self.inner.lock_py_attached(py);
+        guard.contains(hash, |stored| eq_keys(stored, key))
     }
 
-    fn __iter__<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyIterator>> {
-        let cache = self.cache.lock();
-        let tuple = PyTuple::new(py, cache.keys().map(|key| key.obj.clone_ref(py)))?;
-        drop(cache);
-        PyIterator::from_object(tuple.as_any())
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let hash = key.hash()?;
+        let mut guard = self.inner.lock_py_attached(py);
+        let value = guard.touch_get(py, hash, |stored| eq_keys(stored, key))?;
+        drop(guard);
+        let Some(value) = value else {
+            return Err(make_key_error(key));
+        };
+        Ok(value.into_bound(py))
     }
 
-    fn __setitem__(&self, py: Python, key: Py<PyAny>, value: Py<PyAny>) -> PyResult<()> {
-        let key = Self::wrap_key(py, key)?;
-        let mut cache = self.cache.lock();
-        cache.insert(key, value);
-        if cache.len() > self.maxsize.get() {
-            cache.pop_front();
-        }
-        drop(cache);
+    fn __setitem__(
+        &self,
+        py: Python<'_>,
+        key: &Bound<'_, PyAny>,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let hash = key.hash()?;
+        let mut guard = self.inner.lock_py_attached(py);
+        let displaced = guard.put(
+            hash,
+            key.clone().unbind(),
+            value.unbind(),
+            |stored| eq_keys(stored, key),
+        )?;
+        // Release the lock before the displaced Py<...> values drop, since their finalizers can
+        // run arbitrary Python code.
+        drop(guard);
+        drop(displaced);
         Ok(())
     }
 
-    fn __getitem__(&self, py: Python, key: Py<PyAny>) -> PyResult<Py<PyAny>> {
-        let cache_key = Self::wrap_key(py, key)?;
-        let mut cache = self.cache.lock();
-        let Some(value) = cache.get(&cache_key) else {
-            drop(cache);
-            return Err(PyKeyError::new_err(Self::key_repr_or_fallback(
-                py,
-                &cache_key.obj,
-            )));
-        };
-
-        let result = value.clone_ref(py);
-        cache.move_to_back(&cache_key);
-        drop(cache);
-        Ok(result)
-    }
-
-    fn __delitem__(&self, py: Python, key: Py<PyAny>) -> PyResult<()> {
-        let cache_key = Self::wrap_key(py, key)?;
-        if self.cache.lock().remove(&cache_key).is_some() {
+    fn __delitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
+        let hash = key.hash()?;
+        let mut guard = self.inner.lock_py_attached(py);
+        let removed = guard.remove(hash, |stored| eq_keys(stored, key))?;
+        drop(guard);
+        if removed.is_some() {
             Ok(())
         } else {
-            Err(PyKeyError::new_err(Self::key_repr_or_fallback(
-                py,
-                &cache_key.obj,
-            )))
+            Err(make_key_error(key))
         }
     }
 
-    #[pyo3(signature = (key, /, default=None))]
-    fn get(&self, py: Python, key: Py<PyAny>, default: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
-        let cache_key = Self::wrap_key(py, key)?;
-        let mut cache = self.cache.lock();
-        let Some(value) = cache.get(&cache_key) else {
-            drop(cache);
-            return Ok(default.unwrap_or_else(|| py.None()));
-        };
-
-        let result = value.clone_ref(py);
-        cache.move_to_back(&cache_key);
-        drop(cache);
-        Ok(result)
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Snapshot keys under the lock, then build a tuple iterator after releasing it. The tuple
+        // takes independent strong references, so subsequent cache mutations cannot invalidate
+        // the returned iterator.
+        let guard = self.inner.lock_py_attached(py);
+        let keys: Vec<Py<PyAny>> = guard.iter_keys().map(|k| k.clone_ref(py)).collect();
+        drop(guard);
+        let tuple = PyTuple::new(py, keys)?;
+        Ok(tuple.try_iter()?.into_any())
     }
+
+    #[pyo3(signature = (key, /, default=None))]
+    fn get(
+        &self,
+        py: Python<'_>,
+        key: &Bound<'_, PyAny>,
+        default: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let hash = key.hash()?;
+        let mut guard = self.inner.lock_py_attached(py);
+        Ok(guard
+            .touch_get(py, hash, |stored| eq_keys(stored, key))?
+            .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
+    }
+
+    /// Read without bumping recency. Useful for instrumentation that should not perturb the LRU
+    /// order; the convention is borrowed from `cachetools`.
+    #[pyo3(signature = (key, /, default=None))]
+    fn peek(
+        &self,
+        py: Python<'_>,
+        key: &Bound<'_, PyAny>,
+        default: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let hash = key.hash()?;
+        let guard = self.inner.lock_py_attached(py);
+        Ok(guard
+            .peek_get(py, hash, |stored| eq_keys(stored, key))?
+            .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
+    }
+
+    fn clear(&self, py: Python<'_>) {
+        self.inner.lock_py_attached(py).clear(py);
+    }
+
+    /// Remove and return the least-recently-used `(key, value)` pair, raising `KeyError` if empty.
+    fn popitem<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let mut guard = self.inner.lock_py_attached(py);
+        let popped = guard.pop_lru();
+        drop(guard);
+        let Some(pair) = popped else {
+            return Err(PyKeyError::new_err("popitem: cache is empty"));
+        };
+        pair.into_pyobject(py)
+    }
+
+    #[getter]
+    const fn maxsize(&self) -> usize {
+        self.maxsize.get()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let len = self.inner.lock_py_attached(py).len();
+        format!("LRUCache(maxsize={}, currsize={len})", self.maxsize.get())
+    }
+}
+
+/// Compare a stored key against the lookup key.
+///
+/// We short-circuit on pointer equality before crossing the FFI boundary; this is the typical
+/// case for interned integers, interned strings, and any caller that reuses the same Python
+/// object as a key. `PyObject_RichCompareBool` does the same identity check internally, but
+/// avoiding the call saves the function-call overhead and lets the linker keep the cold path
+/// (`__eq__` invocation) out of the icache for the common case.
+///
+/// The remaining FFI is `PyObject_RichCompareBool`, called directly because pyo3's safe `eq()`
+/// would route through `PyObject_RichCompare` plus a separate `PyObject_IsTrue` (two FFI calls
+/// and an intermediate `PyObject` allocation) instead of one. See pyo3 issue #985 for why
+/// `Bound::eq` deliberately avoids the `RichCompareBool` shape.
+fn eq_keys(stored: &Py<PyAny>, lookup: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if lookup.is(stored) {
+        return Ok(true);
+    }
+    // SAFETY: both pointers refer to live Python objects under a held GIL/attached state;
+    // `lookup` is a `Bound<...>`, and `stored` is owned by the store which only mutates while
+    // attached. PyObject_RichCompareBool returns -1 with the error indicator set on failure.
+    let cmp = unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), lookup.as_ptr(), ffi::Py_EQ) };
+    if cmp < 0 {
+        Err(PyErr::fetch(lookup.py()))
+    } else {
+        Ok(cmp == 1)
+    }
+}
+
+fn make_key_error(key: &Bound<'_, PyAny>) -> PyErr {
+    let repr = key
+        .repr()
+        .map_or_else(|_| String::from("key not found"), |s| s.to_string());
+    PyKeyError::new_err(repr)
 }

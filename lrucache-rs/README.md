@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/p/lrucache-rs)
 
-An efficient LRU cache written in Rust with Python bindings. Unlike other LRU cache implementations, this one behaves like a Python dictionary and does not wrap around a function.
+An efficient LRU cache written in Rust with Python bindings. Unlike most LRU cache implementations, this one behaves like a Python dictionary and does not wrap a function.
 
 ## Installation
 
@@ -23,3 +23,5 @@ assert cache.get('1') is None
 assert cache.get('2') == 2
 assert cache.get('3') == 3
 ```
+
+The cache is a [`MutableMapping`](https://docs.python.org/3/library/collections.abc.html#collections.abc.MutableMapping). All `dict`-style operations work as usual.
