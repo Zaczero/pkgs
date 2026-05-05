@@ -1,14 +1,13 @@
 use bytes::BytesMut;
 use tokio::io::AsyncWrite;
 
+use super::ENCODED_HEADER_BLOCK_CAPACITY;
+use super::flush::write_frame;
 use crate::error::{ErrorExt, H2CornError, HttpResponseError};
 use crate::frame::{FrameFlags, FrameHeader, FrameType, StreamId};
 use crate::hpack::Encoder;
 use crate::http::digits;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
-
-use super::ENCODED_HEADER_BLOCK_CAPACITY;
-use super::flush::write_frame;
 
 pub(super) struct HeaderEncodeState {
     encoder: Encoder,
@@ -142,15 +141,15 @@ fn encode_status_header(
     match status {
         status_code::OK => out.extend_from_slice(&[0x88]),
         status_code::NO_CONTENT => out.extend_from_slice(&[0x89]),
-        status_code::PARTIAL_CONTENT => out.extend_from_slice(&[0x8a]),
-        status_code::NOT_MODIFIED => out.extend_from_slice(&[0x8b]),
-        status_code::BAD_REQUEST => out.extend_from_slice(&[0x8c]),
-        status_code::NOT_FOUND => out.extend_from_slice(&[0x8d]),
-        status_code::INTERNAL_SERVER_ERROR => out.extend_from_slice(&[0x8e]),
+        status_code::PARTIAL_CONTENT => out.extend_from_slice(&[0x8A]),
+        status_code::NOT_MODIFIED => out.extend_from_slice(&[0x8B]),
+        status_code::BAD_REQUEST => out.extend_from_slice(&[0x8C]),
+        status_code::NOT_FOUND => out.extend_from_slice(&[0x8D]),
+        status_code::INTERNAL_SERVER_ERROR => out.extend_from_slice(&[0x8E]),
         100..=999 => encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status), out),
         _ => {
             return HttpResponseError::StatusMustBeThreeDigitCode.err();
-        }
+        },
     }
     Ok(())
 }
@@ -193,6 +192,6 @@ mod tests {
             .encode_response(status_code::NOT_FOUND, &ResponseHeaders::new())
             .unwrap();
 
-        assert_eq!(block, &[0x8d]);
+        assert_eq!(block, &[0x8D]);
     }
 }

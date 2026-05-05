@@ -1,9 +1,9 @@
 mod table;
 
+use bytes::BytesMut;
+
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
-
-use bytes::BytesMut;
 
 const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
@@ -26,7 +26,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> 
         }
         state = usize::from(next);
 
-        let (next, symbol, flags) = DECODE_TABLE[state][usize::from(byte & 0x0f)];
+        let (next, symbol, flags) = DECODE_TABLE[state][usize::from(byte & 0x0F)];
         if flags & ERROR != 0 {
             return Err(DecoderError::InvalidHuffmanCode);
         }

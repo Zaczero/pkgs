@@ -1,16 +1,31 @@
-use std::{
-    collections::HashMap,
-    future::pending,
-    time::{Duration, Instant},
-};
+mod http;
+mod request;
+mod state;
+mod websocket;
+mod writer;
+
+use std::collections::HashMap;
+use std::future::pending;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
+use http::spawn_request_stream;
 use nohash_hasher::BuildNoHashHasher;
+use request::{
+    HeaderBlockFragment, PendingHeaders, RequestHeadError, decode_request_head,
+    decode_trailer_block, parse_header_block_fragment, resolve_request_head,
+};
 use smallvec::SmallVec;
+use state::{
+    ConnectionDrainState, H2ConnectionState, InboundStream, ReceiveState, RequestInputClose,
+    RequestInputDeadline, RequestSpawnContext,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
+pub use writer::H2WriteTarget;
+use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
@@ -23,111 +38,15 @@ use crate::http::types::{RequestHead, ResponseHeaders};
 use crate::proxy::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
 
-mod http;
-mod request;
-mod state;
-mod websocket;
-mod writer;
-
-use http::spawn_request_stream;
-use request::{
-    HeaderBlockFragment, PendingHeaders, RequestHeadError, decode_request_head,
-    decode_trailer_block, parse_header_block_fragment, resolve_request_head,
-};
-use state::{
-    ConnectionDrainState, H2ConnectionState, InboundStream, ReceiveState, RequestInputClose,
-    RequestInputDeadline, RequestSpawnContext,
-};
-pub use writer::H2WriteTarget;
-use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
-
-type StreamMap<T> = HashMap<u32, T, BuildNoHashHasher<u32>>;
 const CONNECTION_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_CONNECTION_WINDOW_SIZE / 2;
 const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_STREAM_WINDOW_SIZE / 2;
 
-fn new_stream_map<T>(capacity: usize) -> StreamMap<T> {
-    HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default())
-}
-
-fn queue_stream_input(stream: &mut InboundStream, value: StreamInput) {
-    let Some(tx) = stream.input.as_ref() else {
-        stream.body.stop_delivering();
-        return;
-    };
-    if !stream.pending_input.is_empty() {
-        stream.pending_input.push_back(value);
-        return;
-    }
-    match try_push(tx, value) {
-        TryPush::Sent => {}
-        TryPush::Full(value) => stream.pending_input.push_back(value),
-        TryPush::Closed(_) => {
-            stream.body.stop_delivering();
-            stream.input = None;
-        }
-    }
-}
-
-async fn flush_pending_stream_inputs<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-) -> Result<(), H2CornError>
-where
-    W: H2WriteTarget,
-{
-    let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
-
-    for (&raw_stream_id, stream) in &mut state.streams {
-        let Some(tx) = stream.input.as_ref() else {
-            stream.pending_input.clear();
-            continue;
-        };
-        while let Some(value) = stream.pending_input.pop_front() {
-            match try_push(tx, value) {
-                TryPush::Sent => {}
-                TryPush::Full(value) => {
-                    stream.pending_input.push_front(value);
-                    break;
-                }
-                TryPush::Closed(_) => {
-                    stream.pending_input.clear();
-                    stream.body.stop_delivering();
-                    stream.input = None;
-                    break;
-                }
-            }
-        }
-        if stream.pending_input.is_empty()
-            && let Some(increment) = stream
-                .receive_window
-                .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
-        {
-            stream_updates.push((
-                StreamId::new(raw_stream_id).expect("stored stream id is non-zero"),
-                increment,
-            ));
-        }
-    }
-
-    for (stream_id, increment) in stream_updates {
-        state
-            .writer
-            .send_window_update(WindowTarget::Stream(stream_id), increment)
-            .await?;
-    }
-
-    Ok(())
-}
+type StreamMap<T> = HashMap<u32, T, BuildNoHashHasher<u32>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PriorityDependency {
     Root,
     Stream(StreamId),
-}
-
-impl PriorityDependency {
-    fn from_wire(raw: u32) -> Self {
-        StreamId::new(raw & frame::STREAM_ID_MASK).map_or(Self::Root, Self::Stream)
-    }
 }
 
 enum H2PeerFailure {
@@ -139,6 +58,37 @@ enum H2PeerFailure {
         stream_id: StreamId,
         error_code: ErrorCode,
     },
+}
+
+enum IngestEvent {
+    Continue,
+    ShutdownChanged,
+    Frame(RawFrame),
+    FrameLengthExceeded(H2Error),
+    PeerClosed,
+    Deadline,
+    KeepAliveTimeout,
+    RequestInputTimeout(RequestInputDeadline),
+}
+
+pub struct UpgradedH2Request {
+    pub buffer: BytesMut,
+    pub request: RequestHead,
+    pub body: Bytes,
+    pub peer_settings: PeerSettings,
+}
+
+struct RequestStartContext<'a, W> {
+    writer: &'a mut WriterState<W>,
+    connection: &'a ConnectionHandle,
+    spawn: RequestSpawnContext<'a>,
+    last_client_stream_id: Option<StreamId>,
+}
+
+impl PriorityDependency {
+    fn from_wire(raw: u32) -> Self {
+        StreamId::new(raw & frame::STREAM_ID_MASK).map_or(Self::Root, Self::Stream)
+    }
 }
 
 impl H2PeerFailure {
@@ -165,6 +115,79 @@ impl H2PeerFailure {
     }
 }
 
+fn new_stream_map<T>(capacity: usize) -> StreamMap<T> {
+    HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default())
+}
+
+fn queue_stream_input(stream: &mut InboundStream, value: StreamInput) {
+    let Some(tx) = stream.input.as_ref() else {
+        stream.body.stop_delivering();
+        return;
+    };
+    if !stream.pending_input.is_empty() {
+        stream.pending_input.push_back(value);
+        return;
+    }
+    match try_push(tx, value) {
+        TryPush::Sent => {},
+        TryPush::Full(value) => stream.pending_input.push_back(value),
+        TryPush::Closed(_) => {
+            stream.body.stop_delivering();
+            stream.input = None;
+        },
+    }
+}
+
+async fn flush_pending_stream_inputs<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+) -> Result<(), H2CornError>
+where
+    W: H2WriteTarget,
+{
+    let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
+
+    for (&raw_stream_id, stream) in &mut state.streams {
+        let Some(tx) = stream.input.as_ref() else {
+            stream.pending_input.clear();
+            continue;
+        };
+        while let Some(value) = stream.pending_input.pop_front() {
+            match try_push(tx, value) {
+                TryPush::Sent => {},
+                TryPush::Full(value) => {
+                    stream.pending_input.push_front(value);
+                    break;
+                },
+                TryPush::Closed(_) => {
+                    stream.pending_input.clear();
+                    stream.body.stop_delivering();
+                    stream.input = None;
+                    break;
+                },
+            }
+        }
+        if stream.pending_input.is_empty()
+            && let Some(increment) = stream
+                .receive_window
+                .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
+        {
+            stream_updates.push((
+                StreamId::new(raw_stream_id).expect("stored stream id is non-zero"),
+                increment,
+            ));
+        }
+    }
+
+    for (stream_id, increment) in stream_updates {
+        state
+            .writer
+            .send_window_update(WindowTarget::Stream(stream_id), increment)
+            .await?;
+    }
+
+    Ok(())
+}
+
 async fn apply_peer_failure<W>(
     writer: &mut WriterState<W>,
     last_stream_id: Option<StreamId>,
@@ -180,14 +203,14 @@ where
                 .goaway(last_stream_id, error_code, message, true)
                 .await?;
             Err(error)
-        }
+        },
         H2PeerFailure::Reset {
             stream_id,
             error_code,
         } => {
             writer.reset_stream(stream_id, error_code).await?;
             Ok(())
-        }
+        },
     }
 }
 
@@ -212,13 +235,6 @@ where
     Ok(())
 }
 
-struct RequestStartContext<'a, W> {
-    writer: &'a mut WriterState<W>,
-    connection: &'a ConnectionHandle,
-    spawn: RequestSpawnContext<'a>,
-    last_client_stream_id: Option<StreamId>,
-}
-
 async fn start_request_stream_from_block<W>(
     ctx: RequestStartContext<'_, W>,
     stream_id: StreamId,
@@ -235,7 +251,7 @@ where
                 .send_headers(stream_id, status, ResponseHeaders::new(), true)
                 .await?;
             return Ok(());
-        }
+        },
         Err(RequestHeadError::Connection { error_code, error }) => {
             apply_peer_failure(
                 ctx.writer,
@@ -244,7 +260,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
         Err(RequestHeadError::Stream { error_code }) => {
             apply_peer_failure(
                 ctx.writer,
@@ -253,7 +269,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
     };
 
     spawn_request_stream(stream_id, request, end_stream, ctx.connection, ctx.spawn).await?;
@@ -291,13 +307,6 @@ where
     .await?;
     seed_upgraded_request(&mut connection, upgraded.request, upgraded.body).await?;
     run_h2_connection(Box::new(connection)).await
-}
-
-pub struct UpgradedH2Request {
-    pub buffer: BytesMut,
-    pub request: RequestHead,
-    pub body: Bytes,
-    pub peer_settings: PeerSettings,
 }
 
 pub async fn serve_connection<R, W>(
@@ -393,11 +402,11 @@ where
                     .reset_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
                     .await?;
                 state.remove_stream(stream_id);
-            }
+            },
             Some(RequestInputClose::Closed { tx: Some(tx), .. }) => {
                 send_best_effort(&tx, StreamInput::EndStream).await;
-            }
-            Some(RequestInputClose::Closed { tx: None, .. }) | None => {}
+            },
+            Some(RequestInputClose::Closed { tx: None, .. }) | None => {},
         },
         Err(RequestHeadError::Connection { error_code, error }) => {
             apply_peer_failure(
@@ -406,7 +415,7 @@ where
                 H2PeerFailure::connection(error_code, error),
             )
             .await?;
-        }
+        },
         Err(RequestHeadError::Stream { error_code }) => {
             apply_peer_failure(
                 &mut state.writer,
@@ -414,7 +423,7 @@ where
                 H2PeerFailure::stream(stream_id, error_code),
             )
             .await?;
-        }
+        },
         Err(RequestHeadError::Reject { .. }) => {
             apply_peer_failure(
                 &mut state.writer,
@@ -422,7 +431,7 @@ where
                 H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
             )
             .await?;
-        }
+        },
     }
     Ok(())
 }
@@ -462,7 +471,7 @@ where
             )
             .await?;
             Ok(true)
-        }
+        },
         ReceiveState::Closed => {
             apply_peer_failure(
                 &mut state.writer,
@@ -471,7 +480,7 @@ where
             )
             .await?;
             Ok(true)
-        }
+        },
         ReceiveState::Idle | ReceiveState::Open | ReceiveState::ResponseClosed => Ok(false),
     }
 }
@@ -550,7 +559,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
     };
     let stream = state.streams.get(&stream_id.get());
     let has_stream = stream.is_some();
@@ -588,7 +597,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
     };
     if matches!(
         fragment.stream_dependency,
@@ -607,12 +616,12 @@ where
         ReceiveState::Open | ReceiveState::ResponseClosed => {
             handle_trailing_headers(state, stream_id, fragment).await?;
             return Ok(());
-        }
-        ReceiveState::Idle => {}
+        },
+        ReceiveState::Idle => {},
         ReceiveState::RequestClosed | ReceiveState::Closed => {
             reject_headers_for_state(state, stream_id, receive_state).await?;
             return Ok(());
-        }
+        },
     }
 
     if state.active_stream_count() >= state.context.config.http2.max_concurrent_streams as usize {
@@ -717,7 +726,7 @@ where
                 H2PeerFailure::protocol(H2Error::DataOnIdleStream),
             )
             .await
-        }
+        },
         ReceiveState::Open
         | ReceiveState::RequestClosed
         | ReceiveState::ResponseClosed
@@ -728,7 +737,7 @@ where
                 H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED),
             )
             .await
-        }
+        },
     }
 }
 
@@ -787,7 +796,7 @@ where
         .get_mut(&stream_id.get())
         .expect("stream existence is validated before recording data");
     match stream.body.record_chunk(data.len() as u64) {
-        RequestBodyProgress::Continue => {}
+        RequestBodyProgress::Continue => {},
         RequestBodyProgress::SizeLimitExceeded | RequestBodyProgress::ContentLengthExceeded => {
             if let Some(tx) = stream.input.take() {
                 send_best_effort(&tx, StreamInput::Reset(ErrorCode::PROTOCOL_ERROR)).await;
@@ -800,7 +809,7 @@ where
             .await?;
             state.remove_stream(stream_id);
             return Ok(false);
-        }
+        },
     }
     if stream.body.should_deliver() {
         queue_stream_input(stream, StreamInput::Data(data));
@@ -857,11 +866,11 @@ where
             )
             .await?;
             state.remove_stream(stream_id);
-        }
+        },
         Some(RequestInputClose::Closed { tx: Some(tx), .. }) => {
             send_best_effort(&tx, StreamInput::EndStream).await;
-        }
-        Some(RequestInputClose::Closed { tx: None, .. }) | None => {}
+        },
+        Some(RequestInputClose::Closed { tx: None, .. }) | None => {},
     }
     Ok(())
 }
@@ -885,7 +894,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
     };
     let Some(stream_id) = header.stream_id else {
         apply_peer_failure(
@@ -936,10 +945,10 @@ where
     loop {
         let mut stop_after_flush = false;
         match ingest_connection_input(&mut state).await? {
-            IngestEvent::Continue => {}
+            IngestEvent::Continue => {},
             IngestEvent::PeerClosed | IngestEvent::Deadline | IngestEvent::KeepAliveTimeout => {
                 stop_after_flush = true;
-            }
+            },
             IngestEvent::FrameLengthExceeded(error) => {
                 state
                     .writer
@@ -951,10 +960,10 @@ where
                     )
                     .await?;
                 stop_after_flush = true;
-            }
+            },
             IngestEvent::RequestInputTimeout(deadline) => {
                 handle_request_input_timeout(&mut state, deadline).await?;
-            }
+            },
             IngestEvent::ShutdownChanged => {
                 if state.shutdown.borrow().kind().is_some() {
                     begin_graceful_shutdown(
@@ -965,12 +974,12 @@ where
                     )
                     .await?;
                 }
-            }
+            },
             IngestEvent::Frame(frame) => {
                 if advance_connection_with_peer_frame(&mut state, frame).await? {
                     stop_after_flush = true;
                 }
-            }
+            },
         }
 
         flush_connection_egress(&mut state).await?;
@@ -1013,7 +1022,7 @@ where
                     .reset_stream(stream_id, ErrorCode::CANCEL)
                     .await?;
             }
-        }
+        },
         RequestInputDeadline::Body(stream_id, _) => {
             if let Some(stream) = state.streams.get_mut(&stream_id.get())
                 && !stream.state.request_is_closed()
@@ -1028,20 +1037,9 @@ where
                     .await?;
                 state.remove_stream(stream_id);
             }
-        }
+        },
     }
     Ok(())
-}
-
-enum IngestEvent {
-    Continue,
-    ShutdownChanged,
-    Frame(RawFrame),
-    FrameLengthExceeded(H2Error),
-    PeerClosed,
-    Deadline,
-    KeepAliveTimeout,
-    RequestInputTimeout(RequestInputDeadline),
 }
 
 fn map_frame_ingest_result(
@@ -1052,7 +1050,7 @@ fn map_frame_ingest_result(
         Ok(None) => Ok(IngestEvent::PeerClosed),
         Err(H2CornError::H2(error @ H2Error::FrameLengthExceedsPeerMax { .. })) => {
             Ok(IngestEvent::FrameLengthExceeded(error))
-        }
+        },
         Err(err) => Err(err),
     }
 }
@@ -1185,7 +1183,7 @@ where
             )
             .await?;
             return Ok(());
-        }
+        },
     };
     state.writer.send_settings_ack().await?;
     state.writer.update_peer_settings(settings).await
@@ -1400,7 +1398,7 @@ where
                 H2PeerFailure::connection(error_code, H2Error::FrameExceedsAdvertisedMaxSize),
             )
             .await?;
-        }
+        },
         Some(_stream_id)
             if matches!(
                 frame.header.frame_type,
@@ -1416,7 +1414,7 @@ where
                 H2PeerFailure::connection(error_code, H2Error::FrameExceedsAdvertisedMaxSize),
             )
             .await?;
-        }
+        },
         Some(stream_id) => {
             apply_peer_failure(
                 &mut state.writer,
@@ -1424,7 +1422,7 @@ where
                 H2PeerFailure::stream(stream_id, error_code),
             )
             .await?;
-        }
+        },
     }
     Ok(true)
 }
@@ -1524,33 +1522,33 @@ where
     match frame.header.frame_type {
         FrameType::SETTINGS => {
             handle_settings_frame(state, frame).await?;
-        }
+        },
         FrameType::PING => {
             handle_ping_frame(state, frame).await?;
-        }
+        },
         FrameType::WINDOW_UPDATE => return handle_window_update_frame(state, frame).await,
         FrameType::RST_STREAM => {
             handle_rst_stream_frame(state, frame).await?;
-        }
+        },
         FrameType::GOAWAY => {
             handle_goaway_frame(state, frame).await?;
-        }
+        },
         FrameType::PRIORITY => {
             handle_priority_frame(state, frame).await?;
-        }
+        },
         FrameType::PUSH_PROMISE => {
             reject_push_promise(state).await?;
-        }
+        },
         FrameType::HEADERS => {
             handle_headers_frame(state, frame).await?;
-        }
+        },
         FrameType::CONTINUATION => {
             handle_continuation_frame(state, frame).await?;
-        }
+        },
         FrameType::DATA => {
             handle_data_frame(state, frame).await?;
-        }
-        _ => {}
+        },
+        _ => {},
     }
     Ok(false)
 }
@@ -1602,11 +1600,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io,
-        pin::Pin,
-        task::{Context, Poll},
-    };
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
     use tokio::io::{AsyncWrite, BufWriter};
 
@@ -1715,10 +1711,9 @@ mod tests {
         }
         writer.flush().await.unwrap();
 
-        assert_eq!(
-            parse_window_updates(&writer.test_writer_ref().bytes),
-            vec![(1, STREAM_WINDOW_UPDATE_THRESHOLD)]
-        );
+        assert_eq!(parse_window_updates(&writer.test_writer_ref().bytes), vec![
+            (1, STREAM_WINDOW_UPDATE_THRESHOLD)
+        ]);
         assert!(
             receive_window
                 .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)

@@ -1,4 +1,5 @@
-use std::{array, simd::Simd};
+use std::array;
+use std::simd::Simd;
 
 const WS_MASK_LANES: usize = 32;
 

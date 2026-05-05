@@ -114,38 +114,6 @@ impl AcceptedWebSocketState {
     }
 }
 
-pub fn append_ws_accept_headers(
-    headers: &mut ResponseHeaders,
-    subprotocol: Option<&str>,
-    per_message_deflate: bool,
-) {
-    headers.reserve(usize::from(subprotocol.is_some()) + usize::from(per_message_deflate));
-    if let Some(subprotocol) = subprotocol {
-        headers.push((
-            Bytes::from_static(b"sec-websocket-protocol").into(),
-            Bytes::copy_from_slice(subprotocol.as_bytes()).into(),
-        ));
-    }
-    if per_message_deflate {
-        headers.push((
-            Bytes::from_static(b"sec-websocket-extensions").into(),
-            Bytes::from_static(PERMESSAGE_DEFLATE_RESPONSE).into(),
-        ));
-    }
-}
-
-pub fn take_pending_close_frame(
-    state: &mut AcceptedWebSocketState,
-    frame_buf: &mut BytesMut,
-) -> Result<Option<Bytes>, H2CornError> {
-    if let Some(close) = state.take_pending_close() {
-        encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
-        state.mark_close_sent();
-        return Ok(Some(frame_buf.split().freeze()));
-    }
-    Ok(None)
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CloseState {
     #[default]
@@ -248,6 +216,38 @@ pub(super) struct AcceptedSessionConfig {
     pub(super) shutdown: watch::Receiver<ShutdownState>,
 }
 
+pub fn append_ws_accept_headers(
+    headers: &mut ResponseHeaders,
+    subprotocol: Option<&str>,
+    per_message_deflate: bool,
+) {
+    headers.reserve(usize::from(subprotocol.is_some()) + usize::from(per_message_deflate));
+    if let Some(subprotocol) = subprotocol {
+        headers.push((
+            Bytes::from_static(b"sec-websocket-protocol").into(),
+            Bytes::copy_from_slice(subprotocol.as_bytes()).into(),
+        ));
+    }
+    if per_message_deflate {
+        headers.push((
+            Bytes::from_static(b"sec-websocket-extensions").into(),
+            Bytes::from_static(PERMESSAGE_DEFLATE_RESPONSE).into(),
+        ));
+    }
+}
+
+pub fn take_pending_close_frame(
+    state: &mut AcceptedWebSocketState,
+    frame_buf: &mut BytesMut,
+) -> Result<Option<Bytes>, H2CornError> {
+    if let Some(close) = state.take_pending_close() {
+        encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
+        state.mark_close_sent();
+        return Ok(Some(frame_buf.split().freeze()));
+    }
+    Ok(None)
+}
+
 pub const fn shutdown_close_code(kind: ShutdownKind) -> WebSocketCloseCode {
     match kind {
         ShutdownKind::Stop => close_code::GOING_AWAY,
@@ -290,7 +290,7 @@ where
                 WebSocketError::HandshakeTimedOut,
             )
             .await;
-        }
+        },
     };
     match first {
         HandshakeEvent::Accept {
@@ -310,34 +310,30 @@ where
                 .send_accept(subprotocol, headers, per_message_deflate)
                 .await?;
             access_log.emit_http_response(transport.accept_status(), 0);
-        }
+        },
         HandshakeEvent::Close => {
             transport.send_forbidden_response().await?;
             access_log.emit_http_response(status_code::FORBIDDEN, 0);
             settle_app_task(&mut running_app, false, timeout_graceful_shutdown).await?;
             return Ok(());
-        }
+        },
         HandshakeEvent::DenialStart { status, headers } => {
             let (tx_bytes, app_finished) =
                 drive_denial_response(transport, status, headers, &mut running_app).await?;
             access_log.emit_http_response(status, tx_bytes);
             settle_app_task(&mut running_app, app_finished, timeout_graceful_shutdown).await?;
             return Ok(());
-        }
+        },
     }
 
     let session_started = Instant::now();
-    let mut outcome = run_accepted_session(
-        transport,
-        &mut running_app,
-        AcceptedSessionConfig {
-            max_message_size,
-            per_message_deflate,
-            ping_interval,
-            ping_timeout,
-            shutdown,
-        },
-    )
+    let mut outcome = run_accepted_session(transport, &mut running_app, AcceptedSessionConfig {
+        max_message_size,
+        per_message_deflate,
+        ping_interval,
+        ping_timeout,
+        shutdown,
+    })
     .await?;
 
     transport.finish_session(&mut outcome.state).await?;

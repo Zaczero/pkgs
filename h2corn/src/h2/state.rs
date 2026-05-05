@@ -1,25 +1,21 @@
-use std::{
-    collections::VecDeque,
-    collections::hash_map::Entry,
-    sync::{Arc, atomic::AtomicU64},
-    time::Instant,
-};
+use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant as TokioInstant;
 
+use super::StreamMap;
+use super::request::PendingHeaders;
+use super::writer::{ConnectionHandle, WriterState};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::frame::{self, StreamId, WindowIncrement};
 use crate::h2::new_stream_map;
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
-
-use super::{
-    StreamMap,
-    request::PendingHeaders,
-    writer::{ConnectionHandle, WriterState},
-};
 
 #[derive(Debug)]
 pub(super) struct InboundStream {
@@ -280,17 +276,14 @@ impl<R, W> H2ConnectionState<R, W> {
         match self.streams.entry(stream_id.get()) {
             Entry::Occupied(mut entry) => {
                 let close = entry.get_mut().finish_request_input();
-                if matches!(
-                    close,
-                    RequestInputClose::Closed {
-                        remove_stream: true,
-                        ..
-                    }
-                ) {
+                if matches!(close, RequestInputClose::Closed {
+                    remove_stream: true,
+                    ..
+                }) {
                     entry.remove();
                 }
                 Some(close)
-            }
+            },
             Entry::Vacant(_) => None,
         }
     }

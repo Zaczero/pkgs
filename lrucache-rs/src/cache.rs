@@ -2,37 +2,42 @@
 //!
 //! ## Concurrency model
 //!
-//! The class is `frozen`, so `PyO3` methods take `&self` and synchronisation lives in a single
-//! [`parking_lot::Mutex`] over the inner store. On the GIL-enabled build the GIL serialises
-//! Python code, so contention is rare. On the free-threaded build, multiple Rust threads can call
-//! methods concurrently and the mutex is the source of truth.
+//! The class is `frozen`, so `PyO3` methods take `&self` and synchronisation
+//! lives in a single [`parking_lot::Mutex`] over the inner store. On the
+//! GIL-enabled build the GIL serialises Python code, so contention is rare. On
+//! the free-threaded build, multiple Rust threads can call methods concurrently
+//! and the mutex is the source of truth.
 //!
-//! [`MutexExt::lock_py_attached`] is used so that, when waiting on a contended mutex, the calling
-//! thread temporarily detaches from the Python interpreter; this avoids the classic GIL/mutex
-//! interleaving deadlock when another thread holds the mutex while waiting on the GC.
+//! [`MutexExt::lock_py_attached`] is used so that, when waiting on a contended
+//! mutex, the calling thread temporarily detaches from the Python interpreter;
+//! this avoids the classic GIL/mutex interleaving deadlock when another thread
+//! holds the mutex while waiting on the GC.
 //!
 //! ## Reentrancy contract
 //!
-//! User-supplied `__hash__` runs *before* the lock is acquired, so it is free to do anything. A
-//! user-supplied `__eq__` runs from inside the lookup closure while the lock is held; it must not
-//! recurse into this same cache instance, which would self-deadlock the thread. This matches the
-//! contract of `dict` in `CPython` and is documented in the public API.
+//! User-supplied `__hash__` runs *before* the lock is acquired, so it is free
+//! to do anything. A user-supplied `__eq__` runs from inside the lookup closure
+//! while the lock is held; it must not recurse into this same cache instance,
+//! which would self-deadlock the thread. This matches the contract of `dict` in
+//! `CPython` and is documented in the public API.
 //!
 //! ## Hash protocol
 //!
-//! `__hash__` is invoked exactly once per call (via `PyObject_Hash`). The resulting `Py_hash_t` is
-//! stored in the entry alongside the key, so subsequent lookups for the same stored key never
-//! re-hash. Collision handling uses `PyObject_RichCompareBool(_, _, Py_EQ)`: it has `CPython`'s
-//! pointer-equality fast path built in, so equal Python object pointers short-circuit before the
-//! Python-level `__eq__` is ever called.
+//! `__hash__` is invoked exactly once per call (via `PyObject_Hash`). The
+//! resulting `Py_hash_t` is stored in the entry alongside the key, so
+//! subsequent lookups for the same stored key never re-hash. Collision handling
+//! uses `PyObject_RichCompareBool(_, _, Py_EQ)`: it has `CPython`'s
+//! pointer-equality fast path built in, so equal Python object pointers
+//! short-circuit before the Python-level `__eq__` is ever called.
 
 use std::num::NonZeroUsize;
 
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::types::{PyAny, PyTuple, PyType};
-use pyo3::{Py, ffi, prelude::*};
+use pyo3::{Py, ffi};
 
 use crate::store::{MAX_CAPACITY, Store};
 
@@ -45,7 +50,8 @@ pub struct LRUCache {
 
 #[pymethods]
 impl LRUCache {
-    /// Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at runtime.
+    /// Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at
+    /// runtime.
     #[classmethod]
     fn __class_getitem__(cls: &Bound<'_, PyType>, _item: &Bound<'_, PyAny>) -> Py<PyType> {
         cls.clone().unbind()
@@ -99,14 +105,11 @@ impl LRUCache {
     ) -> PyResult<()> {
         let hash = key.hash()?;
         let mut guard = self.inner.lock_py_attached(py);
-        let displaced = guard.put(
-            hash,
-            key.clone().unbind(),
-            value.unbind(),
-            |stored| eq_keys(stored, key),
-        )?;
-        // Release the lock before the displaced Py<...> values drop, since their finalizers can
-        // run arbitrary Python code.
+        let displaced = guard.put(hash, key.clone().unbind(), value.unbind(), |stored| {
+            eq_keys(stored, key)
+        })?;
+        // Release the lock before the displaced Py<...> values drop, since their
+        // finalizers can run arbitrary Python code.
         drop(guard);
         drop(displaced);
         Ok(())
@@ -125,9 +128,9 @@ impl LRUCache {
     }
 
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        // Snapshot keys under the lock, then build a tuple iterator after releasing it. The tuple
-        // takes independent strong references, so subsequent cache mutations cannot invalidate
-        // the returned iterator.
+        // Snapshot keys under the lock, then build a tuple iterator after releasing it.
+        // The tuple takes independent strong references, so subsequent cache
+        // mutations cannot invalidate the returned iterator.
         let guard = self.inner.lock_py_attached(py);
         let keys: Vec<Py<PyAny>> = guard.iter_keys().map(|k| k.clone_ref(py)).collect();
         drop(guard);
@@ -149,8 +152,8 @@ impl LRUCache {
             .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
     }
 
-    /// Read without bumping recency. Useful for instrumentation that should not perturb the LRU
-    /// order; the convention is borrowed from `cachetools`.
+    /// Read without bumping recency. Useful for instrumentation that should not
+    /// perturb the LRU order; the convention is borrowed from `cachetools`.
     #[pyo3(signature = (key, /, default=None))]
     fn peek(
         &self,
@@ -169,7 +172,8 @@ impl LRUCache {
         self.inner.lock_py_attached(py).clear(py);
     }
 
-    /// Remove and return the least-recently-used `(key, value)` pair, raising `KeyError` if empty.
+    /// Remove and return the least-recently-used `(key, value)` pair, raising
+    /// `KeyError` if empty.
     fn popitem<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let mut guard = self.inner.lock_py_attached(py);
         let popped = guard.pop_lru();
@@ -193,24 +197,28 @@ impl LRUCache {
 
 /// Compare a stored key against the lookup key.
 ///
-/// We short-circuit on pointer equality before crossing the FFI boundary; this is the typical
-/// case for interned integers, interned strings, and any caller that reuses the same Python
-/// object as a key. `PyObject_RichCompareBool` does the same identity check internally, but
-/// avoiding the call saves the function-call overhead and lets the linker keep the cold path
+/// We short-circuit on pointer equality before crossing the FFI boundary; this
+/// is the typical case for interned integers, interned strings, and any caller
+/// that reuses the same Python object as a key. `PyObject_RichCompareBool` does
+/// the same identity check internally, but avoiding the call saves the
+/// function-call overhead and lets the linker keep the cold path
 /// (`__eq__` invocation) out of the icache for the common case.
 ///
-/// The remaining FFI is `PyObject_RichCompareBool`, called directly because pyo3's safe `eq()`
-/// would route through `PyObject_RichCompare` plus a separate `PyObject_IsTrue` (two FFI calls
-/// and an intermediate `PyObject` allocation) instead of one. See pyo3 issue #985 for why
-/// `Bound::eq` deliberately avoids the `RichCompareBool` shape.
+/// The remaining FFI is `PyObject_RichCompareBool`, called directly because
+/// pyo3's safe `eq()` would route through `PyObject_RichCompare` plus a
+/// separate `PyObject_IsTrue` (two FFI calls and an intermediate `PyObject`
+/// allocation) instead of one. See pyo3 issue #985 for why `Bound::eq`
+/// deliberately avoids the `RichCompareBool` shape.
 fn eq_keys(stored: &Py<PyAny>, lookup: &Bound<'_, PyAny>) -> PyResult<bool> {
     if lookup.is(stored) {
         return Ok(true);
     }
-    // SAFETY: both pointers refer to live Python objects under a held GIL/attached state;
-    // `lookup` is a `Bound<...>`, and `stored` is owned by the store which only mutates while
-    // attached. PyObject_RichCompareBool returns -1 with the error indicator set on failure.
-    let cmp = unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), lookup.as_ptr(), ffi::Py_EQ) };
+    // SAFETY: both pointers refer to live Python objects under a held GIL/attached
+    // state; `lookup` is a `Bound<...>`, and `stored` is owned by the store
+    // which only mutates while attached. PyObject_RichCompareBool returns -1
+    // with the error indicator set on failure.
+    let cmp =
+        unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), lookup.as_ptr(), ffi::Py_EQ) };
     if cmp < 0 {
         Err(PyErr::fetch(lookup.py()))
     } else {

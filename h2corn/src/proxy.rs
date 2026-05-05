@@ -14,7 +14,7 @@ use crate::frame::{CONNECTION_PREFACE, FrameReader};
 const PROXY_V1_MAX_LEN: usize = 107;
 const HTTP2_PREFACE_LEAD: &[u8] = b"PRI * HTTP/2.0";
 const PROXY_V2_SIG: [u8; 12] = [
-    0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a,
+    0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
 ];
 
 #[derive(FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
@@ -161,6 +161,35 @@ impl ConnectionInfo {
         }
         if let Some(server) = proxy.server {
             self.server = Some(server);
+        }
+    }
+}
+
+impl Cidr {
+    fn new(network: IpAddr, prefix: u8) -> Self {
+        match network {
+            IpAddr::V4(network) => {
+                let mask = prefix_to_mask_v4(prefix);
+                Self::V4 {
+                    network: u32::from(network) & mask,
+                    mask,
+                }
+            },
+            IpAddr::V6(network) => {
+                let mask = prefix_to_mask_v6(prefix);
+                Self::V6 {
+                    network: u128::from(network) & mask,
+                    mask,
+                }
+            },
+        }
+    }
+
+    fn contains(self, ip: IpAddr) -> bool {
+        match (self, ip) {
+            (Self::V4 { network, mask }, IpAddr::V4(ip)) => u32::from(ip) & mask == network,
+            (Self::V6 { network, mask }, IpAddr::V6(ip)) => u128::from(ip) & mask == network,
+            _ => false,
         }
     }
 }
@@ -378,7 +407,7 @@ fn parse_proxy_v1(line: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
         b"TCP6" => ProxyV1Transport::Tcp6,
         _ => {
             return ProxyError::UnsupportedProxyV1Transport.err();
-        }
+        },
     };
 
     let Some(client_host) = take_proxy_v1_part(&mut parts) else {
@@ -451,19 +480,19 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     if version != 2 {
         return ProxyError::UnsupportedProxyV2Version.err();
     }
-    let command = header.version_command & 0x0f;
+    let command = header.version_command & 0x0F;
     let family = header.family_transport >> 4;
-    let transport = header.family_transport & 0x0f;
+    let transport = header.family_transport & 0x0F;
     let payload_len = usize::from(header.payload_len.get());
     if frame.len() != 16 + payload_len {
         return ProxyError::TruncatedProxyV2Header.err();
     }
     match command {
         0x0 => return Ok(None),
-        0x1 => {}
+        0x1 => {},
         _ => {
             return ProxyError::UnsupportedProxyV2Command.err();
-        }
+        },
     }
     if transport != 0x1 {
         return ProxyError::UnsupportedProxyV2Transport.err();
@@ -492,7 +521,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
                     })
                 },
             }))
-        }
+        },
         0x2 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv6Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv6Payload)?;
@@ -513,37 +542,8 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
                     })
                 },
             }))
-        }
+        },
         _ => ProxyError::UnsupportedProxyV2AddressFamily.err(),
-    }
-}
-
-impl Cidr {
-    fn new(network: IpAddr, prefix: u8) -> Self {
-        match network {
-            IpAddr::V4(network) => {
-                let mask = prefix_to_mask_v4(prefix);
-                Self::V4 {
-                    network: u32::from(network) & mask,
-                    mask,
-                }
-            }
-            IpAddr::V6(network) => {
-                let mask = prefix_to_mask_v6(prefix);
-                Self::V6 {
-                    network: u128::from(network) & mask,
-                    mask,
-                }
-            }
-        }
-    }
-
-    fn contains(self, ip: IpAddr) -> bool {
-        match (self, ip) {
-            (Self::V4 { network, mask }, IpAddr::V4(ip)) => u32::from(ip) & mask == network,
-            (Self::V6 { network, mask }, IpAddr::V6(ip)) => u128::from(ip) & mask == network,
-            _ => false,
-        }
     }
 }
 
@@ -567,10 +567,9 @@ const fn prefix_to_mask_v6(prefix: u8) -> u128 {
 mod tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
+    use super::*;
     use crate::error::H2CornError;
     use crate::frame::FrameReader;
-
-    use super::*;
 
     #[test]
     fn trusted_peer_cidr_matches_ipv4_and_ipv6() {
@@ -581,7 +580,7 @@ mod tests {
             TrustedPeer::Cidr(cidr) => {
                 assert!(cidr.contains("10.0.0.42".parse().unwrap()));
                 assert!(!cidr.contains("10.0.1.42".parse().unwrap()));
-            }
+            },
             _ => panic!("expected IPv4 CIDR"),
         }
 
@@ -589,7 +588,7 @@ mod tests {
             TrustedPeer::Cidr(cidr) => {
                 assert!(cidr.contains("2001:db8::1".parse().unwrap()));
                 assert!(!cidr.contains("2001:db9::1".parse().unwrap()));
-            }
+            },
             _ => panic!("expected IPv6 CIDR"),
         }
     }
@@ -598,7 +597,7 @@ mod tests {
     fn parse_proxy_v2_ipv4() {
         let mut frame = Vec::from(PROXY_V2_SIG);
         frame.extend_from_slice(&[
-            0x21, 0x11, 0x00, 0x0c, 192, 0, 2, 1, 198, 51, 100, 7, 0x1f, 0x90, 0x00, 0x50,
+            0x21, 0x11, 0x00, 0x0C, 192, 0, 2, 1, 198, 51, 100, 7, 0x1F, 0x90, 0x00, 0x50,
         ]);
 
         let proxy = parse_proxy_v2(&frame).unwrap().unwrap();
@@ -623,9 +622,9 @@ mod tests {
     fn parse_proxy_v2_ipv6() {
         let mut frame = Vec::from(PROXY_V2_SIG);
         frame.extend_from_slice(&[0x21, 0x21, 0x00, 0x24]);
-        frame.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        frame.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        frame.extend_from_slice(&[0x1f, 0x90, 0x00, 0x50]);
+        frame.extend_from_slice(&[0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        frame.extend_from_slice(&[0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        frame.extend_from_slice(&[0x1F, 0x90, 0x00, 0x50]);
 
         let proxy = parse_proxy_v2(&frame).unwrap().unwrap();
 

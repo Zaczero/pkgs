@@ -1,8 +1,9 @@
 mod cache;
 mod store;
 
-use crate::cache::LRUCache;
 use pyo3::prelude::*;
+
+use crate::cache::LRUCache;
 
 #[pymodule]
 #[pyo3(name = "_lib")]

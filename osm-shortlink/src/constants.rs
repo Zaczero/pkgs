@@ -13,7 +13,7 @@ pub const DECODE_OFFSET: u8 = 0xFE;
 // Special values:
 // - DECODE_INVALID: not a valid shortlink character
 // - DECODE_OFFSET: '-' or '=' offset (legacy) character
-const fn build_decode_lut() -> [u8; 256] {
+pub const DECODE_LUT: [u8; 256] = {
     let mut lut = [DECODE_INVALID; 256];
     lut[b'-' as usize] = DECODE_OFFSET;
     lut[b'=' as usize] = DECODE_OFFSET;
@@ -32,6 +32,4 @@ const fn build_decode_lut() -> [u8; 256] {
     // Resolve '@' for backwards compatibility.
     lut[b'@' as usize] = lut[b'~' as usize];
     lut
-}
-
-pub const DECODE_LUT: [u8; 256] = build_decode_lut();
+};

@@ -1,13 +1,18 @@
-use std::{future::pending, ops::ControlFlow};
+use std::future::pending;
+use std::ops::ControlFlow;
 
 use bytes::Bytes;
 use pyo3::pybacked::PyBackedStr;
-use tokio::sync::{
-    mpsc::{self, error::TryRecvError},
-    watch,
-};
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
+use super::super::app::RunningWebSocketApp;
+use super::handshake::abort_app_task;
+use super::{
+    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport, FrameFlushMode,
+    TransportRead, shutdown_close_code,
+};
 use crate::async_util::{send_best_effort, send_with_backpressure};
 use crate::bridge::{PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt, FailureDomain, H2CornError, WebSocketError, WebSocketFrameKind};
@@ -18,13 +23,6 @@ use crate::websocket::deflate::{
     PerMessageDeflateDisabled, PerMessageDeflateEnabled, PerMessageDeflateMode,
 };
 use crate::websocket::{WebSocketCloseCode, close_code};
-
-use super::super::app::RunningWebSocketApp;
-use super::handshake::abort_app_task;
-use super::{
-    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport, FrameFlushMode,
-    TransportRead, shutdown_close_code,
-};
 
 pub(super) struct AcceptedSessionOutcome {
     pub(super) state: AcceptedWebSocketState,
@@ -89,7 +87,7 @@ fn parse_accepted_outbound_event(
         WebSocketOutboundEvent::SendBytes(data) => Ok(AcceptedOutboundEvent::SendBytes(data)),
         WebSocketOutboundEvent::Close { code, reason } => {
             Ok(AcceptedOutboundEvent::Close { code, reason })
-        }
+        },
         unexpected => WebSocketError::unexpected_outbound_event_after_accept(&unexpected).err(),
     }
 }
@@ -367,13 +365,10 @@ async fn abort_for_ping_timeout(
 ) {
     outbound.running_app.close_outbound();
     outbound.state.mark_peer_reset(close_code::ABNORMAL_CLOSURE);
-    send_best_effort(
-        recv_tx,
-        WebSocketInboundEvent::Disconnect {
-            code: close_code::ABNORMAL_CLOSURE,
-            reason: Some("ping timeout".into()),
-        },
-    )
+    send_best_effort(recv_tx, WebSocketInboundEvent::Disconnect {
+        code: close_code::ABNORMAL_CLOSURE,
+        reason: Some("ping timeout".into()),
+    })
     .await;
     abort_app_task(outbound.running_app).await;
 }
@@ -504,7 +499,7 @@ where
                 return Ok(ControlFlow::Break(
                     WebSocketError::Protocol(err.error).err(),
                 ));
-            }
+            },
         };
 
         if let ControlFlow::Break(result) =
@@ -530,7 +525,7 @@ where
     match read {
         TransportRead::Progress => {
             drain_decoded_frames::<T, M>(transport, codec, inflater, pong_deadline, context).await
-        }
+        },
         TransportRead::PeerGone => {
             let code = close_code::NO_STATUS_RECEIVED;
             terminate_inbound_session(context, code, None, |state, code| {
@@ -539,13 +534,13 @@ where
             })
             .await?;
             Ok(ControlFlow::Break(Ok(())))
-        }
+        },
         TransportRead::PeerGoneSilent => {
             let code = close_code::NO_STATUS_RECEIVED;
             context.running_app.close_outbound();
             context.state.set_close_code(code);
             Ok(ControlFlow::Break(Ok(())))
-        }
+        },
         TransportRead::PeerReset { reason } => {
             let code = close_code::ABNORMAL_CLOSURE;
             terminate_inbound_session(context, code, Some(reason), |state, code| {
@@ -554,7 +549,7 @@ where
             })
             .await?;
             Ok(ControlFlow::Break(Ok(())))
-        }
+        },
     }
 }
 
@@ -577,7 +572,7 @@ where
             )
             .await?;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         DecodedFrame::Binary(data) => {
             *context.rx_bytes = context.rx_bytes.saturating_add(data.len() as u64);
             send_with_backpressure(
@@ -587,7 +582,7 @@ where
             )
             .await?;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         DecodedFrame::Ping(payload) => {
             send_encoded_frame(
                 transport,
@@ -598,11 +593,11 @@ where
             )
             .await?;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         DecodedFrame::Pong => {
             *pong_deadline = None;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         DecodedFrame::Close { code, reason } => {
             terminate_inbound_session(context, code, reason, |state, code| {
                 state.set_close_code(code);
@@ -610,7 +605,7 @@ where
             })
             .await?;
             Ok(ControlFlow::Break(Ok(())))
-        }
+        },
     }
 }
 
@@ -660,12 +655,12 @@ where
             *context.tx_bytes = context.tx_bytes.saturating_add(text.len() as u64);
             send_message_frame::<T, M>(transport, deflater, 0x1, text.as_bytes()).await?;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         AcceptedOutboundEvent::SendBytes(data) => {
             *context.tx_bytes = context.tx_bytes.saturating_add(data.len() as u64);
             send_message_frame::<T, M>(transport, deflater, 0x2, data.as_ref()).await?;
             Ok(ControlFlow::Continue(()))
-        }
+        },
         AcceptedOutboundEvent::Close { code, reason } => {
             match context
                 .state
@@ -674,7 +669,7 @@ where
                 Ok(()) => Ok(ControlFlow::Break(Ok(()))),
                 Err(err) => fail_session(context.running_app, context.state, err).await,
             }
-        }
+        },
     }
 }
 

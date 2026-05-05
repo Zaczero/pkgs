@@ -1,7 +1,28 @@
+pub mod status_code {
+    use super::HttpStatusCode;
+
+    pub const SWITCHING_PROTOCOLS: HttpStatusCode = 101;
+    pub const OK: HttpStatusCode = 200;
+    pub const NO_CONTENT: HttpStatusCode = 204;
+    pub const PARTIAL_CONTENT: HttpStatusCode = 206;
+    pub const NOT_MODIFIED: HttpStatusCode = 304;
+    pub const BAD_REQUEST: HttpStatusCode = 400;
+    pub const FORBIDDEN: HttpStatusCode = 403;
+    pub const NOT_FOUND: HttpStatusCode = 404;
+    pub const PAYLOAD_TOO_LARGE: HttpStatusCode = 413;
+    pub const URI_TOO_LONG: HttpStatusCode = 414;
+    pub const UPGRADE_REQUIRED: HttpStatusCode = 426;
+    pub const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode = 431;
+    pub const INTERNAL_SERVER_ERROR: HttpStatusCode = 500;
+    pub const NOT_IMPLEMENTED: HttpStatusCode = 501;
+    pub const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
+}
+
 use std::str;
 
 use bytes::Bytes;
-use http::{Method, method::InvalidMethod};
+use http::Method;
+use http::method::InvalidMethod;
 use pyo3::pybacked::PyBackedBytes;
 
 use crate::ext::Protocol;
@@ -12,24 +33,61 @@ use crate::http::header::{
 };
 use crate::http::header_meta::RequestHeaderMeta;
 
+macro_rules! known_request_header_names {
+    ($($first:literal => { $(($variant:ident, $name:literal)),+ $(,)? }),+ $(,)?) => {
+        const _: () = {
+            $($(
+                assert!(!$name.is_empty());
+                assert!($name[0] == $first);
+            )+)+
+        };
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum KnownRequestHeaderName {
+            $($($variant),+),+
+        }
+
+        impl KnownRequestHeaderName {
+            pub(crate) fn from_bytes(name: &[u8]) -> Option<Self> {
+                match name {
+                    $($($name => Some(Self::$variant),)+)+
+                    _ => None,
+                }
+            }
+
+            pub(crate) fn from_bytes_ignore_ascii_case(name: &[u8]) -> Option<Self> {
+                match name.first().map(u8::to_ascii_lowercase) {
+                    $(
+                    Some($first) => {
+                        $(
+                        if name.eq_ignore_ascii_case($name) {
+                            return Some(Self::$variant);
+                        }
+                        )+
+                        None
+                    }
+                    )+
+                    _ => None,
+                }
+            }
+
+            pub(crate) const fn as_bytes(self) -> &'static [u8] {
+                match self {
+                    $($(Self::$variant => $name,)+)+
+                }
+            }
+
+            pub(crate) const fn as_str(self) -> &'static str {
+                // SAFETY: all names are ASCII byte literals.
+                unsafe { str::from_utf8_unchecked(self.as_bytes()) }
+            }
+        }
+    };
+}
+
 pub type RequestHeaders = Vec<(RequestHeaderName, RequestHeaderValue)>;
 pub type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
 pub type HttpStatusCode = u16;
-
-pub fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
-    match value {
-        b"GET" => Ok(Method::GET),
-        b"POST" => Ok(Method::POST),
-        b"HEAD" => Ok(Method::HEAD),
-        b"PUT" => Ok(Method::PUT),
-        b"DELETE" => Ok(Method::DELETE),
-        b"PATCH" => Ok(Method::PATCH),
-        b"OPTIONS" => Ok(Method::OPTIONS),
-        b"TRACE" => Ok(Method::TRACE),
-        b"CONNECT" => Ok(Method::CONNECT),
-        method => Method::from_bytes(method),
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestAuthority(BytesStr);
@@ -165,58 +223,6 @@ impl RequestTarget {
                 .unwrap_or_else(|| authority.as_bytes_str()),
         }
     }
-}
-
-macro_rules! known_request_header_names {
-    ($($first:literal => { $(($variant:ident, $name:literal)),+ $(,)? }),+ $(,)?) => {
-        const _: () = {
-            $($(
-                assert!(!$name.is_empty());
-                assert!($name[0] == $first);
-            )+)+
-        };
-
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub enum KnownRequestHeaderName {
-            $($($variant),+),+
-        }
-
-        impl KnownRequestHeaderName {
-            pub(crate) fn from_bytes(name: &[u8]) -> Option<Self> {
-                match name {
-                    $($($name => Some(Self::$variant),)+)+
-                    _ => None,
-                }
-            }
-
-            pub(crate) fn from_bytes_ignore_ascii_case(name: &[u8]) -> Option<Self> {
-                match name.first().map(u8::to_ascii_lowercase) {
-                    $(
-                    Some($first) => {
-                        $(
-                        if name.eq_ignore_ascii_case($name) {
-                            return Some(Self::$variant);
-                        }
-                        )+
-                        None
-                    }
-                    )+
-                    _ => None,
-                }
-            }
-
-            pub(crate) const fn as_bytes(self) -> &'static [u8] {
-                match self {
-                    $($(Self::$variant => $name,)+)+
-                }
-            }
-
-            pub(crate) const fn as_str(self) -> &'static str {
-                // SAFETY: all names are ASCII byte literals.
-                unsafe { str::from_utf8_unchecked(self.as_bytes()) }
-            }
-        }
-    };
 }
 
 known_request_header_names! {
@@ -457,26 +463,6 @@ impl HttpVersion {
     }
 }
 
-pub mod status_code {
-    use super::HttpStatusCode;
-
-    pub const SWITCHING_PROTOCOLS: HttpStatusCode = 101;
-    pub const OK: HttpStatusCode = 200;
-    pub const NO_CONTENT: HttpStatusCode = 204;
-    pub const PARTIAL_CONTENT: HttpStatusCode = 206;
-    pub const NOT_MODIFIED: HttpStatusCode = 304;
-    pub const BAD_REQUEST: HttpStatusCode = 400;
-    pub const FORBIDDEN: HttpStatusCode = 403;
-    pub const NOT_FOUND: HttpStatusCode = 404;
-    pub const PAYLOAD_TOO_LARGE: HttpStatusCode = 413;
-    pub const URI_TOO_LONG: HttpStatusCode = 414;
-    pub const UPGRADE_REQUIRED: HttpStatusCode = 426;
-    pub const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode = 431;
-    pub const INTERNAL_SERVER_ERROR: HttpStatusCode = 500;
-    pub const NOT_IMPLEMENTED: HttpStatusCode = 501;
-    pub const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
-}
-
 #[derive(Clone, Debug)]
 pub struct RequestHead {
     pub http_version: HttpVersion,
@@ -520,11 +506,25 @@ impl RequestHead {
     }
 }
 
+pub fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
+    match value {
+        b"GET" => Ok(Method::GET),
+        b"POST" => Ok(Method::POST),
+        b"HEAD" => Ok(Method::HEAD),
+        b"PUT" => Ok(Method::PUT),
+        b"DELETE" => Ok(Method::DELETE),
+        b"PATCH" => Ok(Method::PATCH),
+        b"OPTIONS" => Ok(Method::OPTIONS),
+        b"TRACE" => Ok(Method::TRACE),
+        b"CONNECT" => Ok(Method::CONNECT),
+        method => Method::from_bytes(method),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-
-    use crate::http::header_meta::RequestHeaderMeta;
+    use http::Method;
 
     use super::{
         HttpVersion, KnownRequestHeaderName, RequestAuthority, RequestHead, RequestHeaderName,
@@ -532,7 +532,7 @@ mod tests {
     };
     use crate::ext::Protocol;
     use crate::hpack::BytesStr;
-    use http::Method;
+    use crate::http::header_meta::RequestHeaderMeta;
 
     #[test]
     fn normal_request_target_exposes_scheme_path_and_log_target() {

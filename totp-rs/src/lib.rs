@@ -1,6 +1,5 @@
 #![feature(likely_unlikely)]
 
-use std::str;
 mod algorithm;
 mod base32;
 mod errors;
@@ -10,6 +9,7 @@ mod totp;
 
 use std::hint::unlikely;
 use std::num::NonZeroU32;
+use std::str;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

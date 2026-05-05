@@ -1,21 +1,23 @@
 mod http;
 mod websocket;
 
-use std::{future, path::PathBuf, sync::Arc};
+use std::future;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use bytes::Bytes;
-use pyo3::{
-    PyTypeCheck, PyTypeInfo,
-    exceptions::{PyRuntimeError, PyStopIteration, PyTypeError},
-    prelude::*,
-    pybacked::{PyBackedBytes, PyBackedStr},
-    types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple},
-};
-use pyo3_async_runtimes::{TaskLocals, tokio::future_into_py_with_locals};
-use tokio::sync::{
-    Mutex,
-    mpsc::{self},
-};
+pub use http::{PyHttpReceive, PyHttpSend};
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError};
+use pyo3::prelude::*;
+use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
+use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
+use pyo3::{PyTypeCheck, PyTypeInfo};
+use pyo3_async_runtimes::TaskLocals;
+use pyo3_async_runtimes::tokio::future_into_py_with_locals;
+use tokio::sync::{Mutex, mpsc};
+#[cfg(test)]
+pub use websocket::WebSocketSendDisposition;
+pub use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
@@ -28,10 +30,15 @@ use crate::http::types::{
 use crate::python::{StaticPyKey, py_dict};
 use crate::websocket::WebSocketCloseCode;
 
-pub use http::{PyHttpReceive, PyHttpSend};
-#[cfg(test)]
-pub use websocket::WebSocketSendDisposition;
-pub use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
+macro_rules! asgi_item {
+    ($fn:ident, $name:literal) => {
+        fn $fn(&self) -> Result<Option<Bound<'py, PyAny>>, H2CornError> {
+            static KEY: StaticPyKey = StaticPyKey::new($name);
+            KEY.get_item(self.dict.py(), self.dict)
+                .map_err(H2CornError::from)
+        }
+    };
+}
 
 pub const ASGI_QUEUE_CAPACITY: usize = 32;
 
@@ -136,16 +143,6 @@ impl From<PyBackedBytes> for PayloadBytes {
 }
 
 type ParsedHeaderPair = (ResponseHeaderName, ResponseHeaderValue);
-
-macro_rules! asgi_item {
-    ($fn:ident, $name:literal) => {
-        fn $fn(&self) -> Result<Option<Bound<'py, PyAny>>, H2CornError> {
-            static KEY: StaticPyKey = StaticPyKey::new($name);
-            KEY.get_item(self.dict.py(), self.dict)
-                .map_err(H2CornError::from)
-        }
-    };
-}
 
 struct AsgiMessage<'py> {
     dict: &'py Bound<'py, PyDict>,
@@ -321,13 +318,18 @@ impl ReadyAwaitable {
     }
 }
 
+pub trait ReceiveStateMachine: Send + 'static {
+    type Event: Send + 'static;
+
+    fn try_next(&mut self) -> Option<Self::Event>;
+
+    fn next(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
+}
+
 pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
-    Ok(Py::new(
-        py,
-        ReadyAwaitable {
-            result: Some(result),
-        },
-    )?
+    Ok(Py::new(py, ReadyAwaitable {
+        result: Some(result),
+    })?
     .into_bound(py)
     .into_any())
 }
@@ -341,14 +343,6 @@ pub fn buffered_or_send<'py, T: Send + 'static>(
         || ready_awaitable(py, py.None()),
         |(tx, event)| try_send_or_await(py, locals, &tx, event),
     )
-}
-
-pub trait ReceiveStateMachine: Send + 'static {
-    type Event: Send + 'static;
-
-    fn try_next(&mut self) -> Option<Self::Event>;
-
-    fn next(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
 }
 
 pub fn receive_or_await<'py, S>(
@@ -551,7 +545,7 @@ pub fn try_send_or_await<'py, T: Send + 'static>(
                     .map_err(|_| into_pyerr(AsgiError::SendAfterClose))?;
                 Python::attach(|py| Ok(py.None()))
             })
-        }
+        },
         TryPush::Closed(_) => Err(into_pyerr(AsgiError::SendAfterClose)),
     }
 }
@@ -571,12 +565,12 @@ pub fn parse_http_outbound_event(
                 headers,
                 trailers,
             })
-        }
+        },
         "http.response.body" => {
             let body = message.body_or_empty()?;
             let more_body = message.more_body_flag()?;
             Ok(HttpOutboundEvent::Body { body, more_body })
-        }
+        },
         "http.response.pathsend" => Ok(HttpOutboundEvent::PathSend {
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),
@@ -587,7 +581,7 @@ pub fn parse_http_outbound_event(
                 headers,
                 more_trailers,
             })
-        }
+        },
         _ => AsgiError::unsupported_http_outbound_message(message.message_type()?).err(),
     }
 }
@@ -605,7 +599,7 @@ pub fn parse_websocket_outbound_event(
                 subprotocol,
                 headers,
             })
-        }
+        },
         "websocket.send" => match message.websocket_send_payload()? {
             WebSocketSendPayload::Text(text) => Ok(WebSocketOutboundEvent::SendText(text)),
             WebSocketSendPayload::Bytes(data) => Ok(WebSocketOutboundEvent::SendBytes(data)),
@@ -614,32 +608,33 @@ pub fn parse_websocket_outbound_event(
             let code = message.close_code_or_default()?;
             let reason = message.reason()?;
             Ok(WebSocketOutboundEvent::Close { code, reason })
-        }
+        },
         "websocket.http.response.start" => {
             let status = message.status(AsgiContainer::WebSocketHttpResponseStart)?;
             let headers = message.headers()?;
             Ok(WebSocketOutboundEvent::HttpResponseStart { status, headers })
-        }
+        },
         "websocket.http.response.body" => {
             let body = message.body_or_empty()?;
             let more_body = message.more_body_flag()?;
             Ok(WebSocketOutboundEvent::HttpResponseBody { body, more_body })
-        }
+        },
         _ => AsgiError::unsupported_websocket_outbound_message(message.message_type()?).err(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+    use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyTuple};
+    use pyo3::{PyResult, Python};
+
     use super::{
         HttpInboundEvent, WebSocketOutboundEvent, build_http_inbound_event,
         parse_http_outbound_event, parse_websocket_outbound_event,
     };
     use crate::error::{AsgiContainer, AsgiError, H2CornError};
     use crate::python::py_dict;
-    use bytes::Bytes;
-    use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyTuple};
-    use pyo3::{PyResult, Python};
 
     fn init_python() {
         Python::initialize();
@@ -774,13 +769,10 @@ mod tests {
     fn http_request_event_omits_default_body_and_more_body() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let event = build_http_inbound_event(
-                py,
-                HttpInboundEvent::Request {
-                    body: Bytes::new(),
-                    more_body: false,
-                },
-            )?
+            let event = build_http_inbound_event(py, HttpInboundEvent::Request {
+                body: Bytes::new(),
+                more_body: false,
+            })?
             .bind(py)
             .clone()
             .cast_into::<PyDict>()?;

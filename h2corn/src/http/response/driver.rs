@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use super::{actions, controller, transport};
 use crate::{bridge, error, http};
 
+enum HttpEventEffect {
+    None,
+    PathSend(PathBuf),
+}
+
 pub async fn finalize_response<T>(
     controller: &mut controller::ResponseController,
     transport: &mut T,
@@ -59,9 +64,4 @@ fn handle_http_event_sync(
             .handle_trailers(actions, headers, more_trailers)
             .map(|()| HttpEventEffect::None),
     }
-}
-
-enum HttpEventEffect {
-    None,
-    PathSend(PathBuf),
 }

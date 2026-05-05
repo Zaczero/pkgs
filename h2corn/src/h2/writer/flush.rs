@@ -1,26 +1,17 @@
 use std::collections::VecDeque;
-
-#[cfg(test)]
-use bytes::Bytes;
-use bytes::BytesMut;
 #[cfg(test)]
 use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
 };
+
+#[cfg(test)]
+use bytes::Bytes;
+use bytes::BytesMut;
 #[cfg(test)]
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
-
-#[cfg(test)]
-use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
-use crate::error::H2CornError;
-use crate::frame::{self, ErrorCode, FrameFlags, FrameHeader, FrameType, StreamId};
-use crate::h2::StreamMap;
-#[cfg(test)]
-use crate::h2::new_stream_map;
-use crate::http::pathsend::PathStreamer;
 
 use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
@@ -29,28 +20,14 @@ use super::stream_state::{PendingChunks, StreamBodyState, StreamWriteState};
 use super::{
     FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, H2WriteTarget, ResponseCloseBatch,
 };
-
-pub(super) fn send_limit(
-    connection_send_window: i64,
-    stream_send_window: i64,
-    data_frame_size: usize,
-) -> Option<usize> {
-    if connection_send_window <= 0 || stream_send_window <= 0 {
-        return None;
-    }
-    Some(usize::min(
-        data_frame_size,
-        usize::min(connection_send_window as usize, stream_send_window as usize),
-    ))
-}
-
-pub(super) fn outbound_data_frame_size(peer_max_frame_size: usize) -> usize {
-    peer_max_frame_size.min(H2_OUTBOUND_DATA_FRAME_SIZE_TARGET)
-}
-
-fn fair_write_quantum(max_frame_size: usize) -> usize {
-    max_frame_size.max(FAIR_WRITE_QUANTUM)
-}
+#[cfg(test)]
+use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
+use crate::error::H2CornError;
+use crate::frame::{self, ErrorCode, FrameFlags, FrameHeader, FrameType, StreamId};
+use crate::h2::StreamMap;
+#[cfg(test)]
+use crate::h2::new_stream_map;
+use crate::http::pathsend::PathStreamer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FlushBodyProgress {
@@ -97,6 +74,28 @@ impl<W> FlushBodyParts<'_, W> {
     const fn budget_exhausted(&self) -> bool {
         self.stream_budget == 0
     }
+}
+
+pub(super) fn send_limit(
+    connection_send_window: i64,
+    stream_send_window: i64,
+    data_frame_size: usize,
+) -> Option<usize> {
+    if connection_send_window <= 0 || stream_send_window <= 0 {
+        return None;
+    }
+    Some(usize::min(
+        data_frame_size,
+        usize::min(connection_send_window as usize, stream_send_window as usize),
+    ))
+}
+
+pub(super) fn outbound_data_frame_size(peer_max_frame_size: usize) -> usize {
+    peer_max_frame_size.min(H2_OUTBOUND_DATA_FRAME_SIZE_TARGET)
+}
+
+fn fair_write_quantum(max_frame_size: usize) -> usize {
+    max_frame_size.max(FAIR_WRITE_QUANTUM)
 }
 
 pub(super) async fn write_data_chunk<W>(
@@ -195,29 +194,29 @@ where
                 } else {
                     ChunkFlushStep::Stop
                 }
-            }
+            },
         };
 
         match step {
             ChunkFlushStep::Stop => break,
             ChunkFlushStep::ConnectionBlocked => {
                 return Ok(FlushBodyProgress::ConnectionBlocked);
-            }
+            },
             ChunkFlushStep::Continue(advance) => {
                 if advance == ChunkAdvance::PopFront {
                     pending.pop_front();
                 }
-            }
+            },
             ChunkFlushStep::FinishStream => {
                 pending.pop_front();
                 stream.finish(stream_id, context.response_closes);
-            }
+            },
             ChunkFlushStep::Yield(advance) => {
                 if advance == ChunkAdvance::PopFront {
                     pending.pop_front();
                 }
                 break;
-            }
+            },
         }
     }
 
@@ -386,10 +385,10 @@ where
             StreamBodyState::Idle => FlushBodyProgress::Continue,
             StreamBodyState::Chunks(pending) => {
                 flush_chunk_body(&mut context, pending, stream_id, stream).await?
-            }
+            },
             StreamBodyState::Path(streamer) => {
                 flush_path_body(&mut context, streamer, stream_id, stream).await?
-            }
+            },
         };
 
         stream.restore_body(body);
@@ -627,10 +626,11 @@ mod tests {
         writer.flush().await.unwrap();
 
         let frames = parse_data_frames(&writer.get_ref().bytes);
-        assert_eq!(
-            frames,
-            vec![(b"abc".len(), FrameFlags::END_STREAM.bits(), stream_id.get())]
-        );
+        assert_eq!(frames, vec![(
+            b"abc".len(),
+            FrameFlags::END_STREAM.bits(),
+            stream_id.get()
+        )]);
         assert!(ready_streams.is_empty());
         assert!(streams.is_empty());
         assert_eq!(response_closes.as_slice(), &[stream_id]);
@@ -712,10 +712,11 @@ mod tests {
 
         let recorded = writer.into_inner();
         let stream_ids = parse_data_stream_ids(&recorded.bytes);
-        assert_eq!(
-            stream_ids,
-            vec![stream_a.get(), stream_b.get(), stream_a.get()]
-        );
+        assert_eq!(stream_ids, vec![
+            stream_a.get(),
+            stream_b.get(),
+            stream_a.get()
+        ]);
         assert!(ready_streams.is_empty());
         assert!(streams.is_empty());
         assert_eq!(response_closes.as_slice(), &[stream_a]);

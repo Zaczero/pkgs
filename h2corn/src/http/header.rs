@@ -1,12 +1,11 @@
+use std::borrow::Cow;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{iter, str};
+
 use atoi_simd::parse_pos;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
-use std::{
-    borrow::Cow,
-    iter, str,
-    time::{SystemTime, UNIX_EPOCH},
-};
 
 use crate::config::{CachedDateValue, ServerConfig};
 use crate::ext::Protocol;
@@ -63,6 +62,46 @@ pub struct ConnectionHeaderTokens {
     pub http2_settings: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ResponseContentLength {
+    #[default]
+    Missing,
+    Valid(usize),
+    NeedsRewrite,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResponseHeaderScan {
+    pub has_server: bool,
+    pub has_date: bool,
+    content_length: Option<ResponseContentLength>,
+}
+
+impl ResponseHeaderScan {
+    pub(crate) const fn content_length(self) -> Option<usize> {
+        match self
+            .content_length
+            .expect("response content-length must be scanned before reading")
+        {
+            ResponseContentLength::Valid(len) => Some(len),
+            ResponseContentLength::Missing | ResponseContentLength::NeedsRewrite => None,
+        }
+    }
+
+    pub(crate) fn ensure_content_length_scanned(&mut self, headers: &ResponseHeaders) {
+        if self.content_length.is_none() {
+            self.content_length = Some(inspect_response_content_length(headers));
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ForwardedView<'a> {
+    pub(crate) client_host: Option<&'a str>,
+    pub(crate) proto: Option<&'a str>,
+    pub(crate) host: Option<(&'a str, Option<u16>)>,
+}
+
 pub fn last_csv_token(value: &str) -> &str {
     let bytes = value.as_bytes();
     let mut in_quotes = false;
@@ -84,7 +123,7 @@ pub fn last_csv_token(value: &str) -> &str {
             b'\\' if in_quotes => escaped = true,
             b'"' => in_quotes = !in_quotes,
             b',' if !in_quotes => last_delimiter = Some(current),
-            _ => {}
+            _ => {},
         }
         index = current + 1;
     }
@@ -152,39 +191,6 @@ pub fn parse_content_length_header(value: &[u8]) -> Option<u64> {
     parse_pos::<u64, false>(value.trim_ascii()).ok()
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum ResponseContentLength {
-    #[default]
-    Missing,
-    Valid(usize),
-    NeedsRewrite,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ResponseHeaderScan {
-    pub has_server: bool,
-    pub has_date: bool,
-    content_length: Option<ResponseContentLength>,
-}
-
-impl ResponseHeaderScan {
-    pub(crate) const fn content_length(self) -> Option<usize> {
-        match self
-            .content_length
-            .expect("response content-length must be scanned before reading")
-        {
-            ResponseContentLength::Valid(len) => Some(len),
-            ResponseContentLength::Missing | ResponseContentLength::NeedsRewrite => None,
-        }
-    }
-
-    pub(crate) fn ensure_content_length_scanned(&mut self, headers: &ResponseHeaders) {
-        if self.content_length.is_none() {
-            self.content_length = Some(inspect_response_content_length(headers));
-        }
-    }
-}
-
 pub fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
     let mut scan = ResponseHeaderScan::default();
 
@@ -192,7 +198,7 @@ pub fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHe
         match name.as_bytes() {
             b"server" => scan.has_server = true,
             b"date" => scan.has_date = true,
-            _ => {}
+            _ => {},
         }
     }
 
@@ -221,7 +227,7 @@ fn inspect_response_content_length(headers: &ResponseHeaders) -> ResponseContent
                 ),
             ResponseContentLength::Valid(_) | ResponseContentLength::NeedsRewrite => {
                 ResponseContentLength::NeedsRewrite
-            }
+            },
         };
     }
 
@@ -406,13 +412,6 @@ pub fn protocol_is_websocket(protocol: &Protocol) -> bool {
     protocol.as_str() == "websocket"
 }
 
-#[derive(Debug)]
-pub struct ForwardedView<'a> {
-    pub(crate) client_host: Option<&'a str>,
-    pub(crate) proto: Option<&'a str>,
-    pub(crate) host: Option<(&'a str, Option<u16>)>,
-}
-
 pub fn header_value_text(value: &RequestHeaderValue) -> Option<&str> {
     let value = str::from_utf8(value.as_bytes()).ok()?.trim_ascii();
     (!value.is_empty()).then_some(value)
@@ -508,12 +507,11 @@ fn normalize_forwarded_value(value: &str) -> &str {
 mod tests {
     use bytes::Bytes;
 
-    use crate::header_value::header_value_is_valid;
-
     use super::{
         ResponseContentLength, civil_from_days, format_http_date, inspect_response_headers,
         last_csv_token, parse_content_length_header, parse_host_port,
     };
+    use crate::header_value::header_value_is_valid;
     use crate::http::types::ResponseHeaders;
 
     #[test]

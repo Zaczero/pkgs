@@ -1,10 +1,9 @@
-use std::{
-    collections::{VecDeque, hash_map::Entry},
-    future::Future,
-    mem,
-    num::NonZeroUsize,
-    sync::Arc,
-};
+use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::future::Future;
+use std::mem;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 #[cfg(test)]
 use std::{num::NonZeroU32, time::Duration};
 
@@ -12,6 +11,17 @@ use bytes::BytesMut;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::futures::Notified;
 
+use super::flush::{
+    FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_data_chunk,
+    write_frame_buf,
+};
+use super::header_encode::{HeaderEncodeState, write_header_block};
+use super::ingress::{QueuedStreamCommands, WriterIngress};
+use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
+use super::{
+    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, H2WriteTarget, ResponseCloseBatch,
+    WindowTarget, WriterCommand, WriterCommandBatch,
+};
 use crate::bridge::PayloadBytes;
 #[cfg(test)]
 use crate::config::{
@@ -26,18 +36,6 @@ use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 #[cfg(test)]
 use crate::proxy::ProxyProtocolMode;
-
-use super::flush::{
-    FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_data_chunk,
-    write_frame_buf,
-};
-use super::header_encode::{HeaderEncodeState, write_header_block};
-use super::ingress::{QueuedStreamCommands, WriterIngress};
-use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
-use super::{
-    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, H2WriteTarget, ResponseCloseBatch,
-    WindowTarget, WriterCommand, WriterCommandBatch,
-};
 
 #[derive(Clone)]
 pub struct ConnectionHandle {
@@ -100,9 +98,334 @@ impl<W> WriterLoopParts<'_, W> {
     }
 }
 
+impl ConnectionHandle {
+    fn send_command(
+        &self,
+        stream_id: StreamId,
+        command: WriterCommand,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.ingress.enqueue(stream_id, command)
+    }
+
+    pub(crate) fn send_commands(
+        &self,
+        stream_id: StreamId,
+        commands: WriterCommandBatch,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.ingress.enqueue_batch(stream_id, commands)
+    }
+
+    pub(crate) const fn config(&self) -> &'static ServerConfig {
+        self.config
+    }
+
+    pub(crate) fn send_headers(
+        &self,
+        stream_id: StreamId,
+        status: HttpStatusCode,
+        mut headers: ResponseHeaders,
+        end_stream: bool,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        apply_default_response_headers(&mut headers, self.config);
+        self.send_command(stream_id, WriterCommand::SendHeaders {
+            stream_id,
+            status,
+            headers,
+            end_stream,
+        })
+    }
+
+    pub(crate) fn send_data(
+        &self,
+        stream_id: StreamId,
+        data: impl Into<PayloadBytes>,
+        end_stream: bool,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.send_command(stream_id, WriterCommand::SendData {
+            stream_id,
+            data: data.into(),
+            end_stream,
+        })
+    }
+
+    pub(crate) fn flush_buffered_output(
+        &self,
+        stream_id: StreamId,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.send_command(stream_id, WriterCommand::FlushBufferedOutput)
+    }
+
+    pub(crate) fn reset_stream(
+        &self,
+        stream_id: StreamId,
+        error_code: ErrorCode,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.send_command(stream_id, WriterCommand::SendReset {
+            stream_id,
+            error_code,
+        })
+    }
+}
+
 impl<W> WriterSendParts<'_, W> {
     fn outbound_data_frame_size(&self) -> usize {
         outbound_data_frame_size(self.peer_max_frame_size)
+    }
+}
+
+impl<W> WriterState<W>
+where
+    W: H2WriteTarget,
+{
+    #[cfg(test)]
+    pub(crate) fn new_test(writer: W) -> Self {
+        let max_concurrent_streams = 8_u32;
+        Self {
+            ingress: WriterIngress::new(max_concurrent_streams as usize),
+            writer: BufWriter::new(writer),
+            frame_buf: BytesMut::with_capacity(FRAME_BUFFER_CAPACITY),
+            config: Box::leak(Box::new(ServerConfig {
+                binds: Box::new([BindTarget::Tcp {
+                    host: Box::from("127.0.0.1"),
+                    port: 8000,
+                }]),
+                access_log: false,
+                root_path: Box::from(""),
+                http1: Http1Config::default(),
+                http2: Http2Config {
+                    max_concurrent_streams,
+                    max_header_list_size: None,
+                    max_header_block_size: None,
+                    max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
+                        .expect("default HTTP/2 frame size is non-zero"),
+                },
+                max_request_body_size: None,
+                timeout_graceful_shutdown: Duration::from_secs(30),
+                timeout_keep_alive: None,
+                timeout_request_header: None,
+                timeout_request_body_idle: None,
+                limit_concurrency: None,
+                limit_connections: None,
+                max_requests: None,
+                runtime_threads: 2,
+                websocket: WebSocketConfig::default(),
+                proxy: ProxyConfig {
+                    trust_headers: false,
+                    trusted_peers: Box::new([]),
+                    protocol: ProxyProtocolMode::Off,
+                },
+                tls: None,
+                timeout_handshake: Duration::from_secs(5),
+                response_headers: ResponseHeaderConfig::default(),
+            })),
+            streams: new_stream_map(max_concurrent_streams as usize),
+            ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
+            drained_app_writes: Vec::with_capacity(max_concurrent_streams as usize),
+            response_closes: ResponseCloseBatch::new(),
+            connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
+            initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
+            peer_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
+            header_state: HeaderEncodeState::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_writer_ref(&self) -> &W {
+        self.writer.get_ref()
+    }
+
+    const fn command_context(&mut self) -> WriterLoopParts<'_, W> {
+        WriterLoopParts {
+            writer: &mut self.writer,
+            frame_buf: &mut self.frame_buf,
+            streams: &mut self.streams,
+            ready_streams: &mut self.ready_streams,
+            response_closes: &mut self.response_closes,
+            connection_send_window: &mut self.connection_send_window,
+            initial_stream_send_window: &mut self.initial_stream_send_window,
+            peer_max_frame_size: &mut self.peer_max_frame_size,
+            header_state: &mut self.header_state,
+        }
+    }
+
+    async fn process_command(&mut self, command: WriterCommand) -> Result<bool, H2CornError> {
+        let mut context = self.command_context();
+        process_writer_command(&mut context, command).await
+    }
+
+    pub(crate) async fn drain_app_writes(&mut self) -> Result<bool, H2CornError> {
+        let mut drained = mem::take(&mut self.drained_app_writes);
+        self.ingress.drain_into(&mut drained).await;
+        if drained.is_empty() {
+            self.drained_app_writes = drained;
+            return Ok(false);
+        }
+
+        for index in 0..drained.len() {
+            while let Some(mut queued_batch) = drained[index].1.pop_front() {
+                while let Some(command) = queued_batch.commands.pop_front() {
+                    if self.process_command(command).await? {
+                        if !queued_batch.commands.is_empty() {
+                            let mut remainder = QueuedStreamCommands::new();
+                            remainder.push_back(queued_batch);
+                            while let Some(queued_batch) = drained[index].1.pop_front() {
+                                remainder.push_back(queued_batch);
+                            }
+                            drained[index].1 = remainder;
+                        }
+                        let remainder = drained.split_off(index);
+                        self.ingress.restore_drained(remainder).await;
+                        drained.clear();
+                        self.drained_app_writes = drained;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        drained.clear();
+        self.drained_app_writes = drained;
+        Ok(true)
+    }
+
+    pub(crate) fn has_ready_streams(&self) -> bool {
+        !self.ready_streams.is_empty()
+    }
+
+    pub(crate) fn needs_flush(&self) -> bool {
+        !self.writer.buffer().is_empty()
+    }
+
+    pub(crate) fn has_queued_app_writes(&self) -> bool {
+        self.ingress.has_pending()
+    }
+
+    pub(crate) fn outbound_notified(&self) -> Notified<'_> {
+        self.ingress.notify.notified()
+    }
+
+    pub(crate) async fn flush(&mut self) -> Result<(), H2CornError> {
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn close_ingress(&self) {
+        self.ingress.close().await;
+    }
+
+    pub(crate) async fn drop_ingress_stream(&self, stream_id: StreamId) {
+        self.ingress.drop_stream(stream_id).await;
+    }
+
+    pub(crate) fn take_response_closes(&mut self) -> ResponseCloseBatch {
+        mem::take(&mut self.response_closes)
+    }
+
+    pub(crate) async fn send_settings_ack(&mut self) -> Result<(), H2CornError> {
+        self.process_command(WriterCommand::SendSettingsAck).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn send_headers(
+        &mut self,
+        stream_id: StreamId,
+        status: HttpStatusCode,
+        mut headers: ResponseHeaders,
+        end_stream: bool,
+    ) -> Result<(), H2CornError> {
+        apply_default_response_headers(&mut headers, self.config);
+        self.process_command(WriterCommand::SendHeaders {
+            stream_id,
+            status,
+            headers,
+            end_stream,
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_peer_settings(
+        &mut self,
+        settings: PeerSettings,
+    ) -> Result<(), H2CornError> {
+        self.process_command(WriterCommand::UpdatePeerSettings(settings))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn peer_reset(&mut self, stream_id: StreamId) -> Result<(), H2CornError> {
+        self.ingress.drop_stream(stream_id).await;
+        self.process_command(WriterCommand::PeerReset { stream_id })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn grant_send_window(
+        &mut self,
+        target: WindowTarget,
+        increment: WindowIncrement,
+    ) -> Result<bool, H2CornError> {
+        self.process_command(WriterCommand::GrantSendWindow { target, increment })
+            .await
+    }
+
+    pub(crate) async fn send_window_update(
+        &mut self,
+        target: WindowTarget,
+        increment: WindowIncrement,
+    ) -> Result<(), H2CornError> {
+        self.process_command(WriterCommand::SendWindowUpdate { target, increment })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn ping_ack(&mut self, payload: [u8; 8]) -> Result<(), H2CornError> {
+        self.process_command(WriterCommand::PingAck(payload))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn goaway(
+        &mut self,
+        last_stream_id: Option<StreamId>,
+        error_code: ErrorCode,
+        debug: Vec<u8>,
+        close: bool,
+    ) -> Result<bool, H2CornError> {
+        self.process_command(WriterCommand::Goaway {
+            last_stream_id,
+            error_code,
+            debug,
+            close,
+        })
+        .await
+    }
+
+    pub(crate) async fn reset_stream(
+        &mut self,
+        stream_id: StreamId,
+        error_code: ErrorCode,
+    ) -> Result<(), H2CornError> {
+        self.ingress.drop_stream(stream_id).await;
+        self.process_command(WriterCommand::SendReset {
+            stream_id,
+            error_code,
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn flush_pending_output(&mut self) -> Result<FlushPassResult, H2CornError> {
+        flush_pending_data(
+            &mut self.writer,
+            &mut self.streams,
+            &mut self.ready_streams,
+            &mut self.connection_send_window,
+            self.peer_max_frame_size,
+            &mut self.header_state,
+            &mut self.response_closes,
+        )
+        .await
     }
 }
 
@@ -387,7 +710,7 @@ where
                 }
                 false
             }
-        }
+        },
         Entry::Vacant(entry) => {
             let stream = entry.insert(StreamWriteState::new(*context.initial_stream_send_window));
             if stream.send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
@@ -396,7 +719,7 @@ where
                 stream.send_window += increment;
                 false
             }
-        }
+        },
     };
     if overflow {
         context.streams.remove(&stream_key);
@@ -442,7 +765,7 @@ where
         WindowTarget::Stream(stream_id) => {
             handle_grant_stream_window(context, stream_id, increment).await?;
             Ok(false)
-        }
+        },
         WindowTarget::Connection => handle_grant_connection_window(context, increment).await,
     }
 }
@@ -497,7 +820,7 @@ where
         WriterCommand::SendSettingsAck => {
             frame::append_settings_ack(context.frame_buf);
             write_frame_buf(context.writer, context.frame_buf).await?;
-        }
+        },
         WriterCommand::UpdatePeerSettings(settings) => {
             apply_peer_settings_to_writer(
                 settings,
@@ -506,7 +829,7 @@ where
                 context.peer_max_frame_size,
                 context.header_state,
             );
-        }
+        },
         WriterCommand::SendHeaders {
             stream_id,
             status,
@@ -515,7 +838,7 @@ where
         } => {
             let mut send = context.send_context();
             handle_send_headers(&mut send, stream_id, status, headers, end_stream).await?;
-        }
+        },
         WriterCommand::SendFinal {
             stream_id,
             status,
@@ -524,11 +847,11 @@ where
         } => {
             let mut send = context.send_context();
             handle_send_final(&mut send, stream_id, status, headers, data).await?;
-        }
+        },
         WriterCommand::SendTrailers { stream_id, headers } => {
             let mut send = context.send_context();
             handle_send_trailers(&mut send, stream_id, headers).await?;
-        }
+        },
         WriterCommand::SendData {
             stream_id,
             data,
@@ -536,39 +859,39 @@ where
         } => {
             let mut send = context.send_context();
             handle_send_data(&mut send, stream_id, data, end_stream).await?;
-        }
+        },
         WriterCommand::SendPath {
             stream_id,
             streamer,
         } => {
             let mut send = context.send_context();
             handle_send_path(&mut send, stream_id, streamer).await?;
-        }
+        },
         WriterCommand::FlushBufferedOutput => {
             flush_buffered_writer_output(context).await?;
             return Ok(true);
-        }
+        },
         WriterCommand::SendReset {
             stream_id,
             error_code,
         } => {
             handle_send_reset(context, stream_id, error_code).await?;
-        }
+        },
         WriterCommand::PeerReset { stream_id } => {
             context.streams.remove(&stream_id.get());
-        }
+        },
         WriterCommand::GrantSendWindow { target, increment } => {
             if handle_grant_send_window(context, target, increment).await? {
                 return Ok(true);
             }
-        }
+        },
         WriterCommand::SendWindowUpdate { target, increment } => {
             send_window_update(context, target, increment).await?;
-        }
+        },
         WriterCommand::PingAck(payload) => {
             frame::append_ping_ack(context.frame_buf, payload);
             write_frame_buf(context.writer, context.frame_buf).await?;
-        }
+        },
         WriterCommand::Goaway {
             last_stream_id,
             error_code,
@@ -581,7 +904,7 @@ where
                 context.writer.flush().await?;
                 return Ok(true);
             }
-        }
+        },
     }
 
     Ok(false)
@@ -660,338 +983,4 @@ where
         config,
     };
     Ok((writer_state, connection))
-}
-
-impl ConnectionHandle {
-    fn send_command(
-        &self,
-        stream_id: StreamId,
-        command: WriterCommand,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        self.ingress.enqueue(stream_id, command)
-    }
-
-    pub(crate) fn send_commands(
-        &self,
-        stream_id: StreamId,
-        commands: WriterCommandBatch,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        self.ingress.enqueue_batch(stream_id, commands)
-    }
-
-    pub(crate) const fn config(&self) -> &'static ServerConfig {
-        self.config
-    }
-
-    pub(crate) fn send_headers(
-        &self,
-        stream_id: StreamId,
-        status: HttpStatusCode,
-        mut headers: ResponseHeaders,
-        end_stream: bool,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        apply_default_response_headers(&mut headers, self.config);
-        self.send_command(
-            stream_id,
-            WriterCommand::SendHeaders {
-                stream_id,
-                status,
-                headers,
-                end_stream,
-            },
-        )
-    }
-
-    pub(crate) fn send_data(
-        &self,
-        stream_id: StreamId,
-        data: impl Into<PayloadBytes>,
-        end_stream: bool,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        self.send_command(
-            stream_id,
-            WriterCommand::SendData {
-                stream_id,
-                data: data.into(),
-                end_stream,
-            },
-        )
-    }
-
-    pub(crate) fn flush_buffered_output(
-        &self,
-        stream_id: StreamId,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        self.send_command(stream_id, WriterCommand::FlushBufferedOutput)
-    }
-
-    pub(crate) fn reset_stream(
-        &self,
-        stream_id: StreamId,
-        error_code: ErrorCode,
-    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        self.send_command(
-            stream_id,
-            WriterCommand::SendReset {
-                stream_id,
-                error_code,
-            },
-        )
-    }
-}
-
-impl<W> WriterState<W>
-where
-    W: H2WriteTarget,
-{
-    #[cfg(test)]
-    pub(crate) fn new_test(writer: W) -> Self {
-        let max_concurrent_streams = 8_u32;
-        Self {
-            ingress: WriterIngress::new(max_concurrent_streams as usize),
-            writer: BufWriter::new(writer),
-            frame_buf: BytesMut::with_capacity(FRAME_BUFFER_CAPACITY),
-            config: Box::leak(Box::new(ServerConfig {
-                binds: Box::new([BindTarget::Tcp {
-                    host: Box::from("127.0.0.1"),
-                    port: 8000,
-                }]),
-                access_log: false,
-                root_path: Box::from(""),
-                http1: Http1Config::default(),
-                http2: Http2Config {
-                    max_concurrent_streams,
-                    max_header_list_size: None,
-                    max_header_block_size: None,
-                    max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
-                        .expect("default HTTP/2 frame size is non-zero"),
-                },
-                max_request_body_size: None,
-                timeout_graceful_shutdown: Duration::from_secs(30),
-                timeout_keep_alive: None,
-                timeout_request_header: None,
-                timeout_request_body_idle: None,
-                limit_concurrency: None,
-                limit_connections: None,
-                max_requests: None,
-                runtime_threads: 2,
-                websocket: WebSocketConfig::default(),
-                proxy: ProxyConfig {
-                    trust_headers: false,
-                    trusted_peers: Box::new([]),
-                    protocol: ProxyProtocolMode::Off,
-                },
-                tls: None,
-                timeout_handshake: Duration::from_secs(5),
-                response_headers: ResponseHeaderConfig::default(),
-            })),
-            streams: new_stream_map(max_concurrent_streams as usize),
-            ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
-            drained_app_writes: Vec::with_capacity(max_concurrent_streams as usize),
-            response_closes: ResponseCloseBatch::new(),
-            connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-            initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-            peer_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
-            header_state: HeaderEncodeState::new(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_writer_ref(&self) -> &W {
-        self.writer.get_ref()
-    }
-
-    const fn command_context(&mut self) -> WriterLoopParts<'_, W> {
-        WriterLoopParts {
-            writer: &mut self.writer,
-            frame_buf: &mut self.frame_buf,
-            streams: &mut self.streams,
-            ready_streams: &mut self.ready_streams,
-            response_closes: &mut self.response_closes,
-            connection_send_window: &mut self.connection_send_window,
-            initial_stream_send_window: &mut self.initial_stream_send_window,
-            peer_max_frame_size: &mut self.peer_max_frame_size,
-            header_state: &mut self.header_state,
-        }
-    }
-
-    async fn process_command(&mut self, command: WriterCommand) -> Result<bool, H2CornError> {
-        let mut context = self.command_context();
-        process_writer_command(&mut context, command).await
-    }
-
-    pub(crate) async fn drain_app_writes(&mut self) -> Result<bool, H2CornError> {
-        let mut drained = mem::take(&mut self.drained_app_writes);
-        self.ingress.drain_into(&mut drained).await;
-        if drained.is_empty() {
-            self.drained_app_writes = drained;
-            return Ok(false);
-        }
-
-        for index in 0..drained.len() {
-            while let Some(mut queued_batch) = drained[index].1.pop_front() {
-                while let Some(command) = queued_batch.commands.pop_front() {
-                    if self.process_command(command).await? {
-                        if !queued_batch.commands.is_empty() {
-                            let mut remainder = QueuedStreamCommands::new();
-                            remainder.push_back(queued_batch);
-                            while let Some(queued_batch) = drained[index].1.pop_front() {
-                                remainder.push_back(queued_batch);
-                            }
-                            drained[index].1 = remainder;
-                        }
-                        let remainder = drained.split_off(index);
-                        self.ingress.restore_drained(remainder).await;
-                        drained.clear();
-                        self.drained_app_writes = drained;
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-
-        drained.clear();
-        self.drained_app_writes = drained;
-        Ok(true)
-    }
-
-    pub(crate) fn has_ready_streams(&self) -> bool {
-        !self.ready_streams.is_empty()
-    }
-
-    pub(crate) fn needs_flush(&self) -> bool {
-        !self.writer.buffer().is_empty()
-    }
-
-    pub(crate) fn has_queued_app_writes(&self) -> bool {
-        self.ingress.has_pending()
-    }
-
-    pub(crate) fn outbound_notified(&self) -> Notified<'_> {
-        self.ingress.notify.notified()
-    }
-
-    pub(crate) async fn flush(&mut self) -> Result<(), H2CornError> {
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    pub(crate) async fn close_ingress(&self) {
-        self.ingress.close().await;
-    }
-
-    pub(crate) async fn drop_ingress_stream(&self, stream_id: StreamId) {
-        self.ingress.drop_stream(stream_id).await;
-    }
-
-    pub(crate) fn take_response_closes(&mut self) -> ResponseCloseBatch {
-        mem::take(&mut self.response_closes)
-    }
-
-    pub(crate) async fn send_settings_ack(&mut self) -> Result<(), H2CornError> {
-        self.process_command(WriterCommand::SendSettingsAck).await?;
-        Ok(())
-    }
-
-    pub(crate) async fn send_headers(
-        &mut self,
-        stream_id: StreamId,
-        status: HttpStatusCode,
-        mut headers: ResponseHeaders,
-        end_stream: bool,
-    ) -> Result<(), H2CornError> {
-        apply_default_response_headers(&mut headers, self.config);
-        self.process_command(WriterCommand::SendHeaders {
-            stream_id,
-            status,
-            headers,
-            end_stream,
-        })
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn update_peer_settings(
-        &mut self,
-        settings: PeerSettings,
-    ) -> Result<(), H2CornError> {
-        self.process_command(WriterCommand::UpdatePeerSettings(settings))
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn peer_reset(&mut self, stream_id: StreamId) -> Result<(), H2CornError> {
-        self.ingress.drop_stream(stream_id).await;
-        self.process_command(WriterCommand::PeerReset { stream_id })
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn grant_send_window(
-        &mut self,
-        target: WindowTarget,
-        increment: WindowIncrement,
-    ) -> Result<bool, H2CornError> {
-        self.process_command(WriterCommand::GrantSendWindow { target, increment })
-            .await
-    }
-
-    pub(crate) async fn send_window_update(
-        &mut self,
-        target: WindowTarget,
-        increment: WindowIncrement,
-    ) -> Result<(), H2CornError> {
-        self.process_command(WriterCommand::SendWindowUpdate { target, increment })
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn ping_ack(&mut self, payload: [u8; 8]) -> Result<(), H2CornError> {
-        self.process_command(WriterCommand::PingAck(payload))
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn goaway(
-        &mut self,
-        last_stream_id: Option<StreamId>,
-        error_code: ErrorCode,
-        debug: Vec<u8>,
-        close: bool,
-    ) -> Result<bool, H2CornError> {
-        self.process_command(WriterCommand::Goaway {
-            last_stream_id,
-            error_code,
-            debug,
-            close,
-        })
-        .await
-    }
-
-    pub(crate) async fn reset_stream(
-        &mut self,
-        stream_id: StreamId,
-        error_code: ErrorCode,
-    ) -> Result<(), H2CornError> {
-        self.ingress.drop_stream(stream_id).await;
-        self.process_command(WriterCommand::SendReset {
-            stream_id,
-            error_code,
-        })
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn flush_pending_output(&mut self) -> Result<FlushPassResult, H2CornError> {
-        flush_pending_data(
-            &mut self.writer,
-            &mut self.streams,
-            &mut self.ready_streams,
-            &mut self.connection_send_window,
-            self.peer_max_frame_size,
-            &mut self.header_state,
-            &mut self.response_closes,
-        )
-        .await
-    }
 }

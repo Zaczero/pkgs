@@ -1,5 +1,7 @@
-use std::{collections::VecDeque, mem};
+use std::collections::VecDeque;
+use std::mem;
 
+use super::ResponseCloseBatch;
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
 use crate::frame::StreamId;
@@ -7,8 +9,6 @@ use crate::h2::StreamMap;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::ResponseHeaders;
 use crate::smallvec_deque::SmallVecDeque;
-
-use super::ResponseCloseBatch;
 
 #[derive(Debug)]
 pub(super) struct PendingChunk {
@@ -99,7 +99,7 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::Open { body, .. } if body.has_pending_output() => {
                 mem::replace(body, StreamBodyState::Idle)
-            }
+            },
             ResponseWriteState::Open { .. }
             | ResponseWriteState::AwaitingHeaders
             | ResponseWriteState::Closed => StreamBodyState::Idle,
@@ -110,8 +110,8 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::Open { body: current, .. } => {
                 *current = body.normalized();
-            }
-            ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => {}
+            },
+            ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => {},
         }
     }
 
@@ -128,13 +128,13 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => {
                 return H2Error::ResponseTrailersOnClosedOrUnopenedStream.err();
-            }
+            },
             ResponseWriteState::Open { trailers, .. } => {
                 if trailers.is_some() {
                     return H2Error::ResponseTrailersAlreadySent.err();
                 }
                 *trailers = Some(headers);
-            }
+            },
         }
         Ok(())
     }
@@ -147,10 +147,10 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders => {
                 return H2Error::DataBeforeResponseHeaders.err();
-            }
+            },
             ResponseWriteState::Closed => {
                 return H2Error::DataOnClosedStream.err();
-            }
+            },
             ResponseWriteState::Open { body, .. } => {
                 let chunk = PendingChunk {
                     bytes: data,
@@ -162,13 +162,13 @@ impl StreamWriteState {
                         let mut chunks = PendingChunks::new();
                         chunks.push_back(chunk);
                         *body = StreamBodyState::Chunks(chunks);
-                    }
+                    },
                     StreamBodyState::Chunks(pending) => pending.push_back(chunk),
                     StreamBodyState::Path(_) => {
                         return HttpResponseError::PathsendMixedWithBody.err();
-                    }
+                    },
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -177,16 +177,16 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders => {
                 return H2Error::PathDataBeforeResponseHeaders.err();
-            }
+            },
             ResponseWriteState::Closed => {
                 return H2Error::PathDataOnClosedStream.err();
-            }
+            },
             ResponseWriteState::Open { body, .. } => {
                 if !body.is_idle() {
                     return HttpResponseError::PathsendMixedWithBody.err();
                 }
                 *body = StreamBodyState::Path(streamer);
-            }
+            },
         }
         Ok(())
     }

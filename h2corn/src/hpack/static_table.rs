@@ -1,48 +1,8 @@
 use bytes::Bytes;
 use http::{Method, StatusCode};
 
-use super::{
-    Header,
-    header::{BytesStr, OwnedName},
-};
-
-pub const STATIC_TABLE_LEN: usize = 61;
-pub const DYNAMIC_INDEX_OFFSET: usize = STATIC_TABLE_LEN + 1;
-const EMPTY_VALUE: &[u8] = b"";
-
-#[derive(Clone, Copy)]
-pub struct StaticFieldEntry {
-    pub index: usize,
-    pub exact_value: &'static [u8],
-    pub skip_value_index: bool,
-    pub never_index: bool,
-}
-
-impl StaticFieldEntry {
-    const fn new(index: usize) -> Self {
-        Self {
-            index,
-            exact_value: EMPTY_VALUE,
-            skip_value_index: false,
-            never_index: false,
-        }
-    }
-
-    const fn with_value(mut self, exact_value: &'static [u8]) -> Self {
-        self.exact_value = exact_value;
-        self
-    }
-
-    const fn skip_value_index(mut self) -> Self {
-        self.skip_value_index = true;
-        self
-    }
-
-    const fn never_index(mut self) -> Self {
-        self.never_index = true;
-        self
-    }
-}
+use super::Header;
+use super::header::{BytesStr, OwnedName};
 
 macro_rules! static_field_data {
     ($($first:literal => { $(($index:literal, $name:literal, $value:literal $(, $flag:ident)*),)+ }),+ $(,)?) => {
@@ -84,6 +44,44 @@ macro_rules! static_field_data {
             }
         }
     };
+}
+
+pub const STATIC_TABLE_LEN: usize = 61;
+pub const DYNAMIC_INDEX_OFFSET: usize = STATIC_TABLE_LEN + 1;
+const EMPTY_VALUE: &[u8] = b"";
+
+#[derive(Clone, Copy)]
+pub struct StaticFieldEntry {
+    pub index: usize,
+    pub exact_value: &'static [u8],
+    pub skip_value_index: bool,
+    pub never_index: bool,
+}
+
+impl StaticFieldEntry {
+    const fn new(index: usize) -> Self {
+        Self {
+            index,
+            exact_value: EMPTY_VALUE,
+            skip_value_index: false,
+            never_index: false,
+        }
+    }
+
+    const fn with_value(mut self, exact_value: &'static [u8]) -> Self {
+        self.exact_value = exact_value;
+        self
+    }
+
+    const fn skip_value_index(mut self) -> Self {
+        self.skip_value_index = true;
+        self
+    }
+
+    const fn never_index(mut self) -> Self {
+        self.never_index = true;
+        self
+    }
 }
 
 static_field_data! {
@@ -220,7 +218,7 @@ pub fn exact_index(header: &Header) -> Option<usize> {
     match header {
         Header::Field { name, value } => {
             field_exact_index_bytes(name.as_str().as_bytes(), value.as_ref())
-        }
+        },
         Header::Authority(value) if value.as_str().is_empty() => Some(1),
         Header::Method(Method::GET) => Some(2),
         Header::Method(Method::POST) => Some(3),

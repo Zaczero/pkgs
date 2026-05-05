@@ -11,7 +11,7 @@ use crate::algorithm::Algorithm;
 fn dynamic_truncate(digest: &[u8]) -> u32 {
     let offset = (digest[digest.len() - 1] & 0x0F) as usize;
     let p = &digest[offset..offset + 4];
-    (u32::from(p[0] & 0x7f) << 24)
+    (u32::from(p[0] & 0x7F) << 24)
         | (u32::from(p[1]) << 16)
         | (u32::from(p[2]) << 8)
         | u32::from(p[3])

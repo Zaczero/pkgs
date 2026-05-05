@@ -1,4 +1,5 @@
-use std::{mem, num::NonZeroUsize};
+use std::mem;
+use std::num::NonZeroUsize;
 
 use bytes::{Buf, Bytes, BytesMut};
 
@@ -8,17 +9,15 @@ use super::super::deflate::PerMessageDeflateMode;
 use super::cursor::SegmentCursor;
 use super::frame::{decode_control_frame, parse_frame_header};
 use super::mask::apply_websocket_mask_phase;
-use super::{
-    CLIENT_FRAME_PREFIX_MAX_LEN, CLIENT_MASK_LEN, DecodedFrame, OPCODE_BINARY, OPCODE_CLOSE,
-    OPCODE_CONTINUATION, OPCODE_TEXT, SEGMENT_INLINE_CAPACITY, WebSocketDecodeError,
-};
+use super::wire::opcode;
+use super::{DecodedFrame, WebSocketDecodeError, wire};
 use crate::error::WebSocketProtocolError;
 use crate::hpack::BytesStr;
 
 #[derive(Debug, Default)]
 pub struct WebSocketCodec {
     pub(crate) buffer: BytesMut,
-    segmented: SegmentCursor<SEGMENT_INLINE_CAPACITY>,
+    segmented: SegmentCursor<{ wire::SEGMENT_INLINE_CAPACITY }>,
     fragmented: FragmentState,
     max_message_size: Option<NonZeroUsize>,
 }
@@ -44,7 +43,7 @@ impl FragmentBuffer {
                 out.extend_from_slice(existing.as_ref());
                 out.extend_from_slice(payload);
                 *self = Self::Mut(out);
-            }
+            },
             Self::Mut(data) => data.extend_from_slice(payload),
         }
     }
@@ -119,7 +118,7 @@ impl WebSocketCodec {
         };
         self.ensure_bufferable_frame(&header, max_message_size)?;
 
-        let needed = header.header_len + CLIENT_MASK_LEN + header.payload_len;
+        let needed = header.header_len + wire::CLIENT_MASK_LEN + header.payload_len;
         if self.buffer.len() < needed {
             return Ok(None);
         }
@@ -145,8 +144,8 @@ impl WebSocketCodec {
             return Ok(None);
         }
 
-        let prefix_len = self.segmented.len().min(CLIENT_FRAME_PREFIX_MAX_LEN);
-        let mut prefix = [0_u8; CLIENT_FRAME_PREFIX_MAX_LEN];
+        let prefix_len = self.segmented.len().min(wire::CLIENT_FRAME_PREFIX_MAX_LEN);
+        let mut prefix = [0_u8; wire::CLIENT_FRAME_PREFIX_MAX_LEN];
         self.segmented
             .peek_prefix(prefix_len, &mut prefix[..prefix_len]);
 
@@ -155,15 +154,16 @@ impl WebSocketCodec {
         };
         self.ensure_bufferable_frame(&header, max_message_size)?;
 
-        let needed = header.header_len + CLIENT_MASK_LEN + header.payload_len;
+        let needed = header.header_len + wire::CLIENT_MASK_LEN + header.payload_len;
         if self.segmented.len() < needed {
             return Ok(None);
         }
 
-        let mask = *prefix[header.header_len..header.header_len + CLIENT_MASK_LEN]
-            .first_chunk::<CLIENT_MASK_LEN>()
+        let mask = *prefix[header.header_len..header.header_len + wire::CLIENT_MASK_LEN]
+            .first_chunk::<{ wire::CLIENT_MASK_LEN }>()
             .expect("segmented websocket mask is buffered");
-        self.segmented.skip(header.header_len + CLIENT_MASK_LEN);
+        self.segmented
+            .skip(header.header_len + wire::CLIENT_MASK_LEN);
         let payload = self.segmented.take_masked_payload(header.payload_len, mask);
 
         self.decode_frame_payload::<M>(
@@ -185,7 +185,7 @@ impl WebSocketCodec {
         payload: Bytes,
         max_message_size: Option<usize>,
     ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
-        if opcode >= OPCODE_CLOSE {
+        if opcode >= opcode::CLOSE {
             if compressed {
                 return Err(WebSocketDecodeError::protocol(
                     WebSocketProtocolError::CompressedControlFrame,
@@ -195,14 +195,14 @@ impl WebSocketCodec {
         }
 
         match opcode {
-            OPCODE_CONTINUATION => self.decode_continuation::<M>(
+            opcode::CONTINUATION => self.decode_continuation::<M>(
                 inflater,
                 fin,
                 compressed,
                 payload.as_ref(),
                 max_message_size,
             ),
-            OPCODE_TEXT | OPCODE_BINARY => self.decode_data_frame::<M>(
+            opcode::TEXT | opcode::BINARY => self.decode_data_frame::<M>(
                 inflater,
                 opcode,
                 fin,
@@ -219,10 +219,10 @@ impl WebSocketCodec {
     fn take_buffered_payload(&mut self, needed: usize, header_len: usize) -> Bytes {
         let mut frame = self.buffer.split_to(needed);
         frame.advance(header_len);
-        // SAFETY: `needed` includes `CLIENT_MASK_LEN` bytes after the parsed
+        // SAFETY: `needed` includes `wire::CLIENT_MASK_LEN` bytes after the parsed
         // header, and `[u8; 4]` has byte alignment.
         let mask = unsafe { *frame.as_ptr().cast::<[u8; 4]>() };
-        frame.advance(CLIENT_MASK_LEN);
+        frame.advance(wire::CLIENT_MASK_LEN);
         apply_websocket_mask_phase(frame.as_mut(), mask, 0);
         frame.freeze()
     }
@@ -239,7 +239,7 @@ impl WebSocketCodec {
                 |err| match err {
                     WebSocketProtocolError::MessageTooLarge => {
                         WebSocketDecodeError::message_too_large()
-                    }
+                    },
                     other => WebSocketDecodeError::protocol(other),
                 },
             )?
@@ -248,7 +248,7 @@ impl WebSocketCodec {
             payload
         };
 
-        if opcode == OPCODE_TEXT {
+        if opcode == opcode::TEXT {
             let text = BytesStr::try_from(payload)
                 .map_err(|err| WebSocketDecodeError::invalid_utf8(err.to_string()))?;
             Ok(DecodedFrame::Text(text))
@@ -272,7 +272,7 @@ impl WebSocketCodec {
         header: &super::frame::ParsedFrameHeader,
         max_message_size: Option<usize>,
     ) -> Result<(), WebSocketDecodeError> {
-        if max_message_size.is_none() || header.opcode >= OPCODE_CLOSE {
+        if max_message_size.is_none() || header.opcode >= opcode::CLOSE {
             return Ok(());
         }
 
@@ -288,7 +288,7 @@ impl WebSocketCodec {
                     compressed_len,
                     ..
                 },
-                OPCODE_CONTINUATION,
+                opcode::CONTINUATION,
             ) => compressed_len.saturating_add(header.payload_len),
             _ => header.payload_len,
         };
@@ -314,7 +314,7 @@ impl WebSocketCodec {
             if !compressed {
                 Self::ensure_message_size(compressed_len, max_message_size)?;
             }
-            self.fragmented = if opcode == OPCODE_TEXT {
+            self.fragmented = if opcode == opcode::TEXT {
                 FragmentState::Text {
                     data: FragmentBuffer::Bytes(payload),
                     compressed,
@@ -350,7 +350,7 @@ impl WebSocketCodec {
                 return Err(WebSocketDecodeError::protocol(
                     WebSocketProtocolError::UnexpectedContinuationFrame,
                 ));
-            }
+            },
             FragmentState::Text {
                 data,
                 compressed: is_compressed,
@@ -373,7 +373,7 @@ impl WebSocketCodec {
                 }
                 data.extend_from_slice(payload);
                 *compressed_len = next_compressed_len;
-            }
+            },
         }
         if !fin {
             return Ok(None);
@@ -383,7 +383,7 @@ impl WebSocketCodec {
                 data, compressed, ..
             } => Self::decode_payload::<M>(
                 inflater,
-                OPCODE_TEXT,
+                opcode::TEXT,
                 compressed,
                 data.freeze(),
                 max_message_size,
@@ -393,7 +393,7 @@ impl WebSocketCodec {
                 data, compressed, ..
             } => Self::decode_payload::<M>(
                 inflater,
-                OPCODE_BINARY,
+                opcode::BINARY,
                 compressed,
                 data.freeze(),
                 max_message_size,
@@ -412,15 +412,10 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
 
-    use super::{
-        super::{
-            super::deflate::{PerMessageDeflateEnabled, PerMessageDeflateMode},
-            CLIENT_FRAME_PREFIX_MAX_LEN, FIN_MASK, INLINE_PAYLOAD_LEN_MAX, MASK_FLAG,
-            OPCODE_CONTINUATION, PAYLOAD_LEN_U16_MARKER, PAYLOAD_LEN_U64_MARKER, RSV1_MASK,
-            close_code,
-        },
-        DecodedFrame, FragmentState, OPCODE_BINARY, OPCODE_TEXT, WebSocketCodec,
-    };
+    use super::super::super::deflate::{PerMessageDeflateEnabled, PerMessageDeflateMode};
+    use super::super::wire::opcode;
+    use super::super::{close_code, wire};
+    use super::{DecodedFrame, FragmentState, WebSocketCodec};
 
     fn encode_masked_client_frame(opcode: u8, payload: &[u8], fin: bool) -> Vec<u8> {
         encode_masked_client_frame_with_flags(opcode, payload, fin, 0)
@@ -433,19 +428,19 @@ mod tests {
         flags: u8,
     ) -> Vec<u8> {
         let mask = [1_u8, 2, 3, 4];
-        let first = if fin { FIN_MASK } else { 0x00 } | opcode | flags;
-        let mut out = Vec::with_capacity(payload.len() + CLIENT_FRAME_PREFIX_MAX_LEN);
+        let first = if fin { wire::FIN } else { 0x00 } | opcode | flags;
+        let mut out = Vec::with_capacity(payload.len() + wire::CLIENT_FRAME_PREFIX_MAX_LEN);
         out.push(first);
         match payload.len() {
-            len if len <= INLINE_PAYLOAD_LEN_MAX => out.push(MASK_FLAG | len as u8),
+            len if len <= wire::INLINE_PAYLOAD_LEN_MAX => out.push(wire::MASK | len as u8),
             len if len < 0x0001_0000 => {
-                out.push(MASK_FLAG | PAYLOAD_LEN_U16_MARKER);
+                out.push(wire::MASK | wire::PAYLOAD_LEN_U16_MARKER);
                 out.extend_from_slice(&(len as u16).to_be_bytes());
-            }
+            },
             len => {
-                out.push(MASK_FLAG | PAYLOAD_LEN_U64_MARKER);
+                out.push(wire::MASK | wire::PAYLOAD_LEN_U64_MARKER);
                 out.extend_from_slice(&(len as u64).to_be_bytes());
-            }
+            },
         }
         out.extend_from_slice(&mask);
         out.extend(
@@ -462,7 +457,7 @@ mod tests {
         let mut codec = WebSocketCodec::default();
         codec
             .buffer
-            .extend_from_slice(&encode_masked_client_frame(OPCODE_TEXT, b"\xff", true));
+            .extend_from_slice(&encode_masked_client_frame(opcode::TEXT, b"\xff", true));
 
         let err = codec.decode_next().expect_err("invalid utf-8 should fail");
 
@@ -472,10 +467,10 @@ mod tests {
     #[test]
     fn websocket_codec_rejects_non_canonical_16_bit_length() {
         let mut frame = vec![
-            FIN_MASK | OPCODE_BINARY,
-            MASK_FLAG | PAYLOAD_LEN_U16_MARKER,
+            wire::FIN | opcode::BINARY,
+            wire::MASK | wire::PAYLOAD_LEN_U16_MARKER,
             0x00,
-            INLINE_PAYLOAD_LEN_MAX as u8,
+            wire::INLINE_PAYLOAD_LEN_MAX as u8,
         ];
         frame.extend_from_slice(&[1, 2, 3, 4]);
 
@@ -491,7 +486,10 @@ mod tests {
 
     #[test]
     fn websocket_codec_rejects_reserved_high_bit_in_64_bit_length() {
-        let mut frame = vec![FIN_MASK | OPCODE_BINARY, MASK_FLAG | PAYLOAD_LEN_U64_MARKER];
+        let mut frame = vec![
+            wire::FIN | opcode::BINARY,
+            wire::MASK | wire::PAYLOAD_LEN_U64_MARKER,
+        ];
         frame.extend_from_slice(&(1_u64 << 63).to_be_bytes());
         frame.extend_from_slice(&[1, 2, 3, 4]);
 
@@ -507,7 +505,7 @@ mod tests {
 
     #[test]
     fn websocket_codec_decodes_segmented_text_frame_split_across_header_mask_and_payload() {
-        let frame = encode_masked_client_frame(OPCODE_TEXT, b"hello", true);
+        let frame = encode_masked_client_frame(opcode::TEXT, b"hello", true);
         let mut codec = WebSocketCodec::segmented(None);
 
         codec.push_segment(Bytes::copy_from_slice(&frame[..1]));
@@ -530,7 +528,7 @@ mod tests {
     #[test]
     fn websocket_codec_decodes_segmented_extended_length_text_frame() {
         let payload = vec![b'x'; 126];
-        let frame = encode_masked_client_frame(OPCODE_TEXT, &payload, true);
+        let frame = encode_masked_client_frame(opcode::TEXT, &payload, true);
         let mut codec = WebSocketCodec::segmented(None);
 
         codec.push_segment(Bytes::copy_from_slice(&frame[..2]));
@@ -557,7 +555,10 @@ mod tests {
 
     #[test]
     fn websocket_codec_rejects_oversized_frame_before_buffering_payload() {
-        let mut frame = vec![FIN_MASK | OPCODE_BINARY, MASK_FLAG | PAYLOAD_LEN_U16_MARKER];
+        let mut frame = vec![
+            wire::FIN | opcode::BINARY,
+            wire::MASK | wire::PAYLOAD_LEN_U16_MARKER,
+        ];
         frame.extend_from_slice(&(126_u16).to_be_bytes());
         frame.extend_from_slice(&[1, 2, 3, 4]);
 
@@ -580,10 +581,10 @@ mod tests {
         codec
             .buffer
             .extend_from_slice(&encode_masked_client_frame_with_flags(
-                OPCODE_TEXT,
+                opcode::TEXT,
                 b"abcd",
                 false,
-                RSV1_MASK,
+                wire::RSV1,
             ));
         assert!(
             codec
@@ -608,11 +609,11 @@ mod tests {
 
         codec
             .buffer
-            .extend_from_slice(&encode_masked_client_frame(OPCODE_TEXT, b"abcd", false));
+            .extend_from_slice(&encode_masked_client_frame(opcode::TEXT, b"abcd", false));
         assert!(codec.decode_next().unwrap().is_none());
 
         codec.buffer.extend_from_slice(&encode_masked_client_frame(
-            OPCODE_CONTINUATION,
+            opcode::CONTINUATION,
             b"efghi",
             true,
         ));

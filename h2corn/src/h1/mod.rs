@@ -2,9 +2,13 @@ mod http;
 mod parse;
 mod websocket;
 
-use std::{num::NonZeroU64, sync::atomic::Ordering, time::Duration};
+use std::num::NonZeroU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+pub use http::H1WriteTarget;
+use parse::read_request;
 use tokio::io::{AsyncRead, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, watch};
 
@@ -17,19 +21,19 @@ use crate::console::run_http_request;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
 use crate::frame::{self, PeerSettings};
 use crate::h2::{H2WriteTarget, UpgradedH2Request, serve_h2_upgraded_connection};
+use crate::http::app::HttpRequestBody;
+use crate::http::body::RequestBodyState;
 use crate::http::execution::prepare_request_input;
 use crate::http::planner::{
     RequestInputPlan, RequestRoute, plan_request_input, reject_oversized_request,
 };
+use crate::http::response::HttpResponseTransport;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
-use crate::http::{app::HttpRequestBody, body::RequestBodyState, response::HttpResponseTransport};
 use crate::runtime::{
     ConnectionContext, RequestAdmission, RequestContext, ShutdownState, StreamInput,
     try_acquire_request_admission,
 };
 use crate::websocket::{HandshakeRejection, WebSocketContext, WebSocketKey, WebSocketRequestMeta};
-pub use http::H1WriteTarget;
-use parse::read_request;
 
 struct ParsedRequest {
     request: RequestHead,
@@ -74,6 +78,11 @@ struct H1Io<'a, R, W> {
     reader: &'a mut R,
     buffer: &'a mut BytesMut,
     writer: &'a mut BufWriter<W>,
+}
+
+struct H1BodyReadParts<'a, R> {
+    reader: &'a mut R,
+    buffer: &'a mut BytesMut,
 }
 
 pub async fn serve_connection<R, W>(
@@ -138,7 +147,7 @@ where
                 {
                     break;
                 }
-            }
+            },
             upgrade => {
                 return handle_upgrade_request(
                     request,
@@ -154,7 +163,7 @@ where
                     },
                 )
                 .await;
-            }
+            },
         }
     }
 
@@ -212,7 +221,7 @@ where
                 writer,
             ))
             .await
-        }
+        },
         UpgradeRequest::WebSocketUnsupportedVersion => {
             let response = HandshakeRejection::unsupported_version();
             write_simple_response(
@@ -225,7 +234,7 @@ where
             )
             .await?;
             Ok(())
-        }
+        },
         UpgradeRequest::WebSocketBadRequest => {
             write_empty_response(
                 &mut writer,
@@ -235,13 +244,13 @@ where
             )
             .await?;
             Ok(())
-        }
+        },
         UpgradeRequest::H2c { settings } => {
             Box::pin(serve_h2c_upgrade_request(
                 request, body_kind, settings, reader, buffer, writer, context,
             ))
             .await
-        }
+        },
         UpgradeRequest::None => Ok(()),
     }
 }
@@ -346,7 +355,7 @@ where
             )
             .await?;
             Ok(persistence)
-        }
+        },
         RequestInputPlan::Stream { count_body_bytes } => {
             handle_streaming_http_request(
                 ctx,
@@ -358,13 +367,8 @@ where
                 H1BodyReadParts { reader, buffer },
             )
             .await
-        }
+        },
     }
-}
-
-struct H1BodyReadParts<'a, R> {
-    reader: &'a mut R,
-    buffer: &'a mut BytesMut,
 }
 
 async fn handle_streaming_http_request<R, W>(
@@ -442,7 +446,7 @@ where
                 .write_empty_response(status_code::PAYLOAD_TOO_LARGE, true)
                 .await?;
             Ok(ConnectionPersistence::Close)
-        }
+        },
         Err(err) => Err(err),
     }
 }
@@ -483,12 +487,12 @@ where
                 timeout_request_body_idle,
             )
             .await?;
-        }
+        },
         RequestBodyKind::Chunked => {
             parse::read_chunked_body(reader, buffer, tx, &mut body, timeout_request_body_idle)
                 .await?;
-        }
-        RequestBodyKind::None => {}
+        },
+        RequestBodyKind::None => {},
     }
     send_best_effort(tx, StreamInput::EndStream).await;
     Ok(())

@@ -1,7 +1,5 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestBodyProgress {
@@ -90,10 +88,8 @@ impl RequestBodyState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 

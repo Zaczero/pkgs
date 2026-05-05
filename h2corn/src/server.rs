@@ -1,13 +1,11 @@
+use std::future::{Future, poll_fn, ready};
+use std::io;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
-use std::{
-    future::{Future, poll_fn, ready},
-    io,
-    net::{SocketAddr, TcpListener as StdTcpListener},
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
 use pyo3::prelude::*;
@@ -38,6 +36,34 @@ use crate::proxy::{
 };
 use crate::runtime::{AppState, ConnectionContext, ShutdownKind, ShutdownState};
 use crate::tls;
+
+macro_rules! serve_with_proxy_protocol {
+    (
+        $mode:expr,
+        $serve:ident,
+        $listener:expr,
+        $app:expr,
+        $config:expr,
+        $shutdown:expr,
+        $http1:ident,
+        $tls:ident
+    ) => {
+        match $mode {
+            ProxyProtocolMode::Off => {
+                $serve::<PreambleOff, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
+                    .await
+            },
+            ProxyProtocolMode::V1 => {
+                $serve::<PreambleV1, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
+                    .await
+            },
+            ProxyProtocolMode::V2 => {
+                $serve::<PreambleV2, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
+                    .await
+            },
+        }
+    };
+}
 
 type TlsWriteHalf = WriteHalf<TlsStream<PrefixedIo>>;
 
@@ -140,7 +166,7 @@ impl ListenerSource {
             Self::Tcp(listener) => match listener.poll_accept(cx) {
                 Poll::Ready(Ok((stream, peer))) => {
                     Poll::Ready(Ok(AcceptedConnection::Tcp(stream, peer)))
-                }
+                },
                 Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
                 Poll::Pending => Poll::Pending,
             },
@@ -208,34 +234,6 @@ impl ConnectionPreamble for PreambleV2 {
     {
         read_proxy_v2(reader, actual_peer, trusted)
     }
-}
-
-macro_rules! serve_with_proxy_protocol {
-    (
-        $mode:expr,
-        $serve:ident,
-        $listener:expr,
-        $app:expr,
-        $config:expr,
-        $shutdown:expr,
-        $http1:ident,
-        $tls:ident
-    ) => {
-        match $mode {
-            ProxyProtocolMode::Off => {
-                $serve::<PreambleOff, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            }
-            ProxyProtocolMode::V1 => {
-                $serve::<PreambleV1, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            }
-            ProxyProtocolMode::V2 => {
-                $serve::<PreambleV2, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            }
-        }
-    };
 }
 
 pub async fn serve_from_fds(
@@ -376,7 +374,7 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
                     .await;
                 });
             }
-        }
+        },
         #[cfg(unix)]
         AcceptedConnection::Unix { stream, path } => {
             debug_assert!(!TLS, "TLS listener mode only supports TCP listeners");
@@ -401,7 +399,7 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
                 )
                 .await;
             });
-        }
+        },
     }
 }
 
@@ -415,9 +413,9 @@ async fn accept_one(
             match listeners[index].poll_accept_item(cx) {
                 Poll::Ready(Ok(connection)) => {
                     return Poll::Ready(Ok(((index + 1) % listeners.len(), connection)));
-                }
+                },
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                Poll::Pending => {}
+                Poll::Pending => {},
             }
         }
         Poll::Pending
@@ -493,14 +491,14 @@ fn adopt_listeners(binds: &[BindTarget], fds: &[i64]) -> io::Result<Box<[Listene
             }),
             BindTarget::Fd { is_unix: false, .. } => {
                 listeners.push(ListenerSource::Tcp(adopt_tcp_listener(fd)?));
-            }
+            },
             #[cfg(not(unix))]
             BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "unix listeners are not supported on this platform",
                 ));
-            }
+            },
         }
     }
     Ok(listeners.into_vec().into_boxed_slice())
@@ -537,7 +535,7 @@ where
         Err(H2CornError::Proxy(ProxyError::InvalidHttp2Preface)) => {
             write_invalid_h2_preface_goaway(&mut writer).await?;
             return ProxyError::InvalidHttp2Preface.err();
-        }
+        },
         Err(err) => return Err(err),
     };
     if let Some(proxy) = connection_start.proxy {
@@ -621,11 +619,11 @@ where
     match protocol {
         DetectedProtocol::Http2 => {
             h2::serve_connection(reader, writer, connection_ctx, secure, shutdown).await
-        }
+        },
         DetectedProtocol::Http1 => {
             let (reader, buffer) = reader.into_parts();
             h1::serve_connection(reader, buffer, writer, connection_ctx, secure, shutdown).await
-        }
+        },
     }
 }
 

@@ -4,11 +4,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+pub use buffered::HttpSendState;
 use bytes::Bytes;
 use http::Method;
 use pyo3::Py;
 use tokio::sync::mpsc;
 
+use self::buffered::HttpSendBuffer;
 use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
@@ -16,9 +18,6 @@ use crate::bridge::{PyHttpReceive, PyHttpSend};
 use crate::error::H2CornError;
 use crate::http::scope::build_http_scope;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
-
-use self::buffered::HttpSendBuffer;
-pub use buffered::HttpSendState;
 
 pub enum HttpRequestBody {
     NoBody,
@@ -54,7 +53,7 @@ pub fn start_asgi_http_request(
             HttpRequestBody::Single(body) => PyHttpReceive::new_single(app.locals.clone(), body),
             HttpRequestBody::Stream(stream_rx) => {
                 PyHttpReceive::new_stream(app.locals.clone(), stream_rx)
-            }
+            },
         };
         let receive = Py::new(py, receive)?.into_bound(py).into_any();
         let send = Py::new(py, PyHttpSend::new(app.locals.clone(), send_state))?
@@ -87,7 +86,7 @@ where
         Err(err) => {
             transport.send_internal_error_response().await?;
             return Err(err);
-        }
+        },
     };
 
     drive_http_request(started, transport).await

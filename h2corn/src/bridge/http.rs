@@ -1,26 +1,21 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use pyo3_async_runtimes::TaskLocals;
-use tokio::sync::{
-    Mutex as AsyncMutex,
-    mpsc::{self, error::TryRecvError},
-};
-
-use crate::error::IntoPyResult;
-use crate::http::app::HttpSendState;
-use crate::runtime::StreamInput;
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
     HttpInboundEvent, ReceiveStateMachine, buffered_or_send, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
+use crate::error::IntoPyResult;
+use crate::http::app::HttpSendState;
+use crate::runtime::StreamInput;
 
 #[derive(Debug)]
 struct HttpReceiveState {
@@ -56,7 +51,7 @@ impl ReceiveStateMachine for HttpReceiveState {
             Ok(StreamInput::Reset(_)) | Err(TryRecvError::Disconnected) => {
                 self.disconnected = true;
                 Some(HttpInboundEvent::HttpDisconnect)
-            }
+            },
         }
     }
 
@@ -76,7 +71,7 @@ impl ReceiveStateMachine for HttpReceiveState {
                 Some(StreamInput::Reset(_)) | None => {
                     self.disconnected = true;
                     HttpInboundEvent::HttpDisconnect
-                }
+                },
             }
         }
     }
@@ -127,7 +122,7 @@ impl PyHttpReceive {
                         more_body: false,
                     }
                 }
-            }
+            },
             HttpReceiveKind::Single(body) => body.lock().take().map_or_else(
                 || HttpInboundEvent::HttpDisconnect,
                 |body| HttpInboundEvent::Request {
@@ -137,7 +132,7 @@ impl PyHttpReceive {
             ),
             HttpReceiveKind::Stream(state) => {
                 return receive_or_await(py, &self.locals, state, build_http_inbound_event);
-            }
+            },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)
     }

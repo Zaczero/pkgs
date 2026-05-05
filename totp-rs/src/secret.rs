@@ -1,7 +1,8 @@
+use std::borrow::Cow;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyBytesMethods, PyString, PyStringMethods};
-use std::borrow::Cow;
 
 use crate::base32::decode_base32_secret;
 use crate::errors::Error;

@@ -243,7 +243,7 @@ where
             .await?;
             writer.flush().await?;
             Ok(())
-        }
+        },
         FinalResponseBody::Bytes(body) => {
             write_response_head(
                 writer,
@@ -258,7 +258,7 @@ where
             }
             writer.flush().await?;
             Ok(())
-        }
+        },
         FinalResponseBody::File { mut file, len } => {
             write_response_head(
                 writer,
@@ -270,7 +270,7 @@ where
             .await?;
             W::send_file_body(writer, &mut file, len).await?;
             Ok(())
-        }
+        },
         FinalResponseBody::Suppressed { len } => {
             write_response_head(
                 writer,
@@ -282,7 +282,7 @@ where
             .await?;
             writer.flush().await?;
             Ok(())
-        }
+        },
     }
 }
 
@@ -438,10 +438,10 @@ fn append_response_headers(
     match framing {
         BodyFraming::KnownLength(len) => {
             append_header_line_with_decimal(dst, b"Content-Length", len);
-        }
+        },
         BodyFraming::Chunked => {
             dst.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
-        }
+        },
     }
     if close_after {
         dst.extend_from_slice(b"Connection: close\r\n");

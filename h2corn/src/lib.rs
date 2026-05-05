@@ -1,4 +1,5 @@
-// Retained for the WebSocket masking SIMD fast path in `websocket::codec::mask`.
+// Retained for the WebSocket masking SIMD fast path in
+// `websocket::codec::mask`.
 #![feature(portable_simd)]
 
 mod async_util;
@@ -23,6 +24,11 @@ mod smallvec_deque;
 mod tls;
 mod websocket;
 
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::path::PathBuf;
+use std::sync::{Arc, Once, OnceLock};
+use std::time::Duration;
+
 use bytes::Bytes;
 use config::{
     BindTarget, ClientCertMode, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig,
@@ -32,40 +38,21 @@ use error::{ConfigError, IntoPyResult, into_pyerr};
 use header_value::header_value_is_valid;
 use parking_lot::RwLock;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
-use pyo3::{
-    conversion::FromPyObjectOwned, exceptions::PyValueError, prelude::*, sync::OnceExt,
-    types::PyAnyMethods,
-};
+use pyo3::conversion::FromPyObjectOwned;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::sync::OnceExt;
+use pyo3::types::PyAnyMethods;
 use pyo3_async_runtimes::tokio::{
     future_into_py_with_locals, get_current_locals, init as init_tokio,
 };
 use smallvec::SmallVec;
-use std::{
-    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
-    path::PathBuf,
-    sync::{Arc, Once, OnceLock},
-    time::Duration,
-};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 
 use crate::runtime::SharedApp;
 
 const TOKIO_EVENT_INTERVAL: u32 = 31;
 const TOKIO_GLOBAL_QUEUE_INTERVAL: u32 = 31;
-
-fn finite_duration(name: &'static str, seconds: f64) -> PyResult<Duration> {
-    if !seconds.is_finite() || seconds < 0.0 {
-        return Err(into_pyerr(ConfigError::invalid_finite_duration(name)));
-    }
-    Ok(Duration::from_secs_f64(seconds))
-}
-
-fn optional_duration(name: &'static str, seconds: f64) -> PyResult<Option<Duration>> {
-    if seconds == 0.0 {
-        return Ok(None);
-    }
-    finite_duration(name, seconds).map(Some)
-}
 
 struct PyConfig<'py>(&'py Bound<'py, PyAny>);
 
@@ -255,13 +242,13 @@ impl<'py> PyConfig<'py> {
                     ));
                 }
                 return Ok(None);
-            }
+            },
             (Some(certfile), Some(keyfile)) => (certfile, keyfile),
             _ => {
                 return Err(PyValueError::new_err(
                     "certfile and keyfile must be configured together",
                 ));
-            }
+            },
         };
         if ca_certs.is_some() && cert_reqs == ClientCertMode::None {
             return Err(PyValueError::new_err(
@@ -316,6 +303,20 @@ impl<'py> PyConfig<'py> {
             response_headers: self.response_headers()?,
         })
     }
+}
+
+fn finite_duration(name: &'static str, seconds: f64) -> PyResult<Duration> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(into_pyerr(ConfigError::invalid_finite_duration(name)));
+    }
+    Ok(Duration::from_secs_f64(seconds))
+}
+
+fn optional_duration(name: &'static str, seconds: f64) -> PyResult<Option<Duration>> {
+    if seconds == 0.0 {
+        return Ok(None);
+    }
+    finite_duration(name, seconds).map(Some)
 }
 
 fn parse_bind_target(raw: &str, fd_is_unix: bool) -> PyResult<BindTarget> {
@@ -460,10 +461,8 @@ fn h2corn_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::{IpAddr, Ipv4Addr},
-        time::Duration,
-    };
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Duration;
 
     use pyo3::types::{PyAny, PyDict, PyModule, PyTuple};
 
@@ -547,7 +546,7 @@ mod tests {
             [BindTarget::Tcp { host, port }] => {
                 assert_eq!(host.as_ref(), "127.0.0.9");
                 assert_eq!(*port, 48_123);
-            }
+            },
             _ => panic!("expected one TCP bind"),
         }
         assert!(!extracted.access_log);

@@ -3,19 +3,16 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use pyo3_async_runtimes::TaskLocals;
-use tokio::sync::{
-    Mutex as AsyncMutex,
-    mpsc::{self, error::TryRecvError},
-};
-
-use crate::buffered_events::BufferedState;
-use crate::error::{AsgiError, IntoPyResult, into_pyerr};
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
     ReceiveStateMachine, WebSocketInboundEvent, WebSocketOutboundEvent, buffered_or_send,
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_awaitable,
     receive_or_await,
 };
+use crate::buffered_events::BufferedState;
+use crate::error::{AsgiError, IntoPyResult, into_pyerr};
 
 #[derive(Clone)]
 pub struct WebSocketSendState {
@@ -61,7 +58,7 @@ impl WebSocketSendState {
                 drop(inner);
                 self.shared.notify_ready();
                 WebSocketSendDisposition::Buffered
-            }
+            },
             WebSocketSendMode::Streaming => WebSocketSendDisposition::Forward(event),
             WebSocketSendMode::Closed => WebSocketSendDisposition::Closed,
         }
@@ -100,7 +97,7 @@ impl WebSocketSendBuffer {
                     inner.state = WebSocketSendMode::Streaming;
                 }
                 Some(event)
-            }
+            },
             WebSocketSendMode::Streaming | WebSocketSendMode::Closed => None,
         };
         drop(inner);
@@ -150,11 +147,11 @@ impl ReceiveStateMachine for WebSocketReceiveState {
             WebSocketReceivePhase::PendingConnect => {
                 self.phase = WebSocketReceivePhase::Open;
                 return Some(WebSocketInboundEvent::Connect);
-            }
+            },
             WebSocketReceivePhase::Disconnected => {
                 return Some(self.terminal_disconnect());
-            }
-            WebSocketReceivePhase::Open => {}
+            },
+            WebSocketReceivePhase::Open => {},
         }
 
         match self.rx.try_recv() {
@@ -233,7 +230,7 @@ impl PyWebSocketSend {
             WebSocketSendDisposition::Buffered => ready_awaitable(py, py.None()),
             WebSocketSendDisposition::Forward(event) => {
                 buffered_or_send(py, &self.locals, Some((self.tx.clone(), event)))
-            }
+            },
             WebSocketSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }
     }

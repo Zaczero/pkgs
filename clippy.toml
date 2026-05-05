@@ -2,4 +2,6 @@ absolute-paths-allowed-crates = ["std", "core", "alloc", "pyo3"]
 absolute-paths-max-segments = 3
 avoid-breaking-exported-api = false
 check-inconsistent-struct-field-initializers = true
+module-items-ordered-within-groupings = "none"
+source-item-ordering = ["module"]
 too-many-arguments-threshold = 10

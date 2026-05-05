@@ -1,5 +1,4 @@
 use std::io;
-
 #[cfg(target_os = "linux")]
 use std::io::{Error, ErrorKind};
 
@@ -32,9 +31,9 @@ pub async fn sendfile_all_tcp(
                     ErrorKind::WriteZero,
                     "sendfile wrote zero bytes",
                 ));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+            },
+            Ok(_) => {},
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {},
             Err(err) => return Err(err.into()),
         }
     }

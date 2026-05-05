@@ -1,3 +1,9 @@
+mod driver;
+mod flush;
+mod header_encode;
+mod ingress;
+mod stream_state;
+
 use std::io;
 
 use smallvec::SmallVec;
@@ -7,18 +13,13 @@ use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
 #[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
 
+pub use self::driver::{ConnectionHandle, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::frame::{ErrorCode, PeerSettings, StreamId, WindowIncrement};
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 use crate::sendfile::sendfile_all_tcp;
 use crate::smallvec_deque::SmallVecDeque;
-
-mod driver;
-mod flush;
-mod header_encode;
-mod ingress;
-mod stream_state;
 
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 const ENCODED_HEADER_BLOCK_CAPACITY: usize = 1024;
@@ -134,5 +135,3 @@ pub enum WriterCommand {
         close: bool,
     },
 }
-
-pub use self::driver::{ConnectionHandle, WriterState, init_writer};

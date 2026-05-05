@@ -4,6 +4,8 @@ use pyo3::prelude::*;
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, spawn};
 
+use super::RequestedSubprotocols;
+use super::session::WebSocketContext;
 use crate::bridge::{
     ASGI_QUEUE_CAPACITY, PyWebSocketReceive, PyWebSocketSend, WebSocketInboundEvent,
     WebSocketOutboundEvent, WebSocketSendBuffer, WebSocketSendState,
@@ -11,8 +13,6 @@ use crate::bridge::{
 use crate::error::H2CornError;
 use crate::http::scope::build_websocket_scope;
 use crate::runtime::{RequestAdmission, start_app_call};
-
-use super::{RequestedSubprotocols, session::WebSocketContext};
 
 pub(super) struct RunningWebSocketApp {
     pub(super) recv_tx: mpsc::Sender<WebSocketInboundEvent>,
@@ -22,6 +22,13 @@ pub(super) struct RunningWebSocketApp {
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
     pub(super) app_task: JoinHandle<Result<(), H2CornError>>,
     pub(super) _admission: RequestAdmission,
+}
+
+impl RunningWebSocketApp {
+    pub(super) fn close_outbound(&mut self) {
+        self.send_state.close();
+        self.send_rx.close();
+    }
 }
 
 pub(super) fn start_websocket_app(
@@ -66,11 +73,4 @@ pub(super) fn start_websocket_app(
         app_task,
         _admission: admission,
     })
-}
-
-impl RunningWebSocketApp {
-    pub(super) fn close_outbound(&mut self) {
-        self.send_state.close();
-        self.send_rx.close();
-    }
 }

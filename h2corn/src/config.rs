@@ -1,12 +1,12 @@
-use crate::frame::DEFAULT_MAX_FRAME_SIZE;
-use crate::proxy::{ProxyProtocolMode, TrustedPeer};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::time::Duration;
+
 use bytes::Bytes;
 use parking_lot::RwLock;
-use std::{
-    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
-    time::Duration,
-};
 use tokio_rustls::TlsAcceptor;
+
+use crate::frame::DEFAULT_MAX_FRAME_SIZE;
+use crate::proxy::{ProxyProtocolMode, TrustedPeer};
 
 pub const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 16 << 20;
 pub const INITIAL_STREAM_WINDOW_SIZE: u32 = 16 << 20;

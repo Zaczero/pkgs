@@ -1,10 +1,7 @@
-use std::{
-    fmt,
-    mem::size_of,
-    num::NonZeroU32,
-    ops::{BitOr, BitOrAssign},
-    slice,
-};
+use std::mem::size_of;
+use std::num::NonZeroU32;
+use std::ops::{BitOr, BitOrAssign};
+use std::{fmt, slice};
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -13,24 +10,22 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::error::{ErrorExt, H2CornError, H2Error};
 
-pub type StreamId = NonZeroU32;
-pub type WindowIncrement = NonZeroU32;
-
 pub const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
 pub const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 0x4000;
 pub const MAX_FRAME_SIZE_UPPER_BOUND: usize = 0x00FF_FFFF;
 pub const MAX_FLOW_CONTROL_WINDOW: u32 = (1 << 31) - 1;
 pub const CONNECTION_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-pub const STREAM_ID_MASK: u32 = 0x7fff_ffff;
+pub const STREAM_ID_MASK: u32 = 0x7FFF_FFFF;
 pub const FRAME_HEADER_LEN: usize = 9;
 pub const GOAWAY_FIXED_PAYLOAD_LEN: usize = 8;
 pub const GOAWAY_FRAME_PREFIX_LEN: usize = FRAME_HEADER_LEN + GOAWAY_FIXED_PAYLOAD_LEN;
+pub const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
 
-const fn decode_u24(bytes: [u8; 3]) -> usize {
-    let [b0, b1, b2] = bytes;
-    ((b0 as usize) << 16) | ((b1 as usize) << 8) | (b2 as usize)
-}
+const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
+
+pub type StreamId = NonZeroU32;
+pub type WindowIncrement = NonZeroU32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
@@ -169,10 +164,6 @@ struct WireSetting {
     value: U32,
 }
 
-pub const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
-
-const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settings {
     pub header_table_size: Option<u32>,
@@ -216,21 +207,21 @@ impl Settings {
                     return H2Error::SettingsEnablePushInvalid.err();
                 }
                 self.enable_push = Some(value != 0);
-            }
+            },
             SettingId::MAX_CONCURRENT_STREAMS => self.max_concurrent_streams = Some(value),
             SettingId::INITIAL_WINDOW_SIZE => self.initial_window_size = Some(value),
             SettingId::MAX_FRAME_SIZE => {
                 self.max_frame_size =
                     Some(NonZeroU32::new(value).ok_or(H2Error::SettingsMaxFrameSizeInvalid)?);
-            }
+            },
             SettingId::MAX_HEADER_LIST_SIZE => self.max_header_list_size = Some(value),
             SettingId::ENABLE_CONNECT_PROTOCOL => {
                 if value > 1 {
                     return H2Error::SettingsEnableConnectProtocolInvalid.err();
                 }
                 self.enable_connect_protocol = Some(value != 0);
-            }
-            _ => {}
+            },
+            _ => {},
         }
         Ok(())
     }
@@ -371,6 +362,11 @@ where
     }
 }
 
+const fn decode_u24(bytes: [u8; 3]) -> usize {
+    let [b0, b1, b2] = bytes;
+    ((b0 as usize) << 16) | ((b1 as usize) << 8) | (b2 as usize)
+}
+
 pub fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
     debug_assert!(header.len <= MAX_FRAME_SIZE_UPPER_BOUND);
     let len = (header.len as u32).to_be_bytes();
@@ -493,8 +489,9 @@ pub fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornErro
     }
 
     // SAFETY: the length check above guarantees `payload` is an exact multiple of
-    // `size_of::<WireSetting>()`, `WireSetting` is `Unaligned`, and its zerocopy traits guarantee
-    // the byte representation can be viewed as `WireSetting` values.
+    // `size_of::<WireSetting>()`, `WireSetting` is `Unaligned`, and its zerocopy
+    // traits guarantee the byte representation can be viewed as `WireSetting`
+    // values.
     let entries = unsafe {
         slice::from_raw_parts(
             payload.as_ptr().cast::<WireSetting>(),
@@ -557,14 +554,11 @@ mod tests {
         let mut frame = BytesMut::new();
         append_settings(&mut frame, settings);
 
-        assert_eq!(
-            parse_wire_settings(&frame[FRAME_HEADER_LEN..]),
-            vec![
-                (SettingId::HEADER_TABLE_SIZE.bits(), u32::MAX),
-                (SettingId::MAX_CONCURRENT_STREAMS.bits(), u32::MAX),
-                (SettingId::MAX_HEADER_LIST_SIZE.bits(), u32::MAX),
-            ],
-        );
+        assert_eq!(parse_wire_settings(&frame[FRAME_HEADER_LEN..]), vec![
+            (SettingId::HEADER_TABLE_SIZE.bits(), u32::MAX),
+            (SettingId::MAX_CONCURRENT_STREAMS.bits(), u32::MAX),
+            (SettingId::MAX_HEADER_LIST_SIZE.bits(), u32::MAX),
+        ],);
     }
 
     #[test]
@@ -581,8 +575,8 @@ mod tests {
     #[test]
     fn append_goaway_writes_unknown_error_code() {
         let mut frame = BytesMut::new();
-        append_goaway(&mut frame, None, ErrorCode::new(0xfeed_beef), b"debug");
-        assert_eq!(&frame[13..17], &0xfeed_beef_u32.to_be_bytes());
+        append_goaway(&mut frame, None, ErrorCode::new(0xFEED_BEEF), b"debug");
+        assert_eq!(&frame[13..17], &0xFEED_BEEF_u32.to_be_bytes());
     }
 
     #[test]

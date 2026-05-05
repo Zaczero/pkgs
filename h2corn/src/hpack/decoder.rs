@@ -3,9 +3,32 @@ use std::str::Utf8Error;
 use bytes::{Buf, Bytes, BytesMut};
 use http::{header, method, status};
 
+use super::header::OwnedName;
+use super::{Header, huffman, static_table};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
 
-use super::{Header, header::OwnedName, huffman, static_table};
+const REPRESENTATION_TABLE: [Option<Representation>; 256] = {
+    let mut table = [None; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let value = byte as u8;
+        table[byte] = if value & 0b1000_0000 == 0b1000_0000 {
+            Some(Representation::Indexed)
+        } else if value & 0b0100_0000 == 0b0100_0000 {
+            Some(Representation::LiteralWithIndexing)
+        } else if value & 0b1111_0000 == 0 {
+            Some(Representation::LiteralWithoutIndexing)
+        } else if value & 0b1111_0000 == 0b0001_0000 {
+            Some(Representation::LiteralNeverIndexed)
+        } else if value & 0b1110_0000 == 0b0010_0000 {
+            Some(Representation::SizeUpdate)
+        } else {
+            None
+        };
+        byte += 1;
+    }
+    table
+};
 
 #[derive(Debug)]
 pub struct Decoder {
@@ -35,6 +58,7 @@ pub enum NeedMore {
     StringUnderflow,
 }
 
+#[derive(Clone, Copy)]
 enum Representation {
     Indexed,
     LiteralWithIndexing,
@@ -42,35 +66,6 @@ enum Representation {
     LiteralNeverIndexed,
     SizeUpdate,
 }
-
-const INVALID_REPRESENTATION: u8 = 0;
-const INDEXED_REPRESENTATION: u8 = 1;
-const LITERAL_WITH_INDEXING_REPRESENTATION: u8 = 2;
-const LITERAL_WITHOUT_INDEXING_REPRESENTATION: u8 = 3;
-const LITERAL_NEVER_INDEXED_REPRESENTATION: u8 = 4;
-const SIZE_UPDATE_REPRESENTATION: u8 = 5;
-const REPRESENTATION_TABLE: [u8; 256] = {
-    let mut table = [INVALID_REPRESENTATION; 256];
-    let mut byte = 0;
-    while byte < 256 {
-        let value = byte as u8;
-        table[byte] = if value & 0b1000_0000 == 0b1000_0000 {
-            INDEXED_REPRESENTATION
-        } else if value & 0b0100_0000 == 0b0100_0000 {
-            LITERAL_WITH_INDEXING_REPRESENTATION
-        } else if value & 0b1111_0000 == 0 {
-            LITERAL_WITHOUT_INDEXING_REPRESENTATION
-        } else if value & 0b1111_0000 == 0b0001_0000 {
-            LITERAL_NEVER_INDEXED_REPRESENTATION
-        } else if value & 0b1110_0000 == 0b0010_0000 {
-            SIZE_UPDATE_REPRESENTATION
-        } else {
-            INVALID_REPRESENTATION
-        };
-        byte += 1;
-    }
-    table
-};
 
 #[derive(Debug)]
 struct Table {
@@ -144,23 +139,23 @@ impl Decoder {
             Representation::Indexed => {
                 *can_resize = false;
                 f(self.decode_indexed(src).map_err(E::from)?)?;
-            }
+            },
             Representation::LiteralWithIndexing => {
                 *can_resize = false;
                 let entry = self.decode_literal::<6>(src).map_err(E::from)?;
                 self.table.insert(entry.clone());
                 f(entry)?;
-            }
+            },
             Representation::LiteralWithoutIndexing | Representation::LiteralNeverIndexed => {
                 *can_resize = false;
                 f(self.decode_literal::<4>(src).map_err(E::from)?)?;
-            }
+            },
             Representation::SizeUpdate => {
                 if !*can_resize {
                     return Err(E::from(DecoderError::InvalidMaxDynamicSize));
                 }
                 self.process_size_update(src).map_err(E::from)?;
-            }
+            },
         }
 
         Ok(true)
@@ -256,50 +251,8 @@ impl Default for Decoder {
 
 impl Representation {
     fn load(byte: u8) -> Result<Self, DecoderError> {
-        match REPRESENTATION_TABLE[usize::from(byte)] {
-            INDEXED_REPRESENTATION => Ok(Self::Indexed),
-            LITERAL_WITH_INDEXING_REPRESENTATION => Ok(Self::LiteralWithIndexing),
-            LITERAL_WITHOUT_INDEXING_REPRESENTATION => Ok(Self::LiteralWithoutIndexing),
-            LITERAL_NEVER_INDEXED_REPRESENTATION => Ok(Self::LiteralNeverIndexed),
-            SIZE_UPDATE_REPRESENTATION => Ok(Self::SizeUpdate),
-            _ => Err(DecoderError::InvalidRepresentation),
-        }
+        REPRESENTATION_TABLE[usize::from(byte)].ok_or(DecoderError::InvalidRepresentation)
     }
-}
-
-fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, DecoderError> {
-    const MAX_BYTES: usize = 5;
-    const VARINT_MASK: u8 = 0b0111_1111;
-    const VARINT_FLAG: u8 = 0b1000_0000;
-
-    debug_assert!((1..=8).contains(&PREFIX_SIZE));
-    if !buf.has_remaining() {
-        return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
-    }
-
-    let mask = u8::MAX >> (u8::BITS - u32::from(PREFIX_SIZE));
-    let mut value = usize::from(buf.get_u8() & mask);
-    if value < usize::from(mask) {
-        return Ok(value);
-    }
-
-    let mut bytes = 1_usize;
-    let mut shift = 0_u32;
-
-    while buf.has_remaining() {
-        let byte = buf.get_u8();
-        bytes += 1;
-        value += usize::from(byte & VARINT_MASK) << shift;
-        if byte & VARINT_FLAG == 0 {
-            return Ok(value);
-        }
-        if bytes == MAX_BYTES {
-            return Err(DecoderError::IntegerOverflow);
-        }
-        shift += 7;
-    }
-
-    Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow))
 }
 
 impl Table {
@@ -420,6 +373,41 @@ impl From<status::InvalidStatusCode> for DecoderError {
     }
 }
 
+fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, DecoderError> {
+    const MAX_BYTES: usize = 5;
+    const VARINT_MASK: u8 = 0b0111_1111;
+    const VARINT_FLAG: u8 = 0b1000_0000;
+
+    debug_assert!((1..=8).contains(&PREFIX_SIZE));
+    if !buf.has_remaining() {
+        return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
+    }
+
+    let mask = u8::MAX >> (u8::BITS - u32::from(PREFIX_SIZE));
+    let mut value = usize::from(buf.get_u8() & mask);
+    if value < usize::from(mask) {
+        return Ok(value);
+    }
+
+    let mut bytes = 1_usize;
+    let mut shift = 0_u32;
+
+    while buf.has_remaining() {
+        let byte = buf.get_u8();
+        bytes += 1;
+        value += usize::from(byte & VARINT_MASK) << shift;
+        if byte & VARINT_FLAG == 0 {
+            return Ok(value);
+        }
+        if bytes == MAX_BYTES {
+            return Err(DecoderError::IntegerOverflow);
+        }
+        shift += 7;
+    }
+
+    Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -463,7 +451,7 @@ mod test {
             Header::Field { name, value } => {
                 assert_eq!(name.as_str(), "x-h2corn");
                 assert_eq!(value.as_ref(), b"value");
-            }
+            },
             _ => panic!("unexpected header kind"),
         }
     }
@@ -482,7 +470,7 @@ mod test {
             Header::Field { name, value } => {
                 assert_eq!(name.as_str(), "host");
                 assert_eq!(value.as_ref(), b"example.com");
-            }
+            },
             _ => panic!("unexpected header kind"),
         }
     }

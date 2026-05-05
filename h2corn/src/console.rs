@@ -1,11 +1,9 @@
-use std::{
-    fmt::{self, Write as _},
-    io::{self, Write},
-    num::NonZeroU16,
-    str,
-    sync::LazyLock,
-    time::{Duration, Instant},
-};
+use std::fmt::{self, Write as _};
+use std::io::{self, Write};
+use std::num::NonZeroU16;
+use std::str;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
 use http::Method;
@@ -343,7 +341,7 @@ pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
                 entry.status,
                 io_summary,
             );
-        }
+        },
         AccessLogMode::Styled(choice) => {
             let mut stderr = AutoStream::new(io::stderr(), choice).lock();
             emit_styled_access_log(
@@ -355,7 +353,7 @@ pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
                 status_style(entry.status),
                 io_summary,
             );
-        }
+        },
     }
 }
 
@@ -374,7 +372,7 @@ pub fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
                 entry.close_code,
                 io_summary,
             );
-        }
+        },
         AccessLogMode::Styled(choice) => {
             let mut stderr = AutoStream::new(io::stderr(), choice).lock();
             emit_styled_access_log(
@@ -386,7 +384,7 @@ pub fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
                 websocket_close_style(entry.close_code),
                 io_summary,
             );
-        }
+        },
     }
 }
 
@@ -493,10 +491,10 @@ fn write_request_summary_to(
         RequestSummaryKind::Http => {
             out.write_str(request.method.as_str())?;
             out.write_char(' ')?;
-        }
+        },
         RequestSummaryKind::WebSocket => {
             out.write_str("WEBSOCKET ")?;
-        }
+        },
     }
     out.write_str(request.path_and_query.as_str())?;
     out.write_char(' ')?;
@@ -596,7 +594,7 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &s
         match precision {
             1 => {
                 out.write_char(char::from(b'0' + fractional as u8))?;
-            }
+            },
             2 => {
                 let tens = (fractional / 10) as u8;
                 let ones = (fractional % 10) as u8;
@@ -604,10 +602,10 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &s
                 if ones != 0 {
                     out.write_char(char::from(b'0' + ones))?;
                 }
-            }
+            },
             _ => {
                 unreachable!("precision is derived from the unit threshold")
-            }
+            },
         }
     }
     out.write_str(unit)
@@ -649,6 +647,11 @@ const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    use std::time::Duration;
+
+    use http::Method;
+
     use super::{
         AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client, write_bytes_to,
         write_duration_to, write_io_summary_to,
@@ -656,9 +659,6 @@ mod tests {
     use crate::hpack::BytesStr;
     use crate::http::types::HttpVersion;
     use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
-    use http::Method;
-    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-    use std::time::Duration;
 
     fn render(f: impl FnOnce(&mut String)) -> String {
         let mut out = String::new();

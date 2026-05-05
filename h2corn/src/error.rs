@@ -1,9 +1,8 @@
-use std::{fmt, io, path::Path};
+use std::path::Path;
+use std::{fmt, io};
 
-use pyo3::{
-    PyErr, PyResult,
-    exceptions::{PyOSError, PyRuntimeError, PyValueError},
-};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
+use pyo3::{PyErr, PyResult};
 use thiserror::Error;
 use tokio::task::JoinError;
 
@@ -585,7 +584,7 @@ impl WebSocketError {
             | Self::UnexpectedEvent { .. } => FailureDomain::AppContract,
             Self::CompressionFailed | Self::ReceiveChannelClosed { .. } => {
                 FailureDomain::InternalInvariant
-            }
+            },
         }
     }
 }
@@ -682,6 +681,16 @@ pub trait ErrorExt: Into<H2CornError> + Sized {
 
 impl<E> ErrorExt for E where E: Into<H2CornError> {}
 
+pub trait IntoPyResult<T> {
+    fn into_pyresult(self) -> PyResult<T>;
+}
+
+impl<T> IntoPyResult<T> for Result<T, H2CornError> {
+    fn into_pyresult(self) -> PyResult<T> {
+        self.map_err(into_pyerr)
+    }
+}
+
 pub fn into_pyerr<E>(err: E) -> PyErr
 where
     E: Into<H2CornError>,
@@ -691,17 +700,7 @@ where
         H2CornError::Config(err) => PyValueError::new_err(err.to_string()),
         H2CornError::Asgi(AsgiError::SendAfterClose) => {
             PyOSError::new_err(AsgiError::SendAfterClose.to_string())
-        }
+        },
         other => PyRuntimeError::new_err(other.to_string()),
-    }
-}
-
-pub trait IntoPyResult<T> {
-    fn into_pyresult(self) -> PyResult<T>;
-}
-
-impl<T> IntoPyResult<T> for Result<T, H2CornError> {
-    fn into_pyresult(self) -> PyResult<T> {
-        self.map_err(into_pyerr)
     }
 }

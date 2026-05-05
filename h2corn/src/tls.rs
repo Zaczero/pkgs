@@ -1,15 +1,14 @@
-use std::{error::Error, io, path::Path, sync::Arc};
+use std::error::Error;
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
 
-use rustls::{
-    RootCertStore, ServerConfig as RustlsServerConfig,
-    crypto::aws_lc_rs::default_provider,
-    server::WebPkiClientVerifier,
-    version::{TLS12, TLS13},
-};
-use rustls_pki_types::{
-    CertificateDer, PrivateKeyDer,
-    pem::{Error as PemError, PemObject},
-};
+use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::server::WebPkiClientVerifier;
+use rustls::version::{TLS12, TLS13};
+use rustls::{RootCertStore, ServerConfig as RustlsServerConfig};
+use rustls_pki_types::pem::{Error as PemError, PemObject};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::TlsAcceptor;
 
 use crate::config::{ClientCertMode, TlsConfig};
@@ -48,7 +47,7 @@ pub fn build_tls_config(
                 builder.build()
             }
             .map_err(tls_io_error)?
-        }
+        },
     };
 
     let mut config = builder

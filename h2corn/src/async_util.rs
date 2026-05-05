@@ -1,4 +1,5 @@
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::error::{ErrorExt, H2CornError};
 
@@ -45,9 +46,9 @@ pub async fn send_if_open<T>(tx: &mpsc::Sender<T>, value: T) -> bool {
 
 pub async fn send_best_effort<T>(tx: &mpsc::Sender<T>, value: T) {
     match try_push(tx, value) {
-        TryPush::Sent | TryPush::Closed(_) => {}
+        TryPush::Sent | TryPush::Closed(_) => {},
         TryPush::Full(value) => {
             let _ = tx.send(value).await;
-        }
+        },
     }
 }

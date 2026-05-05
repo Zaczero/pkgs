@@ -1,8 +1,8 @@
+use std::fs::File as SyncFile;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 use rustix::fs::{Advice, fadvise};
-use std::fs::File as SyncFile;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::task::spawn_blocking;

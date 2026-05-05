@@ -193,12 +193,9 @@ mod tests {
             .expect("websocket request is accepted");
 
         assert_eq!(plan.route, RequestRoute::WebSocket("meta"));
-        assert_eq!(
-            plan.input,
-            RequestInputPlan::Stream {
-                count_body_bytes: false
-            }
-        );
+        assert_eq!(plan.input, RequestInputPlan::Stream {
+            count_body_bytes: false
+        });
     }
 
     #[test]

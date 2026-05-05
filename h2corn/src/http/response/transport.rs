@@ -42,24 +42,24 @@ pub trait HttpResponseTransport {
             match action {
                 ResponseAction::Final { start, body } => {
                     self.send_final_response(start, body).await?;
-                }
+                },
                 ResponseAction::Start { start } => {
                     self.start_streaming_response(start).await?;
-                }
+                },
                 ResponseAction::Body(body) => self.send_streaming_body(body).await?,
                 ResponseAction::File { file, len } => {
                     self.send_streaming_file(file, len).await?;
-                }
+                },
                 ResponseAction::Finish => self.finish_streaming_response().await?,
                 ResponseAction::FinishWithTrailers(trailers) => {
                     self.finish_streaming_with_trailers(trailers).await?;
-                }
+                },
                 ResponseAction::InternalError => {
                     self.send_internal_error_response().await?;
-                }
+                },
                 ResponseAction::AbortIncomplete => {
                     self.abort_incomplete_response().await?;
-                }
+                },
             }
         }
         Ok(())

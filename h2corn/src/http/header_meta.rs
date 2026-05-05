@@ -25,14 +25,6 @@ pub struct WebSocketHandshakeMeta {
     pub(crate) version_supported: bool,
 }
 
-fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
-    value.len() == WEBSOCKET_KEY_LEN
-        && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
-        && value[..WEBSOCKET_KEY_LEN - 2]
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RequestHeaderMeta {
     pub(crate) accepts_trailers: bool,
@@ -52,25 +44,25 @@ impl RequestHeaderMeta {
         match known_name {
             KnownRequestHeaderName::Forwarded => {
                 self.proxy_headers.forwarded = Some(index);
-            }
+            },
             KnownRequestHeaderName::XForwardedFor => {
                 self.proxy_headers.x_forwarded_for = Some(index);
-            }
+            },
             KnownRequestHeaderName::XForwardedProto => {
                 self.proxy_headers.x_forwarded_proto = Some(index);
-            }
+            },
             KnownRequestHeaderName::XForwardedHost => {
                 self.proxy_headers.x_forwarded_host = Some(index);
-            }
+            },
             KnownRequestHeaderName::XForwardedPort => {
                 self.proxy_headers.x_forwarded_port = Some(index);
-            }
+            },
             KnownRequestHeaderName::XForwardedPrefix => {
                 self.proxy_headers.x_forwarded_prefix = Some(index);
-            }
+            },
             KnownRequestHeaderName::SecWebSocketVersion => {
                 self.websocket.version_supported |= value_bytes == WEBSOCKET_VERSION;
-            }
+            },
             KnownRequestHeaderName::SecWebSocketKey => {
                 if self.websocket.key.is_some() {
                     self.websocket.key_duplicate = true;
@@ -79,17 +71,25 @@ impl RequestHeaderMeta {
                 {
                     self.websocket.key = Some(key);
                 }
-            }
+            },
             KnownRequestHeaderName::SecWebSocketProtocol => {
                 push_requested_subprotocols(value, &mut self.websocket.request);
-            }
+            },
             KnownRequestHeaderName::SecWebSocketExtensions => {
                 self.websocket.request.per_message_deflate |=
                     websocket_requested_permessage_deflate(value_bytes);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
+}
+
+fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
+    value.len() == WEBSOCKET_KEY_LEN
+        && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
+        && value[..WEBSOCKET_KEY_LEN - 2]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
 }
 
 fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {

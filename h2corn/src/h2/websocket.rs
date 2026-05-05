@@ -3,39 +3,22 @@ use std::num::NonZeroUsize;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
+use super::ConnectionHandle;
+use super::http::send_final_response;
 use crate::bridge::PayloadBytes;
 use crate::error::H2CornError;
 use crate::frame::{ErrorCode, StreamId};
 use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::StreamInput;
-use crate::websocket::{
-    WebSocketCodec,
-    session::{
-        AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, FrameFlushMode,
-        TransportRead, WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers,
-        run_websocket, take_pending_close_frame,
-    },
+use crate::websocket::WebSocketCodec;
+use crate::websocket::session::{
+    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, FrameFlushMode, TransportRead,
+    WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers, run_websocket,
+    take_pending_close_frame,
 };
 
-use super::{ConnectionHandle, http::send_final_response};
-
 const INITIAL_FRAME_BUF_CAPACITY: usize = 256;
-
-pub(super) async fn handle_request(
-    context: WebSocketContext,
-    stream_id: StreamId,
-    stream_rx: mpsc::Receiver<StreamInput>,
-    connection: ConnectionHandle,
-) -> Result<(), H2CornError> {
-    let mut transport = H2WebSocketTransport {
-        connection,
-        stream_id,
-        stream_rx,
-        frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
-    };
-    run_websocket(&mut transport, context).await
-}
 
 struct H2WebSocketTransport {
     connection: ConnectionHandle,
@@ -137,7 +120,7 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             Some(StreamInput::Data(data)) => {
                 codec.push_segment(data);
                 Ok(TransportRead::Progress)
-            }
+            },
             Some(StreamInput::EndStream) => Ok(TransportRead::PeerGone),
             Some(StreamInput::Reset(code)) => Ok(TransportRead::PeerReset {
                 reason: format!("stream reset: {code}").into(),
@@ -160,7 +143,7 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             return Ok(());
         }
 
-        assert!(state.close_state != CloseState::CloseQueued);
+        assert_ne!(state.close_state, CloseState::CloseQueued);
         if state.close_state == CloseState::Open {
             let _ = self
                 .connection
@@ -169,4 +152,19 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
         }
         Ok(())
     }
+}
+
+pub(super) async fn handle_request(
+    context: WebSocketContext,
+    stream_id: StreamId,
+    stream_rx: mpsc::Receiver<StreamInput>,
+    connection: ConnectionHandle,
+) -> Result<(), H2CornError> {
+    let mut transport = H2WebSocketTransport {
+        connection,
+        stream_id,
+        stream_rx,
+        frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
+    };
+    run_websocket(&mut transport, context).await
 }

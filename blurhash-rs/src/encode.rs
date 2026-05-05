@@ -1,11 +1,9 @@
 use std::hint::unlikely;
 use std::num::NonZeroUsize;
 
-use crate::base83;
 use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, row_vectors};
-use crate::cos;
 use crate::errors::Error;
-use crate::srgb;
+use crate::{base83, cos, srgb};
 
 struct ComponentGrid {
     x_components: usize,

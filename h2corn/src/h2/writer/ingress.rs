@@ -1,19 +1,14 @@
-use std::{
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
+use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::frame::StreamId;
 use crate::h2::{StreamMap, new_stream_map};
 use crate::smallvec_deque::SmallVecDeque;
-
-use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 
 #[derive(Debug)]
 pub(super) struct QueuedCommandBatch {
@@ -73,7 +68,8 @@ impl WriterIngressQueue {
             if stream.commands.is_empty() {
                 continue;
             }
-            // SAFETY: ready_streams only stores ids enqueued from validated StreamId values.
+            // SAFETY: ready_streams only stores ids enqueued from validated StreamId
+            // values.
             let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
             drained.push((stream_id, stream.commands));
         }
@@ -165,13 +161,10 @@ impl WriterIngress {
             return H2Error::ConnectionWriterClosed.err();
         }
 
-        queue.enqueue_batch(
-            stream_id,
-            QueuedCommandBatch {
-                commands,
-                _permit: permit,
-            },
-        );
+        queue.enqueue_batch(stream_id, QueuedCommandBatch {
+            commands,
+            _permit: permit,
+        });
         self.has_pending.store(true, Ordering::Release);
         drop(queue);
         self.notify.notify_one();

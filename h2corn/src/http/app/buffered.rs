@@ -43,7 +43,7 @@ impl HttpSendState {
                 drop(inner);
                 self.shared.notify_ready();
                 None
-            }
+            },
             HttpSendMode::Streaming { tx } => Some((tx.clone(), event)),
         }
     }
@@ -105,7 +105,7 @@ mod tests {
             HttpOutboundEvent::Body { body, more_body } => {
                 assert_eq!(body.as_ref(), expected);
                 assert!(more_body);
-            }
+            },
             other => panic!("expected buffered HTTP body event, got {other:?}"),
         }
     }

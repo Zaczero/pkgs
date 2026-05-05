@@ -1,11 +1,8 @@
 use bytes::{Bytes, BytesMut};
 
+use super::huffman;
+use super::static_table::{self, StaticFieldEntry};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
-
-use super::{
-    huffman,
-    static_table::{self, StaticFieldEntry},
-};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -273,7 +270,7 @@ fn encode_literal(name: LiteralName<'_>, value: &[u8], mode: LiteralMode, dst: &
         LiteralName::Literal(name) => {
             dst.extend_from_slice(&[prefix_mask]);
             encode_string(name, dst);
-        }
+        },
     }
 
     encode_string(value, dst);
@@ -312,7 +309,7 @@ fn encode_int(value: usize, prefix: u8, mask: u8, dst: &mut BytesMut) {
     dst.extend_from_slice(&[(max_prefix as u8) | mask]);
     let mut remaining = value - max_prefix;
     while remaining >= 128 {
-        dst.extend_from_slice(&[((remaining & 0x7f) as u8) | 0x80]);
+        dst.extend_from_slice(&[((remaining & 0x7F) as u8) | 0x80]);
         remaining >>= 7;
     }
     dst.extend_from_slice(&[remaining as u8]);
@@ -336,7 +333,7 @@ mod test {
         dst.clear();
         encoder.begin_block(&mut dst);
         encoder.encode_field_bytes(b"x-h2corn-test", b"value", &mut dst);
-        assert_eq!(&dst[..], &[0xbe]);
+        assert_eq!(&dst[..], &[0xBE]);
     }
 
     #[test]
@@ -346,12 +343,12 @@ mod test {
 
         encoder.begin_block(&mut dst);
         encoder.encode_field_bytes(b"content-length", b"7", &mut dst);
-        assert_eq!(&dst[..], &[0x0f, 13, 1, b'7']);
+        assert_eq!(&dst[..], &[0x0F, 13, 1, b'7']);
 
         dst.clear();
         encoder.begin_block(&mut dst);
         encoder.encode_field_bytes(b"content-length", b"7", &mut dst);
-        assert_eq!(&dst[..], &[0x0f, 13, 1, b'7']);
+        assert_eq!(&dst[..], &[0x0F, 13, 1, b'7']);
     }
 
     #[test]

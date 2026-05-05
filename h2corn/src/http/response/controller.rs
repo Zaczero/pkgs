@@ -3,11 +3,8 @@ use std::mem;
 use tokio::fs::File;
 
 use super::actions;
-use crate::{
-    bridge,
-    error::{self, ErrorExt},
-    http,
-};
+use crate::error::{self, ErrorExt};
+use crate::{bridge, http};
 
 #[derive(Debug)]
 enum ResponseState {
@@ -61,37 +58,6 @@ pub struct ResponseController {
     state: ResponseState,
 }
 
-fn wait_for_trailers(
-    actions: &mut actions::ResponseActions,
-    started: &mut StartedResponse,
-) -> ResponseState {
-    actions.push(started.take_start_action());
-    ResponseState::WaitingForTrailers {
-        buffered: http::types::ResponseHeaders::new(),
-    }
-}
-
-fn complete_response(
-    actions: &mut actions::ResponseActions,
-    started: &mut StartedResponse,
-    body: actions::FinalResponseBody,
-) -> ResponseState {
-    actions.push(started.take_final_action(body));
-    ResponseState::Complete
-}
-
-fn complete_or_wait_for_trailers(
-    actions: &mut actions::ResponseActions,
-    started: &mut StartedResponse,
-    body: actions::FinalResponseBody,
-) -> ResponseState {
-    if started.expects_trailers {
-        wait_for_trailers(actions, started)
-    } else {
-        complete_response(actions, started, body)
-    }
-}
-
 impl ResponseController {
     pub(crate) const fn new(head_only: bool, supports_response_trailers: bool) -> Self {
         Self {
@@ -119,7 +85,7 @@ impl ResponseController {
         match &mut self.state {
             ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
                 started.pathsend_len_hint()
-            }
+            },
             ResponseState::WaitingForStart
             | ResponseState::WaitingForTrailers { .. }
             | ResponseState::Complete
@@ -234,11 +200,11 @@ impl ResponseController {
                 buffered: http::types::ResponseHeaders::new(),
             };
         } else {
-            self.state = complete_response(
-                actions,
-                &mut started,
-                actions::FinalResponseBody::File { file, len },
-            );
+            self.state =
+                complete_response(actions, &mut started, actions::FinalResponseBody::File {
+                    file,
+                    len,
+                });
         }
         Ok(())
     }
@@ -275,7 +241,7 @@ impl ResponseController {
                     Err(err) => Err(err),
                     Ok(()) => error::HttpResponseError::AppReturnedWithoutStartingResponse.err(),
                 }
-            }
+            },
             (ResponseState::UnaryBufferable(started), Ok(()))
                 if !started.expects_trailers
                     && !started.saw_body
@@ -283,7 +249,7 @@ impl ResponseController {
             {
                 actions.push(started.into_final_action(actions::FinalResponseBody::Empty));
                 Ok(())
-            }
+            },
             (ResponseState::UnaryBufferable(started), Ok(()))
                 if self.head_only && !started.expects_trailers && started.saw_body =>
             {
@@ -294,7 +260,7 @@ impl ResponseController {
                     }),
                 );
                 Ok(())
-            }
+            },
             (
                 ResponseState::UnaryBufferable(_)
                 | ResponseState::StartedStreaming(_)
@@ -303,12 +269,12 @@ impl ResponseController {
             ) => {
                 actions.push(actions::ResponseAction::AbortIncomplete);
                 error::HttpResponseError::AppReturnedWithoutCompletingResponse.err()
-            }
+            },
             (ResponseState::Complete, Err(err)) => Err(err),
             (_, Err(err)) => {
                 actions.push(actions::ResponseAction::AbortIncomplete);
                 Err(err)
-            }
+            },
             _ => Ok(()),
         }
     }
@@ -320,12 +286,43 @@ impl ResponseController {
         match mem::replace(&mut self.state, ResponseState::Aborted) {
             ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
                 Ok(started)
-            }
+            },
             state => {
                 self.state = state;
                 err.err()
-            }
+            },
         }
+    }
+}
+
+fn wait_for_trailers(
+    actions: &mut actions::ResponseActions,
+    started: &mut StartedResponse,
+) -> ResponseState {
+    actions.push(started.take_start_action());
+    ResponseState::WaitingForTrailers {
+        buffered: http::types::ResponseHeaders::new(),
+    }
+}
+
+fn complete_response(
+    actions: &mut actions::ResponseActions,
+    started: &mut StartedResponse,
+    body: actions::FinalResponseBody,
+) -> ResponseState {
+    actions.push(started.take_final_action(body));
+    ResponseState::Complete
+}
+
+fn complete_or_wait_for_trailers(
+    actions: &mut actions::ResponseActions,
+    started: &mut StartedResponse,
+    body: actions::FinalResponseBody,
+) -> ResponseState {
+    if started.expects_trailers {
+        wait_for_trailers(actions, started)
+    } else {
+        complete_response(actions, started, body)
     }
 }
 
@@ -411,10 +408,10 @@ mod tests {
                 match body {
                     http::response::FinalResponseBody::Bytes(body) => {
                         assert_eq!(body.as_ref(), b"hello");
-                    }
+                    },
                     _ => panic!("expected byte-backed final body"),
                 }
-            }
+            },
             _ => panic!("expected final response action"),
         }
     }
@@ -451,7 +448,7 @@ mod tests {
                 let (status, headers) = start.into_status_headers();
                 assert_eq!(status, 200);
                 assert!(headers.is_empty());
-            }
+            },
             _ => panic!("expected streaming start action"),
         }
         assert!(!controller.is_complete());
@@ -475,7 +472,7 @@ mod tests {
                 assert_eq!(trailers.len(), 1);
                 assert_eq!(trailers[0].0.as_ref(), b"x-finished");
                 assert_eq!(trailers[0].1.as_ref(), b"yes");
-            }
+            },
             _ => panic!("expected finish-with-trailers action"),
         }
     }
@@ -536,10 +533,9 @@ mod tests {
                 error::HttpResponseError::AppReturnedWithoutStartingResponse
             )
         ));
-        assert!(matches!(
-            actions.as_slice(),
-            [http::response::ResponseAction::InternalError]
-        ));
+        assert!(matches!(actions.as_slice(), [
+            http::response::ResponseAction::InternalError
+        ]));
     }
 
     #[test]

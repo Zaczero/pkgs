@@ -1,11 +1,18 @@
-use rand::RngCore;
 use std::cell::UnsafeCell;
 use std::hint;
 use std::hint::{likely, unlikely};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rand::RngCore;
+
 const RAND_BUFFER_SIZE: usize = 8 * 1024; // 8 KiB
+
+static LAST_ZID: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static RAND_BUFFER: UnsafeCell<RandBuffer> = const { UnsafeCell::new(RandBuffer::new()) };
+}
 
 struct RandBuffer {
     buffer: [u8; RAND_BUFFER_SIZE],
@@ -31,17 +38,12 @@ impl RandBuffer {
     }
 }
 
-thread_local! {
-    static RAND_BUFFER: UnsafeCell<RandBuffer> = const { UnsafeCell::new(RandBuffer::new()) };
-}
-
 fn next_rand_u16() -> u16 {
-    // Safety: `RAND_BUFFER` is thread-local, so this `UnsafeCell` is only accessed from the
-    // current thread, and we don't leak references outside this closure.
+    // Safety: `RAND_BUFFER` is thread-local, so this `UnsafeCell` is only accessed
+    // from the current thread, and we don't leak references outside this
+    // closure.
     RAND_BUFFER.with(|cell| unsafe { (*cell.get()).next_u16() })
 }
-
-static LAST_ZID: AtomicU64 = AtomicU64::new(0);
 
 fn time() -> u64 {
     let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
@@ -61,7 +63,7 @@ fn random_start_seq(max_start: u16) -> u16 {
         _ => {
             let range = u32::from(max_start) + 1;
             (u32::from(next_rand_u16()) % range) as u16
-        }
+        },
     }
 }
 
@@ -81,7 +83,7 @@ pub fn reserve_sequences(additional: u16) -> (u64, u16) {
                 _ => {
                     zid_time = zid_time.saturating_add(1);
                     random_start_seq(max_start)
-                }
+                },
             }
         } else {
             random_start_seq(max_start)

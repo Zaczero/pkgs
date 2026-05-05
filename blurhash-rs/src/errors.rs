@@ -16,7 +16,7 @@ impl Error {
             )),
             Self::BlurhashMalformed { index } => {
                 Cow::Owned(format!("Invalid blurhash: malformed at index {index}"))
-            }
+            },
             Self::BlurhashLengthMismatch { expected, got } => Cow::Owned(format!(
                 "Invalid blurhash length (expected {expected}, got {got})"
             )),

@@ -3,12 +3,11 @@ use std::{fmt, ops, str};
 use bytes::Bytes;
 use http::{Method, StatusCode};
 
+use super::{DecoderError, NeedMore};
 use crate::ext::Protocol;
 use crate::header_value::header_value_is_valid;
 use crate::http::header::lowercase_header_name_is_valid;
 use crate::http::types::parse_request_method;
-
-use super::{DecoderError, NeedMore};
 
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -37,10 +36,6 @@ pub enum OwnedName {
 #[derive(Clone, Eq, PartialEq, Hash, Default)]
 pub struct BytesStr(Bytes);
 
-pub fn len(name: &BytesStr, value: &Bytes) -> usize {
-    32 + name.len() + value.len()
-}
-
 impl Header {
     pub fn new(name: Bytes, value: Bytes) -> Result<Self, DecoderError> {
         if name.is_empty() {
@@ -51,27 +46,27 @@ impl Header {
                 b"authority" => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Authority(value))
-                }
+                },
                 b"method" => {
                     let method = parse_request_method(&value)?;
                     Ok(Self::Method(method))
-                }
+                },
                 b"scheme" => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Scheme(value))
-                }
+                },
                 b"path" => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Path(value))
-                }
+                },
                 b"protocol" => {
                     let value = Protocol::try_from(value)?;
                     Ok(Self::Protocol(value))
-                }
+                },
                 b"status" => {
                     let status = StatusCode::from_bytes(&value)?;
                     Ok(Self::Status(status))
-                }
+                },
                 _ => Err(DecoderError::InvalidPseudoheader),
             }
         } else {
@@ -124,7 +119,7 @@ impl OwnedName {
                     return Err(DecoderError::InvalidUtf8);
                 }
                 Ok(Header::Field { name, value })
-            }
+            },
             Self::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
             Self::Method => Ok(Header::Method(parse_request_method(&value)?)),
             Self::Scheme => Ok(Header::Scheme(BytesStr::try_from(value)?)),
@@ -212,4 +207,8 @@ impl fmt::Debug for BytesStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+pub fn len(name: &BytesStr, value: &Bytes) -> usize {
+    32 + name.len() + value.len()
 }

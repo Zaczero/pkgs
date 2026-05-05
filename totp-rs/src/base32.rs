@@ -4,8 +4,7 @@ use crate::errors::Error;
 
 const INVALID: u8 = 0xFF;
 const IGNORE: u8 = 0xFE;
-
-const fn build_decode_lut() -> [u8; 256] {
+const DECODE_LUT: [u8; 256] = {
     let mut lut = [INVALID; 256];
 
     // A-Z / a-z
@@ -33,9 +32,7 @@ const fn build_decode_lut() -> [u8; 256] {
     lut[b'=' as usize] = IGNORE;
 
     lut
-}
-
-const DECODE_LUT: [u8; 256] = build_decode_lut();
+};
 
 pub fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
     let bytes = encoded.as_bytes();

@@ -1,9 +1,6 @@
-use std::{
-    iter,
-    num::{NonZeroU64, NonZeroUsize},
-    str,
-    sync::LazyLock,
-};
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::LazyLock;
+use std::{iter, str};
 
 use bytes::{Buf, Bytes, BytesMut};
 use http::{Method, Uri};
@@ -12,27 +9,24 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
+use super::http::write_empty_response;
+use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, UpgradeRequest};
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
 use crate::frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::hpack::BytesStr;
+use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
+use crate::http::header::{
+    header_contains_token, header_is_single_token, parse_connection_header_tokens,
+    parse_content_length_header,
+};
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::types::{
     HttpVersion, KnownRequestHeaderName, RequestHead, RequestHeaderName, RequestHeaderValue,
     RequestHeaders, RequestTarget as DomainRequestTarget, parse_request_method, status_code,
 };
-use crate::http::{
-    body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState},
-    header::{
-        header_contains_token, header_is_single_token, parse_connection_header_tokens,
-        parse_content_length_header,
-    },
-};
 use crate::runtime::StreamInput;
-
-use super::http::write_empty_response;
-use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, UpgradeRequest};
 
 const HEADER_TERMINATOR: &[u8; 4] = b"\r\n\r\n";
 const LINE_TERMINATOR: &[u8; 2] = b"\r\n";
@@ -95,25 +89,6 @@ impl<'a> BufferedTerminatorFinder<'a> {
     const fn reset(&mut self) {
         self.search_start = 0;
     }
-}
-
-fn head_lines(head: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut next_start = 0;
-    let mut newlines = memchr_iter(b'\n', head);
-    let mut finished = false;
-    iter::from_fn(move || {
-        if let Some(end) = newlines.next() {
-            let line = &head[next_start..end];
-            next_start = end + 1;
-            return Some(line.strip_suffix(b"\r").unwrap_or(line));
-        }
-        if finished {
-            return None;
-        }
-        finished = true;
-        let line = &head[next_start..];
-        Some(line.strip_suffix(b"\r").unwrap_or(line))
-    })
 }
 
 #[derive(Default)]
@@ -213,20 +188,20 @@ impl HeaderParseState {
                     return Http1Error::ConflictingAbsoluteFormAuthority.err();
                 }
                 self.host_header_index = Some(self.headers.len());
-            }
+            },
             Some(KnownRequestHeaderName::Connection) => {
                 let tokens = parse_connection_header_tokens(value);
                 self.connection.close |= tokens.close;
                 self.connection.upgrade |= tokens.upgrade;
                 self.connection.http2_settings |= tokens.http2_settings;
-            }
+            },
             Some(KnownRequestHeaderName::Upgrade) => {
                 self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
                 self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
-            }
+            },
             Some(KnownRequestHeaderName::Te) => {
                 self.header_meta.accepts_trailers |= header_contains_token(value, b"trailers");
-            }
+            },
             Some(KnownRequestHeaderName::ContentLength) => {
                 if self.body_kind == RequestBodyKind::Chunked {
                     return Http1Error::InvalidContentLength.err();
@@ -243,7 +218,7 @@ impl HeaderParseState {
                 self.header_meta.content_length = Some(parsed);
                 self.body_kind = NonZeroU64::new(parsed)
                     .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
-            }
+            },
             Some(KnownRequestHeaderName::TransferEncoding) => {
                 if self.body_kind == RequestBodyKind::Chunked
                     || self.header_meta.content_length.is_some()
@@ -253,19 +228,38 @@ impl HeaderParseState {
                 }
                 self.body_kind = RequestBodyKind::Chunked;
                 self.header_meta.content_length = None;
-            }
+            },
             Some(KnownRequestHeaderName::Expect) => {
                 self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
-            }
+            },
             Some(KnownRequestHeaderName::Http2Settings) if self.http2_settings.is_none() => {
                 self.http2_settings = Some(parse_http2_settings(value)?);
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         self.headers.push((header_name, header_value));
         Ok(())
     }
+}
+
+fn head_lines(head: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut next_start = 0;
+    let mut newlines = memchr_iter(b'\n', head);
+    let mut finished = false;
+    iter::from_fn(move || {
+        if let Some(end) = newlines.next() {
+            let line = &head[next_start..end];
+            next_start = end + 1;
+            return Some(line.strip_suffix(b"\r").unwrap_or(line));
+        }
+        if finished {
+            return None;
+        }
+        finished = true;
+        let line = &head[next_start..];
+        Some(line.strip_suffix(b"\r").unwrap_or(line))
+    })
 }
 
 async fn read_request_head<R, W>(
@@ -343,15 +337,15 @@ where
     }
     let (method, target, version) = parse_request_line(request_line)?;
     match version {
-        b"HTTP/1.1" => {}
+        b"HTTP/1.1" => {},
         [b'H', b'T', b'T', b'P', b'/', b'1', b'.', ..] => {
             write_empty_response(writer, config, 505, true).await?;
             return Ok(None);
-        }
+        },
         _ => {
             write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
             return Ok(None);
-        }
+        },
     }
     let websocket_method_supported = method == Method::GET;
     Ok(Some(RequestLineParts {
@@ -416,7 +410,7 @@ where
         Err(H2CornError::Http1(Http1Error::ConflictingAbsoluteFormAuthority)) => {
             write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
             return Ok(None);
-        }
+        },
         Err(err) => return Err(err),
     };
     if !matches!(request_target, ParsedRequestTarget::Absolute(_))
@@ -604,13 +598,13 @@ where
             };
         }
         match body.preview_chunk(size as u64) {
-            RequestBodyProgress::Continue => {}
+            RequestBodyProgress::Continue => {},
             RequestBodyProgress::SizeLimitExceeded => {
                 return Http1Error::RequestBodyLimitExceeded.err();
-            }
+            },
             RequestBodyProgress::ContentLengthExceeded => {
                 return Http1Error::RequestBodyTooLarge.err();
-            }
+            },
         }
 
         let mut remaining = size;
@@ -643,7 +637,7 @@ async fn consume_body_bytes(
     body: &mut RequestBodyState,
 ) -> Result<(), H2CornError> {
     match body.record_chunk(chunk_len as u64) {
-        RequestBodyProgress::Continue => {}
+        RequestBodyProgress::Continue => {},
         RequestBodyProgress::SizeLimitExceeded => Http1Error::RequestBodyLimitExceeded.err()?,
         RequestBodyProgress::ContentLengthExceeded => Http1Error::RequestBodyTooLarge.err()?,
     }
@@ -793,7 +787,7 @@ fn parse_request_target<'a>(
     match target {
         b"*" => return Ok(ParsedRequestTarget::Asterisk),
         [b'/', ..] => return Ok(ParsedRequestTarget::Origin(target)),
-        _ => {}
+        _ => {},
     }
     let uri = str::from_utf8(target)
         .map_err(|_| Http1Error::RequestTargetNotUtf8)?
@@ -899,7 +893,7 @@ pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
             b'_' => 63,
             _ => {
                 return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
-            }
+            },
         };
         block[used] = value;
         used += 1;
@@ -911,24 +905,26 @@ pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
         }
     }
     match used {
-        0 => {}
+        0 => {},
         2 => out.push((block[0] << 2) | (block[1] >> 4)),
         3 => {
             out.push((block[0] << 2) | (block[1] >> 4));
             out.push((block[1] << 4) | (block[2] >> 2));
-        }
+        },
         _ => {
             return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
-        }
+        },
     }
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
     use bytes::BytesMut;
     use http::Method;
-    use std::{num::NonZeroU32, time::Duration};
     use tokio::io::{AsyncWriteExt, BufWriter, duplex};
     use tokio::spawn;
     use tokio::sync::mpsc;
@@ -1029,21 +1025,21 @@ mod tests {
         for &[c0, c1, c2] in chunks {
             out.push(TABLE[usize::from(c0 >> 2)]);
             out.push(TABLE[usize::from(((c0 & 0x03) << 4) | (c1 >> 4))]);
-            out.push(TABLE[usize::from(((c1 & 0x0f) << 2) | (c2 >> 6))]);
-            out.push(TABLE[usize::from(c2 & 0x3f)]);
+            out.push(TABLE[usize::from(((c1 & 0x0F) << 2) | (c2 >> 6))]);
+            out.push(TABLE[usize::from(c2 & 0x3F)]);
         }
 
         match remainder {
             &[a] => {
                 out.push(TABLE[usize::from(a >> 2)]);
                 out.push(TABLE[usize::from((a & 0x03) << 4)]);
-            }
+            },
             &[a, b] => {
                 out.push(TABLE[usize::from(a >> 2)]);
                 out.push(TABLE[usize::from(((a & 0x03) << 4) | (b >> 4))]);
-                out.push(TABLE[usize::from((b & 0x0f) << 2)]);
-            }
-            [] => {}
+                out.push(TABLE[usize::from((b & 0x0F) << 2)]);
+            },
+            [] => {},
             _ => unreachable!("remainder from as_chunks::<3>() is at most 2 bytes"),
         }
 
@@ -1353,9 +1349,9 @@ mod tests {
 
     #[test]
     fn parse_chunk_size_accepts_hex_extensions_and_whitespace() {
-        assert_eq!(parse_chunk_size(b"1a").unwrap(), 0x1a);
-        assert_eq!(parse_chunk_size(b"1A;foo=bar").unwrap(), 0x1a);
-        assert_eq!(parse_chunk_size(b" \t1A\r").unwrap(), 0x1a);
+        assert_eq!(parse_chunk_size(b"1a").unwrap(), 0x1A);
+        assert_eq!(parse_chunk_size(b"1A;foo=bar").unwrap(), 0x1A);
+        assert_eq!(parse_chunk_size(b" \t1A\r").unwrap(), 0x1A);
     }
 
     #[test]

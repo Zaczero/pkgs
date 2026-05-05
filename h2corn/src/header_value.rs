@@ -1,7 +1,5 @@
-use std::simd::{
-    cmp::{SimdPartialEq, SimdPartialOrd},
-    u8x32,
-};
+use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+use std::simd::u8x32;
 
 const SIMD_WIDTH: usize = 32;
 

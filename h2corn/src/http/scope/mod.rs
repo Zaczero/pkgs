@@ -4,14 +4,15 @@ use std::borrow::Cow;
 
 use http::Method;
 use memchr::memchr;
+pub use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
-use pyo3::{ffi, intern, prelude::*};
+use pyo3::{ffi, intern};
 
 use crate::hpack::BytesStr;
 use crate::http::types::{HttpVersion, KnownRequestHeaderName, RequestHeaderName, RequestHeaders};
 use crate::python::{py_cached_dict, py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
-pub use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 
 const INVALID_HEX: u8 = u8::MAX;
 const HEX_NIBBLE_TABLE: [u8; 256] = {
@@ -315,22 +316,18 @@ fn path_to_python<'py>(py: Python<'py>, path: &str) -> Bound<'py, PyString> {
 }
 
 fn method_to_python<'py>(py: Python<'py>, method: &Method) -> Bound<'py, PyString> {
-    py_match_cached_string!(
-        py,
-        method.as_str(),
-        ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",]
-    )
+    py_match_cached_string!(py, method.as_str(), [
+        "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
+    ])
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        borrow::Cow,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        num::NonZeroU32,
-        sync::Arc,
-        time::Duration,
-    };
+    use std::borrow::Cow;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::num::NonZeroU32;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use http::Method;
     use pyo3::types::{PyAnyMethods, PyDictMethods};

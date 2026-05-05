@@ -1,12 +1,10 @@
-use std::{
-    future::Future,
-    num::NonZeroU64,
-    pin::Pin,
-    ptr::null_mut,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    sync::{Arc, OnceLock},
-    task::{Context, Poll},
-};
+use std::future::Future;
+use std::num::NonZeroU64;
+use std::pin::Pin;
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use pyo3::ffi;
@@ -17,10 +15,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::frame::ErrorCode;
-use crate::http::{
-    scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts},
-    types::RequestHead,
-};
+use crate::http::scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+use crate::http::types::RequestHead;
 use crate::proxy::ConnectionInfo;
 
 pub struct SharedApp {
@@ -127,24 +123,6 @@ impl Drop for RequestAdmission {
             limits.on_task_complete();
         }
     }
-}
-
-pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
-    let Some(limits) = app.limits.as_ref() else {
-        return Some(RequestAdmission {
-            permit: None,
-            limits: None,
-        });
-    };
-    let permit = if let Some(semaphore) = limits.concurrency.as_ref() {
-        Some(semaphore.clone().try_acquire_owned().ok()?)
-    } else {
-        None
-    };
-    Some(RequestAdmission {
-        permit,
-        limits: limits.max_requests.map(|_| Arc::clone(limits)),
-    })
 }
 
 #[derive(Clone)]
@@ -259,6 +237,24 @@ where
             Poll::Ready(Err(err)) => Poll::Ready(Err(H2CornError::from(err))),
         }
     }
+}
+
+pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
+    let Some(limits) = app.limits.as_ref() else {
+        return Some(RequestAdmission {
+            permit: None,
+            limits: None,
+        });
+    };
+    let permit = if let Some(semaphore) = limits.concurrency.as_ref() {
+        Some(semaphore.clone().try_acquire_owned().ok()?)
+    } else {
+        None
+    };
+    Some(RequestAdmission {
+        permit,
+        limits: limits.max_requests.map(|_| Arc::clone(limits)),
+    })
 }
 
 pub fn start_app_call<B>(

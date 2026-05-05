@@ -1,7 +1,6 @@
-use std::env;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::PathBuf;
+use std::{env, fs};
 
 const LINEAR_TO_SRGB_LUT_LEN: usize = 4096;
 

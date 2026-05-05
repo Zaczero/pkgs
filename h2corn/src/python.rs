@@ -1,14 +1,10 @@
-pub use pyo3::sync::PyOnceLock;
-pub use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
-use pyo3::{IntoPyObject, IntoPyObjectExt, prelude::*};
-pub use pyo3::{Py, PyResult};
-use std::{any::Any, mem::MaybeUninit};
-
 #[cfg(not(any(PyPy, GraalPy, Py_LIMITED_API)))]
 mod dict_api {
-    use super::*;
-    use pyo3::{PyErr, ffi};
     use std::ffi::c_int;
+
+    use pyo3::{PyErr, ffi};
+
+    use super::*;
 
     pub(super) type CachedKey = (Py<PyString>, ffi::Py_hash_t);
 
@@ -59,11 +55,12 @@ mod dict_api {
         (key, hash): &CachedKey,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let key = key.bind(py);
-        // SAFETY: the GIL is held by `py`; `dict` and `key` are live bound Python objects;
-        // the cached hash was computed for this exact interned key.
+        // SAFETY: the GIL is held by `py`; `dict` and `key` are live bound Python
+        // objects; the cached hash was computed for this exact interned key.
         let value = unsafe { _PyDict_GetItem_KnownHash(dict.as_ptr(), key.as_ptr(), *hash) };
         if value.is_null() {
-            // SAFETY: the GIL is held by `py`; checking the current Python error indicator is valid.
+            // SAFETY: the GIL is held by `py`; checking the current Python error indicator
+            // is valid.
             if unsafe { ffi::PyErr_Occurred().is_null() } {
                 Ok(None)
             } else {
@@ -83,8 +80,9 @@ mod dict_api {
         value: &Bound<'py, PyAny>,
     ) -> PyResult<()> {
         let key = key.bind(py);
-        // SAFETY: the GIL is held by `py`; `dict`, `key`, and `value` are live bound Python
-        // objects; the cached hash was computed for this exact interned key.
+        // SAFETY: the GIL is held by `py`; `dict`, `key`, and `value` are live bound
+        // Python objects; the cached hash was computed for this exact interned
+        // key.
         if unsafe { _PyDict_SetItem_KnownHash(dict.as_ptr(), key.as_ptr(), value.as_ptr(), *hash) }
             == -1
         {
@@ -97,8 +95,9 @@ mod dict_api {
 
 #[cfg(any(PyPy, GraalPy, Py_LIMITED_API))]
 mod dict_api {
-    use super::*;
     use pyo3::types::PyDictMethods;
+
+    use super::*;
 
     pub(super) type CachedKey = Py<PyString>;
 
@@ -128,117 +127,23 @@ mod dict_api {
     }
 }
 
-pub fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
-    dict_api::new_dict(py, capacity)
-}
+use std::any::Any;
+use std::mem::MaybeUninit;
 
-pub struct StaticPyKey {
-    text: &'static str,
-    cached: PyOnceLock<dict_api::CachedKey>,
-}
+use pyo3::prelude::*;
+pub use pyo3::sync::PyOnceLock;
+pub use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
+use pyo3::{IntoPyObject, IntoPyObjectExt};
+pub use pyo3::{Py, PyResult};
 
-impl StaticPyKey {
-    pub(crate) const fn new(text: &'static str) -> Self {
-        Self {
-            text,
-            cached: PyOnceLock::new(),
-        }
-    }
+// Re-export crate-root macros (defined with `#[macro_export]` below) at this module path,
+// so existing `$crate::python::py_dict!(...)` paths inside macro bodies continue to resolve.
+pub(crate) use crate::{
+    py_cached_dict, py_dict, py_dict_slots, py_match_cached_bytes, py_match_cached_string,
+    py_static_key,
+};
 
-    fn key(&self, py: Python<'_>) -> PyResult<&dict_api::CachedKey> {
-        self.cached
-            .get_or_try_init(py, || dict_api::cache_key(py, self.text))
-    }
-
-    pub(crate) fn get_item<'py>(
-        &self,
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-    ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        dict_api::get_item(py, dict, self.key(py)?)
-    }
-
-    fn set_item<'py>(
-        &self,
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        value: &Bound<'py, PyAny>,
-    ) -> PyResult<()> {
-        dict_api::set_item(py, dict, self.key(py)?, value)
-    }
-}
-
-pub struct PyDictScratch<'py, const N: usize> {
-    py: Python<'py>,
-    len: usize,
-    items: [MaybeUninit<PendingDictItem<'py>>; N],
-}
-
-impl<'py, const N: usize> PyDictScratch<'py, N> {
-    pub(crate) const fn new(py: Python<'py>) -> Self {
-        Self {
-            py,
-            len: 0,
-            // SAFETY: an uninitialized `[MaybeUninit<_>; N]` is valid because each element is
-            // `MaybeUninit`; initialized entries are tracked by `len`.
-            items: unsafe {
-                MaybeUninit::<[MaybeUninit<PendingDictItem<'py>>; N]>::uninit().assume_init()
-            },
-        }
-    }
-
-    pub(crate) fn push<V>(&mut self, key: &'static StaticPyKey, value: V) -> PyResult<()>
-    where
-        V: IntoPyObject<'py>,
-    {
-        let value = value.into_bound_py_any(self.py)?;
-        self.push_bound(key, value);
-        Ok(())
-    }
-
-    pub(crate) fn push_bound(&mut self, key: &'static StaticPyKey, value: Bound<'py, PyAny>) {
-        // SAFETY: `py_dict_slots!` sizes the scratch array exactly for all pushes generated by
-        // `py_dict!`, so `self.len` is in bounds for every call before `finish`.
-        unsafe {
-            self.items
-                .get_unchecked_mut(self.len)
-                .write(PendingDictItem { key, value });
-        }
-        self.len += 1;
-    }
-
-    pub(crate) const fn py(&self) -> Python<'py> {
-        self.py
-    }
-
-    pub(crate) fn finish(self) -> PyResult<Bound<'py, PyDict>> {
-        let dict = py_new_dict(self.py, self.len)?;
-        for index in 0..self.len {
-            // SAFETY: indices below `self.len` have been initialized by `push_bound`.
-            let item = unsafe { self.items.get_unchecked(index).assume_init_ref() };
-            item.key.set_item(self.py, &dict, &item.value)?;
-        }
-        Ok(dict)
-    }
-}
-
-struct PendingDictItem<'py> {
-    key: &'static StaticPyKey,
-    value: Bound<'py, PyAny>,
-}
-
-impl<const N: usize> Drop for PyDictScratch<'_, N> {
-    fn drop(&mut self) {
-        for index in 0..self.len {
-            // SAFETY: indices below `self.len` have been initialized by `push_bound` and are
-            // dropped exactly once here if `finish` did not consume `self`.
-            unsafe {
-                self.items.get_unchecked_mut(index).assume_init_drop();
-            }
-        }
-    }
-}
-
+#[macro_export]
 macro_rules! py_static_key {
     ($key:literal) => {{
         static KEY: $crate::python::StaticPyKey = $crate::python::StaticPyKey::new($key);
@@ -246,8 +151,7 @@ macro_rules! py_static_key {
     }};
 }
 
-pub(crate) use py_static_key;
-
+#[macro_export]
 macro_rules! py_dict_slots {
     () => {
         0_usize
@@ -265,19 +169,7 @@ macro_rules! py_dict_slots {
     };
 }
 
-pub(crate) use py_dict_slots;
-
-pub fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
-where
-    V: Copy + IntoPyObject<'py> + 'static,
-{
-    let value_any = &value as &dyn Any;
-    value_any.downcast_ref::<&'static str>().map_or_else(
-        || value.into_bound_py_any(py),
-        |text| Ok(PyString::intern(py, text).clone().into_any()),
-    )
-}
-
+#[macro_export]
 macro_rules! py_dict {
     ($py:expr, { $($items:tt)* }) => {{
         let mut __scratch = $crate::python::PyDictScratch::<
@@ -332,8 +224,7 @@ macro_rules! py_dict {
     }};
 }
 
-pub(crate) use py_dict;
-
+#[macro_export]
 macro_rules! py_cached_dict {
     ($py:expr, { $($key:literal => $value:expr),* $(,)? }) => {{
         static CACHED: $crate::python::PyOnceLock<
@@ -357,8 +248,7 @@ macro_rules! py_cached_dict {
     }};
 }
 
-pub(crate) use py_cached_dict;
-
+#[macro_export]
 macro_rules! py_match_cached_string {
     (
         $py:expr,
@@ -386,8 +276,7 @@ macro_rules! py_match_cached_string {
     }};
 }
 
-pub(crate) use py_match_cached_string;
-
+#[macro_export]
 macro_rules! py_match_cached_bytes {
     (
         $py:expr,
@@ -458,15 +347,135 @@ macro_rules! py_match_cached_bytes {
     }};
 }
 
-pub(crate) use py_match_cached_bytes;
+pub struct StaticPyKey {
+    text: &'static str,
+    cached: PyOnceLock<dict_api::CachedKey>,
+}
+
+impl StaticPyKey {
+    pub(crate) const fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            cached: PyOnceLock::new(),
+        }
+    }
+
+    fn key(&self, py: Python<'_>) -> PyResult<&dict_api::CachedKey> {
+        self.cached
+            .get_or_try_init(py, || dict_api::cache_key(py, self.text))
+    }
+
+    pub(crate) fn get_item<'py>(
+        &self,
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        dict_api::get_item(py, dict, self.key(py)?)
+    }
+
+    fn set_item<'py>(
+        &self,
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
+        dict_api::set_item(py, dict, self.key(py)?, value)
+    }
+}
+
+pub struct PyDictScratch<'py, const N: usize> {
+    py: Python<'py>,
+    len: usize,
+    items: [MaybeUninit<PendingDictItem<'py>>; N],
+}
+
+impl<'py, const N: usize> PyDictScratch<'py, N> {
+    pub(crate) const fn new(py: Python<'py>) -> Self {
+        Self {
+            py,
+            len: 0,
+            // SAFETY: an uninitialized `[MaybeUninit<_>; N]` is valid because each element is
+            // `MaybeUninit`; initialized entries are tracked by `len`.
+            items: unsafe {
+                MaybeUninit::<[MaybeUninit<PendingDictItem<'py>>; N]>::uninit().assume_init()
+            },
+        }
+    }
+
+    pub(crate) fn push<V>(&mut self, key: &'static StaticPyKey, value: V) -> PyResult<()>
+    where
+        V: IntoPyObject<'py>,
+    {
+        let value = value.into_bound_py_any(self.py)?;
+        self.push_bound(key, value);
+        Ok(())
+    }
+
+    pub(crate) fn push_bound(&mut self, key: &'static StaticPyKey, value: Bound<'py, PyAny>) {
+        // SAFETY: `py_dict_slots!` sizes the scratch array exactly for all pushes
+        // generated by `py_dict!`, so `self.len` is in bounds for every call
+        // before `finish`.
+        unsafe {
+            self.items
+                .get_unchecked_mut(self.len)
+                .write(PendingDictItem { key, value });
+        }
+        self.len += 1;
+    }
+
+    pub(crate) const fn py(&self) -> Python<'py> {
+        self.py
+    }
+
+    pub(crate) fn finish(self) -> PyResult<Bound<'py, PyDict>> {
+        let dict = py_new_dict(self.py, self.len)?;
+        for index in 0..self.len {
+            // SAFETY: indices below `self.len` have been initialized by `push_bound`.
+            let item = unsafe { self.items.get_unchecked(index).assume_init_ref() };
+            item.key.set_item(self.py, &dict, &item.value)?;
+        }
+        Ok(dict)
+    }
+}
+
+struct PendingDictItem<'py> {
+    key: &'static StaticPyKey,
+    value: Bound<'py, PyAny>,
+}
+
+impl<const N: usize> Drop for PyDictScratch<'_, N> {
+    fn drop(&mut self) {
+        for index in 0..self.len {
+            // SAFETY: indices below `self.len` have been initialized by `push_bound` and
+            // are dropped exactly once here if `finish` did not consume `self`.
+            unsafe {
+                self.items.get_unchecked_mut(index).assume_init_drop();
+            }
+        }
+    }
+}
+
+pub fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+    dict_api::new_dict(py, capacity)
+}
+
+pub fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
+where
+    V: Copy + IntoPyObject<'py> + 'static,
+{
+    let value_any = &value as &dyn Any;
+    value_any.downcast_ref::<&'static str>().map_or_else(
+        || value.into_bound_py_any(py),
+        |text| Ok(PyString::intern(py, text).clone().into_any()),
+    )
+}
 
 #[cfg(test)]
 mod tests {
+    use pyo3::types::{PyBool, PyBytes, PyDictMethods};
+    use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
+
     use super::PyString;
-    use pyo3::{
-        IntoPyObjectExt, PyResult, Python, ffi,
-        types::{PyBool, PyBytes, PyDictMethods},
-    };
 
     fn init_python() {
         Python::initialize();

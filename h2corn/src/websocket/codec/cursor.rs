@@ -2,9 +2,8 @@ use std::cmp::min;
 
 use bytes::{Bytes, BytesMut};
 
-use crate::smallvec_deque::SmallVecDeque;
-
 use super::mask::apply_websocket_mask_phase;
+use crate::smallvec_deque::SmallVecDeque;
 
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {

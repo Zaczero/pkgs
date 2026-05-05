@@ -4,13 +4,15 @@ mod constants;
 mod core;
 mod errors;
 
-use crate::constants::MAX_ZIDS_AT_ONCE;
-use crate::core::{reserve_sequences, zid_from_time_and_sequence};
-use crate::errors::Error;
+use std::hint::unlikely;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use std::hint::unlikely;
+
+use crate::constants::MAX_ZIDS_AT_ONCE;
+use crate::core::{reserve_sequences, zid_from_time_and_sequence};
+use crate::errors::Error;
 
 #[pyfunction]
 fn zid() -> u64 {

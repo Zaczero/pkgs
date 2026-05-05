@@ -4,8 +4,7 @@ const CHARSET: &[u8; 83] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
 
 const INVALID: u8 = 0xFF;
-
-const fn build_decode_table() -> [u8; 256] {
+const DECODE: [u8; 256] = {
     let mut table = [INVALID; 256];
     let mut i = 0;
     while i < 83 {
@@ -13,11 +12,8 @@ const fn build_decode_table() -> [u8; 256] {
         i += 1;
     }
     table
-}
-
-const DECODE: [u8; 256] = build_decode_table();
-
-const fn build_pow83_table() -> [u32; 5] {
+};
+const POW83: [u32; 5] = {
     let mut out = [0_u32; 5];
     out[0] = 1;
     let mut i = 1;
@@ -26,9 +22,7 @@ const fn build_pow83_table() -> [u32; 5] {
         i += 1;
     }
     out
-}
-
-const POW83: [u32; 5] = build_pow83_table();
+};
 
 pub const fn decode_byte(b: u8) -> Option<u8> {
     let v = DECODE[b as usize];

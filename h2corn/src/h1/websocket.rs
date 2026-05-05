@@ -1,4 +1,15 @@
-use std::{mem, num::NonZeroUsize};
+mod accept {
+    pub(super) const LEN: usize = 28;
+    pub(super) const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+}
+
+mod b64 {
+    pub(super) const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+use std::mem;
+use std::num::NonZeroUsize;
 
 use bytes::{Bytes, BytesMut};
 use smallvec::SmallVec;
@@ -25,29 +36,6 @@ const INITIAL_FRAME_BUF_CAPACITY: usize = 256;
 const HANDSHAKE_BUF_CAPACITY: usize = 512;
 
 type HandshakeBuf = SmallVec<[u8; HANDSHAKE_BUF_CAPACITY]>;
-
-pub(super) async fn handle_request<R, W>(
-    context: WebSocketContext,
-    key: WebSocketKey,
-    reader: R,
-    buffer: BytesMut,
-    writer: BufWriter<W>,
-) -> Result<(), H2CornError>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget,
-{
-    let mut transport = H1WebSocketTransport {
-        config: context.request.connection.config,
-        key,
-        reader,
-        buffer,
-        frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
-        frame_flush_pending: false,
-        writer,
-    };
-    run_websocket(&mut transport, context).await
-}
 
 struct H1WebSocketTransport<R, W> {
     config: &'static ServerConfig,
@@ -178,12 +166,35 @@ where
         state: &mut AcceptedWebSocketState,
     ) -> Result<(), H2CornError> {
         let Some(frame) = take_pending_close_frame(state, self.frame_buf())? else {
-            assert!(state.close_state != CloseState::CloseQueued);
+            assert_ne!(state.close_state, CloseState::CloseQueued);
             return Ok(());
         };
         self.send_frame(frame, FrameFlushMode::Immediate).await?;
         Ok(())
     }
+}
+
+pub(super) async fn handle_request<R, W>(
+    context: WebSocketContext,
+    key: WebSocketKey,
+    reader: R,
+    buffer: BytesMut,
+    writer: BufWriter<W>,
+) -> Result<(), H2CornError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: H1WriteTarget,
+{
+    let mut transport = H1WebSocketTransport {
+        config: context.request.connection.config,
+        key,
+        reader,
+        buffer,
+        frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
+        frame_flush_pending: false,
+        writer,
+    };
+    run_websocket(&mut transport, context).await
 }
 
 async fn write_websocket_accept<W>(
@@ -213,12 +224,8 @@ where
     Ok(())
 }
 
-const WEBSOCKET_ACCEPT_LEN: usize = 28;
-const WEBSOCKET_ACCEPT_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const B64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn websocket_accept(key: &WebSocketKey) -> [u8; WEBSOCKET_ACCEPT_LEN] {
-    const INPUT_LEN: usize = WEBSOCKET_KEY_LEN + WEBSOCKET_ACCEPT_GUID.len();
+fn websocket_accept(key: &WebSocketKey) -> [u8; accept::LEN] {
+    const INPUT_LEN: usize = WEBSOCKET_KEY_LEN + accept::GUID.len();
     let mut state = [
         0x6745_2301_u32,
         0xEFCD_AB89,
@@ -233,7 +240,7 @@ fn websocket_accept(key: &WebSocketKey) -> [u8; WEBSOCKET_ACCEPT_LEN] {
     for (dst, word) in first[..6].iter_mut().zip(key_words) {
         *dst = u32::from_be_bytes(*word);
     }
-    let (guid_words, remainder) = WEBSOCKET_ACCEPT_GUID.as_chunks::<4>();
+    let (guid_words, remainder) = accept::GUID.as_chunks::<4>();
     debug_assert!(remainder.is_empty());
     for (dst, word) in first[6..15].iter_mut().zip(guid_words) {
         *dst = u32::from_be_bytes(*word);
@@ -246,7 +253,7 @@ fn websocket_accept(key: &WebSocketKey) -> [u8; WEBSOCKET_ACCEPT_LEN] {
     compress_sha1_block(&mut state, second);
 
     let [w0, w1, w2, w3, w4] = state;
-    let mut out = [0_u8; WEBSOCKET_ACCEPT_LEN];
+    let mut out = [0_u8; accept::LEN];
     let (out_groups, out_remainder) = out.as_chunks_mut::<4>();
     debug_assert!(out_remainder.is_empty());
     out_groups[0] = encode_b64_triplet((w0 >> 24) as u8, (w0 >> 16) as u8, (w0 >> 8) as u8);
@@ -304,18 +311,18 @@ fn compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
 
 const fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     [
-        B64_TABLE[(b0 >> 2) as usize],
-        B64_TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        B64_TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
-        B64_TABLE[(b2 & 0x3F) as usize],
+        b64::TABLE[(b0 >> 2) as usize],
+        b64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
+        b64::TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
+        b64::TABLE[(b2 & 0x3F) as usize],
     ]
 }
 
 const fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
     [
-        B64_TABLE[(b0 >> 2) as usize],
-        B64_TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        B64_TABLE[((b1 & 0x0F) << 2) as usize],
+        b64::TABLE[(b0 >> 2) as usize],
+        b64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
+        b64::TABLE[((b1 & 0x0F) << 2) as usize],
         b'=',
     ]
 }

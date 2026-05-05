@@ -16,20 +16,20 @@ impl Error {
         match self {
             Self::InvalidSecretChar { index } => {
                 Cow::Owned(format!("Invalid secret: invalid base32 at index {index}"))
-            }
+            },
             Self::InvalidSecretType => {
                 Cow::Borrowed("Invalid secret: must be bytes or base32 string")
-            }
+            },
             Self::DigitsOutOfRange { digits } => {
                 Cow::Owned(format!("digits must be in 1..=9 (got {digits})"))
-            }
+            },
             Self::StepSecondsMustBeNonZero => Cow::Borrowed("step_seconds must be non-zero"),
             Self::InvalidAlgorithm => {
                 Cow::Borrowed("algorithm must be one of: sha1, sha256, sha512")
-            }
+            },
             Self::TimeAndTimeWindowBothSet => {
                 Cow::Borrowed("time and time_window cannot both be set")
-            }
+            },
         }
     }
 }

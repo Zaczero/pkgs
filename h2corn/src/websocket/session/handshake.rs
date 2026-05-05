@@ -4,6 +4,8 @@ use pyo3::pybacked::PyBackedStr;
 use tokio::task::JoinError;
 use tokio::time::timeout;
 
+use super::super::app::RunningWebSocketApp;
+use super::WebSocketHandshakeTransport;
 use crate::bridge::{HttpOutboundEvent, PayloadBytes, WebSocketOutboundEvent};
 use crate::console::{ResponseLogState, WebSocketAccessLogState};
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
@@ -12,9 +14,6 @@ use crate::http::response::{
     apply_http_event, finalize_response,
 };
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
-
-use super::super::app::RunningWebSocketApp;
-use super::WebSocketHandshakeTransport;
 
 pub(super) enum HandshakeEvent {
     Accept {
@@ -26,34 +25,6 @@ pub(super) enum HandshakeEvent {
         status: HttpStatusCode,
         headers: ResponseHeaders,
     },
-}
-
-fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent, H2CornError> {
-    match event {
-        WebSocketOutboundEvent::Accept {
-            subprotocol,
-            headers,
-        } => Ok(HandshakeEvent::Accept {
-            subprotocol,
-            headers,
-        }),
-        WebSocketOutboundEvent::Close { .. } => Ok(HandshakeEvent::Close),
-        WebSocketOutboundEvent::HttpResponseStart { status, headers } => {
-            Ok(HandshakeEvent::DenialStart { status, headers })
-        }
-        other => WebSocketError::unexpected_initial_event(&other).err(),
-    }
-}
-
-fn parse_denial_body_event(
-    event: WebSocketOutboundEvent,
-) -> Result<HttpOutboundEvent, H2CornError> {
-    match event {
-        WebSocketOutboundEvent::HttpResponseBody { body, more_body } => {
-            Ok(HttpOutboundEvent::Body { body, more_body })
-        }
-        other => WebSocketError::unexpected_denial_body_event(&other).err(),
-    }
 }
 
 struct DenialHttpTransport<'a, T> {
@@ -116,6 +87,34 @@ where
 
     fn response_log_state(&self) -> ResponseLogState {
         ResponseLogState::default()
+    }
+}
+
+fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent, H2CornError> {
+    match event {
+        WebSocketOutboundEvent::Accept {
+            subprotocol,
+            headers,
+        } => Ok(HandshakeEvent::Accept {
+            subprotocol,
+            headers,
+        }),
+        WebSocketOutboundEvent::Close { .. } => Ok(HandshakeEvent::Close),
+        WebSocketOutboundEvent::HttpResponseStart { status, headers } => {
+            Ok(HandshakeEvent::DenialStart { status, headers })
+        },
+        other => WebSocketError::unexpected_initial_event(&other).err(),
+    }
+}
+
+fn parse_denial_body_event(
+    event: WebSocketOutboundEvent,
+) -> Result<HttpOutboundEvent, H2CornError> {
+    match event {
+        WebSocketOutboundEvent::HttpResponseBody { body, more_body } => {
+            Ok(HttpOutboundEvent::Body { body, more_body })
+        },
+        other => WebSocketError::unexpected_denial_body_event(&other).err(),
     }
 }
 
@@ -182,7 +181,7 @@ where
             let flush_result = match parse_denial_body_event(outbound) {
                 Ok(event) => {
                     apply_http_event(&mut response, &mut transport, &mut actions, event).await
-                }
+                },
                 Err(err) => Err(err),
             };
             if let Err(err) = flush_result {
@@ -252,15 +251,16 @@ pub(super) async fn settle_app_task(
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, mem::size_of_val};
+    use std::future::pending;
+    use std::mem::size_of_val;
 
     use bytes::Bytes;
     use tokio::sync::mpsc;
 
     use super::{HandshakeEvent, drive_denial_response, receive_handshake_event};
-    use crate::bridge::WebSocketSendDisposition;
     use crate::bridge::{
-        PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendState,
+        PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendDisposition,
+        WebSocketSendState,
     };
     use crate::error::{H2CornError, HttpResponseError};
     use crate::http::response::FinalResponseBody;
@@ -268,6 +268,7 @@ mod tests {
     use crate::runtime::RequestAdmission;
     use crate::websocket::RequestedSubprotocols;
     use crate::websocket::app::RunningWebSocketApp;
+    use crate::websocket::session::WebSocketHandshakeTransport;
 
     #[derive(Default)]
     struct RecordingHandshakeTransport {
@@ -275,8 +276,6 @@ mod tests {
         body_chunks: Vec<Bytes>,
         final_bodies: Vec<Bytes>,
     }
-
-    use crate::websocket::session::WebSocketHandshakeTransport;
 
     impl WebSocketHandshakeTransport for RecordingHandshakeTransport {
         fn accept_status(&self) -> u16 {
@@ -310,7 +309,7 @@ mod tests {
                 FinalResponseBody::Bytes(body) => Bytes::copy_from_slice(body.as_ref()),
                 FinalResponseBody::File { .. } | FinalResponseBody::Suppressed { .. } => {
                     unreachable!("websocket denial responses never send files or suppressed bodies")
-                }
+                },
             });
             Ok(())
         }
@@ -495,14 +494,11 @@ mod tests {
             err,
             H2CornError::HttpResponse(HttpResponseError::AppReturnedWithoutCompletingResponse)
         ));
-        assert_eq!(
-            transport.calls,
-            [
-                "start_denial_response",
-                "send_denial_body",
-                "abort_denial_response"
-            ]
-        );
+        assert_eq!(transport.calls, [
+            "start_denial_response",
+            "send_denial_body",
+            "abort_denial_response"
+        ]);
         assert_eq!(transport.body_chunks, [Bytes::from_static(b"denied")]);
         drop(running_app);
     }

@@ -52,30 +52,6 @@ pub struct MessageInflater {
     out: BytesMut,
 }
 
-pub fn requested_by_client(value: &[u8]) -> bool {
-    let mut rest = Some(value);
-    while let Some(current) = rest {
-        let (extension, next) = memchr(b',', current).map_or((current, None), |index| {
-            (&current[..index], Some(&current[index + 1..]))
-        });
-        let extension = extension.trim_ascii();
-        let end = memchr(b';', extension).unwrap_or(extension.len());
-        if extension[..end]
-            .trim_ascii()
-            .eq_ignore_ascii_case(PERMESSAGE_DEFLATE)
-        {
-            return true;
-        }
-        rest = next;
-    }
-    false
-}
-
-fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
-    let estimated = payload_len.saturating_mul(4).max(64);
-    max_message_size.map_or(estimated, |limit| estimated.min(limit))
-}
-
 impl MessageDeflater {
     pub(crate) fn new() -> Self {
         Self {
@@ -250,6 +226,30 @@ impl PerMessageDeflateMode for PerMessageDeflateDisabled {
     ) -> Result<Bytes, WebSocketProtocolError> {
         Err(WebSocketProtocolError::ExtensionsNotNegotiated)
     }
+}
+
+pub fn requested_by_client(value: &[u8]) -> bool {
+    let mut rest = Some(value);
+    while let Some(current) = rest {
+        let (extension, next) = memchr(b',', current).map_or((current, None), |index| {
+            (&current[..index], Some(&current[index + 1..]))
+        });
+        let extension = extension.trim_ascii();
+        let end = memchr(b';', extension).unwrap_or(extension.len());
+        if extension[..end]
+            .trim_ascii()
+            .eq_ignore_ascii_case(PERMESSAGE_DEFLATE)
+        {
+            return true;
+        }
+        rest = next;
+    }
+    false
+}
+
+fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
+    let estimated = payload_len.saturating_mul(4).max(64);
+    max_message_size.map_or(estimated, |limit| estimated.min(limit))
 }
 
 #[cfg(test)]

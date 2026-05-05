@@ -61,7 +61,7 @@ pub fn validate_accepted_subprotocol(
                 .any(|requested| requested.as_str() == subprotocol) =>
         {
             Ok(())
-        }
+        },
         Some(_) => WebSocketError::AcceptSubprotocolNotRequested.err(),
     }
 }

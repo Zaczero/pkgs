@@ -26,6 +26,16 @@ pub struct ScopeOverrides {
     pub(crate) root_path: Option<Box<str>>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ProxyHeaderView<'a> {
+    forwarded: Option<&'a str>,
+    x_forwarded_for: Option<&'a str>,
+    x_forwarded_proto: Option<&'a str>,
+    x_forwarded_host: Option<&'a str>,
+    x_forwarded_port: Option<&'a str>,
+    x_forwarded_prefix: Option<&'a str>,
+}
+
 fn default_server<'a>(
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
@@ -172,16 +182,6 @@ pub fn resolve_scope_overrides(
     overrides
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct ProxyHeaderView<'a> {
-    forwarded: Option<&'a str>,
-    x_forwarded_for: Option<&'a str>,
-    x_forwarded_proto: Option<&'a str>,
-    x_forwarded_host: Option<&'a str>,
-    x_forwarded_port: Option<&'a str>,
-    x_forwarded_prefix: Option<&'a str>,
-}
-
 fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     let headers = &request.headers;
     let slots = &request.header_meta.proxy_headers;
@@ -254,13 +254,13 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
             joined.push('/');
             joined.push_str(root_path);
             Cow::Owned(joined)
-        }
+        },
         (false, false) => {
             let mut joined = String::with_capacity(prefix.len() + root_path.len() + 1);
             joined.push_str(prefix);
             joined.push('/');
             joined.push_str(root_path);
             Cow::Owned(joined)
-        }
+        },
     }
 }

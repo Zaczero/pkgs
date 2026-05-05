@@ -112,32 +112,26 @@ mod tests {
 
     #[test]
     fn response_start_keeps_content_length_hint() {
-        let mut start = ResponseStart::new(
-            200,
-            vec![(
-                Bytes::from_static(b"content-length").into(),
-                Bytes::from_static(b"42").into(),
-            )],
-        );
+        let mut start = ResponseStart::new(200, vec![(
+            Bytes::from_static(b"content-length").into(),
+            Bytes::from_static(b"42").into(),
+        )]);
 
         assert_eq!(start.content_length_hint(), Some(42));
     }
 
     #[test]
     fn response_start_canonicalizes_duplicate_content_length_once() {
-        let mut start = ResponseStart::new(
-            200,
-            vec![
-                (
-                    Bytes::from_static(b"content-length").into(),
-                    Bytes::from_static(b"1").into(),
-                ),
-                (
-                    Bytes::from_static(b"content-length").into(),
-                    Bytes::from_static(b"1").into(),
-                ),
-            ],
-        );
+        let mut start = ResponseStart::new(200, vec![
+            (
+                Bytes::from_static(b"content-length").into(),
+                Bytes::from_static(b"1").into(),
+            ),
+            (
+                Bytes::from_static(b"content-length").into(),
+                Bytes::from_static(b"1").into(),
+            ),
+        ]);
 
         start.canonicalize_known_length(7);
         let (_, headers) = start.into_status_headers();
@@ -157,13 +151,10 @@ mod tests {
 
     #[test]
     fn response_start_adds_missing_content_length() {
-        let mut start = ResponseStart::new(
-            200,
-            vec![(
-                Bytes::from_static(b"content-type").into(),
-                Bytes::from_static(b"text/plain").into(),
-            )],
-        );
+        let mut start = ResponseStart::new(200, vec![(
+            Bytes::from_static(b"content-type").into(),
+            Bytes::from_static(b"text/plain").into(),
+        )]);
 
         start.canonicalize_known_length(5);
         let (_, headers) = start.into_status_headers();

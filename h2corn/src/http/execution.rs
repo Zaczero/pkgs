@@ -1,4 +1,5 @@
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use tokio::sync::mpsc;
 
@@ -32,7 +33,7 @@ pub fn prepare_request_input(input: RequestInputPlan) -> RequestInputChannels {
                 rx: Some(rx),
                 body_bytes_read: count_body_bytes.then(|| Arc::new(AtomicU64::new(0))),
             }
-        }
+        },
     }
 }
 
