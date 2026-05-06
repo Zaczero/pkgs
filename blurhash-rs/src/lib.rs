@@ -9,9 +9,10 @@ mod encode;
 mod errors;
 mod srgb;
 
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
+
+use crate::errors::Error;
 
 #[pyfunction]
 fn encode_rgb(
@@ -21,8 +22,7 @@ fn encode_rgb(
     x_components: u8,
     y_components: u8,
 ) -> PyResult<String> {
-    encode::encode_rgb(rgb, width, height, x_components, y_components)
-        .map_err(|err| PyValueError::new_err(err.message()))
+    encode::encode_rgb(rgb, width, height, x_components, y_components).map_err(Error::into_pyerr)
 }
 
 #[pyfunction]
@@ -36,8 +36,7 @@ fn decode_rgb(
     let blurhash = blurhash.trim();
     let out_len = width * height * 3;
     let out = PyByteArray::new_with(py, out_len, |buf| {
-        decode::decode_rgb_into(blurhash, width, height, punch, buf)
-            .map_err(|err| PyValueError::new_err(err.message()))
+        decode::decode_rgb_into(blurhash, width, height, punch, buf).map_err(Error::into_pyerr)
     })?;
     Ok(out.unbind())
 }

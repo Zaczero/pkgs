@@ -153,7 +153,8 @@ def _build_tcp_socket(host: str, port: int, config: Config):
     ):
         sock = socket.socket(
             family,
-            socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
+            socket.SOCK_STREAM
+            | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
         )
         try:
             if family == socket.AF_INET6:

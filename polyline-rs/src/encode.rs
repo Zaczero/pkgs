@@ -1,4 +1,3 @@
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::constants::{
@@ -10,12 +9,12 @@ use crate::zigzag::zigzag_encode;
 fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, f64)> {
     let mut it = coord.try_iter()?;
 
-    let first = it.next().ok_or_else(|| {
-        PyValueError::new_err(Error::CoordinateMustContain2Values { index }.message())
-    })??;
-    let second = it.next().ok_or_else(|| {
-        PyValueError::new_err(Error::CoordinateMustContain2Values { index }.message())
-    })??;
+    let first = it
+        .next()
+        .ok_or_else(|| Error::CoordinateMustContain2Values { index }.into_pyerr())??;
+    let second = it
+        .next()
+        .ok_or_else(|| Error::CoordinateMustContain2Values { index }.into_pyerr())??;
 
     Ok((first.extract()?, second.extract()?))
 }

@@ -13,6 +13,7 @@ hashbrown = { version = "0.15", default-features = false, features = [
 ] }
 parking_lot = "0.12.5"
 pyo3 = { version = "0.28.3", features = ["parking_lot"] }
+thiserror = "2.0"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

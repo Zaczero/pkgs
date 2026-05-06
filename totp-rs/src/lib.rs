@@ -11,12 +11,11 @@ use std::hint::unlikely;
 use std::num::NonZeroU32;
 use std::str;
 
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyString, PyStringMethods};
 
 use crate::algorithm::parse_algorithm;
-use crate::errors::Error;
+use crate::errors::{Error, validate_digits};
 use crate::secret::parse_secret_from_py;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
@@ -95,8 +94,7 @@ fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: NonZeroU32) -> Op
 #[pyfunction]
 #[pyo3(signature = (time = None, *, step_seconds = 30, t0 = 0))]
 fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> PyResult<i64> {
-    time_window_from_time(time, step_seconds, t0)
-        .map_err(|err| PyValueError::new_err(err.message()))
+    time_window_from_time(time, step_seconds, t0).map_err(Error::into_pyerr)
 }
 
 #[pyfunction]
@@ -111,15 +109,10 @@ fn totp_generate(
     step_seconds: i64,
     t0: i64,
 ) -> PyResult<Py<PyString>> {
-    if unlikely(!(1..=9).contains(&digits)) {
-        return Err(PyValueError::new_err(
-            Error::DigitsOutOfRange { digits }.message(),
-        ));
-    }
-    let algorithm =
-        parse_algorithm(algorithm).map_err(|err| PyValueError::new_err(err.message()))?;
-    let counter = resolve_counter(time, time_window, step_seconds, t0)
-        .map_err(|err| PyValueError::new_err(err.message()))?;
+    validate_digits(digits).map_err(Error::into_pyerr)?;
+    let algorithm = parse_algorithm(algorithm).map_err(Error::into_pyerr)?;
+    let counter =
+        resolve_counter(time, time_window, step_seconds, t0).map_err(Error::into_pyerr)?;
 
     let secret = parse_secret_from_py(secret)?;
     let modulus = modulus_for_digits(digits);
@@ -142,15 +135,10 @@ fn totp_verify(
     t0: i64,
     window: u8,
 ) -> PyResult<bool> {
-    if unlikely(!(1..=9).contains(&digits)) {
-        return Err(PyValueError::new_err(
-            Error::DigitsOutOfRange { digits }.message(),
-        ));
-    }
-    let algorithm =
-        parse_algorithm(algorithm).map_err(|err| PyValueError::new_err(err.message()))?;
-    let counter = resolve_counter(time, time_window, step_seconds, t0)
-        .map_err(|err| PyValueError::new_err(err.message()))?;
+    validate_digits(digits).map_err(Error::into_pyerr)?;
+    let algorithm = parse_algorithm(algorithm).map_err(Error::into_pyerr)?;
+    let counter =
+        resolve_counter(time, time_window, step_seconds, t0).map_err(Error::into_pyerr)?;
 
     let modulus = modulus_for_digits(digits);
     let Some(code) = parse_code_py(code, digits, modulus) else {

@@ -51,8 +51,7 @@ async def test_http1_absolute_form_preserves_cleartext_scheme() -> None:
     async def app(scope, receive, send):
         assert scope['type'] == 'http'
         body = (
-            f'{scope["scheme"]}|{scope["path"]}|'
-            f'{scope["query_string"].decode()}'
+            f'{scope["scheme"]}|{scope["path"]}|{scope["query_string"].decode()}'
         ).encode()
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})
@@ -127,7 +126,9 @@ async def test_http1_keep_alive_reuses_connection() -> None:
     assert second[2] == b'/two'
 
 
-async def test_http1_keep_alive_request_head_still_honors_timeout_request_header() -> None:
+async def test_http1_keep_alive_request_head_still_honors_timeout_request_header() -> (
+    None
+):
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': scope['path'].encode()})
@@ -193,7 +194,9 @@ async def test_http1_first_request_head_timeout_is_idle_not_total() -> None:
 
 async def test_http1_first_request_head_stall_honors_timeout_request_header() -> None:
     async def app(scope, receive, send):
-        raise AssertionError('stalled first request head should timeout before app dispatch')
+        raise AssertionError(
+            'stalled first request head should timeout before app dispatch'
+        )
 
     config = Config(port=find_free_port(), timeout_request_header=0.05)
     async with running_server(app, config):
@@ -896,7 +899,9 @@ async def test_http1_content_length_limit_returns_413() -> None:
     assert body == b''
 
 
-async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> None:
+async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> (
+    None
+):
     seen = []
 
     async def app(scope, receive, send):

@@ -8,7 +8,7 @@ from lrucache_rs import LRUCache
 def test_invalid_maxsize():
     with pytest.raises(OverflowError):
         LRUCache(-1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='maxsize must be a positive integer'):
         LRUCache(0)
 
 
@@ -206,7 +206,6 @@ def test_pointer_equality_short_circuits_eq():
     This mirrors the CPython dict optimisation: identical pointers compare equal regardless of
     user-defined __eq__.
     """
-
     eq_calls = 0
 
     class CountingEq:
@@ -271,7 +270,7 @@ def test_popitem_returns_lru():
     assert cache.popitem() == ('b', 2)
     assert cache.popitem() == ('c', 3)
     assert cache.popitem() == ('a', 1)
-    with pytest.raises(KeyError, match='cache is empty'):
+    with pytest.raises(KeyError, match=r'popitem\(\): cache is empty'):
         cache.popitem()
 
 
@@ -284,7 +283,6 @@ def test_repr():
 
 def test_drop_releases_python_objects():
     """When the cache is dropped, references to stored values must be released."""
-
     cache = LRUCache[int, object](16)
     obj = object()
     obj_id = id(obj)
@@ -311,7 +309,6 @@ def test_setitem_updates_value():
 
 def test_get_returns_existing_value_unchanged():
     """Repeated get on the same key returns the same Python object (no copy)."""
-
     cache = LRUCache[str, list[int]](2)
     value = [1, 2, 3]
     cache['a'] = value
@@ -323,7 +320,6 @@ def test_get_returns_existing_value_unchanged():
 
 def test_concurrent_access_does_not_crash():
     """Smoke test: parallel writers should not crash, deadlock, or violate maxsize."""
-
     cache = LRUCache[int, int](1024)
     errors: list[BaseException] = []
 
@@ -335,7 +331,10 @@ def test_concurrent_access_does_not_crash():
         except BaseException as exc:
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(start,)) for start in (0, 10_000, 20_000, 30_000)]
+    threads = [
+        threading.Thread(target=worker, args=(start,))
+        for start in (0, 10_000, 20_000, 30_000)
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -347,7 +346,8 @@ def test_concurrent_access_does_not_crash():
 
 def test_hash_preserves_insertion_for_equal_keys_in_collision():
     """If two distinct keys collide and the second is inserted while the first exists,
-    the cache must keep them as separate entries."""
+    the cache must keep them as separate entries.
+    """
 
     class Coll:
         def __init__(self, value: int) -> None:

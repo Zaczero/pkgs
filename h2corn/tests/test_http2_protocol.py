@@ -186,7 +186,9 @@ async def test_h2_limit_concurrency_rejects_second_stream_with_503() -> None:
 
     async def app(scope, receive, send):
         if scope['path'] != '/slow':
-            raise AssertionError('concurrency rejection should happen before app dispatch')
+            raise AssertionError(
+                'concurrency rejection should happen before app dispatch'
+            )
         started.set()
         await release.wait()
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -626,9 +628,7 @@ async def test_server_settings_advertise_header_list_size() -> None:
     )
     settings = _decode_h2_settings_payload(settings_payload)
     assert settings[int(h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS)] == 456
-    assert (
-        settings[int(h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE)] == 123_456
-    )
+    assert settings[int(h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE)] == 123_456
 
 
 async def test_invalid_ping_emits_goaway_after_valid_preface_and_settings() -> None:
@@ -840,15 +840,13 @@ async def test_h2_header_block_size_limit_resets_stream() -> None:
     async with running_server(app, config):
         reader, writer, _conn, authority = await open_h2_connection(port=config.port)
         encoder = hpack.Encoder()
-        block = encoder.encode(
-            [
-                (b':method', b'GET'),
-                (b':scheme', b'http'),
-                (b':authority', authority),
-                (b':path', b'/'),
-                (b'x-demo', b'abcdefghijklmnopqrstuvwxyz0123456789'),
-            ]
-        )
+        block = encoder.encode([
+            (b':method', b'GET'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/'),
+            (b'x-demo', b'abcdefghijklmnopqrstuvwxyz0123456789'),
+        ])
         split_at = 16
         writer.write(
             _encode_h2_frame(0x01, block[:split_at], flags=0x01, stream_id=1)
@@ -884,22 +882,18 @@ async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
     config = Config(port=find_free_port(), timeout_request_header=0.05)
     async with running_server(app, config):
         reader, writer, _conn, authority = await open_h2_connection(port=config.port)
-        slow_block = hpack.Encoder().encode(
-            [
-                (b':method', b'GET'),
-                (b':scheme', b'http'),
-                (b':authority', authority),
-                (b':path', b'/slow'),
-            ]
-        )
-        fast_block = hpack.Encoder().encode(
-            [
-                (b':method', b'GET'),
-                (b':scheme', b'http'),
-                (b':authority', authority),
-                (b':path', b'/fast'),
-            ]
-        )
+        slow_block = hpack.Encoder().encode([
+            (b':method', b'GET'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/slow'),
+        ])
+        fast_block = hpack.Encoder().encode([
+            (b':method', b'GET'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/fast'),
+        ])
         writer.write(_encode_h2_frame(0x01, slow_block[:8], flags=0x01, stream_id=1))
         await writer.drain()
         slow_reset = None
@@ -958,12 +952,16 @@ async def test_invalid_h2_preface_emits_goaway_protocol_error() -> None:
             writer.close()
             await writer.wait_closed()
 
-    assert int.from_bytes(payload[4:8], 'big') == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+    assert int.from_bytes(payload[4:8], 'big') == int(
+        h2.errors.ErrorCodes.PROTOCOL_ERROR
+    )
 
 
 async def test_h2_inbound_frame_size_limit_ignores_larger_peer_setting() -> None:
     async def app(scope, receive, send):
-        raise AssertionError('oversized control frame should close before any request runs')
+        raise AssertionError(
+            'oversized control frame should close before any request runs'
+        )
 
     config = Config(port=find_free_port(), h2_max_inbound_frame_size=16_384)
     async with running_server(app, config):
@@ -971,10 +969,7 @@ async def test_h2_inbound_frame_size_limit_ignores_larger_peer_setting() -> None
         await _read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         conn.update_settings({h2.settings.SettingCodes.MAX_FRAME_SIZE: 32 * 1024})
         oversized_settings = [(0x01, 4096)] * 2731
-        writer.write(
-            conn.data_to_send()
-            + _encode_h2_settings(oversized_settings)
-        )
+        writer.write(conn.data_to_send() + _encode_h2_settings(oversized_settings))
         await writer.drain()
         try:
             frames = await _read_raw_h2_frames(reader, timeout=5, stop_at_goaway=True)
@@ -999,14 +994,12 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
         reader, writer, _conn, authority = await open_h2_connection(port=config.port)
         await _read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
 
-        block = hpack.Encoder().encode(
-            [
-                (b':method', b'POST'),
-                (b':scheme', b'http'),
-                (b':authority', authority),
-                (b':path', b'/'),
-            ]
-        )
+        block = hpack.Encoder().encode([
+            (b':method', b'POST'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/'),
+        ])
         padded_data = _encode_h2_frame(
             0x00,
             bytes([255]) + (b'\0' * 255),
@@ -1026,8 +1019,14 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
             writer.close()
             await writer.wait_closed()
 
-    assert any(frame_type == 0x08 and stream_id == 0 for frame_type, stream_id, _payload in frames)
-    assert any(frame_type == 0x08 and stream_id == 1 for frame_type, stream_id, _payload in frames)
+    assert any(
+        frame_type == 0x08 and stream_id == 0
+        for frame_type, stream_id, _payload in frames
+    )
+    assert any(
+        frame_type == 0x08 and stream_id == 1
+        for frame_type, stream_id, _payload in frames
+    )
 
 
 async def test_connection_specific_response_headers_are_passthrough_invalid() -> None:

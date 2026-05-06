@@ -477,7 +477,9 @@ async def test_proxy_protocol_v1_rewrites_scope_from_trusted_peer() -> None:
 
 async def test_proxy_protocol_v1_rejects_overlong_header_line() -> None:
     async def app(scope, receive, send):
-        raise AssertionError('overlong proxy header should fail before request dispatch')
+        raise AssertionError(
+            'overlong proxy header should fail before request dispatch'
+        )
 
     config = Config(
         port=find_free_port(),
@@ -577,7 +579,9 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
     assert body == f'203.0.113.10|0|127.0.0.1|{config.port}'.encode()
 
 
-async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listener() -> None:
+async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listener() -> (
+    None
+):
     async def app(scope, receive, send):
         payload = (
             f'{scope["client"][0]}|{scope["client"][1]}|'

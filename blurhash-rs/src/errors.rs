@@ -1,35 +1,21 @@
-use std::borrow::Cow;
-use std::fmt;
+use pyo3::PyErr;
+use pyo3::exceptions::PyValueError;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Invalid RGB buffer length: expected {expected}, got {got}")]
     InvalidRGBBufferLength { expected: usize, got: usize },
+    #[error("Invalid {axis} component count: expected 1..=9, got {got}")]
     InvalidComponentCount { axis: &'static str, got: u8 },
+    #[error("Invalid blurhash: malformed at index {index}")]
     BlurhashMalformed { index: usize },
+    #[error("Invalid blurhash length: expected {expected}, got {got}")]
     BlurhashLengthMismatch { expected: usize, got: usize },
 }
 
 impl Error {
-    pub(crate) fn message(&self) -> Cow<'static, str> {
-        match self {
-            Self::InvalidRGBBufferLength { expected, got } => Cow::Owned(format!(
-                "Invalid RGB buffer length (expected {expected}, got {got})"
-            )),
-            Self::InvalidComponentCount { axis, got } => Cow::Owned(format!(
-                "Invalid {axis} component count (expected 1..=9, got {got})"
-            )),
-            Self::BlurhashMalformed { index } => {
-                Cow::Owned(format!("Invalid blurhash: malformed at index {index}"))
-            },
-            Self::BlurhashLengthMismatch { expected, got } => Cow::Owned(format!(
-                "Invalid blurhash length (expected {expected}, got {got})"
-            )),
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message().as_ref())
+    pub(crate) fn into_pyerr(self) -> PyErr {
+        PyValueError::new_err(self.to_string())
     }
 }

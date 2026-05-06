@@ -1,4 +1,3 @@
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyListMethods};
 
@@ -80,20 +79,19 @@ pub fn decode<'py, const LATLON: bool>(
 
     while !cursor.is_empty() {
         let coord_index = cursor.index();
-        let dlat =
-            decode_next_value(&mut cursor).map_err(|err| PyValueError::new_err(err.message()))?;
+        let dlat = decode_next_value(&mut cursor).map_err(Error::into_pyerr)?;
         let dlon = decode_next_value(&mut cursor).map_err(|err| match err {
-            Error::UnterminatedPolylineValue { .. } => PyValueError::new_err(
-                Error::IncompletePolylineCoordinate { index: coord_index }.message(),
-            ),
-            err => PyValueError::new_err(err.message()),
+            Error::UnterminatedPolylineValue { .. } => {
+                Error::IncompletePolylineCoordinate { index: coord_index }.into_pyerr()
+            },
+            err => err.into_pyerr(),
         })?;
-        last_lat = last_lat.checked_add(dlat).ok_or_else(|| {
-            PyValueError::new_err(Error::CoordinateOverflow { index: coord_index }.message())
-        })?;
-        last_lon = last_lon.checked_add(dlon).ok_or_else(|| {
-            PyValueError::new_err(Error::CoordinateOverflow { index: coord_index }.message())
-        })?;
+        last_lat = last_lat
+            .checked_add(dlat)
+            .ok_or_else(|| Error::CoordinateOverflow { index: coord_index }.into_pyerr())?;
+        last_lon = last_lon
+            .checked_add(dlon)
+            .ok_or_else(|| Error::CoordinateOverflow { index: coord_index }.into_pyerr())?;
 
         let lat = f64::from(last_lat) * inv_scale;
         let lon = f64::from(last_lon) * inv_scale;

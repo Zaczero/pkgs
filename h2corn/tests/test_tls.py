@@ -62,8 +62,7 @@ def write_mutual_tls_certs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path
     client_csr = tmp_path / 'client.csr'
     client_ext = tmp_path / 'client.ext'
     server_ext.write_text(
-        'subjectAltName=DNS:localhost,IP:127.0.0.1\n'
-        'extendedKeyUsage=serverAuth\n'
+        'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n'
     )
     client_ext.write_text('extendedKeyUsage=clientAuth\n')
     subprocess.run(
@@ -347,8 +346,7 @@ async def test_tls_http1_absolute_form_preserves_tls_scheme(tmp_path: Path) -> N
     async def app(scope, receive, send):
         assert scope['type'] == 'http'
         body = (
-            f'{scope["scheme"]}|{scope["path"]}|'
-            f'{scope["query_string"].decode()}'
+            f'{scope["scheme"]}|{scope["path"]}|{scope["query_string"].decode()}'
         ).encode()
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})

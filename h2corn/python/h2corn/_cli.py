@@ -187,7 +187,8 @@ def _toml_literal(value: _TomlLiteralValue):
             return 'false'
         case str():
             escaped = (
-                value.replace('\\', '\\\\')
+                value
+                .replace('\\', '\\\\')
                 .replace('"', '\\"')
                 .replace('\b', '\\b')
                 .replace('\f', '\\f')
@@ -199,7 +200,7 @@ def _toml_literal(value: _TomlLiteralValue):
         case int() | float():
             return str(value)
         case tuple() | list():
-            return f"[{', '.join(_toml_literal(item) for item in value)}]"
+            return f'[{", ".join(_toml_literal(item) for item in value)}]'
         case unexpected_value:
             assert_never(unexpected_value)
 
@@ -427,13 +428,17 @@ def parse_cli(
     _apply_tcp_bind_sugar(parser, args, base, values)
     config = Config(**values)
     if args.reload and (args.check_config or args.print_config):
-        parser.error('--reload cannot be combined with --check-config or --print-config')
+        parser.error(
+            '--reload cannot be combined with --check-config or --print-config'
+        )
     if (
         args.reload_dir
         or args.reload_include != _DEFAULT_RELOAD_INCLUDE_PATTERNS
         or args.reload_exclude != _DEFAULT_RELOAD_EXCLUDE_PATTERNS
     ) and not args.reload:
-        parser.error('--reload-dir, --reload-include, and --reload-exclude require --reload')
+        parser.error(
+            '--reload-dir, --reload-include, and --reload-exclude require --reload'
+        )
     if args.reload and config.workers != 1:
         parser.error('--reload requires workers=1')
     return (

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from contextlib import nullcontext
 
 from PIL import Image
@@ -17,12 +19,13 @@ __all__ = [
 
 
 class BlurhashDecodeError(Exception):
-    def __init__(self, blurhash: str):
+    def __init__(self, blurhash: str, message: str | None = None):
+        super().__init__(message or f'Invalid blurhash: {blurhash!r}')
         self.blurhash = blurhash
 
 
 def blurhash_encode(
-    image: 'Image.Image | str | bytes | PathLike[str] | PathLike[bytes] | IO[bytes]',
+    image: Image.Image | str | bytes | PathLike[str] | PathLike[bytes] | IO[bytes],
     x_components: int = 4,
     y_components: int = 3,
 ) -> str:
@@ -48,6 +51,6 @@ def blurhash_decode(
     try:
         data = decode_rgb(blurhash, width, height, punch)
     except ValueError as e:
-        raise BlurhashDecodeError(blurhash) from e
+        raise BlurhashDecodeError(blurhash, str(e)) from e
     else:
         return Image.frombuffer('RGB', (width, height), data, 'raw', 'RGB', 0, 1)

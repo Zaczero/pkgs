@@ -473,7 +473,9 @@ def test_parse_cli_accepts_check_config_without_target() -> None:
     assert isinstance(config, Config)
 
 
-def test_parse_cli_version_exits_without_target(capsys: pytest.CaptureFixture[str]) -> None:
+def test_parse_cli_version_exits_without_target(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit) as exc:
         parse_cli(['--version'], {})
 

@@ -72,7 +72,10 @@ async def client():
     ],
 )
 async def test_blocks_localhost(client, url):
-    with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+    with pytest.raises(
+        SSRFProtectionError,
+        match=r'Access denied: .* not globally reachable',
+    ):
         await client.get(url)
 
 
@@ -85,7 +88,10 @@ async def test_blocks_localhost(client, url):
     ],
 )
 async def test_blocks_nat64_with_non_global_embedded_ipv4(client, url):
-    with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+    with pytest.raises(
+        SSRFProtectionError,
+        match=r'Access denied: .* not globally reachable',
+    ):
         await client.get(url)
 
 
@@ -101,7 +107,10 @@ async def test_blocks_nat64_with_non_global_embedded_ipv4(client, url):
     ],
 )
 async def test_blocks_private_networks(client, url):
-    with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+    with pytest.raises(
+        SSRFProtectionError,
+        match=r'Access denied: .* not globally reachable',
+    ):
         await client.get(url)
 
 
@@ -117,6 +126,23 @@ async def test_blocks_private_networks(client, url):
 async def test_allows_global_addresses(client, url):
     with pytest.raises(SuccessError):
         await client.get(url)
+
+
+@pytest.mark.parametrize(
+    'url',
+    [
+        'http://8.8.8.8/',
+        'http://[2001:4860:4860::8888]/',
+    ],
+)
+async def test_ip_literals_do_not_probe_tcp(mock_tcp_fixture, url):
+    async with httpx_ssrf_protection(AsyncClient()) as client:
+        client.event_hooks['request'].append(success_hook)
+
+        with pytest.raises(SuccessError):
+            await client.get(url)
+
+    mock_tcp_fixture.assert_not_called()
 
 
 async def test_dns_resolution_rewrites_host_header():
@@ -166,7 +192,10 @@ async def test_blocks_nat64_with_non_global_embedded_ipv4_after_dns_resolution(
     async with httpx_ssrf_protection(AsyncClient()) as client:
         client.event_hooks['request'].append(success_hook)
 
-        with pytest.raises(SSRFProtectionError, match='not globally reachable'):
+        with pytest.raises(
+            SSRFProtectionError,
+            match=r'Access denied: .* not globally reachable',
+        ):
             await client.get('https://example.com/')
 
 
@@ -188,7 +217,10 @@ async def test_custom_validator_blocks_specific_ips():
     ) as client:
         client.event_hooks['request'].append(success_hook)
 
-        with pytest.raises(SSRFProtectionError, match='failed custom validation'):
+        with pytest.raises(
+            SSRFProtectionError,
+            match=r'Access denied: .* failed custom validation',
+        ):
             await client.get('http://8.8.8.8/')
         assert call_count == 1
 
@@ -197,7 +229,10 @@ async def test_custom_validator_blocks_specific_ips():
         assert call_count == 2
 
         # Another request to blocked IP should still use cache
-        with pytest.raises(SSRFProtectionError, match='failed custom validation'):
+        with pytest.raises(
+            SSRFProtectionError,
+            match=r'Access denied: .* failed custom validation',
+        ):
             await client.get('http://8.8.8.8/different/path')
         assert call_count == 2
 
@@ -223,7 +258,10 @@ async def test_skips_global_check_when_disabled():
         with pytest.raises(SuccessError):
             await client.get('http://192.168.1.1/')
 
-        with pytest.raises(SSRFProtectionError, match='failed custom validation'):
+        with pytest.raises(
+            SSRFProtectionError,
+            match=r'Access denied: .* failed custom validation',
+        ):
             await client.get('http://127.0.0.1/')
 
 

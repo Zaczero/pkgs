@@ -118,6 +118,7 @@ dependencies = [
  "arrayvec",
  "pyo3",
  "pyo3-build-config",
+ "thiserror",
 ]
 
 [[package]]
@@ -443,6 +444,7 @@ dependencies = [
  "parking_lot",
  "pyo3",
  "pyo3-build-config",
+ "thiserror",
 ]
 
 [[package]]
@@ -496,6 +498,7 @@ version = "1.4.1"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
+ "thiserror",
 ]
 
 [[package]]
@@ -543,6 +546,7 @@ version = "1.4.0"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
+ "thiserror",
 ]
 
 [[package]]
@@ -936,6 +940,7 @@ dependencies = [
  "sha1",
  "sha2",
  "subtle",
+ "thiserror",
 ]
 
 [[package]]
@@ -1110,6 +1115,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "rand",
+ "thiserror",
 ]
 
 [[package]]

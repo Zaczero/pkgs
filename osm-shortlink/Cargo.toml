@@ -9,6 +9,7 @@ name = "osm_shortlink"
 
 [dependencies]
 pyo3 = "0.28.3"
+thiserror = "2.0"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

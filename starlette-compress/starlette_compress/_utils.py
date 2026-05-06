@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-import re
 from functools import lru_cache
-
-from starlette.datastructures import Headers
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from starlette.types import Message
 
-_accept_encoding_re = re.compile(r'[a-z]{2,8}')
+_SUPPORTED_ENCODINGS = frozenset({'br', 'gzip', 'zstd'})
+
+
+def _accepts_encoding_quality(params: list[str]) -> bool:
+    for param in params:
+        key, _, value = param.strip().partition('=')
+        if key.strip().lower() != 'q':
+            continue
+        try:
+            return float(value) > 0
+        except ValueError:
+            return False
+    return True
 
 
 @lru_cache(maxsize=128)
@@ -17,9 +26,31 @@ def parse_accept_encoding(accept_encoding: str) -> frozenset[str]:
     """Parse the accept encoding header and return a set of supported encodings.
 
     >>> _parse_accept_encoding('br;q=1.0, gzip;q=0.8, *;q=0.1')
-    {'br', 'gzip'}
+    {'br', 'gzip', 'zstd'}
     """
-    return frozenset(_accept_encoding_re.findall(accept_encoding))
+    accepted: set[str] = set()
+    rejected: set[str] = set()
+    wildcard = False
+
+    for item in accept_encoding.split(','):
+        coding, *params = item.split(';')
+        coding = coding.strip().lower()
+        if not coding:
+            continue
+
+        if _accepts_encoding_quality(params):
+            if coding == '*':
+                wildcard = True
+            elif coding in _SUPPORTED_ENCODINGS:
+                accepted.add(coding)
+        else:
+            rejected.add(coding)
+            accepted.discard(coding)
+
+    if wildcard:
+        accepted.update(_SUPPORTED_ENCODINGS - rejected)
+
+    return frozenset(accepted)
 
 
 # Based on
@@ -108,20 +139,23 @@ def remove_compress_type(content_type: str) -> None:
 
 def is_start_message_satisfied(message: Message) -> bool:
     """Check if response should be compressed based on the start message."""
-    headers = Headers(raw=message['headers'])
+    content_type: bytes | None = None
 
-    # must not already be compressed
-    for content_encoding in headers.getlist('Content-Encoding'):
-        for v in content_encoding.split(','):
-            v = v.strip()
-            if v and v.lower() != 'identity':
-                return False
+    for name, value in message['headers']:
+        name = name.lower()
+        if name == b'content-encoding':
+            for encoding in value.split(b','):
+                encoding = encoding.strip()
+                if encoding and encoding.lower() != b'identity':
+                    return False
+        elif name == b'content-type':
+            content_type = value
 
-    # content-type header must be present
-    content_type = headers.get('Content-Type')
-    if not content_type:
+    if content_type is None:
         return False
 
-    # must be a compressible content-type
-    basic_content_type = content_type.split(';', maxsplit=1)[0].strip()
-    return basic_content_type in _compress_content_types
+    basic_content_type = content_type.split(b';', maxsplit=1)[0].strip()
+    try:
+        return basic_content_type.decode('ascii') in _compress_content_types
+    except UnicodeDecodeError:
+        return False

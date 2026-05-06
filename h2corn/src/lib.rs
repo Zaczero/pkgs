@@ -40,7 +40,6 @@ use header_value::header_value_is_valid;
 use parking_lot::RwLock;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use pyo3::conversion::FromPyObjectOwned;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::OnceExt;
 use pyo3::types::PyAnyMethods;
@@ -103,9 +102,7 @@ impl<'py> PyConfig<'py> {
             "none" => Ok(ClientCertMode::None),
             "optional" => Ok(ClientCertMode::Optional),
             "required" => Ok(ClientCertMode::Required),
-            value => Err(PyValueError::new_err(format!(
-                "invalid cert_reqs mode: {value:?}"
-            ))),
+            value => Err(into_pyerr(ConfigError::invalid_client_cert_mode(value))),
         }
     }
 
@@ -238,28 +235,22 @@ impl<'py> PyConfig<'py> {
         let (certfile, keyfile) = match (certfile, keyfile) {
             (None, None) => {
                 if ca_certs.is_some() || cert_reqs != ClientCertMode::None {
-                    return Err(PyValueError::new_err(
-                        "client certificate verification requires certfile and keyfile",
+                    return Err(into_pyerr(
+                        ConfigError::ClientCertVerificationRequiresCertAndKey,
                     ));
                 }
                 return Ok(None);
             },
             (Some(certfile), Some(keyfile)) => (certfile, keyfile),
             _ => {
-                return Err(PyValueError::new_err(
-                    "certfile and keyfile must be configured together",
-                ));
+                return Err(into_pyerr(ConfigError::CertAndKeyMustBeConfiguredTogether));
             },
         };
         if ca_certs.is_some() && cert_reqs == ClientCertMode::None {
-            return Err(PyValueError::new_err(
-                "ca_certs requires cert_reqs to be optional or required",
-            ));
+            return Err(into_pyerr(ConfigError::CaCertsRequiresClientCerts));
         }
         if cert_reqs != ClientCertMode::None && ca_certs.is_none() {
-            return Err(PyValueError::new_err(
-                "cert_reqs optional/required requires ca_certs",
-            ));
+            return Err(into_pyerr(ConfigError::ClientCertsRequireCaCerts));
         }
         if binds.iter().any(|bind| {
             matches!(
@@ -267,9 +258,7 @@ impl<'py> PyConfig<'py> {
                 BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. }
             )
         }) {
-            return Err(PyValueError::new_err(
-                "TLS is supported only on TCP listeners",
-            ));
+            return Err(into_pyerr(ConfigError::TlsRequiresTcpListeners));
         }
         tls::build_tls_config(&certfile, &keyfile, ca_certs.as_deref(), cert_reqs, http1)
             .map(Some)

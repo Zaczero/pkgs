@@ -4,6 +4,15 @@ use std::simd::u64x2;
 use crate::constants::{
     CHARSET, DECODE_INVALID, DECODE_LUT, DECODE_OFFSET, X_SCALE, X_SCALE_INV, Y_SCALE, Y_SCALE_INV,
 };
+use crate::errors::{DecodeError, EncodeError};
+
+const COORD_BITS: u8 = 32;
+const MIN_ZOOM_BIT_COUNT: u8 = 8;
+const BITS_PER_DIGIT: u8 = 3;
+pub const MAX_ZOOM: u8 = 22;
+const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
+const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
+const _: () = assert!(MAX_ZOOM_BIT_COUNT % BITS_PER_DIGIT == 0);
 
 fn interleave_bits(x: u32, y: u32) -> u64 {
     let mut v = u64x2::from_array([u64::from(x), u64::from(y)]);
@@ -16,7 +25,11 @@ fn interleave_bits(x: u32, y: u32) -> u64 {
     (sx << 1) | sy
 }
 
-pub fn encode(lon: f64, lat: f64, zoom: u8) -> String {
+pub fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
+    if unlikely(zoom > MAX_ZOOM) {
+        return Err(EncodeError::ZoomOutOfRange { zoom });
+    }
+
     // how many 180° half-turns (parity decides whether lon flips by 180°)
     let normalized_lat = lat + 90.0;
     let half_turns = (normalized_lat / 180.0).floor() as i64;
@@ -26,9 +39,9 @@ pub fn encode(lon: f64, lat: f64, zoom: u8) -> String {
     let encoded_y = ((180.0 - (normalized_lat.rem_euclid(360.0) - 180.0).abs()) * Y_SCALE) as u32;
     let cell = interleave_bits(encoded_x, encoded_y);
 
-    let bit_count = zoom + 8;
-    let padding = (bit_count % 3) as usize;
-    let digit_count = bit_count.div_ceil(3) as usize;
+    let bit_count = zoom + MIN_ZOOM_BIT_COUNT;
+    let padding = (bit_count % BITS_PER_DIGIT) as usize;
+    let digit_count = bit_count.div_ceil(BITS_PER_DIGIT) as usize;
 
     let mut out = String::with_capacity(digit_count + padding);
 
@@ -41,14 +54,14 @@ pub fn encode(lon: f64, lat: f64, zoom: u8) -> String {
         out.push('-');
     }
 
-    out
+    Ok(out)
 }
 
-pub fn decode(s: &str) -> (f64, f64, u8) {
+pub fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
     let mut x = 0;
     let mut y = 0;
-    let mut z = 0;
-    let mut offsets = 0_u8;
+    let mut z = 0_u8;
+    let mut offset_bits = 0_u8;
 
     for c in s.bytes() {
         let packed = DECODE_LUT[c as usize];
@@ -56,24 +69,37 @@ pub fn decode(s: &str) -> (f64, f64, u8) {
             continue;
         }
         if packed == DECODE_OFFSET {
-            offsets += 1;
+            offset_bits = if offset_bits == 0 {
+                BITS_PER_DIGIT - 1
+            } else {
+                offset_bits - 1
+            };
             continue;
         }
 
-        x = (x << 3) | u32::from(packed & 0b111);
-        y = (y << 3) | u32::from(packed >> 3);
-        z += 3;
+        if unlikely(z == MAX_ZOOM_BIT_COUNT) {
+            return Err(DecodeError::TooLong);
+        }
+
+        x = (x << BITS_PER_DIGIT) | u32::from(packed & 0b111);
+        y = (y << BITS_PER_DIGIT) | u32::from(packed >> 3);
+        z += BITS_PER_DIGIT;
     }
 
-    let shift = 32 - z;
+    if unlikely(z < MIN_ZOOM_BIT_COUNT + offset_bits) {
+        return Err(DecodeError::TooShort);
+    }
+
+    let shift = COORD_BITS - z;
     x <<= shift;
     y <<= shift;
-    z -= 8;
-    z -= (3 - offsets) % 3;
 
-    (
+    z -= MIN_ZOOM_BIT_COUNT;
+    z -= offset_bits;
+
+    Ok((
         (f64::from(x) * X_SCALE_INV) - 180.0,
         (f64::from(y) * Y_SCALE_INV) - 90.0,
         z,
-    )
+    ))
 }

@@ -652,7 +652,11 @@ def test_build_sockets_reuses_kernel_allocated_port_across_tcp_zero_binds(
 
         def getsockname(self):
             host = '::1' if self.family == _socket.socket.AF_INET6 else '127.0.0.1'
-            return (host, self._port, 0, 0) if self.family == _socket.socket.AF_INET6 else (host, self._port)
+            return (
+                (host, self._port, 0, 0)
+                if self.family == _socket.socket.AF_INET6
+                else (host, self._port)
+            )
 
         def close(self) -> None:
             calls.append(('close', (self.family,)))
@@ -671,7 +675,9 @@ def test_build_sockets_reuses_kernel_allocated_port_across_tcp_zero_binds(
             )
         ],
     )
-    monkeypatch.setattr(_socket.socket, 'socket', lambda family, *_args: FakeSocket(family))
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda family, *_args: FakeSocket(family)
+    )
 
     sockets, _owned_socket_paths = _socket._build_sockets(config)
 
@@ -762,7 +768,9 @@ def test_build_sockets_rolls_back_open_listeners_on_partial_failure(
             (_socket.socket.AF_INET, _socket.socket.SOCK_STREAM, 0, '', (host, port))
         ],
     )
-    monkeypatch.setattr(_socket.socket, 'socket', lambda family, *_args: FakeSocket(family))
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda family, *_args: FakeSocket(family)
+    )
 
     with pytest.raises(OSError, match='bind failed'):
         _socket._build_sockets(Config(bind=('127.0.0.1:8000', '127.0.0.1:8001')))

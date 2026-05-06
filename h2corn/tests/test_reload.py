@@ -33,7 +33,9 @@ def test_reload_snapshot_ignores_hidden_files_by_default(tmp_path: Path) -> None
     visible.write_text('value = 1\n')
     hidden.write_text('value = 2\n')
 
-    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
+    snapshot = _watch_file_snapshot(
+        (tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*')
+    )
 
     assert visible in snapshot
     assert hidden not in snapshot
@@ -64,13 +66,17 @@ def test_reload_snapshot_respects_exclude_patterns(tmp_path: Path) -> None:
     assert excluded not in snapshot
 
 
-def test_reload_snapshot_ignores_dunder_pypackages_dir_by_default(tmp_path: Path) -> None:
+def test_reload_snapshot_ignores_dunder_pypackages_dir_by_default(
+    tmp_path: Path,
+) -> None:
     package_dir = tmp_path / '__pypackages__'
     package_dir.mkdir()
     generated = package_dir / 'generated.py'
     generated.write_text('value = 1\n')
 
-    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*'))
+    snapshot = _watch_file_snapshot(
+        (tmp_path,), ('*.py',), ('.*', '.py[cod]', '.sw.*', '~*')
+    )
 
     assert generated not in snapshot
 
@@ -90,19 +96,17 @@ def test_reload_dirs_override_default_watch_root(tmp_path: Path) -> None:
 
 
 def test_child_argv_strips_reload_parent_flags() -> None:
-    child_argv = _child_argv(
-        [
-            '--reload',
-            '--reload-dir',
-            'src',
-            '--reload-include=*.mo',
-            '--reload-exclude',
-            'tests',
-            '--workers',
-            '1',
-            'example:app',
-        ]
-    )
+    child_argv = _child_argv([
+        '--reload',
+        '--reload-dir',
+        'src',
+        '--reload-include=*.mo',
+        '--reload-exclude',
+        'tests',
+        '--workers',
+        '1',
+        'example:app',
+    ])
 
     assert child_argv == ['--workers', '1', 'example:app']
 
@@ -165,7 +169,9 @@ def test_changed_paths_detects_modified_added_and_removed_files(tmp_path: Path) 
     assert _changed_paths(previous, current) == (added, modified, removed)
 
 
-def test_reload_change_message_includes_changed_path(tmp_path: Path, monkeypatch) -> None:
+def test_reload_change_message_includes_changed_path(
+    tmp_path: Path, monkeypatch
+) -> None:
     changed = tmp_path / 'app.py'
     monkeypatch.chdir(tmp_path)
 
@@ -174,7 +180,9 @@ def test_reload_change_message_includes_changed_path(tmp_path: Path, monkeypatch
     assert message == 'Reload change detected: app.py; restarting'
 
 
-def test_reload_change_message_summarizes_many_paths(tmp_path: Path, monkeypatch) -> None:
+def test_reload_change_message_summarizes_many_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     changed = tuple(tmp_path / f'file{i}.py' for i in range(5))
 

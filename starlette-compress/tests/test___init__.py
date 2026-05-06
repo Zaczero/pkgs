@@ -20,7 +20,7 @@ from starlette_compress import (
     add_compress_type,
     remove_compress_type,
 )
-from starlette_compress._utils import parse_accept_encoding
+from starlette_compress._utils import is_start_message_satisfied, parse_accept_encoding
 
 TestClientFactory = Callable[[ASGIApp], TestClient]
 
@@ -300,5 +300,28 @@ def test_compress_registered_content_type(test_client_factory: TestClientFactory
 
 def test_parse_accept_encoding():
     assert parse_accept_encoding('') == frozenset()
-    assert parse_accept_encoding('gzip, deflate') == {'gzip', 'deflate'}
-    assert parse_accept_encoding('br;q=1.0,gzip;q=0.8, *;q=0.1') == {'br', 'gzip'}
+    assert parse_accept_encoding('gzip, deflate') == {'gzip'}
+    assert parse_accept_encoding('br;q=1.0,gzip;q=0.8, *;q=0.1') == {
+        'br',
+        'gzip',
+        'zstd',
+    }
+    assert parse_accept_encoding('gzip;q=0, br;q=0.5') == {'br'}
+    assert parse_accept_encoding('gzip;q=0, *;q=0.1') == {'br', 'zstd'}
+
+
+def test_is_start_message_satisfied_reads_raw_headers():
+    assert is_start_message_satisfied(
+        {
+            'headers': [
+                (b'Content-Encoding', b'identity, identity'),
+                (b'Content-Type', b'text/html; charset=utf-8'),
+            ],
+        },
+    )
+    assert not is_start_message_satisfied(
+        {'headers': [(b'content-encoding', b'gzip'), (b'content-type', b'text/html')]},
+    )
+    assert not is_start_message_satisfied({
+        'headers': [(b'content-type', b'image/png')]
+    })

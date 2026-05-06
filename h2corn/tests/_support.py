@@ -286,9 +286,11 @@ async def wait_for_config_binds(config: Config, timeout: float = 5.0) -> None:
                 pending_ports.append((spec.host, spec.port))
             elif isinstance(spec, UnixBindSpec):
                 pending_unix.append(spec.path)
-        if pending_ports is not None and all(
-            _port_is_open(host, port) for host, port in pending_ports
-        ) and all(path.exists() for path in pending_unix):
+        if (
+            pending_ports is not None
+            and all(_port_is_open(host, port) for host, port in pending_ports)
+            and all(path.exists() for path in pending_unix)
+        ):
             return
         if loop.time() >= deadline:
             raise TimeoutError(f'timed out waiting for listeners {config.bind}')

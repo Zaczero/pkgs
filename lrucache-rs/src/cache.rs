@@ -33,13 +33,13 @@
 use std::num::NonZeroUsize;
 
 use parking_lot::Mutex;
-use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::types::{PyAny, PyTuple, PyType};
 use pyo3::{Py, ffi};
 
-use crate::store::{MAX_CAPACITY, Store};
+use crate::errors::{CacheError, missing_key};
+use crate::store::Store;
 
 #[pyclass(frozen, module = "lrucache_rs._lib")]
 pub struct LRUCache {
@@ -60,11 +60,9 @@ impl LRUCache {
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
         let maxsize = NonZeroUsize::new(maxsize)
-            .ok_or_else(|| PyValueError::new_err("maxsize must be positive"))?;
-        if maxsize.get() > MAX_CAPACITY {
-            return Err(PyValueError::new_err(format!(
-                "maxsize must be <= {MAX_CAPACITY}",
-            )));
+            .ok_or_else(|| CacheError::MaxsizeMustBePositive.into_pyerr())?;
+        if maxsize.get() > crate::store::MAX_CAPACITY {
+            return Err(CacheError::MaxsizeTooLarge.into_pyerr());
         }
         Ok(Self {
             inner: Mutex::new(Store::new(maxsize)),
@@ -92,7 +90,7 @@ impl LRUCache {
         let value = guard.touch_get(py, hash, |stored| eq_keys(stored, key))?;
         drop(guard);
         let Some(value) = value else {
-            return Err(make_key_error(key));
+            return Err(missing_key(key));
         };
         Ok(value.into_bound(py))
     }
@@ -123,7 +121,7 @@ impl LRUCache {
         if removed.is_some() {
             Ok(())
         } else {
-            Err(make_key_error(key))
+            Err(missing_key(key))
         }
     }
 
@@ -179,7 +177,7 @@ impl LRUCache {
         let popped = guard.pop_lru();
         drop(guard);
         let Some(pair) = popped else {
-            return Err(PyKeyError::new_err("popitem: cache is empty"));
+            return Err(CacheError::PopitemEmpty.into_pyerr());
         };
         pair.into_pyobject(py)
     }
@@ -224,11 +222,4 @@ fn eq_keys(stored: &Py<PyAny>, lookup: &Bound<'_, PyAny>) -> PyResult<bool> {
     } else {
         Ok(cmp == 1)
     }
-}
-
-fn make_key_error(key: &Bound<'_, PyAny>) -> PyErr {
-    let repr = key
-        .repr()
-        .map_or_else(|_| String::from("key not found"), |s| s.to_string());
-    PyKeyError::new_err(repr)
 }

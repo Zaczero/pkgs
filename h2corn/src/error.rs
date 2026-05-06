@@ -99,6 +99,8 @@ pub enum ConfigError {
     InvalidFiniteDuration { name: &'static str },
     #[error("invalid proxy_protocol mode: {value:?}")]
     InvalidProxyProtocolMode { value: Box<str> },
+    #[error("invalid cert_reqs mode: {value:?}")]
+    InvalidClientCertMode { value: Box<str> },
     #[error("bind metadata length does not match configured listeners")]
     BindMetadataLengthMismatch,
     #[error("invalid response header {value:?}: expected 'name: value'")]
@@ -113,6 +115,16 @@ pub enum ConfigError {
         value: Box<str>,
         detail: &'static str,
     },
+    #[error("client certificate verification requires certfile and keyfile")]
+    ClientCertVerificationRequiresCertAndKey,
+    #[error("certfile and keyfile must be configured together")]
+    CertAndKeyMustBeConfiguredTogether,
+    #[error("ca_certs requires cert_reqs to be optional or required")]
+    CaCertsRequiresClientCerts,
+    #[error("cert_reqs optional/required requires ca_certs")]
+    ClientCertsRequireCaCerts,
+    #[error("TLS is supported only on TCP listeners")]
+    TlsRequiresTcpListeners,
     #[error(
         "runtime_threads is process-global and was already initialized with {initialized_threads}; cannot change it to {worker_threads}"
     )]
@@ -141,6 +153,12 @@ impl ConfigError {
 
     pub(crate) fn invalid_proxy_protocol_mode(value: &str) -> Self {
         Self::InvalidProxyProtocolMode {
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn invalid_client_cert_mode(value: &str) -> Self {
+        Self::InvalidClientCertMode {
             value: value.into(),
         }
     }

@@ -144,7 +144,7 @@ class _LifespanRunner:
                 case 'lifespan.startup.failed':
                     await self._discard_task()
                     raise RuntimeError(
-                        f"lifespan startup failed: {message.get('message', '')}"
+                        f'lifespan startup failed: {message.get("message", "")}'
                     )
                 case _ if not startup_seen:
                     await self._discard_task()
@@ -170,7 +170,9 @@ class _LifespanRunner:
         ):
             raise exc
         if required:
-            raise RuntimeError('lifespan startup is required but the app does not support it')
+            raise RuntimeError(
+                'lifespan startup is required but the app does not support it'
+            )
         return
 
     async def shutdown(self):
@@ -194,7 +196,7 @@ class _LifespanRunner:
             case 'lifespan.shutdown.failed':
                 await self._discard_task()
                 raise RuntimeError(
-                    f"lifespan shutdown failed: {message.get('message', '')}"
+                    f'lifespan shutdown failed: {message.get("message", "")}'
                 )
             case message_type:
                 await self._discard_task()

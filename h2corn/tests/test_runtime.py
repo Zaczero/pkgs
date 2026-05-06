@@ -80,7 +80,7 @@ async def _wait_for_listening_port(
             line = await process.stderr.readline()
             if not line:
                 raise AssertionError('server exited before printing listening banner')
-            match = re.search(rb"Listening on http://127\.0\.0\.1:(\d+)", line)
+            match = re.search(rb'Listening on http://127\.0\.0\.1:(\d+)', line)
             if match is not None:
                 return int(match.group(1))
 

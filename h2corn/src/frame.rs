@@ -316,18 +316,17 @@ where
         &mut self,
         max_frame_size: usize,
     ) -> Result<Option<RawFrame>, H2CornError> {
-        if !self.read_at_least(9).await? {
+        if !self.read_at_least(FRAME_HEADER_LEN).await? {
             if self.buffer.is_empty() {
                 return Ok(None);
             }
             return H2Error::FrameHeaderClosed.err();
         }
 
-        let payload_len = decode_u24(
-            self.buffer[..3]
-                .try_into()
-                .expect("frame header prefix is buffered"),
-        );
+        let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
+            unreachable!("frame header is buffered")
+        };
+        let payload_len = decode_u24([header[0], header[1], header[2]]);
         if payload_len > max_frame_size {
             return H2Error::frame_length_exceeds_peer_max(payload_len, max_frame_size).err();
         }
@@ -337,17 +336,15 @@ where
             return H2Error::FramePayloadClosed.err();
         }
 
-        let header = &self.buffer[..FRAME_HEADER_LEN];
+        let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
+            unreachable!("frame header is buffered")
+        };
         let frame_type = FrameType::new(header[3]);
         let flags = FrameFlags::new(header[4]);
         let stream_id = StreamId::new(
-            u32::from_be_bytes(
-                header[5..9]
-                    .try_into()
-                    .expect("frame stream id is buffered"),
-            ) & STREAM_ID_MASK,
+            u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & STREAM_ID_MASK,
         );
-        self.buffer.advance(9);
+        self.buffer.advance(FRAME_HEADER_LEN);
         let payload = self.buffer.split_to(payload_len).freeze();
 
         Ok(Some(RawFrame {

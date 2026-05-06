@@ -97,7 +97,9 @@ def _reload_change_message(changed_paths: tuple[Path, ...]):
     path = _display_reload_path(changed_paths[0])
     if len(changed_paths) == 1:
         return f'Reload change detected: {path}; restarting'
-    return f'Reload changes detected: {path} (+{len(changed_paths) - 1} more); restarting'
+    return (
+        f'Reload changes detected: {path} (+{len(changed_paths) - 1} more); restarting'
+    )
 
 
 def _watch_dirs(
@@ -220,9 +222,7 @@ def _inotify_needs_rebuild(mask: int):
 
 
 class _InotifyNotifier:
-    def __init__(
-        self, roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]
-    ):
+    def __init__(self, roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
         self._roots = roots
         self._exclude_patterns = exclude_patterns
         self._fd = -1
@@ -246,6 +246,8 @@ class _InotifyNotifier:
         return self._fd
 
     def consume(self):
+        event_size = _INOTIFY_EVENT.size
+        unpack_event = _INOTIFY_EVENT.unpack_from
         needs_rebuild = False
         while True:
             try:
@@ -255,10 +257,11 @@ class _InotifyNotifier:
             if not chunk:
                 return needs_rebuild
             offset = 0
-            while offset + _INOTIFY_EVENT.size <= len(chunk):
-                _, mask, _, name_len = _INOTIFY_EVENT.unpack_from(chunk, offset)
+            chunk_len = len(chunk)
+            while offset + event_size <= chunk_len:
+                _, mask, _, name_len = unpack_event(chunk, offset)
                 needs_rebuild |= _inotify_needs_rebuild(mask)
-                offset += _INOTIFY_EVENT.size + name_len
+                offset += event_size + name_len
 
     def rebuild(self):
         self._rebuild()
@@ -389,9 +392,7 @@ def _child_argv(argv: Sequence[str] | None):
         if arg in {'--reload-dir', '--reload-include', '--reload-exclude'}:
             next(args, None)
             continue
-        if arg.startswith(
-            ('--reload-dir=', '--reload-include=', '--reload-exclude=')
-        ):
+        if arg.startswith(('--reload-dir=', '--reload-include=', '--reload-exclude=')):
             continue
         child_args.append(arg)
     return child_args
@@ -481,10 +482,13 @@ def _serve_with_reload(
         reload_excludes,
     )
     selector = selectors.DefaultSelector()
-    with _signal_wakeup_pipe() as wakeup_fd, _swap_signal_handlers({
-        signal.SIGINT: _handle_stop,
-        signal.SIGTERM: _handle_stop,
-    }):
+    with (
+        _signal_wakeup_pipe() as wakeup_fd,
+        _swap_signal_handlers({
+            signal.SIGINT: _handle_stop,
+            signal.SIGTERM: _handle_stop,
+        }),
+    ):
         selector.register(wakeup_fd, selectors.EVENT_READ)
         selector.register(notifier.fileno(), selectors.EVENT_READ)
         try:

@@ -56,15 +56,15 @@ def _parse_octal(value: str):
 
 
 def _parse_csv_tuple(value: str):
-    return tuple(item.strip() for item in value.split(',') if item.strip())
+    return tuple(stripped for item in value.split(',') if (stripped := item.strip()))
 
 
 def _parse_bind_env(value: str):
     return tuple(
-        item.strip()
+        stripped
         for line in value.splitlines()
         for item in line.split(',')
-        if item.strip()
+        if (stripped := item.strip())
     )
 
 
@@ -811,7 +811,9 @@ class Config:
         if self.cert_reqs != 'none' and self.ca_certs is None:
             raise ValueError('cert_reqs optional/required requires ca_certs')
         if (self.ca_certs is not None or self.cert_reqs != 'none') and not tls_enabled:
-            raise ValueError('client certificate verification requires certfile and keyfile')
+            raise ValueError(
+                'client certificate verification requires certfile and keyfile'
+            )
         if tls_enabled:
             for bind in self.bind:
                 match _parse_bind_spec(bind):

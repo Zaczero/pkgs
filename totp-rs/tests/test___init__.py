@@ -222,17 +222,26 @@ def test_secret_accepts_base32_str(
 
 
 def test_invalid_inputs() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='Invalid step_seconds: must be non-zero'):
         totp_time_window(0, step_seconds=0)
 
     for digits in (0, 10):
-        with pytest.raises(ValueError):
+        with pytest.raises(
+            ValueError,
+            match=f'Invalid digits: expected 1..=9, got {digits}',
+        ):
             totp_generate(SECRET_SHA1, digits=digits)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match='Invalid algorithm: expected sha1, sha256, or sha512',
+    ):
         totp_generate(SECRET_SHA1, algorithm='md5')  # type: ignore
 
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match='Invalid arguments: time and time_window cannot both be set',
+    ):
         totp_generate(SECRET_SHA1, time=0, time_window=0)
 
     for code in ('not-a-code', '12345', '1234567'):

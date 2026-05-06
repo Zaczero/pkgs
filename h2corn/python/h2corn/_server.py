@@ -252,7 +252,9 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
 
 
 def _serve_cli_target(import_settings: ImportSettings, config: Config) -> None:
-    if sys.platform != 'win32' and (config.user is not None or config.group is not None):
+    if sys.platform != 'win32' and (
+        config.user is not None or config.group is not None
+    ):
         from ._supervisor import _serve_supervisor
 
         with _process_umask(config), _pidfile(config):

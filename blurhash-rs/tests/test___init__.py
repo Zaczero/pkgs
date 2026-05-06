@@ -87,9 +87,15 @@ def test_encode_accepts_rgba_input_ignores_alpha_matches_rgb() -> None:
 
 def test_encode_rejects_invalid_component_count() -> None:
     img = Image.new('RGB', (1, 1), (255, 0, 0))
-    with pytest.raises(ValueError, match='Invalid x component count'):
+    with pytest.raises(
+        ValueError,
+        match=r'Invalid x component count: expected 1\.\.=9, got 0',
+    ):
         blurhash_encode(img, 0, 1)
-    with pytest.raises(ValueError, match='Invalid y component count'):
+    with pytest.raises(
+        ValueError,
+        match=r'Invalid y component count: expected 1\.\.=9, got 10',
+    ):
         blurhash_encode(img, 1, 10)
 
 
@@ -119,6 +125,7 @@ def test_decode_rejects_out_of_range_ac_component() -> None:
     with pytest.raises(BlurhashDecodeError) as excinfo:
         blurhash_decode('100000~~', 8, 8)
     assert excinfo.value.blurhash == '100000~~'
+    assert str(excinfo.value) == 'Invalid blurhash: malformed at index 6'
 
 
 def test_decode_whitespace_suffix_is_ignored() -> None:

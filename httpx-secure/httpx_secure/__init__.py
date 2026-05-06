@@ -44,6 +44,53 @@ class SSRFProtectionError(RequestError):
         self.ip_addr = ip_addr
         self.port = port
 
+    @classmethod
+    def invalid_ip(
+        cls,
+        ip_str: str,
+        *,
+        hostname: str,
+        port: int,
+    ) -> SSRFProtectionError:
+        return cls(
+            f'Invalid IP address format: {ip_str!r}',
+            hostname=hostname,
+            ip_addr=None,
+            port=port,
+        )
+
+    @classmethod
+    def non_global(
+        cls,
+        ip_str: str,
+        *,
+        hostname: str,
+        ip_addr: _IPAddress,
+        port: int,
+    ) -> SSRFProtectionError:
+        return cls(
+            f'Access denied: IP address {ip_str!r} is not globally reachable',
+            hostname=hostname,
+            ip_addr=ip_addr,
+            port=port,
+        )
+
+    @classmethod
+    def custom_validation_failed(
+        cls,
+        ip_str: str,
+        *,
+        hostname: str,
+        ip_addr: _IPAddress,
+        port: int,
+    ) -> SSRFProtectionError:
+        return cls(
+            f'Access denied: IP address {ip_str!r} failed custom validation',
+            hostname=hostname,
+            ip_addr=ip_addr,
+            port=port,
+        )
+
 
 class _DNSCache:
     __slots__ = ('_cache', '_max_size', '_ttl')
@@ -125,6 +172,11 @@ class _SSRFProtectionHook:
 
     async def _resolve(self, request: Request, hostname: str, port: int) -> str:
         try:
+            return str(ip_address(hostname))
+        except ValueError:
+            pass
+
+        try:
             with fail_after(self.connect_timeout):
                 async with await connect_tcp(
                     hostname,
@@ -146,10 +198,9 @@ class _SSRFProtectionHook:
         try:
             ip_addr = ip_address(ip_str)
         except ValueError as e:
-            raise SSRFProtectionError(
-                f'Invalid IP address format: {ip_str!r}',
+            raise SSRFProtectionError.invalid_ip(
+                ip_str,
                 hostname=hostname,
-                ip_addr=None,
                 port=port,
             ) from e
 
@@ -161,8 +212,8 @@ class _SSRFProtectionHook:
                 and not IPv4Address(ip_addr.packed[-4:]).is_global
             )
         ):
-            raise SSRFProtectionError(
-                f'Access denied: IP address {ip_str!r} is not globally reachable',
+            raise SSRFProtectionError.non_global(
+                ip_str,
                 hostname=hostname,
                 ip_addr=ip_addr,
                 port=port,
@@ -173,8 +224,8 @@ class _SSRFProtectionHook:
             if isawaitable(result):
                 result = await result
             if not result:
-                raise SSRFProtectionError(
-                    f'Access denied: IP address {ip_str!r} failed custom validation',
+                raise SSRFProtectionError.custom_validation_failed(
+                    ip_str,
                     hostname=hostname,
                     ip_addr=ip_addr,
                     port=port,

@@ -28,6 +28,20 @@ def test_encode_wrapping():
     assert shortlink_encode(720, 0, 5) == shortlink_encode(0, 0, 5)
 
 
+def test_encode_supports_max_zoom_without_panicking():
+    encoded = shortlink_encode(0, 0, 22)
+    decoded = shortlink_decode(encoded)
+    assert decoded[2] == 22
+
+
+def test_encode_rejects_unsupported_zoom():
+    with pytest.raises(
+        ValueError,
+        match='Invalid zoom: must be between 0 and 22, got 23',
+    ):
+        shortlink_encode(0, 0, 23)
+
+
 @pytest.mark.parametrize(
     'lat',
     [-91, -90, 90, 91],
@@ -63,6 +77,19 @@ def test_decode(input, expected):
     decoded = shortlink_decode(input)
     for a, b in zip(expected, decoded):
         assert isclose(a, b, abs_tol=0.01)
+
+
+@pytest.mark.parametrize(
+    'input',
+    [
+        'X',
+        'A' * 11,
+        '---',
+    ],
+)
+def test_decode_rejects_malformed_input(input):
+    with pytest.raises(ValueError, match='Invalid shortlink'):
+        shortlink_decode(input)
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,9 @@ from jinja2_htmlmin import _restore_placeholders, minify_loader
 
 
 def render_template(source: str, **context: object) -> str:
-    return render_template_with_environment(Environment(autoescape=True), source, **context)
+    return render_template_with_environment(
+        Environment(autoescape=True), source, **context
+    )
 
 
 def render_template_with_environment(
@@ -108,9 +110,7 @@ def test_placeholder_index_is_not_limited_to_five_digits():
 
 def test_multiline_jinja_syntax_is_preserved():
     rendered = render_template(
-        '<p>{{\n value\n}}</p>'
-        '{%\n if ok\n%}<b>yes</b>{% endif %}'
-        '{#\n hidden\n#}',
+        '<p>{{\n value\n}}</p>{%\n if ok\n%}<b>yes</b>{% endif %}{#\n hidden\n#}',
         value='content',
         ok=True,
     )

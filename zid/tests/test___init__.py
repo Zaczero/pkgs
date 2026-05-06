@@ -32,7 +32,10 @@ def test_zids_n_underflow():
 
 
 def test_zids_n_too_large():
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match='Invalid count: expected at most 65536, got 65537',
+    ):
         zids(65537)
 
 
