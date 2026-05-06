@@ -1,7 +1,9 @@
 use std::hint::unlikely;
 use std::num::NonZeroUsize;
 
-use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, row_vectors};
+use crate::color::{
+    BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
+};
 use crate::errors::Error;
 use crate::{base83, cos, srgb};
 
@@ -38,6 +40,9 @@ pub fn encode_rgb(
         return Ok(String::new());
     };
 
+    validate_component_count("x", x_components)?;
+    validate_component_count("y", y_components)?;
+
     Ok(encode_rgb_impl(
         rgb,
         width,
@@ -45,6 +50,13 @@ pub fn encode_rgb(
         x_components,
         y_components,
     ))
+}
+
+fn validate_component_count(axis: &'static str, count: u8) -> Result<(), Error> {
+    if unlikely(count == 0 || usize::from(count) > MAX_COMPONENTS) {
+        return Err(Error::InvalidComponentCount { axis, got: count });
+    }
+    Ok(())
 }
 
 fn encode_rgb_impl(
@@ -70,9 +82,30 @@ fn accumulate_factors(
     x_components: usize,
     y_components: usize,
 ) -> ComponentGrid {
-    let blocks = x_components.div_ceil(4);
+    let blocks = x_components.div_ceil(LANES);
+    match blocks {
+        1 => accumulate_factors_with_blocks::<1>(rgb, width, height, x_components, y_components),
+        2 => accumulate_factors_with_blocks::<2>(rgb, width, height, x_components, y_components),
+        3 => accumulate_factors_with_blocks::<3>(rgb, width, height, x_components, y_components),
+        _ => unreachable!("component counts are validated before encoding"),
+    }
+}
+
+fn accumulate_factors_with_blocks<const BLOCKS: usize>(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    x_components: usize,
+    y_components: usize,
+) -> ComponentGrid {
+    debug_assert_eq!(x_components.div_ceil(LANES), BLOCKS);
+
     let cos_y = cos::cos_axis_cached(height, y_components);
-    let cos_x_simd = cos::cos_axis_simd4_cached(width, x_components);
+    let cos_x_simd = cos::cos_axis_simd_cached(width, x_components);
+    let (cos_x_pixels, []) = cos_x_simd.as_chunks::<BLOCKS>() else {
+        unreachable!("cosine cache rows are generated with the selected block count")
+    };
+    assert_eq!(cos_x_pixels.len(), width);
     let mut factors = component_vectors();
 
     // Separable basis:
@@ -83,20 +116,17 @@ fn accumulate_factors(
     for y in 0..height {
         let mut row = row_vectors();
 
-        let mut pixel = y * width * 3;
-        for x in 0..width {
-            let r = srgb::srgb_u8_to_linear(rgb[pixel]);
-            let g = srgb::srgb_u8_to_linear(rgb[pixel + 1]);
-            let b = srgb::srgb_u8_to_linear(rgb[pixel + 2]);
-            pixel += 3;
+        let rgb_row = &rgb[y * width * 3..(y + 1) * width * 3];
+        for (cos_x_pixel, pixel) in cos_x_pixels.iter().zip(rgb_row.chunks_exact(3)) {
+            let r = srgb::srgb_u8_to_linear(pixel[0]);
+            let g = srgb::srgb_u8_to_linear(pixel[1]);
+            let b = srgb::srgb_u8_to_linear(pixel[2]);
 
             let r_v = V4::splat(r);
             let g_v = V4::splat(g);
             let b_v = V4::splat(b);
 
-            let base = x * blocks;
-            let bases = &cos_x_simd[base..base + blocks];
-            for (k, &basis_x) in bases.iter().enumerate() {
+            for (k, &basis_x) in cos_x_pixel.iter().enumerate() {
                 row[RED][k] += basis_x * r_v;
                 row[GREEN][k] += basis_x * g_v;
                 row[BLUE][k] += basis_x * b_v;
@@ -106,13 +136,10 @@ fn accumulate_factors(
         let cos_y_row = &cos_y[y * y_components..(y + 1) * y_components];
         for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
             let cos_y_vector = V4::splat(cos_y_value);
-            let base = j * blocks;
+            let base = j * BLOCKS;
             for channel in [RED, GREEN, BLUE] {
-                for (factor, &row_slot) in factors[channel][base..base + blocks]
-                    .iter_mut()
-                    .zip(&row[channel][..blocks])
-                {
-                    *factor += row_slot * cos_y_vector;
+                for k in 0..BLOCKS {
+                    factors[channel][base + k] += row[channel][k] * cos_y_vector;
                 }
             }
         }
@@ -121,7 +148,7 @@ fn accumulate_factors(
     ComponentGrid {
         x_components,
         y_components,
-        blocks,
+        blocks: BLOCKS,
         vectors: factors,
     }
 }
@@ -157,9 +184,9 @@ fn max_ac_value(factors: &ComponentGrid) -> f32 {
 
             let start_lane = usize::from(j == 0 && block == 0);
             let lanes = if block + 1 == factors.blocks {
-                factors.x_components - block * 4
+                factors.x_components - block * LANES
             } else {
-                4
+                LANES
             };
             for lane in start_lane..lanes {
                 maximum_value =
@@ -183,9 +210,10 @@ fn encode_factors(factors: &ComponentGrid) -> String {
     let total_len = 1 + 1 + 4 + 2 * (num_components - 1);
     let mut out = Vec::with_capacity(total_len);
 
-    let size_flag = ((factors.x_components - 1) + (factors.y_components - 1) * 9) as u32;
-    base83::push_base83(&mut out, size_flag, 1);
-    base83::push_base83(&mut out, quantised_max_value, 1);
+    let size_flag =
+        ((factors.x_components - 1) + (factors.y_components - 1) * MAX_COMPONENTS) as u32;
+    base83::push_base83::<1>(&mut out, size_flag);
+    base83::push_base83::<1>(&mut out, quantised_max_value);
 
     let dc_r = factors.vectors[RED][0].to_array()[0];
     let dc_g = factors.vectors[GREEN][0].to_array()[0];
@@ -193,7 +221,7 @@ fn encode_factors(factors: &ComponentGrid) -> String {
     let dc_value = (u32::from(srgb::linear_to_srgb_u8(dc_r)) << 16)
         | (u32::from(srgb::linear_to_srgb_u8(dc_g)) << 8)
         | u32::from(srgb::linear_to_srgb_u8(dc_b));
-    base83::push_base83(&mut out, dc_value, 4);
+    base83::push_base83::<4>(&mut out, dc_value);
 
     for j in 0..factors.y_components {
         for i in 0..factors.x_components {
@@ -201,8 +229,8 @@ fn encode_factors(factors: &ComponentGrid) -> String {
                 continue;
             }
 
-            let block = i / 4;
-            let lane = i % 4;
+            let block = i / LANES;
+            let lane = i % LANES;
             let idx = j * factors.blocks + block;
 
             let r = factors.vectors[RED][idx].to_array()[lane] / maximum_value;
@@ -218,7 +246,7 @@ fn encode_factors(factors: &ComponentGrid) -> String {
             let quant_b = quant_b.clamp(0, 18) as u32;
 
             let ac_value = quant_r * 19 * 19 + quant_g * 19 + quant_b;
-            base83::push_base83(&mut out, ac_value, 2);
+            base83::push_base83::<2>(&mut out, ac_value);
         }
     }
 

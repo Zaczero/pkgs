@@ -33,7 +33,7 @@ pub const fn decode_byte(b: u8) -> Option<u8> {
     }
 }
 
-pub fn decode_u32(bytes: &[u8]) -> Option<u32> {
+pub fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<u32> {
     let mut value = 0;
     for &b in bytes {
         let digit = u32::from(decode_byte(b)?);
@@ -42,8 +42,8 @@ pub fn decode_u32(bytes: &[u8]) -> Option<u32> {
     Some(value)
 }
 
-pub fn push_base83(out: &mut Vec<u8>, value: u32, length: usize) {
-    let mut i = length;
+pub fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
+    let mut i = LENGTH;
     while i > 0 {
         i -= 1;
         let divisor = POW83[i];

@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::f32::consts::PI;
 use std::rc::Rc;
-use std::simd::Simd;
 
 use arrayvec::ArrayVec;
 
-type V4 = Simd<f32, 4>;
+use crate::color::{LANES, V4};
+
 type CacheKey = (usize, usize);
 type CosAxisCache = ArrayVec<(CacheKey, Rc<[f32]>), 32>;
-type CosAxisSimd4Cache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
+type CosAxisSimdCache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
 
 pub fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
@@ -28,7 +28,7 @@ thread_local! {
     // component counts. A linear scan over a tiny Vec has better locality than
     // a HashMap and avoids hashing overhead.
     static COS_AXIS_CACHE: RefCell<CosAxisCache> = RefCell::new(ArrayVec::new());
-    static COS_AXIS_SIMD4_CACHE: RefCell<CosAxisSimd4Cache> = RefCell::new(ArrayVec::new());
+    static COS_AXIS_SIMD_CACHE: RefCell<CosAxisSimdCache> = RefCell::new(ArrayVec::new());
 }
 
 pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
@@ -52,9 +52,9 @@ pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     })
 }
 
-pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
+pub fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
     let key = (len, components);
-    COS_AXIS_SIMD4_CACHE.with(|cache| {
+    COS_AXIS_SIMD_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         for (k, v) in cache.iter() {
             if *k == key {
@@ -67,21 +67,21 @@ pub fn cos_axis_simd4_cached(len: usize, components: usize) -> Rc<[V4]> {
             cache.clear();
         }
 
-        let blocks = components.div_ceil(4);
+        let blocks = components.div_ceil(LANES);
         let len_f = len as f32;
 
         let mut out = Vec::with_capacity(len * blocks);
         for p in 0..len {
             let p_f = p as f32;
             for block in 0..blocks {
-                let start = block * 4;
-                let lanes = (components - start).min(4);
-                let mut v = [0.0_f32; 4];
+                let start = block * LANES;
+                let lanes = (components - start).min(LANES);
+                let mut v = [0.0_f32; LANES];
                 for (lane, slot) in v.iter_mut().enumerate().take(lanes) {
                     let c = start + lane;
                     *slot = (PI * p_f * (c as f32) / len_f).cos();
                 }
-                out.push(Simd::from_array(v));
+                out.push(V4::from_array(v));
             }
         }
 

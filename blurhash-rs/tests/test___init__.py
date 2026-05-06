@@ -85,6 +85,14 @@ def test_encode_accepts_rgba_input_ignores_alpha_matches_rgb() -> None:
     assert blurhash_encode(img, 4, 3) == 'LzJkWT?SSs?F~q$um-krE0vfmJ5t'
 
 
+def test_encode_rejects_invalid_component_count() -> None:
+    img = Image.new('RGB', (1, 1), (255, 0, 0))
+    with pytest.raises(ValueError, match='Invalid x component count'):
+        blurhash_encode(img, 0, 1)
+    with pytest.raises(ValueError, match='Invalid y component count'):
+        blurhash_encode(img, 1, 10)
+
+
 def test_decode_known_hash_matches_reference_bytes() -> None:
     hash_ = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj'
     img = blurhash_decode(hash_, 8, 8)

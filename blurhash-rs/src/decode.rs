@@ -1,7 +1,9 @@
 use std::hint::unlikely;
 use std::simd::num::SimdFloat;
 
-use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, row_vectors};
+use crate::color::{
+    BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
+};
 use crate::errors::Error;
 use crate::{base83, cos, srgb};
 
@@ -63,8 +65,8 @@ fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Error> {
         return Err(Error::BlurhashMalformed { index: 0 });
     };
     let size_flag = size_flag as usize;
-    let num_y = (size_flag / 9) + 1;
-    let num_x = (size_flag % 9) + 1;
+    let num_y = (size_flag / MAX_COMPONENTS) + 1;
+    let num_x = (size_flag % MAX_COMPONENTS) + 1;
     let num_components = num_x * num_y;
     let expected_len = 4 + 2 * num_components;
 
@@ -109,17 +111,23 @@ fn decode_component_vectors(
     layout: &DecodeLayout,
 ) -> Result<ComponentVectors, Error> {
     let mut colors = component_vectors();
-    let Some(dc_value) = base83::decode_u32(&bytes[2..6]) else {
+    let Some(dc_bytes) = bytes[2..].first_chunk::<4>() else {
+        unreachable!("layout validation ensures a four-character DC component")
+    };
+    let Some(dc_value) = base83::decode_array(dc_bytes) else {
         return Err(Error::BlurhashMalformed { index: 2 });
     };
     colors[RED][0].as_mut_array()[0] = srgb::srgb_u8_to_linear((dc_value >> 16) as u8);
     colors[GREEN][0].as_mut_array()[0] = srgb::srgb_u8_to_linear(((dc_value >> 8) & 255) as u8);
     colors[BLUE][0].as_mut_array()[0] = srgb::srgb_u8_to_linear((dc_value & 255) as u8);
 
-    let blocks = layout.num_x.div_ceil(4);
+    let blocks = layout.num_x.div_ceil(LANES);
     for idx in 1..layout.num_components {
         let start = 4 + idx * 2;
-        let Some(value) = base83::decode_u32(&bytes[start..start + 2]) else {
+        let Some(value_bytes) = bytes[start..].first_chunk::<2>() else {
+            unreachable!("layout validation ensures every AC component has two characters")
+        };
+        let Some(value) = base83::decode_array(value_bytes) else {
             return Err(Error::BlurhashMalformed { index: start });
         };
         if unlikely(value >= AC_VALUE_LIMIT) {
@@ -131,8 +139,8 @@ fn decode_component_vectors(
         let quant_b = (value % AC_QUANT_LEVELS_U32) as usize;
 
         let i = idx % layout.num_x;
-        let slot = (idx / layout.num_x) * blocks + (i / 4);
-        let lane = i % 4;
+        let slot = (idx / layout.num_x) * blocks + (i / LANES);
+        let lane = i % LANES;
 
         let r = AC_DECODE_SCALE[quant_r] * layout.max_value;
         let g = AC_DECODE_SCALE[quant_g] * layout.max_value;
@@ -153,9 +161,30 @@ fn render_pixels(
     layout: &DecodeLayout,
     colors: &ComponentVectors,
 ) {
-    let blocks = layout.num_x.div_ceil(4);
+    let blocks = layout.num_x.div_ceil(LANES);
+    match blocks {
+        1 => render_pixels_with_blocks::<1>(width, height, out_pixels, layout, colors),
+        2 => render_pixels_with_blocks::<2>(width, height, out_pixels, layout, colors),
+        3 => render_pixels_with_blocks::<3>(width, height, out_pixels, layout, colors),
+        _ => unreachable!("component counts are decoded from one base83 size byte"),
+    }
+}
+
+fn render_pixels_with_blocks<const BLOCKS: usize>(
+    width: usize,
+    height: usize,
+    out_pixels: &mut [u8],
+    layout: &DecodeLayout,
+    colors: &ComponentVectors,
+) {
+    debug_assert_eq!(layout.num_x.div_ceil(LANES), BLOCKS);
+
     let cos_y = cos::cos_axis_cached(height, layout.num_y);
-    let cos_x_simd = cos::cos_axis_simd4_cached(width, layout.num_x);
+    let cos_x_simd = cos::cos_axis_simd_cached(width, layout.num_x);
+    let (cos_x_pixels, []) = cos_x_simd.as_chunks::<BLOCKS>() else {
+        unreachable!("cosine cache rows are generated with the selected block count")
+    };
+    assert_eq!(cos_x_pixels.len(), width);
     let zero = V4::splat(0.0);
 
     // Separable basis:
@@ -167,27 +196,24 @@ fn render_pixels(
         let cos_y_row = &cos_y[y * layout.num_y..(y + 1) * layout.num_y];
         for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
             let cos_y_vector = V4::splat(cos_y_value);
-            let base = j * blocks;
+            let base = j * BLOCKS;
 
             for channel in [RED, GREEN, BLUE] {
-                for (row_slot, &color) in row[channel][..blocks]
-                    .iter_mut()
-                    .zip(&colors[channel][base..base + blocks])
-                {
-                    *row_slot += color * cos_y_vector;
+                for k in 0..BLOCKS {
+                    row[channel][k] += colors[channel][base + k] * cos_y_vector;
                 }
             }
         }
 
-        let mut out_idx = y * width * 3;
-        for x in 0..width {
-            let base = x * blocks;
-            let bases = &cos_x_simd[base..base + blocks];
-
+        let out_row = &mut out_pixels[y * width * 3..(y + 1) * width * 3];
+        let (pixels, []) = out_row.as_chunks_mut::<3>() else {
+            unreachable!("output rows are validated to contain whole pixels")
+        };
+        for (cos_x_pixel, pixel) in cos_x_pixels.iter().zip(pixels) {
             let mut acc_r = zero;
             let mut acc_g = zero;
             let mut acc_b = zero;
-            for (k, &basis_x) in bases.iter().enumerate() {
+            for (k, &basis_x) in cos_x_pixel.iter().enumerate() {
                 acc_r += row[RED][k] * basis_x;
                 acc_g += row[GREEN][k] * basis_x;
                 acc_b += row[BLUE][k] * basis_x;
@@ -197,10 +223,11 @@ fn render_pixels(
             let g = acc_g.reduce_sum();
             let b = acc_b.reduce_sum();
 
-            out_pixels[out_idx] = srgb::linear_to_srgb_u8(r);
-            out_pixels[out_idx + 1] = srgb::linear_to_srgb_u8(g);
-            out_pixels[out_idx + 2] = srgb::linear_to_srgb_u8(b);
-            out_idx += 3;
+            *pixel = [
+                srgb::linear_to_srgb_u8(r),
+                srgb::linear_to_srgb_u8(g),
+                srgb::linear_to_srgb_u8(b),
+            ];
         }
     }
 }

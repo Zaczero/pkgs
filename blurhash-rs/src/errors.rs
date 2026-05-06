@@ -4,6 +4,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum Error {
     InvalidRGBBufferLength { expected: usize, got: usize },
+    InvalidComponentCount { axis: &'static str, got: u8 },
     BlurhashMalformed { index: usize },
     BlurhashLengthMismatch { expected: usize, got: usize },
 }
@@ -13,6 +14,9 @@ impl Error {
         match self {
             Self::InvalidRGBBufferLength { expected, got } => Cow::Owned(format!(
                 "Invalid RGB buffer length (expected {expected}, got {got})"
+            )),
+            Self::InvalidComponentCount { axis, got } => Cow::Owned(format!(
+                "Invalid {axis} component count (expected 1..=9, got {got})"
             )),
             Self::BlurhashMalformed { index } => {
                 Cow::Owned(format!("Invalid blurhash: malformed at index {index}"))
