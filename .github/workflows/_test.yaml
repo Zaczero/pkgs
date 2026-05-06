@@ -14,6 +14,7 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
+      build-runners: ${{ steps.resolve.outputs.build-runners }}
       import-name: ${{ steps.resolve.outputs.import-name }}
       is-rusty: ${{ steps.resolve.outputs.is-rusty }}
       python-versions: ${{ steps.resolve.outputs.python-versions }}
@@ -32,17 +33,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          metadata="$(python3 .github/scripts/package_version.py info "$PACKAGE")"
+          is_rusty="$(sed -n 's/^is-rusty=//p' <<< "$metadata")"
+          requires_python="$(sed -n 's/^requires-python=//p' <<< "$metadata")"
+
           versions_file="$PACKAGE/.python-versions"
           if [ ! -f "$versions_file" ]; then
             versions_file=".python-versions"
           fi
 
           versions="$(awk '$0 && $0 !~ /^#/ { print }' "$versions_file")"
-          requires_python="$(
-            sed -nE \
-              's/^requires-python = "([^"]+)"/\1/p' \
-              "$PACKAGE/pyproject.toml"
-          )"
           if [ -n "$requires_python" ]; then
             supported="$(
               uv python list "$requires_python" \
@@ -57,11 +57,12 @@ jobs:
           versions="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<< "$versions")"
           echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
 
-          if [ -f "$PACKAGE/Cargo.toml" ]; then
-            echo "is-rusty=true" >> "$GITHUB_OUTPUT"
+          if [ "$is_rusty" = "true" ]; then
+            build_runners='["ubuntu-latest","ubuntu-24.04-arm","windows-latest","macos-15-intel","macos-15"]'
           else
-            echo "is-rusty=false" >> "$GITHUB_OUTPUT"
+            build_runners='["ubuntu-latest"]'
           fi
+          echo "build-runners=$build_runners" >> "$GITHUB_OUTPUT"
 
           rust_toolchain="$(
             python3 - <<'PY'
@@ -72,9 +73,6 @@ jobs:
           PY
           )"
           echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
-
-          import_name="${PACKAGE//-/_}"
-          echo "import-name=$import_name" >> "$GITHUB_OUTPUT"
 
   test-rust:
     needs: resolve
@@ -170,45 +168,12 @@ jobs:
           uv sync
           uv run pytest
 
-  build-pure:
+  build:
     needs: resolve
-    if: needs.resolve.outputs.is-rusty == 'false'
-    runs-on: ubuntu-latest
-    env:
-      PACKAGE: ${{ inputs.package }}
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-          enable-cache: true
-          working-directory: ${{ env.PACKAGE }}
-
-      - name: Rewrite README for PyPI
-        shell: bash
-        run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
-
-      - name: Build package
-        shell: bash
-        run: uv build -o dist "$PACKAGE"
-
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: dist-${{ env.PACKAGE }}-ubuntu-latest
-          path: dist
-
-  build-rusty:
-    needs: resolve
-    if: needs.resolve.outputs.is-rusty == 'true'
     strategy:
       fail-fast: false
       matrix:
-        runner: [ ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15-intel, macos-15 ]
+        runner: ${{ fromJson(needs.resolve.outputs.build-runners) }}
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE: ${{ inputs.package }}
@@ -244,18 +209,19 @@ jobs:
         run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
 
       - name: Install Rust toolchain
-        if: runner.os != 'Linux'
+        if: needs.resolve.outputs.is-rusty == 'true' && runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
 
       - name: Restore Rust cache
-        if: runner.os != 'Linux'
+        if: needs.resolve.outputs.is-rusty == 'true' && runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: . -> target
 
       - name: Build wheels
+        if: needs.resolve.outputs.is-rusty == 'true'
         shell: bash
         run: |
           uv tool run \
@@ -263,8 +229,13 @@ jobs:
             --output-dir dist \
             "$PACKAGE"
 
+      - name: Build package
+        if: needs.resolve.outputs.is-rusty == 'false'
+        shell: bash
+        run: uv build -o dist "$PACKAGE"
+
       - name: Build sdist
-        if: matrix.runner == 'ubuntu-latest'
+        if: needs.resolve.outputs.is-rusty == 'true' && matrix.runner == 'ubuntu-latest'
         shell: bash
         run: uv build --sdist -o dist "$PACKAGE"
 

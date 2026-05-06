@@ -6,6 +6,7 @@ on:
     tags: ["*/*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,7 +21,6 @@ jobs:
     outputs:
       packages: ${{ steps.detect.outputs.packages }}
       release-package: ${{ steps.release.outputs.package }}
-      release-type: ${{ steps.release.outputs.type }}
       release-version: ${{ steps.release.outputs.version }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -41,18 +41,22 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
             changed="${tag%/*}"
           else
-            if [ "$EVENT_NAME" = "pull_request" ]; then
-              base="$BASE_SHA"
-            else
-              base="$BEFORE_SHA"
-            fi
-
-            if [[ "$base" =~ ^0+$ ]]; then
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               test_all=true
               changed=""
-            else
-              changed="$(git diff --name-only "$base" HEAD | cut -d/ -f1 | sort -u)"
+            elif [ "$EVENT_NAME" = "pull_request" ]; then
+              base="$BASE_SHA"
               test_all=false
+            else
+              base="$BEFORE_SHA"
+              test_all=false
+            fi
+
+            if ! $test_all && [[ "$base" =~ ^0+$ ]]; then
+              test_all=true
+              changed=""
+            elif ! $test_all; then
+              changed="$(git diff --name-only "$base" HEAD | cut -d/ -f1 | sort -u)"
 
               for package in $changed; do
                 [ -f "$package/pyproject.toml" ] || test_all=true
@@ -81,18 +85,7 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           package="${tag%/*}"
           version="${tag#*/}"
-
-          if [ -f "$package/Cargo.toml" ]; then
-            type="python-rust"
-          else
-            type="python"
-          fi
-
-          {
-            echo "package=$package"
-            echo "version=$version"
-            echo "type=$type"
-          } >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/package_version.py check "$package" "$version"
 
   test:
     needs: detect
@@ -105,45 +98,10 @@ jobs:
     with:
       package: ${{ matrix.package }}
 
-  release-validate:
-    needs: detect
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    env:
-      PACKAGE: ${{ needs.detect.outputs.release-package }}
-      RELEASE_TYPE: ${{ needs.detect.outputs.release-type }}
-      VERSION: ${{ needs.detect.outputs.release-version }}
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: false
-
-      - id: check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ "$RELEASE_TYPE" = "python-rust" ]; then
-            package_version="$(grep '^version' "$PACKAGE/Cargo.toml" | head -1 | cut -d'"' -f2)"
-          else
-            package_name="${PACKAGE//-/_}"
-            package_version="$(
-              grep -oP \
-                "__version__\s*=\s*['\"]?\K[^'\"]*" \
-                "$PACKAGE/$package_name/__init__.py"
-            )"
-          fi
-
-          if [ "$package_version" != "$VERSION" ]; then
-            echo "Tag version ($VERSION) != package version ($package_version)"
-            exit 1
-          fi
-
   release:
-    needs: [detect, release-validate, test]
+    needs: [detect, test]
     if: >-
       startsWith(github.ref, 'refs/tags/')
-      && needs.release-validate.result == 'success'
       && needs.test.result == 'success'
     runs-on: ubuntu-latest
     environment:
@@ -166,3 +124,5 @@ jobs:
           subject-path: dist/*
 
       - uses: pypa/gh-action-pypi-publish@v1.14.0
+        with:
+          skip-existing: true

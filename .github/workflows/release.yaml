@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package
+        required: true
+        type: choice
+        options:
+          - blurhash-rs
+          - githead
+          - h2corn
+          - httpx-secure
+          - jinja2-htmlmin
+          - lrucache-rs
+          - osm-shortlink
+          - polyline-rs
+          - sizestr
+          - starlette-compress
+          - totp-rs
+          - zid
+      version:
+        description: Version
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ inputs.package }}
+      VERSION: ${{ inputs.version }}
+      TAG: ${{ inputs.package }}/${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Check existing tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git worktree add --detach /tmp/release-tag "$TAG"
+            (
+              cd /tmp/release-tag
+              python3 "$GITHUB_WORKSPACE/.github/scripts/package_version.py" check "$PACKAGE" "$VERSION"
+            )
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump source version
+        if: steps.tag.outputs.exists == 'false'
+        id: package
+        shell: bash
+        run: python3 .github/scripts/package_version.py set "$PACKAGE" "$VERSION"
+
+      - name: Update Cargo lockfile
+        if: steps.tag.outputs.exists == 'false' && steps.package.outputs.type == 'python-rust'
+        shell: bash
+        run: cargo update -p "${{ steps.package.outputs.crate }}" --precise "$VERSION"
+
+      - name: Commit and tag release
+        if: steps.tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock "$PACKAGE"
+            git commit -m "$PACKAGE bump to $VERSION"
+            git push origin HEAD:main
+          fi
+
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Dispatch tag CI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GITHUB_TOKEN tag pushes do not trigger push workflows.
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$(jq -nc --arg ref "$TAG" '{ref: $ref}')" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/dispatches"
