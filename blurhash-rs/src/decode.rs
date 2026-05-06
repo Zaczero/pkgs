@@ -5,8 +5,12 @@ use crate::color::{BLUE, ComponentVectors, GREEN, RED, V4, component_vectors, ro
 use crate::errors::Error;
 use crate::{base83, cos, srgb};
 
-const AC_DECODE_SCALE: [f32; 19] = {
-    let mut table = [0.0; 19];
+const AC_QUANT_LEVELS: usize = 19;
+const AC_QUANT_LEVELS_U32: u32 = AC_QUANT_LEVELS as u32;
+const AC_VALUE_LIMIT: u32 = AC_QUANT_LEVELS_U32 * AC_QUANT_LEVELS_U32 * AC_QUANT_LEVELS_U32;
+
+const AC_DECODE_SCALE: [f32; AC_QUANT_LEVELS] = {
+    let mut table = [0.0; AC_QUANT_LEVELS];
     let mut quant = 0;
     while quant < table.len() {
         let scaled = (quant as f32 - 9.0) / 9.0;
@@ -118,10 +122,13 @@ fn decode_component_vectors(
         let Some(value) = base83::decode_u32(&bytes[start..start + 2]) else {
             return Err(Error::BlurhashMalformed { index: start });
         };
+        if unlikely(value >= AC_VALUE_LIMIT) {
+            return Err(Error::BlurhashMalformed { index: start });
+        }
 
-        let quant_r = (value / (19 * 19)) as usize;
-        let quant_g = ((value / 19) % 19) as usize;
-        let quant_b = (value % 19) as usize;
+        let quant_r = (value / (AC_QUANT_LEVELS_U32 * AC_QUANT_LEVELS_U32)) as usize;
+        let quant_g = ((value / AC_QUANT_LEVELS_U32) % AC_QUANT_LEVELS_U32) as usize;
+        let quant_b = (value % AC_QUANT_LEVELS_U32) as usize;
 
         let i = idx % layout.num_x;
         let slot = (idx / layout.num_x) * blocks + (i / 4);

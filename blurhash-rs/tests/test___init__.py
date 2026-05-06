@@ -107,6 +107,12 @@ def test_decode_invalid_blurhash_raises() -> None:
     assert excinfo.value.blurhash == 'not a blurhash'
 
 
+def test_decode_rejects_out_of_range_ac_component() -> None:
+    with pytest.raises(BlurhashDecodeError) as excinfo:
+        blurhash_decode('100000~~', 8, 8)
+    assert excinfo.value.blurhash == '100000~~'
+
+
 def test_decode_whitespace_suffix_is_ignored() -> None:
     hash_ = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj'
     clean = blurhash_decode(hash_, 8, 8)
