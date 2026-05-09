@@ -138,7 +138,7 @@ Only `h2corn` and `hypercorn` accept HTTP/2 directly.
 git clone https://github.com/Zaczero/pkgs.git
 cd pkgs/h2corn
 uv sync
-python bench/bench.py
+uv run python bench/bench.py
 ```
 
 The harness records per-scenario k6 summaries and renders the SVGs you
