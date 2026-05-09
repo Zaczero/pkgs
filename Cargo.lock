@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "h2corn"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anstream",
  "atoi_simd",
