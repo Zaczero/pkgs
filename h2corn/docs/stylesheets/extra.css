@@ -40,11 +40,48 @@
   width: auto;
 }
 
+/* Subtle amber wash under the header — echoes the logo's secondary color
+   without an obvious hard line. */
+.md-header {
+  box-shadow: 0 1px 0 rgba(254, 172, 3, 0.25);
+}
+
 /* Landing-page hero. */
 .hero {
+  position: relative;
   text-align: center;
   padding: 3rem 1rem 2.5rem;
   margin-bottom: 1.5rem;
+}
+
+/* Subtle purple wash behind the hero — adds depth without coloring the
+   page. Monochromatic so it reads as ambient lighting, not decoration. */
+.hero::before {
+  content: "";
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 1400px;
+  height: 800px;
+  max-width: 120vw;
+  background: radial-gradient(
+    ellipse closest-side,
+    rgba(108, 31, 252, 0.08) 0%,
+    rgba(108, 31, 252, 0.03) 45%,
+    transparent 80%
+  );
+  pointer-events: none;
+  z-index: -1;
+}
+
+[data-md-color-scheme="slate"] .hero::before {
+  background: radial-gradient(
+    ellipse closest-side,
+    rgba(108, 31, 252, 0.18) 0%,
+    rgba(108, 31, 252, 0.07) 45%,
+    transparent 80%
+  );
 }
 
 .hero-logo {
