@@ -370,8 +370,8 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# mkdocs documentation (build output, any package)
+site/
 
 # mypy
 .mypy_cache/
@@ -453,3 +453,6 @@ githead/tests/git/HEAD
 h2corn/bench/*.bin
 h2corn/bench/results/*_summary.json
 jinja2-htmlmin/tests/templates/.*
+
+# mkdocs build output (any package)
+**/site/

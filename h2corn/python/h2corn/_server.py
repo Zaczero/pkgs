@@ -154,18 +154,55 @@ def _drop_process_privileges(identity: _ProcessIdentity):
 
 
 class Server:
+    """
+    In-process, single-worker ASGI server.
+
+    Use this when you want to embed `h2corn` inside an existing event loop —
+    for example, inside a test harness, a custom CLI, or an application that
+    manages its own process model. For ordinary deployments, prefer
+    [`serve`][h2corn.serve], which goes through the multi-worker supervisor
+    and matches the `h2corn` CLI.
+
+    The configured `bind` listeners are opened, lifespan startup runs, then
+    the server processes requests until [`shutdown()`][h2corn.Server.shutdown]
+    is called or the surrounding task is cancelled.
+
+    Example:
+
+        import asyncio
+        from h2corn import Config, Server
+
+        async def main():
+            server = Server(app, Config(bind=('127.0.0.1:8000',)))
+            await server.serve()
+
+        asyncio.run(main())
+    """
+
     def __init__(self, app: ASGIApp, config: Config | None = None) -> None:
         self.app = app
         self.config = Config() if config is None else config
         self._shutdown_future: asyncio.Future[str] | None = None
 
     def shutdown(self, kind: Literal['stop', 'restart'] = 'stop') -> None:
-        """Signal the server to initiate a graceful shutdown."""
+        """
+        Initiate a graceful shutdown of an in-flight `serve()` call.
+
+        Safe to call from any thread or coroutine. The currently in-flight
+        requests are given up to `Config.timeout_graceful_shutdown` seconds
+        to complete before the server returns.
+        """
         if self._shutdown_future is not None and not self._shutdown_future.done():
             self._shutdown_future.set_result(kind)
 
     def restart(self) -> None:
-        """Signal the server to initiate a graceful restart-style shutdown."""
+        """
+        Equivalent to `shutdown('restart')`.
+
+        Used by the supervisor to distinguish a graceful reload from a
+        terminal stop. Outside the supervisor, this behaves the same as
+        `shutdown()`.
+        """
         self.shutdown('restart')
 
     async def _serve_fds(
@@ -190,9 +227,13 @@ class Server:
 
     async def serve(self) -> None:
         """
-        Serve the ASGI application asynchronously.
+        Run the server until shutdown.
 
-        Raises `NotImplementedError` if `Config.workers` is not 1.
+        Binds the configured listeners, runs ASGI lifespan startup, processes
+        requests, then runs lifespan shutdown when the loop exits.
+
+        Raises `NotImplementedError` if `Config.workers` is not 1; multi-worker
+        deployments must go through [`serve`][h2corn.serve].
         """
         if self.config.workers != 1:
             raise NotImplementedError(
@@ -227,18 +268,33 @@ class Server:
 
 def serve(app: ASGIApp, config: Config | None = None) -> None:
     """
-    Primary entrypoint to start the server.
+    Start the server. This is the primary programmatic entrypoint and matches
+    the behavior of the `h2corn` CLI.
 
-    On Unix-like systems, this runs through the multiprocessing supervisor,
-    even for `workers=1`, so signal handling, inherited listeners, and worker
-    lifecycle stay consistent with the CLI entrypoint.
+    On Unix, the call goes through the multi-worker supervisor, even for
+    `workers=1`, so signal handling, inherited listeners, and worker lifecycle
+    stay identical to the CLI. On Windows, a single in-process worker is used.
 
-    Available signals for dynamic control (Unix only):
-    - `SIGHUP`: Reload workers.
-    - `SIGTTIN` / `SIGTTOU`: Scale workers up / down.
-    - `SIGINT` / `SIGTERM`: Graceful shutdown.
+    Blocks until the server is asked to shut down via one of:
 
-    On Windows, this always falls back to running a single-worker in-process server.
+    | Signal              | Effect                                          |
+    | ------------------- | ----------------------------------------------- |
+    | `SIGINT` / `SIGTERM`| Graceful shutdown                               |
+    | `SIGHUP`            | Rolling worker reload                           |
+    | `SIGTTIN`           | Scale workers up by one                         |
+    | `SIGTTOU`           | Scale workers down by one                       |
+
+    Args:
+        app: An ASGI 3 application callable.
+        config: Server configuration. Defaults to `Config()` (one worker,
+            bound to `127.0.0.1:8000`).
+
+    Example:
+
+        from h2corn import Config, serve
+        from myapp import app
+
+        serve(app, Config(bind=('127.0.0.1:8000',), workers=4))
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':

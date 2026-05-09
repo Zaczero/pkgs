@@ -1,0 +1,105 @@
+/* Brand palette. Material's deep-purple primary doesn't match the logo, so
+   the colors are pinned here and surfaced through Material's own tokens. */
+:root {
+  --h2corn-purple: #6c1ffc;
+  --h2corn-purple-light: #b48aff;
+  --h2corn-amber: #feac03;
+  --h2corn-amber-dark: #a86c00;
+}
+
+[data-md-color-primary="deep-purple"] {
+  --md-primary-fg-color: var(--h2corn-purple);
+  --md-primary-fg-color--light: #8a4dfd;
+  --md-primary-fg-color--dark: #4d12c0;
+  --md-typeset-a-color: var(--h2corn-purple);
+  --md-accent-fg-color: var(--h2corn-amber-dark);
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="deep-purple"] {
+  --md-typeset-a-color: var(--h2corn-purple-light);
+  --md-accent-fg-color: var(--h2corn-amber);
+}
+
+/* Outline button: Material's default hover fills with --md-accent-fg-color
+   (amber), losing contrast with the dark text. Tie it to the link color so
+   both schemes stay on-brand and legible. */
+[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary) {
+  color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+}
+[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary):hover,
+[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary):focus {
+  background-color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+  color: var(--md-default-bg-color);
+}
+
+/* Header logo: Material's default is small for our wider mark. */
+.md-header__button.md-logo img {
+  height: 1.8rem;
+  width: auto;
+}
+
+/* Landing-page hero. */
+.hero {
+  text-align: center;
+  padding: 3rem 1rem 2.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.hero-logo {
+  display: block;
+  width: 200px;
+  height: auto;
+  margin: 0 auto 1.5rem;
+}
+
+.hero h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(135deg, var(--md-typeset-a-color) 0%, var(--md-accent-fg-color) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero p {
+  font-size: 1.05rem;
+  max-width: 640px;
+  margin: 0.75rem auto 1.5rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.hero .hero-stats {
+  font-size: 1.15rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  margin: -0.25rem auto 1.5rem;
+  white-space: nowrap;
+}
+
+.hero .hero-stats strong {
+  color: var(--md-default-fg-color);
+}
+
+.hero .md-button {
+  margin: 0.25rem;
+}
+
+/* Matplotlib bench plots ship a white canvas; lift them out of slate. */
+[data-md-color-scheme="slate"] img[src*="benchmarks/"] {
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+/* Pygments tags every integer/float as a Number token (.m, .mi, .mf, ...),
+   which paints addresses and ports red in shell and config blocks. Render
+   them as regular code text so 127.0.0.1 reads as an address, not an error. */
+:is(.language-bash, .language-text, .language-nginx) :is(.m, .mb, .mf, .mh, .mi, .mo) {
+  color: inherit;
+}

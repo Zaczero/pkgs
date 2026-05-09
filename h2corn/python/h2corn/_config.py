@@ -426,11 +426,25 @@ def _env_values(env: Mapping[str, str] | None = None):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Config:
     """
-    Configuration parameters for the ASGI server.
+    Immutable server configuration.
 
-    This immutable structure dictates network bindings, concurrency, proxy trust,
-    and operational bounds. Unix listeners (`unix:PATH`) and their permissions
-    are not supported on Windows.
+    Every option is also exposed as a CLI flag and an `H2CORN_*` environment
+    variable. The full list and defaults are documented in the configuration
+    reference of the project documentation.
+
+    Resolution order (highest precedence first):
+
+    1. CLI flags
+    2. Environment variables
+    3. TOML file (via `--config` or `H2CORN_CONFIG`)
+    4. Built-in defaults
+
+    Validation runs in `__post_init__`. Invalid combinations (for example,
+    `certfile` without `keyfile`, or a Unix listener with TLS) raise
+    `ValueError` at construction time.
+
+    Unix listeners (`unix:PATH`) and the `user`/`group`/`umask` options
+    are POSIX-only.
     """
 
     bind: tuple[str, ...] = _option(
@@ -824,10 +838,30 @@ class Config:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
+        """
+        Build a `Config` from `H2CORN_*` environment variables.
+
+        Each option's environment variable name is its field name in upper
+        case, prefixed with `H2CORN_` (for example, `H2CORN_BIND`,
+        `H2CORN_WORKERS`, `H2CORN_PROXY_HEADERS`). Variables that are not set
+        fall through to defaults; unrecognized variables are ignored.
+
+        The convenience pair `H2CORN_HOST` / `H2CORN_PORT` is accepted only
+        when `H2CORN_BIND` is unset.
+        """
         return cls(**_env_values(env))
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> Self:
+        """
+        Build a `Config` from a plain mapping (e.g. parsed JSON or TOML).
+
+        Keys must match either a field name on `Config` or the convenience
+        keys `host`/`port`. Unknown keys raise `ValueError`. String values
+        are coerced through the same parsing rules as the matching
+        environment variable; non-string values are passed through and
+        validated by `__post_init__`.
+        """
         option_map = {option.toml_key: option for option in config_options()}
         if unknown := sorted(data.keys() - option_map.keys() - _CONVENIENCE_KEYS):
             raise ValueError(f'unknown config keys: {", ".join(unknown)}')
@@ -844,6 +878,18 @@ class Config:
 
     @classmethod
     def from_toml(cls, path: str | os.PathLike[str]) -> Self:
+        """
+        Build a `Config` from a TOML file.
+
+        The file must be a flat table whose keys correspond to `Config`
+        field names. Example:
+
+            bind = ["127.0.0.1:8000"]
+            workers = 4
+            proxy_headers = true
+            forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
+            http1 = false
+        """
         import tomllib
 
         path = Path(path)

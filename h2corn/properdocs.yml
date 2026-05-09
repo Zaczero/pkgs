@@ -1,0 +1,164 @@
+site_name: h2corn
+site_description: High-performance HTTP/2 ASGI server for FastAPI, Starlette, and similar apps.
+site_url: https://h2corn.monicz.dev/
+repo_url: https://github.com/Zaczero/pkgs/tree/main/h2corn
+repo_name: Zaczero/pkgs
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  logo: assets/logo-light.svg
+  favicon: assets/favicon.ico
+  palette:
+    - media: '(prefers-color-scheme)'
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Zaczero/pkgs/tree/main/h2corn
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/h2corn/
+  analytics:
+    provider: google
+    property: G-QY82ZM1HD5
+  generator: false
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_config_reference.py
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [python]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            members_order: source
+            heading_level: 2
+            filters:
+              - '!^_'
+            extensions:
+              - griffe_inherited_docstrings
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      base_path:
+        - .
+        - examples
+      check_paths: true
+      auto_append:
+        - _snippets/links.md
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Guide:
+    - Quickstart: quickstart.md
+    - Behind a proxy: deployment/proxy.md
+    - Direct TLS: deployment/tls.md
+    - Operations: deployment/operations.md
+    - WebSockets: websockets.md
+    - Embedding: embedding.md
+  - Reference:
+    - Configuration: configuration.md
+    - API:
+      - Overview: api/index.md
+      - Server: api/server.md
+      - Config: api/config.md
+      - Types: api/types.md
+    - Benchmarks: benchmarks.md
+  - Help:
+    - Support: support.md
+    - FAQ: faq.md
+
+watch:
+  - python/h2corn
+  - examples

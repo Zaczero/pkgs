@@ -1,579 +1,82 @@
-# h2corn
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="h2corn" width="180">
+</p>
 
-`h2corn` is a high-performance HTTP/2 ASGI server for FastAPI, Starlette, and similar applications. It is optimized for `h2c` behind a trusted reverse proxy, with optional direct TLS support.
+<h1 align="center">h2corn</h1>
 
-## Why h2corn
+<p align="center">
+  <strong>High-performance HTTP/2 ASGI server</strong> for FastAPI, Starlette, and similar applications.<br>
+  <a href="https://h2corn.monicz.dev/">Documentation</a> ·
+  <a href="https://h2corn.monicz.dev/quickstart/">Quickstart</a> ·
+  <a href="https://h2corn.monicz.dev/configuration/">Configuration</a> ·
+  <a href="https://h2corn.monicz.dev/benchmarks/">Benchmarks</a>
+</p>
 
-- Better security for the internal proxy-to-application connection
-- Higher throughput and lower latency
-- Lower resource use from a Rust implementation
-- Compatible with FastAPI, Starlette, and other ASGI 3 applications
-- Direct TLS with secure TLS 1.2+ defaults
-- RFC 8441 WebSockets over HTTP/2
-- Multi-worker supervision with graceful shutdown, reload, live scaling, worker recycling, and health checks
+---
 
-The central design choice is simple: keep application traffic on HTTP/2 instead of translating requests back to HTTP/1.1 before they reach the ASGI application.
+`h2corn` keeps application traffic on **HTTP/2 end-to-end** instead of
+downgrading to HTTP/1.1 inside your trust boundary. It is built around `h2c`
+behind a trusted reverse proxy, with optional direct TLS for TCP listeners.
 
-Behind a proxy, keeping the internal connection on a modern protocol (HTTP/2 or HTTP/3) avoids the downgrade that can reintroduce HTTP/1.1 framing ambiguities and connection-reuse problems. A good deal of the published request-smuggling and desynchronization work focuses on exactly those downgrade paths; PortSwigger's material on [HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading), [HTTP request smuggling](https://portswigger.net/web-security/request-smuggling), and [browser-powered desync attacks](https://portswigger.net/research/browser-powered-desync-attacks) is a useful reference.
+- **Better security** for the proxy → application connection (no HTTP/1.1 downgrade)
+- **Higher throughput** and lower latency from a Rust core on Tokio + Hyper
+- **Compatible** with any ASGI 3 application — FastAPI, Starlette, Django, Litestar
+- **Direct TLS** with Rustls and modern defaults
+- **RFC 8441 WebSockets** over HTTP/2
+- **Operator-friendly**: multi-worker supervisor with graceful shutdown, rolling reload, live scaling, worker recycling, and health checks
 
-Among popular Python ASGI servers, Hypercorn is the closest comparison because it also supports HTTP/2. Uvicorn and Gunicorn are familiar migration points, but they are built around a different deployment model and with different performance characteristics.
-
-## Quick start
-
-Install with `uv`:
+## Install
 
 ```bash
-uv add h2corn
+uv add h2corn         # or: pip install h2corn
 ```
 
-Or with `pip`:
-
-```bash
-pip install h2corn
-```
-
-Minimal FastAPI application:
+## A 60-second start
 
 ```python
+# hello.py
 from fastapi import FastAPI
 
 app = FastAPI()
 
 
-@app.get("/")
+@app.get('/')
 async def index():
-    return {"message": "hello from h2corn"}
+    return {'message': 'hello from h2corn'}
 ```
-
-Local development:
 
 ```bash
-h2corn example:app
+h2corn hello:app
 ```
 
-Startup output:
-
-```text
-h2corn v1.0.0 • HTTP/2 ASGI
-Listening on http://127.0.0.1:8000
-HTTP/1 compatibility is enabled; disable with --no-http1
-
-Started worker [12345]
-127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms tx=25b
-```
-
-Typical production-style run behind a proxy:
-
-```bash
-h2corn example:app \
-  --bind 127.0.0.1:8000 \
-  --proxy-headers \
-  --forwarded-allow-ips 127.0.0.1,::1,unix \
-  --no-http1
-```
-
-`--no-http1` is recommended as a fail-closed hardening flag. If the proxy is already configured to speak only `h2c`, it does not change the intended steady-state path; it simply makes accidental HTTP/1.1 use fail immediately.
-
-Why keep HTTP/1.1 at all?
-
-Because browsers generally do not speak cleartext `h2c`. Without a reverse proxy and TLS in front, a browser cannot talk directly to an `h2c`-only server. HTTP/1.1 is therefore kept for development and local testing. In production, the intended reverse-proxy protocol remains `h2c`.
-
-## Direct TLS
-
-Direct TLS is opt-in for TCP listeners. Configure a certificate chain and private key:
-
-```bash
-h2corn example:app \
-  --bind 0.0.0.0:8443 \
-  --certfile /etc/ssl/example/fullchain.pem \
-  --keyfile /etc/ssl/example/privkey.pem
-```
-
-TLS uses Rustls with TLS 1.2 and TLS 1.3 only. `h2corn` advertises `h2,http/1.1` by default, or only `h2` when `--no-http1` is set. OpenSSL cipher strings, legacy TLS versions, and encrypted private-key files are intentionally not supported.
-
-For client certificate verification, add a CA bundle and choose whether client certificates are optional or required:
-
-```bash
-h2corn example:app \
-  --certfile /etc/ssl/example/fullchain.pem \
-  --keyfile /etc/ssl/example/privkey.pem \
-  --ca-certs /etc/ssl/example/client-ca.pem \
-  --cert-reqs required
-```
-
-## Running behind a proxy
-
-The recommended production deployment shape is:
-
-`browser/client -> trusted reverse proxy -> h2corn application`
-
-The proxy handles browser-facing protocol negotiation, TLS termination, and public-edge hardening. `h2corn` then handles the application side of the connection over `h2c`.
-
-### Proxy headers and PROXY protocol
-
-`h2corn` supports the two common ways a proxy can pass metadata downstream:
-
-- `--proxy-headers` for `Forwarded` and `X-Forwarded-*`
-- `--proxy-protocol v1|v2` for HAProxy PROXY protocol
-
-They serve different purposes.
-
-- Proxy headers carry request metadata such as scheme, host, and forwarded client address
-- PROXY protocol carries transport-level peer information on the connection itself
-
-Both are accepted only from configured trusted peers. In many deployments, proxy headers are sufficient on their own. Add PROXY protocol when the upstream is explicitly configured to send it and you want that connection-level metadata as well.
-
-Reference: [PROXY protocol specification](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt)
-
-### Caddy example
-
-```caddyfile
-example.com {
-    reverse_proxy h2c://127.0.0.1:8000
-}
-```
-
-Pair it with:
-
-```bash
-h2corn example:app \
-  --bind 127.0.0.1:8000 \
-  --proxy-headers \
-  --forwarded-allow-ips 127.0.0.1,::1,unix \
-  --no-http1
-```
-
-Reference: [Caddy `reverse_proxy` docs](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)
-
-### HAProxy example
-
-```haproxy
-global
-    log stdout format raw daemon
-
-defaults
-    mode http
-    timeout connect 5s
-    timeout client 30s
-    timeout server 30s
-
-frontend public_https
-    bind :443 ssl crt /etc/haproxy/certs/example.pem alpn h2,http/1.1
-    default_backend h2corn_backend
-
-backend h2corn_backend
-    server app1 127.0.0.1:8000 check proto h2 send-proxy-v2
-```
-
-Pair it with:
-
-```bash
-h2corn example:app \
-  --bind 127.0.0.1:8000 \
-  --proxy-protocol v2 \
-  --proxy-headers \
-  --forwarded-allow-ips 127.0.0.1,::1,unix \
-  --no-http1
-```
-
-Reference: [HAProxy HTTP guide](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/http/)
-
-## Operations
-
-`h2corn` has two runtime modes:
-
-- CLI supervisor mode for multi-worker deployments
-- `Server(app, config).serve()` for in-process, single-worker embedding
-
-The CLI supervisor supports the operational features you would expect in production:
-
-| Signal | Effect |
-| --- | --- |
-| `SIGINT` / `SIGTERM` | Graceful shutdown |
-| `SIGHUP` | Rolling worker reload |
-| `SIGTTIN` | Scale workers up |
-| `SIGTTOU` | Scale workers down |
-
-Operational notes:
-
-- Worker supervision is Unix-only
-- Workers that keep crashing are restarted with backoff
-- Repeated crash loops stop the supervisor instead of respawning forever
-- `timeout_graceful_shutdown` controls how long workers get to finish in-flight work
-- `max_requests` and `max_requests_jitter` enable rolling worker recycling without synchronized restarts
-
-## Configuration
-
-Configuration precedence is:
-
-`CLI > environment variables > TOML config > built-in defaults`
-
-<details>
-<summary>CLI and environment reference (`h2corn --help`)</summary>
-
-```text
-usage: h2corn [-h] [-c CONFIG] [--version] [--check-config] [--print-config]
-              [--factory] [--app-dir APP_DIR] [--env-file ENV_FILE]
-              [-r ROOT_PATH] [--lifespan {auto,on,off}]
-              [--timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP]
-              [--timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN]
-              [--reload] [--reload-dir DIR] [--reload-include PATTERN]
-              [--reload-exclude PATTERN] [--host HOST] [-p PORT]
-              [--bind ADDRESS] [--uds-permissions UDS_PERMISSIONS]
-              [--backlog BACKLOG] [--certfile CERTFILE] [--keyfile KEYFILE]
-              [--ca-certs CA_CERTS] [--cert-reqs {none,optional,required}]
-              [--pid PID] [-u USER] [-g GROUP] [-m UMASK]
-              [-w WORKERS] [--runtime-threads RUNTIME_THREADS]
-              [--max-requests MAX_REQUESTS]
-              [--max-requests-jitter MAX_REQUESTS_JITTER]
-              [--timeout-worker-healthcheck TIMEOUT_WORKER_HEALTHCHECK]
-              [--http1 | --no-http1] [--access-log | --no-access-log]
-              [--max-concurrent-streams MAX_CONCURRENT_STREAMS]
-              [--limit-request-head-size LIMIT_REQUEST_HEAD_SIZE]
-              [--limit-request-line LIMIT_REQUEST_LINE]
-              [--limit-request-fields LIMIT_REQUEST_FIELDS]
-              [--limit-request-field-size LIMIT_REQUEST_FIELD_SIZE]
-              [--h2-max-header-list-size H2_MAX_HEADER_LIST_SIZE]
-              [--h2-max-header-block-size H2_MAX_HEADER_BLOCK_SIZE]
-              [--h2-max-inbound-frame-size H2_MAX_INBOUND_FRAME_SIZE]
-              [--max-request-body-size MAX_REQUEST_BODY_SIZE]
-              [--limit-concurrency LIMIT_CONCURRENCY]
-              [--limit-connections LIMIT_CONNECTIONS]
-              [--timeout-handshake TIMEOUT_HANDSHAKE]
-              [--timeout-graceful-shutdown TIMEOUT_GRACEFUL_SHUTDOWN]
-              [--timeout-keep-alive TIMEOUT_KEEP_ALIVE]
-              [--timeout-request-header TIMEOUT_REQUEST_HEADER]
-              [--timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE]
-              [--websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE]
-              [--websocket-per-message-deflate | --no-websocket-per-message-deflate]
-              [--websocket-ping-interval WEBSOCKET_PING_INTERVAL]
-              [--websocket-ping-timeout WEBSOCKET_PING_TIMEOUT]
-              [--proxy-headers | --no-proxy-headers]
-              [--forwarded-allow-ips FORWARDED_ALLOW_IPS]
-              [--proxy-protocol {off,v1,v2}]
-              [--server-header | --no-server-header]
-              [--date-header | --no-date-header] [--header HEADER]
-              [target]
-
-High-performance HTTP/2 ASGI server (v1.2.0)
-
-positional arguments:
-  target                The ASGI application to run, e.g., module:app.
-                        (default: None)
-
-options:
-  -h, --help            show this help message and exit
-  -c, --config CONFIG   Path to a TOML configuration file. [env:
-                        H2CORN_CONFIG] (default: None)
-  --version             show program's version number and exit
-  --check-config        Validate configuration, then exit without importing
-                        the target or starting the server. (default: False)
-  --print-config        Print the fully resolved configuration, then exit
-                        without importing the target or starting the server.
-                        (default: False)
-
-Application:
-  --factory             Treat the target as a zero-argument callable that
-                        returns an ASGI application. (default: False)
-  --app-dir APP_DIR     Import the target module from this directory instead
-                        of the current working directory. (default: None)
-  --env-file ENV_FILE   Load application environment variables from this file
-                        before importing the target. (default: None)
-  -r, --root-path ROOT_PATH
-                        ASGI root path (to mount the application at a
-                        subpath). [env: H2CORN_ROOT_PATH] (default: )
-  --lifespan {auto,on,off}
-                        ASGI lifespan handling mode. [env: H2CORN_LIFESPAN]
-                        (default: auto)
-  --timeout-lifespan-startup TIMEOUT_LIFESPAN_STARTUP
-                        Maximum time to wait for ASGI lifespan startup in
-                        seconds. Use 0 to disable. [env:
-                        H2CORN_TIMEOUT_LIFESPAN_STARTUP] (default: 60.0)
-  --timeout-lifespan-shutdown TIMEOUT_LIFESPAN_SHUTDOWN
-                        Maximum time to wait for ASGI lifespan shutdown in
-                        seconds. Use 0 to disable. [env:
-                        H2CORN_TIMEOUT_LIFESPAN_SHUTDOWN] (default: 30.0)
-
-Development:
-  --reload              Restart the server when watched Python files change.
-                        Development only. (default: False)
-  --reload-dir DIR      Directory to watch for reload. Repeat the flag to add
-                        more directories. Overrides the default watch root.
-                        (default: ())
-  --reload-include PATTERN
-                        Glob pattern for files that should trigger reload.
-                        Repeat the flag to add more patterns. (default:
-                        ('*.py',))
-  --reload-exclude PATTERN
-                        Glob pattern for files or directories that should be
-                        ignored by reload. Repeat the flag to add more
-                        patterns. (default: ('.*', '.py[cod]', '.sw.*', '~*'))
-
-Socket Binding:
-  --host HOST           TCP host convenience override for a single listener.
-                        When --port is omitted, the base configuration port is
-                        reused.
-  -p, --port PORT       TCP port convenience override for a single listener.
-                        When --host is omitted, the base configuration host is
-                        reused.
-  --bind ADDRESS        Listener addresses to bind. Repeat the flag to add
-                        more listeners. Supports HOST:PORT, [IPv6]:PORT,
-                        unix:PATH, and fd://N. [env: H2CORN_BIND] (default:
-                        ('127.0.0.1:8000',))
-  --uds-permissions UDS_PERMISSIONS
-                        Octal mask for Unix Domain Socket permissions. [env:
-                        H2CORN_UDS_PERMISSIONS] (default: None)
-  --backlog BACKLOG     The maximum number of queued connections allowed on
-                        the socket. [env: H2CORN_BACKLOG] (default: 1024)
-
-TLS:
-  --certfile CERTFILE   PEM certificate chain file for direct TLS. [env:
-                        H2CORN_CERTFILE] (default: None)
-  --keyfile KEYFILE     PEM private key file for direct TLS. Encrypted keys
-                        are not supported. [env: H2CORN_KEYFILE] (default:
-                        None)
-  --ca-certs CA_CERTS   PEM CA bundle used to verify client certificates for
-                        direct TLS. [env: H2CORN_CA_CERTS] (default: None)
-  --cert-reqs {none,optional,required}
-                        Client certificate verification mode for direct TLS.
-                        [env: H2CORN_CERT_REQS] (default: none)
-
-Process and Workers:
-  --pid PID             Write the server process PID to this file. [env:
-                        H2CORN_PID] (default: None)
-  -u, --user USER       User name or numeric UID for worker processes and
-                        created Unix sockets. [env: H2CORN_USER] (default:
-                        None)
-  -g, --group GROUP     Group name or numeric GID for worker processes and
-                        created Unix sockets. [env: H2CORN_GROUP] (default:
-                        None)
-  -m, --umask UMASK     Octal process umask to apply before creating files and
-                        sockets. Leave unset to preserve the inherited umask.
-                        [env: H2CORN_UMASK] (default: None)
-  -w, --workers WORKERS
-                        The number of child worker processes to spawn. [env:
-                        H2CORN_WORKERS] (default: 1)
-  --runtime-threads RUNTIME_THREADS
-                        Number of Tokio runtime worker threads per worker
-                        process. [env: H2CORN_RUNTIME_THREADS] (default: 2)
-  --max-requests MAX_REQUESTS
-                        Maximum number of requests or WebSocket sessions a
-                        worker should complete before retiring. Use 0 to
-                        disable. [env: H2CORN_MAX_REQUESTS] (default: 0)
-  --max-requests-jitter MAX_REQUESTS_JITTER
-                        Maximum jitter added to max_requests to stagger worker
-                        retirements. Use 0 to disable. [env:
-                        H2CORN_MAX_REQUESTS_JITTER] (default: 0)
-  --timeout-worker-healthcheck TIMEOUT_WORKER_HEALTHCHECK
-                        Maximum time between worker healthcheck heartbeats
-                        before the supervisor replaces the worker. Use 0 to
-                        disable. [env: H2CORN_TIMEOUT_WORKER_HEALTHCHECK]
-                        (default: 30.0)
-
-HTTP and Resource Limits:
-  --http1, --no-http1   Whether HTTP/1.1 is supported. Intended for
-                        development purposes only; disable in production.
-                        [env: H2CORN_HTTP1] (default: True)
-  --access-log, --no-access-log
-                        Whether requests should be logged to stderr. [env:
-                        H2CORN_ACCESS_LOG] (default: True)
-  --max-concurrent-streams MAX_CONCURRENT_STREAMS
-                        Maximum active HTTP/2 streams per connection. [env:
-                        H2CORN_MAX_CONCURRENT_STREAMS] (default: 256)
-  --limit-request-head-size LIMIT_REQUEST_HEAD_SIZE
-                        Limit the total size of an HTTP/1.1 request head in
-                        bytes. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_HEAD_SIZE] (default: 1048576)
-  --limit-request-line LIMIT_REQUEST_LINE
-                        The maximum size of the HTTP/1.1 request line in
-                        bytes. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_LINE] (default: 16384)
-  --limit-request-fields LIMIT_REQUEST_FIELDS
-                        Limit the number of HTTP/1.1 header fields in a
-                        request. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_FIELDS] (default: 100)
-  --limit-request-field-size LIMIT_REQUEST_FIELD_SIZE
-                        Limit the size of an individual HTTP/1.1 header field
-                        in bytes. Use 0 for no limit. [env:
-                        H2CORN_LIMIT_REQUEST_FIELD_SIZE] (default: 32768)
-  --h2-max-header-list-size H2_MAX_HEADER_LIST_SIZE
-                        Maximum decoded HTTP/2 header list size in bytes. Use
-                        0 for no limit. [env: H2CORN_H2_MAX_HEADER_LIST_SIZE]
-                        (default: 1048576)
-  --h2-max-header-block-size H2_MAX_HEADER_BLOCK_SIZE
-                        Maximum compressed HTTP/2 header block size in bytes
-                        while collecting HEADERS and CONTINUATION frames. Use
-                        0 for no limit. [env: H2CORN_H2_MAX_HEADER_BLOCK_SIZE]
-                        (default: 1048576)
-  --h2-max-inbound-frame-size H2_MAX_INBOUND_FRAME_SIZE
-                        Maximum inbound HTTP/2 frame payload size to accept
-                        and advertise via SETTINGS_MAX_FRAME_SIZE. [env:
-                        H2CORN_H2_MAX_INBOUND_FRAME_SIZE] (default: 65536)
-  --max-request-body-size MAX_REQUEST_BODY_SIZE
-                        Maximum request body size in bytes. Use 0 for no
-                        limit. [env: H2CORN_MAX_REQUEST_BODY_SIZE] (default:
-                        1073741824)
-  --limit-concurrency LIMIT_CONCURRENCY
-                        Maximum number of concurrent ASGI request/session
-                        tasks per worker. Use 0 to disable. [env:
-                        H2CORN_LIMIT_CONCURRENCY] (default: 0)
-  --limit-connections LIMIT_CONNECTIONS
-                        Maximum number of live client connections per worker.
-                        Use 0 to disable. [env: H2CORN_LIMIT_CONNECTIONS]
-                        (default: 0)
-
-Timeouts:
-  --timeout-handshake TIMEOUT_HANDSHAKE
-                        Time limit to establish a connection/handshake
-                        (seconds). [env: H2CORN_TIMEOUT_HANDSHAKE] (default:
-                        5.0)
-  --timeout-graceful-shutdown TIMEOUT_GRACEFUL_SHUTDOWN
-                        Time allowed for workers to finish existing requests
-                        on stop. [env: H2CORN_TIMEOUT_GRACEFUL_SHUTDOWN]
-                        (default: 30.0)
-  --timeout-keep-alive TIMEOUT_KEEP_ALIVE
-                        Idle keep-alive timeout in seconds. Use 0 to disable.
-                        [env: H2CORN_TIMEOUT_KEEP_ALIVE] (default: 120.0)
-  --timeout-request-header TIMEOUT_REQUEST_HEADER
-                        Idle timeout in seconds while reading an HTTP request
-                        head or an HTTP/2 header block. Use 0 to disable.
-                        [env: H2CORN_TIMEOUT_REQUEST_HEADER] (default: 10.0)
-  --timeout-request-body-idle TIMEOUT_REQUEST_BODY_IDLE
-                        Idle timeout in seconds while reading an HTTP request
-                        body. Use 0 to disable. [env:
-                        H2CORN_TIMEOUT_REQUEST_BODY_IDLE] (default: 60.0)
-
-WebSocket:
-  --websocket-max-message-size WEBSOCKET_MAX_MESSAGE_SIZE
-                        Maximum WebSocket message size in bytes. Defaults to
-                        16 MiB. Use 'inherit' to follow
-                        `max_request_body_size`, or 0 for no limit. [env:
-                        H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE] (default: 16777216)
-  --websocket-per-message-deflate, --no-websocket-per-message-deflate
-                        Whether to negotiate permessage-deflate for WebSockets
-                        when the client offers it. [env:
-                        H2CORN_WEBSOCKET_PER_MESSAGE_DEFLATE] (default: True)
-  --websocket-ping-interval WEBSOCKET_PING_INTERVAL
-                        Interval in seconds between server WebSocket ping
-                        frames. Use 0 to disable. [env:
-                        H2CORN_WEBSOCKET_PING_INTERVAL] (default: 60.0)
-  --websocket-ping-timeout WEBSOCKET_PING_TIMEOUT
-                        Time limit in seconds to wait for a pong after a
-                        server WebSocket ping. Use 0 to disable. [env:
-                        H2CORN_WEBSOCKET_PING_TIMEOUT] (default: 30.0)
-
-Proxy and Response Headers:
-  --proxy-headers, --no-proxy-headers
-                        Trust proxy headers (e.g., Forwarded, X-Forwarded-*)
-                        if the client IP is in `forwarded_allow_ips`. [env:
-                        H2CORN_PROXY_HEADERS] (default: False)
-  --forwarded-allow-ips FORWARDED_ALLOW_IPS
-                        Allowed IPs or networks (in CIDR notation) for proxy
-                        headers. Use '*' to trust all. [env:
-                        H2CORN_FORWARDED_ALLOW_IPS] (default: ('127.0.0.1',
-                        '::1', 'unix'))
-  --proxy-protocol {off,v1,v2}
-                        Expect HAProxy's PROXY protocol on inbound
-                        connections. [env: H2CORN_PROXY_PROTOCOL] (default:
-                        off)
-  --server-header, --no-server-header
-                        Whether h2corn should add a default Server header when
-                        the application did not set one. [env:
-                        H2CORN_SERVER_HEADER] (default: False)
-  --date-header, --no-date-header
-                        Whether h2corn should add a default Date header when
-                        the application did not set one. [env:
-                        H2CORN_DATE_HEADER] (default: True)
-  --header HEADER       Additional default response headers in `name: value`
-                        form. Repeat the flag to add more headers. [env:
-                        H2CORN_RESPONSE_HEADERS] (default: ())
-```
-
-</details>
+For production, put `h2corn` behind a reverse proxy that speaks `h2c`
+upstream (Caddy or HAProxy), then disable HTTP/1.1 with `--no-http1`.
+The full deployment recipes live in
+[the docs](https://h2corn.monicz.dev/deployment/proxy/).
 
 ## Benchmarks
 
-The repository includes a local benchmark suite comparing `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn` across baseline request handling, Unix socket transport, static files, streaming request and response paths, and WebSockets.
+In local runs comparing `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn`
+across baseline GETs, Unix sockets, static files, streaming, and
+WebSockets, `h2corn` leads on every scenario tested:
 
-In the included local runs, `h2corn` leads across the tested scenarios. Hypercorn is the nearest mainstream comparison for this deployment model, and the included plots show `h2corn` ahead there as well.
+![HTTP/1 GET, 4 workers. h2corn ~90k RPS p99 2.3ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
 
-![HTTP/1 GET, 4 workers. h2corn 1.0.0: 89,886.99 RPS, p99 2.3 ms; uvicorn 0.43.0: 2,253.27 RPS, p99 48.3 ms; hypercorn 0.18.0: 13,856.44 RPS, p99 17.1 ms; gunicorn 25.3.0: 23,185.35 RPS, p99 7.1 ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
-
-<details>
-<summary>Full benchmark set</summary>
-
-### HTTP/1 GET
-
-![HTTP/1 GET, 1 worker. h2corn 1.0.0: 26,661.18 RPS, p99 6.2 ms; uvicorn 0.43.0: 7,402.46 RPS, p99 13.7 ms; hypercorn 0.18.0: 3,771.02 RPS, p99 27.0 ms; gunicorn 25.3.0: 8,088.09 RPS, p99 12.5 ms.](bench/results/plots/benchmark_http_1_get_1_worker.svg)
-
-![HTTP/1 GET, 4 workers. h2corn 1.0.0: 89,886.99 RPS, p99 2.3 ms; uvicorn 0.43.0: 2,253.27 RPS, p99 48.3 ms; hypercorn 0.18.0: 13,856.44 RPS, p99 17.1 ms; gunicorn 25.3.0: 23,185.35 RPS, p99 7.1 ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
-
-### HTTP/1 GET over Unix domain sockets (UDS)
-
-![HTTP/1 GET over UDS, 1 worker. h2corn 1.0.0: 29,439.59 RPS, p99 5.8 ms; uvicorn 0.43.0: 8,924.59 RPS, p99 11.3 ms; hypercorn 0.18.0: 4,065.69 RPS, p99 25.0 ms; gunicorn 25.3.0: 9,794.80 RPS, p99 10.5 ms.](bench/results/plots/benchmark_http_1_get_over_uds_1_worker.svg)
-
-![HTTP/1 GET over UDS, 4 workers. h2corn 1.0.0: 93,916.47 RPS, p99 2.1 ms; uvicorn 0.43.0: 34,332.18 RPS, p99 4.5 ms; hypercorn 0.18.0: 15,141.46 RPS, p99 14.1 ms; gunicorn 25.3.0: 28,068.59 RPS, p99 5.9 ms.](bench/results/plots/benchmark_http_1_get_over_uds_4_workers.svg)
-
-### HTTP/2 GET
-
-![HTTP/2 GET, 1 worker. h2corn 1.0.0: 26,972.50 RPS, p99 6.1 ms; hypercorn 0.18.0: 2,867.97 RPS, p99 36.7 ms.](bench/results/plots/benchmark_http_2_get_1_worker.svg)
-
-![HTTP/2 GET, 4 workers. h2corn 1.0.0: 82,114.27 RPS, p99 3.2 ms; hypercorn 0.18.0: 10,886.42 RPS, p99 16.8 ms.](bench/results/plots/benchmark_http_2_get_4_workers.svg)
-
-### HTTP/1 Static file
-
-![HTTP/1 static file, 1 worker. h2corn 1.0.0: 7,942.09 RPS, p99 18.5 ms; uvicorn 0.43.0: 1,651.12 RPS, p99 64.5 ms; hypercorn 0.18.0: 1,359.07 RPS, p99 80.9 ms; gunicorn 25.3.0: 1,687.18 RPS, p99 63.0 ms.](bench/results/plots/benchmark_http_1_static_file_1_worker.svg)
-
-![HTTP/1 static file, 4 workers. h2corn 1.0.0: 26,301.97 RPS, p99 7.6 ms; uvicorn 0.43.0: 6,694.54 RPS, p99 19.7 ms; hypercorn 0.18.0: 5,284.96 RPS, p99 42.3 ms; gunicorn 25.3.0: 6,902.89 RPS, p99 25.1 ms.](bench/results/plots/benchmark_http_1_static_file_4_workers.svg)
-
-### HTTP/2 Static file
-
-![HTTP/2 static file, 1 worker. h2corn 1.0.0: 5,027.66 RPS, p99 28.3 ms; hypercorn 0.18.0: 936.14 RPS, p99 113.0 ms.](bench/results/plots/benchmark_http_2_static_file_1_worker.svg)
-
-![HTTP/2 static file, 4 workers. h2corn 1.0.0: 16,571.47 RPS, p99 14.5 ms; hypercorn 0.18.0: 3,274.31 RPS, p99 38.0 ms.](bench/results/plots/benchmark_http_2_static_file_4_workers.svg)
-
-### HTTP/1 Streaming POST
-
-![HTTP/1 streaming POST, 1 worker. h2corn 1.0.0: 13,649.85 RPS, p99 96.4 ms; uvicorn 0.43.0: 3,723.76 RPS, p99 289.1 ms; hypercorn 0.18.0: 2,361.04 RPS, p99 442.9 ms; gunicorn 25.3.0: 4,004.47 RPS, p99 272.2 ms.](bench/results/plots/benchmark_http_1_streaming_post_1_worker.svg)
-
-![HTTP/1 streaming POST, 4 workers. h2corn 1.0.0: 37,539.49 RPS, p99 40.5 ms; uvicorn 0.43.0: 14,446.83 RPS, p99 110.2 ms; hypercorn 0.18.0: 9,504.84 RPS, p99 120.6 ms; gunicorn 25.3.0: 15,339.52 RPS, p99 91.1 ms.](bench/results/plots/benchmark_http_1_streaming_post_4_workers.svg)
-
-### HTTP/2 Streaming POST
-
-![HTTP/2 streaming POST, 1 worker. h2corn 1.0.0: 13,138.11 RPS, p99 99.8 ms; hypercorn 0.18.0: 1,727.79 RPS, p99 629.4 ms.](bench/results/plots/benchmark_http_2_streaming_post_1_worker.svg)
-
-![HTTP/2 streaming POST, 4 workers. h2corn 1.0.0: 38,112.57 RPS, p99 36.2 ms; hypercorn 0.18.0: 7,735.71 RPS, p99 181.3 ms.](bench/results/plots/benchmark_http_2_streaming_post_4_workers.svg)
-
-### HTTP/1 WebSocket
-
-![HTTP/1 WebSocket, 1 worker. h2corn 1.0.0: 7,102.55 RPS, p99 18.2 ms; uvicorn 0.43.0: 2,155.01 RPS, p99 49.0 ms; hypercorn 0.18.0: 2,224.88 RPS, p99 47.7 ms; gunicorn 25.3.0: 2,089.26 RPS, p99 50.3 ms.](bench/results/plots/benchmark_http_1_websocket_1_worker.svg)
-
-![HTTP/1 WebSocket, 4 workers. h2corn 1.0.0: 20,305.78 RPS, p99 8.8 ms; uvicorn 0.43.0: 7,708.00 RPS, p99 21.9 ms; hypercorn 0.18.0: 7,951.21 RPS, p99 21.2 ms; gunicorn 25.3.0: 7,796.02 RPS, p99 21.5 ms.](bench/results/plots/benchmark_http_1_websocket_4_workers.svg)
-
-</details>
+Full plots and methodology: [Benchmarks](https://h2corn.monicz.dev/benchmarks/).
 
 ## Support
 
-Project support is available in the GitHub issue tracker.
+Bug reports, feature requests, and questions go in the
+[GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 
-If you need direct help with deployment, upgrades, or performance work in Python applications, premium support is also available through [monicz.dev](https://monicz.dev).
+For deployment review, migration help, performance audits, or prioritized
+work, commercial support is available through
+[monicz.dev](https://monicz.dev). See the
+[Support page](https://h2corn.monicz.dev/support/) for details.
 
-## FAQ
+Security disclosures: use GitHub's
+[private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new).
 
-### Should I expose h2corn directly to the Internet?
+## License
 
-No. Put a trusted reverse proxy in front of it. Let the proxy handle TLS, public-edge hardening, and browser-facing protocol negotiation.
-
-### Why prefer `h2c` behind a proxy?
-
-Because it keeps the internal connection on a modern protocol instead of translating requests back down to HTTP/1.1 before they reach the application server. That removes a protocol-conversion boundary where HTTP/1.1 framing ambiguity and connection-reuse problems can reappear. The PortSwigger references above are a good starting point if you want the detailed background.
-
-### Why not HTTP/3?
-
-HTTP/3 has real advantages, but they mostly matter at the edge rather than on the connection from the reverse proxy to the application server.
-
-It runs over QUIC and therefore brings UDP and TLS into the picture. That is often worthwhile on the public side, where network conditions, handshake behavior, and connection migration matter. On a short trusted internal connection, the gains are usually smaller. In that role, `h2c` is simpler, and more widely supported.
-
-### Does this work on Windows?
-
-Yes, but the full Unix-style worker supervisor does not. Windows runs in single-worker / in-process mode.
+MIT.

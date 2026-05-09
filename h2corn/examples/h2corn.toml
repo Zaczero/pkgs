@@ -1,0 +1,14 @@
+bind = ["127.0.0.1:8000"]
+workers = 4
+http1 = false
+
+proxy_headers = true
+forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
+
+# Rolling worker recycling: each worker retires after handling
+# 50_000 ± 5_000 requests, so retirements stagger naturally.
+max_requests = 50000
+max_requests_jitter = 5000
+
+# Restart workers if they stop sending health-check heartbeats.
+timeout_worker_healthcheck = 30.0
