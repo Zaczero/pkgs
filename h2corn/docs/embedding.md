@@ -1,12 +1,12 @@
-# Embedding `h2corn` in your own program
+# Embedding
 
 The CLI (`h2corn module:app`) and the [`serve()`][h2corn.serve] function
 cover the common case: spawn the server as a top-level process. When you
 need finer control — running inside an existing event loop, supervising
-the server from your own code, or driving it from tests — use the
+the server from your own code, or driving it from tests — reach for the
 [`Server`][h2corn.Server] class instead.
 
-## In an asyncio program
+## Inside an asyncio app
 
 ```python title="embedded.py"
 --8<-- "embedded.py"
@@ -14,8 +14,8 @@ the server from your own code, or driving it from tests — use the
 
 [`Server.serve()`][h2corn.Server.serve] is an async function that runs
 until the server is asked to shut down. It is single-worker by design;
-for multiple workers, use [`serve()`][h2corn.serve] instead — it goes
-through the same multi-process supervisor as the CLI.
+when you need multiple workers, fall back to [`serve()`][h2corn.serve],
+which goes through the same multi-process supervisor as the CLI.
 
 ## Programmatic shutdown
 
@@ -42,7 +42,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## When to choose which entrypoint
+## Which entrypoint to use
 
 | You want…                                            | Use                                  |
 | ---------------------------------------------------- | ------------------------------------ |

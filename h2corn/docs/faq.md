@@ -2,7 +2,7 @@
 
 ## Should I expose `h2corn` directly to the internet?
 
-Either works. The common topology is to run `h2corn` behind a reverse
+Either works. The common topology runs `h2corn` behind a reverse
 proxy that handles TLS and public-edge hardening — see
 [Behind a proxy](deployment/proxy.md). When that isn't a fit, `h2corn`
 can terminate TLS itself with [Direct TLS](deployment/tls.md). Browsers

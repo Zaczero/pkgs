@@ -127,6 +127,19 @@
   margin: 0.25rem;
 }
 
+/* "Why h2corn" rationale — keep the H3s as plain headings so the
+   section stays calm; the title text alone is enough to mark the three
+   pillars now that body paragraphs lead with the outcome. */
+.rationale h3 {
+  margin-top: 2.25rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.1rem;
+}
+
+.rationale h3:first-child {
+  margin-top: 0;
+}
+
 /* Matplotlib bench plots ship a white canvas; lift them out of slate. */
 [data-md-color-scheme="slate"] img[src*="benchmarks/"] {
   background: #ffffff;

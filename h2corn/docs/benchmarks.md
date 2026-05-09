@@ -43,10 +43,10 @@ Hardware and kernel for the displayed run are recorded as a header on
 each plot. To reproduce on your own box, see
 [Reproducing](#reproducing).
 
-## Headline
+## Headline result
 
-The most representative workload — a JSON GET endpoint with four
-workers — looks like this:
+The most representative workload — a small JSON GET endpoint served by
+four workers — looks like this:
 
 ![HTTP/1 GET, 4 workers](assets/benchmarks/benchmark_http_1_get_4_workers.svg)
 

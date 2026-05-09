@@ -50,36 +50,46 @@ end-to-end HTTP/2 and a production-grade worker supervisor.
 
     [:octicons-arrow-right-24: Operations](deployment/operations.md)
 
--   :material-puzzle:{ .lg .middle } **Drop-in for ASGI**
-
-    ---
-
-    FastAPI, Starlette, Django, Litestar, Quart — anything ASGI 3.
-    Migration from `uvicorn`, `hypercorn`, or `gunicorn` is a one-line
-    swap.
-
-    [:octicons-arrow-right-24: Quickstart](quickstart.md)
-
 </div>
 
 ## Why h2corn
 
-**Performance where it counts.** The HTTP hot path — accept loop, framing,
-TLS, multiplexing — runs in Rust on top of [Hyper](https://hyper.rs/)
-and [Tokio](https://tokio.rs/). Python only sees a request once there is
-handler work to do, so server overhead stops dominating the budget.
-[See benchmarks](benchmarks.md).
+<div class="rationale" markdown>
 
-**HTTP/2 end-to-end.** Keeping the proxy → app hop on HTTP/2 (`h2c`)
-removes the HTTP/1.1 downgrade where framing ambiguity and
-connection-reuse issues reappear — the surface that
+### Lower latency
+
+Server overhead stops dominating your latency budget. The HTTP hot
+path — accept loop, framing, TLS, multiplexing — runs in Rust on top
+of [Hyper](https://hyper.rs/) and [Tokio](https://tokio.rs/), so Python
+only sees a request once there's real handler work to do. **60–95%
+lower latency** vs `uvicorn`, `hypercorn`, or `gunicorn` on the same
+Starlette app.
+
+### Higher throughput
+
+More requests per worker, on the same hardware. With framing and the
+accept loop running natively, each worker absorbs far more concurrent
+connections than a Python-only server. The four-worker headline
+benchmark reaches **~90k RPS** on a small JSON GET — several times the
+nearest mainstream alternative. [See benchmarks](benchmarks.md).
+
+### Modern protocols
+
+HTTP/2 stays end-to-end, including WebSockets. Keeping the proxy → app
+hop on `h2c` removes the HTTP/1.1 downgrade where framing ambiguity
+and connection-reuse issues reappear — the surface that
 [request-smuggling research](https://portswigger.net/web-security/request-smuggling)
 repeatedly targets. WebSockets ride the same connection
 ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)) instead of
 hijacking a separate HTTP/1.1 socket.
 
-**Production-ready supervisor.** Listeners are opened once and inherited
-into workers. `SIGHUP` does a rolling reload, `SIGTTIN`/`SIGTTOU` scales
-the pool live, worker recycling staggers memory growth, and per-worker
-heartbeats replace anything wedged.
+### Production ready
+
+Everything a long-running deployment expects, in the box. The
+supervisor opens listeners once and inherits them into workers;
+`SIGHUP` performs a rolling reload, `SIGTTIN`/`SIGTTOU` scales the pool
+live, worker recycling staggers memory growth with jitter, and
+per-worker heartbeats replace anything wedged.
+
+</div>
 

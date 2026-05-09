@@ -1,15 +1,15 @@
 # Operations
 
-`h2corn` has two runtime shapes:
+`h2corn` runs in one of two shapes:
 
 - The **CLI supervisor** (`h2corn module:app` or [`serve()`][h2corn.serve])
   spawns and supervises one or more worker processes. This is the
-  production deployment mode.
+  production deployment mode and the focus of this page.
 - The **embedded server** ([`Server`][h2corn.Server]) runs a single
-  worker in your own event loop. See [Embedding](../embedding.md).
+  worker inside your own event loop — see [Embedding](../embedding.md).
 
-The supervisor is **POSIX-only**. On Windows, `serve()` falls back to
-single-worker, in-process mode automatically.
+The supervisor is **POSIX-only**. On Windows, `serve()` automatically
+falls back to single-worker, in-process mode.
 
 ## Worker pool
 
@@ -146,6 +146,8 @@ h2corn app:app --workers 4 --no-http1
 # /metrics is now scraped by Prometheus on the same listener
 ```
 
-## Configuration index
+## Full option reference
 
-For the full set of options, see the [Configuration reference](../configuration.md).
+Every option above — and several more not covered here — is documented
+with its CLI flag, environment variable, TOML key, and default in the
+[Configuration reference](../configuration.md).

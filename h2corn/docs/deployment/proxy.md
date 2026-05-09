@@ -7,13 +7,14 @@ that handles browser-facing TLS:
 browser/client  →  reverse proxy (TLS edge)  →  h2corn (h2c)
 ```
 
-The proxy handles ALPN negotiation, TLS termination, and public-edge
-hardening. `h2corn` then runs the application side of the connection on
+The proxy takes care of ALPN negotiation, TLS termination, and
+public-edge hardening. `h2corn` runs the application side of the
+connection on
 [`h2c`](https://datatracker.ietf.org/doc/html/rfc9113) — cleartext
 HTTP/2 over TCP or a Unix socket inside the trust boundary.
 
-If a separate proxy isn't a good fit for your environment, `h2corn` can
-also terminate TLS itself — see [Direct TLS](tls.md).
+When a separate proxy isn't a good fit for your environment, `h2corn`
+can terminate TLS itself instead — see [Direct TLS](tls.md).
 
 !!! note "Why h2c upstream?"
     Keeping the proxy → app hop on HTTP/2 avoids the HTTP/1.1 *downgrade*
@@ -64,7 +65,9 @@ h2corn hello:app \
 ## HAProxy
 
 [HAProxy](https://www.haproxy.com/) speaks HTTP/2 upstream with
-`proto h2` and can add PROXY protocol v2 on the same connection.
+`proto h2` and can layer PROXY protocol v2 on the same connection — see
+the [HAProxy HTTP guide](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/http/)
+for the full directive set.
 
 ```text title="haproxy.cfg"
 --8<-- "haproxy.cfg"
@@ -81,11 +84,9 @@ h2corn hello:app \
   --no-http1
 ```
 
-Reference: [HAProxy HTTP guide](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/http/).
-
 ## Other proxies
 
-`h2corn` works with any reverse proxy that speaks `h2c` upstream. Caddy
-and HAProxy currently do this cleanly. If you are evaluating an
-alternative that cannot, prefer one that can over falling back to
-HTTP/1.1 between the proxy and the application.
+`h2corn` works with any reverse proxy that speaks `h2c` upstream — Caddy
+and HAProxy are simply the two that do it cleanly today. If you're
+evaluating an alternative that cannot, pick one that can rather than
+falling back to HTTP/1.1 between the proxy and the application.
