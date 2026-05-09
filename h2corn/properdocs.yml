@@ -73,6 +73,16 @@ plugins:
   - gen-files:
       scripts:
         - scripts/gen_config_reference.py
+  - minify:
+      minify_html: true
+      minify_css: true
+      minify_js: true
+      htmlmin_opts:
+        remove_comments: true
+        remove_empty_space: true
+      css_files:
+        - stylesheets/extra.css
+      cache_safe: true
   - mkdocstrings:
       default_handler: python
       handlers:

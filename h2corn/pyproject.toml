@@ -68,6 +68,7 @@ docs = [
   "properdocs>=1.6",
   "mkdocs-material>=9.5",
   "mkdocs-gen-files>=0.5",
+  "mkdocs-minify-plugin>=0.8",
   "mkdocstrings[python]>=0.27",
   "griffe-inherited-docstrings>=1.0",
   "pymdown-extensions>=10.7",

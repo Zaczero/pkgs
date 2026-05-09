@@ -1,7 +1,5 @@
 # Quickstart
 
-This page gets you from zero to a running `h2corn` server in under a minute.
-
 ## Install
 
 === "uv"
@@ -17,20 +15,25 @@ This page gets you from zero to a running `h2corn` server in under a minute.
     ```
 
 `h2corn` requires **Python 3.11+**. Wheels are published for Linux,
-macOS and Windows (the multi-worker supervisor is Unix-only — see
-[Operations](deployment/operations.md)).
+macOS, and Windows; the multi-worker supervisor is Unix-only — see
+[Operations](deployment/operations.md).
 
-## A minimal application
+## Run your first server
+
+Save a tiny FastAPI app as `hello.py`:
 
 ```python title="hello.py"
 --8<-- "hello.py"
 ```
 
-Start it:
+Then start `h2corn`, pointing it at the module and the ASGI app
+object inside it:
 
 ```bash
 h2corn hello:app
 ```
+
+You'll see something like this in your terminal:
 
 ```text
 h2corn v1.4.0 • HTTP/2 ASGI
@@ -41,19 +44,35 @@ Started worker [12345]
 127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms tx=25b
 ```
 
-That's it — visit <http://127.0.0.1:8000/> in your browser.
+Visit <http://127.0.0.1:8000/> in your browser. You should see
+`{"message": "hello from h2corn"}` come back.
 
 !!! info "Why does the response say HTTP/1.1?"
-    Browsers do not speak cleartext `h2c`, so the development server keeps
-    HTTP/1.1 enabled for local testing. In production, the edge advertises
-    HTTPS — either through a [reverse proxy](deployment/proxy.md) or
-    `h2corn`'s own [Direct TLS](deployment/tls.md) — and you turn HTTP/1.1
-    off with `--no-http1`.
+    Browsers do not speak cleartext `h2c`, so the development server
+    keeps HTTP/1.1 enabled for local testing. In production, the edge
+    advertises HTTPS — either through a
+    [reverse proxy](deployment/proxy.md) or `h2corn`'s own
+    [Direct TLS](deployment/tls.md) — and you turn HTTP/1.1 off with
+    `--no-http1`.
+
+## Hot reload
+
+While iterating locally, add `--reload` so `h2corn` restarts whenever
+your source files change:
+
+```bash
+h2corn hello:app --reload
+```
+
+The watcher follows `*.py` by default; tune it with `--reload-include`
+and `--reload-exclude`. Reload is intended for development only and
+cannot be combined with multiple workers.
 
 ## Application factories
 
-Pass `--factory` when your target is a zero-argument callable that returns
-the ASGI app:
+Some applications expose their ASGI object through a factory function
+rather than a module-level attribute. Pass `--factory` and `h2corn`
+will call it for you:
 
 ```python title="factory.py"
 --8<-- "factory.py"
@@ -63,19 +82,11 @@ the ASGI app:
 h2corn factory:create_app --factory
 ```
 
-## Hot reload during development
+## Deploy
 
-```bash
-h2corn hello:app --reload
-```
-
-The watcher follows `*.py` by default; tune it with `--reload-include` and
-`--reload-exclude`. Reload is intended for development only and is mutually
-exclusive with multiple workers.
-
-## Production-style command
-
-A typical shape behind a reverse proxy:
+In production, `h2corn` typically sits behind a reverse proxy that
+terminates browser-facing TLS. The application server itself runs on a
+local listener with several workers, looking something like this:
 
 ```bash
 h2corn hello:app \
@@ -86,12 +97,33 @@ h2corn hello:app \
   --no-http1
 ```
 
-`--no-http1` is a fail-closed hardening flag: once the upstream is
-configured to speak `h2c`, an accidental fallback fails immediately
-instead of quietly serving traffic on the older protocol.
+Each flag above makes a deliberate choice worth understanding before
+you ship it:
 
-Next steps:
+- **`--bind 127.0.0.1:8000`** listens on loopback only so the proxy can
+  reach it locally. Use `0.0.0.0:port` if you want a public-facing TCP
+  listener instead.
+- **`--workers 4`** is a reasonable starting point on a 4-core box.
+  Size it to your workload and revisit after measuring.
+- **`--proxy-headers`** trusts standard `Forwarded` and `X-Forwarded-*`
+  headers, but only when they come from the peers listed in
+  `--forwarded-allow-ips`. Set that list to wherever your proxy
+  actually connects from.
+- **`--no-http1`** is a fail-closed hardening flag. Once the upstream
+  is configured to speak `h2c`, an accidental fallback fails
+  immediately instead of quietly serving traffic on the older protocol.
 
-- [Behind a proxy](deployment/proxy.md) — full Caddy and HAProxy recipes.
-- [Direct TLS](deployment/tls.md) — terminate TLS in `h2corn` itself.
-- [Configuration](configuration.md) — the complete option list.
+Once you have more than a handful of flags, prefer a
+[TOML config file](deployment/operations.md#toml-config-files) — same
+keys, single source of truth, easier to review in a pull request.
+
+## Next steps
+
+- [Behind a proxy](deployment/proxy.md) — full Caddy and HAProxy
+  recipes with `h2c` upstream.
+- [Direct TLS](deployment/tls.md) — terminate TLS in `h2corn` itself
+  for single-server deployments.
+- [Operations](deployment/operations.md) — multi-worker supervisor,
+  signals, rolling reload, live scaling, and recycling.
+- [Configuration](configuration.md) — every option, in CLI, environment,
+  and TOML form.

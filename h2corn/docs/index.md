@@ -85,9 +85,17 @@ heartbeats replace anything wedged.
 
 ## A 60-second start
 
-```bash
-uv add h2corn
-```
+=== "uv"
+
+    ```bash
+    uv add h2corn
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install h2corn
+    ```
 
 ```python title="hello.py"
 --8<-- "hello.py"
