@@ -83,35 +83,3 @@ into workers. `SIGHUP` does a rolling reload, `SIGTTIN`/`SIGTTOU` scales
 the pool live, worker recycling staggers memory growth, and per-worker
 heartbeats replace anything wedged.
 
-## A 60-second start
-
-=== "uv"
-
-    ```bash
-    uv add h2corn
-    ```
-
-=== "pip"
-
-    ```bash
-    pip install h2corn
-    ```
-
-```python title="hello.py"
---8<-- "hello.py"
-```
-
-```bash
-h2corn hello:app
-```
-
-```text
-h2corn v1.4.0 • HTTP/2 ASGI
-Listening on http://127.0.0.1:8000
-HTTP/1 compatibility is enabled; disable with --no-http1
-
-Started worker [12345]
-127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms tx=25b
-```
-
-[Continue to the quickstart :material-arrow-right:](quickstart.md){ .md-button }
