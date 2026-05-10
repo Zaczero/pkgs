@@ -738,6 +738,7 @@ mod tests {
         );
         assert!(not_found.is_not_found());
         assert!(!not_found.is_permission_denied());
+        assert!(!not_found.is_not_a_directory());
 
         let forbidden = error::PathsendError::open_failed(
             path,
@@ -745,13 +746,20 @@ mod tests {
         );
         assert!(!forbidden.is_not_found());
         assert!(forbidden.is_permission_denied());
+        assert!(!forbidden.is_not_a_directory());
 
-        let other = error::PathsendError::open_failed(
+        let not_a_dir = error::PathsendError::open_failed(
             path,
-            std::io::Error::new(std::io::ErrorKind::Other, "weird"),
+            std::io::Error::new(std::io::ErrorKind::NotADirectory, "path component is a file"),
         );
+        assert!(!not_a_dir.is_not_found());
+        assert!(!not_a_dir.is_permission_denied());
+        assert!(not_a_dir.is_not_a_directory());
+
+        let other = error::PathsendError::open_failed(path, std::io::Error::other("weird"));
         assert!(!other.is_not_found());
         assert!(!other.is_permission_denied());
+        assert!(!other.is_not_a_directory());
     }
 
     #[test]

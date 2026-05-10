@@ -485,6 +485,12 @@ impl PathsendError {
         }
     }
 
+    pub(crate) fn is_not_a_directory(&self) -> bool {
+        match self {
+            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::NotADirectory,
+        }
+    }
+
     const fn failure_domain(&self) -> FailureDomain {
         FailureDomain::TransportIo
     }
