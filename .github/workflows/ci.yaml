@@ -56,11 +56,16 @@ jobs:
               test_all=true
               changed=""
             elif ! $test_all; then
-              changed="$(git diff --name-only "$base" HEAD | cut -d/ -f1 | sort -u)"
+              relevant="$(git diff --name-only "$base" HEAD | python3 .github/scripts/path_filter.py)"
 
-              for package in $changed; do
-                [ -f "$package/pyproject.toml" ] || test_all=true
-              done
+              if [ -z "$relevant" ]; then
+                changed=""
+              else
+                changed="$(echo "$relevant" | cut -d/ -f1 | sort -u)"
+                for package in $changed; do
+                  [ -f "$package/pyproject.toml" ] || test_all=true
+                done
+              fi
             fi
 
             if $test_all; then
