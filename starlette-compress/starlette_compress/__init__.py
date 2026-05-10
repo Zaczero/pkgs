@@ -15,7 +15,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-__version__ = '1.7.0'
+__version__ = '1.7.1'
 
 
 class CompressMiddleware:
