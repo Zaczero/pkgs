@@ -7,6 +7,22 @@
   --h2corn-amber-dark: #a86c00;
 }
 
+/* Higher-quality text wrapping for headings and body. `balance` keeps
+   headline lines roughly equal in length (no awkward single-word last
+   line); `pretty` avoids orphans and chooses cleaner break points in
+   paragraphs. Modern Chromium/Firefox/Safari all support both. */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  text-wrap: balance;
+}
+
+.md-typeset p,
+.md-typeset li {
+  text-wrap: pretty;
+}
+
 [data-md-color-primary="deep-purple"] {
   --md-primary-fg-color: var(--h2corn-purple);
   --md-primary-fg-color--light: #8a4dfd;
@@ -64,7 +80,7 @@
   transform: translate(-50%, -50%);
   width: 1400px;
   height: 800px;
-  max-width: 120vw;
+  max-width: 100vw;
   background: radial-gradient(
     ellipse closest-side,
     rgba(108, 31, 252, 0.08) 0%,
@@ -116,7 +132,6 @@
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
   margin: -0.25rem auto 1.5rem;
-  white-space: nowrap;
 }
 
 .hero .hero-stats strong {
