@@ -473,6 +473,12 @@ impl PathsendError {
         }
     }
 
+    pub(crate) fn is_not_found(&self) -> bool {
+        match self {
+            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::NotFound,
+        }
+    }
+
     const fn failure_domain(&self) -> FailureDomain {
         FailureDomain::TransportIo
     }

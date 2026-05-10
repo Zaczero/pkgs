@@ -32,9 +32,13 @@ where
     T: transport::HttpResponseTransport,
 {
     if let HttpEventEffect::PathSend(path) = handle_http_event_sync(controller, actions, event)? {
-        let (file, len) =
-            http::pathsend::open_pathsend_file(path, controller.pathsend_len_hint()).await?;
-        controller.handle_pathsend(actions, file, len)?;
+        match http::pathsend::open_pathsend_file(path, controller.pathsend_len_hint()).await {
+            Ok((file, len)) => controller.handle_pathsend(actions, file, len)?,
+            Err(error::H2CornError::Pathsend(err)) if err.is_not_found() => {
+                controller.handle_pathsend_not_found(actions)?;
+            },
+            Err(err) => return Err(err),
+        }
     }
     transport.apply_response_actions(actions).await
 }

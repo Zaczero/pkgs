@@ -172,6 +172,28 @@ impl ResponseController {
         Ok(())
     }
 
+    pub(crate) fn handle_pathsend_not_found(
+        &mut self,
+        actions: &mut actions::ResponseActions,
+    ) -> Result<(), error::H2CornError> {
+        let started = self.take_started(error::HttpResponseError::PathsendBeforeStart)?;
+        if started.saw_body {
+            self.state = ResponseState::StartedStreaming(started);
+            return error::HttpResponseError::PathsendMixedWithBody.err();
+        }
+        drop(started);
+        let start = actions::ResponseStart::new(
+            http::types::status_code::NOT_FOUND,
+            http::types::ResponseHeaders::new(),
+        );
+        actions.push(actions::ResponseAction::Final {
+            start,
+            body: actions::FinalResponseBody::Empty,
+        });
+        self.state = ResponseState::Complete;
+        Ok(())
+    }
+
     pub(crate) fn handle_pathsend(
         &mut self,
         actions: &mut actions::ResponseActions,
@@ -593,6 +615,112 @@ mod tests {
             )
         ));
         let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn pathsend_not_found_substitutes_clean_404_after_start() {
+        let mut controller = ResponseController::new(false, false);
+        let mut actions = http::response::ResponseActions::new();
+
+        event_requests_pathsend(
+            &mut controller,
+            &mut actions,
+            bridge::HttpOutboundEvent::Start {
+                status: 200,
+                headers: vec![(
+                    Bytes::from_static(b"content-type").into(),
+                    Bytes::from_static(b"image/png").into(),
+                )],
+                trailers: false,
+            },
+        )
+        .expect("response start is accepted");
+        assert!(actions.is_empty());
+
+        controller
+            .handle_pathsend_not_found(&mut actions)
+            .expect("missing file substitutes 404");
+        assert!(controller.is_complete());
+        assert_eq!(actions.len(), 1);
+        match actions.pop().expect("404 final action is buffered") {
+            http::response::ResponseAction::Final { start, body } => {
+                let (status, headers) = start.into_status_headers();
+                assert_eq!(status, 404);
+                assert!(
+                    headers.is_empty(),
+                    "user-supplied headers must be discarded for the 404 substitute",
+                );
+                assert!(matches!(body, http::response::FinalResponseBody::Empty));
+            },
+            _ => panic!("expected final 404 response action"),
+        }
+    }
+
+    #[test]
+    fn pathsend_not_found_rejects_pathsend_before_start() {
+        let mut controller = ResponseController::new(false, false);
+        let mut actions = http::response::ResponseActions::new();
+
+        let err = controller
+            .handle_pathsend_not_found(&mut actions)
+            .expect_err("pathsend before start is invalid");
+        assert!(matches!(
+            err,
+            error::H2CornError::HttpResponse(error::HttpResponseError::PathsendBeforeStart)
+        ));
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn pathsend_not_found_rejects_after_streaming_body() {
+        let mut controller = ResponseController::new(false, false);
+        let mut actions = http::response::ResponseActions::new();
+
+        event_requests_pathsend(
+            &mut controller,
+            &mut actions,
+            bridge::HttpOutboundEvent::Start {
+                status: 200,
+                headers: Vec::new(),
+                trailers: false,
+            },
+        )
+        .expect("response start is accepted");
+        event_requests_pathsend(
+            &mut controller,
+            &mut actions,
+            bridge::HttpOutboundEvent::Body {
+                body: bridge::PayloadBytes::from(Bytes::from_static(b"partial")),
+                more_body: true,
+            },
+        )
+        .expect("streaming body is accepted");
+        actions.clear();
+
+        let err = controller
+            .handle_pathsend_not_found(&mut actions)
+            .expect_err("substituting 404 after body is invalid");
+        assert!(matches!(
+            err,
+            error::H2CornError::HttpResponse(error::HttpResponseError::PathsendMixedWithBody)
+        ));
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn pathsend_error_is_not_found_detects_enoent() {
+        let path = std::path::Path::new("/definitely/does/not/exist/h2corn-test");
+        let err = error::PathsendError::open_failed(
+            path,
+            std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        );
+        assert!(err.is_not_found());
+
+        let other = error::PathsendError::open_failed(
+            path,
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no access"),
+        );
+        assert!(!other.is_not_found());
     }
 
     #[test]
