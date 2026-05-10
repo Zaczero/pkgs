@@ -61,6 +61,9 @@ class BrotliResponder:
 
             # skip if start message is not satisfied or unknown message type
             if start_message is None or message_type != 'http.response.body':
+                if start_message is not None:
+                    await send(start_message)
+                    start_message = None
                 await send(message)
                 return
 

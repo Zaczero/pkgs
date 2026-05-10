@@ -325,3 +325,52 @@ def test_is_start_message_satisfied_reads_raw_headers():
     assert not is_start_message_satisfied({
         'headers': [(b'content-type', b'image/png')]
     })
+
+
+@pytest.mark.parametrize('encoding', ['gzip', 'br', 'zstd', 'identity'])
+def test_pathsend_after_compressible_start_flushes_start_first(encoding: str):
+    """`http.response.pathsend` must not orphan a buffered start message.
+
+    Some ASGI servers (e.g. h2corn) implement the `http.response.pathsend`
+    extension, which Starlette's `FileResponse` uses to skip the body chunk
+    stream. The compress middleware buffers `http.response.start` for
+    compressible content types while it waits for `http.response.body`. When
+    pathsend follows instead, compression doesn't apply — but the buffered
+    start must still be forwarded, otherwise the downstream server never
+    sees the response start and produces a 500.
+    """
+    import asyncio
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/xml; charset=utf-8')],
+        })
+        await send({'type': 'http.response.pathsend', 'path': '/tmp/whatever'})
+
+    middleware = CompressMiddleware(app)
+    sent: list[dict] = []
+
+    async def fake_send(message: dict) -> None:
+        sent.append(message)
+
+    async def fake_receive() -> dict:
+        return {'type': 'http.disconnect'}
+
+    scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [(b'accept-encoding', encoding.encode())],
+        'extensions': {'http.response.pathsend': {}},
+    }
+    asyncio.run(middleware(scope, fake_receive, fake_send))
+
+    types = [m['type'] for m in sent]
+    assert types == ['http.response.start', 'http.response.pathsend'], (
+        f'expected start before pathsend, got {types}'
+    )
+    # No Content-Encoding should be set — pathsend bypasses compression.
+    start_headers = dict(sent[0]['headers'])
+    assert b'content-encoding' not in start_headers
