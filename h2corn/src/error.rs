@@ -479,6 +479,12 @@ impl PathsendError {
         }
     }
 
+    pub(crate) fn is_permission_denied(&self) -> bool {
+        match self {
+            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::PermissionDenied,
+        }
+    }
+
     const fn failure_domain(&self) -> FailureDomain {
         FailureDomain::TransportIo
     }

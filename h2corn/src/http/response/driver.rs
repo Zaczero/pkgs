@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::{actions, controller, transport};
+use crate::http::types::{HttpStatusCode, status_code};
 use crate::{bridge, error, http};
 
 enum HttpEventEffect {
@@ -34,13 +35,26 @@ where
     if let HttpEventEffect::PathSend(path) = handle_http_event_sync(controller, actions, event)? {
         match http::pathsend::open_pathsend_file(path, controller.pathsend_len_hint()).await {
             Ok((file, len)) => controller.handle_pathsend(actions, file, len)?,
-            Err(error::H2CornError::Pathsend(err)) if err.is_not_found() => {
-                controller.handle_pathsend_not_found(actions)?;
+            Err(err) => match pathsend_open_substitute_status(&err) {
+                Some(status) => controller.handle_pathsend_substitute(actions, status)?,
+                None => return Err(err),
             },
-            Err(err) => return Err(err),
         }
     }
     transport.apply_response_actions(actions).await
+}
+
+fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatusCode> {
+    let error::H2CornError::Pathsend(err) = err else {
+        return None;
+    };
+    if err.is_not_found() {
+        Some(status_code::NOT_FOUND)
+    } else if err.is_permission_denied() {
+        Some(status_code::FORBIDDEN)
+    } else {
+        None
+    }
 }
 
 fn handle_http_event_sync(
