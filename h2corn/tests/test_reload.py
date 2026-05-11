@@ -1,6 +1,9 @@
+import selectors
+import sys
 from pathlib import Path
 
 import h2corn._reload as reload_module
+import pytest
 from h2corn._cli import ImportSettings
 from h2corn._reload import (
     _INOTIFY_DIR_REBUILD_MASK,
@@ -12,6 +15,10 @@ from h2corn._reload import (
     _reload_change_message,
     _watch_dirs,
     _watch_file_snapshot,
+)
+
+_linux_only = pytest.mark.skipif(
+    sys.platform != 'linux', reason='inotify is Linux-only'
 )
 
 
@@ -209,6 +216,42 @@ def test_inotify_consume_skips_rebuild_for_file_events(monkeypatch) -> None:
     monkeypatch.setattr(reload_module.os, 'read', fake_read)
 
     assert notifier.consume() is False
+
+
+@_linux_only
+def test_inotify_rebuild_preserves_fileno(tmp_path: Path) -> None:
+    notifier = _InotifyNotifier((tmp_path,), ())
+    try:
+        original_fd = notifier.fileno()
+        (tmp_path / 'sub').mkdir()
+        notifier.rebuild()
+        assert notifier.fileno() == original_fd
+    finally:
+        notifier.close()
+
+
+@_linux_only
+def test_inotify_rebuild_keeps_events_on_originally_registered_fd(
+    tmp_path: Path,
+) -> None:
+    notifier = _InotifyNotifier((tmp_path,), ())
+    try:
+        registered_fd = notifier.fileno()
+        sel = selectors.DefaultSelector()
+        try:
+            sel.register(registered_fd, selectors.EVENT_READ)
+            (tmp_path / 'sub').mkdir()
+            assert sel.select(timeout=1.0), 'parent watch must deliver subdir create'
+            notifier.consume()
+            notifier.rebuild()
+            (tmp_path / 'sub' / 'newfile.txt').write_text('hello')
+            assert sel.select(timeout=1.0), (
+                'rebuild() must preserve the fd seen by the selector'
+            )
+        finally:
+            sel.close()
+    finally:
+        notifier.close()
 
 
 def test_inotify_consume_rebuilds_for_directory_topology_events(monkeypatch) -> None:

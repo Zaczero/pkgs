@@ -58,7 +58,7 @@ _INOTIFY_MASK = (
     | 0x0000_0400  # IN_DELETE_SELF
     | 0x0000_0800  # IN_MOVE_SELF
 )
-_inotify_init1 = _inotify_add_watch = None
+_inotify_init1 = _inotify_add_watch = _inotify_rm_watch = None
 
 if sys.platform == 'linux':
     _libc = ctypes.CDLL(None, use_errno=True)
@@ -68,6 +68,9 @@ if sys.platform == 'linux':
     _inotify_add_watch = _libc.inotify_add_watch
     _inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
     _inotify_add_watch.restype = ctypes.c_int
+    _inotify_rm_watch = _libc.inotify_rm_watch
+    _inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+    _inotify_rm_watch.restype = ctypes.c_int
 
 
 def _log_line(message: str):
@@ -225,22 +228,27 @@ class _InotifyNotifier:
     def __init__(self, roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
         self._roots = roots
         self._exclude_patterns = exclude_patterns
-        self._fd = -1
-        self._rebuild()
-
-    def _rebuild(self):
-        if self._fd != -1:
-            os.close(self._fd)
         fd = _inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if fd < 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
         self._fd = fd
+        self._watches: dict[int, Path] = {}
+        self._sync_watches()
+
+    def _sync_watches(self):
+        active: dict[int, Path] = {}
         for path in _walk_watch_dirs(self._roots, self._exclude_patterns):
-            if _inotify_add_watch(fd, os.fsencode(path), _INOTIFY_MASK) < 0:
+            wd = _inotify_add_watch(self._fd, os.fsencode(path), _INOTIFY_MASK)
+            if wd < 0:
                 error = ctypes.get_errno()
-                if error not in {errno.ENOENT, errno.ENOTDIR}:
-                    raise OSError(error, os.strerror(error), os.fspath(path))
+                if error in {errno.ENOENT, errno.ENOTDIR}:
+                    continue
+                raise OSError(error, os.strerror(error), os.fspath(path))
+            active[wd] = path
+        for stale_wd in self._watches.keys() - active.keys():
+            _inotify_rm_watch(self._fd, stale_wd)
+        self._watches = active
 
     def fileno(self) -> int:
         return self._fd
@@ -264,12 +272,13 @@ class _InotifyNotifier:
                 offset += event_size + name_len
 
     def rebuild(self):
-        self._rebuild()
+        self._sync_watches()
 
     def close(self):
         if self._fd != -1:
             os.close(self._fd)
             self._fd = -1
+            self._watches.clear()
 
 
 class _KqueueNotifier:
