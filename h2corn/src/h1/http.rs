@@ -259,7 +259,7 @@ where
             writer.flush().await?;
             Ok(())
         },
-        FinalResponseBody::File { mut file, len } => {
+        FinalResponseBody::File { file, len } => {
             write_response_head(
                 writer,
                 status,
@@ -268,6 +268,7 @@ where
                 BodyFraming::KnownLength(len),
             )
             .await?;
+            let mut file = *file;
             W::send_file_body(writer, &mut file, len).await?;
             Ok(())
         },

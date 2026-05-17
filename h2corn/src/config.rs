@@ -2,7 +2,6 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use bytes::Bytes;
-use parking_lot::RwLock;
 use tokio_rustls::TlsAcceptor;
 
 use crate::frame::DEFAULT_MAX_FRAME_SIZE;
@@ -76,17 +75,10 @@ pub enum BindTarget {
 }
 
 #[derive(Debug, Default)]
-pub struct CachedDateValue {
-    pub unix_seconds: u64,
-    pub value: Bytes,
-}
-
-#[derive(Debug, Default)]
 pub struct ResponseHeaderConfig {
     pub server_header: bool,
     pub date_header: bool,
     pub extra_headers: Box<[(Bytes, Bytes)]>,
-    pub cached_date: RwLock<CachedDateValue>,
 }
 
 pub struct ServerConfig {

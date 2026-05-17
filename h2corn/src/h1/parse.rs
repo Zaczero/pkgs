@@ -147,72 +147,67 @@ impl HeaderParseState {
             RequestHeaderValue::from_h1(head, value).ok_or(Http1Error::InvalidHeaderValue)?;
         let value = header_value.as_bytes();
 
-        let known_name = match &header_name {
-            RequestHeaderName::Known(name) => Some(*name),
-            RequestHeaderName::Other(_) => None,
-        };
-        if let Some(known_name) = known_name {
+        if let RequestHeaderName::Known(known_name) = &header_name {
             self.header_meta.observe_known_header(
-                known_name,
+                *known_name,
                 header_value.inner(),
                 self.headers.len(),
             );
-        }
-
-        match known_name {
-            Some(KnownRequestHeaderName::Host) => {
-                if self.host_header_index.is_some() {
-                    return Http1Error::ConflictingAbsoluteFormAuthority.err();
-                }
-                self.host_header_index = Some(self.headers.len());
-            },
-            Some(KnownRequestHeaderName::Connection) => {
-                let tokens = parse_connection_header_tokens(value);
-                self.connection.close |= tokens.close;
-                self.connection.upgrade |= tokens.upgrade;
-                self.connection.http2_settings |= tokens.http2_settings;
-            },
-            Some(KnownRequestHeaderName::Upgrade) => {
-                self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
-                self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
-            },
-            Some(KnownRequestHeaderName::Te) => {
-                self.header_meta.accepts_trailers |= header_contains_token(value, b"trailers");
-            },
-            Some(KnownRequestHeaderName::ContentLength) => {
-                if self.body_kind == RequestBodyKind::Chunked {
-                    return Http1Error::InvalidContentLength.err();
-                }
-                let parsed =
-                    parse_content_length_header(value).ok_or(Http1Error::InvalidContentLength)?;
-                if self
-                    .header_meta
-                    .content_length
-                    .is_some_and(|existing| existing != parsed)
-                {
-                    return Http1Error::InvalidContentLength.err();
-                }
-                self.header_meta.content_length = Some(parsed);
-                self.body_kind = NonZeroU64::new(parsed)
-                    .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
-            },
-            Some(KnownRequestHeaderName::TransferEncoding) => {
-                if self.body_kind == RequestBodyKind::Chunked
-                    || self.header_meta.content_length.is_some()
-                    || !header_is_single_token(value, b"chunked")
-                {
-                    return Http1Error::MalformedHeaderLine.err();
-                }
-                self.body_kind = RequestBodyKind::Chunked;
-                self.header_meta.content_length = None;
-            },
-            Some(KnownRequestHeaderName::Expect) => {
-                self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
-            },
-            Some(KnownRequestHeaderName::Http2Settings) if self.http2_settings.is_none() => {
-                self.http2_settings = Some(parse_http2_settings(value)?);
-            },
-            _ => {},
+            match known_name {
+                KnownRequestHeaderName::Host => {
+                    if self.host_header_index.is_some() {
+                        return Http1Error::ConflictingAbsoluteFormAuthority.err();
+                    }
+                    self.host_header_index = Some(self.headers.len());
+                },
+                KnownRequestHeaderName::Connection => {
+                    let tokens = parse_connection_header_tokens(value);
+                    self.connection.close |= tokens.close;
+                    self.connection.upgrade |= tokens.upgrade;
+                    self.connection.http2_settings |= tokens.http2_settings;
+                },
+                KnownRequestHeaderName::Upgrade => {
+                    self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
+                    self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
+                },
+                KnownRequestHeaderName::Te => {
+                    self.header_meta.accepts_trailers |= header_contains_token(value, b"trailers");
+                },
+                KnownRequestHeaderName::ContentLength => {
+                    if self.body_kind == RequestBodyKind::Chunked {
+                        return Http1Error::InvalidContentLength.err();
+                    }
+                    let parsed = parse_content_length_header(value)
+                        .ok_or(Http1Error::InvalidContentLength)?;
+                    if self
+                        .header_meta
+                        .content_length
+                        .is_some_and(|existing| existing != parsed)
+                    {
+                        return Http1Error::InvalidContentLength.err();
+                    }
+                    self.header_meta.content_length = Some(parsed);
+                    self.body_kind = NonZeroU64::new(parsed)
+                        .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
+                },
+                KnownRequestHeaderName::TransferEncoding => {
+                    if self.body_kind == RequestBodyKind::Chunked
+                        || self.header_meta.content_length.is_some()
+                        || !header_is_single_token(value, b"chunked")
+                    {
+                        return Http1Error::MalformedHeaderLine.err();
+                    }
+                    self.body_kind = RequestBodyKind::Chunked;
+                    self.header_meta.content_length = None;
+                },
+                KnownRequestHeaderName::Expect => {
+                    self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
+                },
+                KnownRequestHeaderName::Http2Settings if self.http2_settings.is_none() => {
+                    self.http2_settings = Some(parse_http2_settings(value)?);
+                },
+                _ => {},
+            }
         }
 
         self.headers.push((header_name, header_value));

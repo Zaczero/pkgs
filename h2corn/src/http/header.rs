@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
 
@@ -8,7 +9,7 @@ use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
 
 use crate::ascii;
-use crate::config::{CachedDateValue, ServerConfig};
+use crate::config::ServerConfig;
 use crate::ext::Protocol;
 use crate::http::digits;
 use crate::http::types::{RequestHeaderValue, ResponseHeaders};
@@ -173,6 +174,7 @@ pub fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHe
     scan
 }
 
+#[cfg(test)]
 pub fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
     let mut scan = inspect_response_default_headers(headers);
     scan.ensure_content_length_scanned(headers);
@@ -246,24 +248,25 @@ pub fn canonicalize_fixed_length_response_headers_with_scan(
     scan.content_length = Some(ResponseContentLength::Valid(len));
 }
 
-fn cached_date_value(config: &ServerConfig) -> Bytes {
+fn cached_date_value() -> Bytes {
+    // Per-thread cache: each worker thread keeps its own `(unix_seconds, value)` so
+    // every response is a refcount bump on a thread-owned `Bytes`. The previous
+    // shared `RwLock` had readers contending on the inner counter across all
+    // workers; this version has zero cross-thread atomics on the fast path.
+    thread_local! {
+        static CACHE: RefCell<(u64, Bytes)> = const { RefCell::new((0, Bytes::new())) };
+    }
     let unix_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    {
-        let cached = config.response_headers.cached_date.read();
-        if cached.unix_seconds == unix_seconds && !cached.value.is_empty() {
-            return Bytes::clone(&cached.value);
+    CACHE.with_borrow_mut(|(cached_seconds, cached_value)| {
+        if *cached_seconds != unix_seconds || cached_value.is_empty() {
+            *cached_value = format_http_date(unix_seconds);
+            *cached_seconds = unix_seconds;
         }
-    }
-    let value = format_http_date(unix_seconds);
-    let mut cached = config.response_headers.cached_date.write();
-    *cached = CachedDateValue {
-        unix_seconds,
-        value: Bytes::clone(&value),
-    };
-    value
+        Bytes::clone(cached_value)
+    })
 }
 
 fn format_http_date(unix_seconds: u64) -> Bytes {
@@ -331,7 +334,7 @@ pub fn apply_default_response_headers_with_scan(
     if defaults.date_header && !scan.has_date {
         headers.push((
             Bytes::from_static(b"date").into(),
-            cached_date_value(config).into(),
+            cached_date_value().into(),
         ));
         scan.has_date = true;
     }
@@ -341,7 +344,7 @@ pub fn apply_default_response_headers_with_scan(
 }
 
 pub fn apply_default_response_headers(headers: &mut ResponseHeaders, config: &ServerConfig) {
-    let mut scan = inspect_response_headers(headers);
+    let mut scan = inspect_response_default_headers(headers);
     apply_default_response_headers_with_scan(headers, &mut scan, config);
 }
 

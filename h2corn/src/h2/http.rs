@@ -82,8 +82,11 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
     }
 
     async fn send_streaming_file(&mut self, file: File, len: usize) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::File { file, len })
-            .await
+        self.send_response_action(ResponseAction::File {
+            file: Box::new(file),
+            len,
+        })
+        .await
     }
 
     async fn finish_streaming_response(&mut self) -> Result<(), H2CornError> {
@@ -362,7 +365,7 @@ fn push_final_response_commands(
             });
             commands.push_back(WriterCommand::SendPath {
                 stream_id,
-                streamer: PathStreamer::new(file, len, true),
+                streamer: Box::new(PathStreamer::new(*file, len, true)),
             });
         },
     }
@@ -397,7 +400,7 @@ fn append_response_action(
         }),
         ResponseAction::File { file, len } => commands.push_back(WriterCommand::SendPath {
             stream_id,
-            streamer: PathStreamer::new(file, len, false),
+            streamer: Box::new(PathStreamer::new(*file, len, false)),
         }),
         ResponseAction::Finish => commands.push_back(WriterCommand::SendData {
             stream_id,
@@ -487,7 +490,10 @@ mod tests {
             StreamId::new(1).unwrap(),
             &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
-            FinalResponseBody::File { file, len: 1 },
+            FinalResponseBody::File {
+                file: Box::new(file),
+                len: 1,
+            },
         );
 
         match commands

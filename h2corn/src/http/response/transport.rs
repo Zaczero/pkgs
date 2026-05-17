@@ -48,7 +48,7 @@ pub trait HttpResponseTransport {
                 },
                 ResponseAction::Body(body) => self.send_streaming_body(body).await?,
                 ResponseAction::File { file, len } => {
-                    self.send_streaming_file(file, len).await?;
+                    self.send_streaming_file(*file, len).await?;
                 },
                 ResponseAction::Finish => self.finish_streaming_response().await?,
                 ResponseAction::FinishWithTrailers(trailers) => {

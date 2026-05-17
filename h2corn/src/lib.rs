@@ -37,7 +37,6 @@ use config::{
 };
 use error::{ConfigError, IntoPyResult, into_pyerr};
 use header_value::header_value_is_valid;
-use parking_lot::RwLock;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use pyo3::conversion::FromPyObjectOwned;
 use pyo3::prelude::*;
@@ -223,7 +222,6 @@ impl<'py> PyConfig<'py> {
             server_header: self.get("server_header")?,
             date_header: self.get("date_header")?,
             extra_headers: headers.into_boxed_slice(),
-            cached_date: RwLock::default(),
         })
     }
 

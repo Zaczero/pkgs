@@ -649,7 +649,7 @@ where
 async fn handle_send_path<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
-    streamer: PathStreamer,
+    streamer: Box<PathStreamer>,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,

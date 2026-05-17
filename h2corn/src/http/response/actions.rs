@@ -15,7 +15,10 @@ use crate::http::types::{HttpStatusCode, ResponseHeaders};
 pub enum FinalResponseBody {
     Empty,
     Bytes(PayloadBytes),
-    File { file: File, len: usize },
+    // `File` is boxed: `tokio::fs::File` is ~104 bytes, and inlining it makes
+    // this enum the largest variant of `ResponseAction`, inflating every
+    // `ResponseActions` slot. Pathsend is rare relative to byte/empty bodies.
+    File { file: Box<File>, len: usize },
     Suppressed { len: usize },
 }
 
@@ -92,7 +95,7 @@ pub enum ResponseAction {
     },
     Body(PayloadBytes),
     File {
-        file: File,
+        file: Box<File>,
         len: usize,
     },
     Finish,
@@ -165,3 +168,4 @@ mod tests {
         );
     }
 }
+

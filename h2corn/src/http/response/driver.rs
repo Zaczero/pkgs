@@ -48,12 +48,12 @@ fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatu
     let error::H2CornError::Pathsend(err) = err else {
         return None;
     };
-    if err.is_not_found() || err.is_not_a_directory() {
-        Some(status_code::NOT_FOUND)
-    } else if err.is_permission_denied() {
-        Some(status_code::FORBIDDEN)
-    } else {
-        None
+    match err.io_error_kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+            Some(status_code::NOT_FOUND)
+        },
+        std::io::ErrorKind::PermissionDenied => Some(status_code::FORBIDDEN),
+        _ => None,
     }
 }
 

@@ -605,7 +605,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_path(PathStreamer::new(file, b"abc".len(), true))
+            .queue_path(Box::new(PathStreamer::new(file, b"abc".len(), true)))
             .unwrap();
         stream.schedule(&mut ready_streams, stream_id, false);
 

@@ -1,30 +1,22 @@
 use bytes::{Bytes, BytesMut};
 
+use super::dynamic_table::DynamicBuffer;
 use super::huffman;
 use super::static_table::{self, StaticFieldEntry};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
 
 #[derive(Debug)]
 pub struct Encoder {
-    table: DynamicTable,
+    table: DynamicBuffer<DynamicEntry>,
     committed_max_size: usize,
     current_max_size: usize,
     pending_floor: Option<usize>,
 }
 
 #[derive(Debug)]
-struct DynamicTable {
-    entries: Vec<DynamicEntry>,
-    start: usize,
-    size: usize,
-    max_size: usize,
-}
-
-#[derive(Debug)]
 struct DynamicEntry {
     name: Bytes,
     value: Bytes,
-    size: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +49,7 @@ impl Encoder {
 
     const fn with_max_size(max_size: usize) -> Self {
         Self {
-            table: DynamicTable::new(max_size),
+            table: DynamicBuffer::new(max_size),
             committed_max_size: max_size,
             current_max_size: max_size,
             pending_floor: None,
@@ -129,7 +121,7 @@ impl Encoder {
                 return;
             }
         }
-        let (exact_index, dynamic_name_index) = self.table.find(name, value);
+        let (exact_index, dynamic_name_index) = find_dynamic(&self.table, name, value);
         if let Some(index) = exact_index {
             self.encode_indexed(index, dst);
             return;
@@ -142,7 +134,7 @@ impl Encoder {
 
         if should_index_header(static_name, name.len(), value.len(), self.current_max_size) {
             encode_literal(literal_name, value, LiteralMode::IncrementalIndexing, dst);
-            self.table.insert(name, value);
+            insert_dynamic(&mut self.table, name, value);
             return;
         }
 
@@ -161,87 +153,36 @@ impl Default for Encoder {
     }
 }
 
-impl DynamicTable {
-    const fn new(max_size: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            start: 0,
-            size: 0,
-            max_size,
+fn find_dynamic(
+    table: &DynamicBuffer<DynamicEntry>,
+    name: &[u8],
+    value: &[u8],
+) -> (Option<usize>, Option<usize>) {
+    let mut name_index = None;
+    for (offset, (entry, _)) in table.live().iter().rev().enumerate() {
+        if entry.name.as_ref() != name {
+            continue;
+        }
+        let index = static_table::DYNAMIC_INDEX_OFFSET + offset;
+        if entry.value.as_ref() == value {
+            return (Some(index), Some(index));
+        }
+        if name_index.is_none() {
+            name_index = Some(index);
         }
     }
+    (None, name_index)
+}
 
-    fn set_max_size(&mut self, max_size: usize) {
-        self.max_size = max_size;
-        self.evict_to_fit(0);
-    }
-
-    fn find(&self, name: &[u8], value: &[u8]) -> (Option<usize>, Option<usize>) {
-        let mut name_index = None;
-        for (offset, entry) in self.entries[self.start..].iter().rev().enumerate() {
-            if entry.name.as_ref() != name {
-                continue;
-            }
-
-            let index = static_table::DYNAMIC_INDEX_OFFSET + offset;
-            if entry.value.as_ref() == value {
-                return (Some(index), Some(index));
-            }
-            if name_index.is_none() {
-                name_index = Some(index);
-            }
-        }
-        (None, name_index)
-    }
-
-    fn insert(&mut self, name: &[u8], value: &[u8]) {
-        let size = dynamic_entry_size(name.len(), value.len());
-        if size > self.max_size {
-            self.clear();
-            return;
-        }
-
-        self.evict_to_fit(size);
-        self.entries.push(DynamicEntry {
+fn insert_dynamic(table: &mut DynamicBuffer<DynamicEntry>, name: &[u8], value: &[u8]) {
+    let size = dynamic_entry_size(name.len(), value.len());
+    table.insert(
+        DynamicEntry {
             name: Bytes::copy_from_slice(name),
             value: Bytes::copy_from_slice(value),
-            size,
-        });
-        self.size += size;
-    }
-
-    fn evict_to_fit(&mut self, incoming: usize) {
-        while self.size + incoming > self.max_size {
-            let Some(entry) = self.entries.get(self.start) else {
-                self.clear();
-                return;
-            };
-            self.size -= entry.size;
-            self.start += 1;
-        }
-        self.compact();
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.start = 0;
-        self.size = 0;
-    }
-
-    fn compact(&mut self) {
-        if self.start == 0 {
-            return;
-        }
-        if self.start == self.entries.len() {
-            self.entries.clear();
-            self.start = 0;
-            return;
-        }
-        if self.start >= 32 && self.start * 2 >= self.entries.len() {
-            self.entries.drain(..self.start);
-            self.start = 0;
-        }
-    }
+        },
+        size,
+    );
 }
 
 fn should_index_header(

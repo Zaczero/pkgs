@@ -23,7 +23,9 @@ pub(super) type PendingChunks = SmallVecDeque<PendingChunk, 2>;
 pub(super) enum StreamBodyState {
     Idle,
     Chunks(PendingChunks),
-    Path(PathStreamer),
+    // `PathStreamer` is 160+ bytes, vs `PendingChunks` at ~88; boxing it keeps
+    // `StreamWriteState` (held per-stream in the writer's `StreamMap`) small.
+    Path(Box<PathStreamer>),
 }
 
 #[derive(Debug)]
@@ -173,7 +175,7 @@ impl StreamWriteState {
         Ok(())
     }
 
-    pub(super) fn queue_path(&mut self, streamer: PathStreamer) -> Result<(), H2CornError> {
+    pub(super) fn queue_path(&mut self, streamer: Box<PathStreamer>) -> Result<(), H2CornError> {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders => {
                 return H2Error::PathDataBeforeResponseHeaders.err();

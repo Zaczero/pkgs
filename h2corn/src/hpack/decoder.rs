@@ -3,44 +3,21 @@ use std::str::Utf8Error;
 use bytes::{Buf, Bytes, BytesMut};
 use http::{header, method, status};
 
+use super::dynamic_table::DynamicBuffer;
 use super::header::OwnedName;
 use super::{Header, huffman, static_table};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
-
-const REPRESENTATION_TABLE: [Option<Representation>; 256] = {
-    let mut table = [None; 256];
-    let mut byte = 0;
-    while byte < 256 {
-        let value = byte as u8;
-        table[byte] = if value & 0b1000_0000 == 0b1000_0000 {
-            Some(Representation::Indexed)
-        } else if value & 0b0100_0000 == 0b0100_0000 {
-            Some(Representation::LiteralWithIndexing)
-        } else if value & 0b1111_0000 == 0 {
-            Some(Representation::LiteralWithoutIndexing)
-        } else if value & 0b1111_0000 == 0b0001_0000 {
-            Some(Representation::LiteralNeverIndexed)
-        } else if value & 0b1110_0000 == 0b0010_0000 {
-            Some(Representation::SizeUpdate)
-        } else {
-            None
-        };
-        byte += 1;
-    }
-    table
-};
 
 #[derive(Debug)]
 pub struct Decoder {
     max_size_update: Option<usize>,
     last_max_update: usize,
-    table: Table,
+    table: DynamicBuffer<DynamicEntry>,
     buffer: BytesMut,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DecoderError {
-    InvalidRepresentation,
     InvalidTableIndex,
     InvalidHuffmanCode,
     InvalidUtf8,
@@ -67,26 +44,14 @@ enum Representation {
     SizeUpdate,
 }
 
-#[derive(Debug)]
-struct Table {
-    entries: Vec<DynamicEntry>,
-    start: usize,
-    size: usize,
-    max_size: usize,
-}
-
-#[derive(Debug)]
-struct DynamicEntry {
-    header: Header,
-    size: usize,
-}
+type DynamicEntry = Header;
 
 impl Decoder {
     pub fn new(size: usize) -> Self {
         Self {
             max_size_update: None,
             last_max_update: size,
-            table: Table::new(size),
+            table: DynamicBuffer::new(size),
             buffer: BytesMut::with_capacity(4096),
         }
     }
@@ -135,7 +100,7 @@ impl Decoder {
             return Ok(false);
         };
 
-        match Representation::load(byte).map_err(E::from)? {
+        match Representation::load(byte) {
             Representation::Indexed => {
                 *can_resize = false;
                 f(self.decode_indexed(src).map_err(E::from)?)?;
@@ -143,7 +108,7 @@ impl Decoder {
             Representation::LiteralWithIndexing => {
                 *can_resize = false;
                 let entry = self.decode_literal::<6>(src).map_err(E::from)?;
-                self.table.insert(entry.clone());
+                insert_decoded(&mut self.table, entry.clone());
                 f(entry)?;
             },
             Representation::LiteralWithoutIndexing | Representation::LiteralNeverIndexed => {
@@ -172,7 +137,7 @@ impl Decoder {
 
     fn decode_indexed(&self, buf: &mut Bytes) -> Result<Header, DecoderError> {
         let index = decode_int::<7, _>(buf)?;
-        self.table.get(index)
+        get_indexed_entry(&self.table, index)
     }
 
     fn decode_literal<const PREFIX_SIZE: u8>(
@@ -185,7 +150,7 @@ impl Decoder {
             return self.decode_new_name_literal(buf);
         }
 
-        let name = self.table.name(table_idx)?;
+        let name = get_indexed_name(&self.table, table_idx)?;
         self.decode_indexed_name_literal(buf, name)
     }
 
@@ -250,95 +215,13 @@ impl Default for Decoder {
 }
 
 impl Representation {
-    fn load(byte: u8) -> Result<Self, DecoderError> {
-        REPRESENTATION_TABLE[usize::from(byte)].ok_or(DecoderError::InvalidRepresentation)
-    }
-}
-
-impl Table {
-    const fn new(max_size: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            start: 0,
-            size: 0,
-            max_size,
-        }
-    }
-
-    fn get(&self, index: usize) -> Result<Header, DecoderError> {
-        match index {
-            0 => Err(DecoderError::InvalidTableIndex),
-            1..=static_table::STATIC_TABLE_LEN => Ok(static_table::get(index)),
-            _ => Ok(self.dynamic_entry(index)?.header.clone()),
-        }
-    }
-
-    fn name(&self, index: usize) -> Result<OwnedName, DecoderError> {
-        match index {
-            0 => Err(DecoderError::InvalidTableIndex),
-            1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
-            _ => Ok(self.dynamic_entry(index)?.header.owned_name()),
-        }
-    }
-
-    fn insert(&mut self, header: Header) {
-        let size = header.len();
-        if size > self.max_size {
-            self.clear();
-            return;
-        }
-
-        self.evict_to_fit(size);
-        self.entries.push(DynamicEntry { header, size });
-        self.size += size;
-    }
-
-    fn set_max_size(&mut self, size: usize) {
-        self.max_size = size;
-        self.evict_to_fit(0);
-    }
-
-    fn evict_to_fit(&mut self, incoming: usize) {
-        while self.size + incoming > self.max_size {
-            let Some(entry) = self.entries.get(self.start) else {
-                self.clear();
-                return;
-            };
-            self.size -= entry.size;
-            self.start += 1;
-        }
-        self.compact();
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.start = 0;
-        self.size = 0;
-    }
-
-    fn dynamic_entry(&self, index: usize) -> Result<&DynamicEntry, DecoderError> {
-        let live_len = self.entries.len() - self.start;
-        let dynamic_offset = index - static_table::DYNAMIC_INDEX_OFFSET;
-        if dynamic_offset >= live_len {
-            return Err(DecoderError::InvalidTableIndex);
-        }
-
-        let slot = self.entries.len() - 1 - dynamic_offset;
-        Ok(&self.entries[slot])
-    }
-
-    fn compact(&mut self) {
-        if self.start == 0 {
-            return;
-        }
-        if self.start == self.entries.len() {
-            self.entries.clear();
-            self.start = 0;
-            return;
-        }
-        if self.start >= 32 && self.start * 2 >= self.entries.len() {
-            self.entries.drain(..self.start);
-            self.start = 0;
+    const fn load(byte: u8) -> Self {
+        match byte {
+            0..16 => Self::LiteralWithoutIndexing,
+            16..32 => Self::LiteralNeverIndexed,
+            32..64 => Self::SizeUpdate,
+            64..128 => Self::LiteralWithIndexing,
+            128..=255 => Self::Indexed,
         }
     }
 }
@@ -371,6 +254,43 @@ impl From<status::InvalidStatusCode> for DecoderError {
     fn from(_: status::InvalidStatusCode) -> Self {
         Self::InvalidUtf8
     }
+}
+
+fn dynamic_entry(
+    table: &DynamicBuffer<DynamicEntry>,
+    index: usize,
+) -> Result<&DynamicEntry, DecoderError> {
+    let offset = index - static_table::DYNAMIC_INDEX_OFFSET;
+    table
+        .entry_from_end(offset)
+        .ok_or(DecoderError::InvalidTableIndex)
+}
+
+fn get_indexed_entry(
+    table: &DynamicBuffer<DynamicEntry>,
+    index: usize,
+) -> Result<Header, DecoderError> {
+    match index {
+        0 => Err(DecoderError::InvalidTableIndex),
+        1..=static_table::STATIC_TABLE_LEN => Ok(static_table::get(index)),
+        _ => Ok(dynamic_entry(table, index)?.clone()),
+    }
+}
+
+fn get_indexed_name(
+    table: &DynamicBuffer<DynamicEntry>,
+    index: usize,
+) -> Result<OwnedName, DecoderError> {
+    match index {
+        0 => Err(DecoderError::InvalidTableIndex),
+        1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
+        _ => Ok(dynamic_entry(table, index)?.owned_name()),
+    }
+}
+
+fn insert_decoded(table: &mut DynamicBuffer<DynamicEntry>, header: Header) {
+    let size = header.len();
+    table.insert(header, size);
 }
 
 fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, DecoderError> {

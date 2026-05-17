@@ -1,4 +1,5 @@
 mod decoder;
+mod dynamic_table;
 mod encoder;
 pub mod header;
 pub mod huffman;

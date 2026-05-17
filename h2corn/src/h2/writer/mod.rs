@@ -107,7 +107,12 @@ pub enum WriterCommand {
     },
     SendPath {
         stream_id: StreamId,
-        streamer: PathStreamer,
+        // Boxed because `PathStreamer` is 160+ bytes and `SendPath` is rare
+        // (only `http.response.pathsend` triggers it); inlining inflates every
+        // `WriterCommand` slot — including the per-stream `SmallVecDeque` — to
+        // ~168 bytes when 80 would otherwise be enough for the common send/data
+        // commands.
+        streamer: Box<PathStreamer>,
     },
     FlushBufferedOutput,
     SendReset {
@@ -134,4 +139,33 @@ pub enum WriterCommand {
         debug: Vec<u8>,
         close: bool,
     },
+}
+
+#[cfg(test)]
+mod size_check {
+    use super::*;
+    use crate::bridge::PayloadBytes;
+    use crate::http::pathsend::PathStreamer;
+    use crate::http::response::ResponseAction;
+
+    /// Guard against accidental enum bloat — `WriterCommand` is queued by value
+    /// in `SmallVecDeque<_, 3>` slots and `ResponseAction` in `SmallVec<_, 2>`,
+    /// so growth on either type silently inflates per-stream and per-request
+    /// memory across the whole writer pipeline. Bumping these caps should be a
+    /// deliberate decision after weighing the per-connection footprint.
+    #[test]
+    fn writer_command_and_response_action_sizes_are_bounded() {
+        assert!(
+            size_of::<WriterCommand>() <= 72,
+            "WriterCommand grew: {} bytes",
+            size_of::<WriterCommand>(),
+        );
+        assert!(
+            size_of::<ResponseAction>() <= 96,
+            "ResponseAction grew: {} bytes",
+            size_of::<ResponseAction>(),
+        );
+        assert!(size_of::<PayloadBytes>() <= 48);
+        assert!(size_of::<PathStreamer>() <= 192);
+    }
 }

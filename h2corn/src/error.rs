@@ -473,21 +473,9 @@ impl PathsendError {
         }
     }
 
-    pub(crate) fn is_not_found(&self) -> bool {
+    pub(crate) fn io_error_kind(&self) -> io::ErrorKind {
         match self {
-            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::NotFound,
-        }
-    }
-
-    pub(crate) fn is_permission_denied(&self) -> bool {
-        match self {
-            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::PermissionDenied,
-        }
-    }
-
-    pub(crate) fn is_not_a_directory(&self) -> bool {
-        match self {
-            Self::OpenFailed { source, .. } => source.kind() == io::ErrorKind::NotADirectory,
+            Self::OpenFailed { source, .. } => source.kind(),
         }
     }
 
