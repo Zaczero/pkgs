@@ -870,6 +870,86 @@ async def test_h2_header_block_size_limit_resets_stream() -> None:
     )
 
 
+async def test_h2_single_frame_header_block_size_limit_resets_stream() -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('single-frame header block limit should reject early')
+
+    config = Config(port=find_free_port(), h2_max_header_block_size=32)
+    async with running_server(app, config):
+        reader, writer, _conn, authority = await open_h2_connection(port=config.port)
+        block = hpack.Encoder().encode([
+            (b':method', b'GET'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/'),
+            (b'x-demo', b'abcdefghijklmnopqrstuvwxyz0123456789'),
+        ])
+        writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
+        await writer.drain()
+        try:
+            frames = await _read_raw_h2_frames(
+                reader, timeout=0.2, stop_at_goaway=False
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert any(
+        frame_type == 0x03
+        and stream_id == 1
+        and int.from_bytes(payload[:4], 'big')
+        == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+        for frame_type, stream_id, payload in frames
+    )
+
+
+async def test_h2_header_field_limit_rejects_indexed_cookie_bomb() -> None:
+    dispatched = False
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            assert (await receive())['type'] == 'lifespan.startup'
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+        nonlocal dispatched
+        dispatched = True
+        raise AssertionError('header field limit should reject before scope build')
+
+    config = Config(port=find_free_port(), limit_request_fields=8)
+    async with running_server(app, config):
+        reader, writer, _conn, authority = await open_h2_connection(port=config.port)
+        block = hpack.Encoder().encode(
+            (
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+                *((b'cookie', b'a') for _ in range(9)),
+            ),
+            huffman=False,
+        )
+        writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
+        await writer.drain()
+        try:
+            frames = await _read_raw_h2_frames(
+                reader, timeout=0.2, stop_at_goaway=False
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert not dispatched
+    decoder = hpack.Decoder()
+    assert any(
+        frame_type == 0x01
+        and stream_id == 1
+        and dict(decoder.decode(payload, raw=True)).get(b':status') == b'431'
+        for frame_type, stream_id, payload in frames
+    )
+
+
 async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
     async def app(scope, receive, send):
         await send({
@@ -930,6 +1010,51 @@ async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
     assert slow_reset == int(h2.errors.ErrorCodes.CANCEL)
     assert fast_status in {b'200', '200'}
     assert fast_body == b'fast'
+
+
+async def test_h2_response_stall_timeout_resets_flow_control_blocked_stream() -> None:
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': b'x' * 1024})
+
+    config = Config(
+        port=find_free_port(),
+        h2_timeout_response_stall=0.05,
+        timeout_keep_alive=10.0,
+    )
+    async with running_server(app, config):
+        reader, writer, conn, authority = await open_h2_connection(port=config.port)
+        conn.update_settings({h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 0})
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+            ],
+            end_stream=True,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        reset_code = None
+        try:
+            while reset_code is None:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    if isinstance(event, h2.events.StreamReset):
+                        reset_code = int(event.error_code)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert reset_code == int(h2.errors.ErrorCodes.CANCEL)
 
 
 async def test_invalid_h2_preface_emits_goaway_protocol_error() -> None:

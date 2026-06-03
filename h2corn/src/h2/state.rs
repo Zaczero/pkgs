@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant as TokioInstant;
 
 use super::StreamMap;
-use super::request::PendingHeaders;
+use super::request::{HeaderLimits, PendingHeaders};
 use super::writer::{ConnectionHandle, WriterState};
 use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::frame::{self, StreamId, WindowIncrement};
@@ -214,6 +214,21 @@ impl<R, W> H2ConnectionState<R, W> {
 
     pub(super) fn active_stream_count(&self) -> usize {
         self.streams.len() + usize::from(self.pending_headers.is_some())
+    }
+
+    pub(super) fn header_limits(&self) -> HeaderLimits {
+        HeaderLimits::new(
+            self.context.config.http2.max_header_list_size,
+            self.context.config.limit_request_fields,
+        )
+    }
+
+    pub(super) fn header_block_too_large(&self, len: usize) -> bool {
+        self.context
+            .config
+            .http2
+            .max_header_block_size
+            .is_some_and(|limit| len > limit.get())
     }
 
     pub(super) fn next_request_input_deadline(

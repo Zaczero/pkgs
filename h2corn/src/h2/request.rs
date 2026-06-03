@@ -16,6 +16,72 @@ use crate::http::types::{
     RequestHeaderName, RequestHeaderValue, RequestHeaders, RequestTarget, status_code,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HeaderLimits {
+    pub(super) max_list_size: Option<NonZeroUsize>,
+    pub(super) max_fields: Option<NonZeroUsize>,
+}
+
+impl HeaderLimits {
+    pub(super) const fn new(
+        max_list_size: Option<NonZeroUsize>,
+        max_fields: Option<NonZeroUsize>,
+    ) -> Self {
+        Self {
+            max_list_size,
+            max_fields,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HeaderBudget {
+    limits: HeaderLimits,
+    list_size: usize,
+    fields: usize,
+}
+
+impl HeaderBudget {
+    const fn new(limits: HeaderLimits) -> Self {
+        Self {
+            limits,
+            list_size: 0,
+            fields: 0,
+        }
+    }
+
+    fn account(&mut self, header: &Header) -> Result<(), RequestHeadError> {
+        if matches!(header, Header::Field { .. }) {
+            self.account_field()?;
+        }
+        self.account_bytes(header.len())
+    }
+
+    fn account_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
+        if let Some(max_header_list_size) = self.limits.max_list_size {
+            self.list_size = self.list_size.saturating_add(len);
+            if self.list_size > max_header_list_size.get() {
+                return Err(RequestHeadError::reject(
+                    status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn account_field(&mut self) -> Result<(), RequestHeadError> {
+        if let Some(max_fields) = self.limits.max_fields {
+            self.fields += 1;
+            if self.fields > max_fields.get() {
+                return Err(RequestHeadError::reject(
+                    status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct PendingHeaders {
     pub stream_id: StreamId,
@@ -79,8 +145,7 @@ struct RequestHeadBuilder {
     regular_headers: RequestHeaders,
     section: HeaderSection,
     host_header_index: Option<usize>,
-    header_list_size: usize,
-    max_header_list_size: Option<NonZeroUsize>,
+    budget: HeaderBudget,
     header_meta: RequestHeaderMeta,
     secure: bool,
 }
@@ -93,7 +158,7 @@ enum HeaderSection {
 }
 
 impl RequestHeadBuilder {
-    fn new(max_header_list_size: Option<NonZeroUsize>, secure: bool) -> Self {
+    fn new(limits: HeaderLimits, secure: bool) -> Self {
         Self {
             method: None,
             scheme: None,
@@ -103,27 +168,14 @@ impl RequestHeadBuilder {
             regular_headers: RequestHeaders::with_capacity(16),
             section: HeaderSection::default(),
             host_header_index: None,
-            header_list_size: 0,
-            max_header_list_size,
+            budget: HeaderBudget::new(limits),
             header_meta: RequestHeaderMeta::default(),
             secure,
         }
     }
 
-    const fn account_header_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
-        if let Some(max_header_list_size) = self.max_header_list_size {
-            self.header_list_size = self.header_list_size.saturating_add(len);
-            if self.header_list_size > max_header_list_size.get() {
-                return Err(RequestHeadError::reject(
-                    status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                ));
-            }
-        }
-        Ok(())
-    }
-
     fn push(&mut self, header: Header) -> Result<(), RequestHeadError> {
-        let header_len = header.len();
+        self.budget.account(&header)?;
         match header {
             Header::Method(value) => {
                 push_request_pseudo(&mut self.method, self.section, value)
@@ -154,7 +206,6 @@ impl RequestHeadBuilder {
                     .map_err(|()| RequestHeadError::stream_protocol())?;
             },
         }
-        self.account_header_bytes(header_len)?;
         Ok(())
     }
 
@@ -390,10 +441,10 @@ pub(super) fn resolve_request_head(
 pub(super) fn decode_request_head(
     decoder: &mut Decoder,
     block: Bytes,
-    max_header_list_size: Option<NonZeroUsize>,
+    limits: HeaderLimits,
     secure: bool,
 ) -> Result<RequestHead, RequestHeadError> {
-    let mut builder = RequestHeadBuilder::new(max_header_list_size, secure);
+    let mut builder = RequestHeadBuilder::new(limits, secure);
     let mut bytes = block;
     decoder.decode_block(&mut bytes, |header| builder.push(header))?;
 
@@ -405,12 +456,15 @@ pub(super) fn decode_request_head(
 pub(super) fn decode_trailer_block(
     decoder: &mut Decoder,
     block: Bytes,
+    limits: HeaderLimits,
 ) -> Result<(), RequestHeadError> {
+    let mut budget = HeaderBudget::new(limits);
     let mut bytes = block;
     decoder.decode_block(&mut bytes, |header| {
-        if !matches!(header, Header::Field { .. }) {
+        if !matches!(&header, Header::Field { .. }) {
             return Err(RequestHeadError::stream_protocol());
         }
+        budget.account(&header)?;
         Ok(())
     })?;
 
@@ -434,7 +488,7 @@ mod tests {
     use bytes::{Bytes, BytesMut};
     use http::Method;
 
-    use super::{RequestHeadError, decode_request_head};
+    use super::{HeaderLimits, RequestHeadError, decode_request_head, decode_trailer_block};
     use crate::hpack::{BytesStr, Decoder, Encoder, Header};
     use crate::http::types::status_code;
 
@@ -468,7 +522,12 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let result = decode_request_head(&mut decoder, block, NonZeroUsize::new(90), false);
+        let result = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(NonZeroUsize::new(90), None),
+            false,
+        );
 
         assert!(matches!(
             result,
@@ -495,7 +554,7 @@ mod tests {
         let request = decode_request_head(
             &mut decoder,
             block,
-            NonZeroUsize::new(exact_received_size),
+            HeaderLimits::new(NonZeroUsize::new(exact_received_size), None),
             false,
         )
         .expect("received header list size should ignore synthesized host");
@@ -515,7 +574,7 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, None, true)
+        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), true)
             .expect("valid HTTP/2 request should decode");
 
         assert_eq!(request.scheme_str(), "https");
@@ -531,9 +590,56 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, None, false)
-            .expect("valid HTTP/2 request should decode");
+        let request =
+            decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false)
+                .expect("valid HTTP/2 request should decode");
 
         assert_eq!(request.scheme_str(), "https");
+    }
+
+    #[test]
+    fn header_field_limit_counts_regular_fields_only() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"x0", b"1"),
+            (b"x1", b"1"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let result = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, NonZeroUsize::new(1)),
+            false,
+        );
+
+        assert!(matches!(
+            result,
+            Err(RequestHeadError::Reject {
+                status: status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            })
+        ));
+    }
+
+    #[test]
+    fn trailer_field_limit_rejects_excess_fields() {
+        let block = encode_request_block(&[(b"x0", b"1"), (b"x1", b"1")]);
+
+        let mut decoder = Decoder::new(4096);
+        let result = decode_trailer_block(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, NonZeroUsize::new(1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(RequestHeadError::Reject {
+                status: status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            })
+        ));
     }
 }

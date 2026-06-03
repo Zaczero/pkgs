@@ -12,6 +12,7 @@ use bytes::BytesMut;
 #[cfg(test)]
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::time::Instant;
 
 use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
@@ -178,6 +179,7 @@ where
                     .await?;
 
                     front.consume(chunk_len);
+                    stream.note_body_progress(Instant::now());
                     if end_stream {
                         ChunkFlushStep::FinishStream
                     } else if front.is_drained() {
@@ -270,6 +272,7 @@ where
             *context.connection_send_window -= chunk_len;
             stream.send_window -= chunk_len;
             streamer.advance_after_sendfile(chunk_len as usize);
+            stream.note_body_progress(Instant::now());
 
             if end_stream {
                 stream.finish(stream_id, context.response_closes);
@@ -325,6 +328,7 @@ where
         .await?;
 
         streamer.consume(chunk_len);
+        stream.note_body_progress(Instant::now());
 
         if end_stream {
             stream.finish(stream_id, context.response_closes);

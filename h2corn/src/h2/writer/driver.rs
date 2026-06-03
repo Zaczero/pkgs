@@ -10,6 +10,7 @@ use std::{num::NonZeroU32, time::Duration};
 use bytes::BytesMut;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::futures::Notified;
+use tokio::time::Instant as TokioInstant;
 
 use super::flush::{
     FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_data_chunk,
@@ -191,6 +192,7 @@ where
                 }]),
                 access_log: false,
                 root_path: Box::from(""),
+                limit_request_fields: None,
                 http1: Http1Config::default(),
                 http2: Http2Config {
                     max_concurrent_streams,
@@ -198,6 +200,7 @@ where
                     max_header_block_size: None,
                     max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
                         .expect("default HTTP/2 frame size is non-zero"),
+                    timeout_response_stall: None,
                 },
                 max_request_body_size: None,
                 timeout_graceful_shutdown: Duration::from_secs(30),
@@ -302,6 +305,24 @@ where
 
     pub(crate) fn outbound_notified(&self) -> Notified<'_> {
         self.ingress.notify.notified()
+    }
+
+    pub(crate) fn next_response_stall_deadline(
+        &self,
+        timeout_duration: Option<std::time::Duration>,
+    ) -> Option<(StreamId, TokioInstant)> {
+        let timeout_duration = timeout_duration?;
+        self.streams
+            .iter()
+            .filter_map(|(&stream_id, stream)| {
+                stream.pending_body_since().map(|since| {
+                    (
+                        StreamId::new(stream_id).expect("stored stream id is non-zero"),
+                        since + timeout_duration,
+                    )
+                })
+            })
+            .min_by_key(|(_, deadline)| *deadline)
     }
 
     pub(crate) async fn flush(&mut self) -> Result<(), H2CornError> {

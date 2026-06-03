@@ -23,6 +23,7 @@ from h2corn._config import config_options
         ({'limit_request_fields': -1}, 'limit_request_fields'),
         ({'limit_request_field_size': -1}, 'limit_request_field_size'),
         ({'timeout_graceful_shutdown': -1}, 'timeout_graceful_shutdown'),
+        ({'h2_timeout_response_stall': -1}, 'h2_timeout_response_stall'),
         ({'max_concurrent_streams': -1}, 'max_concurrent_streams'),
         ({'max_concurrent_streams': 4_294_967_296}, 'max_concurrent_streams'),
         ({'h2_max_header_list_size': -1}, 'h2_max_header_list_size'),
@@ -66,6 +67,7 @@ forwarded_allow_ips = ["127.0.0.1"]
 timeout_keep_alive = 1.5
 timeout_request_header = 2.5
 timeout_request_body_idle = 3.5
+h2_timeout_response_stall = 4.5
 limit_concurrency = 9
 limit_connections = 11
 runtime_threads = 4
@@ -100,6 +102,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.timeout_keep_alive == 1.5
     assert config.timeout_request_header == 2.5
     assert config.timeout_request_body_idle == 3.5
+    assert config.h2_timeout_response_stall == 4.5
     assert config.limit_concurrency == 9
     assert config.limit_connections == 11
     assert config.runtime_threads == 4

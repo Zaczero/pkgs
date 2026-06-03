@@ -69,6 +69,7 @@ enum IngestEvent {
     Deadline,
     KeepAliveTimeout,
     RequestInputTimeout(RequestInputDeadline),
+    ResponseStallTimeout(StreamId),
 }
 
 pub struct UpgradedH2Request {
@@ -394,7 +395,8 @@ async fn finish_trailer_block<R, W>(
 where
     W: H2WriteTarget,
 {
-    match decode_trailer_block(&mut state.decoder, block) {
+    let header_limits = state.header_limits();
+    match decode_trailer_block(&mut state.decoder, block, header_limits) {
         Ok(()) => match state.finish_request_input(stream_id) {
             Some(RequestInputClose::ContentLengthMismatch) => {
                 state
@@ -495,6 +497,16 @@ where
     W: H2WriteTarget,
 {
     if fragment.end_headers {
+        let header_limits = state.header_limits();
+        if state.header_block_too_large(fragment.block.len()) {
+            apply_peer_failure(
+                &mut state.writer,
+                state.last_client_stream_id,
+                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
+            )
+            .await?;
+            return Ok(());
+        }
         start_request_stream_from_block(
             RequestStartContext {
                 writer: &mut state.writer,
@@ -510,19 +522,13 @@ where
             decode_request_head(
                 &mut state.decoder,
                 fragment.block,
-                state.context.config.http2.max_header_list_size,
+                header_limits,
                 state.secure,
             ),
         )
         .await?;
     } else {
-        if state
-            .context
-            .config
-            .http2
-            .max_header_block_size
-            .is_some_and(|limit| fragment.block.len() > limit.get())
-        {
+        if state.header_block_too_large(fragment.block.len()) {
             apply_peer_failure(
                 &mut state.writer,
                 state.last_client_stream_id,
@@ -668,13 +674,7 @@ where
 
     pending.block.extend_from_slice(frame.payload.as_ref());
     pending.last_fragment_at = TokioInstant::now();
-    if state
-        .context
-        .config
-        .http2
-        .max_header_block_size
-        .is_some_and(|limit| pending.block.len() > limit.get())
-    {
+    if state.header_block_too_large(pending.block.len()) {
         apply_peer_failure(
             &mut state.writer,
             state.last_client_stream_id,
@@ -684,6 +684,7 @@ where
         return Ok(());
     }
     if frame.header.flags.contains(FrameFlags::END_HEADERS) {
+        let header_limits = state.header_limits();
         start_request_stream_from_block(
             RequestStartContext {
                 writer: &mut state.writer,
@@ -699,7 +700,7 @@ where
             decode_request_head(
                 &mut state.decoder,
                 pending.block.freeze(),
-                state.context.config.http2.max_header_list_size,
+                header_limits,
                 state.secure,
             ),
         )
@@ -964,6 +965,13 @@ where
             IngestEvent::RequestInputTimeout(deadline) => {
                 handle_request_input_timeout(&mut state, deadline).await?;
             },
+            IngestEvent::ResponseStallTimeout(stream_id) => {
+                state
+                    .writer
+                    .reset_stream(stream_id, ErrorCode::CANCEL)
+                    .await?;
+                state.remove_stream(stream_id);
+            },
             IngestEvent::ShutdownChanged => {
                 if state.shutdown.borrow().kind().is_some() {
                     begin_graceful_shutdown(
@@ -1077,6 +1085,9 @@ where
         state.context.config.timeout_request_header,
         state.context.config.timeout_request_body_idle,
     );
+    let response_stall_deadline = state
+        .writer
+        .next_response_stall_deadline(state.context.config.http2.timeout_response_stall);
     let keep_alive_timeout = async {
         if let Some(deadline) = keep_alive_deadline {
             sleep_until(deadline).await;
@@ -1087,6 +1098,13 @@ where
     let request_input_timeout = async {
         if let Some(deadline) = request_input_deadline {
             sleep_until(deadline.instant()).await;
+        } else {
+            pending::<()>().await;
+        }
+    };
+    let response_stall_timeout = async {
+        if let Some((_, deadline)) = response_stall_deadline {
+            sleep_until(deadline).await;
         } else {
             pending::<()>().await;
         }
@@ -1105,6 +1123,9 @@ where
         () = keep_alive_timeout, if keep_alive_deadline.is_some() => Ok(IngestEvent::KeepAliveTimeout),
         () = request_input_timeout, if request_input_deadline.is_some() => Ok(IngestEvent::RequestInputTimeout(
             request_input_deadline.expect("timeout is only polled when present"),
+        )),
+        () = response_stall_timeout, if response_stall_deadline.is_some() => Ok(IngestEvent::ResponseStallTimeout(
+            response_stall_deadline.expect("timeout is only polled when present").0,
         )),
         () = &mut outbound_notified => Ok(IngestEvent::Continue),
         () = yield_now(), if continue_writing => Ok(IngestEvent::Continue),

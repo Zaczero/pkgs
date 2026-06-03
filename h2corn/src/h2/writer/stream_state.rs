@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::mem;
 
+use tokio::time::Instant;
+
 use super::ResponseCloseBatch;
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
@@ -42,6 +44,7 @@ pub(super) enum ResponseWriteState {
 pub(super) struct StreamWriteState {
     pub(super) send_window: i64,
     pub(super) scheduled: bool,
+    pending_body_since: Option<Instant>,
     response: ResponseWriteState,
 }
 
@@ -50,6 +53,7 @@ impl StreamWriteState {
         Self {
             send_window: initial_window,
             scheduled: false,
+            pending_body_since: None,
             response: ResponseWriteState::AwaitingHeaders,
         }
     }
@@ -112,9 +116,26 @@ impl StreamWriteState {
         match &mut self.response {
             ResponseWriteState::Open { body: current, .. } => {
                 *current = body.normalized();
+                if current.is_idle() {
+                    self.pending_body_since = None;
+                } else if self.pending_body_since.is_none() {
+                    self.pending_body_since = Some(Instant::now());
+                }
             },
             ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => {},
         }
+    }
+
+    pub(super) const fn pending_body_since(&self) -> Option<Instant> {
+        self.pending_body_since
+    }
+
+    pub(super) fn note_body_progress(&mut self, now: Instant) {
+        self.pending_body_since = if self.has_pending_output() {
+            Some(now)
+        } else {
+            None
+        };
     }
 
     pub(super) const fn take_trailers_if_body_idle(&mut self) -> Option<ResponseHeaders> {
@@ -154,6 +175,7 @@ impl StreamWriteState {
                 return H2Error::DataOnClosedStream.err();
             },
             ResponseWriteState::Open { body, .. } => {
+                let was_idle = body.is_idle();
                 let chunk = PendingChunk {
                     bytes: data,
                     offset: 0,
@@ -169,6 +191,9 @@ impl StreamWriteState {
                     StreamBodyState::Path(_) => {
                         return HttpResponseError::PathsendMixedWithBody.err();
                     },
+                }
+                if was_idle {
+                    self.pending_body_since = Some(Instant::now());
                 }
             },
         }
@@ -188,6 +213,7 @@ impl StreamWriteState {
                     return HttpResponseError::PathsendMixedWithBody.err();
                 }
                 *body = StreamBodyState::Path(streamer);
+                self.pending_body_since = Some(Instant::now());
             },
         }
         Ok(())
@@ -195,6 +221,7 @@ impl StreamWriteState {
 
     pub(super) fn finish(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
         self.response = ResponseWriteState::Closed;
+        self.pending_body_since = None;
         notify_response_close(response_closes, stream_id);
     }
 }

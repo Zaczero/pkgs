@@ -471,7 +471,7 @@ where
     let http1 = &config.http1;
     let limit_request_head_size = http1.limit_request_head_size.map(NonZeroUsize::get);
     let limit_request_line = http1.limit_request_line.map(NonZeroUsize::get);
-    let limit_request_fields = http1.limit_request_fields.map(NonZeroUsize::get);
+    let limit_request_fields = config.limit_request_fields.map(NonZeroUsize::get);
     let limit_request_field_size = http1.limit_request_field_size.map(NonZeroUsize::get);
 
     let Some(head) = read_request_head(
@@ -916,6 +916,7 @@ mod tests {
             }]),
             access_log: false,
             root_path: Box::from(""),
+            limit_request_fields: None,
             http1: Http1Config {
                 enabled: true,
                 ..Default::default()
@@ -926,6 +927,7 @@ mod tests {
                 max_header_block_size: None,
                 max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
                     .expect("default HTTP/2 frame size is non-zero"),
+                timeout_response_stall: None,
             },
             max_request_body_size: None,
             timeout_graceful_shutdown: Duration::from_secs(30),

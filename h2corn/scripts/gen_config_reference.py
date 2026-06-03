@@ -75,6 +75,7 @@ GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
             'timeout_keep_alive',
             'timeout_request_header',
             'timeout_request_body_idle',
+            'h2_timeout_response_stall',
         ),
     ),
     (

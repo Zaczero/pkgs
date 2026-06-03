@@ -76,6 +76,7 @@ _TIMEOUT_CONFIG_OPTIONS = (
     'timeout_keep_alive',
     'timeout_request_header',
     'timeout_request_body_idle',
+    'h2_timeout_response_stall',
 )
 _WEBSOCKET_CONFIG_OPTIONS = (
     'websocket_max_message_size',

@@ -447,6 +447,33 @@ class Config:
     are POSIX-only.
     """
 
+    root_path: str = _option(
+        default='',
+        doc='ASGI root path (to mount the application at a subpath).',
+        env_parse=str,
+        cli_flags=('-r', '--root-path'),
+    )
+    lifespan: LifespanMode = _option(
+        default='auto',
+        doc='ASGI lifespan handling mode.',
+        env_parse=_normalize_lifespan,
+        normalize=_normalize_lifespan,
+        cli_choices=_LIFESPAN_MODES,
+    )
+    timeout_lifespan_startup: float = _option(
+        default=60.0,
+        doc='Maximum time to wait for ASGI lifespan startup in seconds. Use 0 to disable.',
+        env_parse=float,
+        normalize=_non_negative('timeout_lifespan_startup'),
+        cli_type=float,
+    )
+    timeout_lifespan_shutdown: float = _option(
+        default=30.0,
+        doc='Maximum time to wait for ASGI lifespan shutdown in seconds. Use 0 to disable.',
+        env_parse=float,
+        normalize=_non_negative('timeout_lifespan_shutdown'),
+        cli_type=float,
+    )
     bind: tuple[str, ...] = _option(
         default_factory=lambda: _DEFAULT_BIND,
         doc='Listener addresses to bind. Repeat the flag to add more listeners. Supports HOST:PORT, [IPv6]:PORT, unix:PATH, and fd://N.',
@@ -536,6 +563,13 @@ class Config:
         cli_flags=('-w', '--workers'),
         cli_type=int,
     )
+    runtime_threads: int = _option(
+        default=2,
+        doc='Number of Tokio runtime worker threads per worker process.',
+        env_parse=int,
+        normalize=_minimum('runtime_threads', 1),
+        cli_type=int,
+    )
     max_requests: int = _option(
         default=0,
         doc='Maximum number of requests or WebSocket sessions a worker should complete before retiring. Use 0 to disable.',
@@ -569,12 +603,6 @@ class Config:
         env_parse=_parse_bool,
         cli_action='bool',
     )
-    root_path: str = _option(
-        default='',
-        doc='ASGI root path (to mount the application at a subpath).',
-        env_parse=str,
-        cli_flags=('-r', '--root-path'),
-    )
     max_concurrent_streams: int = _option(
         default=256,
         doc='Maximum active HTTP/2 streams per connection.',
@@ -598,7 +626,7 @@ class Config:
     )
     limit_request_fields: int = _option(
         default=100,
-        doc='Limit the number of HTTP/1.1 header fields in a request. Use 0 for no limit.',
+        doc='Limit the number of request header fields. HTTP/2 counts every decoded regular header field, including duplicate cookie fields. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_fields'),
         cli_type=int,
@@ -638,6 +666,20 @@ class Config:
         normalize=_non_negative('max_request_body_size'),
         cli_type=int,
     )
+    limit_concurrency: int = _option(
+        default=0,
+        doc='Maximum number of concurrent ASGI request/session tasks per worker. Use 0 to disable.',
+        env_parse=int,
+        normalize=_non_negative('limit_concurrency'),
+        cli_type=int,
+    )
+    limit_connections: int = _option(
+        default=0,
+        doc='Maximum number of live client connections per worker. Use 0 to disable.',
+        env_parse=int,
+        normalize=_non_negative('limit_connections'),
+        cli_type=int,
+    )
     timeout_handshake: float = _option(
         default=5.0,
         doc='Time limit to establish a connection/handshake (seconds).',
@@ -673,46 +715,11 @@ class Config:
         normalize=_non_negative('timeout_request_body_idle'),
         cli_type=float,
     )
-    limit_concurrency: int = _option(
-        default=0,
-        doc='Maximum number of concurrent ASGI request/session tasks per worker. Use 0 to disable.',
-        env_parse=int,
-        normalize=_non_negative('limit_concurrency'),
-        cli_type=int,
-    )
-    limit_connections: int = _option(
-        default=0,
-        doc='Maximum number of live client connections per worker. Use 0 to disable.',
-        env_parse=int,
-        normalize=_non_negative('limit_connections'),
-        cli_type=int,
-    )
-    runtime_threads: int = _option(
-        default=2,
-        doc='Number of Tokio runtime worker threads per worker process.',
-        env_parse=int,
-        normalize=_minimum('runtime_threads', 1),
-        cli_type=int,
-    )
-    lifespan: LifespanMode = _option(
-        default='auto',
-        doc='ASGI lifespan handling mode.',
-        env_parse=_normalize_lifespan,
-        normalize=_normalize_lifespan,
-        cli_choices=_LIFESPAN_MODES,
-    )
-    timeout_lifespan_startup: float = _option(
+    h2_timeout_response_stall: float = _option(
         default=60.0,
-        doc='Maximum time to wait for ASGI lifespan startup in seconds. Use 0 to disable.',
+        doc='Timeout in seconds for HTTP/2 response body bytes pinned behind peer flow control. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_lifespan_startup'),
-        cli_type=float,
-    )
-    timeout_lifespan_shutdown: float = _option(
-        default=30.0,
-        doc='Maximum time to wait for ASGI lifespan shutdown in seconds. Use 0 to disable.',
-        env_parse=float,
-        normalize=_non_negative('timeout_lifespan_shutdown'),
+        normalize=_non_negative('h2_timeout_response_stall'),
         cli_type=float,
     )
     websocket_max_message_size: int | None = _option(

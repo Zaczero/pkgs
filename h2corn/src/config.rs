@@ -16,7 +16,6 @@ pub struct Http1Config {
     pub enabled: bool,
     pub limit_request_head_size: Option<NonZeroUsize>,
     pub limit_request_line: Option<NonZeroUsize>,
-    pub limit_request_fields: Option<NonZeroUsize>,
     pub limit_request_field_size: Option<NonZeroUsize>,
 }
 
@@ -26,6 +25,7 @@ pub struct Http2Config {
     pub max_header_list_size: Option<NonZeroUsize>,
     pub max_header_block_size: Option<NonZeroUsize>,
     pub max_inbound_frame_size: NonZeroU32,
+    pub timeout_response_stall: Option<Duration>,
 }
 
 impl Default for Http2Config {
@@ -36,6 +36,7 @@ impl Default for Http2Config {
             max_header_block_size: None,
             max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
                 .expect("default HTTP/2 frame size is non-zero"),
+            timeout_response_stall: None,
         }
     }
 }
@@ -85,6 +86,7 @@ pub struct ServerConfig {
     pub binds: Box<[BindTarget]>,
     pub access_log: bool,
     pub root_path: Box<str>,
+    pub limit_request_fields: Option<NonZeroUsize>,
     pub http1: Http1Config,
     pub http2: Http2Config,
     pub max_request_body_size: Option<NonZeroU64>,

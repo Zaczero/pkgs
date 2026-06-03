@@ -162,7 +162,6 @@ impl<'py> PyConfig<'py> {
             enabled: self.get("http1")?,
             limit_request_head_size: self.nonzero_usize("limit_request_head_size")?,
             limit_request_line: self.nonzero_usize("limit_request_line")?,
-            limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             limit_request_field_size: self.nonzero_usize("limit_request_field_size")?,
         })
     }
@@ -176,6 +175,7 @@ impl<'py> PyConfig<'py> {
             max_header_block_size: self.nonzero_usize("h2_max_header_block_size")?,
             max_inbound_frame_size: NonZeroU32::new(self.get("h2_max_inbound_frame_size")?)
                 .expect("configured inbound frame size is non-zero"),
+            timeout_response_stall: self.optional_duration("h2_timeout_response_stall")?,
         })
     }
 
@@ -273,6 +273,7 @@ impl<'py> PyConfig<'py> {
             binds,
             access_log: self.get("access_log")?,
             root_path: self.boxed_str("root_path")?,
+            limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             http1,
             http2: self.http2()?,
             max_request_body_size,
@@ -498,6 +499,7 @@ mod tests {
         config.setattr("timeout_keep_alive", 2.5).unwrap();
         config.setattr("timeout_request_header", 4.5).unwrap();
         config.setattr("timeout_request_body_idle", 5.5).unwrap();
+        config.setattr("h2_timeout_response_stall", 6.0).unwrap();
         config.setattr("timeout_lifespan_startup", 6.5).unwrap();
         config.setattr("timeout_lifespan_shutdown", 8.5).unwrap();
         config.setattr("limit_concurrency", 23).unwrap();
@@ -561,8 +563,8 @@ mod tests {
             Some(4_097),
         );
         assert_eq!(
-            extracted.http1.limit_request_fields.map(NonZeroUsize::get),
-            Some(17),
+            extracted.limit_request_fields.map(NonZeroUsize::get),
+            Some(17)
         );
         assert_eq!(
             extracted
@@ -600,6 +602,10 @@ mod tests {
         assert_eq!(
             extracted.timeout_request_body_idle,
             Some(Duration::from_secs_f64(5.5))
+        );
+        assert_eq!(
+            extracted.http2.timeout_response_stall,
+            Some(Duration::from_secs_f64(6.0))
         );
         assert_eq!(extracted.limit_concurrency.map(NonZeroUsize::get), Some(23));
         assert_eq!(extracted.limit_connections.map(NonZeroUsize::get), Some(29));
