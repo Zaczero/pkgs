@@ -1,6 +1,6 @@
 [package]
 name = "h2corn"
-version = "1.4.4"
+version = "1.4.5"
 edition = "2024"
 readme = "README.md"
 license = "MIT"
@@ -23,24 +23,31 @@ parking_lot = "0.12"
 pyo3 = { version = "0.28.3", features = ["bytes"] }
 pyo3-async-runtimes = { version = "0.28.0", features = ["tokio-runtime"] }
 rustix = { version = "1.1", features = ["fs", "net"] }
-rustls = { version = "0.23", default-features = false, features = [
-  "aws_lc_rs",
-  "std",
-  "tls12",
-] }
+rustls = {
+  version = "0.23",
+  default-features = false,
+  features = [
+    "aws_lc_rs",
+    "std",
+    "tls12",
+  ]
+}
 rustls-pki-types = { version = "1.14", features = ["std"] }
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
 thiserror = "2.0"
-tokio = { version = "1.48", features = [
-  "fs",
-  "io-util",
-  "macros",
-  "net",
-  "parking_lot",
-  "rt-multi-thread",
-  "sync",
-  "time"
-] }
+tokio = {
+  version = "1.48",
+  features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "parking_lot",
+    "rt-multi-thread",
+    "sync",
+    "time"
+  ]
+}
 tokio-rustls = { version = "0.26", default-features = false }
 zerocopy = { version = "0.8", features = ["derive"] }
 
