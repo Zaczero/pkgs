@@ -445,6 +445,8 @@ Cargo.lock
 !/Cargo.lock
 
 .codex
+.claude/
+.uv-cache/
 repomix-output.xml
 uv.lock
 vendor/
