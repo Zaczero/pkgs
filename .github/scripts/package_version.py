@@ -1,69 +1,99 @@
 import argparse
+import json
 import os
 import re
+import subprocess
 from pathlib import Path
+from typing import Never
 
 import tomllib
 
-VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+VERSION_RE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+\Z')
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> Never:
     raise SystemExit(message)
 
 
 def validate_version(version: str) -> None:
     if not VERSION_RE.fullmatch(version):
-        fail(f"invalid version {version!r}; expected X.Y.Z")
+        fail(f'invalid version {version!r}; expected X.Y.Z')
 
 
 def package_path(package: str) -> Path:
     path = Path(package)
-    if path.name != package or not (path / "pyproject.toml").is_file():
-        valid = ", ".join(
-            sorted(
-                path.parent.name
-                for path in Path(".").glob("*/pyproject.toml")
-            )
+    if path.name != package or not (path / 'pyproject.toml').is_file():
+        valid = ', '.join(
+            sorted(path.parent.name for path in Path('.').glob('*/pyproject.toml'))
         )
-        fail(f"unknown package {package!r}; valid packages: {valid}")
+        fail(f'unknown package {package!r}; valid packages: {valid}')
     return path
 
 
 def load_toml(path: Path) -> dict:
-    with path.open("rb") as file:
+    with path.open('rb') as file:
         return tomllib.load(file)
+
+
+def cargo_package_info(path: Path) -> dict[str, str]:
+    result = subprocess.run(
+        [
+            'cargo',
+            'metadata',
+            '--no-deps',
+            '--format-version',
+            '1',
+            '--manifest-path',
+            path.as_posix(),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail(f'could not read Cargo metadata from {path}:\n{result.stderr.strip()}')
+
+    manifest_path = path.resolve()
+    metadata = json.loads(result.stdout)
+    for package in metadata['packages']:
+        if Path(package['manifest_path']) == manifest_path:
+            return {
+                'name': package['name'],
+                'version': package['version'],
+            }
+
+    fail(f'Cargo metadata did not include package manifest {path}')
 
 
 def package_info(package: str) -> dict[str, str]:
     path = package_path(package)
-    pyproject = load_toml(path / "pyproject.toml")
-    requires_python = pyproject["project"].get("requires-python", "")
-    cargo_toml = path / "Cargo.toml"
+    pyproject = load_toml(path / 'pyproject.toml')
+    requires_python = pyproject['project'].get('requires-python', '')
+    cargo_toml = path / 'Cargo.toml'
 
     if cargo_toml.is_file():
-        cargo = load_toml(cargo_toml)
-        module_name = pyproject["tool"]["maturin"]["module-name"]
+        cargo = cargo_package_info(cargo_toml)
+        module_name = pyproject['tool']['maturin']['module-name']
         return {
-            "import-name": module_name.split(".", maxsplit=1)[0],
-            "is-rusty": "true",
-            "package": package,
-            "requires-python": requires_python,
-            "type": "python-rust",
-            "version": cargo["package"]["version"],
-            "version_path": cargo_toml.as_posix(),
-            "crate": cargo["package"]["name"],
+            'import-name': module_name.split('.', maxsplit=1)[0],
+            'is-rusty': 'true',
+            'package': package,
+            'requires-python': requires_python,
+            'type': 'python-rust',
+            'version': cargo['version'],
+            'version_path': cargo_toml.as_posix(),
+            'crate': cargo['name'],
         }
 
-    version_path = path / pyproject["tool"]["hatch"]["version"]["path"]
+    version_path = path / pyproject['tool']['hatch']['version']['path']
     return {
-        "import-name": version_path.relative_to(path).parts[0],
-        "is-rusty": "false",
-        "package": package,
-        "requires-python": requires_python,
-        "type": "python",
-        "version": read_python_version(version_path),
-        "version_path": version_path.as_posix(),
+        'import-name': version_path.relative_to(path).parts[0],
+        'is-rusty': 'false',
+        'package': package,
+        'requires-python': requires_python,
+        'type': 'python',
+        'version': read_python_version(version_path),
+        'version_path': version_path.as_posix(),
     }
 
 
@@ -73,41 +103,37 @@ def read_python_version(path: Path) -> str:
         path.read_text(),
     )
     if match is None:
-        fail(f"could not find __version__ in {path}")
+        fail(f'could not find __version__ in {path}')
     return match.group(2)
 
 
 def set_rust_version(path: Path, version: str) -> None:
     text = path.read_text()
-    pattern = re.compile(
-        r"(?ms)^(\[package\]\s+.*?^version\s*=\s*\")([^\"]+)(\")"
-    )
-    text, count = pattern.subn(rf"\g<1>{version}\3", text, count=1)
+    pattern = re.compile(r'(?ms)^(\[package\]\s+.*?^version\s*=\s*\")([^\"]+)(\")')
+    text, count = pattern.subn(rf'\g<1>{version}\3', text, count=1)
     if count != 1:
-        fail(f"could not update [package].version in {path}")
+        fail(f'could not update [package].version in {path}')
     path.write_text(text)
 
 
 def set_python_version(path: Path, version: str) -> None:
     text = path.read_text()
-    pattern = re.compile(
-        r"(?m)^(__version__\s*=\s*)(['\"])([^'\"]+)(\2)([ \t]*)$"
-    )
-    text, count = pattern.subn(rf"\g<1>\g<2>{version}\g<4>\g<5>", text, count=1)
+    pattern = re.compile(r"(?m)^(__version__\s*=\s*)(['\"])([^'\"]+)(\2)([ \t]*)$")
+    text, count = pattern.subn(rf'\g<1>\g<2>{version}\g<4>\g<5>', text, count=1)
     if count != 1:
-        fail(f"could not update __version__ in {path}")
+        fail(f'could not update __version__ in {path}')
     path.write_text(text)
 
 
 def write_outputs(outputs: dict[str, str]) -> None:
     for key, value in outputs.items():
-        print(f"{key}={value}")
+        print(f'{key}={value}')
 
-    output_path = os.environ.get("GITHUB_OUTPUT")
+    output_path = os.environ.get('GITHUB_OUTPUT')
     if output_path is not None:
-        with Path(output_path).open("a") as file:
+        with Path(output_path).open('a') as file:
             for key, value in outputs.items():
-                file.write(f"{key}={value}\n")
+                file.write(f'{key}={value}\n')
 
 
 def command_info(args: argparse.Namespace) -> None:
@@ -118,26 +144,26 @@ def command_set(args: argparse.Namespace) -> None:
     validate_version(args.version)
     info = package_info(args.package)
 
-    if info["type"] == "python-rust":
-        set_rust_version(Path(info["version_path"]), args.version)
+    if info['type'] == 'python-rust':
+        set_rust_version(Path(info['version_path']), args.version)
     else:
-        set_python_version(Path(info["version_path"]), args.version)
+        set_python_version(Path(info['version_path']), args.version)
 
     info = package_info(args.package)
-    if info["version"] != args.version:
+    if info['version'] != args.version:
         fail(
-            f"version update failed for {args.package}: "
-            f"expected {args.version}, got {info['version']}"
+            f'version update failed for {args.package}: '
+            f'expected {args.version}, got {info["version"]}'
         )
     write_outputs(info)
 
 
 def command_check(args: argparse.Namespace) -> None:
     info = package_info(args.package)
-    if info["version"] != args.version:
+    if info['version'] != args.version:
         fail(
-            f"version mismatch for {args.package}: "
-            f"expected {args.version}, got {info['version']}"
+            f'version mismatch for {args.package}: '
+            f'expected {args.version}, got {info["version"]}'
         )
     write_outputs(info)
 
@@ -146,26 +172,26 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
 
-    info_parser = subparsers.add_parser("info")
-    info_parser.add_argument("package")
+    info_parser = subparsers.add_parser('info')
+    info_parser.add_argument('package')
     info_parser.set_defaults(func=command_info)
 
-    set_parser = subparsers.add_parser("set")
-    set_parser.add_argument("package")
-    set_parser.add_argument("version")
+    set_parser = subparsers.add_parser('set')
+    set_parser.add_argument('package')
+    set_parser.add_argument('version')
     set_parser.set_defaults(func=command_set)
 
-    check_parser = subparsers.add_parser("check")
-    check_parser.add_argument("package")
-    check_parser.add_argument("version")
+    check_parser = subparsers.add_parser('check')
+    check_parser.add_argument('package')
+    check_parser.add_argument('version')
     check_parser.set_defaults(func=command_check)
 
     args = parser.parse_args()
     args.func(args)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         main()
     except KeyError as error:
-        raise SystemExit(f"missing expected metadata key: {error}") from error
+        raise SystemExit(f'missing expected metadata key: {error}') from error
