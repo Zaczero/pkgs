@@ -201,7 +201,7 @@ fn encode_factors(factors: &ComponentGrid) -> String {
     let num_components = factors.x_components * factors.y_components;
     let maximum_value = max_ac_value(factors);
     let (quantised_max_value, maximum_value) = if num_components > 1 {
-        let quantised = (maximum_value.mul_add(166.0, -0.5).floor() as i32).clamp(0, 82) as u32;
+        let quantised = ((maximum_value * 166.0 - 0.5).floor() as i32).clamp(0, 82) as u32;
         (quantised, (quantised as f32 + 1.0) / 166.0)
     } else {
         (0, 1.0)
@@ -237,9 +237,9 @@ fn encode_factors(factors: &ComponentGrid) -> String {
             let g = factors.vectors[GREEN][idx].to_array()[lane] / maximum_value;
             let b = factors.vectors[BLUE][idx].to_array()[lane] / maximum_value;
 
-            let quant_r = sign_pow_05(r).mul_add(9.0, 9.5).floor() as i32;
-            let quant_g = sign_pow_05(g).mul_add(9.0, 9.5).floor() as i32;
-            let quant_b = sign_pow_05(b).mul_add(9.0, 9.5).floor() as i32;
+            let quant_r = (sign_pow_05(r) * 9.0 + 9.5).floor() as i32;
+            let quant_g = (sign_pow_05(g) * 9.0 + 9.5).floor() as i32;
+            let quant_b = (sign_pow_05(b) * 9.0 + 9.5).floor() as i32;
 
             let quant_r = quant_r.clamp(0, 18) as u32;
             let quant_g = quant_g.clamp(0, 18) as u32;
