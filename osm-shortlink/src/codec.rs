@@ -12,7 +12,7 @@ const BITS_PER_DIGIT: u8 = 3;
 pub const MAX_ZOOM: u8 = 22;
 const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
 const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
-const _: () = assert!(MAX_ZOOM_BIT_COUNT % BITS_PER_DIGIT == 0);
+const _: () = assert!(MAX_ZOOM_BIT_COUNT.is_multiple_of(BITS_PER_DIGIT));
 
 fn interleave_bits(x: u32, y: u32) -> u64 {
     let mut v = u64x2::from_array([u64::from(x), u64::from(y)]);
@@ -30,13 +30,28 @@ pub fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
         return Err(EncodeError::ZoomOutOfRange { zoom });
     }
 
-    // how many 180° half-turns (parity decides whether lon flips by 180°)
     let normalized_lat = lat + 90.0;
-    let half_turns = (normalized_lat / 180.0).floor() as i64;
-    let parity = (half_turns & 1) as f64;
 
-    let encoded_x = (180.0_f64.mul_add(parity, lon + 180.0).rem_euclid(360.0) * X_SCALE) as u32;
-    let encoded_y = ((180.0 - (normalized_lat.rem_euclid(360.0) - 180.0).abs()) * Y_SCALE) as u32;
+    // In-range inputs (virtually every call) need no modular wraparound:
+    // both `rem_euclid`s return their argument unchanged there, but each
+    // costs a soft-float `fmod` on the x86-64-v2 baseline. The fast arm
+    // keeps the identical remaining operations, so it is bit-exact.
+    let (wrapped_x, wrapped_y) =
+        if (0.0..180.0).contains(&normalized_lat) && (-180.0..180.0).contains(&lon) {
+            (lon + 180.0, 180.0 - (normalized_lat - 180.0).abs())
+        } else {
+            // how many 180° half-turns (parity decides whether lon flips by
+            // 180°); `180 * parity` is exact (parity is 0.0 or 1.0), so the
+            // plain form matches the previous fused one bit-for-bit.
+            let half_turns = (normalized_lat / 180.0).floor() as i64;
+            let parity = (half_turns & 1) as f64;
+            (
+                (180.0 * parity + (lon + 180.0)).rem_euclid(360.0),
+                180.0 - (normalized_lat.rem_euclid(360.0) - 180.0).abs(),
+            )
+        };
+    let encoded_x = (wrapped_x * X_SCALE) as u32;
+    let encoded_y = (wrapped_y * Y_SCALE) as u32;
     let cell = interleave_bits(encoded_x, encoded_y);
 
     let bit_count = zoom + MIN_ZOOM_BIT_COUNT;
