@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
 
           metadata="$(python3 .github/scripts/package_version.py info "$PACKAGE")"
+          echo "$metadata" >> "$GITHUB_OUTPUT"
           is_rusty="$(sed -n 's/^is-rusty=//p' <<< "$metadata")"
           requires_python="$(sed -n 's/^requires-python=//p' <<< "$metadata")"
 
@@ -86,14 +87,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
-          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          workspaces: . -> target
+          cache-workspaces: . -> target
+          # An exported RUSTFLAGS would override the v2 target-cpu flags in
+          # .cargo/config.toml (env beats target config) — never set it.
+          rustflags: ""
 
       - name: Test Rust debug
         shell: bash
@@ -118,7 +117,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PACKAGE: ${{ inputs.package }}
-      PYTHON_VERSION: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -127,28 +125,19 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+            ${{ inputs.package }}/pyproject.toml
+            ${{ inputs.package }}/uv.lock
           cache-suffix: ${{ env.PACKAGE }}-py${{ matrix.python-version }}
           enable-cache: true
           python-version: ${{ matrix.python-version }}
           working-directory: ${{ env.PACKAGE }}
 
-      - name: Install Python
-        shell: bash
-        run: uv python install "$PYTHON_VERSION"
-
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: dtolnay/rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
-          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
-
-      - name: Restore Rust cache
-        if: needs.resolve.outputs.is-rusty == 'true'
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          workspaces: . -> target
+          cache-workspaces: . -> target
+          rustflags: ""
 
       - name: Install h2spec
         if: env.PACKAGE == 'h2corn'
@@ -180,17 +169,16 @@ jobs:
       CIBW_ARCHS_WINDOWS: "AMD64"
       CIBW_BUILD_VERBOSITY: "1"
       CIBW_ENABLE: "cpython-freethreading pypy"
-      CIBW_ENVIRONMENT_LINUX: ${{ matrix.runner == 'ubuntu-latest' &&
-        'PATH="$HOME/.cargo/bin:$PATH" RUSTFLAGS="-C target-cpu=x86-64-v2"' ||
-        'PATH="$HOME/.cargo/bin:$PATH"' }}
+      CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: RUSTUP_TOOLCHAIN
       CIBW_SKIP: "pp39-* pp310-*"
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
-      CIBW_BEFORE_ALL_LINUX: "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      CIBW_BEFORE_ALL_LINUX:
+        'curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
         --default-toolchain none && rustup toolchain install --profile minimal
-        \"$RUSTUP_TOOLCHAIN\""
+        "$RUSTUP_TOOLCHAIN"'
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -199,8 +187,8 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+            ${{ inputs.package }}/pyproject.toml
+            ${{ inputs.package }}/uv.lock
           enable-cache: true
           working-directory: ${{ env.PACKAGE }}
 
@@ -210,15 +198,10 @@ jobs:
 
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true' && runner.os != 'Linux'
-        uses: dtolnay/rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
-          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
-
-      - name: Restore Rust cache
-        if: needs.resolve.outputs.is-rusty == 'true' && runner.os != 'Linux'
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          workspaces: . -> target
+          cache-workspaces: . -> target
+          rustflags: ""
 
       - name: Build wheels
         if: needs.resolve.outputs.is-rusty == 'true'
