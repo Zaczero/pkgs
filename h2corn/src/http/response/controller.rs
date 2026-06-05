@@ -616,19 +616,18 @@ mod tests {
         let _ = std::fs::remove_file(temp_path);
     }
 
-    fn start_unary(controller: &mut ResponseController, actions: &mut http::response::ResponseActions) {
-        event_requests_pathsend(
-            controller,
-            actions,
-            bridge::HttpOutboundEvent::Start {
-                status: 200,
-                headers: vec![(
-                    Bytes::from_static(b"content-type").into(),
-                    Bytes::from_static(b"image/png").into(),
-                )],
-                trailers: false,
-            },
-        )
+    fn start_unary(
+        controller: &mut ResponseController,
+        actions: &mut http::response::ResponseActions,
+    ) {
+        event_requests_pathsend(controller, actions, bridge::HttpOutboundEvent::Start {
+            status: 200,
+            headers: vec![(
+                Bytes::from_static(b"content-type").into(),
+                Bytes::from_static(b"image/png").into(),
+            )],
+            trailers: false,
+        })
         .expect("response start is accepted");
         assert!(actions.is_empty());
     }
