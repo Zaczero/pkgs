@@ -73,3 +73,10 @@ def test_decode_rejects_malformed_input(polyline):
         decode_latlon(polyline)
     with pytest.raises(ValueError, match='Invalid polyline'):
         decode_lonlat(polyline)
+
+
+def test_encode_rounds_scaled_values_per_spec():
+    # 0.000006 * 1e5 = 0.6 must round to 1 (the reference implementations
+    # round; truncation would encode 0 and bias toward zero).
+    assert encode_latlon([(0.000006, 0.000002)], 5) == 'A?'
+    assert encode_latlon([(-0.000006, -0.000002)], 5) == '@?'

@@ -49,12 +49,16 @@ pub fn encode<const LATLON: bool>(
             (second, first)
         };
 
-        let lat = (lat_f * scale) as i64;
+        // The Encoded Polyline spec ROUNDS the scaled value (Google's
+        // reference uses Math.round); truncation would bias every
+        // non-exact coordinate toward zero by up to one full grid unit.
+        // `f64::round` (half away from zero) matches the C/C++ references.
+        let lat = (lat_f * scale).round() as i64;
         let delta_lat = (lat - last_lat) as i32;
         encode_value(&mut out, delta_lat);
         last_lat = lat;
 
-        let lon = (lon_f * scale) as i64;
+        let lon = (lon_f * scale).round() as i64;
         let delta_lon = (lon - last_lon) as i32;
         encode_value(&mut out, delta_lon);
         last_lon = lon;
