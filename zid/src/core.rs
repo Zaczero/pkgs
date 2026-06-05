@@ -61,8 +61,19 @@ fn random_start_seq(max_start: u16) -> u16 {
         0 => 0,
         u16::MAX => next_rand_u16(),
         _ => {
+            // Unbiased bounded draw (Lemire's multiply-shift): a plain
+            // `% range` would skew low sequences whenever the range does
+            // not divide 2^16 — the CSPRNG-backed sequence privacy should
+            // not carry modulo bias. The low-sliver rejection re-draws with
+            // probability < range / 2^16.
             let range = u32::from(max_start) + 1;
-            (u32::from(next_rand_u16()) % range) as u16
+            let threshold = 0x1_0000 % range;
+            loop {
+                let product = u32::from(next_rand_u16()) * range;
+                if (product & 0xFFFF) >= threshold {
+                    break (product >> 16) as u16;
+                }
+            }
         },
     }
 }
