@@ -626,7 +626,7 @@ class Config:
     )
     limit_request_fields: int = _option(
         default=100,
-        doc='Limit the number of request header fields. HTTP/2 counts every decoded regular header field, including duplicate cookie fields. Use 0 for no limit.',
+        doc='Limit the number of request header fields. HTTP/2 counts every decoded regular header field, including duplicate. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_fields'),
         cli_type=int,
