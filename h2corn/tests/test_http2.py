@@ -717,6 +717,37 @@ async def test_http_response_pathsend_streams_large_file(tmp_path: Path) -> None
     assert body == payload
 
 
+async def test_http_response_pathsend_sendfile_tier_delivers_byte_identical(
+    tmp_path: Path,
+) -> None:
+    """Files ≥ 1 MiB take the zero-copy sendfile tier; bytes must arrive
+    identical through it.
+    """
+    file_path = tmp_path / 'sendfile-payload.bin'
+    payload = (b'sendfile-tier-' * 120000)[: 1536 * 1024]
+    file_path.write_bytes(payload)
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'application/octet-stream'),
+                (b'content-length', str(len(payload)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.pathsend', 'path': str(file_path)})
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=10
+        )
+
+    assert status == 200
+    assert body == payload
+
+
 async def test_h2_head_pathsend_synthesizes_content_length_and_keeps_empty_body(
     tmp_path: Path,
 ) -> None:

@@ -1,7 +1,5 @@
 use std::mem;
 
-use tokio::fs::File;
-
 use super::actions;
 use crate::error::{self, ErrorExt};
 use crate::{bridge, http};
@@ -195,7 +193,7 @@ impl ResponseController {
     pub(crate) fn handle_pathsend(
         &mut self,
         actions: &mut actions::ResponseActions,
-        file: File,
+        source: http::pathsend::PathSource,
         len: usize,
     ) -> Result<(), error::H2CornError> {
         let mut started = self.take_started(error::HttpResponseError::PathsendBeforeStart)?;
@@ -213,19 +211,43 @@ impl ResponseController {
             return Ok(());
         }
 
-        let file = Box::new(file);
-        if started.expects_trailers {
-            actions.push(started.take_start_action());
-            actions.push(actions::ResponseAction::File { file, len });
-            self.state = ResponseState::WaitingForTrailers {
-                buffered: http::types::ResponseHeaders::new(),
-            };
-        } else {
-            self.state =
-                complete_response(actions, &mut started, actions::FinalResponseBody::File {
-                    file,
-                    len,
-                });
+        match source {
+            // Preloaded files travel the ordinary body path (vectored
+            // chunk emission downstream); the file is already closed.
+            http::pathsend::PathSource::Buffered(data) => {
+                if started.expects_trailers {
+                    actions.push(started.take_start_action());
+                    if !data.is_empty() {
+                        actions.push(actions::ResponseAction::Body(data.into()));
+                    }
+                    self.state = ResponseState::WaitingForTrailers {
+                        buffered: http::types::ResponseHeaders::new(),
+                    };
+                } else {
+                    let body = if data.is_empty() {
+                        actions::FinalResponseBody::Empty
+                    } else {
+                        actions::FinalResponseBody::Bytes(data.into())
+                    };
+                    self.state = complete_response(actions, &mut started, body);
+                }
+            },
+            http::pathsend::PathSource::File(file) => {
+                let file = Box::new(file);
+                if started.expects_trailers {
+                    actions.push(started.take_start_action());
+                    actions.push(actions::ResponseAction::File { file, len });
+                    self.state = ResponseState::WaitingForTrailers {
+                        buffered: http::types::ResponseHeaders::new(),
+                    };
+                } else {
+                    self.state = complete_response(
+                        actions,
+                        &mut started,
+                        actions::FinalResponseBody::File { file, len },
+                    );
+                }
+            },
         }
         Ok(())
     }
@@ -590,7 +612,9 @@ mod tests {
         controller
             .handle_pathsend(
                 &mut actions,
-                File::from_std(std::fs::File::open(&temp_path).expect("temp file opens")),
+                http::pathsend::PathSource::File(File::from_std(
+                    std::fs::File::open(&temp_path).expect("temp file opens"),
+                )),
                 4,
             )
             .expect("pathsend is accepted");

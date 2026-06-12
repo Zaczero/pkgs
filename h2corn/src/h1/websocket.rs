@@ -45,8 +45,8 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
 use super::http::{
-    BodyFraming, H1WriteTarget, append_header_lines, finish_chunked_response, write_chunk,
-    write_empty_response, write_final_response, write_response_head,
+    BodyFraming, append_header_lines, finish_chunked_response, write_chunk, write_empty_response,
+    write_final_response, write_response_head,
 };
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
@@ -54,6 +54,7 @@ use crate::error::H2CornError;
 use crate::http::header::apply_default_response_headers;
 use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+use crate::sendfile::WriteTarget;
 use crate::websocket::session::{
     AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, FrameFlushMode, TransportRead,
     WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers, run_websocket,
@@ -79,7 +80,7 @@ struct H1WebSocketTransport<R, W> {
 impl<R, W> WebSocketHandshakeTransport for H1WebSocketTransport<R, W>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     fn accept_status(&self) -> HttpStatusCode {
         status_code::SWITCHING_PROTOCOLS
@@ -212,7 +213,7 @@ pub(super) async fn handle_request<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     let mut transport = H1WebSocketTransport {
         config: context.request.connection.config,

@@ -1,4 +1,3 @@
-
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
@@ -11,7 +10,7 @@ use crate::console::ResponseLogState;
 use crate::error::H2CornError;
 use crate::http::digits;
 use crate::http::header::apply_default_response_headers;
-use crate::http::pathsend::PathStreamer;
+use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseStart};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::sendfile::WriteTarget;
@@ -19,33 +18,6 @@ use crate::sendfile::WriteTarget;
 const RESPONSE_BUF_CAPACITY: usize = 512;
 
 type ResponseBuf = SmallVec<[u8; RESPONSE_BUF_CAPACITY]>;
-
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        len: usize,
-    ) -> io::Result<()>
-    where
-        Self: Sized;
-}
-
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        len: usize,
-    ) -> io::Result<()> {
-        writer.flush().await?;
-        let mut offset = 0_u64;
-    }
-}
-
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        _len: usize,
-    ) -> io::Result<()> {
-        writer.flush().await?;
-        copy(file, writer.get_mut()).await?;
-        Ok(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BodyFraming {
@@ -255,7 +227,27 @@ where
             )
             .await?;
             let mut file = *file;
-            W::send_file_body(writer, &mut file, len).await?;
+            if len < PATHSEND_SENDFILE_MIN {
+                // Small files: one buffered read + ordinary writes beat a
+                // per-response sendfile setup (measured: sendfile's loopback
+                // skb handling is the hot path at this size).
+                let mut streamer = PathStreamer::new(file, len, true);
+                while !streamer.is_drained() {
+                    streamer.fill().await?;
+                    let chunk = streamer.remaining();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    let chunk_len = chunk.len();
+                    writer.write_all(chunk).await?;
+                    streamer.consume(chunk_len);
+                }
+                writer.flush().await?;
+            } else {
+                writer.flush().await?;
+                let mut offset = 0_u64;
+                W::send_file(writer, &mut file, &mut offset, len).await?;
+            }
             Ok(())
         },
         FinalResponseBody::Suppressed { len } => {

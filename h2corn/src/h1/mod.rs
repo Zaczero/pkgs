@@ -18,7 +18,8 @@ use crate::async_util::send_best_effort;
 use crate::config::ServerConfig;
 use crate::console::run_http_request;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
-use crate::frame::{self, PeerSettings};
+use crate::frame::PeerSettings;
+use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::http::app::HttpRequestBody;
 use crate::http::body::RequestBodyState;
 use crate::http::execution::prepare_request_input;
@@ -33,6 +34,8 @@ use crate::runtime::{
 };
 use crate::sendfile::WriteTarget;
 use crate::websocket::{HandshakeRejection, WebSocketContext, WebSocketKey, WebSocketRequestMeta};
+
+const H1_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 
 struct ParsedRequest {
     request: RequestHead,
@@ -96,7 +99,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: WriteTarget,
 {
-    let mut writer = BufWriter::with_capacity(frame::DEFAULT_MAX_FRAME_SIZE, writer);
+    let mut writer = BufWriter::with_capacity(H1_WRITER_BUFFER_CAPACITY, writer);
     let mut first_request = true;
 
     loop {
