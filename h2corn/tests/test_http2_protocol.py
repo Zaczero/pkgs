@@ -721,6 +721,58 @@ async def test_response_data_frames_cap_at_server_target_when_peer_allows_more()
     assert max(data_lengths) == SERVER_MAX_FRAME_SIZE
 
 
+async def test_streamed_multi_chunk_response_bytes_and_end_stream_placement() -> None:
+    """Characterizes the vectored chunk emitter: a multi-chunk streamed body
+    arrives byte-identical, every DATA frame respects the peer frame size,
+    and END_STREAM lands exactly on the final DATA frame.
+    """
+    chunks = [b'a' * (20 * 1024), b'b' * (10 * 1024), b'', b'c' * 4]
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        for chunk in chunks[:-1]:
+            await send({
+                'type': 'http.response.body',
+                'body': chunk,
+                'more_body': True,
+            })
+        await send({'type': 'http.response.body', 'body': chunks[-1]})
+
+    config = Config(port=find_free_port())
+    async with running_server(app, config):
+        reader, writer, conn, authority = await open_h2_connection(port=config.port)
+        conn.update_settings({h2.settings.SettingCodes.MAX_FRAME_SIZE: 16 * 1024})
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+            ],
+            end_stream=True,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        try:
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    data_frames = [
+        (flags, frame_payload)
+        for frame_type, flags, frame_stream_id, frame_payload in frames
+        if frame_type == 0x00 and frame_stream_id == stream_id
+    ]
+    assert data_frames
+    assert b''.join(payload for _, payload in data_frames) == b''.join(chunks)
+    assert all(len(payload) <= 16 * 1024 for _, payload in data_frames)
+    end_flags = [bool(flags & 0x01) for flags, _ in data_frames]
+    assert end_flags == [False] * (len(data_frames) - 1) + [True]
+
+
 async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
     async def app(scope, receive, send):
         if scope['path'] == '/slow':

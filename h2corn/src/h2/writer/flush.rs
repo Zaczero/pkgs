@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
+use std::io;
 #[cfg(test)]
 use std::{
-    io,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -9,6 +9,7 @@ use std::{
 #[cfg(test)]
 use bytes::Bytes;
 use bytes::BytesMut;
+use smallvec::SmallVec;
 #[cfg(test)]
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
@@ -18,36 +19,21 @@ use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
 use super::stream_state::writer_stream;
 use super::stream_state::{PendingChunks, StreamBodyState, StreamWriteState};
-use super::{
-    FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, H2WriteTarget, ResponseCloseBatch,
-};
-#[cfg(test)]
-use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
+use super::{FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch};
 use crate::error::H2CornError;
-use crate::frame::{self, ErrorCode, FrameFlags, FrameHeader, FrameType, StreamId};
+use crate::frame::{
+    self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FrameType, StreamId,
+};
 use crate::h2::StreamMap;
 #[cfg(test)]
 use crate::h2::new_stream_map;
 use crate::http::pathsend::PathStreamer;
+use crate::sendfile::WriteTarget;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FlushBodyProgress {
     Continue,
     ConnectionBlocked,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChunkAdvance {
-    KeepFront,
-    PopFront,
-}
-
-enum ChunkFlushStep {
-    Stop,
-    ConnectionBlocked,
-    Continue(ChunkAdvance),
-    FinishStream,
-    Yield(ChunkAdvance),
 }
 
 struct FlushBodyParts<'a, W> {
@@ -57,6 +43,29 @@ struct FlushBodyParts<'a, W> {
     data_frame_size: usize,
     stream_budget: usize,
     response_closes: &'a mut ResponseCloseBatch,
+}
+
+/// One vectored-write's worth of DATA frames collected over body segments.
+struct FrameBatch<'a> {
+    headers: SmallVec<[[u8; FRAME_HEADER_LEN]; 9]>,
+    payloads: SmallVec<[&'a [u8]; 9]>,
+    /// Window consumption (sum of payload lengths).
+    total: usize,
+    /// Leading segments fully consumed by this batch.
+    drained_segments: usize,
+    /// Bytes consumed from the first segment after the drained ones.
+    tail_consumed: usize,
+    ended_stream: bool,
+    /// Stopped because the connection send window is exhausted (the caller
+    /// must reschedule the stream at the front and break the flush pass).
+    connection_blocked: bool,
+}
+
+impl<'a> FrameBatch<'a> {
+    fn push(&mut self, header: [u8; FRAME_HEADER_LEN], payload: &'a [u8]) {
+        self.headers.push(header);
+        self.payloads.push(payload);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,39 +108,6 @@ fn fair_write_quantum(max_frame_size: usize) -> usize {
     max_frame_size.max(FAIR_WRITE_QUANTUM)
 }
 
-pub(super) async fn write_data_chunk<W>(
-    writer: &mut BufWriter<W>,
-    stream_id: StreamId,
-    chunk: &[u8],
-    end_stream: bool,
-    connection_send_window: &mut i64,
-    stream_send_window: &mut i64,
-) -> Result<(), H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
-    write_frame(
-        writer,
-        FrameHeader {
-            len: chunk.len(),
-            frame_type: FrameType::DATA,
-            flags: if end_stream {
-                FrameFlags::END_STREAM
-            } else {
-                FrameFlags::EMPTY
-            },
-            stream_id: Some(stream_id),
-        },
-        chunk,
-    )
-    .await?;
-
-    let chunk_len = chunk.len() as i64;
-    *connection_send_window -= chunk_len;
-    *stream_send_window -= chunk_len;
-    Ok(())
-}
-
 async fn flush_chunk_body<W>(
     context: &mut FlushBodyParts<'_, W>,
     pending: &mut PendingChunks,
@@ -141,87 +117,55 @@ async fn flush_chunk_body<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    loop {
-        if stream.is_closed() {
-            break;
-        }
-
-        let step = match pending.front_mut() {
-            None => ChunkFlushStep::Stop,
-            Some(front) => {
-                if front.remaining().is_empty() {
-                    write_empty_data_frame(context.writer, stream_id, front.end_stream).await?;
-                    if front.end_stream {
-                        ChunkFlushStep::FinishStream
-                    } else {
-                        ChunkFlushStep::Continue(ChunkAdvance::PopFront)
-                    }
-                } else if *context.connection_send_window <= 0 {
-                    stream.schedule(context.ready_streams, stream_id, true);
-                    ChunkFlushStep::ConnectionBlocked
-                } else if let Some(limit) = send_limit(
-                    *context.connection_send_window,
-                    stream.send_window,
-                    context.data_frame_size,
-                ) {
-                    let remaining = front.remaining();
-                    let chunk_len = context.next_body_write_len(limit, remaining.len());
-                    let end_stream = front.end_stream && chunk_len == remaining.len();
-
-                    write_data_chunk(
-                        context.writer,
-                        stream_id,
-                        &remaining[..chunk_len],
-                        end_stream,
-                        context.connection_send_window,
-                        &mut stream.send_window,
-                    )
-                    .await?;
-
-                    front.consume(chunk_len);
-                    stream.note_body_progress(Instant::now());
-                    if end_stream {
-                        ChunkFlushStep::FinishStream
-                    } else if front.is_drained() {
-                        if context.budget_exhausted() {
-                            ChunkFlushStep::Yield(ChunkAdvance::PopFront)
-                        } else {
-                            ChunkFlushStep::Continue(ChunkAdvance::PopFront)
-                        }
-                    } else if context.budget_exhausted() {
-                        ChunkFlushStep::Yield(ChunkAdvance::KeepFront)
-                    } else {
-                        ChunkFlushStep::Continue(ChunkAdvance::KeepFront)
-                    }
-                } else {
-                    ChunkFlushStep::Stop
-                }
-            },
-        };
-
-        match step {
-            ChunkFlushStep::Stop => break,
-            ChunkFlushStep::ConnectionBlocked => {
-                return Ok(FlushBodyProgress::ConnectionBlocked);
-            },
-            ChunkFlushStep::Continue(advance) => {
-                if advance == ChunkAdvance::PopFront {
-                    pending.pop_front();
-                }
-            },
-            ChunkFlushStep::FinishStream => {
-                pending.pop_front();
-                stream.finish(stream_id, context.response_closes);
-            },
-            ChunkFlushStep::Yield(advance) => {
-                if advance == ChunkAdvance::PopFront {
-                    pending.pop_front();
-                }
-                break;
-            },
-        }
+    if stream.is_closed() {
+        return Ok(FlushBodyProgress::Continue);
     }
 
+    // Collect ALL window/budget-allowed frames across the queued chunks,
+    // then emit them in one vectored write: with peer-capped frames a
+    // multi-chunk streamed body becomes a single writev instead of a
+    // flush+write pair per frame.
+    let (total, drained_segments, tail_consumed, ended_stream, connection_blocked) = {
+        let batch = collect_data_frames(
+            context,
+            stream,
+            stream_id,
+            pending
+                .iter()
+                .map(|chunk| (chunk.remaining(), chunk.end_stream)),
+        );
+        if !batch.headers.is_empty() {
+            write_frames_vectored(context.writer, &batch.headers, &batch.payloads).await?;
+        }
+        (
+            batch.total,
+            batch.drained_segments,
+            batch.tail_consumed,
+            batch.ended_stream,
+            batch.connection_blocked,
+        )
+    };
+
+    if total != 0 || drained_segments != 0 {
+        *context.connection_send_window -= total as i64;
+        stream.send_window -= total as i64;
+        for _ in 0..drained_segments {
+            pending.pop_front();
+        }
+        if tail_consumed != 0
+            && let Some(front) = pending.front_mut()
+        {
+            front.consume(tail_consumed);
+        }
+        stream.note_body_progress(Instant::now());
+    }
+
+    if ended_stream {
+        stream.finish(stream_id, context.response_closes);
+    } else if connection_blocked {
+        stream.schedule(context.ready_streams, stream_id, true);
+        return Ok(FlushBodyProgress::ConnectionBlocked);
+    }
     Ok(FlushBodyProgress::Continue)
 }
 
@@ -232,14 +176,14 @@ async fn flush_path_body<W>(
     stream: &mut StreamWriteState,
 ) -> Result<FlushBodyProgress, H2CornError>
 where
-    W: AsyncWrite + Unpin + H2WriteTarget,
+    W: AsyncWrite + Unpin + WriteTarget,
 {
     loop {
         if stream.is_closed() {
             return Ok(FlushBodyProgress::Continue);
         }
 
-        if W::SUPPORTS_SENDFILE && streamer.needs_fill() {
+        if W::SUPPORTS_SENDFILE && streamer.prefers_sendfile && streamer.needs_fill() {
             if *context.connection_send_window <= 0 {
                 stream.schedule(context.ready_streams, stream_id, true);
                 return Ok(FlushBodyProgress::ConnectionBlocked);
@@ -266,7 +210,9 @@ where
                 stream_id: Some(stream_id),
             });
             let (file, offset) = streamer.sendfile_parts();
-            W::write_file_chunk(context.writer, header, file, offset, chunk_len).await?;
+            context.writer.write_all(&header).await?;
+            context.writer.flush().await?;
+            W::send_file(context.writer, file, offset, chunk_len).await?;
 
             let chunk_len = chunk_len as i64;
             *context.connection_send_window -= chunk_len;
@@ -300,44 +246,160 @@ where
             return Ok(FlushBodyProgress::Continue);
         }
 
-        if *context.connection_send_window <= 0 {
-            stream.schedule(context.ready_streams, stream_id, true);
-            return Ok(FlushBodyProgress::ConnectionBlocked);
-        }
-        let Some(limit) = send_limit(
-            *context.connection_send_window,
-            stream.send_window,
-            context.data_frame_size,
-        ) else {
-            return Ok(FlushBodyProgress::Continue);
+        // Emit as many DATA frames as the windows, fair budget, and frame
+        // size allow in ONE vectored write: with peer-capped frames
+        // (typically 16 KiB) a 128 KiB buffer fill becomes a single writev
+        // instead of 8 flush+write pairs.
+        let (total, ended_stream, connection_blocked) = {
+            let remaining = streamer.remaining();
+            let may_end = streamer.end_stream && streamer.sendfile_remaining_len() == 0;
+            let batch = collect_data_frames(context, stream, stream_id, [(remaining, may_end)]);
+            if !batch.headers.is_empty() {
+                write_frames_vectored(context.writer, &batch.headers, &batch.payloads).await?;
+            }
+            (batch.total, batch.ended_stream, batch.connection_blocked)
         };
 
-        let remaining = streamer.remaining();
-        let chunk_len = context.next_body_write_len(limit, remaining.len());
-        let end_stream = streamer.end_stream
-            && streamer.sendfile_remaining_len() == 0
-            && chunk_len == remaining.len();
-        write_data_chunk(
-            context.writer,
-            stream_id,
-            &remaining[..chunk_len],
-            end_stream,
-            context.connection_send_window,
-            &mut stream.send_window,
-        )
-        .await?;
+        if total != 0 {
+            *context.connection_send_window -= total as i64;
+            stream.send_window -= total as i64;
+            streamer.consume(total);
+            stream.note_body_progress(Instant::now());
+        }
 
-        streamer.consume(chunk_len);
-        stream.note_body_progress(Instant::now());
-
-        if end_stream {
+        if ended_stream {
             stream.finish(stream_id, context.response_closes);
             return Ok(FlushBodyProgress::Continue);
         }
-        if context.budget_exhausted() {
+        if connection_blocked {
+            stream.schedule(context.ready_streams, stream_id, true);
+            return Ok(FlushBodyProgress::ConnectionBlocked);
+        }
+        if total == 0 || context.budget_exhausted() {
             return Ok(FlushBodyProgress::Continue);
         }
     }
+}
+
+fn data_frame_header(len: usize, end_stream: bool, stream_id: StreamId) -> [u8; FRAME_HEADER_LEN] {
+    frame::encode_frame_header(FrameHeader {
+        len,
+        frame_type: FrameType::DATA,
+        flags: if end_stream {
+            FrameFlags::END_STREAM
+        } else {
+            FrameFlags::EMPTY
+        },
+        stream_id: Some(stream_id),
+    })
+}
+
+/// Collect DATA frames over body segments until the windows, the fair-write
+/// budget, or the segments themselves are exhausted. Each frame stays within
+/// one segment (mirroring per-chunk framing); an empty segment becomes an
+/// empty DATA frame so it can carry `END_STREAM`.
+fn collect_data_frames<'a, W>(
+    context: &mut FlushBodyParts<'_, W>,
+    stream: &StreamWriteState,
+    stream_id: StreamId,
+    segments: impl IntoIterator<Item = (&'a [u8], bool)>,
+) -> FrameBatch<'a> {
+    let mut batch = FrameBatch {
+        headers: SmallVec::new(),
+        payloads: SmallVec::new(),
+        total: 0,
+        drained_segments: 0,
+        tail_consumed: 0,
+        ended_stream: false,
+        connection_blocked: false,
+    };
+    'segments: for (segment, may_end) in segments {
+        if segment.is_empty() {
+            batch.push(data_frame_header(0, may_end, stream_id), &[]);
+            batch.drained_segments += 1;
+            if may_end {
+                batch.ended_stream = true;
+                break;
+            }
+            continue;
+        }
+        let mut pos = 0;
+        loop {
+            if *context.connection_send_window - batch.total as i64 <= 0 {
+                batch.connection_blocked = true;
+                batch.tail_consumed = pos;
+                break 'segments;
+            }
+            let Some(limit) = send_limit(
+                *context.connection_send_window - batch.total as i64,
+                stream.send_window - batch.total as i64,
+                context.data_frame_size,
+            ) else {
+                batch.tail_consumed = pos;
+                break 'segments;
+            };
+            let chunk_len = context.next_body_write_len(limit, segment.len() - pos);
+            let end_stream = may_end && pos + chunk_len == segment.len();
+            batch.push(
+                data_frame_header(chunk_len, end_stream, stream_id),
+                &segment[pos..pos + chunk_len],
+            );
+            batch.total += chunk_len;
+            pos += chunk_len;
+            if end_stream {
+                batch.drained_segments += 1;
+                batch.ended_stream = true;
+                break 'segments;
+            }
+            if pos == segment.len() {
+                batch.drained_segments += 1;
+                if context.budget_exhausted() {
+                    break 'segments;
+                }
+                continue 'segments;
+            }
+            if context.budget_exhausted() {
+                batch.tail_consumed = pos;
+                break 'segments;
+            }
+        }
+    }
+    batch
+}
+
+/// Write `[header|payload]*` as one vectored write sequence: flush the
+/// buffered writer first, then drive `write_vectored` over the raw target
+/// with `IoSlice::advance_slices` handling partial writes.
+async fn write_frames_vectored<W>(
+    writer: &mut BufWriter<W>,
+    headers: &[[u8; FRAME_HEADER_LEN]],
+    payloads: &[&[u8]],
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    writer.flush().await?;
+    let mut slices: SmallVec<[io::IoSlice<'_>; 18]> = SmallVec::new();
+    for (header, payload) in headers.iter().zip(payloads) {
+        slices.push(io::IoSlice::new(header));
+        if !payload.is_empty() {
+            slices.push(io::IoSlice::new(payload));
+        }
+    }
+    let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
+    let mut bufs = slices.as_mut_slice();
+    while remaining > 0 {
+        let written = writer.get_mut().write_vectored(bufs).await?;
+        if written == 0 {
+            return Err(H2CornError::from(io::Error::from(io::ErrorKind::WriteZero)));
+        }
+        remaining -= written;
+        if remaining == 0 {
+            break;
+        }
+        io::IoSlice::advance_slices(&mut bufs, written);
+    }
+    Ok(())
 }
 
 pub async fn flush_pending_data<W>(
@@ -350,7 +412,7 @@ pub async fn flush_pending_data<W>(
     response_closes: &mut ResponseCloseBatch,
 ) -> Result<FlushPassResult, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let mut finished = smallvec::SmallVec::<[StreamId; 8]>::new();
     let mut result = FlushPassResult::Continue;
@@ -497,6 +559,9 @@ where
 mod tests {
     use super::*;
 
+    const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
+    const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
+
     #[derive(Default)]
     struct RecordingWriter {
         bytes: Vec<u8>,
@@ -521,12 +586,11 @@ mod tests {
         }
     }
 
-    impl H2WriteTarget for RecordingWriter {
+    impl WriteTarget for RecordingWriter {
         const SUPPORTS_SENDFILE: bool = false;
 
-        async fn write_file_chunk(
+        async fn send_file(
             _writer: &mut BufWriter<Self>,
-            _header: [u8; 9],
             _file: &mut File,
             _offset: &mut u64,
             _len: usize,
@@ -640,6 +704,216 @@ mod tests {
         assert_eq!(response_closes.as_slice(), &[stream_id]);
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Reconstruct the concatenated DATA payload bytes for one stream.
+    fn parse_data_payload(bytes: &[u8]) -> Vec<u8> {
+        let mut cursor = 0;
+        let mut payload = Vec::new();
+        while cursor + 9 <= bytes.len() {
+            let len = ((bytes[cursor] as usize) << 16)
+                | ((bytes[cursor + 1] as usize) << 8)
+                | bytes[cursor + 2] as usize;
+            if bytes[cursor + 3] == 0 {
+                payload.extend_from_slice(&bytes[cursor + 9..cursor + 9 + len]);
+            }
+            cursor += 9 + len;
+        }
+        payload
+    }
+
+    /// A multi-chunk streamed body is emitted as one cross-chunk frame batch:
+    /// frames stay within chunks, bytes arrive identical, and `END_STREAM`
+    /// lands exactly on the final frame.
+    #[tokio::test]
+    async fn multi_chunk_body_flushes_in_one_cross_chunk_batch() {
+        let stream_id = StreamId::new(1).unwrap();
+        let frame_size = 16 * 1024;
+
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let stream = writer_stream(
+            &mut streams,
+            stream_id,
+            i64::from(INITIAL_STREAM_WINDOW_SIZE),
+        );
+        stream.open_response(false).unwrap();
+        let chunk_a = vec![b'a'; 20 * 1024];
+        let chunk_b = vec![b'b'; 10 * 1024];
+        let chunk_c = vec![b'c'; 4];
+        stream
+            .queue_data(Bytes::from(chunk_a.clone()).into(), false)
+            .unwrap();
+        stream
+            .queue_data(Bytes::from(chunk_b.clone()).into(), false)
+            .unwrap();
+        stream
+            .queue_data(Bytes::from(chunk_c.clone()).into(), true)
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let recording = RecordingWriter::default();
+        let mut writer = BufWriter::new(recording);
+
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            frame_size,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        let bytes = &writer.get_ref().bytes;
+        // Frames never span chunks: 20K -> 16K + 4K, 10K, 4-byte END_STREAM.
+        assert_eq!(parse_data_frames(bytes), vec![
+            (frame_size, 0, stream_id.get()),
+            (4 * 1024, 0, stream_id.get()),
+            (10 * 1024, 0, stream_id.get()),
+            (4, FrameFlags::END_STREAM.bits(), stream_id.get()),
+        ]);
+        let expected: Vec<u8> = [chunk_a, chunk_b, chunk_c].concat();
+        assert_eq!(parse_data_payload(bytes), expected);
+        assert!(streams.is_empty());
+        assert_eq!(response_closes.as_slice(), &[stream_id]);
+        assert_eq!(
+            connection_send_window,
+            i64::from(INITIAL_CONNECTION_WINDOW_SIZE) - expected.len() as i64
+        );
+    }
+
+    /// Empty chunks become empty DATA frames in the same batch; `END_STREAM`
+    /// may ride on an empty frame.
+    #[tokio::test]
+    async fn empty_chunks_emit_empty_data_frames_in_batch() {
+        let stream_id = StreamId::new(1).unwrap();
+
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let stream = writer_stream(
+            &mut streams,
+            stream_id,
+            i64::from(INITIAL_STREAM_WINDOW_SIZE),
+        );
+        stream.open_response(false).unwrap();
+        stream
+            .queue_data(Bytes::from_static(b"").into(), false)
+            .unwrap();
+        stream
+            .queue_data(Bytes::from_static(b"body").into(), false)
+            .unwrap();
+        stream
+            .queue_data(Bytes::from_static(b"").into(), true)
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let recording = RecordingWriter::default();
+        let mut writer = BufWriter::new(recording);
+
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![
+            (0, 0, stream_id.get()),
+            (4, 0, stream_id.get()),
+            (0, FrameFlags::END_STREAM.bits(), stream_id.get()),
+        ]);
+        assert!(streams.is_empty());
+        assert_eq!(response_closes.as_slice(), &[stream_id]);
+    }
+
+    /// A stream-window-limited batch consumes the chunk partially and the
+    /// remainder flushes after a window grant.
+    #[tokio::test]
+    async fn stream_window_limits_batch_and_resumes_after_grant() {
+        let stream_id = StreamId::new(1).unwrap();
+        let window = 8 * 1024_i64;
+        let body = vec![b'z'; 12 * 1024];
+
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let stream = writer_stream(&mut streams, stream_id, window);
+        stream.open_response(false).unwrap();
+        stream
+            .queue_data(Bytes::from(body.clone()).into(), true)
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let recording = RecordingWriter::default();
+        let mut writer = BufWriter::new(recording);
+
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![(
+            window as usize,
+            0,
+            stream_id.get()
+        )]);
+        assert!(response_closes.as_slice().is_empty());
+
+        // Window grant -> the remaining 4 KiB flushes with END_STREAM.
+        let stream = streams.get_mut(&stream_id.get()).unwrap();
+        stream.send_window += window;
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        let bytes = &writer.get_ref().bytes;
+        assert_eq!(parse_data_frames(bytes), vec![
+            (window as usize, 0, stream_id.get()),
+            (4 * 1024, FrameFlags::END_STREAM.bits(), stream_id.get()),
+        ]);
+        assert_eq!(parse_data_payload(bytes), body);
+        assert!(streams.is_empty());
+        assert_eq!(response_closes.as_slice(), &[stream_id]);
     }
 
     #[tokio::test]

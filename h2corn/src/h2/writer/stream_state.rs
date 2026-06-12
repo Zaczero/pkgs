@@ -131,11 +131,7 @@ impl StreamWriteState {
     }
 
     pub(super) fn note_body_progress(&mut self, now: Instant) {
-        self.pending_body_since = if self.has_pending_output() {
-            Some(now)
-        } else {
-            None
-        };
+        self.pending_body_since = self.has_pending_output().then_some(now);
     }
 
     pub(super) const fn take_trailers_if_body_idle(&mut self) -> Option<ResponseHeaders> {
@@ -256,10 +252,6 @@ impl PendingChunk {
 
     pub(super) const fn consume(&mut self, len: usize) {
         self.offset += len;
-    }
-
-    pub(super) fn is_drained(&self) -> bool {
-        self.offset == self.bytes.len()
     }
 }
 

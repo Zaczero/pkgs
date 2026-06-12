@@ -13,14 +13,15 @@ use tokio::sync::futures::Notified;
 use tokio::time::Instant as TokioInstant;
 
 use super::flush::{
-    FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_data_chunk,
+    FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_frame,
     write_frame_buf,
 };
 use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
 use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
 use super::{
-    WindowTarget, WriterCommand, WriterCommandBatch,
+    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, ResponseCloseBatch, WindowTarget,
+    WriterCommand, WriterCommandBatch,
 };
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
@@ -648,16 +649,20 @@ where
             return Ok(());
         }
 
-        let mut stream_send_window = context.initial_stream_send_window;
-        write_data_chunk(
+        // Single-shot DATA frame into the BufWriter: small responses
+        // coalesce with the HEADERS frame into one sendto on flush.
+        write_frame(
             context.writer,
-            stream_id,
+            frame::FrameHeader {
+                len: data.len(),
+                frame_type: frame::FrameType::DATA,
+                flags: frame::FrameFlags::END_STREAM,
+                stream_id: Some(stream_id),
+            },
             data.as_ref(),
-            true,
-            context.connection_send_window,
-            &mut stream_send_window,
         )
         .await?;
+        *context.connection_send_window -= data.len() as i64;
 
         notify_response_close(context.response_closes, stream_id);
         return Ok(());
