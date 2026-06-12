@@ -24,7 +24,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
-pub use writer::H2WriteTarget;
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
@@ -36,6 +35,7 @@ use crate::http::body::RequestBodyProgress;
 use crate::http::types::{RequestHead, ResponseHeaders};
 use crate::proxy::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
+use crate::sendfile::WriteTarget;
 
 /// Initial capacity for per-connection stream-keyed containers: the
 /// concurrency cap is not the working set — idle and low-traffic connections
@@ -149,7 +149,7 @@ async fn flush_pending_stream_inputs<R, W>(
     state: &mut H2ConnectionState<R, W>,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
     let stream_window_threshold = state.context.config.http2.initial_stream_window_size.get() / 2;
@@ -200,7 +200,7 @@ async fn apply_peer_failure<W>(
     failure: H2PeerFailure,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match failure {
         H2PeerFailure::Goaway { error_code, error } => {
@@ -227,7 +227,7 @@ async fn begin_graceful_shutdown<W>(
     timeout_graceful_shutdown: Duration,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if *drain_state != ConnectionDrainState::Accepting {
         return Ok(());
@@ -248,7 +248,7 @@ async fn start_request_stream_from_block<W>(
     decode_result: Result<RequestHead, RequestHeadError>,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let request = match resolve_request_head(end_stream, decode_result) {
         Ok(request) => request,
@@ -292,7 +292,7 @@ pub async fn serve_h2_upgraded_connection<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     let mut reader = frame::FrameReader::with_buffer(reader, upgraded.buffer);
     timeout(
@@ -324,7 +324,7 @@ pub async fn serve_connection<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     let state = start_h2_connection(reader, writer, context, secure, shutdown, None).await?;
     run_h2_connection(Box::new(state)).await
@@ -339,7 +339,7 @@ async fn start_h2_connection<R, W>(
     peer_settings: Option<PeerSettings>,
 ) -> Result<H2ConnectionState<R, W>, H2CornError>
 where
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     let (writer, connection) = init_writer(writer, context.config, peer_settings).await?;
 
@@ -398,7 +398,7 @@ async fn finish_trailer_block<R, W>(
     block: Bytes,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let header_limits = state.header_limits();
     match decode_trailer_block(&mut state.decoder, block, header_limits) {
@@ -449,7 +449,7 @@ async fn handle_trailing_headers<R, W>(
     fragment: HeaderBlockFragment,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if !fragment.end_headers || !fragment.end_stream {
         state
@@ -467,7 +467,7 @@ async fn reject_headers_for_state<R, W>(
     receive_state: ReceiveState,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match receive_state {
         ReceiveState::RequestClosed => {
@@ -499,7 +499,7 @@ async fn start_or_buffer_headers<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if fragment.end_headers {
         let header_limits = state.header_limits();
@@ -558,7 +558,7 @@ async fn handle_headers_frame<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let stream_id = match frame.header.stream_id {
         Some(stream_id) if stream_id.get() & 1 != 0 => stream_id,
@@ -656,7 +656,7 @@ async fn handle_continuation_frame<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let Some(mut pending) = state.pending_headers.take() else {
         apply_peer_failure(
@@ -722,7 +722,7 @@ async fn reject_data_for_missing_stream<R, W>(
     stream_id: StreamId,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match state.receive_state(stream_id) {
         ReceiveState::Idle => {
@@ -753,7 +753,7 @@ async fn apply_data_flow_control<R, W>(
     flow_control_len: u32,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let Some(stream) = state.streams.get_mut(&stream_id.get()) else {
         reject_data_for_missing_stream(state, stream_id).await?;
@@ -792,7 +792,7 @@ async fn record_data_chunk<R, W>(
     data: Bytes,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if data.is_empty() {
         return Ok(true);
@@ -828,7 +828,7 @@ async fn send_data_window_updates<R, W>(
     stream_id: StreamId,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let http2 = &state.context.config.http2;
     let connection_window_threshold = http2.initial_connection_window_size.get() / 2;
@@ -862,7 +862,7 @@ async fn finish_data_stream<R, W>(
     stream_id: StreamId,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match state.finish_request_input(stream_id) {
         Some(RequestInputClose::ContentLengthMismatch) => {
@@ -888,7 +888,7 @@ async fn handle_data_frame<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let header = frame.header;
     let (data, end_stream) = match parse_data_payload(frame.payload, header.flags) {
@@ -935,7 +935,9 @@ where
 async fn run_h2_connection<R, W>(mut state: Box<H2ConnectionState<R, W>>) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
+    W: AsyncWrite + Unpin + WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     if state.drain_state != ConnectionDrainState::Accepting {
         state
@@ -1021,7 +1023,7 @@ async fn handle_request_input_timeout<R, W>(
     deadline: RequestInputDeadline,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match deadline {
         RequestInputDeadline::Headers(stream_id, _) => {
@@ -1074,7 +1076,7 @@ async fn ingest_connection_input<R, W>(
 ) -> Result<IngestEvent, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     if state.writer.has_queued_app_writes() {
         return Ok(IngestEvent::Continue);
@@ -1143,7 +1145,7 @@ async fn flush_connection_egress<R, W>(
     state: &mut H2ConnectionState<R, W>,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     apply_writer_response_closes(state).await;
     flush_pending_stream_inputs(state).await?;
@@ -1169,7 +1171,7 @@ async fn handle_settings_frame<R, W>(
     frame: RawFrame,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if frame.header.stream_id.is_some() {
         apply_peer_failure(
@@ -1221,7 +1223,7 @@ async fn handle_ping_frame<R, W>(
     frame: RawFrame,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if frame.header.stream_id.is_some() {
         apply_peer_failure(
@@ -1255,7 +1257,7 @@ async fn handle_window_update_frame<R, W>(
     frame: RawFrame,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if frame.payload.len() != 4 {
         apply_peer_failure(
@@ -1324,7 +1326,7 @@ async fn handle_rst_stream_frame<R, W>(
     frame: RawFrame,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let Some(stream_id) = frame.header.stream_id else {
         apply_peer_failure(
@@ -1372,7 +1374,7 @@ async fn handle_priority_frame<R, W>(
     frame: RawFrame,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let Some(stream_id) = frame.header.stream_id else {
         apply_peer_failure(
@@ -1411,7 +1413,7 @@ async fn reject_oversized_frame<R, W>(
     frame: &RawFrame,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if frame.header.len <= state.local_max_frame_size {
         return Ok(false);
@@ -1459,7 +1461,7 @@ async fn validate_frame_order<R, W>(
     frame: &RawFrame,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if state.pending_headers.is_some() && frame.header.frame_type != FrameType::CONTINUATION {
         apply_peer_failure(
@@ -1500,7 +1502,7 @@ async fn handle_goaway_frame<R, W>(
     frame: RawFrame,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     if frame.header.stream_id.is_some() || frame.payload.len() < 8 {
         apply_peer_failure(
@@ -1519,7 +1521,7 @@ where
 
 async fn reject_push_promise<R, W>(state: &mut H2ConnectionState<R, W>) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     apply_peer_failure(
         &mut state.writer,
@@ -1535,7 +1537,7 @@ async fn advance_connection_with_peer_frame<R, W>(
 ) -> Result<bool, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     apply_writer_response_closes(state).await;
 
@@ -1617,7 +1619,7 @@ fn parse_priority_dependency(payload: &[u8]) -> Result<PriorityDependency, H2Cor
 
 async fn apply_writer_response_closes<R, W>(state: &mut H2ConnectionState<R, W>)
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     for response_close in state.writer.take_response_closes() {
         state.writer.drop_ingress_stream(response_close).await;
@@ -1664,10 +1666,10 @@ mod tests {
         }
     }
 
-    impl writer::H2WriteTarget for RecordingWriter {
+    impl WriteTarget for RecordingWriter {
         const SUPPORTS_SENDFILE: bool = false;
 
-        async fn write_file_chunk(
+        async fn send_file(
             _writer: &mut BufWriter<Self>,
             _header: [u8; 9],
             _file: &mut tokio::fs::File,

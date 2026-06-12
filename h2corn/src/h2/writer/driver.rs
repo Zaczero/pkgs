@@ -20,7 +20,6 @@ use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
 use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
 use super::{
-    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, H2WriteTarget, ResponseCloseBatch,
     WindowTarget, WriterCommand, WriterCommandBatch,
 };
 use crate::bridge::PayloadBytes;
@@ -31,13 +30,13 @@ use crate::config::{
 };
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
-use crate::h2::{StreamMap, new_stream_map};
 use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 #[cfg(test)]
 use crate::proxy::ProxyProtocolMode;
+use crate::sendfile::WriteTarget;
 
 #[derive(Clone)]
 pub struct ConnectionHandle {
@@ -177,7 +176,7 @@ impl<W> WriterSendParts<'_, W> {
 
 impl<W> WriterState<W>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     #[cfg(test)]
     pub(crate) fn new_test(writer: W) -> Self {
@@ -799,7 +798,7 @@ async fn flush_buffered_writer_output<W>(
     context: &mut WriterLoopParts<'_, W>,
 ) -> Result<(), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let _ = flush_pending_data(
         context.writer,
@@ -839,7 +838,7 @@ async fn process_writer_command<W>(
     command: WriterCommand,
 ) -> Result<bool, H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     match command {
         WriterCommand::SendSettingsAck => {
@@ -945,7 +944,7 @@ pub async fn init_writer<W>(
     initial_peer_settings: Option<PeerSettings>,
 ) -> Result<(WriterState<W>, ConnectionHandle), H2CornError>
 where
-    W: H2WriteTarget,
+    W: WriteTarget,
 {
     let ingress = WriterIngress::new(config.http2.max_concurrent_streams as usize);
     let mut writer = BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer);

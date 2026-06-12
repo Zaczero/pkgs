@@ -14,7 +14,7 @@ use pyo3_async_runtimes::TaskLocals;
 use rustix::net::sockopt::set_tcp_quickack;
 use smallvec::SmallVec;
 use tokio::fs::File;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter, ReadBuf, WriteHalf, copy, split};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter, ReadBuf, WriteHalf, split};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -27,15 +27,14 @@ use tokio_rustls::server::TlsStream;
 use crate::config::{BindTarget, ServerConfig};
 use crate::error::{ErrorExt, H2CornError, H2Error, ProxyError};
 use crate::frame::{self, ErrorCode, FrameReader};
-use crate::h1::{self, H1WriteTarget};
-use crate::h2::{self, H2WriteTarget};
 use crate::proxy::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
     ProxyProtocolMode, ServerAddr, TrustedPeer, peer_is_trusted, read_h2_preface,
     read_preamble_protocol, read_proxy_v1, read_proxy_v2,
 };
 use crate::runtime::{AppState, ConnectionContext, ShutdownKind, ShutdownState};
-use crate::tls;
+use crate::sendfile::WriteTarget;
+use crate::{h1, h2, tls};
 
 macro_rules! serve_with_proxy_protocol {
     (
@@ -116,29 +115,16 @@ impl AsyncWrite for PrefixedIo {
     }
 }
 
-impl H1WriteTarget for TlsWriteHalf {
-    async fn send_file_body(
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        _len: usize,
-    ) -> io::Result<()> {
-        writer.flush().await?;
-        copy(file, writer.get_mut()).await?;
-        Ok(())
-    }
-}
-
-impl H2WriteTarget for TlsWriteHalf {
+impl WriteTarget for TlsWriteHalf {
     const SUPPORTS_SENDFILE: bool = false;
 
-    async fn write_file_chunk(
-        _writer: &mut BufWriter<Self>,
-        _header: [u8; 9],
-        _file: &mut File,
-        _offset: &mut u64,
-        _len: usize,
+    async fn send_file(
+        writer: &mut BufWriter<Self>,
+        file: &mut File,
+        offset: &mut u64,
+        len: usize,
     ) -> io::Result<()> {
-        unreachable!("TLS H2 writer does not use direct sendfile")
+        crate::sendfile::copy_file_range_buffered(writer, file, offset, len).await
     }
 }
 
@@ -515,7 +501,7 @@ async fn serve_connection<R, W, P, const HTTP1: bool>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H1WriteTarget + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
     P: ConnectionPreamble,
 {
     let mut reader = FrameReader::new(reader);
@@ -614,7 +600,7 @@ async fn serve_detected_connection<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + H1WriteTarget + H2WriteTarget,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     match protocol {
         DetectedProtocol::Http2 => {

@@ -1,15 +1,9 @@
-use std::io;
 
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
 use tokio::fs::File;
-#[cfg(unix)]
-use tokio::io::copy;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
-use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
-#[cfg(unix)]
-use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
 
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
@@ -20,14 +14,12 @@ use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseStart};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
-use crate::sendfile::sendfile_all_tcp;
+use crate::sendfile::WriteTarget;
 
 const RESPONSE_BUF_CAPACITY: usize = 512;
 
 type ResponseBuf = SmallVec<[u8; RESPONSE_BUF_CAPACITY]>;
 
-pub trait H1WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
-    async fn send_file_body(
         writer: &mut BufWriter<Self>,
         file: &mut File,
         len: usize,
@@ -36,21 +28,15 @@ pub trait H1WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
         Self: Sized;
 }
 
-impl H1WriteTarget for TcpOwnedWriteHalf {
-    async fn send_file_body(
         writer: &mut BufWriter<Self>,
         file: &mut File,
         len: usize,
     ) -> io::Result<()> {
         writer.flush().await?;
         let mut offset = 0_u64;
-        sendfile_all_tcp(writer, file, &mut offset, len).await
     }
 }
 
-#[cfg(unix)]
-impl H1WriteTarget for UnixOwnedWriteHalf {
-    async fn send_file_body(
         writer: &mut BufWriter<Self>,
         file: &mut File,
         _len: usize,
@@ -102,7 +88,7 @@ where
 
 impl<W> HttpResponseTransport for H1HttpTransport<'_, W>
 where
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     async fn send_final_response(
         &mut self,
@@ -229,7 +215,7 @@ pub(super) async fn write_final_response<W>(
     close_after: bool,
 ) -> Result<(), H2CornError>
 where
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     match body {
         FinalResponseBody::Empty => {

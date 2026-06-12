@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-pub use http::H1WriteTarget;
 use parse::read_request;
 use tokio::io::{AsyncRead, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, watch};
@@ -20,7 +19,6 @@ use crate::config::ServerConfig;
 use crate::console::run_http_request;
 use crate::error::{ErrorExt, H2CornError, Http1Error};
 use crate::frame::{self, PeerSettings};
-use crate::h2::{H2WriteTarget, UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::http::app::HttpRequestBody;
 use crate::http::body::RequestBodyState;
 use crate::http::execution::prepare_request_input;
@@ -33,6 +31,7 @@ use crate::runtime::{
     ConnectionContext, RequestAdmission, RequestContext, ShutdownState, StreamInput,
     try_acquire_request_admission,
 };
+use crate::sendfile::WriteTarget;
 use crate::websocket::{HandshakeRejection, WebSocketContext, WebSocketKey, WebSocketRequestMeta};
 
 struct ParsedRequest {
@@ -95,7 +94,7 @@ pub async fn serve_connection<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget + H2WriteTarget,
+    W: WriteTarget,
 {
     let mut writer = BufWriter::with_capacity(frame::DEFAULT_MAX_FRAME_SIZE, writer);
     let mut first_request = true;
@@ -195,7 +194,7 @@ async fn handle_upgrade_request<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget + H2WriteTarget,
+    W: WriteTarget,
 {
     match upgrade {
         UpgradeRequest::WebSocket { key, meta } => {
@@ -266,7 +265,7 @@ async fn serve_h2c_upgrade_request<R, W>(
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget + H2WriteTarget,
+    W: WriteTarget,
 {
     request.http_version = HttpVersion::Http2;
     if body_kind != RequestBodyKind::None {
@@ -302,7 +301,7 @@ async fn handle_http_request<R, W>(
 ) -> Result<ConnectionPersistence, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     let H1Io {
         reader,
@@ -382,7 +381,7 @@ async fn handle_streaming_http_request<R, W>(
 ) -> Result<ConnectionPersistence, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: H1WriteTarget,
+    W: WriteTarget,
 {
     let config = ctx.connection.config;
     let H1BodyReadParts { reader, buffer } = read_parts;
