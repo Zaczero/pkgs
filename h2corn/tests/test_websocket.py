@@ -1,5 +1,6 @@
 import asyncio
 import zlib
+from typing import NamedTuple
 
 import h2.config
 import h2.connection
@@ -17,6 +18,21 @@ from tests._support import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+class _H2WsHandshake(NamedTuple):
+    """Client-side websocket state carried out of the h2 handshake helper.
+
+    `terminal` is None while the stream is still open; `frames`/`buffer` hold
+    any websocket frames (and residual partial-frame bytes) that arrived in
+    the same socket flights as the handshake response and must seed the next
+    reader instead of being dropped.
+    """
+
+    terminal: str | None
+    detail: int | None
+    frames: list[tuple[int, bytes]]
+    buffer: bytes
 
 
 def _decode_ws_close_payload(payload: bytes) -> tuple[int, str]:
@@ -364,7 +380,7 @@ async def _h2_open_websocket_stream(
     asyncio.StreamWriter,
     h2.connection.H2Connection,
     int,
-    tuple[str, int | None, list[tuple[int, bytes]]] | None,
+    '_H2WsHandshake',
 ]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
     stream_id = _send_h2_websocket_headers(
@@ -398,30 +414,31 @@ async def _h2_open_websocket_stream(
                     writer.write(pending)
                     await writer.drain()
                 assert status == 200
-                return reader, writer, conn, stream_id, ('ended', None, initial_frames)
+                handshake = _H2WsHandshake('ended', None, initial_frames, ws_buffer)
+                return reader, writer, conn, stream_id, handshake
             elif isinstance(event, h2.events.StreamReset):
-                return (
-                    reader,
-                    writer,
-                    conn,
-                    stream_id,
-                    ('reset', int(event.error_code), initial_frames),
+                handshake = _H2WsHandshake(
+                    'reset', int(event.error_code), initial_frames, ws_buffer
                 )
+                return reader, writer, conn, stream_id, handshake
             elif isinstance(event, h2.events.ConnectionTerminated):
-                return (
-                    reader,
-                    writer,
-                    conn,
-                    stream_id,
-                    ('goaway', int(event.error_code), initial_frames),
+                handshake = _H2WsHandshake(
+                    'goaway', int(event.error_code), initial_frames, ws_buffer
                 )
+                return reader, writer, conn, stream_id, handshake
         pending = conn.data_to_send()
         if pending:
             writer.write(pending)
             await writer.drain()
 
     assert status == 200
-    return reader, writer, conn, stream_id, None
+    # The stream is still open, but frames may already have arrived in the
+    # same socket flight as the response headers — carry them (and any
+    # residual partial-frame bytes) forward so no frame is ever dropped at
+    # the handshake handoff.
+    return reader, writer, conn, stream_id, _H2WsHandshake(
+        None, None, initial_frames, ws_buffer
+    )
 
 
 async def _h2_websocket_handshake(
@@ -617,9 +634,12 @@ async def _read_ws_server_result(
     writer: asyncio.StreamWriter,
     conn: h2.connection.H2Connection,
     stream_id: int,
+    handshake: _H2WsHandshake | None = None,
 ) -> tuple[str, int | None, list[tuple[int, bytes]]]:
-    frames = []
-    ws_buffer = b''
+    frames = list(handshake.frames) if handshake else []
+    ws_buffer = handshake.buffer if handshake else b''
+    if handshake is not None and handshake.terminal is not None:
+        return handshake.terminal, handshake.detail, frames
 
     while True:
         data = await asyncio.wait_for(reader.read(65535), timeout=5)
@@ -675,7 +695,7 @@ async def _assert_h2_websocket_close_code(
 ) -> None:
     config = config or Config(port=0)
     async with running_server(app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
             extensions=extensions,
@@ -686,11 +706,12 @@ async def _assert_h2_websocket_close_code(
                     conn.send_data(stream_id, frame, end_stream=False)
                 writer.write(conn.data_to_send())
                 await writer.drain()
-            terminal, detail, frames = initial or await _read_ws_server_result(
+            terminal, detail, frames = await _read_ws_server_result(
                 reader,
                 writer,
                 conn,
                 stream_id,
+                handshake,
             )
         finally:
             writer.close()
@@ -887,12 +908,12 @@ async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> 
 
     config = Config(port=0, timeout_request_body_idle=0.05)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
         )
         try:
-            assert initial is None
+            assert handshake.terminal is None
             await asyncio.sleep(0.2)
             conn.send_data(
                 stream_id, _encode_ws_client_frame(0x1, b'hello'), end_stream=False
@@ -904,6 +925,7 @@ async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> 
                 writer,
                 conn,
                 stream_id,
+                handshake,
             )
         finally:
             writer.close()
@@ -1125,16 +1147,16 @@ async def test_websocket_multiple_messages_round_trip_on_one_stream() -> None:
 
     config = Config(port=0)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
         )
         try:
-            assert initial is None
-            frames = []
+            assert handshake.terminal is None
+            frames = list(handshake.frames)
             terminal = None
             detail = None
-            ws_buffer = b''
+            ws_buffer = handshake.buffer
             for message in ('one', 'two'):
                 conn.send_data(
                     stream_id,
@@ -1184,12 +1206,12 @@ async def test_websocket_fragmented_text_message_round_trip() -> None:
 
     config = Config(port=0)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
         )
         try:
-            assert initial is None
+            assert handshake.terminal is None
             conn.send_data(
                 stream_id,
                 _encode_ws_client_frame(0x1, b'hel', first_byte=0x01),
@@ -1212,7 +1234,7 @@ async def test_websocket_fragmented_text_message_round_trip() -> None:
                 writer,
                 conn,
                 stream_id,
-                b'',
+                handshake.buffer,
             )
             if terminal is None:
                 terminal, detail, frames = await _read_ws_server_result(
@@ -1251,12 +1273,12 @@ async def test_websocket_fragmented_text_message_with_interleaved_ping_round_tri
 
     config = Config(port=0)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
         )
         try:
-            assert initial is None
+            assert handshake.terminal is None
             conn.send_data(
                 stream_id,
                 _encode_ws_client_frame(0x1, b'hel', first_byte=0x01),
@@ -1278,7 +1300,7 @@ async def test_websocket_fragmented_text_message_with_interleaved_ping_round_tri
             pong_payload = None
             echoed = None
             close_frames = []
-            ws_buffer = b''
+            ws_buffer = handshake.buffer
             terminal = None
             detail = None
             while pong_payload is None or echoed is None:
@@ -1353,12 +1375,12 @@ async def test_h2_websocket_single_frame_split_across_data_frames_round_trip() -
     frame = _encode_ws_client_frame(0x1, b'hello')
     config = Config(port=0)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
         )
         try:
-            assert initial is None
+            assert handshake.terminal is None
             conn.send_data(stream_id, frame[:1], end_stream=False)
             conn.send_data(stream_id, frame[1:4], end_stream=False)
             conn.send_data(stream_id, frame[4:7], end_stream=False)
@@ -1371,7 +1393,7 @@ async def test_h2_websocket_single_frame_split_across_data_frames_round_trip() -
                 writer,
                 conn,
                 stream_id,
-                b'',
+                handshake.buffer,
             )
             if terminal is None:
                 terminal, detail, frames = await _read_ws_server_result(
@@ -1658,11 +1680,11 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
     config = Config(port=0, timeout_graceful_shutdown=0.2)
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, _conn, stream_id, initial = await _h2_open_websocket_stream(
+            reader, writer, _conn, stream_id, handshake = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )
-            assert initial is None
+            assert handshake.terminal is None
         else:
             reader, writer, _ = await _http1_open_websocket_stream(
                 port=server_port(server),
@@ -1713,11 +1735,11 @@ async def test_websocket_send_after_disconnect_raises_oserror(
     config = Config(port=0)
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )
-            assert initial is None
+            assert handshake.terminal is None
             conn.send_data(
                 stream_id,
                 _encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')),
@@ -1733,7 +1755,7 @@ async def test_websocket_send_after_disconnect_raises_oserror(
         await writer.drain()
         try:
             if transport == 'h2':
-                await _read_ws_server_result(reader, writer, conn, stream_id)
+                await _read_ws_server_result(reader, writer, conn, stream_id, handshake)
             else:
                 await _read_http1_ws_server_result(reader)
         finally:
@@ -1910,13 +1932,13 @@ async def test_h2_websocket_permessage_deflate_round_trip() -> None:
 
     config = Config(port=0)
     async with running_server(websocket_app, config) as server:
-        reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
             path='/ws',
             extensions='permessage-deflate',
         )
         try:
-            assert initial is None
+            assert handshake.terminal is None
             conn.send_data(
                 stream_id,
                 _encode_ws_client_frame(
@@ -1929,7 +1951,7 @@ async def test_h2_websocket_permessage_deflate_round_trip() -> None:
             writer.write(conn.data_to_send())
             await writer.drain()
 
-            ws_buffer = b''
+            ws_buffer = handshake.buffer
             echoed = None
             close_code = None
             while echoed is None or close_code is None:

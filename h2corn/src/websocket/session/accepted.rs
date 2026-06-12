@@ -297,13 +297,22 @@ where
             queue_normal_close_after_app_finish(outbound.state)?;
             Ok(ControlFlow::Break(Ok(())))
         }
-        outbound_event = outbound.running_app.send_rx.recv() => match outbound_event {
-            Some(outbound_event) => {
-                process_app_outbound_event::<T, M>(
+        outbound_event = outbound.running_app.send_rx.recv() => {
+            if let Some(outbound_event) = outbound_event {
+                return process_app_outbound_event::<T, M>(
                     transport, outbound_event, deflater, outbound
-                ).await
+                ).await;
             }
-            None => Ok(ControlFlow::Break(Ok(()))),
+            // All senders are gone, but events buffered just before the
+            // last sender dropped may still be queued — drain them onto
+            // the wire before ending the session, mirroring the
+            // app-completion arm above.
+            if let ControlFlow::Break(result) =
+                process_outbound_batch::<T, M>(transport, None, deflater, outbound).await?
+            {
+                return Ok(ControlFlow::Break(result));
+            }
+            Ok(ControlFlow::Break(Ok(())))
         },
         () = ping_sleep, if ping.next_ping.is_some() => {
             send_ping_and_arm_timeout(transport, ping).await?;

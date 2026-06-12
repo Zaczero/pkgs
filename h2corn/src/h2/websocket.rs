@@ -134,11 +134,11 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
         state: &mut AcceptedWebSocketState,
     ) -> Result<(), H2CornError> {
         if let Some(frame) = take_pending_close_frame(state, self.frame_buf())? {
+            // END_STREAM rides on the close frame itself: one DATA frame on
+            // the wire, and clients observe the close payload and stream end
+            // atomically in the same flight.
             self.connection
-                .send_data(self.stream_id, frame, false)
-                .await?;
-            self.connection
-                .send_data(self.stream_id, Bytes::new(), true)
+                .send_data(self.stream_id, frame, true)
                 .await?;
             return Ok(());
         }
