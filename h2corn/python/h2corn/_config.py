@@ -1,8 +1,10 @@
 # ruff: noqa: RUF009
 from __future__ import annotations
 
+import importlib.util
 import ipaddress
 import os
+import socket
 from collections.abc import Callable
 from dataclasses import MISSING, dataclass, field, fields
 from functools import cache
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
 LifespanMode = Literal['auto', 'on', 'off']
 CertReqsMode = Literal['none', 'optional', 'required']
+LoopImpl = Literal['auto', 'asyncio', 'uvloop']
 _CliAction = Literal['bool', 'append']
 _StringCollection = tuple[object, ...] | list[object] | set[object] | frozenset[object]
 _StringTupleValue = str | _StringCollection | None
@@ -27,10 +30,13 @@ _BindValue = str | _StringCollection | None
 _PROXY_PROTOCOL_MODES = get_args(ProxyProtocolMode)
 _LIFESPAN_MODES = get_args(LifespanMode)
 _CERT_REQS_MODES = get_args(CertReqsMode)
+_LOOP_IMPLS = get_args(LoopImpl)
 CONFIG_PATH_ENV_VAR = 'H2CORN_CONFIG'
 _OPTION_METADATA_KEY = 'h2corn_option'
 _H2_MIN_FRAME_SIZE = 16_384
 _H2_MAX_FRAME_SIZE = 16_777_215
+_H2_MIN_WINDOW_SIZE = 65_535
+_H2_MAX_WINDOW_SIZE = 2_147_483_647
 _U32_MAX = (1 << 32) - 1
 _DEFAULT_BIND = ('127.0.0.1:8000',)
 _CONVENIENCE_KEYS = frozenset({'host', 'port'})
@@ -253,6 +259,12 @@ def _normalize_cert_reqs(value):
     return value
 
 
+def _normalize_loop(value):
+    if value not in _LOOP_IMPLS:
+        raise ValueError(f'invalid loop implementation: {value!r}')
+    return value
+
+
 def _minimum(name: str, minimum: int):
     def normalize(value: int):
         if value < minimum:
@@ -277,6 +289,17 @@ def _non_negative_u32(name: str):
             raise ValueError(f'{name} must be non-negative')
         if value > _U32_MAX:
             raise ValueError(f'{name} must be at most {_U32_MAX}')
+        return value
+
+    return normalize
+
+
+def _h2_window_size(name: str):
+    def normalize(value: int):
+        if not _H2_MIN_WINDOW_SIZE <= value <= _H2_MAX_WINDOW_SIZE:
+            raise ValueError(
+                f'{name} must be between {_H2_MIN_WINDOW_SIZE} and {_H2_MAX_WINDOW_SIZE}'
+            )
         return value
 
     return normalize
@@ -587,6 +610,7 @@ class Config:
         doc='Listener addresses to bind. Repeat the flag to add more listeners. Supports HOST:PORT, [IPv6]:PORT, unix:PATH, and fd://N.',
         env_parse=_parse_bind_env,
         normalize=_normalize_bind_specs,
+        cli_flags=('-b', '--bind'),
         cli_action='append',
         cli_type=str,
         cli_metavar='ADDRESS',
@@ -599,10 +623,16 @@ class Config:
     )
     backlog: int = _option(
         default=1024,
-        doc='The maximum number of queued connections allowed on the socket.',
+        doc='Maximum number of queued connections on the listening socket.',
         env_parse=int,
         normalize=_minimum('backlog', 1),
         cli_type=int,
+    )
+    reuse_port: bool = _option(
+        default=False,
+        doc='Set SO_REUSEPORT on the TCP listeners so other server processes can bind the same port — for zero-downtime deploys or independent processes. Workers of one server always share the inherited listener. TCP listeners only.',
+        env_parse=_parse_bool,
+        cli_action='bool',
     )
     certfile: Path | None = _option(
         default=None,
@@ -665,7 +695,7 @@ class Config:
     )
     workers: int = _option(
         default=1,
-        doc='The number of child worker processes to spawn.',
+        doc='Number of worker processes to spawn.',
         env_parse=int,
         normalize=_minimum('workers', 1),
         cli_flags=('-w', '--workers'),
@@ -676,6 +706,20 @@ class Config:
         doc='Number of Tokio runtime worker threads per worker process.',
         env_parse=int,
         normalize=_minimum('runtime_threads', 1),
+        cli_type=int,
+    )
+    loop: LoopImpl = _option(
+        default='auto',
+        doc="Python event-loop implementation: 'auto' uses uvloop when installed (the 'h2corn[uvloop]' extra), otherwise the stdlib asyncio loop. h2corn runs its I/O in Rust, so this only affects how application callbacks are scheduled.",
+        env_parse=_normalize_loop,
+        normalize=_normalize_loop,
+        cli_choices=_LOOP_IMPLS,
+    )
+    loop_threads: int = _option(
+        default=1,
+        doc='Number of Python event-loop threads per worker, balanced round-robin. Requires a free-threaded (no-GIL) interpreter; ignored on GIL builds. Composes with workers — keep workers x loop_threads at or below the core count.',
+        env_parse=int,
+        normalize=_minimum('loop_threads', 1),
         cli_type=int,
     )
     max_requests: int = _option(
@@ -701,13 +745,13 @@ class Config:
     )
     http1: bool = _option(
         default=True,
-        doc='Whether HTTP/1.1 is supported. Intended for development purposes only; disable in production.',
+        doc='Whether to accept HTTP/1.1 connections. Intended for development; disable in production.',
         env_parse=_parse_bool,
         cli_action='bool',
     )
     access_log: bool = _option(
         default=True,
-        doc='Whether requests should be logged to stderr.',
+        doc='Whether to log requests to stderr.',
         env_parse=_parse_bool,
         cli_action='bool',
     )
@@ -720,28 +764,28 @@ class Config:
     )
     limit_request_head_size: int = _option(
         default=1_048_576,
-        doc='Limit the total size of an HTTP/1.1 request head in bytes. Use 0 for no limit.',
+        doc='Maximum total HTTP/1.1 request head size in bytes. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_head_size'),
         cli_type=int,
     )
     limit_request_line: int = _option(
         default=16_384,
-        doc='The maximum size of the HTTP/1.1 request line in bytes. Use 0 for no limit.',
+        doc='Maximum HTTP/1.1 request line size in bytes. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_line'),
         cli_type=int,
     )
     limit_request_fields: int = _option(
         default=100,
-        doc='Limit the number of request header fields. HTTP/2 counts every decoded regular header field, including duplicate. Use 0 for no limit.',
+        doc='Maximum number of request header fields; HTTP/2 counts every decoded field, including duplicates. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_fields'),
         cli_type=int,
     )
     limit_request_field_size: int = _option(
         default=32_768,
-        doc='Limit the size of an individual HTTP/1.1 header field in bytes. Use 0 for no limit.',
+        doc='Maximum individual HTTP/1.1 header field size in bytes. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_request_field_size'),
         cli_type=int,
@@ -767,6 +811,20 @@ class Config:
         normalize=_h2_frame_size('h2_max_inbound_frame_size'),
         cli_type=int,
     )
+    h2_initial_stream_window_size: int = _option(
+        default=1_048_576,
+        doc='HTTP/2 per-stream receive flow-control window in bytes (SETTINGS_INITIAL_WINDOW_SIZE). Bounds worst-case buffered upload bytes per stream; raise for high-bandwidth-delay uploads.',
+        env_parse=int,
+        normalize=_h2_window_size('h2_initial_stream_window_size'),
+        cli_type=int,
+    )
+    h2_initial_connection_window_size: int = _option(
+        default=2_097_152,
+        doc='HTTP/2 connection-wide receive flow-control window in bytes. Bounds total buffered upload bytes per connection.',
+        env_parse=int,
+        normalize=_h2_window_size('h2_initial_connection_window_size'),
+        cli_type=int,
+    )
     max_request_body_size: int = _option(
         default=1_073_741_824,
         doc='Maximum request body size in bytes. Use 0 for no limit.',
@@ -776,28 +834,28 @@ class Config:
     )
     limit_concurrency: int = _option(
         default=0,
-        doc='Maximum number of concurrent ASGI request/session tasks per worker. Use 0 to disable.',
+        doc='Maximum number of concurrent ASGI request or session tasks per worker. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_concurrency'),
         cli_type=int,
     )
     limit_connections: int = _option(
         default=0,
-        doc='Maximum number of live client connections per worker. Use 0 to disable.',
+        doc='Maximum number of live client connections per worker. Use 0 for no limit.',
         env_parse=int,
         normalize=_non_negative('limit_connections'),
         cli_type=int,
     )
     timeout_handshake: float = _option(
         default=5.0,
-        doc='Time limit to establish a connection/handshake (seconds).',
+        doc='Maximum time to establish a connection and TLS handshake, in seconds. Use 0 to disable.',
         env_parse=float,
         normalize=_non_negative('timeout_handshake'),
         cli_type=float,
     )
     timeout_graceful_shutdown: float = _option(
         default=30.0,
-        doc='Time allowed for workers to finish existing requests on stop.',
+        doc='Maximum time for workers to finish in-flight requests on shutdown, in seconds.',
         env_parse=float,
         normalize=_non_negative('timeout_graceful_shutdown'),
         cli_type=float,
@@ -879,13 +937,13 @@ class Config:
     )
     server_header: bool = _option(
         default=False,
-        doc='Whether h2corn should add a default Server header when the application did not set one.',
+        doc='Whether to add a default Server header when the application sets none.',
         env_parse=_parse_bool,
         cli_action='bool',
     )
     date_header: bool = _option(
         default=True,
-        doc='Whether h2corn should add a default Date header when the application did not set one.',
+        doc='Whether to add a default Date header when the application sets none.',
         env_parse=_parse_bool,
         cli_action='bool',
     )
@@ -932,6 +990,17 @@ class Config:
                 raise ValueError('bind cannot be combined with host or port')
             object.__setattr__(self, 'bind', convenience_bind)
         _sync_bind_convenience_fields(self)
+        if self.reuse_port:
+            if not hasattr(socket, 'SO_REUSEPORT'):
+                raise ValueError('reuse_port is not supported on this platform')
+            for bind in self.bind:
+                if bind.startswith(('unix:', 'fd://')):
+                    raise ValueError('reuse_port supports TCP listeners only')
+        if self.loop == 'uvloop' and importlib.util.find_spec('uvloop') is None:
+            raise ValueError(
+                "loop='uvloop' requires the uvloop package — install it with "
+                "the 'h2corn[uvloop]' extra"
+            )
         tls_enabled = self.certfile is not None or self.keyfile is not None
         if tls_enabled and (self.certfile is None or self.keyfile is None):
             raise ValueError('certfile and keyfile must be configured together')

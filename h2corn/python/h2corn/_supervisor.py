@@ -82,9 +82,15 @@ def _worker_entry(
     fds: tuple[int, ...],
     identity,
 ):
-    from ._server import Server, _drop_process_privileges, _import_target
+    from ._server import (
+        Server,
+        _drop_process_privileges,
+        _import_target,
+        _install_event_loop,
+    )
 
     _drop_process_privileges(identity)
+    _install_event_loop(config.loop)
     if isinstance(app, ImportSettings):
         app = _import_target(app)
     server = Server(app, _clone_config(config, workers=1))

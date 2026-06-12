@@ -211,6 +211,7 @@ where
                 limit_connections: None,
                 max_requests: None,
                 runtime_threads: 2,
+                loop_threads: 1,
                 websocket: WebSocketConfig::default(),
                 proxy: ProxyConfig {
                     trust_headers: false,

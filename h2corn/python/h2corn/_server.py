@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import sys
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -23,6 +24,35 @@ if TYPE_CHECKING:
 
 
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
+
+
+def _install_event_loop(loop: str) -> None:
+    """Select the worker's Python event loop, before any loop is created.
+
+    Installs the uvloop event-loop policy when requested and available; the
+    policy also governs the free-threaded loop-shard threads, which build
+    their loops with ``asyncio.new_event_loop()``. h2corn runs its network
+    I/O in Rust, so this only changes how application callbacks are
+    scheduled — see the ``loop`` option.
+    """
+    import importlib.util
+
+    if loop == 'asyncio' or importlib.util.find_spec('uvloop') is None:
+        if loop == 'uvloop':
+            raise RuntimeError(
+                "loop='uvloop' requires the uvloop package — install the "
+                "'h2corn[uvloop]' extra"
+            )
+        return
+    import uvloop
+
+    # uvloop.install() sets the asyncio policy — the one mechanism that also
+    # makes the free-threaded loop shards' new_event_loop() build uvloop
+    # loops. Both it and the underlying policy API are deprecated (removal in
+    # 3.16); silence that upstream warning rather than spam the operator.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        uvloop.install()
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +334,7 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
             _serve_supervisor(app, config)
         return
 
+    _install_event_loop(config.loop)
     asyncio.run(Server(app, config).serve())
 
 

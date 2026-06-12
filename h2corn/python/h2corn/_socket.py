@@ -126,8 +126,10 @@ def _adopt_socket(fd: int):
     return sock
 
 
-def _prepare_tcp_listener(sock: socket.socket):
+def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if reuse_port:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.SOL_TCP, socket.TCP_FASTOPEN, 512)
     if sys.platform == 'linux':
         try:
@@ -162,7 +164,7 @@ def _build_tcp_socket(host: str, port: int, config: Config):
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                 except OSError:
                     pass
-            _prepare_tcp_listener(sock)
+            _prepare_tcp_listener(sock, reuse_port=config.reuse_port)
             sock.bind(sockaddr)
             return _finish_bound_socket(sock, config.backlog)
         except OSError as exc:

@@ -1,6 +1,5 @@
 [project]
 name = "h2corn"
-dynamic = ["version"]
 description = "High-performance HTTP/2 ASGI server"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,10 +21,10 @@ classifiers = [
   "Framework :: AsyncIO",
   "Intended Audience :: Developers",
   "Intended Audience :: System Administrators",
-  "Operating System :: POSIX :: Linux",
-  "Operating System :: POSIX",
-  "Operating System :: Unix",
   "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Unix",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -38,26 +37,30 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = []
+dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://h2corn.monicz.dev/"
 Documentation = "https://h2corn.monicz.dev/"
-Repository = "https://github.com/Zaczero/pkgs/tree/main/h2corn"
+Homepage = "https://h2corn.monicz.dev/"
 Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/h2corn"
 
 [project.scripts]
 h2corn = "h2corn._server:main"
+
+[project.optional-dependencies]
+uvloop = ["uvloop>=0.21.0; sys_platform != 'win32'"]
 
 [dependency-groups]
 dev = [
   "fastapi>=0.118.0",
   "gunicorn>=25.3.0",
   "h2>=4.2.0",
+  "h2corn[uvloop]",
   "hpack>=4.1.0",
   "hypercorn>=0.18.0",
   "matplotlib>=3.10.8",
   "maturin>=1.12.6,<2",
-  "maturin-import-hook>=0.3.0",
   "pytest>=9.0.0",
   "pytest-asyncio>=0.26.0",
   "starlette>=0.46.0",
@@ -65,12 +68,12 @@ dev = [
   "websockets>=16.0",
 ]
 docs = [
-  "properdocs>=1.6",
-  "mkdocs-material>=9.5",
+  "griffe-inherited-docstrings>=1.0",
   "mkdocs-gen-files>=0.5",
+  "mkdocs-material>=9.5",
   "mkdocs-minify-plugin>=0.8",
   "mkdocstrings[python]>=0.27",
-  "griffe-inherited-docstrings>=1.0",
+  "properdocs>=1.6",
   "pymdown-extensions>=10.7",
 ]
 
@@ -83,9 +86,14 @@ bindings = "pyo3"
 module-name = "h2corn._lib"
 python-source = "python"
 
-[tool.ruff]
-extend = "../ruff.toml"
-
-[tool.pytest]
+[tool.pytest.ini_options]
+filterwarnings = [
+  # uvloop installs its policy through the deprecated asyncio policy API
+  # (the only way to do it until 3.16); upstream noise, not ours.
+  "ignore:'asyncio.(set_event_loop_policy|DefaultEventLoopPolicy)':DeprecationWarning",
+]
 minversion = "9.0"
 testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../ruff.toml"

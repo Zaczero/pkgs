@@ -938,6 +938,7 @@ mod tests {
             limit_connections: None,
             max_requests: None,
             runtime_threads: 2,
+            loop_threads: 1,
             websocket: crate::config::WebSocketConfig::default(),
             proxy: ProxyConfig {
                 trust_headers: false,

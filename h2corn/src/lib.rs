@@ -285,6 +285,7 @@ impl<'py> PyConfig<'py> {
             limit_connections: self.nonzero_usize("limit_connections")?,
             max_requests: self.nonzero_u64("max_requests")?,
             runtime_threads: self.get("runtime_threads")?,
+            loop_threads: self.get("loop_threads")?,
             websocket: self.websocket(max_request_body_size)?,
             proxy: self.proxy()?,
             tls,
@@ -477,6 +478,7 @@ mod tests {
         config.setattr("root_path", "/api").unwrap();
         config.setattr("max_request_body_size", 987_654).unwrap();
         config.setattr("runtime_threads", 7).unwrap();
+        config.setattr("loop_threads", 1).unwrap();
     }
 
     fn set_http_options(config: &Bound<'_, PyAny>) {

@@ -68,6 +68,20 @@ async def _wait_for_h2_body(
         await asyncio.sleep(0.05)
 
 
+async def _wait_for_h2_body_any(
+    *, port: int, timeout: float = 5.0
+) -> tuple[int, bytes]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return await h2_request(port=port)
+        except Exception:
+            if loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
+
+
 async def _wait_for_listening_port(
     process: asyncio.subprocess.Process,
     *,
@@ -612,3 +626,62 @@ async def test_reload_coalesces_bursty_writes_into_one_restart(
         sum(b'Reload change detected:' in line for line in stderr_lines)
         + sum(b'Reload changes detected:' in line for line in stderr_lines)
     ) == 1
+
+
+async def test_reuse_port_allows_overlapping_server_generations(tmp_path: Path) -> None:
+    """Two independent server processes share one port via SO_REUSEPORT and
+    requests keep succeeding after the first generation drains away.
+    """
+    module_source = """
+    import os
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': str(os.getpid()).encode()})
+    """
+    port = find_free_port()
+    gen_a, _ = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='reuse_port_app',
+        module_source=module_source,
+        workers=1,
+        port=port,
+        extra_args=['--reuse-port'],
+    )
+    try:
+        status, pid_a = await _wait_for_h2_body_any(port=port)
+        assert status == 200
+        gen_b, _ = await _spawn_server_process(
+            tmp_path=tmp_path,
+            module_name='reuse_port_app',
+            module_source=module_source,
+            workers=1,
+            port=port,
+            extra_args=['--reuse-port'],
+        )
+        try:
+            # Generation B is up once a different worker pid answers — only
+            # then is draining A guaranteed not to empty the port.
+            await _wait_for_pid_change(port=port, previous_pid=pid_a, timeout=10)
+            await _terminate_process(gen_a)
+            deadline = asyncio.get_running_loop().time() + 5
+            served = 0
+            while served < 5:
+                try:
+                    status, body = await asyncio.wait_for(
+                        h2_request(port=port), timeout=5
+                    )
+                except OSError:
+                    # A connection may still hash to A's just-closed socket
+                    # for an instant; the kernel rebalances immediately.
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise
+                    await asyncio.sleep(0.05)
+                    continue
+                assert status == 200
+                assert body != pid_a
+                served += 1
+        finally:
+            await _terminate_process(gen_b)
+    finally:
+        await _terminate_process(gen_a)
