@@ -42,6 +42,23 @@ async def main():
 asyncio.run(main())
 ```
 
+## Binding to any free port
+
+Bind port `0` and read the kernel-assigned address back from
+[`Server.addresses`][h2corn.Server.addresses] — ideal for test harnesses
+and service discovery:
+
+```python
+server = Server(app, Config(bind=('127.0.0.1:0',)))
+task = asyncio.create_task(server.serve())
+while not server.addresses:
+    await asyncio.sleep(0)
+print(server.addresses)  # ('127.0.0.1:54123',)
+```
+
+When several TCP listeners all bind port `0` (for example `0.0.0.0:0`
+plus `[::]:0`), they deliberately share one kernel-assigned port.
+
 ## Which entrypoint to use
 
 | You want…                                            | Use                                  |

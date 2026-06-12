@@ -19,7 +19,7 @@ downgrading to HTTP/1.1 inside your trust boundary. It is built around `h2c`
 behind a trusted reverse proxy, with optional direct TLS for TCP listeners.
 
 - **Better security** for the proxy → application connection (no HTTP/1.1 downgrade)
-- **Higher throughput** and lower latency from a Rust core on Tokio + Hyper
+- **Higher throughput** and lower latency from a Rust engine on Tokio
 - **Compatible** with any ASGI 3 application — FastAPI, Starlette, Django, Litestar
 - **Direct TLS** with Rustls and modern defaults
 - **RFC 8441 WebSockets** over HTTP/2

@@ -22,6 +22,70 @@ the file descriptors into each worker. Workers accept connections
 directly on a [Tokio](https://tokio.rs/) runtime — no shared
 user-space accept queue.
 
+## Shared ports across processes
+
+```bash
+h2corn hello:app --reuse-port
+```
+
+`--reuse-port` sets `SO_REUSEPORT` on the TCP listeners so another server
+process can bind the same port: start a new generation during a
+zero-downtime deploy and stop the old one, or run several independently
+managed processes behind one port. Workers of a single server always share
+its listener — the kernel's shared accept queue lets any idle worker pick
+up a connection, which measures faster than per-worker `SO_REUSEPORT`
+hashing. TCP listeners only.
+
+## Event loop
+
+`--loop` selects the Python event-loop implementation:
+
+```bash
+h2corn hello:app --loop auto      # default
+```
+
+| Value     | Behavior                                                              |
+| --------- | -------------------------------------------------------------------- |
+| `auto`    | Use `uvloop` if it is installed, otherwise the stdlib asyncio loop.  |
+| `asyncio` | Always the standard-library asyncio loop.                            |
+| `uvloop`  | Always `uvloop`; errors at startup if it is not installed.           |
+
+`uvloop` is an optional dependency — install it with the extra:
+
+```bash
+pip install h2corn[uvloop]
+```
+
+Unlike a pure-Python server, h2corn runs its accept loop, framing, and
+socket I/O in Rust; the Python loop only schedules your application's
+callbacks. So the loop choice has little effect on throughput.
+
+## Free-threaded Python
+
+On a free-threaded (no-GIL) CPython build, one worker can run the
+application on several event loops in parallel:
+
+```bash
+h2corn hello:app --loop-threads 4
+```
+
+Requests are balanced across the loops round-robin, and each request
+runs entirely on one loop. A single process scales across cores with
+shared memory — on a CPU-bound JSON endpoint, four loop threads deliver
+roughly the throughput of three forked workers. On a regular (GIL)
+build `loop_threads` above 1 is a no-op — the GIL would serialize the
+loops anyway, so a single loop is used. Combine with `--runtime-threads`
+to scale the I/O side accordingly.
+
+`--loop-threads` composes with `--workers`: each forked worker runs its
+own set of loop threads, so `-w 4 --loop-threads 4` is 16 event loops.
+Prefer scaling `loop_threads` first on free-threaded builds (shared
+memory, no per-process duplication of the application), and add workers
+when you want process-level isolation, rolling restarts mid-deploy, or
+`max_requests` recycling. Keep `workers × loop_threads` at or below the
+machine's core count — beyond it the threads contend instead of
+scaling.
+
 ## Signals
 
 The supervisor responds to four standard signals:
