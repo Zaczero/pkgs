@@ -10,7 +10,7 @@ hide:
 
 # Blazing-fast Python ASGI
 
-<p class="hero-stats"><strong>60–95%</strong> lower latency at p50–p99</p>
+<p class="hero-stats"><strong>70–95%</strong> lower latency at p50–p99</p>
 
 A drop-in ASGI server for FastAPI, Starlette, Django, Litestar, and any
 ASGI 3 app. Same `module:app` start line, same `--workers`, plus
@@ -58,20 +58,21 @@ end-to-end HTTP/2 and a production-grade worker supervisor.
 
 ### Lower latency
 
-Server overhead stops dominating your latency budget. The HTTP hot
-path — accept loop, framing, TLS, multiplexing — runs in Rust on top
-of [Hyper](https://hyper.rs/) and [Tokio](https://tokio.rs/), so Python
-only sees a request once there's real handler work to do. **60–95%
-lower latency** vs `uvicorn`, `hypercorn`, or `gunicorn` on the same
-Starlette app.
+In most Python services the handler itself is quick — it's the server
+around it that keeps p99 high. h2corn moves that overhead out of
+Python entirely: connections, TLS, and HTTP are handled in Rust, and
+the event loop is left free to do one thing — run your code. Across
+the benchmark suite that comes out to **70–95% lower latency at
+p50–p99** than `uvicorn`, `hypercorn`, or `gunicorn`.
 
 ### Higher throughput
 
-More requests per worker, on the same hardware. With framing and the
-accept loop running natively, each worker absorbs far more concurrent
-connections than a Python-only server. The four-worker headline
-benchmark reaches **~90k RPS** on a small JSON GET — several times the
-nearest mainstream alternative. [See benchmarks](benchmarks.md).
+The same shift shows up as capacity. Each worker absorbs several
+times the load of a pure-Python server, so traffic that used to need
+a dozen pods fits in a couple. Four workers push a small JSON GET to
+**~216k RPS at p99 0.9 ms** — about **10×** the nearest alternative
+serving the identical Starlette app.
+[See benchmarks](benchmarks.md).
 
 ### Modern protocols
 

@@ -60,7 +60,7 @@ In local runs comparing `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn`
 across baseline GETs, Unix sockets, static files, streaming, and
 WebSockets, `h2corn` leads on every scenario tested:
 
-![HTTP/1 GET, 4 workers. h2corn ~90k RPS p99 2.3ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
+![HTTP/1 GET, 4 workers. h2corn ~216k RPS p99 0.9ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
 
 Full plots and methodology: [Benchmarks](https://h2corn.monicz.dev/benchmarks/).
 

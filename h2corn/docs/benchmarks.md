@@ -50,9 +50,9 @@ four workers — looks like this:
 
 ![HTTP/1 GET, 4 workers](assets/benchmarks/benchmark_http_1_get_4_workers.svg)
 
-`h2corn` reaches **~90k RPS at p99 2.3 ms**, several times ahead of the
-nearest mainstream alternative on the same deployment shape and the
-same Starlette app.
+`h2corn` reaches **~216k RPS at p99 0.9 ms** — about 10× the nearest
+mainstream Python server on the same deployment shape, the same Starlette
+app, and the standard-library asyncio stack.
 
 ## HTTP/1 GET
 
