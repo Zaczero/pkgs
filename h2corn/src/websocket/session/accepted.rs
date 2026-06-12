@@ -8,7 +8,6 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use super::super::app::RunningWebSocketApp;
-use super::handshake::abort_app_task;
 use super::{
     AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport, FrameFlushMode,
     TransportRead, shutdown_close_code,
@@ -28,7 +27,6 @@ pub(super) struct AcceptedSessionOutcome {
     pub(super) state: AcceptedWebSocketState,
     pub(super) rx_bytes: u64,
     pub(super) tx_bytes: u64,
-    pub(super) app_finished: bool,
     pub(super) result: Result<(), H2CornError>,
 }
 
@@ -37,14 +35,12 @@ impl AcceptedSessionOutcome {
         state: AcceptedWebSocketState,
         rx_bytes: u64,
         tx_bytes: u64,
-        app_finished: bool,
         result: Result<(), H2CornError>,
     ) -> Self {
         Self {
             state,
             rx_bytes,
             tx_bytes,
-            app_finished,
             result,
         }
     }
@@ -195,7 +191,6 @@ where
     let mut state = AcceptedWebSocketState::default();
     let mut rx_bytes = 0_u64;
     let mut tx_bytes = 0_u64;
-    let mut app_finished = false;
     let mut ping = PingState {
         next_ping: next_ping_deadline(config.ping_interval),
         pong_deadline: None,
@@ -242,7 +237,6 @@ where
                 &recv_tx,
                 &mut outbound,
                 &mut rx_bytes,
-                &mut app_finished,
                 &mut ping,
             )
             .await?
@@ -253,11 +247,7 @@ where
     };
 
     Ok(AcceptedSessionOutcome::new(
-        state,
-        rx_bytes,
-        tx_bytes,
-        app_finished,
-        result,
+        state, rx_bytes, tx_bytes, result,
     ))
 }
 
@@ -283,7 +273,6 @@ async fn wait_session_event<T, M>(
     recv_tx: &mpsc::Sender<WebSocketInboundEvent>,
     outbound: &mut OutboundParts<'_>,
     rx_bytes: &mut u64,
-    app_finished: &mut bool,
     ping: &mut PingState,
 ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError>
 where
@@ -294,9 +283,17 @@ where
     let pong_timeout = sleep_until_or_pending(ping.pong_deadline);
 
     tokio::select! {
-        result = &mut outbound.running_app.app_task, if !*app_finished => {
-            result??;
-            *app_finished = true;
+        () = outbound.running_app.app.join_store(), if !outbound.running_app.app.joined() => {
+            // Messages the app sent just before returning may have become
+            // ready in the same instant as its completion — drain them onto
+            // the wire before acting on the result, or the final sends of a
+            // `send(...); return` app are lost to select ordering.
+            if let ControlFlow::Break(result) =
+                process_outbound_batch::<T, M>(transport, None, deflater, outbound).await?
+            {
+                return Ok(ControlFlow::Break(result));
+            }
+            outbound.running_app.app.take_outcome().unwrap_or(Ok(()))?;
             queue_normal_close_after_app_finish(outbound.state)?;
             Ok(ControlFlow::Break(Ok(())))
         }
@@ -370,7 +367,7 @@ async fn abort_for_ping_timeout(
         reason: Some("ping timeout".into()),
     })
     .await;
-    abort_app_task(outbound.running_app).await;
+    outbound.running_app.app.abort().await;
 }
 
 async fn flush_ready_outbound<T, M>(
@@ -495,7 +492,7 @@ where
                     state.queue_close_if_open(code, "")
                 })
                 .await?;
-                abort_app_task(context.running_app).await;
+                context.running_app.app.abort().await;
                 return Ok(ControlFlow::Break(
                     WebSocketError::Protocol(err.error).err(),
                 ));
@@ -691,6 +688,6 @@ where
         | FailureDomain::InternalInvariant => close_code::INTERNAL_ERROR,
     };
     state.queue_close_if_open(close_code, "")?;
-    abort_app_task(running_app).await;
+    running_app.app.abort().await;
     Ok(ControlFlow::Break(Err(err)))
 }

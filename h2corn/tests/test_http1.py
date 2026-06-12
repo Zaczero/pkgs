@@ -72,6 +72,40 @@ async def test_http1_absolute_form_preserves_cleartext_scheme() -> None:
     assert trailers == []
 
 
+@pytest.mark.parametrize(
+    ('target', 'raw_path', 'query_string'),
+    [
+        (b'/', b'/', b''),
+        (b'/items%2Fall?q=1', b'/items%2Fall', b'q=1'),
+    ],
+)
+async def test_http1_scope_raw_path_preserves_target_bytes(
+    target: bytes,
+    raw_path: bytes,
+    query_string: bytes,
+) -> None:
+    state = {}
+
+    async def app(scope, receive, send):
+        state['raw_path'] = scope['raw_path']
+        state['query_string'] = scope['query_string']
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, _, _, _ = await asyncio.wait_for(
+            http1_request(
+                port=server_port(server),
+                request=b'GET %s HTTP/1.1\r\nHost: x\r\n\r\n' % target,
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert state == {'raw_path': raw_path, 'query_string': query_string}
+
+
 async def test_http1_response_defaults_apply_to_normal_app_responses() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})

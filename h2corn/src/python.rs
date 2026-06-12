@@ -294,7 +294,11 @@ macro_rules! py_match_cached_bytes {
                     > = $crate::python::PyOnceLock::new();
                     CACHED
                         .get_or_init($py, || {
-                            $crate::python::PyBytes::new($py, b"").unbind()
+                            // A str literal is matched but bytes are cached;
+                            // the suggested byte-literal form cannot be
+                            // spelled generically in a macro.
+                            #[expect(clippy::string_lit_as_bytes)]
+                            $crate::python::PyBytes::new($py, $value_text.as_bytes()).unbind()
                         })
                         .bind($py)
                         .clone()
@@ -461,6 +465,54 @@ pub fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict
     dict_api::new_dict(py, capacity)
 }
 
+/// Vectorcall `callable(args[..positional], **kwnames=args[positional..])`
+/// with a cached kwnames tuple — the keyword-call shape pyo3's safe API
+/// cannot spell without building a kwargs dict per call. The only raw
+/// Python-call FFI in the crate lives here; everything else goes through
+/// pyo3's safe `call*` (which compiles to the same vectorcalls).
+pub fn py_vectorcall_kwnames<'py, const N: usize>(
+    callable: &Bound<'py, PyAny>,
+    positional: usize,
+    args: [&Bound<'py, PyAny>; N],
+    kwnames: &Bound<'py, pyo3::types::PyTuple>,
+) -> PyResult<Bound<'py, PyAny>> {
+    use pyo3::ffi;
+    use pyo3::types::PyTupleMethods;
+    debug_assert_eq!(kwnames.len(), N - positional);
+
+    const {
+        assert!(N < 9, "py_vectorcall_kwnames supports at most 8 arguments");
+    }
+    // Fixed-capacity buffer; only slots `1..=N` (the arguments) are written.
+    // Slot 0 is the `PY_VECTORCALL_ARGUMENTS_OFFSET` scratch slot and stays
+    // uninitialized: the flag grants the callee write-only access (e.g.
+    // `method_vectorcall` prepends `self` there) — it is never read. The
+    // `MaybeUninit` shape keeps codegen at exactly `N` stores — a plain
+    // `[null; 9]` init emits five extra vector zero-stores the optimizer
+    // cannot elide because the buffer escapes into the call.
+    let mut buffer = [MaybeUninit::<*mut ffi::PyObject>::uninit(); 9];
+    for (slot, arg) in buffer[1..=N].iter_mut().zip(args) {
+        slot.write(arg.as_ptr());
+    }
+    // SAFETY: the GIL is held via the bound arguments; all argument pointers
+    // are live borrowed objects valid for the call; `buffer[0]` is the
+    // write-only offset-flag scratch slot; `kwnames` names exactly the
+    // trailing `N - positional` values, so the callee reads only the `N`
+    // initialized slots; the call returns a new owned reference or sets a
+    // Python exception.
+    unsafe {
+        Bound::from_owned_ptr_or_err(
+            callable.py(),
+            ffi::PyObject_Vectorcall(
+                callable.as_ptr(),
+                buffer.as_mut_ptr().add(1).cast::<*mut ffi::PyObject>(),
+                positional | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                kwnames.as_ptr(),
+            ),
+        )
+    }
+}
+
 pub fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
 where
     V: Copy + IntoPyObject<'py> + 'static,
@@ -474,7 +526,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use pyo3::types::{PyBool, PyBytes, PyDictMethods};
+    use pyo3::types::{PyBool, PyBytes, PyBytesMethods, PyDictMethods};
     use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
 
     use super::PyString;
@@ -495,6 +547,21 @@ mod tests {
 
             // SAFETY: both pointers are live Python objects bound under the current GIL.
             assert!(unsafe { ffi::Py_Is(value.as_ptr(), interned.as_ptr()) } != 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn py_match_cached_bytes_list_form_caches_each_literal() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let root = py_match_cached_bytes!(py, "/", ["", "/"]);
+            let empty = py_match_cached_bytes!(py, "", ["", "/"]);
+            let other = py_match_cached_bytes!(py, "/other", ["", "/"]);
+            assert_eq!(root.as_bytes(), b"/");
+            assert_eq!(empty.as_bytes(), b"");
+            assert_eq!(other.as_bytes(), b"/other");
             Ok(())
         })
         .unwrap();

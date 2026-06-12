@@ -28,13 +28,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use future::{AbortHook, ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAnyMethods, PyTuple};
+use pyo3::types::{PyAnyMethods, PyBool, PyTuple};
 pub use slot::{SlotFuture, TaskSlot};
 
 use crate::error::H2CornError;
+use crate::python::py_vectorcall_kwnames;
 use crate::runtime::AppState;
 
 /// Maximum events processed per pump invocation before yielding back to the
@@ -282,43 +282,23 @@ impl ShardHandle {
         py: Python<'py>,
         coroutine: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Leading scratch slot for `PY_VECTORCALL_ARGUMENTS_OFFSET`, then
-        // positional (coro,); keyword values follow in `task_kwnames`
+        // Positional (coro,); keyword values follow in `task_kwnames`
         // order — ("loop", "eager_start", "name") on 3.12+, ("loop", "name")
-        // on 3.11 (the unused tail slot is simply not read).
-        let mut args: [*mut ffi::PyObject; 5] = if self.eager {
-            [
-                std::ptr::null_mut(),
-                coroutine.as_ptr(),
-                self.event_loop.as_ptr(),
-                // SAFETY: `Py_True` returns the immortal True singleton.
-                unsafe { ffi::Py_True() },
-                self.task_name.as_ptr(),
-            ]
-        } else {
-            [
-                std::ptr::null_mut(),
-                coroutine.as_ptr(),
-                self.event_loop.as_ptr(),
-                self.task_name.as_ptr(),
-                std::ptr::null_mut(),
-            ]
-        };
-        // SAFETY: the GIL is held; all read pointers are live borrowed
-        // objects; `task_kwnames` names exactly the keyword values that
-        // follow the single positional argument; args[0] is the offset-flag
-        // scratch slot the callee may clobber; the call returns a new owned
-        // reference or sets a Python exception.
-        unsafe {
-            Bound::from_owned_ptr_or_err(
-                py,
-                ffi::PyObject_Vectorcall(
-                    self.task_type.as_ptr(),
-                    args.as_mut_ptr().add(1),
-                    1 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                    self.task_kwnames.as_ptr(),
-                ),
+        // on 3.11.
+        let task_type = self.task_type.bind(py);
+        let event_loop = self.event_loop.bind(py);
+        let task_name = self.task_name.bind(py);
+        let kwnames = self.task_kwnames.bind(py);
+        if self.eager {
+            let eager_start = PyBool::new(py, true).to_owned().into_any();
+            py_vectorcall_kwnames(
+                task_type,
+                1,
+                [coroutine, event_loop, &eager_start, task_name],
+                kwnames,
             )
+        } else {
+            py_vectorcall_kwnames(task_type, 1, [coroutine, event_loop, task_name], kwnames)
         }
     }
 
@@ -381,29 +361,10 @@ impl ShardHandle {
             .pump
             .get(py)
             .expect("pump is initialized before events are pushed");
-        // One-positional-arg vectorcall with the offset-flag scratch slot —
-        // exactly what `PyObject_CallOneArg` desugars to (that wrapper is
-        // not exposed for PyPy). The scratch slot lets a pure-Python
-        // `call_soon*` bound method prepend `self` in place.
-        let mut args = [std::ptr::null_mut(), pump.as_ptr()];
-        // SAFETY: the GIL is held; both pointers are live owned objects;
-        // args[0] is the offset-flag scratch slot the callee may clobber;
-        // the call returns a new reference or sets an exception.
-        let result = unsafe {
-            ffi::PyObject_Vectorcall(
-                scheduler.as_ptr(),
-                args.as_mut_ptr().add(1),
-                1 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                std::ptr::null_mut(),
-            )
-        };
-        if result.is_null() {
-            return Err(PyErr::fetch(py));
-        }
-        // SAFETY: non-null result from a successful call is a new owned
-        // reference (an asyncio.Handle we do not need).
-        unsafe { ffi::Py_DECREF(result) };
-        Ok(())
+        // pyo3's tuple `call1` compiles to `PyObject_CallOneArg` — the same
+        // offset-flag vectorcall a manual FFI call would make. The returned
+        // asyncio.Handle is dropped.
+        scheduler.bind(py).call1((pump,)).map(drop)
     }
 
     pub(crate) const fn event_loop(&self) -> &Py<PyAny> {

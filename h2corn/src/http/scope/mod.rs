@@ -5,9 +5,9 @@ use std::borrow::Cow;
 use http::Method;
 use memchr::memchr;
 pub use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
-use pyo3::{ffi, intern};
 
 use crate::ascii;
 use crate::hpack::BytesStr;
@@ -170,42 +170,18 @@ pub fn headers_to_python<'py>(
     py: Python<'py>,
     headers: &RequestHeaders,
 ) -> PyResult<Bound<'py, PyList>> {
-    // SAFETY: the GIL is held by `py`; the list and each tuple are allocated to
-    // their exact final length; each slot is written exactly once with a fresh
-    // owned reference; and ownership is transferred immediately to the
-    // containing Python object.
-    unsafe {
-        let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(headers.len().cast_signed()))?
-            .cast_into_unchecked::<PyList>();
-
-        for (index, header) in headers.iter().enumerate() {
-            let tuple = Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(2))?;
-
-            let name = header_name_to_python(py, &header.0).unbind().into_ptr();
-            #[cfg(PyPy)]
-            if ffi::PyTuple_SetItem(tuple.as_ptr(), 0, name) != 0 {
-                return Err(PyErr::fetch(py));
-            }
-            #[cfg(not(PyPy))]
-            ffi::PyTuple_SET_ITEM(tuple.as_ptr(), 0, name);
-
-            let value = PyBytes::new(py, header.1.as_bytes()).unbind().into_ptr();
-            #[cfg(PyPy)]
-            if ffi::PyTuple_SetItem(tuple.as_ptr(), 1, value) != 0 {
-                return Err(PyErr::fetch(py));
-            }
-            #[cfg(not(PyPy))]
-            ffi::PyTuple_SET_ITEM(tuple.as_ptr(), 1, value);
-
-            ffi::PyList_SET_ITEM(
-                list.as_ptr(),
-                index.cast_signed(),
-                tuple.unbind().into_ptr(),
-            );
-        }
-
-        Ok(list)
-    }
+    // `PyList::new` over an exact-size iterator compiles to the same
+    // `PyList_New` + `PyList_SET_ITEM` / `PyTuple_New` + `PyTuple_SET_ITEM`
+    // sequence a hand-rolled fill would use.
+    PyList::new(
+        py,
+        headers.iter().map(|(name, value)| {
+            (
+                header_name_to_python(py, name),
+                PyBytes::new(py, value.as_bytes()),
+            )
+        }),
+    )
 }
 
 fn scope_type_to_python<const IS_HTTP: bool>(py: Python<'_>) -> Bound<'_, PyString> {

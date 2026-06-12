@@ -10,7 +10,7 @@ use tokio::time::timeout;
 
 use self::accepted::run_accepted_session;
 use self::handshake::{
-    HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event, settle_app_task,
+    HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event,
 };
 use super::app::start_websocket_app;
 use super::codec::{
@@ -314,14 +314,14 @@ where
         HandshakeEvent::Close => {
             transport.send_forbidden_response().await?;
             access_log.emit_http_response(status_code::FORBIDDEN, 0);
-            settle_app_task(&mut running_app, false, timeout_graceful_shutdown).await?;
+            running_app.app.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
         HandshakeEvent::DenialStart { status, headers } => {
-            let (tx_bytes, app_finished) =
+            let (tx_bytes, _) =
                 drive_denial_response(transport, status, headers, &mut running_app).await?;
             access_log.emit_http_response(status, tx_bytes);
-            settle_app_task(&mut running_app, app_finished, timeout_graceful_shutdown).await?;
+            running_app.app.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
     }
@@ -337,12 +337,7 @@ where
     .await?;
 
     transport.finish_session(&mut outcome.state).await?;
-    settle_app_task(
-        &mut running_app,
-        outcome.app_finished,
-        timeout_graceful_shutdown,
-    )
-    .await?;
+    running_app.app.settle(timeout_graceful_shutdown).await?;
     access_log.emit_session(
         outcome
             .state

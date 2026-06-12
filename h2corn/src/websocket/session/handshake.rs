@@ -1,10 +1,6 @@
-use std::time::Duration;
-
 use pyo3::pybacked::PyBackedStr;
-use tokio::task::JoinError;
-use tokio::time::timeout;
 
-use super::super::app::RunningWebSocketApp;
+use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
 use crate::bridge::{HttpOutboundEvent, PayloadBytes, WebSocketOutboundEvent};
 use crate::console::{ResponseLogState, WebSocketAccessLogState};
@@ -118,38 +114,13 @@ fn parse_denial_body_event(
     }
 }
 
-pub(super) fn flatten_app_result(
-    result: Result<Result<(), H2CornError>, JoinError>,
-) -> Result<(), H2CornError> {
-    match result {
-        Ok(result) => result,
-        Err(err) => err.err(),
-    }
-}
-
 pub(super) async fn receive_handshake_event(
     running_app: &mut RunningWebSocketApp,
 ) -> Result<HandshakeEvent, H2CornError> {
-    loop {
-        if let Some(event) = running_app.send_buffer.take_ready() {
-            return parse_handshake_event(event);
-        }
-
-        tokio::select! {
-            () = running_app.send_buffer.wait_ready() => {}
-            result = &mut running_app.app_task => {
-                flatten_app_result(result)?;
-                // The app finished cleanly, but a handshake event it sent
-                // just before returning may have landed in the buffer in the
-                // same instant — both select branches were ready and either
-                // could win. The event happens-before task completion, so a
-                // final drain is authoritative.
-                return running_app.send_buffer.take_ready().map_or_else(
-                    || WebSocketError::AppEndedBeforeHandshake.err(),
-                    parse_handshake_event,
-                );
-            }
-        }
+    match running_app.next_handshake_step().await {
+        AppStep::Event(event) => parse_handshake_event(event),
+        AppStep::Done(Err(err)) => Err(err),
+        AppStep::Done(Ok(())) => WebSocketError::AppEndedBeforeHandshake.err(),
     }
 }
 
@@ -180,39 +151,25 @@ where
     )
     .await?;
 
-    // The app finishing and its final body event landing in the buffer can
-    // become ready in the same instant; buffered events happen-before task
-    // completion, so they are always drained before the result is finalized.
-    let mut app_result = None;
-    loop {
-        if response.is_complete() {
-            break;
-        }
-
-        if let Some(outbound) = running_app.send_buffer.take_ready() {
-            let flush_result = match parse_denial_body_event(outbound) {
-                Ok(event) => {
-                    apply_http_event(&mut response, &mut transport, &mut actions, event).await
-                },
-                Err(err) => Err(err),
-            };
-            if let Err(err) = flush_result {
-                finalize_response(&mut response, &mut transport, &mut actions, Err(err)).await?;
-                return Ok((transport.tx_bytes, false));
-            }
-            continue;
-        }
-
-        if let Some(result) = app_result.take() {
-            finalize_response(&mut response, &mut transport, &mut actions, result).await?;
-            return Ok((transport.tx_bytes, true));
-        }
-
-        tokio::select! {
-            () = running_app.send_buffer.wait_ready() => {}
-            result = &mut running_app.app_task => {
-                app_result = Some(flatten_app_result(result));
-            }
+    while !response.is_complete() {
+        match running_app.next_handshake_step().await {
+            AppStep::Event(outbound) => {
+                let flush_result = match parse_denial_body_event(outbound) {
+                    Ok(event) => {
+                        apply_http_event(&mut response, &mut transport, &mut actions, event).await
+                    },
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = flush_result {
+                    finalize_response(&mut response, &mut transport, &mut actions, Err(err))
+                        .await?;
+                    return Ok((transport.tx_bytes, false));
+                }
+            },
+            AppStep::Done(result) => {
+                finalize_response(&mut response, &mut transport, &mut actions, result).await?;
+                return Ok((transport.tx_bytes, true));
+            },
         }
     }
 
@@ -231,32 +188,9 @@ where
 {
     let err = err.into();
     transport.send_internal_error_response().await?;
-    if !running_app.app_task.is_finished() {
-        abort_app_task(running_app).await;
-    }
+    running_app.app.abort().await;
     access_log.emit_http_response(status_code::INTERNAL_SERVER_ERROR, 0);
     Err(err)
-}
-
-pub(super) async fn abort_app_task(running_app: &mut RunningWebSocketApp) {
-    running_app.app_task.abort();
-    let _ = (&mut running_app.app_task).await;
-}
-
-pub(super) async fn settle_app_task(
-    running_app: &mut RunningWebSocketApp,
-    app_finished: bool,
-    timeout_graceful_shutdown: Duration,
-) -> Result<(), H2CornError> {
-    if app_finished || running_app.app_task.is_finished() {
-        return Ok(());
-    }
-    if let Ok(result) = timeout(timeout_graceful_shutdown, &mut running_app.app_task).await {
-        flatten_app_result(result)
-    } else {
-        abort_app_task(running_app).await;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -277,7 +211,7 @@ mod tests {
     use crate::http::types::{ResponseHeaders, status_code};
     use crate::runtime::RequestAdmission;
     use crate::websocket::RequestedSubprotocols;
-    use crate::websocket::app::RunningWebSocketApp;
+    use crate::websocket::app::{AppHandle, RunningWebSocketApp};
     use crate::websocket::session::WebSocketHandshakeTransport;
 
     #[derive(Default)]
@@ -368,7 +302,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            app_task,
+            app: AppHandle::new(app_task),
             _admission: RequestAdmission::default(),
         }
     }
@@ -391,8 +325,7 @@ mod tests {
             .expect("buffered close event is returned");
         assert!(matches!(event, HandshakeEvent::Close));
 
-        running_app.app_task.abort();
-        let _ = (&mut running_app.app_task).await;
+        running_app.app.abort().await;
         drop(running_app);
     }
 
@@ -415,7 +348,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            app_task: tokio::spawn(async { Ok(()) }),
+            app: AppHandle::new(tokio::spawn(async { Ok(()) })),
             _admission: RequestAdmission::default(),
         };
         let _keep_sender_alive = send_tx;
@@ -447,7 +380,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            app_task: tokio::spawn(async { Ok(()) }),
+            app: AppHandle::new(tokio::spawn(async { Ok(()) })),
             _admission: RequestAdmission::default(),
         };
         let _keep_sender_alive = send_tx;
@@ -486,7 +419,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            app_task: tokio::spawn(async { Ok(()) }),
+            app: AppHandle::new(tokio::spawn(async { Ok(()) })),
             _admission: RequestAdmission::default(),
         };
         let _keep_sender_alive = send_tx;
@@ -533,10 +466,10 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            app_task: tokio::spawn(async {
+            app: AppHandle::new(tokio::spawn(async {
                 pending::<()>().await;
                 Ok(())
-            }),
+            })),
             _admission: RequestAdmission::default(),
         };
         let _keep_sender_alive = send_tx;
@@ -550,8 +483,7 @@ mod tests {
 
         assert!(size_of_val(&future) <= 3344);
         drop(future);
-        running_app.app_task.abort();
-        let _ = (&mut running_app.app_task).await;
+        running_app.app.abort().await;
         drop(running_app);
     }
 }
