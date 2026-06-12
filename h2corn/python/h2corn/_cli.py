@@ -12,6 +12,7 @@ from ._config import (
     _CONVENIENCE_KEYS,
     _DEFAULT_BIND,
     CONFIG_PATH_ENV_VAR,
+    OPTION_GROUPS,
     Config,
     _bind_from_convenience,
     _env_values,
@@ -27,71 +28,6 @@ if TYPE_CHECKING:
 _DEFAULT_RELOAD_INCLUDE_PATTERNS = ('*.py',)
 _DEFAULT_RELOAD_EXCLUDE_PATTERNS = ('.*', '.py[cod]', '.sw.*', '~*')
 _TomlLiteralValue = None | bool | str | int | float | tuple[object, ...] | list[object]
-_APPLICATION_CONFIG_OPTIONS = (
-    'root_path',
-    'lifespan',
-    'timeout_lifespan_startup',
-    'timeout_lifespan_shutdown',
-)
-_BINDING_CONFIG_OPTIONS = (
-    'bind',
-    'uds_permissions',
-    'backlog',
-)
-_TLS_CONFIG_OPTIONS = (
-    'certfile',
-    'keyfile',
-    'ca_certs',
-    'cert_reqs',
-)
-_PROCESS_CONFIG_OPTIONS = (
-    'pid',
-    'user',
-    'group',
-    'umask',
-    'workers',
-    'runtime_threads',
-    'max_requests',
-    'max_requests_jitter',
-    'timeout_worker_healthcheck',
-)
-_HTTP_LIMIT_CONFIG_OPTIONS = (
-    'http1',
-    'access_log',
-    'max_concurrent_streams',
-    'limit_request_head_size',
-    'limit_request_line',
-    'limit_request_fields',
-    'limit_request_field_size',
-    'h2_max_header_list_size',
-    'h2_max_header_block_size',
-    'h2_max_inbound_frame_size',
-    'max_request_body_size',
-    'limit_concurrency',
-    'limit_connections',
-)
-_TIMEOUT_CONFIG_OPTIONS = (
-    'timeout_handshake',
-    'timeout_graceful_shutdown',
-    'timeout_keep_alive',
-    'timeout_request_header',
-    'timeout_request_body_idle',
-    'h2_timeout_response_stall',
-)
-_WEBSOCKET_CONFIG_OPTIONS = (
-    'websocket_max_message_size',
-    'websocket_per_message_deflate',
-    'websocket_ping_interval',
-    'websocket_ping_timeout',
-)
-_PROXY_HEADER_CONFIG_OPTIONS = (
-    'proxy_headers',
-    'forwarded_allow_ips',
-    'proxy_protocol',
-    'server_header',
-    'date_header',
-    'response_headers',
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,32 +190,49 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         action='store_true',
         help='Print the fully resolved configuration, then exit without importing the target or starting the server.',
     )
-    application = parser.add_argument_group('Application')
-    application.add_argument(
-        '--factory',
-        action='store_true',
-        help='Treat the target as a zero-argument callable that returns an ASGI application.',
-    )
-    application.add_argument(
-        '--app-dir',
-        type=Path,
-        default=None,
-        help='Import the target module from this directory instead of the current working directory.',
-    )
-    application.add_argument(
-        '--env-file',
-        type=Path,
-        default=None,
-        help='Load application environment variables from this file before importing the target.',
-    )
     option_map = {option.name: option for option in config_options()}
-    _add_named_config_arguments(
-        application,
-        base,
-        option_map,
-        _APPLICATION_CONFIG_OPTIONS,
-    )
+    for group in OPTION_GROUPS:
+        section = parser.add_argument_group(group.title)
+        if group.title == 'Application':
+            section.add_argument(
+                '--factory',
+                action='store_true',
+                help='Treat the target as a zero-argument callable that returns an ASGI application.',
+            )
+            section.add_argument(
+                '--app-dir',
+                type=Path,
+                default=None,
+                help='Import the target module from this directory instead of the current working directory.',
+            )
+            section.add_argument(
+                '--env-file',
+                type=Path,
+                default=None,
+                help='Load application environment variables from this file before importing the target.',
+            )
+        elif group.title == 'Listeners':
+            section.add_argument(
+                '--host',
+                default=argparse.SUPPRESS,
+                help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
+            )
+            section.add_argument(
+                '-p',
+                '--port',
+                type=int,
+                default=argparse.SUPPRESS,
+                help='TCP port convenience override for a single listener. When --host is omitted, the base configuration host is reused.',
+            )
+        _add_named_config_arguments(section, base, option_map, group.options)
+        if group.title == 'Application':
+            _add_development_arguments(parser)
 
+    assert not option_map, f'unhandled config options: {", ".join(sorted(option_map))}'
+    return parser
+
+
+def _add_development_arguments(parser: argparse.ArgumentParser) -> None:
     development = parser.add_argument_group('Development')
     development.add_argument(
         '--reload',
@@ -307,57 +260,6 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         help='Glob pattern for files or directories that should be ignored by reload. Repeat the flag to add more patterns.',
         metavar='PATTERN',
     )
-
-    binding = parser.add_argument_group('Socket Binding')
-    binding.add_argument(
-        '--host',
-        default=argparse.SUPPRESS,
-        help='TCP host convenience override for a single listener. When --port is omitted, the base configuration port is reused.',
-    )
-    binding.add_argument(
-        '-p',
-        '--port',
-        type=int,
-        default=argparse.SUPPRESS,
-        help='TCP port convenience override for a single listener. When --host is omitted, the base configuration host is reused.',
-    )
-    _add_named_config_arguments(binding, base, option_map, _BINDING_CONFIG_OPTIONS)
-
-    tls = parser.add_argument_group('TLS')
-    _add_named_config_arguments(tls, base, option_map, _TLS_CONFIG_OPTIONS)
-
-    process = parser.add_argument_group('Process and Workers')
-    _add_named_config_arguments(process, base, option_map, _PROCESS_CONFIG_OPTIONS)
-
-    http_limits = parser.add_argument_group('HTTP and Resource Limits')
-    _add_named_config_arguments(
-        http_limits,
-        base,
-        option_map,
-        _HTTP_LIMIT_CONFIG_OPTIONS,
-    )
-
-    timeouts = parser.add_argument_group('Timeouts')
-    _add_named_config_arguments(timeouts, base, option_map, _TIMEOUT_CONFIG_OPTIONS)
-
-    websocket = parser.add_argument_group('WebSocket')
-    _add_named_config_arguments(
-        websocket,
-        base,
-        option_map,
-        _WEBSOCKET_CONFIG_OPTIONS,
-    )
-
-    proxy_headers = parser.add_argument_group('Proxy and Response Headers')
-    _add_named_config_arguments(
-        proxy_headers,
-        base,
-        option_map,
-        _PROXY_HEADER_CONFIG_OPTIONS,
-    )
-
-    assert not option_map, f'unhandled config options: {", ".join(sorted(option_map))}'
-    return parser
 
 
 def _apply_tcp_bind_sugar(

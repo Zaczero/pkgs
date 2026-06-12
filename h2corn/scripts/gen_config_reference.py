@@ -8,95 +8,16 @@ and this docs page. No manual sync required.
 
 from __future__ import annotations
 
-from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import mkdocs_gen_files
-
 from h2corn._config import (
-    _CONVENIENCE_KEYS,
-    _OPTION_METADATA_KEY,
-    Config,
+    OPTION_GROUPS,
     ConfigOption,
     OptionMetadata,
     config_options,
 )
-
-
-# Logical grouping that mirrors the CLI parser sections, so the page is easy
-# to scan by topic rather than by alphabetical field order.
-GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
-    (
-        'Application',
-        'Where the ASGI app lives and how it is loaded.',
-        ('root_path', 'lifespan', 'timeout_lifespan_startup', 'timeout_lifespan_shutdown'),
-    ),
-    (
-        'Listeners',
-        'How `h2corn` accepts connections.',
-        ('bind', 'uds_permissions', 'backlog'),
-    ),
-    (
-        'TLS',
-        'Direct TLS for TCP listeners. Leave unset when terminating TLS at a proxy.',
-        ('certfile', 'keyfile', 'ca_certs', 'cert_reqs'),
-    ),
-    (
-        'Process and workers',
-        'Process identity, worker pool, and lifecycle on Unix.',
-        (
-            'pid', 'user', 'group', 'umask',
-            'workers', 'runtime_threads',
-            'max_requests', 'max_requests_jitter',
-            'timeout_worker_healthcheck',
-        ),
-    ),
-    (
-        'HTTP and resource limits',
-        'Protocol behavior and per-connection bounds.',
-        (
-            'http1', 'access_log',
-            'max_concurrent_streams',
-            'limit_request_head_size', 'limit_request_line',
-            'limit_request_fields', 'limit_request_field_size',
-            'h2_max_header_list_size', 'h2_max_header_block_size',
-            'h2_max_inbound_frame_size',
-            'max_request_body_size',
-            'limit_concurrency', 'limit_connections',
-        ),
-    ),
-    (
-        'Timeouts',
-        'Connection-level timeouts. All values are in seconds; `0` disables.',
-        (
-            'timeout_handshake',
-            'timeout_graceful_shutdown',
-            'timeout_keep_alive',
-            'timeout_request_header',
-            'timeout_request_body_idle',
-            'h2_timeout_response_stall',
-        ),
-    ),
-    (
-        'WebSocket',
-        'Limits and keep-alive for RFC 6455 and RFC 8441 WebSockets.',
-        (
-            'websocket_max_message_size',
-            'websocket_per_message_deflate',
-            'websocket_ping_interval',
-            'websocket_ping_timeout',
-        ),
-    ),
-    (
-        'Proxy and response headers',
-        'Trust boundaries with the upstream proxy and default response headers.',
-        (
-            'proxy_headers', 'forwarded_allow_ips', 'proxy_protocol',
-            'server_header', 'date_header', 'response_headers',
-        ),
-    ),
-]
 
 
 def _format_default(value: Any) -> str:
@@ -169,12 +90,12 @@ def _intro_section() -> str:
 
 def _index_table() -> str:
     rows = ['| Option | Default | CLI |', '| --- | --- | --- |']
-    for option in config_options():
-        rows.append(
-            f'| [`{option.name}`](#option-{option.name}) | '
-            f'{_format_default(option.default)} | '
-            f'{_format_cli(option)} |'
-        )
+    rows.extend(
+        f'| [`{option.name}`](#option-{option.name}) | '
+        f'{_format_default(option.default)} | '
+        f'{_format_cli(option)} |'
+        for option in config_options()
+    )
     return '\n'.join(rows) + '\n\n</div>\n\n'
 
 
@@ -198,9 +119,9 @@ def render() -> str:
     parts: list[str] = [_intro_section(), _index_table()]
     seen: set[str] = set()
 
-    for title, blurb, names in GROUPS:
-        parts.append(f'## {title}\n\n{blurb}\n\n')
-        for name in names:
+    for group in OPTION_GROUPS:
+        parts.append(f'## {group.title}\n\n{group.blurb}\n\n')
+        for name in group.options:
             option = next((o for o in config_options() if o.name == name), None)
             if option is None:
                 raise RuntimeError(f'unknown option in config reference group: {name!r}')
@@ -210,20 +131,11 @@ def render() -> str:
     leftover = [o for o in config_options() if o.name not in seen]
     if leftover:
         parts.append('## Other\n\n')
-        for option in leftover:
-            parts.append(_option_section(option))
+        parts.extend(_option_section(option) for option in leftover)
 
     parts.append(_factories_section())
     return ''.join(parts)
 
-
-_validate_known_fields = set(f.name for f in fields(Config) if _OPTION_METADATA_KEY in f.metadata)
-_referenced = {name for _, _, names in GROUPS for name in names}
-_orphans = _validate_known_fields - _referenced
-if _orphans:
-    # Soft-fail: leftover fields appear under the "Other" section so we never
-    # silently drop options when new ones are added to the dataclass.
-    pass
 
 with mkdocs_gen_files.open('configuration.md', 'w') as fh:
     fh.write(render())

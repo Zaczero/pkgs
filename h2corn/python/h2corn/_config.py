@@ -406,6 +406,114 @@ def config_options() -> tuple[ConfigOption, ...]:
     return tuple(options)
 
 
+@dataclass(frozen=True, slots=True)
+class OptionGroup:
+    title: str
+    blurb: str
+    options: tuple[str, ...]
+
+
+# Logical grouping of options by topic — the single source consumed by both
+# the CLI parser sections (`_cli.py`) and the generated configuration docs
+# (`scripts/gen_config_reference.py`). Both consumers enforce completeness:
+# the CLI asserts every option is claimed by a group, and the docs page
+# surfaces unclaimed options under an "Other" section.
+OPTION_GROUPS: tuple[OptionGroup, ...] = (
+    OptionGroup(
+        'Application',
+        'Where the ASGI app lives and how it is loaded.',
+        (
+            'root_path',
+            'lifespan',
+            'timeout_lifespan_startup',
+            'timeout_lifespan_shutdown',
+        ),
+    ),
+    OptionGroup(
+        'Listeners',
+        'How `h2corn` accepts connections.',
+        ('bind', 'uds_permissions', 'backlog', 'reuse_port'),
+    ),
+    OptionGroup(
+        'TLS',
+        'Direct TLS for TCP listeners. Leave unset when terminating TLS at a proxy.',
+        ('certfile', 'keyfile', 'ca_certs', 'cert_reqs'),
+    ),
+    OptionGroup(
+        'Process and workers',
+        'Process identity, worker pool, and lifecycle on Unix.',
+        (
+            'pid',
+            'user',
+            'group',
+            'umask',
+            'workers',
+            'runtime_threads',
+            'loop',
+            'loop_threads',
+            'max_requests',
+            'max_requests_jitter',
+            'timeout_worker_healthcheck',
+        ),
+    ),
+    OptionGroup(
+        'HTTP and resource limits',
+        'Protocol behavior and per-connection bounds.',
+        (
+            'http1',
+            'access_log',
+            'max_concurrent_streams',
+            'limit_request_head_size',
+            'limit_request_line',
+            'limit_request_fields',
+            'limit_request_field_size',
+            'h2_max_header_list_size',
+            'h2_max_header_block_size',
+            'h2_max_inbound_frame_size',
+            'h2_initial_stream_window_size',
+            'h2_initial_connection_window_size',
+            'max_request_body_size',
+            'limit_concurrency',
+            'limit_connections',
+        ),
+    ),
+    OptionGroup(
+        'Timeouts',
+        'Connection-level timeouts. All values are in seconds; `0` disables.',
+        (
+            'timeout_handshake',
+            'timeout_graceful_shutdown',
+            'timeout_keep_alive',
+            'timeout_request_header',
+            'timeout_request_body_idle',
+            'h2_timeout_response_stall',
+        ),
+    ),
+    OptionGroup(
+        'WebSocket',
+        'Limits and keep-alive for RFC 6455 and RFC 8441 WebSockets.',
+        (
+            'websocket_max_message_size',
+            'websocket_per_message_deflate',
+            'websocket_ping_interval',
+            'websocket_ping_timeout',
+        ),
+    ),
+    OptionGroup(
+        'Proxy and response headers',
+        'Trust boundaries with the upstream proxy and default response headers.',
+        (
+            'proxy_headers',
+            'forwarded_allow_ips',
+            'proxy_protocol',
+            'server_header',
+            'date_header',
+            'response_headers',
+        ),
+    ),
+)
+
+
 def _env_values(env: Mapping[str, str] | None = None):
     if env is None:
         env = os.environ
