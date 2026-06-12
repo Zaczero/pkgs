@@ -24,11 +24,11 @@ use super::{
     WindowTarget, WriterCommand, WriterCommandBatch,
 };
 use crate::bridge::PayloadBytes;
+use crate::config::ServerConfig;
 #[cfg(test)]
 use crate::config::{
     BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, WebSocketConfig,
 };
-use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE, ServerConfig};
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
 use crate::h2::{StreamMap, new_stream_map};
@@ -200,6 +200,8 @@ where
                     max_header_block_size: None,
                     max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
                         .expect("default HTTP/2 frame size is non-zero"),
+                    initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
+                    initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
                     timeout_response_stall: None,
                 },
                 max_request_body_size: None,
@@ -951,7 +953,7 @@ where
         header_table_size: Some(frame::DEFAULT_HEADER_TABLE_SIZE as u32),
         enable_push: Some(false),
         max_concurrent_streams: Some(config.http2.max_concurrent_streams),
-        initial_window_size: Some(INITIAL_STREAM_WINDOW_SIZE),
+        initial_window_size: Some(config.http2.initial_stream_window_size.get()),
         max_frame_size: Some(config.http2.max_inbound_frame_size),
         max_header_list_size: config
             .http2
@@ -962,11 +964,12 @@ where
     };
     frame::append_settings(&mut frame_buf, initial_settings);
     write_frame_buf(&mut writer, &mut frame_buf).await?;
-    if INITIAL_CONNECTION_WINDOW_SIZE > frame::DEFAULT_WINDOW_SIZE {
+    let initial_connection_window = config.http2.initial_connection_window_size.get();
+    if initial_connection_window > frame::DEFAULT_WINDOW_SIZE {
         frame::append_window_update(
             &mut frame_buf,
             None,
-            WindowIncrement::new(INITIAL_CONNECTION_WINDOW_SIZE - frame::DEFAULT_WINDOW_SIZE)
+            WindowIncrement::new(initial_connection_window - frame::DEFAULT_WINDOW_SIZE)
                 .expect("increment is positive"),
         );
         write_frame_buf(&mut writer, &mut frame_buf).await?;

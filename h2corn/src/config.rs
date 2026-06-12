@@ -7,8 +7,6 @@ use tokio_rustls::TlsAcceptor;
 use crate::frame::DEFAULT_MAX_FRAME_SIZE;
 use crate::proxy::{ProxyProtocolMode, TrustedPeer};
 
-pub const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 16 << 20;
-pub const INITIAL_STREAM_WINDOW_SIZE: u32 = 16 << 20;
 pub const PATHSEND_BUFFER_SIZE: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Default)]
@@ -25,6 +23,11 @@ pub struct Http2Config {
     pub max_header_list_size: Option<NonZeroUsize>,
     pub max_header_block_size: Option<NonZeroUsize>,
     pub max_inbound_frame_size: NonZeroU32,
+    /// Receive-side flow-control window advertised per stream. Bounds the
+    /// worst-case buffered request bytes per stream.
+    pub initial_stream_window_size: NonZeroU32,
+    /// Receive-side connection flow-control window.
+    pub initial_connection_window_size: NonZeroU32,
     pub timeout_response_stall: Option<Duration>,
 }
 
@@ -36,6 +39,10 @@ impl Default for Http2Config {
             max_header_block_size: None,
             max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
                 .expect("default HTTP/2 frame size is non-zero"),
+            initial_stream_window_size: NonZeroU32::new(1 << 20)
+                .expect("default stream window is non-zero"),
+            initial_connection_window_size: NonZeroU32::new(2 << 20)
+                .expect("default connection window is non-zero"),
             timeout_response_stall: None,
         }
     }

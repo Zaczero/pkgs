@@ -237,6 +237,12 @@ fn register_inbound_stream(
             content_length,
             input.body_bytes_read.clone(),
             max_request_body_size,
+            context
+                .connection
+                .config
+                .http2
+                .initial_stream_window_size
+                .get(),
         ),
     );
 }

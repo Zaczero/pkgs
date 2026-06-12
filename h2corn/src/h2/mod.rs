@@ -28,7 +28,6 @@ pub use writer::H2WriteTarget;
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
-use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::frame::{
     self, ErrorCode, FrameFlags, FrameType, PeerSettings, RawFrame, StreamId, WindowIncrement,
@@ -38,8 +37,6 @@ use crate::http::types::{RequestHead, ResponseHeaders};
 use crate::proxy::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
 
-const CONNECTION_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_CONNECTION_WINDOW_SIZE / 2;
-const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_STREAM_WINDOW_SIZE / 2;
 
 type StreamMap<T> = HashMap<u32, T, BuildNoHashHasher<u32>>;
 
@@ -146,6 +143,7 @@ where
     W: H2WriteTarget,
 {
     let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
+    let stream_window_threshold = state.context.config.http2.initial_stream_window_size.get() / 2;
 
     for (&raw_stream_id, stream) in &mut state.streams {
         let Some(tx) = stream.input.as_ref() else {
@@ -168,9 +166,7 @@ where
             }
         }
         if stream.pending_input.is_empty()
-            && let Some(increment) = stream
-                .receive_window
-                .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
+            && let Some(increment) = stream.receive_window.take_update(stream_window_threshold)
         {
             stream_updates.push((
                 StreamId::new(raw_stream_id).expect("stored stream id is non-zero"),
@@ -825,9 +821,12 @@ async fn send_data_window_updates<R, W>(
 where
     W: H2WriteTarget,
 {
+    let http2 = &state.context.config.http2;
+    let connection_window_threshold = http2.initial_connection_window_size.get() / 2;
+    let stream_window_threshold = http2.initial_stream_window_size.get() / 2;
     if let Some(increment) = state
         .connection_window
-        .take_update(CONNECTION_WINDOW_UPDATE_THRESHOLD)
+        .take_update(connection_window_threshold)
     {
         state
             .writer
@@ -839,9 +838,7 @@ where
         .get_mut(&stream_id.get())
         .expect("stream existence is validated before window updates");
     if stream.pending_input.is_empty()
-        && let Some(increment) = stream
-            .receive_window
-            .take_update(STREAM_WINDOW_UPDATE_THRESHOLD)
+        && let Some(increment) = stream.receive_window.take_update(stream_window_threshold)
     {
         state
             .writer
@@ -1628,6 +1625,11 @@ mod tests {
     use tokio::io::{AsyncWrite, BufWriter};
 
     use super::*;
+
+    const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
+    const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
+    const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_STREAM_WINDOW_SIZE / 2;
+    const CONNECTION_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_CONNECTION_WINDOW_SIZE / 2;
 
     #[derive(Default)]
     struct RecordingWriter {

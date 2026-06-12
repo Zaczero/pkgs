@@ -10,7 +10,6 @@ use tokio::time::Instant as TokioInstant;
 use super::StreamMap;
 use super::request::{HeaderLimits, PendingHeaders};
 use super::writer::{ConnectionHandle, WriterState};
-use crate::config::{INITIAL_CONNECTION_WINDOW_SIZE, INITIAL_STREAM_WINDOW_SIZE};
 use crate::frame::{self, StreamId, WindowIncrement};
 use crate::h2::new_stream_map;
 use crate::hpack::Decoder;
@@ -136,11 +135,12 @@ impl InboundStream {
         expected_content_length: Option<u64>,
         body_bytes: Option<Arc<AtomicU64>>,
         max_request_body_size: Option<u64>,
+        initial_window: u32,
     ) -> Self {
         Self {
             input,
             counts_toward_read_timeout,
-            receive_window: ReceiveWindowState::new(INITIAL_STREAM_WINDOW_SIZE),
+            receive_window: ReceiveWindowState::new(initial_window),
             state: if end_stream {
                 ReceiveState::RequestClosed
             } else {
@@ -194,6 +194,7 @@ impl<R, W> H2ConnectionState<R, W> {
     ) -> Self {
         let stream_capacity = context.config.http2.max_concurrent_streams as usize;
         let local_max_frame_size = context.config.http2.max_inbound_frame_size.get() as usize;
+        let initial_connection_window = context.config.http2.initial_connection_window_size.get();
         Self {
             reader,
             connection,
@@ -205,7 +206,7 @@ impl<R, W> H2ConnectionState<R, W> {
             streams: new_stream_map(stream_capacity),
             pending_headers: None,
             last_client_stream_id: None,
-            connection_window: ReceiveWindowState::new(INITIAL_CONNECTION_WINDOW_SIZE),
+            connection_window: ReceiveWindowState::new(initial_connection_window),
             local_max_frame_size,
             saw_client_settings: false,
             drain_state,
@@ -216,7 +217,7 @@ impl<R, W> H2ConnectionState<R, W> {
         self.streams.len() + usize::from(self.pending_headers.is_some())
     }
 
-    pub(super) fn header_limits(&self) -> HeaderLimits {
+    pub(super) const fn header_limits(&self) -> HeaderLimits {
         HeaderLimits::new(
             self.context.config.http2.max_header_list_size,
             self.context.config.limit_request_fields,
