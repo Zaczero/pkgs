@@ -39,6 +39,33 @@ async def open_h2_connection(
     return reader, writer, conn, authority
 
 
+async def read_raw_h2_frames(
+    reader: asyncio.StreamReader,
+    *,
+    timeout: float = 5.0,
+    stop_at_goaway: bool = True,
+) -> list[tuple[int, int, int, bytes]]:
+    """Read raw HTTP/2 frames as ``(type, flags, stream_id, payload)`` tuples
+    until GOAWAY (optional), peer close, or ``timeout`` of inactivity.
+    """
+    frames = []
+    try:
+        while True:
+            header = await asyncio.wait_for(reader.readexactly(9), timeout=timeout)
+            length = int.from_bytes(header[:3], 'big')
+            frame_type = header[3]
+            flags = header[4]
+            stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
+            payload = await asyncio.wait_for(
+                reader.readexactly(length), timeout=timeout
+            )
+            frames.append((frame_type, flags, stream_id, payload))
+            if stop_at_goaway and frame_type == 0x07:
+                return frames
+    except (asyncio.IncompleteReadError, TimeoutError):
+        return frames
+
+
 async def read_h2_response(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,

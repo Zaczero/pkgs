@@ -14,6 +14,7 @@ from tests._support import (
     find_free_port,
     h2_request,
     open_h2_connection,
+    read_raw_h2_frames,
     running_server,
     wait_for_port,
 )
@@ -104,29 +105,6 @@ async def _h2_expect_error(
     finally:
         writer.close()
         await writer.wait_closed()
-
-
-async def _read_raw_h2_frames(
-    reader: asyncio.StreamReader,
-    *,
-    timeout: float = 5.0,
-    stop_at_goaway: bool = True,
-) -> list[tuple[int, int, bytes]]:
-    frames = []
-    try:
-        while True:
-            header = await asyncio.wait_for(reader.readexactly(9), timeout=timeout)
-            length = int.from_bytes(header[:3], 'big')
-            frame_type = header[3]
-            stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-            payload = await asyncio.wait_for(
-                reader.readexactly(length), timeout=timeout
-            )
-            frames.append((frame_type, stream_id, payload))
-            if stop_at_goaway and frame_type == 0x07:
-                return frames
-    except (asyncio.IncompleteReadError, TimeoutError):
-        return frames
 
 
 async def _start_blocked_request_server(
@@ -274,7 +252,7 @@ async def test_shutdown_drains_inflight_stream() -> None:
     release.set()
     try:
         frames = await asyncio.wait_for(
-            _read_raw_h2_frames(reader, timeout=0.5, stop_at_goaway=False),
+            read_raw_h2_frames(reader, timeout=0.5, stop_at_goaway=False),
             timeout=5,
         )
     finally:
@@ -286,7 +264,7 @@ async def test_shutdown_drains_inflight_stream() -> None:
     body = bytearray()
     trailers = []
     decoder = hpack.Decoder()
-    for frame_type, frame_stream_id, payload in frames:
+    for frame_type, _flags, frame_stream_id, payload in frames:
         if frame_stream_id != stream_id:
             continue
         if frame_type == 0x01:
@@ -557,13 +535,15 @@ async def test_client_must_send_settings_as_first_frame() -> None:
         )
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(reader)
+            frames = await read_raw_h2_frames(reader)
         finally:
             writer.close()
             await writer.wait_closed()
 
     goaway = next(
-        payload for frame_type, _stream_id, payload in frames if frame_type == 0x07
+        payload
+        for frame_type, _flags, _stream_id, payload in frames
+        if frame_type == 0x07
     )
     assert int.from_bytes(goaway[4:8], 'big') == int(
         h2.errors.ErrorCodes.PROTOCOL_ERROR
@@ -581,16 +561,14 @@ async def test_server_settings_advertise_max_frame_size() -> None:
         writer.write(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' + _encode_h2_settings([]))
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
     settings_payload = next(
         payload
-        for frame_type, _stream_id, payload in frames
+        for frame_type, _flags, _stream_id, payload in frames
         if frame_type == 0x04 and payload
     )
     settings = _decode_h2_settings_payload(settings_payload)
@@ -614,16 +592,14 @@ async def test_server_settings_advertise_header_list_size() -> None:
         writer.write(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' + _encode_h2_settings([]))
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
     settings_payload = next(
         payload
-        for frame_type, _stream_id, payload in frames
+        for frame_type, _flags, _stream_id, payload in frames
         if frame_type == 0x04 and payload
     )
     settings = _decode_h2_settings_payload(settings_payload)
@@ -646,13 +622,15 @@ async def test_invalid_ping_emits_goaway_after_valid_preface_and_settings() -> N
         )
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(reader)
+            frames = await read_raw_h2_frames(reader)
         finally:
             writer.close()
             await writer.wait_closed()
 
     goaway = next(
-        payload for frame_type, _stream_id, payload in frames if frame_type == 0x07
+        payload
+        for frame_type, _flags, _stream_id, payload in frames
+        if frame_type == 0x07
     )
     assert int.from_bytes(goaway[4:8], 'big') == int(
         h2.errors.ErrorCodes.PROTOCOL_ERROR
@@ -684,16 +662,14 @@ async def test_response_data_frames_respect_peer_max_frame_size() -> None:
         writer.write(conn.data_to_send())
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
     data_lengths = [
         len(frame_payload)
-        for frame_type, frame_stream_id, frame_payload in frames
+        for frame_type, _flags, frame_stream_id, frame_payload in frames
         if frame_type == 0x00 and frame_stream_id == stream_id
     ]
     assert data_lengths
@@ -731,16 +707,14 @@ async def test_response_data_frames_cap_at_server_target_when_peer_allows_more()
         writer.write(conn.data_to_send())
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
     data_lengths = [
         len(frame_payload)
-        for frame_type, frame_stream_id, frame_payload in frames
+        for frame_type, _flags, frame_stream_id, frame_payload in frames
         if frame_type == 0x00 and frame_stream_id == stream_id
     ]
     assert data_lengths
@@ -854,9 +828,7 @@ async def test_h2_header_block_size_limit_resets_stream() -> None:
         )
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -866,7 +838,7 @@ async def test_h2_header_block_size_limit_resets_stream() -> None:
         and stream_id == 1
         and int.from_bytes(payload[:4], 'big')
         == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-        for frame_type, stream_id, payload in frames
+        for frame_type, _flags, stream_id, payload in frames
     )
 
 
@@ -887,9 +859,7 @@ async def test_h2_single_frame_header_block_size_limit_resets_stream() -> None:
         writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -899,7 +869,7 @@ async def test_h2_single_frame_header_block_size_limit_resets_stream() -> None:
         and stream_id == 1
         and int.from_bytes(payload[:4], 'big')
         == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-        for frame_type, stream_id, payload in frames
+        for frame_type, _flags, stream_id, payload in frames
     )
 
 
@@ -933,9 +903,7 @@ async def test_h2_header_field_limit_rejects_indexed_cookie_bomb() -> None:
         writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=0.2, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -946,7 +914,7 @@ async def test_h2_header_field_limit_rejects_indexed_cookie_bomb() -> None:
         frame_type == 0x01
         and stream_id == 1
         and dict(decoder.decode(payload, raw=True)).get(b':status') == b'431'
-        for frame_type, stream_id, payload in frames
+        for frame_type, _flags, stream_id, payload in frames
     )
 
 
@@ -1091,13 +1059,13 @@ async def test_h2_inbound_frame_size_limit_ignores_larger_peer_setting() -> None
     config = Config(port=find_free_port(), h2_max_inbound_frame_size=16_384)
     async with running_server(app, config):
         reader, writer, conn, _authority = await open_h2_connection(port=config.port)
-        await _read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+        await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
         conn.update_settings({h2.settings.SettingCodes.MAX_FRAME_SIZE: 32 * 1024})
         oversized_settings = [(0x01, 4096)] * 2731
         writer.write(conn.data_to_send() + _encode_h2_settings(oversized_settings))
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(reader, timeout=5, stop_at_goaway=True)
+            frames = await read_raw_h2_frames(reader, timeout=5, stop_at_goaway=True)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -1106,7 +1074,7 @@ async def test_h2_inbound_frame_size_limit_ignores_larger_peer_setting() -> None
         frame_type == 0x07
         and int.from_bytes(payload[4:8], 'big')
         == int(h2.errors.ErrorCodes.FRAME_SIZE_ERROR)
-        for frame_type, _stream_id, payload in frames
+        for frame_type, _flags, _stream_id, payload in frames
     )
 
 
@@ -1117,7 +1085,7 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
     config = Config(port=find_free_port(), access_log=False)
     async with running_server(app, config):
         reader, writer, _conn, authority = await open_h2_connection(port=config.port)
-        await _read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+        await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
 
         block = hpack.Encoder().encode([
             (b':method', b'POST'),
@@ -1137,20 +1105,18 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
         )
         await writer.drain()
         try:
-            frames = await _read_raw_h2_frames(
-                reader, timeout=1.0, stop_at_goaway=False
-            )
+            frames = await read_raw_h2_frames(reader, timeout=1.0, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
     assert any(
         frame_type == 0x08 and stream_id == 0
-        for frame_type, stream_id, _payload in frames
+        for frame_type, _flags, stream_id, _payload in frames
     )
     assert any(
         frame_type == 0x08 and stream_id == 1
-        for frame_type, stream_id, _payload in frames
+        for frame_type, _flags, stream_id, _payload in frames
     )
 
 

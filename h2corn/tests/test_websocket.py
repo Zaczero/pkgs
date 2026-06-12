@@ -12,6 +12,7 @@ from tests._support import (
     find_free_port,
     open_h2_connection,
     read_http1_response,
+    read_raw_h2_frames,
     running_server,
 )
 
@@ -645,27 +646,6 @@ async def _read_ws_server_result(
         if pending:
             writer.write(pending)
             await writer.drain()
-
-
-async def _read_raw_h2_frames(
-    reader: asyncio.StreamReader,
-    *,
-    timeout: float = 5.0,
-) -> list[tuple[int, int, bytes]]:
-    frames = []
-    try:
-        while True:
-            header = await asyncio.wait_for(reader.readexactly(9), timeout=timeout)
-            length = int.from_bytes(header[:3], 'big')
-            frame_type = header[3]
-            stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-            payload = await asyncio.wait_for(
-                reader.readexactly(length),
-                timeout=timeout,
-            )
-            frames.append((frame_type, stream_id, payload))
-    except (asyncio.IncompleteReadError, TimeoutError):
-        return frames
 
 
 async def _read_http1_ws_server_result(
@@ -1688,10 +1668,10 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
         await asyncio.wait_for(disconnect_event.wait(), timeout=5)
         try:
             if transport == 'h2':
-                raw_frames = await _read_raw_h2_frames(reader)
+                raw_frames = await read_raw_h2_frames(reader, stop_at_goaway=False)
                 ws_buffer = b''.join(
                     payload
-                    for frame_type, frame_stream_id, payload in raw_frames
+                    for frame_type, _flags, frame_stream_id, payload in raw_frames
                     if frame_type == 0x00 and frame_stream_id == stream_id
                 )
                 frames, remainder = _parse_ws_frames(ws_buffer)
