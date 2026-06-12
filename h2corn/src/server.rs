@@ -9,7 +9,6 @@ use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
 use pyo3::prelude::*;
-use pyo3_async_runtimes::TaskLocals;
 #[cfg(target_os = "linux")]
 use rustix::net::sockopt::set_tcp_quickack;
 use smallvec::SmallVec;
@@ -419,7 +418,7 @@ where
     P: ConnectionPreamble,
 {
     let mut accept_start = 0;
-    let shutdown = shutdown_future(shutdown_trigger, app.locals.clone());
+    let shutdown = shutdown_future(shutdown_trigger, app.main_shard());
     tokio::pin!(shutdown);
     let (shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
     let mut tasks = JoinSet::new();
@@ -624,13 +623,13 @@ where
     Ok(())
 }
 
-async fn shutdown_future(trigger: Py<PyAny>, locals: TaskLocals) -> ShutdownKind {
-    let awaitable = Python::attach(|py| {
-        pyo3_async_runtimes::into_future_with_locals(&locals, trigger.into_bound(py))
+async fn shutdown_future(trigger: Py<PyAny>, shard: crate::pyloop::Shard) -> ShutdownKind {
+    let slot = crate::pyloop::TaskSlot::new();
+    shard.push(crate::pyloop::PumpEvent::SpawnAwaitable {
+        awaitable: trigger,
+        slot: Arc::clone(&slot),
     });
-    if let Ok(future) = awaitable
-        && let Ok(value) = future.await
-    {
+    if let Ok(value) = slot.wait().await {
         return Python::attach(|py| {
             value
                 .bind(py)

@@ -105,6 +105,7 @@ pub struct ServerConfig {
     pub limit_connections: Option<NonZeroUsize>,
     pub max_requests: Option<NonZeroU64>,
     pub runtime_threads: usize,
+    pub loop_threads: usize,
     pub websocket: WebSocketConfig,
     pub proxy: ProxyConfig,
     pub tls: Option<TlsConfig>,

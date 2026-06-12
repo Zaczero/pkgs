@@ -1717,7 +1717,6 @@ mod tests {
 
         async fn send_file(
             _writer: &mut BufWriter<Self>,
-            _header: [u8; 9],
             _file: &mut tokio::fs::File,
             _offset: &mut u64,
             _len: usize,
@@ -1812,5 +1811,41 @@ mod tests {
             STREAM_WINDOW_UPDATE_THRESHOLD,
             INITIAL_STREAM_WINDOW_SIZE / 2
         );
+    }
+
+    #[test]
+    #[ignore = "diagnostic: prints per-connection memory anatomy for the RSS hunt"]
+    fn report_connection_memory_anatomy() {
+        use crate::runtime::test_fixtures;
+
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let context = test_fixtures::connection_context(py);
+            let (_shutdown_tx, shutdown) = watch::channel(ShutdownState::Running);
+            let reader = frame::FrameReader::new(tokio::io::empty());
+            let fut =
+                serve_connection(reader, RecordingWriter::default(), context, false, shutdown);
+            println!(
+                "serve_connection future:      {:>8} bytes",
+                size_of_val(&fut)
+            );
+            drop(fut);
+            println!(
+                "H2ConnectionState:            {:>8} bytes",
+                size_of::<H2ConnectionState<tokio::io::Empty, RecordingWriter>>()
+            );
+            println!(
+                "WriterState<RecordingWriter>: {:>8} bytes",
+                size_of::<writer::WriterState<RecordingWriter>>()
+            );
+            println!(
+                "InboundStream:                {:>8} bytes",
+                size_of::<InboundStream>()
+            );
+            println!(
+                "Decoder (HPACK):              {:>8} bytes",
+                size_of::<crate::hpack::Decoder>()
+            );
+        });
     }
 }

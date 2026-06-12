@@ -275,7 +275,7 @@ where
     let ping_timeout = config.websocket.ping_timeout;
     let shutdown = connection.shutdown.clone();
 
-    let mut running_app = start_websocket_app(context)?;
+    let mut running_app = start_websocket_app(context);
 
     let first = match timeout(timeout_handshake, receive_handshake_event(&mut running_app)).await {
         Ok(result) => match result {

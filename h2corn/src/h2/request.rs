@@ -57,7 +57,7 @@ impl HeaderBudget {
         self.account_bytes(header.len())
     }
 
-    fn account_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
+    const fn account_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
         if let Some(max_header_list_size) = self.limits.max_list_size {
             self.list_size = self.list_size.saturating_add(len);
             if self.list_size > max_header_list_size.get() {
@@ -69,7 +69,7 @@ impl HeaderBudget {
         Ok(())
     }
 
-    fn account_field(&mut self) -> Result<(), RequestHeadError> {
+    const fn account_field(&mut self) -> Result<(), RequestHeadError> {
         if let Some(max_fields) = self.limits.max_fields {
             self.fields += 1;
             if self.fields > max_fields.get() {

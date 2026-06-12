@@ -927,6 +927,8 @@ mod tests {
                 max_header_block_size: None,
                 max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
                     .expect("default HTTP/2 frame size is non-zero"),
+                initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
+                initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
                 timeout_response_stall: None,
             },
             max_request_body_size: None,
