@@ -129,6 +129,8 @@ mod dict_api {
 
 use std::any::Any;
 use std::mem::MaybeUninit;
+#[cfg(Py_GIL_DISABLED)]
+use std::os::raw::c_int;
 
 use pyo3::prelude::*;
 pub use pyo3::sync::PyOnceLock;
@@ -234,10 +236,10 @@ macro_rules! py_cached_dict {
             let dict = CACHED.get_or_try_init(
                 $py,
                 || -> $crate::python::PyResult<$crate::python::Py<$crate::python::PyDict>> {
-                    Ok($crate::python::py_dict!($py, {
+                    let dict = $crate::python::py_dict!($py, {
                         $($key => $value),*
-                    })
-                    .unbind())
+                    });
+                    Ok(dict.unbind())
                 },
             )?;
             ::std::result::Result::<

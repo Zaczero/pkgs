@@ -1,15 +1,9 @@
-use std::future::Future;
 use std::num::NonZeroU64;
-use std::pin::Pin;
-use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3_async_runtimes::TaskLocals;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::config::ServerConfig;
@@ -18,11 +12,45 @@ use crate::frame::ErrorCode;
 use crate::http::scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use crate::http::types::RequestHead;
 use crate::proxy::ConnectionInfo;
+use crate::pyloop::{PumpEvent, Shard, SlotFuture, TaskSlot};
 
 pub struct SharedApp {
     pub app: Py<PyAny>,
-    pub locals: TaskLocals,
+    /// Loop shards; exactly one on GIL builds, `loop_threads` on
+    /// free-threaded builds. Index 0 is the main (caller's) loop, which
+    /// also owns lifespan and the shutdown trigger.
+    pub shards: Box<[Shard]>,
+    next_shard: AtomicUsize,
     pub limits: Option<Arc<RuntimeLimits>>,
+}
+
+impl SharedApp {
+    pub fn new(app: Py<PyAny>, shards: Box<[Shard]>, limits: Option<Arc<RuntimeLimits>>) -> Self {
+        debug_assert!(!shards.is_empty());
+        Self {
+            app,
+            shards,
+            next_shard: AtomicUsize::new(0),
+            limits,
+        }
+    }
+
+    /// The caller's loop: lifespan, shutdown trigger, server-done future.
+    pub fn main_shard(&self) -> Shard {
+        self.shards[0]
+    }
+
+    /// Round-robin shard pick; every Python object of one request binds to
+    /// the picked shard so the request runs entirely on one loop.
+    pub fn pick_shard(&self) -> Shard {
+        match self.shards.as_ref() {
+            [single] => single,
+            shards => {
+                let index = self.next_shard.fetch_add(1, Ordering::Relaxed);
+                shards[index % shards.len()]
+            },
+        }
+    }
 }
 
 pub type AppState = Arc<SharedApp>;
@@ -218,27 +246,6 @@ pub enum StreamInput {
     Reset(ErrorCode),
 }
 
-struct AppCallFuture<F>(F);
-
-impl<F> Future for AppCallFuture<F>
-where
-    F: Future<Output = PyResult<Py<PyAny>>>,
-{
-    type Output = Result<(), H2CornError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `AppCallFuture` is a transparent newtype around `F`, so
-        // projecting the pin to the inner future preserves the original pinning
-        // guarantees and does not move `F`.
-        let future = unsafe { self.map_unchecked_mut(|this| &mut this.0) };
-        match future.poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(_)) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(H2CornError::from(err))),
-        }
-    }
-}
-
 pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
@@ -257,38 +264,109 @@ pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission>
     })
 }
 
-pub fn start_app_call<B>(
-    app: &AppState,
-    build_args: B,
-) -> Result<impl Future<Output = Result<(), H2CornError>> + use<B>, H2CornError>
+/// Hand the request to the pump: the scope build, the app vectorcall, and
+/// the eager Task all run on the loop thread. This function never touches
+/// Python and never fails — startup errors arrive through the returned
+/// future like any other app failure.
+pub fn start_app_call<B>(app: &AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
 where
     B: for<'py> FnOnce(
-        Python<'py>,
-        &AppState,
-    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>,
+            Python<'py>,
+            &AppState,
+            Shard,
+        )
+            -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>
+        + Send
+        + 'static,
 {
-    let app = Arc::clone(app);
-    let locals = app.locals.clone();
-    let future = Python::attach(|py| {
-        let (scope, receive, send) = build_args(py, &app)?;
-        let args = [scope.as_ptr(), receive.as_ptr(), send.as_ptr()];
-        let coroutine = unsafe {
-            // SAFETY: the GIL is held; the argument array contains three valid
-            // borrowed Python object pointers which outlive the call; no kwargs
-            // are passed; and `PyObject_Vectorcall` returns a new owned
-            // reference or sets a Python exception.
-            Bound::from_owned_ptr_or_err(
-                py,
-                ffi::PyObject_Vectorcall(
-                    app.app.as_ptr(),
-                    args.as_ptr().cast_mut(),
-                    args.len(),
-                    null_mut(),
-                ),
-            )?
-        };
-        pyo3_async_runtimes::into_future_with_locals(&locals, coroutine)
-    })?;
+    let slot = TaskSlot::new();
+    let shard = app.pick_shard();
+    shard.push(PumpEvent::StartTask {
+        app: Arc::clone(app),
+        build_args: Box::new(build_args),
+        slot: Arc::clone(&slot),
+    });
+    slot.wait()
+}
 
-    Ok(AppCallFuture(future))
+#[cfg(test)]
+pub mod test_fixtures {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::num::NonZeroU32;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use pyo3::Python;
+    use tokio::sync::watch;
+
+    use super::{ConnectionContext, SharedApp, ShutdownState};
+    use crate::config::{
+        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
+        WebSocketConfig,
+    };
+    use crate::frame::DEFAULT_MAX_FRAME_SIZE;
+    use crate::proxy::{ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
+
+    pub fn server_config() -> &'static ServerConfig {
+        Box::leak(Box::new(ServerConfig {
+            binds: Box::new([BindTarget::Tcp {
+                host: Box::from("127.0.0.1"),
+                port: 8000,
+            }]),
+            access_log: false,
+            root_path: Box::from(""),
+            limit_request_fields: None,
+            http1: Http1Config {
+                enabled: true,
+                ..Default::default()
+            },
+            http2: Http2Config {
+                max_concurrent_streams: 8,
+                max_header_list_size: None,
+                max_header_block_size: None,
+                max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
+                    .expect("default HTTP/2 frame size is non-zero"),
+                initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
+                initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
+                timeout_response_stall: None,
+            },
+            max_request_body_size: None,
+            timeout_graceful_shutdown: Duration::from_secs(30),
+            timeout_keep_alive: None,
+            timeout_request_header: None,
+            timeout_request_body_idle: None,
+            limit_concurrency: None,
+            limit_connections: None,
+            max_requests: None,
+            runtime_threads: 2,
+            loop_threads: 1,
+            websocket: WebSocketConfig::default(),
+            proxy: ProxyConfig {
+                trust_headers: false,
+                trusted_peers: Box::new([]),
+                protocol: ProxyProtocolMode::Off,
+            },
+            tls: None,
+            timeout_handshake: Duration::from_secs(5),
+            response_headers: ResponseHeaderConfig::default(),
+        }))
+    }
+
+    pub fn connection_context(py: Python<'_>) -> ConnectionContext {
+        let app = Arc::new(SharedApp::new(
+            py.None(),
+            Box::new([crate::pyloop::ShardHandle::test_stub(py)]),
+            None,
+        ));
+        let info = Arc::new(ConnectionInfo::from_peer(
+            ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
+            Some(ServerAddr {
+                host: "127.0.0.1".into(),
+                port: Some(8000),
+            }),
+            false,
+        ));
+        let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
+        ConnectionContext::new(app, server_config(), info, shutdown_rx)
+    }
 }

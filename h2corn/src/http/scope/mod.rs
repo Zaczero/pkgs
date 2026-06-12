@@ -306,92 +306,26 @@ fn method_to_python<'py>(py: Python<'py>, method: &Method) -> Bound<'py, PyStrin
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::num::NonZeroU32;
-    use std::sync::Arc;
-    use std::time::Duration;
 
     use http::Method;
     use pyo3::types::{PyAnyMethods, PyDictMethods};
     use pyo3::{PyResult, Python};
-    use pyo3_async_runtimes::TaskLocals;
-    use tokio::sync::watch;
 
     use super::{build_http_scope, decode_path};
-    use crate::config::{
-        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
-        WebSocketConfig,
-    };
-    use crate::frame::DEFAULT_MAX_FRAME_SIZE;
     use crate::hpack::BytesStr;
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{HttpVersion, RequestHead, RequestTarget};
-    use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
-    use crate::runtime::{ConnectionContext, RequestContext, SharedApp, ShutdownState};
+    use crate::proxy::{ClientAddr, ServerAddr};
+    use crate::runtime::{ConnectionContext, RequestContext};
 
     fn init_python() {
         Python::initialize();
     }
 
-    fn test_server_config() -> &'static ServerConfig {
-        Box::leak(Box::new(ServerConfig {
-            binds: Box::new([BindTarget::Tcp {
-                host: Box::from("127.0.0.1"),
-                port: 8000,
-            }]),
-            access_log: false,
-            root_path: Box::from(""),
-            limit_request_fields: None,
-            http1: Http1Config {
-                enabled: true,
-                ..Default::default()
-            },
-            http2: Http2Config {
-                max_concurrent_streams: 8,
-                max_header_list_size: None,
-                max_header_block_size: None,
-                max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
-                    .expect("default HTTP/2 frame size is non-zero"),
-                timeout_response_stall: None,
-            },
-            max_request_body_size: None,
-            timeout_graceful_shutdown: Duration::from_secs(30),
-            timeout_keep_alive: None,
-            timeout_request_header: None,
-            timeout_request_body_idle: None,
-            limit_concurrency: None,
-            limit_connections: None,
-            max_requests: None,
-            runtime_threads: 2,
-            websocket: WebSocketConfig::default(),
-            proxy: ProxyConfig {
-                trust_headers: false,
-                trusted_peers: Box::new([]),
-                protocol: ProxyProtocolMode::Off,
-            },
-            tls: None,
-            timeout_handshake: Duration::from_secs(5),
-            response_headers: ResponseHeaderConfig::default(),
-        }))
-    }
-
     fn test_connection(py: Python<'_>) -> ConnectionContext {
-        let locals = TaskLocals::new(py.None().into_bound(py));
-        let app = Arc::new(SharedApp {
-            app: py.None(),
-            locals,
-            limits: None,
-        });
-        let info = Arc::new(ConnectionInfo::from_peer(
-            ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
-            Some(ServerAddr {
-                host: "127.0.0.1".into(),
-                port: Some(8000),
-            }),
-            false,
-        ));
-        let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
-        ConnectionContext::new(app, test_server_config(), info, shutdown_rx)
+        use crate::runtime::test_fixtures;
+
+        test_fixtures::connection_context(py)
     }
 
     fn test_request() -> RequestHead {

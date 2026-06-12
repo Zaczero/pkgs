@@ -165,12 +165,14 @@ async def tls_http1_request(
         ssl=context,
         server_hostname='localhost',
     )
-    writer.write(request)
-    await writer.drain()
-    status, _, body, _ = await read_http1_response(reader)
-    writer.close()
-    with suppress(ConnectionResetError, ssl.SSLError):
-        await writer.wait_closed()
+    try:
+        writer.write(request)
+        await writer.drain()
+        status, _, body, _ = await read_http1_response(reader)
+    finally:
+        writer.close()
+        with suppress(OSError, ssl.SSLError):
+            await writer.wait_closed()
     assert status == 200
     return body
 
@@ -182,10 +184,18 @@ async def open_prefixed_tls_connection(
     prefix: bytes = b'',
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
-    if prefix:
-        writer.write(prefix)
-        await writer.drain()
-    await writer.start_tls(context, server_hostname='localhost')
+    try:
+        if prefix:
+            writer.write(prefix)
+            await writer.drain()
+        await writer.start_tls(context, server_hostname='localhost')
+    except BaseException:
+        # Close the plain-TCP transport on handshake failure so its pending
+        # futures don't surface "exception was never retrieved" at GC time.
+        writer.close()
+        with suppress(OSError, ssl.SSLError):
+            await writer.wait_closed()
+        raise
     return reader, writer
 
 

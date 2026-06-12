@@ -1,9 +1,9 @@
 mod http;
 mod websocket;
 
-use std::future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::{fmt, future};
 
 use bytes::Bytes;
 pub use http::{PyHttpReceive, PyHttpSend};
@@ -12,8 +12,6 @@ use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
 use pyo3::{PyTypeCheck, PyTypeInfo};
-use pyo3_async_runtimes::TaskLocals;
-use pyo3_async_runtimes::tokio::future_into_py_with_locals;
 use tokio::sync::{Mutex, mpsc};
 #[cfg(test)]
 pub use websocket::WebSocketSendDisposition;
@@ -27,6 +25,7 @@ use crate::hpack::BytesStr;
 use crate::http::types::{
     HttpStatusCode, ResponseHeaderName, ResponseHeaderValue, ResponseHeaders,
 };
+use crate::pyloop::{AbortHook, ResolveOp, ResolvePayload, Shard, new_rust_future};
 use crate::python::{StaticPyKey, py_dict};
 use crate::websocket::WebSocketCloseCode;
 
@@ -281,7 +280,7 @@ impl<'py> AsgiMessage<'py> {
     }
 }
 
-#[pyclass(freelist = 512)]
+#[pyclass]
 struct ReadyAwaitable {
     result: Option<Py<PyAny>>,
 }
@@ -318,12 +317,83 @@ impl ReadyAwaitable {
     }
 }
 
-pub trait ReceiveStateMachine: Send + 'static {
+/// Protocol-specific event pull. The cancel-race requeue invariant lives in
+/// [`Requeueable`], not in implementations of this trait.
+pub trait EventSource: Send + 'static {
     type Event: Send + 'static;
 
-    fn try_next(&mut self) -> Option<Self::Event>;
+    fn try_pull(&mut self) -> Option<Self::Event>;
 
-    fn next(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
+    fn pull(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
+}
+
+/// Wraps an [`EventSource`] with the requeued-event slot: an event consumed
+/// for a future that got cancelled before resolution (`wait_for(receive())`
+/// and friends) is handed back and must be served before any new event —
+/// the no-event-loss invariant lives here, once.
+pub struct Requeueable<S: EventSource> {
+    source: S,
+    requeued: Option<S::Event>,
+}
+
+impl<S: EventSource + fmt::Debug> fmt::Debug for Requeueable<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Requeueable")
+            .field("source", &self.source)
+            .field("requeued", &self.requeued.is_some())
+            .finish()
+    }
+}
+
+impl<S: EventSource> Requeueable<S> {
+    pub const fn new(source: S) -> Self {
+        Self {
+            source,
+            requeued: None,
+        }
+    }
+
+    fn try_next(&mut self) -> Option<S::Event> {
+        self.requeued.take().or_else(|| self.source.try_pull())
+    }
+
+    async fn next(&mut self) -> S::Event {
+        match self.try_next() {
+            Some(event) => event,
+            None => self.source.pull().await,
+        }
+    }
+
+    fn requeue(&mut self, event: S::Event) {
+        debug_assert!(self.requeued.is_none(), "at most one receive in flight");
+        self.requeued = Some(event);
+    }
+}
+
+/// Resolve payload for a consumed receive event: convert on the loop thread,
+/// or give the event back after a cancellation race.
+struct ReceiveResolve<S: EventSource> {
+    event: S::Event,
+    state: Arc<Mutex<Requeueable<S>>>,
+    build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
+}
+
+impl<S: EventSource> ResolveOp for ReceiveResolve<S> {
+    fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        (self.build_event)(py, self.event)
+    }
+
+    fn requeue(self: Box<Self>) {
+        let Self { event, state, .. } = *self;
+        if let Ok(mut guard) = state.try_lock() {
+            guard.requeue(event);
+        } else {
+            // A new waiter already holds the lock; queue behind it.
+            crate::pyloop::runtime().spawn(async move {
+                state.lock().await.requeue(event);
+            });
+        }
+    }
 }
 
 pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
@@ -334,38 +404,54 @@ pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, 
     .into_any())
 }
 
-pub fn buffered_or_send<'py, T: Send + 'static>(
-    py: Python<'py>,
-    locals: &TaskLocals,
+pub fn buffered_or_send<T: Send + 'static>(
+    py: Python<'_>,
+    shard: Shard,
     forwarded: Option<(mpsc::Sender<T>, T)>,
-) -> PyResult<Bound<'py, PyAny>> {
+) -> PyResult<Bound<'_, PyAny>> {
     forwarded.map_or_else(
         || ready_awaitable(py, py.None()),
-        |(tx, event)| try_send_or_await(py, locals, &tx, event),
+        |(tx, event)| try_send_or_await(py, shard, &tx, event),
     )
 }
 
 pub fn receive_or_await<'py, S>(
     py: Python<'py>,
-    locals: &TaskLocals,
-    state: &Arc<Mutex<S>>,
+    shard: Shard,
+    state: &Arc<Mutex<Requeueable<S>>>,
     build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>>
 where
-    S: ReceiveStateMachine,
+    S: EventSource,
 {
-    if let Ok(mut state) = state.try_lock()
-        && let Some(event) = state.try_next()
+    if let Ok(mut guard) = state.try_lock()
+        && let Some(event) = guard.try_next()
     {
         return ready_awaitable(py, build_event(py, event)?);
     }
 
-    let locals = locals.clone();
+    // Slow path: a duck future resolved through the pump. The waiter task
+    // owns the event between consumption and resolution; cancellation either
+    // aborts the waiter before it consumes (mpsc recv is cancel-safe) or the
+    // pump requeues the in-flight event.
+    let fut = new_rust_future(py, shard)?;
+    let waiter_fut = fut.clone_ref(py);
+    let waiter_shard = shard;
     let state = Arc::clone(state);
-    future_into_py_with_locals(py, locals, async move {
+    let join = crate::pyloop::runtime().spawn(async move {
         let event = state.lock().await.next().await;
-        Python::attach(|py| build_event(py, event))
-    })
+        let payload = ResolvePayload::Op(Box::new(ReceiveResolve {
+            event,
+            state,
+            build_event,
+        }));
+        waiter_shard.push(crate::pyloop::PumpEvent::Resolve {
+            fut: waiter_fut,
+            payload,
+        });
+    });
+    fut.get().set_abort(AbortHook::Tokio(join.abort_handle()));
+    Ok(fut.into_bound(py).into_any())
 }
 
 pub fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyResult<Py<PyAny>> {
@@ -530,21 +616,36 @@ where
 
 pub fn try_send_or_await<'py, T: Send + 'static>(
     py: Python<'py>,
-    locals: &TaskLocals,
+    shard: Shard,
     tx: &mpsc::Sender<T>,
     event: T,
 ) -> PyResult<Bound<'py, PyAny>> {
     match try_push(tx, event) {
         TryPush::Sent => ready_awaitable(py, py.None()),
         TryPush::Full(event) => {
-            let locals = locals.clone();
+            // Backpressure wait as a duck future. Cancellation aborts the
+            // waiter; an aborted `send` never enqueues, so the message is
+            // consistently "not sent".
+            let fut = new_rust_future(py, shard)?;
+            let waiter_fut = fut.clone_ref(py);
+            let waiter_shard = shard;
             let tx = tx.clone();
-            future_into_py_with_locals(py, locals, async move {
-                tx.send(event)
-                    .await
-                    .map_err(|_| into_pyerr(AsgiError::SendAfterClose))?;
-                Python::attach(|py| Ok(py.None()))
-            })
+            let join = crate::pyloop::runtime().spawn(async move {
+                let sent = tx.send(event).await.is_ok();
+                let payload = ResolvePayload::Simple(Box::new(move |py| {
+                    if sent {
+                        Ok(py.None())
+                    } else {
+                        Err(into_pyerr(AsgiError::SendAfterClose))
+                    }
+                }));
+                waiter_shard.push(crate::pyloop::PumpEvent::Resolve {
+                    fut: waiter_fut,
+                    payload,
+                });
+            });
+            fut.get().set_abort(AbortHook::Tokio(join.abort_handle()));
+            Ok(fut.into_bound(py).into_any())
         },
         TryPush::Closed(_) => Err(into_pyerr(AsgiError::SendAfterClose)),
     }

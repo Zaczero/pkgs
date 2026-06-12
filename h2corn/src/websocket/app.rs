@@ -31,9 +31,7 @@ impl RunningWebSocketApp {
     }
 }
 
-pub(super) fn start_websocket_app(
-    ctx: WebSocketContext,
-) -> Result<RunningWebSocketApp, H2CornError> {
+pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp {
     let WebSocketContext {
         request: ctx,
         admission,
@@ -47,24 +45,18 @@ pub(super) fn start_websocket_app(
     let app = Arc::clone(&ctx.connection.app);
     let task_send_state = send_state.clone();
 
-    let app_task = spawn(start_app_call(&app, move |py, app| {
+    let app_task = spawn(start_app_call(&app, move |py, _app, shard| {
         let scope = build_websocket_scope(py, &ctx, scope_subprotocols.as_ref())?;
-        let receive = Py::new(
-            py,
-            PyWebSocketReceive::new_stream(app.locals.clone(), recv_rx),
-        )?
-        .into_bound(py)
-        .into_any();
-        let send = Py::new(
-            py,
-            PyWebSocketSend::new(app.locals.clone(), task_send_state, send_tx),
-        )?
-        .into_bound(py)
-        .into_any();
+        let receive = Py::new(py, PyWebSocketReceive::new_stream(shard, recv_rx))?
+            .into_bound(py)
+            .into_any();
+        let send = Py::new(py, PyWebSocketSend::new(shard, task_send_state, send_tx))?
+            .into_bound(py)
+            .into_any();
         Ok((scope.into_any(), receive, send))
-    })?);
+    }));
 
-    Ok(RunningWebSocketApp {
+    RunningWebSocketApp {
         recv_tx,
         requested_subprotocols,
         send_state,
@@ -72,5 +64,5 @@ pub(super) fn start_websocket_app(
         send_rx,
         app_task,
         _admission: admission,
-    })
+    }
 }

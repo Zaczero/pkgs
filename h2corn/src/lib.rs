@@ -17,6 +17,7 @@ mod header_value;
 mod hpack;
 mod http;
 mod proxy;
+mod pyloop;
 mod python;
 mod runtime;
 mod sendfile;
@@ -27,7 +28,7 @@ mod websocket;
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -40,14 +41,11 @@ use header_value::header_value_is_valid;
 use proxy::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use pyo3::conversion::FromPyObjectOwned;
 use pyo3::prelude::*;
-use pyo3::sync::OnceExt;
 use pyo3::types::PyAnyMethods;
-use pyo3_async_runtimes::tokio::{
-    future_into_py_with_locals, get_current_locals, init as init_tokio,
-};
 use smallvec::SmallVec;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 
+use crate::pyloop::{PumpEvent, ResolvePayload, ShardHandle, new_rust_future};
 use crate::runtime::SharedApp;
 
 const TOKIO_EVENT_INTERVAL: u32 = 31;
@@ -175,6 +173,12 @@ impl<'py> PyConfig<'py> {
             max_header_block_size: self.nonzero_usize("h2_max_header_block_size")?,
             max_inbound_frame_size: NonZeroU32::new(self.get("h2_max_inbound_frame_size")?)
                 .expect("configured inbound frame size is non-zero"),
+            initial_stream_window_size: NonZeroU32::new(self.get("h2_initial_stream_window_size")?)
+                .expect("configured stream window is non-zero"),
+            initial_connection_window_size: NonZeroU32::new(
+                self.get("h2_initial_connection_window_size")?,
+            )
+            .expect("configured connection window is non-zero"),
             timeout_response_stall: self.optional_duration("h2_timeout_response_stall")?,
         })
     }
@@ -371,8 +375,7 @@ fn parse_bind_target(raw: &str, fd_is_unix: bool) -> PyResult<BindTarget> {
     })
 }
 
-fn init_tokio_runtime(py: Python<'_>, worker_threads: usize) -> PyResult<()> {
-    static TOKIO_INIT: Once = Once::new();
+fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
     static TOKIO_WORKER_THREADS: OnceLock<usize> = OnceLock::new();
 
     if let Some(initialized_threads) = TOKIO_WORKER_THREADS.get() {
@@ -388,13 +391,14 @@ fn init_tokio_runtime(py: Python<'_>, worker_threads: usize) -> PyResult<()> {
         let _ = TOKIO_WORKER_THREADS.set(worker_threads);
     }
 
-    TOKIO_INIT.call_once_py_attached(py, || {
-        let mut builder = TokioRuntimeBuilder::new_multi_thread();
-        builder.worker_threads(worker_threads);
-        builder.event_interval(TOKIO_EVENT_INTERVAL);
-        builder.global_queue_interval(TOKIO_GLOBAL_QUEUE_INTERVAL);
-        builder.enable_all();
-        init_tokio(builder);
+    pyloop::init_runtime(|| {
+        TokioRuntimeBuilder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .event_interval(TOKIO_EVENT_INTERVAL)
+            .global_queue_interval(TOKIO_GLOBAL_QUEUE_INTERVAL)
+            .enable_all()
+            .build()
+            .expect("tokio runtime construction succeeds")
     });
     Ok(())
 }
@@ -422,22 +426,54 @@ fn serve_fds<'py>(
     retire_trigger: Option<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let config = PyConfig(config).server_config()?;
-    init_tokio_runtime(py, config.runtime_threads)?;
+    init_tokio_runtime(config.runtime_threads)?;
     let config: &'static ServerConfig = Box::leak(Box::new(config));
 
-    let locals = get_current_locals(py)?;
+    let main_shard = ShardHandle::from_running_loop(py)?;
     let limits = runtime::RuntimeLimits::new(config, retire_trigger).map(Arc::new);
-    let app = Arc::new(SharedApp {
-        app,
-        locals: locals.clone(),
-        limits,
+
+    // Extra loop shards only run on free-threaded builds; on a GIL build the
+    // loop_threads setting is a no-op (the GIL would serialize the loops
+    // anyway), so it is silently capped to the single main loop.
+    let loop_count = if cfg!(Py_GIL_DISABLED) {
+        config.loop_threads
+    } else {
+        1
+    };
+    let mut shard_threads = Vec::new();
+    let mut shards = vec![main_shard];
+    for index in 1..loop_count {
+        let thread = pyloop::spawn_shard_thread(index)?;
+        shards.push(thread.shard);
+        shard_threads.push(thread);
+    }
+    let app = Arc::new(SharedApp::new(app, shards.into_boxed_slice(), limits));
+
+    // The Python side awaits this duck future; it resolves when the server
+    // future completes (shutdown or fatal error).
+    let server_done = new_rust_future(py, main_shard)?;
+    let resolve_fut = server_done.clone_ref(py);
+    pyloop::runtime().spawn(async move {
+        let result =
+            server::serve_from_fds(app, fds.into_boxed_slice(), config, shutdown_trigger).await;
+        // Extra shard loops idle once connections are gone; stop and join
+        // them off the async path before resolving the awaited future.
+        if !shard_threads.is_empty() {
+            let _ = tokio::task::spawn_blocking(move || {
+                for thread in shard_threads {
+                    thread.shutdown();
+                }
+            })
+            .await;
+        }
+        main_shard.push(PumpEvent::Resolve {
+            fut: resolve_fut,
+            payload: ResolvePayload::Simple(Box::new(move |py| {
+                result.into_pyresult().map(|()| py.None())
+            })),
+        });
     });
-    future_into_py_with_locals(py, locals, async move {
-        server::serve_from_fds(app, fds.into_boxed_slice(), config, shutdown_trigger)
-            .await
-            .into_pyresult()?;
-        Python::attach(|py| Ok(py.None()))
-    })
+    Ok(server_done.into_bound(py).into_any())
 }
 
 #[pymodule]
@@ -492,6 +528,12 @@ mod tests {
         config.setattr("h2_max_header_block_size", 76_543).unwrap();
         config
             .setattr("h2_max_inbound_frame_size", 0x0001_0000)
+            .unwrap();
+        config
+            .setattr("h2_initial_stream_window_size", 0x0008_0000)
+            .unwrap();
+        config
+            .setattr("h2_initial_connection_window_size", 0x0010_0000)
             .unwrap();
     }
 
@@ -585,6 +627,14 @@ mod tests {
             Some(76_543),
         );
         assert_eq!(extracted.http2.max_inbound_frame_size.get(), 0x0001_0000);
+        assert_eq!(
+            extracted.http2.initial_stream_window_size.get(),
+            0x0008_0000
+        );
+        assert_eq!(
+            extracted.http2.initial_connection_window_size.get(),
+            0x0010_0000
+        );
     }
 
     fn assert_timeout_and_limit_config(extracted: &ServerConfig) {

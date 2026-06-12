@@ -5,16 +5,16 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use pyo3_async_runtimes::TaskLocals;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
-    HttpInboundEvent, ReceiveStateMachine, buffered_or_send, build_http_inbound_event,
+    EventSource, HttpInboundEvent, Requeueable, buffered_or_send, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
 use crate::error::IntoPyResult;
 use crate::http::app::HttpSendState;
+use crate::pyloop::Shard;
 use crate::runtime::StreamInput;
 
 #[derive(Debug)]
@@ -27,83 +27,77 @@ struct HttpReceiveState {
 enum HttpReceiveKind {
     NoBody(AtomicBool),
     Single(Mutex<Option<Bytes>>),
-    Stream(Arc<AsyncMutex<HttpReceiveState>>),
+    Stream(Arc<AsyncMutex<Requeueable<HttpReceiveState>>>),
 }
 
-impl ReceiveStateMachine for HttpReceiveState {
-    type Event = HttpInboundEvent;
-
-    fn try_next(&mut self) -> Option<Self::Event> {
-        if self.disconnected {
-            return Some(HttpInboundEvent::HttpDisconnect);
-        }
-
-        match self.rx.try_recv() {
-            Ok(StreamInput::Data(body)) => Some(HttpInboundEvent::Request {
+impl HttpReceiveState {
+    fn map_input(&mut self, input: Option<StreamInput>) -> HttpInboundEvent {
+        match input {
+            Some(StreamInput::Data(body)) => HttpInboundEvent::Request {
                 body,
                 more_body: true,
-            }),
-            Ok(StreamInput::EndStream) => Some(HttpInboundEvent::Request {
+            },
+            Some(StreamInput::EndStream) => HttpInboundEvent::Request {
                 body: Bytes::new(),
                 more_body: false,
-            }),
-            Err(TryRecvError::Empty) => None,
-            Ok(StreamInput::Reset(_)) | Err(TryRecvError::Disconnected) => {
+            },
+            Some(StreamInput::Reset(_)) | None => {
                 self.disconnected = true;
-                Some(HttpInboundEvent::HttpDisconnect)
+                HttpInboundEvent::HttpDisconnect
             },
         }
     }
+}
 
-    async fn next(&mut self) -> Self::Event {
-        if let Some(event) = self.try_next() {
-            event
-        } else {
-            match self.rx.recv().await {
-                Some(StreamInput::Data(body)) => HttpInboundEvent::Request {
-                    body,
-                    more_body: true,
-                },
-                Some(StreamInput::EndStream) => HttpInboundEvent::Request {
-                    body: Bytes::new(),
-                    more_body: false,
-                },
-                Some(StreamInput::Reset(_)) | None => {
-                    self.disconnected = true;
-                    HttpInboundEvent::HttpDisconnect
-                },
-            }
+impl EventSource for HttpReceiveState {
+    type Event = HttpInboundEvent;
+
+    fn try_pull(&mut self) -> Option<Self::Event> {
+        if self.disconnected {
+            return Some(HttpInboundEvent::HttpDisconnect);
         }
+        match self.rx.try_recv() {
+            Ok(input) => Some(self.map_input(Some(input))),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(self.map_input(None)),
+        }
+    }
+
+    async fn pull(&mut self) -> Self::Event {
+        let input = self.rx.recv().await;
+        self.map_input(input)
     }
 }
 
-#[pyclass(frozen, freelist = 256)]
+#[pyclass(frozen)]
 pub struct PyHttpReceive {
-    locals: TaskLocals,
+    shard: Shard,
     kind: HttpReceiveKind,
 }
 
 impl PyHttpReceive {
-    pub(crate) const fn new_no_body(locals: TaskLocals) -> Self {
+    pub(crate) const fn new_no_body(shard: Shard) -> Self {
         Self {
-            locals,
+            shard,
             kind: HttpReceiveKind::NoBody(AtomicBool::new(false)),
         }
     }
 
-    pub(crate) fn new_stream(locals: TaskLocals, rx: mpsc::Receiver<StreamInput>) -> Self {
+    pub(crate) fn new_stream(shard: Shard, rx: mpsc::Receiver<StreamInput>) -> Self {
         Self {
-            locals,
-            kind: HttpReceiveKind::Stream(Arc::new(AsyncMutex::new(HttpReceiveState {
-                rx,
-                disconnected: false,
-            }))),
+            shard,
+            kind: HttpReceiveKind::Stream(Arc::new(AsyncMutex::new(Requeueable::new(
+                HttpReceiveState {
+                    rx,
+                    disconnected: false,
+                },
+            )))),
         }
     }
 
-    pub(crate) const fn new_single(locals: TaskLocals, body: Bytes) -> Self {
+    pub(crate) const fn new_single(shard: Shard, body: Bytes) -> Self {
         Self {
-            locals,
+            shard,
             kind: HttpReceiveKind::Single(Mutex::new(Some(body))),
         }
     }
@@ -131,22 +125,22 @@ impl PyHttpReceive {
                 },
             ),
             HttpReceiveKind::Stream(state) => {
-                return receive_or_await(py, &self.locals, state, build_http_inbound_event);
+                return receive_or_await(py, self.shard, state, build_http_inbound_event);
             },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)
     }
 }
 
-#[pyclass(frozen, freelist = 256)]
+#[pyclass(frozen)]
 pub struct PyHttpSend {
-    locals: TaskLocals,
+    shard: Shard,
     state: HttpSendState,
 }
 
 impl PyHttpSend {
-    pub(crate) const fn new(locals: TaskLocals, state: HttpSendState) -> Self {
-        Self { locals, state }
+    pub(crate) const fn new(shard: Shard, state: HttpSendState) -> Self {
+        Self { shard, state }
     }
 }
 
@@ -158,6 +152,6 @@ impl PyHttpSend {
         message: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let event = parse_http_outbound_event(message).into_pyresult()?;
-        buffered_or_send(py, &self.locals, self.state.push_or_forward(event))
+        buffered_or_send(py, self.shard, self.state.push_or_forward(event))
     }
 }

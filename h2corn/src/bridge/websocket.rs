@@ -2,17 +2,17 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use pyo3_async_runtimes::TaskLocals;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
-    ReceiveStateMachine, WebSocketInboundEvent, WebSocketOutboundEvent, buffered_or_send,
+    EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent, buffered_or_send,
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_awaitable,
     receive_or_await,
 };
 use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, IntoPyResult, into_pyerr};
+use crate::pyloop::Shard;
 
 #[derive(Clone)]
 pub struct WebSocketSendState {
@@ -139,10 +139,10 @@ impl WebSocketReceiveState {
     }
 }
 
-impl ReceiveStateMachine for WebSocketReceiveState {
+impl EventSource for WebSocketReceiveState {
     type Event = WebSocketInboundEvent;
 
-    fn try_next(&mut self) -> Option<Self::Event> {
+    fn try_pull(&mut self) -> Option<Self::Event> {
         match self.phase {
             WebSocketReceivePhase::PendingConnect => {
                 self.phase = WebSocketReceivePhase::Open;
@@ -161,35 +161,28 @@ impl ReceiveStateMachine for WebSocketReceiveState {
         }
     }
 
-    async fn next(&mut self) -> Self::Event {
-        if let Some(event) = self.try_next() {
-            event
-        } else {
-            match self.rx.recv().await {
-                Some(event) => self.finalize_event(event),
-                None => self.terminal_disconnect(),
-            }
+    async fn pull(&mut self) -> Self::Event {
+        match self.rx.recv().await {
+            Some(event) => self.finalize_event(event),
+            None => self.terminal_disconnect(),
         }
     }
 }
 
-#[pyclass(frozen, freelist = 256)]
+#[pyclass(frozen)]
 pub struct PyWebSocketReceive {
-    locals: TaskLocals,
-    state: Arc<AsyncMutex<WebSocketReceiveState>>,
+    shard: Shard,
+    state: Arc<AsyncMutex<Requeueable<WebSocketReceiveState>>>,
 }
 
 impl PyWebSocketReceive {
-    pub(crate) fn new_stream(
-        locals: TaskLocals,
-        rx: mpsc::Receiver<WebSocketInboundEvent>,
-    ) -> Self {
+    pub(crate) fn new_stream(shard: Shard, rx: mpsc::Receiver<WebSocketInboundEvent>) -> Self {
         Self {
-            locals,
-            state: Arc::new(AsyncMutex::new(WebSocketReceiveState {
+            shard,
+            state: Arc::new(AsyncMutex::new(Requeueable::new(WebSocketReceiveState {
                 rx,
                 phase: WebSocketReceivePhase::PendingConnect,
-            })),
+            }))),
         }
     }
 }
@@ -197,24 +190,24 @@ impl PyWebSocketReceive {
 #[pymethods]
 impl PyWebSocketReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        receive_or_await(py, &self.locals, &self.state, build_websocket_inbound_event)
+        receive_or_await(py, self.shard, &self.state, build_websocket_inbound_event)
     }
 }
 
-#[pyclass(frozen, freelist = 256)]
+#[pyclass(frozen)]
 pub struct PyWebSocketSend {
-    locals: TaskLocals,
+    shard: Shard,
     state: WebSocketSendState,
     tx: mpsc::Sender<WebSocketOutboundEvent>,
 }
 
 impl PyWebSocketSend {
     pub(crate) const fn new(
-        locals: TaskLocals,
+        shard: Shard,
         state: WebSocketSendState,
         tx: mpsc::Sender<WebSocketOutboundEvent>,
     ) -> Self {
-        Self { locals, state, tx }
+        Self { shard, state, tx }
     }
 }
 
@@ -229,7 +222,7 @@ impl PyWebSocketSend {
         match self.state.push_or_forward(event) {
             WebSocketSendDisposition::Buffered => ready_awaitable(py, py.None()),
             WebSocketSendDisposition::Forward(event) => {
-                buffered_or_send(py, &self.locals, Some((self.tx.clone(), event)))
+                buffered_or_send(py, self.shard, Some((self.tx.clone(), event)))
             },
             WebSocketSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }
