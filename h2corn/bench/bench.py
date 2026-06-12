@@ -29,11 +29,15 @@ SERVERS = {
     'h2corn': [
         'h2corn',
         'bench.bench_app:app',
+        '--loop',
+        'asyncio',
     ],
     # uvicorn: supports h1, ws (no h2)
     'uvicorn': [
         'uvicorn',
         'bench.bench_app:app',
+        '--loop',
+        'asyncio',
     ],
     # hypercorn: supports h1, h2, ws
     'hypercorn': [
@@ -42,12 +46,13 @@ SERVERS = {
         '--access-logfile',
         '-',
     ],
-    # gunicorn (uvicorn workers): supports h1, ws (no h2)
+    # gunicorn (uvicorn workers): supports h1, ws (no h2). UvicornH11Worker is
+    # uvicorn's own worker pinned to the stdlib asyncio loop + h11 parser.
     'gunicorn': [
         'gunicorn',
         'bench.bench_app:app',
         '-k',
-        'uvicorn.workers.UvicornWorker',
+        'uvicorn.workers.UvicornH11Worker',
         '--access-logfile',
         '-',
     ],
