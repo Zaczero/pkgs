@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use pyo3::prelude::*;
@@ -152,10 +151,10 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
     let (send_state, send_buffer) = WebSocketSendState::new();
     let requested_subprotocols = meta.requested_subprotocols;
     let scope_subprotocols = requested_subprotocols.clone();
-    let app = Arc::clone(&ctx.connection.app);
+    let app = ctx.connection.app;
     let task_send_state = send_state.clone();
 
-    let app_task = spawn(start_app_call(&app, move |py, _app, shard| {
+    let app_task = spawn(start_app_call(app, move |py, _app, shard| {
         let scope = build_websocket_scope(py, &ctx, scope_subprotocols.as_ref())?;
         let receive = Py::new(py, PyWebSocketReceive::new_stream(shard, recv_rx))?
             .into_bound(py)

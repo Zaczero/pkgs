@@ -14,7 +14,7 @@ use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, UpgradeReques
 use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
-use crate::error::{ErrorExt, H2CornError, Http1Error};
+use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
 use crate::frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::hpack::BytesStr;
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
@@ -379,7 +379,12 @@ where
         header_state.host_header_index,
     ) {
         Ok(request_target) => request_target,
-        Err(H2CornError::Http1(Http1Error::ConflictingAbsoluteFormAuthority)) => {
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::Http1(Http1Error::ConflictingAbsoluteFormAuthority)
+            ) =>
+        {
             write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
             return Ok(None);
         },
@@ -901,7 +906,7 @@ mod tests {
         read_request,
     };
     use crate::config::{BindTarget, Http1Config, Http2Config, ProxyConfig, ServerConfig};
-    use crate::error::{H2CornError, Http1Error};
+    use crate::error::{ErrorKind, H2CornError, Http1Error};
     use crate::frame;
     use crate::h1::{ConnectionPersistence, RequestBodyKind, UpgradeRequest};
     use crate::http::body::RequestBodyState;
@@ -1267,8 +1272,8 @@ mod tests {
             .expect_err("overlong buffered chunk size line is rejected");
 
         assert!(matches!(
-            err,
-            H2CornError::Http1(Http1Error::InvalidChunkSize)
+            err.kind(),
+            ErrorKind::Http1(Http1Error::InvalidChunkSize)
         ));
     }
 
@@ -1287,8 +1292,8 @@ mod tests {
             .expect_err("oversized trailer section is rejected");
 
         assert!(matches!(
-            err,
-            H2CornError::Http1(Http1Error::MalformedHeaderLine)
+            err.kind(),
+            ErrorKind::Http1(Http1Error::MalformedHeaderLine)
         ));
     }
 
@@ -1311,8 +1316,8 @@ mod tests {
         writer.await.expect("writer task finishes");
 
         assert!(matches!(
-            err,
-            H2CornError::Http1(Http1Error::RequestBodyLimitExceeded)
+            err.kind(),
+            ErrorKind::Http1(Http1Error::RequestBodyLimitExceeded)
         ));
         rx.try_recv().unwrap_err();
         assert_eq!(&buffer[..], b"hello\r\n");
@@ -1328,16 +1333,16 @@ mod tests {
     #[test]
     fn parse_chunk_size_rejects_empty_and_invalid_values() {
         assert!(matches!(
-            parse_chunk_size(b""),
-            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+            parse_chunk_size(b"").unwrap_err().kind(),
+            ErrorKind::Http1(Http1Error::InvalidChunkSize)
         ));
         assert!(matches!(
-            parse_chunk_size(b";foo=bar"),
-            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+            parse_chunk_size(b";foo=bar").unwrap_err().kind(),
+            ErrorKind::Http1(Http1Error::InvalidChunkSize)
         ));
         assert!(matches!(
-            parse_chunk_size(b"1 g"),
-            Err(H2CornError::Http1(Http1Error::InvalidChunkSize))
+            parse_chunk_size(b"1 g").unwrap_err().kind(),
+            ErrorKind::Http1(Http1Error::InvalidChunkSize)
         ));
     }
 }

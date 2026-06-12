@@ -27,7 +27,7 @@ use tokio::time::{Instant as TokioInstant, sleep_until, timeout, timeout_at};
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
-use crate::error::{ErrorExt, H2CornError, H2Error};
+use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
 use crate::frame::{
     self, ErrorCode, FrameFlags, FrameType, PeerSettings, RawFrame, StreamId, WindowIncrement,
 };
@@ -1102,10 +1102,12 @@ fn map_frame_ingest_result(
     match frame {
         Ok(Some(frame)) => Ok(IngestEvent::Frame(frame)),
         Ok(None) => Ok(IngestEvent::PeerClosed),
-        Err(H2CornError::H2(error @ H2Error::FrameLengthExceedsPeerMax { .. })) => {
-            Ok(IngestEvent::FrameLengthExceeded(error))
+        Err(err) => match err.into_kind() {
+            ErrorKind::H2(error @ H2Error::FrameLengthExceedsPeerMax { .. }) => {
+                Ok(IngestEvent::FrameLengthExceeded(error))
+            },
+            kind => Err(kind.into()),
         },
-        Err(err) => Err(err),
     }
 }
 

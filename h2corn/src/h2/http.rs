@@ -39,7 +39,7 @@ struct H2HttpTransport<'a> {
 }
 
 struct HttpRequestTask {
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     connection: ConnectionHandle,
     admission: RequestAdmission,
     body_bytes_read: Option<Arc<AtomicU64>>,
@@ -171,7 +171,7 @@ pub(super) async fn spawn_request_stream(
             return Ok(());
         },
     };
-    let Some(prepared) = prepare_request_execution(&context.connection.app, plan) else {
+    let Some(prepared) = prepare_request_execution(context.connection.app, plan) else {
         connection
             .send_headers(
                 stream_id,
@@ -316,7 +316,7 @@ where
 }
 
 async fn run_no_body_http_request(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     admission: RequestAdmission,
     transport: &mut H2HttpTransport<'_>,
 ) -> Result<(), H2CornError> {

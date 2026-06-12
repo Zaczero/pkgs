@@ -447,7 +447,11 @@ fn serve_fds<'py>(
         shards.push(thread.shard);
         shard_threads.push(thread);
     }
-    let app = Arc::new(SharedApp::new(app, shards.into_boxed_slice(), limits));
+    let app: runtime::AppState = Box::leak(Box::new(SharedApp::new(
+        app,
+        shards.into_boxed_slice(),
+        limits,
+    )));
 
     // The Python side awaits this duck future; it resolves when the server
     // future completes (shutdown or fatal error).

@@ -571,8 +571,8 @@ mod tests {
             .expect_err("missing start is an app contract error");
 
         assert!(matches!(
-            err,
-            error::H2CornError::HttpResponse(
+            err.kind(),
+            error::ErrorKind::HttpResponse(
                 error::HttpResponseError::AppReturnedWithoutStartingResponse
             )
         ));
@@ -631,8 +631,8 @@ mod tests {
         };
 
         assert!(matches!(
-            err,
-            error::H2CornError::HttpResponse(
+            err.kind(),
+            error::ErrorKind::HttpResponse(
                 error::HttpResponseError::BodyBeforeStart
                     | error::HttpResponseError::PathsendMixedWithBody
             )
@@ -710,8 +710,8 @@ mod tests {
             .handle_pathsend_substitute(&mut actions, http::types::status_code::NOT_FOUND)
             .expect_err("pathsend before start is invalid");
         assert!(matches!(
-            err,
-            error::H2CornError::HttpResponse(error::HttpResponseError::PathsendBeforeStart)
+            err.kind(),
+            error::ErrorKind::HttpResponse(error::HttpResponseError::PathsendBeforeStart)
         ));
         assert!(actions.is_empty());
     }
@@ -746,8 +746,8 @@ mod tests {
             .handle_pathsend_substitute(&mut actions, http::types::status_code::NOT_FOUND)
             .expect_err("substituting after body is invalid");
         assert!(matches!(
-            err,
-            error::H2CornError::HttpResponse(error::HttpResponseError::PathsendMixedWithBody)
+            err.kind(),
+            error::ErrorKind::HttpResponse(error::HttpResponseError::PathsendMixedWithBody)
         ));
         assert!(actions.is_empty());
     }
@@ -801,8 +801,8 @@ mod tests {
             http::response::ResponseAction::AbortIncomplete,
         ));
         assert!(matches!(
-            err,
-            error::H2CornError::HttpResponse(
+            err.kind(),
+            error::ErrorKind::HttpResponse(
                 error::HttpResponseError::AppReturnedWithoutCompletingResponse
             ),
         ));

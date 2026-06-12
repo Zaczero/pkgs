@@ -24,7 +24,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
 use crate::config::{BindTarget, ServerConfig};
-use crate::error::{ErrorExt, H2CornError, H2Error, ProxyError};
+use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error, ProxyError};
 use crate::frame::{self, ErrorCode, FrameReader};
 use crate::proxy::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
@@ -310,7 +310,7 @@ fn configure_tcp_stream(stream: &TcpStream) {
 
 fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
     tasks: &mut JoinSet<()>,
-    app: &AppState,
+    app: AppState,
     config: &'static ServerConfig,
     accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
@@ -324,7 +324,6 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
                 host: addr.ip().to_string().into(),
                 port: Some(addr.port()),
             });
-            let app = Arc::clone(app);
             if TLS {
                 let acceptor = config
                     .tls
@@ -371,7 +370,6 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
                 port: None,
             });
             let (reader, writer) = stream.into_split();
-            let app = Arc::clone(app);
             tasks.spawn(async move {
                 let _ = serve_connection::<_, _, P, HTTP1>(
                     reader,
@@ -447,7 +445,7 @@ where
         };
         accept_start = next_accept_start;
 
-        spawn_connection::<P, HTTP1, TLS>(&mut tasks, &app, config, accepted, shutdown_rx.clone());
+        spawn_connection::<P, HTTP1, TLS>(&mut tasks, app, config, accepted, shutdown_rx.clone());
     }
 
     Ok(())
@@ -517,7 +515,12 @@ where
     .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
     let connection_start = match connection_start {
         Ok(start) => start,
-        Err(H2CornError::Proxy(ProxyError::InvalidHttp2Preface)) => {
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::Proxy(ProxyError::InvalidHttp2Preface)
+            ) =>
+        {
             write_invalid_h2_preface_goaway(&mut writer).await?;
             return ProxyError::InvalidHttp2Preface.err();
         },

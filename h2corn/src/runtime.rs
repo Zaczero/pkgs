@@ -53,7 +53,10 @@ impl SharedApp {
     }
 }
 
-pub type AppState = Arc<SharedApp>;
+/// Leaked to `'static` like the shards and `ServerConfig`: the app outlives
+/// every connection of its `serve()` call, so per-request handle copies are
+/// plain pointer copies instead of cross-thread `Arc` refcount traffic.
+pub type AppState = &'static SharedApp;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ShutdownKind {
@@ -228,14 +231,17 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    pub(crate) fn new(connection: ConnectionContext, request: RequestHead) -> Self {
+    /// Boxed at creation: at 608 bytes, moving this by value through the
+    /// per-request future chain would otherwise replicate it in every
+    /// suspended layer of the spawned task.
+    pub(crate) fn new(connection: ConnectionContext, request: RequestHead) -> Box<Self> {
         let scope_overrides =
             resolve_scope_overrides(&request, connection.config, &connection.info);
-        Self {
+        Box::new(Self {
             connection,
             request,
             scope_overrides,
-        }
+        })
     }
 }
 
@@ -246,7 +252,7 @@ pub enum StreamInput {
     Reset(ErrorCode),
 }
 
-pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission> {
+pub fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
             permit: None,
@@ -268,11 +274,11 @@ pub fn try_acquire_request_admission(app: &AppState) -> Option<RequestAdmission>
 /// the eager Task all run on the loop thread. This function never touches
 /// Python and never fails — startup errors arrive through the returned
 /// future like any other app failure.
-pub fn start_app_call<B>(app: &AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
+pub fn start_app_call<B>(app: AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
 where
     B: for<'py> FnOnce(
             Python<'py>,
-            &AppState,
+            AppState,
             Shard,
         )
             -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>
@@ -282,7 +288,7 @@ where
     let slot = TaskSlot::new();
     let shard = app.pick_shard();
     shard.push(PumpEvent::StartTask {
-        app: Arc::clone(app),
+        app,
         build_args: Box::new(build_args),
         slot: Arc::clone(&slot),
     });
@@ -353,11 +359,11 @@ pub mod test_fixtures {
     }
 
     pub fn connection_context(py: Python<'_>) -> ConnectionContext {
-        let app = Arc::new(SharedApp::new(
+        let app: super::AppState = Box::leak(Box::new(SharedApp::new(
             py.None(),
             Box::new([crate::pyloop::ShardHandle::test_stub(py)]),
             None,
-        ));
+        )));
         let info = Arc::new(ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
             Some(ServerAddr {

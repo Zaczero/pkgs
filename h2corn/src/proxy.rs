@@ -571,7 +571,7 @@ mod tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
     use super::*;
-    use crate::error::H2CornError;
+    use crate::error::ErrorKind;
     use crate::frame::FrameReader;
 
     #[test]
@@ -664,8 +664,8 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(
-            err,
-            H2CornError::Proxy(ProxyError::ClosedWhileReadingProxyV2Header)
+            err.kind(),
+            ErrorKind::Proxy(ProxyError::ClosedWhileReadingProxyV2Header)
         ));
     }
 }

@@ -6,8 +6,15 @@ use pyo3::{PyErr, PyResult};
 use thiserror::Error;
 use tokio::task::JoinError;
 
+/// Crate-wide error: a single pointer wide so every `Result<T, H2CornError>`
+/// on the request path (and every future holding one) stays small; the
+/// payload is boxed because errors are cold.
 #[derive(Debug, Error)]
-pub enum H2CornError {
+#[error(transparent)]
+pub struct H2CornError(Box<ErrorKind>);
+
+#[derive(Debug, Error)]
+pub enum ErrorKind {
     #[error(transparent)]
     Python(#[from] PyErr),
     #[error(transparent)]
@@ -32,6 +39,15 @@ pub enum H2CornError {
     WebSocket(#[from] WebSocketError),
 }
 
+impl<E> From<E> for H2CornError
+where
+    E: Into<ErrorKind>,
+{
+    fn from(err: E) -> Self {
+        Self(Box::new(err.into()))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailureDomain {
     Configuration,
@@ -42,15 +58,27 @@ pub enum FailureDomain {
 }
 
 impl H2CornError {
+    pub(crate) const fn kind(&self) -> &ErrorKind {
+        &self.0
+    }
+
+    pub(crate) fn into_kind(self) -> ErrorKind {
+        *self.0
+    }
+
     pub(crate) const fn failure_domain(&self) -> FailureDomain {
-        match self {
-            Self::Io(_) => FailureDomain::TransportIo,
-            Self::Join(_) => FailureDomain::InternalInvariant,
-            Self::Config(_) => FailureDomain::Configuration,
-            Self::Python(_) | Self::Asgi(_) | Self::HttpResponse(_) => FailureDomain::AppContract,
-            Self::Http1(_) | Self::H2(_) | Self::Proxy(_) => FailureDomain::PeerProtocol,
-            Self::Pathsend(err) => err.failure_domain(),
-            Self::WebSocket(err) => err.failure_domain(),
+        match self.kind() {
+            ErrorKind::Io(_) => FailureDomain::TransportIo,
+            ErrorKind::Join(_) => FailureDomain::InternalInvariant,
+            ErrorKind::Config(_) => FailureDomain::Configuration,
+            ErrorKind::Python(_) | ErrorKind::Asgi(_) | ErrorKind::HttpResponse(_) => {
+                FailureDomain::AppContract
+            },
+            ErrorKind::Http1(_) | ErrorKind::H2(_) | ErrorKind::Proxy(_) => {
+                FailureDomain::PeerProtocol
+            },
+            ErrorKind::Pathsend(err) => err.failure_domain(),
+            ErrorKind::WebSocket(err) => err.failure_domain(),
         }
     }
 }
@@ -721,10 +749,10 @@ pub fn into_pyerr<E>(err: E) -> PyErr
 where
     E: Into<H2CornError>,
 {
-    match err.into() {
-        H2CornError::Python(err) => err,
-        H2CornError::Config(err) => PyValueError::new_err(err.to_string()),
-        H2CornError::Asgi(AsgiError::SendAfterClose) => {
+    match err.into().into_kind() {
+        ErrorKind::Python(err) => err,
+        ErrorKind::Config(err) => PyValueError::new_err(err.to_string()),
+        ErrorKind::Asgi(AsgiError::SendAfterClose) => {
             PyOSError::new_err(AsgiError::SendAfterClose.to_string())
         },
         other => PyRuntimeError::new_err(other.to_string()),

@@ -38,7 +38,7 @@ pub fn prepare_request_input(input: RequestInputPlan) -> RequestInputChannels {
 }
 
 pub fn prepare_request_execution<WebSocketMeta>(
-    app: &AppState,
+    app: AppState,
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {
     let RequestLaunchPlan { route, input } = plan;

@@ -2,7 +2,6 @@ mod buffered;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 pub use buffered::HttpSendState;
 use bytes::Bytes;
@@ -37,16 +36,16 @@ pub struct RunningHttpRequest<F> {
 }
 
 pub fn start_asgi_http_request(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
 ) -> RunningHttpRequest<impl Future<Output = Result<(), H2CornError>> + Send> {
     let head_only = ctx.request.method == Method::HEAD;
     let supports_response_trailers = ctx.request.accepts_trailers();
     let (send_state, send_buffer) = HttpSendState::new();
-    let app = Arc::clone(&ctx.connection.app);
+    let app = ctx.connection.app;
 
-    let app_task = start_app_call(&app, move |py, _app, shard| {
+    let app_task = start_app_call(app, move |py, _app, shard| {
         let scope = build_http_scope(py, &ctx)?.into_any();
         let receive = match request_body {
             HttpRequestBody::NoBody => PyHttpReceive::new_no_body(shard),
@@ -71,7 +70,7 @@ pub fn start_asgi_http_request(
 }
 
 pub async fn run_asgi_http_request<T>(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
     transport: &mut T,

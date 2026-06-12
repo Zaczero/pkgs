@@ -270,7 +270,7 @@ impl ResponseLogState {
 }
 
 pub async fn run_http_request<T, F>(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
     transport: &mut T,

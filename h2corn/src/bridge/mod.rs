@@ -734,7 +734,7 @@ mod tests {
         HttpInboundEvent, WebSocketOutboundEvent, build_http_inbound_event,
         parse_http_outbound_event, parse_websocket_outbound_event,
     };
-    use crate::error::{AsgiContainer, AsgiError, H2CornError};
+    use crate::error::{AsgiContainer, AsgiError, ErrorKind};
     use crate::python::py_dict;
 
     fn init_python() {
@@ -751,8 +751,8 @@ mod tests {
 
             let err = parse_http_outbound_event(&message).unwrap_err();
             assert!(matches!(
-                err,
-                H2CornError::Asgi(AsgiError::MissingField {
+                err.kind(),
+                ErrorKind::Asgi(AsgiError::MissingField {
                     container: AsgiContainer::HttpResponseStart,
                     field: "status",
                 })
@@ -807,8 +807,8 @@ mod tests {
             for message in [&missing_payload, &ambiguous_payload] {
                 let err = parse_websocket_outbound_event(message).unwrap_err();
                 assert!(matches!(
-                    err,
-                    H2CornError::Asgi(AsgiError::WebSocketSendRequiresExactlyOnePayload)
+                    err.kind(),
+                    ErrorKind::Asgi(AsgiError::WebSocketSendRequiresExactlyOnePayload)
                 ));
             }
             Ok(())

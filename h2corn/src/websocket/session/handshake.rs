@@ -206,7 +206,7 @@ mod tests {
         PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendDisposition,
         WebSocketSendState,
     };
-    use crate::error::{H2CornError, HttpResponseError};
+    use crate::error::{ErrorKind, H2CornError, HttpResponseError};
     use crate::http::response::FinalResponseBody;
     use crate::http::types::{ResponseHeaders, status_code};
     use crate::runtime::RequestAdmission;
@@ -434,8 +434,8 @@ mod tests {
         .expect_err("incomplete denial response is rejected");
 
         assert!(matches!(
-            err,
-            H2CornError::HttpResponse(HttpResponseError::AppReturnedWithoutCompletingResponse)
+            err.kind(),
+            ErrorKind::HttpResponse(HttpResponseError::AppReturnedWithoutCompletingResponse)
         ));
         assert_eq!(transport.calls, [
             "start_denial_response",

@@ -45,7 +45,7 @@ where
 }
 
 fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatusCode> {
-    let error::H2CornError::Pathsend(err) = err else {
+    let error::ErrorKind::Pathsend(err) = err.kind() else {
         return None;
     };
     match err.io_error_kind() {

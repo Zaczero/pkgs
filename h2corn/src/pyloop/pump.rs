@@ -80,7 +80,7 @@ fn process_event(py: Python<'_>, shard: Shard, event: PumpEvent) {
             build_args,
             slot,
         } => {
-            if let Err(err) = start_task(py, shard, &app, build_args, &slot) {
+            if let Err(err) = start_task(py, shard, app, build_args, &slot) {
                 slot.fill(Err(H2CornError::from(err)));
             }
         },
@@ -97,7 +97,7 @@ fn process_event(py: Python<'_>, shard: Shard, event: PumpEvent) {
 fn start_task(
     py: Python<'_>,
     shard: Shard,
-    app: &AppState,
+    app: AppState,
     build_args: super::BuildArgs,
     slot: &SlotHandle<Result<(), H2CornError>>,
 ) -> PyResult<()> {

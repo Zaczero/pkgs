@@ -17,7 +17,7 @@ use self::http::{
 use crate::async_util::send_best_effort;
 use crate::config::ServerConfig;
 use crate::console::run_http_request;
-use crate::error::{ErrorExt, H2CornError, Http1Error};
+use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
 use crate::frame::PeerSettings;
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::http::app::HttpRequestBody;
@@ -201,7 +201,7 @@ where
 {
     match upgrade {
         UpgradeRequest::WebSocket { key, meta } => {
-            let Some(admission) = try_acquire_request_admission(&context.connection.app) else {
+            let Some(admission) = try_acquire_request_admission(context.connection.app) else {
                 write_empty_response(
                     &mut writer,
                     context.connection.config,
@@ -297,7 +297,7 @@ where
 }
 
 async fn handle_http_request<R, W>(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     body_kind: RequestBodyKind,
     persistence: ConnectionPersistence,
     io: H1Io<'_, R, W>,
@@ -330,7 +330,7 @@ where
         return Ok(ConnectionPersistence::Close);
     }
 
-    let Some(admission) = try_acquire_request_admission(&ctx.connection.app) else {
+    let Some(admission) = try_acquire_request_admission(ctx.connection.app) else {
         write_empty_response(
             writer,
             ctx.connection.config,
@@ -374,7 +374,7 @@ where
 }
 
 async fn handle_streaming_http_request<R, W>(
-    ctx: RequestContext,
+    ctx: Box<RequestContext>,
     body_kind: RequestBodyKind,
     persistence: ConnectionPersistence,
     count_body_bytes: bool,
@@ -441,8 +441,11 @@ where
     };
     match result {
         Ok(((), ())) => Ok(persistence),
-        Err(H2CornError::Http1(Http1Error::RequestBodyLimitExceeded))
-            if transport.response_log_state().status.is_none() =>
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::Http1(Http1Error::RequestBodyLimitExceeded)
+            ) && transport.response_log_state().status.is_none() =>
         {
             transport
                 .write_empty_response(status_code::PAYLOAD_TOO_LARGE, true)

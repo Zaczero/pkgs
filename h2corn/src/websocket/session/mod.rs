@@ -203,7 +203,7 @@ pub trait AcceptedWebSocketTransport {
 }
 
 pub struct WebSocketContext {
-    pub(crate) request: RequestContext,
+    pub(crate) request: Box<RequestContext>,
     pub(crate) admission: RequestAdmission,
     pub(crate) meta: WebSocketRequestMeta,
 }

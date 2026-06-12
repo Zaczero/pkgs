@@ -45,12 +45,11 @@ const PUMP_BATCH_MAX: usize = 64;
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Per-request closure that builds `(scope, receive, send)` under the GIL on
-/// the loop thread. Same shape as the old `start_app_call` callback so call
-/// sites stay unchanged.
+/// the loop thread.
 pub type BuildArgs = Box<
     dyn for<'py> FnOnce(
             Python<'py>,
-            &AppState,
+            AppState,
             Shard,
         )
             -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>
