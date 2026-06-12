@@ -104,18 +104,22 @@ fn start_task(
     slot: &SlotHandle<Result<(), H2CornError>>,
 ) -> PyResult<()> {
     let (scope, receive, send) = build_args(py, app, shard)?;
-    let args = [scope.as_ptr(), receive.as_ptr(), send.as_ptr()];
+    // Leading scratch slot for `PY_VECTORCALL_ARGUMENTS_OFFSET`: a
+    // pure-Python `app.__call__` bound method prepends `self` in place
+    // instead of copying the argument array.
+    let mut args = [null_mut(), scope.as_ptr(), receive.as_ptr(), send.as_ptr()];
     let coroutine = unsafe {
         // SAFETY: the GIL is held; the argument array contains three valid
-        // borrowed object pointers which outlive the call; no kwargs are
+        // borrowed object pointers which outlive the call, preceded by the
+        // offset-flag scratch slot the callee may clobber; no kwargs are
         // passed; `PyObject_Vectorcall` returns a new owned reference or
         // sets a Python exception.
         Bound::from_owned_ptr_or_err(
             py,
             ffi::PyObject_Vectorcall(
                 app.app.as_ptr(),
-                args.as_ptr().cast_mut(),
-                args.len(),
+                args.as_mut_ptr().add(1),
+                3 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
                 null_mut(),
             ),
         )?

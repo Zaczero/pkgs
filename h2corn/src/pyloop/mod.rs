@@ -1,10 +1,12 @@
 //! Loop-affine batched pump: the only bridge between tokio threads and the
 //! Python event loop.
 //!
-//! Tokio threads never attach to Python on the request path. They push
-//! [`PumpEvent`]s into a shard queue and ring a doorbell — one
-//! `call_soon_threadsafe(pump)` per empty→non-empty transition. The pump runs
-//! as a plain loop callback with the GIL already held: it builds scopes,
+//! Tokio threads push [`PumpEvent`]s into a shard queue and ring a doorbell,
+//! at most once per empty→non-empty transition. On POSIX the ring is a plain
+//! `write(2)` on an fd the loop watches — tokio threads never attach to
+//! Python on the request path; on Windows it is one coalesced
+//! `call_soon_threadsafe(pump)` (see [`Doorbell`]). The pump runs as a plain
+//! loop callback with the GIL already held: it builds scopes,
 //! vectorcalls the app, constructs eagerly-started `asyncio.Task`s, and
 //! resolves [`RustFuture`]s by invoking their stored done-callbacks directly.
 //!
@@ -18,7 +20,8 @@ mod pump;
 mod slot;
 
 use std::collections::VecDeque;
-use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -62,6 +65,80 @@ pub type Shard = &'static ShardHandle;
 
 pub type SlotHandle<T> = std::sync::Arc<TaskSlot<T>>;
 
+/// Cross-thread pump wakeup, chosen per platform so the Linux hot path
+/// stays a single `write(2)`:
+///
+/// - **Linux**: an eventfd watched via `loop.add_reader` — ring is one syscall,
+///   no Python attach off the loop thread.
+/// - **Other POSIX** (macOS, BSDs): a non-blocking pipe watched via
+///   `loop.add_reader` (kqueue) — same architecture, different fd.
+/// - **Windows**: asyncio's Proactor loop has no `add_reader`, so the ring is
+///   `call_soon_threadsafe(pump)` — one coalesced Python attach per
+///   empty→non-empty queue transition (never per event). The pump-only
+///   invariant is unaffected: task creation and future resolution still happen
+///   only inside the pump callback.
+#[cfg(unix)]
+struct Doorbell {
+    #[cfg(target_os = "linux")]
+    fd: OwnedFd,
+    #[cfg(not(target_os = "linux"))]
+    read: OwnedFd,
+    #[cfg(not(target_os = "linux"))]
+    write: OwnedFd,
+}
+
+#[cfg(unix)]
+impl Doorbell {
+    fn new() -> rustix::io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::event::{EventfdFlags, eventfd};
+            let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+            Ok(Self { fd })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            use rustix::pipe::{PipeFlags, pipe_with};
+            let (read, write) = pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?;
+            Ok(Self { read, write })
+        }
+    }
+
+    /// The fd the event loop watches with `add_reader`.
+    fn reader_fd(&self) -> RawFd {
+        #[cfg(target_os = "linux")]
+        return self.fd.as_raw_fd();
+        #[cfg(not(target_os = "linux"))]
+        return self.read.as_raw_fd();
+    }
+
+    /// Ring from any thread with a plain `write(2)`. A full counter/pipe
+    /// (`EAGAIN`) still leaves the fd readable, and a closing loop stops
+    /// reading: both are safe to ignore.
+    fn ring(&self) {
+        #[cfg(target_os = "linux")]
+        let _ = rustix::io::write(&self.fd, &1_u64.to_ne_bytes());
+        #[cfg(not(target_os = "linux"))]
+        let _ = rustix::io::write(&self.write, &[1_u8]);
+    }
+
+    /// Drain pending wakeups; called by the pump before processing. The
+    /// `armed` flag coalesces rings, so one read clears everything on Linux
+    /// (eventfd counter) and a short loop suffices on the pipe path.
+    fn drain(&self) {
+        #[cfg(target_os = "linux")]
+        {
+            let mut buf = [0_u8; 8];
+            let _ = rustix::io::read(&self.fd, &mut buf);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let mut buf = [0_u8; 64];
+            while matches!(rustix::io::read(&self.read, &mut buf), Ok(n) if n == buf.len()) {}
+        }
+    }
+}
+
 pub enum PumpEvent {
     /// Start an ASGI app call: build args, vectorcall the app, create an
     /// eager task, deliver the outcome through the slot.
@@ -89,10 +166,10 @@ pub enum PumpEvent {
 pub struct ShardHandle {
     queue: Mutex<VecDeque<PumpEvent>>,
     armed: AtomicBool,
-    /// Doorbell rung by tokio threads with a plain `write(2)` — no Python
-    /// attach ever happens off the loop thread. The loop watches the fd via
-    /// `loop.add_reader(fd, pump)`.
-    doorbell: OwnedFd,
+    /// POSIX-only wakeup fd; see [`Doorbell`] for the per-platform ring
+    /// strategy (Windows rings through `call_soon_threadsafe` instead).
+    #[cfg(unix)]
+    doorbell: Doorbell,
     call_soon_threadsafe: Py<PyAny>,
     call_soon: Py<PyAny>,
     event_loop: Py<PyAny>,
@@ -126,11 +203,8 @@ impl ShardHandle {
     pub fn from_event_loop(py: Python<'_>, event_loop: &Bound<'_, PyAny>) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = event_loop.clone();
-        let doorbell = rustix::event::eventfd(
-            0,
-            rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
-        )
-        .map_err(|err| {
+        #[cfg(unix)]
+        let doorbell = Doorbell::new().map_err(|err| {
             PyRuntimeError::new_err(format!("failed to create shard doorbell: {err}"))
         })?;
         let tasks_mod = py.import("asyncio.tasks")?;
@@ -147,6 +221,7 @@ impl ShardHandle {
         let shard: Shard = Box::leak(Box::new(Self {
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
+            #[cfg(unix)]
             doorbell,
             call_soon_threadsafe,
             call_soon,
@@ -163,10 +238,13 @@ impl ShardHandle {
         }));
 
         let pump = pump::Pump::into_callable(py, shard)?;
-        // The pump doubles as the doorbell reader callback.
+        // The pump doubles as the doorbell reader callback. On Windows there
+        // is no fd to watch (Proactor has no `add_reader`); rings go through
+        // `call_soon_threadsafe` instead.
+        #[cfg(unix)]
         shard.event_loop.bind(py).call_method1(
             pyo3::intern!(py, "add_reader"),
-            (shard.doorbell.as_raw_fd(), pump.bind(py)),
+            (shard.doorbell.reader_fd(), pump.bind(py)),
         )?;
         shard
             .pump
@@ -182,11 +260,8 @@ impl ShardHandle {
         Box::leak(Box::new(Self {
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
-            doorbell: rustix::event::eventfd(
-                0,
-                rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
-            )
-            .expect("test eventfd"),
+            #[cfg(unix)]
+            doorbell: Doorbell::new().expect("test doorbell"),
             call_soon_threadsafe: py.None(),
             call_soon: py.None(),
             event_loop: py.None(),
@@ -207,11 +282,13 @@ impl ShardHandle {
         py: Python<'py>,
         coroutine: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Positional: (coro,); keyword values follow in `task_kwnames`
+        // Leading scratch slot for `PY_VECTORCALL_ARGUMENTS_OFFSET`, then
+        // positional (coro,); keyword values follow in `task_kwnames`
         // order — ("loop", "eager_start", "name") on 3.12+, ("loop", "name")
         // on 3.11 (the unused tail slot is simply not read).
-        let args: [*mut ffi::PyObject; 4] = if self.eager {
+        let mut args: [*mut ffi::PyObject; 5] = if self.eager {
             [
+                std::ptr::null_mut(),
                 coroutine.as_ptr(),
                 self.event_loop.as_ptr(),
                 // SAFETY: `Py_True` returns the immortal True singleton.
@@ -220,6 +297,7 @@ impl ShardHandle {
             ]
         } else {
             [
+                std::ptr::null_mut(),
                 coroutine.as_ptr(),
                 self.event_loop.as_ptr(),
                 self.task_name.as_ptr(),
@@ -228,15 +306,16 @@ impl ShardHandle {
         };
         // SAFETY: the GIL is held; all read pointers are live borrowed
         // objects; `task_kwnames` names exactly the keyword values that
-        // follow the single positional argument; the call returns a new
-        // owned reference or sets a Python exception.
+        // follow the single positional argument; args[0] is the offset-flag
+        // scratch slot the callee may clobber; the call returns a new owned
+        // reference or sets a Python exception.
         unsafe {
             Bound::from_owned_ptr_or_err(
                 py,
                 ffi::PyObject_Vectorcall(
                     self.task_type.as_ptr(),
-                    args.as_ptr().cast_mut(),
-                    1,
+                    args.as_mut_ptr().add(1),
+                    1 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
                     self.task_kwnames.as_ptr(),
                 ),
             )
@@ -270,8 +349,9 @@ impl ShardHandle {
     }
 
     /// Enqueue an event from any thread and ring the doorbell if the pump is
-    /// not already scheduled. The ring is a single `write(2)` on the
-    /// eventfd — tokio threads never attach to Python.
+    /// not already scheduled. On POSIX the ring is a single `write(2)` —
+    /// tokio threads never attach to Python; on Windows it is one coalesced
+    /// `call_soon_threadsafe(pump)` per empty→non-empty transition.
     pub fn push(&self, event: PumpEvent) {
         self.queue.lock().push_back(event);
         if !self.armed.swap(true, Ordering::AcqRel) {
@@ -280,15 +360,20 @@ impl ShardHandle {
     }
 
     fn ring(&self) {
-        // A full eventfd counter (EAGAIN) still leaves the fd readable, and
-        // a closing loop stops reading: both are safe to ignore.
-        let _ = rustix::io::write(&self.doorbell, &1_u64.to_ne_bytes());
+        #[cfg(unix)]
+        self.doorbell.ring();
+        // A closed loop raises from `call_soon_threadsafe`: same benign
+        // teardown case as a POSIX loop that stopped reading the fd.
+        #[cfg(windows)]
+        Python::attach(|py| {
+            let _ = self.schedule_pump(py, &self.call_soon_threadsafe);
+        });
     }
 
-    /// Drain the doorbell counter; called by the pump before processing.
+    /// Drain pending doorbell wakeups; called by the pump before processing.
     pub(super) fn drain_doorbell(&self) {
-        let mut buf = [0_u8; 8];
-        let _ = rustix::io::read(&self.doorbell, &mut buf);
+        #[cfg(unix)]
+        self.doorbell.drain();
     }
 
     fn schedule_pump(&self, py: Python<'_>, scheduler: &Py<PyAny>) -> PyResult<()> {
@@ -296,9 +381,22 @@ impl ShardHandle {
             .pump
             .get(py)
             .expect("pump is initialized before events are pushed");
+        // One-positional-arg vectorcall with the offset-flag scratch slot —
+        // exactly what `PyObject_CallOneArg` desugars to (that wrapper is
+        // not exposed for PyPy). The scratch slot lets a pure-Python
+        // `call_soon*` bound method prepend `self` in place.
+        let mut args = [std::ptr::null_mut(), pump.as_ptr()];
         // SAFETY: the GIL is held; both pointers are live owned objects;
-        // `PyObject_CallOneArg` returns a new reference or sets an exception.
-        let result = unsafe { ffi::PyObject_CallOneArg(scheduler.as_ptr(), pump.as_ptr()) };
+        // args[0] is the offset-flag scratch slot the callee may clobber;
+        // the call returns a new reference or sets an exception.
+        let result = unsafe {
+            ffi::PyObject_Vectorcall(
+                scheduler.as_ptr(),
+                args.as_mut_ptr().add(1),
+                1 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                std::ptr::null_mut(),
+            )
+        };
         if result.is_null() {
             return Err(PyErr::fetch(py));
         }
@@ -320,13 +418,14 @@ impl ShardHandle {
     /// a loop already closed during teardown is the expected benign case.
     pub fn stop(&self) {
         Python::attach(|py| {
-            let result = self
-                .event_loop
-                .bind(py)
-                .call_method1(
-                    pyo3::intern!(py, "remove_reader"),
-                    (self.doorbell.as_raw_fd(),),
-                )
+            #[cfg(unix)]
+            let removed = self.event_loop.bind(py).call_method1(
+                pyo3::intern!(py, "remove_reader"),
+                (self.doorbell.reader_fd(),),
+            );
+            #[cfg(windows)]
+            let removed: PyResult<()> = Ok(());
+            let result = removed
                 .and_then(|_| self.event_loop.bind(py).getattr(pyo3::intern!(py, "stop")))
                 .and_then(|stop| self.call_soon_threadsafe.bind(py).call1((stop,)));
             drop(result);

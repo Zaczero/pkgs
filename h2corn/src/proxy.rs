@@ -93,6 +93,9 @@ pub enum Cidr {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionPeer {
     Tcp(SocketAddr),
+    /// Constructed only by the (unix-only) UDS accept path; the variant
+    /// stays unconditional so peer handling reads platform-neutral.
+    #[cfg_attr(windows, allow(dead_code))]
     Unix,
 }
 

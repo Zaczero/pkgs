@@ -138,8 +138,16 @@ pub(super) async fn receive_handshake_event(
         tokio::select! {
             () = running_app.send_buffer.wait_ready() => {}
             result = &mut running_app.app_task => {
-                flatten_app_result(result)
-                    .and_then(|()| WebSocketError::AppEndedBeforeHandshake.err())?;
+                flatten_app_result(result)?;
+                // The app finished cleanly, but a handshake event it sent
+                // just before returning may have landed in the buffer in the
+                // same instant — both select branches were ready and either
+                // could win. The event happens-before task completion, so a
+                // final drain is authoritative.
+                return running_app.send_buffer.take_ready().map_or_else(
+                    || WebSocketError::AppEndedBeforeHandshake.err(),
+                    parse_handshake_event,
+                );
             }
         }
     }
@@ -172,6 +180,10 @@ where
     )
     .await?;
 
+    // The app finishing and its final body event landing in the buffer can
+    // become ready in the same instant; buffered events happen-before task
+    // completion, so they are always drained before the result is finalized.
+    let mut app_result = None;
     loop {
         if response.is_complete() {
             break;
@@ -191,17 +203,15 @@ where
             continue;
         }
 
+        if let Some(result) = app_result.take() {
+            finalize_response(&mut response, &mut transport, &mut actions, result).await?;
+            return Ok((transport.tx_bytes, true));
+        }
+
         tokio::select! {
             () = running_app.send_buffer.wait_ready() => {}
             result = &mut running_app.app_task => {
-                finalize_response(
-                    &mut response,
-                    &mut transport,
-                    &mut actions,
-                    flatten_app_result(result),
-                )
-                .await?;
-                return Ok((transport.tx_bytes, true));
+                app_result = Some(flatten_app_result(result));
             }
         }
     }
