@@ -14,6 +14,7 @@ from dataclasses import replace
 from ._cli import ImportSettings
 from ._lifespan import _cancel_task, _serve_with_lifespan
 from ._socket import (
+    _bound_addresses,
     _bound_sockets,
     _drain_fd,
     _nonblocking_pipe,
@@ -154,7 +155,10 @@ def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
     with _bound_sockets(config, socket_owner=(identity.uid, identity.gid)) as socks:
         from ._lib import emit_banner
 
-        emit_banner(config)
+        # Banner shows the RESOLVED addresses (meaningful when binding port 0).
+        emit_banner(
+            replace(config, bind=_bound_addresses(socks), host=None, port=None)
+        )
         fds = tuple(sock.fileno() for sock in socks)
         workers: dict[int, BaseProcess] = {}
         worker_controls: dict[int, int] = {}

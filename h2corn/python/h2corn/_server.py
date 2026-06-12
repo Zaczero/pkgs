@@ -6,13 +6,13 @@ import re
 import sys
 import warnings
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from ._cli import ImportSettings, run_cli
 from ._config import Config
 from ._lifespan import _cancel_task, _serve_with_lifespan
-from ._socket import _bound_sockets
+from ._socket import _bound_addresses, _bound_sockets
 
 TYPE_CHECKING = False
 
@@ -213,6 +213,24 @@ class Server:
         self.app = app
         self.config = Config() if config is None else config
         self._shutdown_future: asyncio.Future[str] | None = None
+        self._addresses: tuple[str, ...] = ()
+
+    @property
+    def addresses(self) -> tuple[str, ...]:
+        """
+        Resolved listener addresses, in `Config.bind` string form.
+
+        Empty until [`serve()`][h2corn.Server.serve] has bound the listeners.
+        Unlike `Config.bind`, these carry the port the kernel actually
+        assigned — bind to port `0` and read the address back from here:
+
+            server = Server(app, Config(bind=('127.0.0.1:0',)))
+            task = asyncio.create_task(server.serve())
+            while not server.addresses:
+                await asyncio.sleep(0)
+            host, _, port = server.addresses[0].rpartition(':')
+        """
+        return self._addresses
 
     def shutdown(self, kind: Literal['stop', 'restart'] = 'stop') -> None:
         """
@@ -278,22 +296,30 @@ class Server:
                 socket_owner=(identity.uid, identity.gid),
             ) as socks,
         ):
+            self._addresses = _bound_addresses(socks)
             _drop_process_privileges(identity)
             with _pidfile(self.config):
                 from ._lib import emit_banner
 
-                emit_banner(self.config)
+                # replace() must clear the synced host/port convenience pair: bind
+                # plus host/port together fail validation.
+                emit_banner(
+                    replace(self.config, bind=self._addresses, host=None, port=None)
+                )
 
                 async def _serve_app(app: ASGIApp):
                     await self._serve_fds(app, [sock.detach() for sock in socks])
 
-                await _serve_with_lifespan(
-                    self.app,
-                    _serve_app,
-                    mode=self.config.lifespan,
-                    startup_timeout=self.config.timeout_lifespan_startup,
-                    shutdown_timeout=self.config.timeout_lifespan_shutdown,
-                )
+                try:
+                    await _serve_with_lifespan(
+                        self.app,
+                        _serve_app,
+                        mode=self.config.lifespan,
+                        startup_timeout=self.config.timeout_lifespan_startup,
+                        shutdown_timeout=self.config.timeout_lifespan_shutdown,
+                    )
+                finally:
+                    self._addresses = ()
 
 
 def serve(app: ASGIApp, config: Config | None = None) -> None:

@@ -9,11 +9,11 @@ from fastapi import FastAPI, WebSocket
 from h2corn import Config
 
 from tests._support import (
-    find_free_port,
     open_h2_connection,
     read_http1_response,
     read_raw_h2_frames,
     running_server,
+    server_port,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -673,10 +673,10 @@ async def _assert_h2_websocket_close_code(
     config: Config | None = None,
     extensions: str | None = None,
 ) -> None:
-    config = config or Config(port=find_free_port())
-    async with running_server(app, config):
+    config = config or Config(port=0)
+    async with running_server(app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
             extensions=extensions,
         )
@@ -710,10 +710,10 @@ async def _assert_http1_websocket_close_code(
     config: Config | None = None,
     extensions: str | None = None,
 ) -> None:
-    config = config or Config(port=find_free_port())
-    async with running_server(app, config):
+    config = config or Config(port=0)
+    async with running_server(app, config) as server:
         reader, writer, _ = await _http1_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
             extensions=extensions,
         )
@@ -806,11 +806,11 @@ async def test_websocket_rfc8441_echo_round_trip() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, subprotocol, echoed = await asyncio.wait_for(
             _h2_websocket_round_trip(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 text='hello',
                 subprotocol='chat',
@@ -833,10 +833,12 @@ async def test_http1_websocket_upgrade_round_trip() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         headers, echoed = await asyncio.wait_for(
-            _http1_websocket_round_trip(port=config.port, path='/ws', text='hello'),
+            _http1_websocket_round_trip(
+                port=server_port(server), path='/ws', text='hello'
+            ),
             timeout=5,
         )
 
@@ -854,10 +856,10 @@ async def test_http1_websocket_idle_session_ignores_timeout_request_body_idle() 
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port(), timeout_request_body_idle=0.05)
-    async with running_server(websocket_app, config):
+    config = Config(port=0, timeout_request_body_idle=0.05)
+    async with running_server(websocket_app, config) as server:
         reader, writer, _ = await _http1_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -883,10 +885,10 @@ async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> 
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port(), timeout_request_body_idle=0.05)
-    async with running_server(websocket_app, config):
+    config = Config(port=0, timeout_request_body_idle=0.05)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -931,11 +933,11 @@ async def test_websocket_accepts_requested_subprotocol_across_transports(
         await websocket.accept(subprotocol='superchat')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, _ = await asyncio.wait_for(
             handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 subprotocol='chat, superchat',
             ),
@@ -958,10 +960,10 @@ async def test_http1_websocket_scope_omits_empty_subprotocols() -> None:
         events.append(await receive())
         await send({'type': 'websocket.close'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _http1_websocket_handshake(port=config.port, path='/ws'),
+            _http1_websocket_handshake(port=server_port(server), path='/ws'),
             timeout=5,
         )
 
@@ -996,15 +998,15 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
         await send({'type': 'websocket.close'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         root_path='/root',
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
             handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 extra_headers=[
                     (
@@ -1035,10 +1037,12 @@ async def test_http1_websocket_invalid_version_is_rejected_with_426() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _http1_websocket_handshake(port=config.port, path='/ws', version='12'),
+            _http1_websocket_handshake(
+                port=server_port(server), path='/ws', version='12'
+            ),
             timeout=5,
         )
 
@@ -1055,10 +1059,10 @@ async def test_http1_websocket_missing_key_is_rejected_with_400() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _http1_websocket_handshake(port=config.port, path='/ws', key=None),
+            _http1_websocket_handshake(port=server_port(server), path='/ws', key=None),
             timeout=5,
         )
 
@@ -1075,11 +1079,11 @@ async def test_http1_websocket_non_get_method_is_rejected_with_400() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _http1_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 method='POST',
             ),
@@ -1097,10 +1101,10 @@ async def test_http1_h2c_upgrade_round_trip() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'upgraded'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
-            _http1_h2c_upgrade_request(port=config.port),
+            _http1_h2c_upgrade_request(port=server_port(server)),
             timeout=5,
         )
 
@@ -1119,10 +1123,10 @@ async def test_websocket_multiple_messages_round_trip_on_one_stream() -> None:
             await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -1178,10 +1182,10 @@ async def test_websocket_fragmented_text_message_round_trip() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -1245,10 +1249,10 @@ async def test_websocket_fragmented_text_message_with_interleaved_ping_round_tri
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -1347,10 +1351,10 @@ async def test_h2_websocket_single_frame_split_across_data_frames_round_trip() -
         await websocket.close()
 
     frame = _encode_ws_client_frame(0x1, b'hello')
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
         )
         try:
@@ -1405,10 +1409,10 @@ async def test_websocket_denial_response_extension_round_trip_across_transports(
 ) -> None:
     app, state = _build_websocket_denial_response_app()
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            handshake(port=config.port, path='/ws'),
+            handshake(port=server_port(server), path='/ws'),
             timeout=5,
         )
 
@@ -1432,10 +1436,10 @@ async def test_websocket_unary_denial_response_is_fixed_length_across_transports
 ) -> None:
     app, state = _build_websocket_unary_denial_response_app()
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            handshake(port=config.port, path='/ws'),
+            handshake(port=server_port(server), path='/ws'),
             timeout=5,
         )
 
@@ -1461,10 +1465,10 @@ async def test_websocket_scope_omits_empty_subprotocols() -> None:
         events.append(await receive())
         await send({'type': 'websocket.close'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _h2_websocket_handshake(port=config.port, path='/ws'),
+            _h2_websocket_handshake(port=server_port(server), path='/ws'),
             timeout=5,
         )
 
@@ -1491,11 +1495,11 @@ async def test_http1_websocket_scope_exposes_requested_subprotocols() -> None:
         })
         await send({'type': 'websocket.close'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _http1_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 subprotocol='chat, superchat',
             ),
@@ -1525,11 +1529,11 @@ async def test_websocket_scope_exposes_requested_subprotocols() -> None:
         })
         await send({'type': 'websocket.close'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _h2_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 subprotocol='chat, superchat',
             ),
@@ -1551,10 +1555,10 @@ async def test_websocket_invalid_version_is_rejected_with_426() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _h2_websocket_handshake(port=config.port, path='/ws', version='12'),
+            _h2_websocket_handshake(port=server_port(server), path='/ws', version='12'),
             timeout=5,
         )
 
@@ -1571,11 +1575,11 @@ async def test_websocket_rejects_unrequested_subprotocol() -> None:
         await websocket.accept(subprotocol='other')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _h2_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 subprotocol='chat',
             ),
@@ -1597,10 +1601,10 @@ async def test_websocket_rejects_extension_negotiation_headers() -> None:
         )
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            _h2_websocket_handshake(port=config.port, path='/ws'),
+            _h2_websocket_handshake(port=server_port(server), path='/ws'),
             timeout=5,
         )
 
@@ -1651,17 +1655,17 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
         disconnects.append(await receive())
         disconnect_event.set()
 
-    config = Config(port=find_free_port(), timeout_graceful_shutdown=0.2)
+    config = Config(port=0, timeout_graceful_shutdown=0.2)
     async with running_server(app, config) as server:
         if transport == 'h2':
             reader, writer, _conn, stream_id, initial = await _h2_open_websocket_stream(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
             )
             assert initial is None
         else:
             reader, writer, _ = await _http1_open_websocket_stream(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
             )
         getattr(server, shutdown_method)()
@@ -1706,11 +1710,11 @@ async def test_websocket_send_after_disconnect_raises_oserror(
         else:
             state['send_after_close'] = 'allowed'
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         if transport == 'h2':
             reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
             )
             assert initial is None
@@ -1722,7 +1726,7 @@ async def test_websocket_send_after_disconnect_raises_oserror(
             writer.write(conn.data_to_send())
         else:
             reader, writer, _ = await _http1_open_websocket_stream(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
             )
             writer.write(_encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')))
@@ -1815,11 +1819,11 @@ async def test_http1_websocket_negotiates_permessage_deflate() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _http1_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 extensions='permessage-deflate',
             ),
@@ -1841,11 +1845,11 @@ async def test_h2_websocket_negotiates_permessage_deflate() -> None:
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, body = await asyncio.wait_for(
             _h2_websocket_handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 extensions='permessage-deflate',
             ),
@@ -1877,11 +1881,11 @@ async def test_websocket_negotiates_permessage_deflate_across_transports(
         await websocket.accept()
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         status, headers, _ = await asyncio.wait_for(
             handshake(
-                port=config.port,
+                port=server_port(server),
                 path='/ws',
                 extensions='permessage-deflate',
             ),
@@ -1904,10 +1908,10 @@ async def test_h2_websocket_permessage_deflate_round_trip() -> None:
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=find_free_port())
-    async with running_server(websocket_app, config):
+    config = Config(port=0)
+    async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, initial = await _h2_open_websocket_stream(
-            port=config.port,
+            port=server_port(server),
             path='/ws',
             extensions='permessage-deflate',
         )
@@ -1977,7 +1981,7 @@ async def test_websocket_message_size_limit_closes_with_1009(
         websocket_app,
         client_frames=[_encode_ws_client_frame(0x1, b'hello')],
         expected_code=1009,
-        config=Config(port=find_free_port(), websocket_max_message_size=4),
+        config=Config(port=0, websocket_max_message_size=4),
     )
 
 
@@ -2003,6 +2007,6 @@ async def test_websocket_compressed_message_size_limit_closes_with_1009(
             )
         ],
         expected_code=1009,
-        config=Config(port=find_free_port(), websocket_max_message_size=4),
+        config=Config(port=0, websocket_max_message_size=4),
         extensions='permessage-deflate',
     )

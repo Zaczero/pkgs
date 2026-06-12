@@ -107,6 +107,11 @@ async def read_h2_response(
 
 
 def find_free_port() -> int:
+    """Allocate a port for SUBPROCESS-spawned servers only.
+
+    Allocate-close-rebind is inherently racy; in-process tests must bind
+    port 0 and read the kernel-assigned port back via `server_port`.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind(('127.0.0.1', 0))
@@ -283,7 +288,7 @@ async def read_http1_response(
 async def running_server(app, config: Config):
     server = Server(app, config)
     task = asyncio.create_task(server.serve())
-    await wait_for_config_binds(config)
+    await wait_for_server(server, task)
     try:
         yield server
     finally:
@@ -298,29 +303,55 @@ async def running_server(app, config: Config):
                 pass
 
 
-async def wait_for_config_binds(config: Config, timeout: float = 5.0) -> None:
+def server_port(server: Server, index: int = 0) -> int:
+    """Kernel-assigned port of the server's `index`-th TCP listener."""
+    ports = [
+        spec.port
+        for address in server.addresses
+        if isinstance(spec := _parse_bind_spec(address), TcpBindSpec)
+    ]
+    if index >= len(ports):
+        raise AssertionError(f'no TCP listener {index}: {server.addresses!r}')
+    return ports[index]
+
+
+async def wait_for_server(
+    server: Server,
+    task: asyncio.Task,
+    timeout: float = 5.0,
+) -> None:
+    """Wait until `server` has bound its listeners and they accept.
+
+    Readiness comes from `Server.addresses` (the resolved binds), so this
+    works for port-0 configs; a failed startup surfaces the task's error
+    instead of timing out.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
+        if task.done():
+            task.result()
+            raise AssertionError('server task finished before binding')
+        if server.addresses:
+            break
+        if loop.time() >= deadline:
+            raise TimeoutError('timed out waiting for the server to bind')
+        await asyncio.sleep(0.01)
+    while True:
         pending_unix = []
         pending_ports = []
-        for bind in config.bind:
+        for bind in server.addresses:
             spec = _parse_bind_spec(bind)
             if isinstance(spec, TcpBindSpec):
-                if spec.port == 0:
-                    pending_ports = None
-                    break
                 pending_ports.append((spec.host, spec.port))
             elif isinstance(spec, UnixBindSpec):
                 pending_unix.append(spec.path)
-        if (
-            pending_ports is not None
-            and all(_port_is_open(host, port) for host, port in pending_ports)
-            and all(path.exists() for path in pending_unix)
+        if all(_port_is_open(host, port) for host, port in pending_ports) and all(
+            path.exists() for path in pending_unix
         ):
             return
         if loop.time() >= deadline:
-            raise TimeoutError(f'timed out waiting for listeners {config.bind}')
+            raise TimeoutError(f'timed out waiting for listeners {server.addresses}')
         await asyncio.sleep(0.01)
 
 

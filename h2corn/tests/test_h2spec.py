@@ -4,7 +4,7 @@ import shutil
 import pytest
 from h2corn import Config
 
-from tests._support import find_free_port, running_server
+from tests._support import running_server, server_port
 
 pytestmark = pytest.mark.asyncio
 
@@ -16,17 +16,17 @@ async def test_h2spec_conformance() -> None:
         await send({'type': 'http.response.body', 'body': b'ok'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         http1=False,
         h2_max_inbound_frame_size=16_384,
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         process = await asyncio.create_subprocess_exec(
             'h2spec',
             '-h',
             '127.0.0.1',
             '-p',
-            str(config.port),
+            str(server_port(server)),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

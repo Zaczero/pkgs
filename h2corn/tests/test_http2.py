@@ -10,13 +10,13 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, PlainTextResponse
 
 from tests._support import (
-    find_free_port,
     h2_request,
     h2_request_details,
     open_h2_connection,
     read_h2_response,
     read_http_request_body,
     running_server,
+    server_port,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -91,13 +91,13 @@ async def test_http2_response_defaults_apply_to_normal_app_responses() -> None:
         await send({'type': 'http.response.body', 'body': b'ok'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         date_header=True,
         response_headers=('x-extra: works',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, response_headers, body = await asyncio.wait_for(
-            h2_request_with_headers(port=config.port),
+            h2_request_with_headers(port=server_port(server)),
             timeout=5,
         )
 
@@ -118,9 +118,11 @@ async def test_h2_request_round_trip() -> None:
         })
         await send({'type': 'http.response.body', 'body': b'hello from h2corn'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == b'hello from h2corn'
@@ -142,9 +144,11 @@ async def test_empty_body_request_omits_empty_state_and_terminal_receive_event()
         second = await receive()
         received.extend((first, second))
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert has_state is False
     assert received == [
@@ -163,10 +167,10 @@ async def test_fastapi_request_state_defaults_without_scope_state() -> None:
         request.state.message = 'ready'
         return PlainTextResponse(request.state.message)
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, path='/state'),
+            h2_request(port=server_port(server), path='/state'),
             timeout=5,
         )
 
@@ -185,9 +189,11 @@ async def test_http_scope_advertises_pathsend_extension() -> None:
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert extensions == {'http.response.pathsend': {}}
     assert client is not None
@@ -206,11 +212,11 @@ async def test_http_scope_advertises_trailer_extension_when_request_accepts_it()
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[(b'te', b'trailers')],
             ),
             timeout=5,
@@ -240,10 +246,10 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
     async def message(request: Request) -> PlainTextResponse:
         return PlainTextResponse(request.app.state.message)
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, path='/message'),
+            h2_request(port=server_port(server), path='/message'),
             timeout=5,
         )
 
@@ -259,11 +265,11 @@ async def test_fastapi_request_headers_work_with_tuple_backed_scope_headers() ->
     async def header(request: Request) -> PlainTextResponse:
         return PlainTextResponse(request.headers['x-demo'])
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 path='/header',
                 extra_headers=[(b'x-demo', b'works')],
             ),
@@ -284,11 +290,12 @@ async def test_scope_headers_support_repeated_iteration_and_synthesized_host() -
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': payload})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        port = server_port(server)
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=port,
                 path='/headers',
                 extra_headers=[(b'x-demo', b'works')],
             ),
@@ -296,7 +303,7 @@ async def test_scope_headers_support_repeated_iteration_and_synthesized_host() -
         )
 
     assert status == 200
-    assert body == f'127.0.0.1:{config.port}|works'.encode()
+    assert body == f'127.0.0.1:{port}|works'.encode()
 
 
 async def test_lifespan_startup_failure_is_reported() -> None:
@@ -311,7 +318,7 @@ async def test_lifespan_startup_failure_is_reported() -> None:
         return FailingLifespan()
 
     fastapi_app = FastAPI(lifespan=lifespan)
-    server = Server(fastapi_app, Config(port=find_free_port()))
+    server = Server(fastapi_app, Config(port=0))
 
     with pytest.raises(RuntimeError, match='boom'):
         await server.serve()
@@ -321,11 +328,11 @@ async def test_h2_header_list_limit_returns_431() -> None:
     async def app(scope, receive, send):
         raise AssertionError('header list limit should reject before the app runs')
 
-    config = Config(port=find_free_port(), h2_max_header_list_size=8)
-    async with running_server(app, config):
+    config = Config(port=0, h2_max_header_list_size=8)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[(b'x-demo', b'0123456789')],
             ),
             timeout=5,
@@ -339,12 +346,12 @@ async def test_h2_header_list_limit_counts_rfc_overhead() -> None:
     async def app(scope, receive, send):
         raise AssertionError('header list limit should reject before the app runs')
 
-    config = Config(port=find_free_port(), h2_max_header_list_size=90)
+    config = Config(port=0, h2_max_header_list_size=90)
     extra_headers = [(f'x{i}'.encode(), b'1') for i in range(10)]
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=extra_headers,
             ),
             timeout=5,
@@ -360,11 +367,11 @@ async def test_h2_content_length_limit_returns_413() -> None:
             'request body size limit should reject before the app runs'
         )
 
-    config = Config(port=find_free_port(), max_request_body_size=4)
-    async with running_server(app, config):
+    config = Config(port=0, max_request_body_size=4)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 method='POST',
                 body=b'hello',
                 extra_headers=[(b'content-length', b'5')],
@@ -386,10 +393,10 @@ async def test_request_body_can_be_consumed() -> None:
         })
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, method='POST', body=b'payload'),
+            h2_request(port=server_port(server), method='POST', body=b'payload'),
             timeout=5,
         )
 
@@ -407,9 +414,11 @@ async def test_request_body_can_be_consumed_across_multiple_data_frames() -> Non
         })
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        reader, writer, conn, authority = await open_h2_connection(port=config.port)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
         try:
             stream_id = conn.get_next_available_stream_id()
             conn.send_headers(
@@ -447,9 +456,11 @@ async def test_request_body_can_be_consumed_across_delayed_small_data_frames() -
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        reader, writer, conn, authority = await open_h2_connection(port=config.port)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
         try:
             stream_id = conn.get_next_available_stream_id()
             conn.send_headers(
@@ -496,9 +507,11 @@ async def test_request_body_can_be_consumed_with_empty_h2_data_frames() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        reader, writer, conn, authority = await open_h2_connection(port=config.port)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
         try:
             stream_id = conn.get_next_available_stream_id()
             conn.send_headers(
@@ -544,9 +557,11 @@ async def test_h2_streaming_response_small_chunks_arrive_in_order() -> None:
             await asyncio.sleep(0.01)
         await send({'type': 'http.response.body', 'body': b'd'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == b'abcd'
@@ -578,11 +593,11 @@ async def test_response_trailers_are_sent_when_request_accepts_them() -> None:
             'headers': [(b'x-finished', b'yes')],
         })
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body, trailers = await asyncio.wait_for(
             h2_request_details(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[(b'te', b'trailers')],
             ),
             timeout=5,
@@ -610,9 +625,11 @@ async def test_response_trailers_require_request_te_trailers() -> None:
             'trailers': True,
         })
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert extensions == {'http.response.pathsend': {}}
     assert status == 500
@@ -635,9 +652,11 @@ async def test_http_response_pathsend_streams_file(tmp_path: Path) -> None:
         })
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == payload
@@ -660,10 +679,10 @@ async def test_http_response_pathsend_synthesizes_content_length_when_missing(
         })
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            h2_request_with_headers(port=config.port),
+            h2_request_with_headers(port=server_port(server)),
             timeout=5,
         )
 
@@ -688,9 +707,11 @@ async def test_http_response_pathsend_streams_large_file(tmp_path: Path) -> None
         })
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == payload
@@ -707,10 +728,10 @@ async def test_h2_head_pathsend_synthesizes_content_length_and_keeps_empty_body(
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, headers, body = await asyncio.wait_for(
-            h2_request_with_headers(port=config.port, method='HEAD'),
+            h2_request_with_headers(port=server_port(server), method='HEAD'),
             timeout=5,
         )
 
@@ -746,11 +767,11 @@ async def test_http_response_pathsend_can_be_followed_by_trailers(
             'headers': [(b'x-finished', b'yes')],
         })
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body, trailers = await asyncio.wait_for(
             h2_request_details(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[(b'te', b'trailers')],
             ),
             timeout=5,
@@ -776,10 +797,10 @@ async def test_starlette_file_response_uses_pathsend(tmp_path: Path) -> None:
     async def download() -> FileResponse:
         return FileResponse(file_path)
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, path='/download'),
+            h2_request(port=server_port(server), path='/download'),
             timeout=5,
         )
 
@@ -803,10 +824,10 @@ async def test_starlette_file_response_accepts_relative_pathsend(
     async def download() -> FileResponse:
         return FileResponse(relative_path)
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, path='/download'),
+            h2_request(port=server_port(server), path='/download'),
             timeout=5,
         )
 
@@ -824,10 +845,10 @@ async def test_starlette_head_file_response_keeps_empty_body(tmp_path: Path) -> 
     async def head_download() -> FileResponse:
         return FileResponse(file_path)
 
-    config = Config(port=find_free_port())
-    async with running_server(fastapi_app, config):
+    config = Config(port=0)
+    async with running_server(fastapi_app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, path='/download', method='HEAD'),
+            h2_request(port=server_port(server), path='/download', method='HEAD'),
             timeout=5,
         )
 
@@ -840,10 +861,10 @@ async def test_h2_head_response_suppresses_app_body() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'hello'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
-            h2_request(port=config.port, method='HEAD'),
+            h2_request(port=server_port(server), method='HEAD'),
             timeout=5,
         )
 
@@ -857,9 +878,11 @@ async def test_h2_no_body_unary_request_can_complete_inline() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'inline'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == b'inline'
@@ -872,9 +895,11 @@ async def test_h2_no_body_request_falls_back_after_initial_await() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'await-before-start'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == b'await-before-start'
@@ -887,9 +912,11 @@ async def test_h2_no_body_request_preserves_buffered_start_when_falling_back() -
         await asyncio.sleep(0)
         await send({'type': 'http.response.body', 'body': b'await-after-start'})
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        status, body = await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
 
     assert status == 200
     assert body == b'await-after-start'
@@ -918,9 +945,9 @@ async def test_h2_disconnect_on_aborted_upload() -> None:
         except Exception as e:
             events.append(f'error: {e}')
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
-        _reader, writer, conn, auth = await open_h2_connection(port=config.port)
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        _reader, writer, conn, auth = await open_h2_connection(port=server_port(server))
         stream_id = conn.get_next_available_stream_id()
         conn.send_headers(
             stream_id,
@@ -960,10 +987,10 @@ async def test_h2_synchronous_app_failure_returns_500() -> None:
 
         return lifespan()
 
-    config = Config(port=find_free_port())
-    async with running_server(app, config):
+    config = Config(port=0)
+    async with running_server(app, config) as server:
         status, _body = await asyncio.wait_for(
-            h2_request(port=config.port, method='GET'),
+            h2_request(port=server_port(server), method='GET'),
             timeout=5,
         )
 

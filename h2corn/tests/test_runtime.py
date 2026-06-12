@@ -228,14 +228,17 @@ async def test_unix_socket_path_rejects_non_socket_files(tmp_path: Path) -> None
 
 async def test_multi_bind_reports_actual_server_port_per_listener() -> None:
     async def app(scope, receive, send):
-        server_port = scope['server'][1]
+        scope_port = scope['server'][1]
         await send({
             'type': 'http.response.start',
             'status': 200,
             'headers': [(b'content-type', b'text/plain')],
         })
-        await send({'type': 'http.response.body', 'body': str(server_port).encode()})
+        await send({'type': 'http.response.body', 'body': str(scope_port).encode()})
 
+    # Two listeners on one host need distinct ports; multiple port-0 binds
+    # deliberately share one ephemeral port (for 0.0.0.0 + [::] pairs), so
+    # this is one of the few in-process cases that must pre-allocate.
     ports = (find_free_port(), find_free_port())
     config = Config(bind=tuple(f'127.0.0.1:{port}' for port in ports))
     async with running_server(app, config):

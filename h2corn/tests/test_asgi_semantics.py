@@ -15,11 +15,11 @@ import pytest
 from h2corn import Config
 
 from tests._support import (
-    find_free_port,
     h2_request,
     open_h2_connection,
     read_h2_response,
     running_server,
+    server_port,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -29,10 +29,8 @@ _VAR: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
-def _config() -> tuple[Config, int]:
-    port = find_free_port()
-    config = Config(bind=(f'127.0.0.1:{port}',), access_log=False, lifespan='off')
-    return config, port
+def _config() -> Config:
+    return Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off')
 
 
 async def _respond(send, body: bytes) -> None:
@@ -85,10 +83,12 @@ async def test_current_task_identity_and_name_across_suspension() -> None:
         seen['body'] = message.get('body', b'')
         await _respond(send, b'ok')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, body, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'payload'], pause=0.05),
+            _streaming_exchange(
+                server_port(server), body_parts=[b'payload'], pause=0.05
+            ),
             timeout=5,
         )
     assert status == 200 and body == b'ok'
@@ -106,10 +106,10 @@ async def test_contextvars_survive_duck_future_suspension() -> None:
         seen['after_await'] = _VAR.get()
         await _respond(send, b'ok')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, _, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'x'], pause=0.05),
+            _streaming_exchange(server_port(server), body_parts=[b'x'], pause=0.05),
             timeout=5,
         )
     assert status == 200
@@ -130,10 +130,12 @@ async def test_wait_for_receive_timeout_does_not_lose_body() -> None:
         seen['body'] = message.get('body', b'')
         await _respond(send, b'ok')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, _, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'late-body'], pause=0.2),
+            _streaming_exchange(
+                server_port(server), body_parts=[b'late-body'], pause=0.2
+            ),
             timeout=5,
         )
     assert status == 200
@@ -148,10 +150,12 @@ async def test_gather_with_receive_and_timer() -> None:
         seen['body'] = message.get('body', b'')
         await _respond(send, b'ok')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, _, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'gathered'], pause=0.05),
+            _streaming_exchange(
+                server_port(server), body_parts=[b'gathered'], pause=0.05
+            ),
             timeout=5,
         )
     assert status == 200
@@ -171,10 +175,12 @@ async def test_anyio_cancellation_scope_and_task_group() -> None:
         seen['body'] = message.get('body', b'')
         await _respond(send, b'ok')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, _, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'anyio-body'], pause=0.2),
+            _streaming_exchange(
+                server_port(server), body_parts=[b'anyio-body'], pause=0.2
+            ),
             timeout=5,
         )
     assert status == 200
@@ -191,11 +197,13 @@ async def test_concurrent_streams_resolve_without_reentrancy_errors() -> None:
         message = await receive()
         await _respond(send, message.get('body', b''))
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         results = await asyncio.wait_for(
             asyncio.gather(*[
-                _streaming_exchange(port, body_parts=[f'req-{i}'.encode()], pause=0.05)
+                _streaming_exchange(
+                    server_port(server), body_parts=[f'req-{i}'.encode()], pause=0.05
+                )
                 for i in range(8)
             ]),
             timeout=10,
@@ -214,10 +222,10 @@ async def test_app_timer_and_sleep_interleave_with_pump() -> None:
         await asyncio.sleep(0.02)
         await _respond(send, b'slept')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         bodies = await asyncio.wait_for(
-            asyncio.gather(*[h2_request(port=port) for _ in range(16)]),
+            asyncio.gather(*[h2_request(port=server_port(server)) for _ in range(16)]),
             timeout=10,
         )
     assert all(status == 200 and body == b'slept' for status, body in bodies)
@@ -231,10 +239,10 @@ async def test_app_exception_after_cancelled_receive_yields_500() -> None:
             pass
         raise RuntimeError('boom after cancellation')
 
-    config, port = _config()
-    async with running_server(app, config):
+    config = _config()
+    async with running_server(app, config) as server:
         status, _, _ = await asyncio.wait_for(
-            _streaming_exchange(port, body_parts=[b'x'], pause=0.2),
+            _streaming_exchange(server_port(server), body_parts=[b'x'], pause=0.2),
             timeout=5,
         )
     assert status == 500

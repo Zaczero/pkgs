@@ -9,6 +9,7 @@ from tests._support import (
     proxy_v1_prefix,
     proxy_v2_prefix,
     running_server,
+    server_port,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -28,14 +29,14 @@ async def test_proxy_headers_rewrite_scope_from_trusted_peer() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (
                         b'forwarded',
@@ -65,14 +66,15 @@ async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('10.0.0.0/8',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
+        port = server_port(server)
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=port,
                 extra_headers=[
                     (
                         b'forwarded',
@@ -85,7 +87,7 @@ async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
         )
 
     assert status == 200
-    assert body == f'http|127.0.0.1|127.0.0.1|{config.port}|'.encode()
+    assert body == f'http|127.0.0.1|127.0.0.1|{port}|'.encode()
 
 
 async def test_proxy_headers_infer_default_port_from_forwarded_scheme() -> None:
@@ -101,14 +103,14 @@ async def test_proxy_headers_infer_default_port_from_forwarded_scheme() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (b'x-forwarded-proto', b'https'),
                     (b'x-forwarded-host', b'example.com'),
@@ -144,15 +146,15 @@ async def test_proxy_headers_join_forwarded_prefix_and_root_path(
         })
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         root_path=root_path,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[(b'x-forwarded-prefix', prefix.encode())],
             ),
             timeout=5,
@@ -176,14 +178,14 @@ async def test_proxy_headers_support_bracketed_ipv6_forwarded_values() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (
                         b'forwarded',
@@ -212,14 +214,14 @@ async def test_proxy_headers_support_mixed_case_forwarded_parameters() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (
                         b'forwarded',
@@ -248,14 +250,14 @@ async def test_proxy_headers_use_backend_facing_forwarded_hop() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (
                         b'forwarded',
@@ -285,14 +287,14 @@ async def test_proxy_headers_use_last_forwarded_header_field() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (
                         b'forwarded',
@@ -325,14 +327,14 @@ async def test_proxy_headers_walk_x_forwarded_for_from_backend_facing_end() -> N
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (b'x-forwarded-for', b'203.0.113.10, 198.51.100.7'),
                     (b'x-forwarded-proto', b'https'),
@@ -359,14 +361,14 @@ async def test_proxy_headers_use_backend_facing_proto_and_host_tokens() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (b'x-forwarded-proto', b'http, https'),
                     (b'x-forwarded-host', b'attacker.example, example.com:8443'),
@@ -393,15 +395,15 @@ async def test_proxy_headers_use_backend_facing_port_and_prefix_tokens() -> None
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         root_path='/root',
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 extra_headers=[
                     (b'x-forwarded-proto', b'http, https'),
                     (b'x-forwarded-host', b'attacker.example, example.com'),
@@ -422,14 +424,14 @@ async def test_http1_requires_proxy_header_when_proxy_protocol_is_configured() -
         await send({'type': 'http.response.body', 'body': b'optional proxy'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
-        reader, writer = await asyncio.open_connection('127.0.0.1', config.port)
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
         writer.write(
-            f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{config.port}\r\n\r\n'.encode()
+            f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{server_port(server)}\r\n\r\n'.encode()
         )
         await writer.drain()
         data = await asyncio.wait_for(reader.read(1024), timeout=5)
@@ -453,14 +455,14 @@ async def test_proxy_protocol_v1_rewrites_scope_from_trusted_peer() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 prefix=proxy_v1_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
@@ -482,11 +484,11 @@ async def test_proxy_protocol_v1_rejects_overlong_header_line() -> None:
         )
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         with pytest.raises((
             ConnectionResetError,
             BrokenPipeError,
@@ -495,7 +497,7 @@ async def test_proxy_protocol_v1_rejects_overlong_header_line() -> None:
         )):
             await asyncio.wait_for(
                 h2_request(
-                    port=config.port,
+                    port=server_port(server),
                     prefix=b'PROXY UNKNOWN ' + (b'x' * 128) + b'\r\n',
                 ),
                 timeout=5,
@@ -516,15 +518,15 @@ async def test_proxy_protocol_v2_and_forwarded_headers_stack_cleanly() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1/32',),
         proxy_protocol='v2',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
@@ -557,14 +559,15 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v2',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
+        port = server_port(server)
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=port,
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
@@ -576,7 +579,7 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
         )
 
     assert status == 200
-    assert body == f'203.0.113.10|0|127.0.0.1|{config.port}'.encode()
+    assert body == f'203.0.113.10|0|127.0.0.1|{port}'.encode()
 
 
 async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listener() -> (
@@ -594,6 +597,9 @@ async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listene
         })
         await send({'type': 'http.response.body', 'body': payload})
 
+    # Two listeners on one host need distinct ports; multiple port-0 binds
+    # deliberately share one ephemeral port (for 0.0.0.0 + [::] pairs), so
+    # this is one of the few in-process cases that must pre-allocate.
     ports = (find_free_port(), find_free_port())
     config = Config(
         bind=tuple(f'127.0.0.1:{port}' for port in ports),
@@ -601,9 +607,10 @@ async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listene
         proxy_protocol='v2',
     )
     async with running_server(app, config):
+        second_port = ports[1]
         status, body = await asyncio.wait_for(
             h2_request(
-                port=ports[1],
+                port=second_port,
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
@@ -615,7 +622,7 @@ async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listene
         )
 
     assert status == 200
-    assert body == f'203.0.113.10|0|127.0.0.1|{ports[1]}'.encode()
+    assert body == f'203.0.113.10|0|127.0.0.1|{second_port}'.encode()
 
 
 async def test_proxy_protocol_v2_ignores_trailing_tlvs() -> None:
@@ -632,14 +639,14 @@ async def test_proxy_protocol_v2_ignores_trailing_tlvs() -> None:
         await send({'type': 'http.response.body', 'body': payload})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v2',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
             h2_request(
-                port=config.port,
+                port=server_port(server),
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
                     server_host='198.51.100.20',
@@ -661,18 +668,18 @@ async def test_proxy_protocol_v1_requires_header_in_strict_mode() -> None:
         await send({'type': 'http.response.body', 'body': b'ok'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         with pytest.raises((
             ConnectionResetError,
             BrokenPipeError,
             RuntimeError,
             OSError,
         )):
-            await asyncio.wait_for(h2_request(port=config.port), timeout=5)
+            await asyncio.wait_for(h2_request(port=server_port(server)), timeout=5)
 
 
 async def test_proxy_protocol_v1_rejects_address_family_mismatch() -> None:
@@ -681,11 +688,11 @@ async def test_proxy_protocol_v1_rejects_address_family_mismatch() -> None:
         await send({'type': 'http.response.body', 'body': b'ok'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('127.0.0.1',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         with pytest.raises((
             ConnectionResetError,
             BrokenPipeError,
@@ -694,7 +701,7 @@ async def test_proxy_protocol_v1_rejects_address_family_mismatch() -> None:
         )):
             await asyncio.wait_for(
                 h2_request(
-                    port=config.port,
+                    port=server_port(server),
                     prefix=proxy_v1_prefix(
                         transport='TCP4',
                         client_host='2001:db8::1',
@@ -713,11 +720,11 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
         await send({'type': 'http.response.body', 'body': b'ok'})
 
     config = Config(
-        port=find_free_port(),
+        port=0,
         forwarded_allow_ips=('10.0.0.0/8',),
         proxy_protocol='v1',
     )
-    async with running_server(app, config):
+    async with running_server(app, config) as server:
         with pytest.raises((
             ConnectionResetError,
             BrokenPipeError,
@@ -726,7 +733,7 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
         )):
             await asyncio.wait_for(
                 h2_request(
-                    port=config.port,
+                    port=server_port(server),
                     prefix=proxy_v1_prefix(
                         client_host='203.0.113.10',
                         server_host='198.51.100.20',

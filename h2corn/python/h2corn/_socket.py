@@ -229,6 +229,22 @@ def _build_sockets(
     return tuple(sockets), tuple(owned_socket_paths)
 
 
+def _bound_addresses(sockets) -> tuple[str, ...]:
+    """Resolved bind addresses of `sockets`, in `Config.bind` string form.
+
+    Unlike the configured bind strings, these carry the port the kernel
+    actually assigned — meaningful when binding port 0.
+    """
+    addresses = []
+    for sock in sockets:
+        name = sock.getsockname()
+        if sock.family in {socket.AF_INET, socket.AF_INET6}:
+            addresses.append(_format_tcp_bind(name[0], name[1]))
+        else:
+            addresses.append(f'unix:{os.fsdecode(name)}')
+    return tuple(addresses)
+
+
 @contextmanager
 def _bound_sockets(
     config: Config,
