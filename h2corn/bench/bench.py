@@ -17,7 +17,7 @@ import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 
-REQUESTS = 200000
+DURATION = '10s'
 CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
 HOST = '127.0.0.1'
@@ -187,14 +187,13 @@ def run_oha(
     method='GET',
     body=None,
     content_type=None,
-    requests=REQUESTS,
     concurrency=CONCURRENCY,
     unix_socket=None,
 ):
     cmd = [
         'oha',
-        '-n',
-        str(requests),
+        '-z',
+        DURATION,
         '-c',
         str(concurrency),
         '--output-format',
@@ -224,7 +223,7 @@ def run_oha(
         return None
 
 
-def run_k6(url, requests=REQUESTS, concurrency=CONCURRENCY):
+def run_k6(url, concurrency=CONCURRENCY):
     k6_script = Path('bench/k6/ws.js')
     summary_file = Path('bench/results/k6_summary.json')
     if summary_file.exists():
@@ -233,8 +232,8 @@ def run_k6(url, requests=REQUESTS, concurrency=CONCURRENCY):
     cmd = [
         'k6',
         'run',
-        '--iterations',
-        str(requests),
+        '--duration',
+        DURATION,
         '--vus',
         str(concurrency),
         '--summary-export',
@@ -521,20 +520,17 @@ def run_benchmarks(selected_servers=None, selected_types=None):
             try:
                 with running_server(server, config['workers'], socket_path):
                     print(f'Running load generation for {server}...')
-                    requests = config.get('requests', REQUESTS)
                     concurrency = config.get('concurrency', CONCURRENCY)
                     if config['type'] == 'h1':
                         raw = run_oha(
                             f'http://{HOST}:{PORT}/',
                             http_version='1.1',
-                            requests=requests,
                             concurrency=concurrency,
                         )
                     elif config['type'] == 'h1_uds':
                         raw = run_oha(
                             'http://localhost/',
                             http_version='1.1',
-                            requests=requests,
                             concurrency=concurrency,
                             unix_socket=socket_path,
                         )
@@ -542,7 +538,6 @@ def run_benchmarks(selected_servers=None, selected_types=None):
                         raw = run_oha(
                             f'http://{HOST}:{PORT}/',
                             http_version='2',
-                            requests=requests,
                             concurrency=concurrency,
                         )
                     elif config['type'] in {'h1_file', 'h2_file'}:
@@ -550,7 +545,6 @@ def run_benchmarks(selected_servers=None, selected_types=None):
                         raw = run_oha(
                             f'http://{HOST}:{PORT}/static-file',
                             http_version=http_version,
-                            requests=requests,
                             concurrency=concurrency,
                         )
                     elif config['type'] in {'h1_stream', 'h2_stream'}:
@@ -561,13 +555,11 @@ def run_benchmarks(selected_servers=None, selected_types=None):
                             method='POST',
                             body='x' * 1024,
                             content_type='application/octet-stream',
-                            requests=requests,
                             concurrency=concurrency,
                         )
                     elif config['type'] == 'ws':
                         raw = run_k6(
                             f'ws://{HOST}:{PORT}/ws',
-                            requests=requests,
                             concurrency=concurrency,
                         )
                     else:
@@ -596,13 +588,13 @@ def run_benchmarks(selected_servers=None, selected_types=None):
             filename = f'bench/results/plots/benchmark_{clean_name}.svg'
             plot_results(
                 results,
-                f'Benchmark: {config["name"]} ({config.get("requests", REQUESTS)} reqs, {config.get("concurrency", CONCURRENCY)} conn)',
+                f'Benchmark: {config["name"]} ({DURATION} sustained, {config.get("concurrency", CONCURRENCY)} conn)',
                 filename,
             )
 
 
 def main():
-    global REQUESTS, CONCURRENCY
+    global DURATION, CONCURRENCY
     parser = argparse.ArgumentParser(
         description='h2corn benchmark suite',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -629,10 +621,9 @@ def main():
         help='List of benchmark types to run',
     )
     parser.add_argument(
-        '--requests',
-        type=int,
-        default=REQUESTS,
-        help='Number of requests per benchmark',
+        '--duration',
+        default=DURATION,
+        help='Sustained load duration per benchmark cell (e.g. 10s)',
     )
     parser.add_argument(
         '--concurrency',
@@ -642,7 +633,7 @@ def main():
     )
     args = parser.parse_args()
 
-    REQUESTS = args.requests
+    DURATION = args.duration
     CONCURRENCY = args.concurrency
 
     selected_servers = set(args.servers) if args.servers else None

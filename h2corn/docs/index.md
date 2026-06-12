@@ -69,8 +69,8 @@ p50–p99** than `uvicorn`, `hypercorn`, or `gunicorn`.
 
 The same shift shows up as capacity. Each worker absorbs several
 times the load of a pure-Python server, so traffic that used to need
-a dozen pods fits in a couple. Four workers push a small JSON GET to
-**~216k RPS at p99 0.9 ms** — about **10×** the nearest alternative
+a dozen pods fits in a couple. Four workers serve a small JSON GET at
+**~232k RPS, p99 0.9 ms** — about **10×** the nearest alternative
 serving the identical Starlette app.
 [See benchmarks](benchmarks.md).
 
@@ -93,4 +93,3 @@ live, worker recycling staggers memory growth with jitter, and
 per-worker heartbeats replace anything wedged.
 
 </div>
-

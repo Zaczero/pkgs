@@ -25,7 +25,7 @@ not from the application code.
 | Knob                     | Value                                                          |
 | ------------------------ | -------------------------------------------------------------- |
 | Load generator           | [k6](https://k6.io/) (one process, separate from the server)   |
-| Iterations per scenario  | 200 000                                                        |
+| Duration per scenario    | 10 s of sustained load                                         |
 | Concurrent VUs           | 100 (1 000 for streaming POST)                                 |
 | Workers                  | 1 and 4, side-by-side per scenario                             |
 | Transports               | HTTP/1.1 over TCP, HTTP/1.1 over UDS, HTTP/2, WebSocket        |
@@ -50,7 +50,7 @@ four workers — looks like this:
 
 ![HTTP/1 GET, 4 workers](assets/benchmarks/benchmark_http_1_get_4_workers.svg)
 
-`h2corn` reaches **~216k RPS at p99 0.9 ms** — about 10× the nearest
+`h2corn` reaches **~232k RPS at p99 0.9 ms** — about 10× the nearest
 mainstream Python server on the same deployment shape, the same Starlette
 app, and the standard-library asyncio stack.
 
