@@ -773,6 +773,57 @@ async def test_streamed_multi_chunk_response_bytes_and_end_stream_placement() ->
     assert end_flags == [False] * (len(data_frames) - 1) + [True]
 
 
+async def test_rapid_reset_flood_triggers_enhance_your_calm_goaway() -> None:
+    """CVE-2023-44487 class guard: a client flooding HEADERS+RST_STREAM pairs
+    is disconnected with GOAWAY ENHANCE_YOUR_CALM; a fresh well-behaved
+    connection is unaffected.
+    """
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        await receive()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    config = Config(port=find_free_port())
+    async with running_server(app, config):
+        reader, writer, conn, authority = await open_h2_connection(
+            port=config.port
+        )
+        request_headers = [
+            (b':method', b'GET'),
+            (b':scheme', b'http'),
+            (b':authority', authority),
+            (b':path', b'/'),
+        ]
+        try:
+            for _ in range(400):
+                stream_id = conn.get_next_available_stream_id()
+                conn.send_headers(stream_id, request_headers, end_stream=True)
+                conn.reset_stream(stream_id, error_code=0x8)  # CANCEL
+                writer.write(conn.data_to_send())
+            await writer.drain()
+            frames = await read_raw_h2_frames(reader, timeout=2.0)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+        goaway_codes = [
+            int.from_bytes(payload[4:8], 'big')
+            for frame_type, _flags, _stream_id, payload in frames
+            if frame_type == 0x07
+        ]
+        assert 0x0B in goaway_codes  # ENHANCE_YOUR_CALM
+
+        # A fresh, well-behaved connection still gets served.
+        status, body = await asyncio.wait_for(
+            h2_request(port=config.port), timeout=5
+        )
+        assert status == 200
+        assert body == b'ok'
+
+
 async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
     async def app(scope, receive, send):
         if scope['path'] == '/slow':

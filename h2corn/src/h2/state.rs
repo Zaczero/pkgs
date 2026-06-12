@@ -16,6 +16,11 @@ use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
 
+/// Generous for legitimate cancellation bursts (browser navigations, gRPC
+/// deadline storms); rapid-reset attacks send thousands per second.
+const RESET_RATE_LIMIT: u32 = 200;
+const RESET_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug)]
 pub(super) struct InboundStream {
     pub(super) input: Option<mpsc::Sender<StreamInput>>,
@@ -49,6 +54,35 @@ impl ReceiveState {
 
     pub(super) const fn request_is_closed(self) -> bool {
         matches!(self, Self::RequestClosed | Self::Closed)
+    }
+}
+
+/// Per-connection `RST_STREAM` rate accounting (CVE-2023-44487 "rapid reset"
+/// class): open+RST floods spawn request work without ever counting toward
+/// `max_concurrent_streams`, so peer resets are capped per fixed window.
+#[derive(Debug)]
+pub(super) struct RapidResetGuard {
+    window_start: TokioInstant,
+    resets: u32,
+}
+
+impl RapidResetGuard {
+    pub(super) fn new() -> Self {
+        Self {
+            window_start: TokioInstant::now(),
+            resets: 0,
+        }
+    }
+
+    /// Count one peer `RST_STREAM`; true when the flood threshold is breached.
+    pub(super) fn note_reset(&mut self) -> bool {
+        let now = TokioInstant::now();
+        if now - self.window_start >= RESET_RATE_WINDOW {
+            self.window_start = now;
+            self.resets = 0;
+        }
+        self.resets += 1;
+        self.resets > RESET_RATE_LIMIT
     }
 }
 
@@ -87,6 +121,7 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) local_max_frame_size: usize,
     pub(super) saw_client_settings: bool,
     pub(super) drain_state: ConnectionDrainState,
+    pub(super) reset_guard: RapidResetGuard,
 }
 
 pub(super) enum RequestInputClose {
@@ -210,6 +245,7 @@ impl<R, W> H2ConnectionState<R, W> {
             local_max_frame_size,
             saw_client_settings: false,
             drain_state,
+            reset_guard: RapidResetGuard::new(),
         }
     }
 

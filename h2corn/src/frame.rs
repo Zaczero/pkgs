@@ -107,6 +107,7 @@ impl ErrorCode {
     pub const REFUSED_STREAM: Self = Self(0x7);
     pub const CANCEL: Self = Self(0x8);
     pub const COMPRESSION_ERROR: Self = Self(0x9);
+    pub const ENHANCE_YOUR_CALM: Self = Self(0xB);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

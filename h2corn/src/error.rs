@@ -401,6 +401,8 @@ pub enum H2Error {
     RstStreamPayloadInvalidLength,
     #[error("received RST_STREAM on an idle stream")]
     RstStreamOnIdleStream,
+    #[error("peer exceeded the stream reset rate limit (rapid reset)")]
+    PeerResetFlood,
     #[error("invalid GOAWAY frame")]
     InvalidGoawayFrame,
     #[error("PRIORITY frame must not use stream 0")]

@@ -334,6 +334,12 @@ where
         Ok(())
     }
 
+    /// Flush and half-close the write side (TCP FIN / TLS `close_notify`),
+    /// prompting the peer to read pending output and close.
+    pub(crate) async fn shutdown_write(&mut self) {
+        let _ = self.writer.shutdown().await;
+    }
+
     pub(crate) async fn close_ingress(&self) {
         self.ingress.close().await;
     }

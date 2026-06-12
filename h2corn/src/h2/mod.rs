@@ -23,7 +23,7 @@ use state::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
-use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
+use tokio::time::{Instant as TokioInstant, sleep_until, timeout, timeout_at};
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
@@ -936,7 +936,58 @@ async fn run_h2_connection<R, W>(mut state: Box<H2ConnectionState<R, W>>) -> Res
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
+{
+    match drive_h2_connection(&mut state).await {
+        Ok(()) => {
+            let _ = state
+                .writer
+                .goaway(
+                    state.last_client_stream_id,
+                    ErrorCode::NO_ERROR,
+                    Vec::new(),
+                    true,
+                )
+                .await;
+            state.writer.close_ingress().await;
+            drop(state.connection);
+            Ok(())
+        },
+        Err(error) => {
+            // The fatal GOAWAY was already written. Linger briefly
+            // (nginx-style) so it actually reaches the peer: dropping the
+            // socket with unread inbound bytes makes the kernel RST the
+            // connection, and the peer's kernel then discards the unread
+            // GOAWAY from its receive buffer.
+            linger_after_fatal_goaway(&mut state).await;
+            Err(error)
+        },
+    }
+}
+
+/// Bounded lingering close: half-close the write side, then discard inbound
+/// bytes until the peer closes or the linger window expires.
+async fn linger_after_fatal_goaway<R, W>(state: &mut H2ConnectionState<R, W>)
+where
+    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + WriteTarget,
+{
+    const FATAL_GOAWAY_LINGER: Duration = Duration::from_secs(1);
+
+    state.writer.shutdown_write().await;
+    let deadline = TokioInstant::now() + FATAL_GOAWAY_LINGER;
+    loop {
+        let buffered = state.reader.buffered().len();
+        state.reader.consume(buffered);
+        match timeout_at(deadline, state.reader.read_more_capped(64 * 1024)).await {
+            Ok(Ok(true)) => {},
+            _ => break, // peer closed, read error, or linger window expired
+        }
+    }
+}
+
+async fn drive_h2_connection<R, W>(state: &mut H2ConnectionState<R, W>) -> Result<(), H2CornError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     if state.drain_state != ConnectionDrainState::Accepting {
@@ -953,7 +1004,7 @@ where
 
     loop {
         let mut stop_after_flush = false;
-        match ingest_connection_input(&mut state).await? {
+        match ingest_connection_input(state).await? {
             IngestEvent::Continue => {},
             IngestEvent::PeerClosed | IngestEvent::Deadline | IngestEvent::KeepAliveTimeout => {
                 stop_after_flush = true;
@@ -971,7 +1022,7 @@ where
                 stop_after_flush = true;
             },
             IngestEvent::RequestInputTimeout(deadline) => {
-                handle_request_input_timeout(&mut state, deadline).await?;
+                handle_request_input_timeout(state, deadline).await?;
             },
             IngestEvent::ResponseStallTimeout(stream_id) => {
                 state
@@ -992,30 +1043,17 @@ where
                 }
             },
             IngestEvent::Frame(frame) => {
-                if advance_connection_with_peer_frame(&mut state, frame).await? {
+                if advance_connection_with_peer_frame(state, frame).await? {
                     stop_after_flush = true;
                 }
             },
         }
 
-        flush_connection_egress(&mut state).await?;
+        flush_connection_egress(state).await?;
         if stop_after_flush || state.should_stop() {
-            break;
+            return Ok(());
         }
     }
-
-    let _ = state
-        .writer
-        .goaway(
-            state.last_client_stream_id,
-            ErrorCode::NO_ERROR,
-            Vec::new(),
-            true,
-        )
-        .await;
-    state.writer.close_ingress().await;
-    drop(state.connection);
-    Ok(())
 }
 
 async fn handle_request_input_timeout<R, W>(
@@ -1354,6 +1392,14 @@ where
         )
         .await?;
         return Ok(());
+    }
+    if state.reset_guard.note_reset() {
+        return apply_peer_failure(
+            &mut state.writer,
+            state.last_client_stream_id,
+            H2PeerFailure::connection(ErrorCode::ENHANCE_YOUR_CALM, H2Error::PeerResetFlood),
+        )
+        .await;
     }
     let error_code = ErrorCode::new(u32::from_be_bytes(
         frame.payload[..4]
