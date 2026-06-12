@@ -97,8 +97,14 @@ impl Doorbell {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            use rustix::pipe::{PipeFlags, pipe_with};
-            let (read, write) = pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?;
+            // Apple platforms have no `pipe2`, so rustix offers no
+            // `pipe_with` there: set CLOEXEC/NONBLOCK with explicit fcntls
+            // (startup-only, once per shard).
+            let (read, write) = rustix::pipe::pipe()?;
+            for fd in [&read, &write] {
+                rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
+                rustix::fs::fcntl_setfl(fd, rustix::fs::OFlags::NONBLOCK)?;
+            }
             Ok(Self { read, write })
         }
     }
