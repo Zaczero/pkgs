@@ -37,6 +37,12 @@ use crate::http::types::{RequestHead, ResponseHeaders};
 use crate::proxy::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
 
+/// Initial capacity for per-connection stream-keyed containers: the
+/// concurrency cap is not the working set — idle and low-traffic connections
+/// hold a handful of streams, so preallocating for the cap (default 256)
+/// wastes memory on every idle connection. Start small; grow toward the cap
+/// on demand.
+const LAZY_STREAM_CAPACITY: usize = 8;
 
 type StreamMap<T> = HashMap<u32, T, BuildNoHashHasher<u32>>;
 
@@ -114,7 +120,10 @@ impl H2PeerFailure {
 }
 
 fn new_stream_map<T>(capacity: usize) -> StreamMap<T> {
-    HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default())
+    HashMap::with_capacity_and_hasher(
+        capacity.min(LAZY_STREAM_CAPACITY),
+        BuildNoHashHasher::default(),
+    )
 }
 
 fn queue_stream_input(stream: &mut InboundStream, value: StreamInput) {

@@ -32,6 +32,7 @@ use crate::config::{
 use crate::error::H2CornError;
 use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
 use crate::h2::{StreamMap, new_stream_map};
+use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
@@ -982,8 +983,12 @@ where
         frame_buf,
         config,
         streams: new_stream_map(config.http2.max_concurrent_streams as usize),
-        ready_streams: VecDeque::with_capacity(config.http2.max_concurrent_streams as usize),
-        drained_app_writes: Vec::with_capacity(config.http2.max_concurrent_streams as usize),
+        ready_streams: VecDeque::with_capacity(
+            (config.http2.max_concurrent_streams as usize).min(LAZY_STREAM_CAPACITY),
+        ),
+        drained_app_writes: Vec::with_capacity(
+            (config.http2.max_concurrent_streams as usize).min(LAZY_STREAM_CAPACITY),
+        ),
         response_closes: ResponseCloseBatch::new(),
         connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
         initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),

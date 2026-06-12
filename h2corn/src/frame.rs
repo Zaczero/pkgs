@@ -13,6 +13,8 @@ use crate::error::{ErrorExt, H2CornError, H2Error};
 pub const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
 pub const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 0x4000;
+/// Initial (and shrink-target) capacity of the connection read buffer.
+pub const READ_BUFFER_INITIAL_CAPACITY: usize = 4096;
 pub const MAX_FRAME_SIZE_UPPER_BOUND: usize = 0x00FF_FFFF;
 pub const MAX_FLOW_CONTROL_WINDOW: u32 = (1 << 31) - 1;
 pub const CONNECTION_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -270,9 +272,11 @@ where
     R: AsyncRead + Unpin,
 {
     pub(crate) fn new(reader: R) -> Self {
+        // Small initial capacity; `read_at_least`/`read_more` reserve on
+        // demand, so large frames grow the buffer only when they occur.
         Self {
             reader,
-            buffer: BytesMut::with_capacity(DEFAULT_MAX_FRAME_SIZE + FRAME_HEADER_LEN),
+            buffer: BytesMut::with_capacity(READ_BUFFER_INITIAL_CAPACITY),
         }
     }
 

@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::frame::StreamId;
-use crate::h2::{StreamMap, new_stream_map};
+use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
 use crate::smallvec_deque::SmallVecDeque;
 
 #[derive(Debug)]
@@ -121,7 +121,9 @@ impl WriterIngress {
         Arc::new(Self {
             queue: Mutex::new(WriterIngressQueue {
                 closed: false,
-                ready_streams: VecDeque::with_capacity(max_concurrent_streams),
+                ready_streams: VecDeque::with_capacity(
+                    max_concurrent_streams.min(LAZY_STREAM_CAPACITY),
+                ),
                 streams: new_stream_map(max_concurrent_streams),
             }),
             has_pending: AtomicBool::new(false),

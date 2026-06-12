@@ -25,7 +25,7 @@ const WRITER_CHANNEL_CAPACITY: usize = 64;
 const ENCODED_HEADER_BLOCK_CAPACITY: usize = 1024;
 const FRAME_BUFFER_CAPACITY: usize = 64;
 const FAIR_WRITE_QUANTUM: usize = 64 * 1024;
-const H2_WRITER_BUFFER_CAPACITY: usize = 64 * 1024;
+const H2_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
