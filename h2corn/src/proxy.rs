@@ -507,46 +507,41 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
         0x1 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv4Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv4Payload)?;
-            let server = IpAddr::V4(Ipv4Addr::from(addrs.server_ip));
-            Ok(Some(ProxyInfo {
-                client: Some(ClientAddr {
-                    host: IpAddr::V4(Ipv4Addr::from(addrs.client_ip))
-                        .to_string()
-                        .into(),
-                    port: addrs.client_port.get(),
-                }),
-                server: if server.is_unspecified() && addrs.server_port.get() == 0 {
-                    None
-                } else {
-                    Some(ServerAddr {
-                        host: server.to_string().into(),
-                        port: Some(addrs.server_port.get()),
-                    })
-                },
-            }))
+            Ok(Some(proxy_v2_info(
+                IpAddr::V4(Ipv4Addr::from(addrs.client_ip)),
+                addrs.client_port.get(),
+                IpAddr::V4(Ipv4Addr::from(addrs.server_ip)),
+                addrs.server_port.get(),
+            )))
         },
         0x2 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv6Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv6Payload)?;
-            let server = IpAddr::V6(Ipv6Addr::from(addrs.server_ip));
-            Ok(Some(ProxyInfo {
-                client: Some(ClientAddr {
-                    host: IpAddr::V6(Ipv6Addr::from(addrs.client_ip))
-                        .to_string()
-                        .into(),
-                    port: addrs.client_port.get(),
-                }),
-                server: if server.is_unspecified() && addrs.server_port.get() == 0 {
-                    None
-                } else {
-                    Some(ServerAddr {
-                        host: server.to_string().into(),
-                        port: Some(addrs.server_port.get()),
-                    })
-                },
-            }))
+            Ok(Some(proxy_v2_info(
+                IpAddr::V6(Ipv6Addr::from(addrs.client_ip)),
+                addrs.client_port.get(),
+                IpAddr::V6(Ipv6Addr::from(addrs.server_ip)),
+                addrs.server_port.get(),
+            )))
         },
         _ => ProxyError::UnsupportedProxyV2AddressFamily.err(),
+    }
+}
+
+fn proxy_v2_info(client: IpAddr, client_port: u16, server: IpAddr, server_port: u16) -> ProxyInfo {
+    ProxyInfo {
+        client: Some(ClientAddr {
+            host: client.to_string().into(),
+            port: client_port,
+        }),
+        server: if server.is_unspecified() && server_port == 0 {
+            None
+        } else {
+            Some(ServerAddr {
+                host: server.to_string().into(),
+                port: Some(server_port),
+            })
+        },
     }
 }
 
