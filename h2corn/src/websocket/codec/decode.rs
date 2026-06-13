@@ -60,12 +60,10 @@ impl FragmentBuffer {
 enum FragmentState {
     #[default]
     Idle,
-    Text {
-        data: FragmentBuffer,
-        compressed: bool,
-        compressed_len: usize,
-    },
-    Binary {
+    Message {
+        /// TEXT or BINARY — the opcode of the first frame of the fragmented
+        /// message, replayed when the final continuation completes it.
+        opcode: u8,
         data: FragmentBuffer,
         compressed: bool,
         compressed_len: usize,
@@ -278,12 +276,7 @@ impl WebSocketCodec {
 
         let accumulated_compressed = match (&self.fragmented, header.opcode) {
             (
-                FragmentState::Text {
-                    compressed: true,
-                    compressed_len,
-                    ..
-                }
-                | FragmentState::Binary {
+                FragmentState::Message {
                     compressed: true,
                     compressed_len,
                     ..
@@ -314,18 +307,11 @@ impl WebSocketCodec {
             if !compressed {
                 Self::ensure_message_size(compressed_len, max_message_size)?;
             }
-            self.fragmented = if opcode == opcode::TEXT {
-                FragmentState::Text {
-                    data: FragmentBuffer::Bytes(payload),
-                    compressed,
-                    compressed_len,
-                }
-            } else {
-                FragmentState::Binary {
-                    data: FragmentBuffer::Bytes(payload),
-                    compressed,
-                    compressed_len,
-                }
+            self.fragmented = FragmentState::Message {
+                opcode,
+                data: FragmentBuffer::Bytes(payload),
+                compressed,
+                compressed_len,
             };
             return Ok(None);
         }
@@ -351,15 +337,11 @@ impl WebSocketCodec {
                     WebSocketProtocolError::UnexpectedContinuationFrame,
                 ));
             },
-            FragmentState::Text {
+            FragmentState::Message {
                 data,
                 compressed: is_compressed,
                 compressed_len,
-            }
-            | FragmentState::Binary {
-                data,
-                compressed: is_compressed,
-                compressed_len,
+                ..
             } => {
                 let next_len = data.len().saturating_add(payload.len());
                 let next_compressed_len = compressed_len.saturating_add(payload.len());
@@ -379,21 +361,14 @@ impl WebSocketCodec {
             return Ok(None);
         }
         match mem::take(&mut self.fragmented) {
-            FragmentState::Text {
-                data, compressed, ..
-            } => Self::decode_payload::<M>(
-                inflater,
-                opcode::TEXT,
+            FragmentState::Message {
+                opcode,
+                data,
                 compressed,
-                data.freeze(),
-                max_message_size,
-            )
-            .map(Some),
-            FragmentState::Binary {
-                data, compressed, ..
+                ..
             } => Self::decode_payload::<M>(
                 inflater,
-                opcode::BINARY,
+                opcode,
                 compressed,
                 data.freeze(),
                 max_message_size,
@@ -623,8 +598,8 @@ mod tests {
 
         assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
         match &codec.fragmented {
-            FragmentState::Text { data, .. } => assert_eq!(data.len(), 4),
-            _ => panic!("expected fragmented text state to remain unchanged"),
+            FragmentState::Message { data, .. } => assert_eq!(data.len(), 4),
+            FragmentState::Idle => panic!("expected fragmented text state to remain unchanged"),
         }
     }
 }
