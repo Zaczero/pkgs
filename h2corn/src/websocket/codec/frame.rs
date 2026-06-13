@@ -78,7 +78,9 @@ fn parse_frame_len(
             }
             Ok(Some((4, payload_len)))
         },
-        wire::PAYLOAD_LEN_U64_MARKER => {
+        // `& PAYLOAD_LEN_MASK` caps the marker at 127, so the remaining
+        // pattern is exactly `PAYLOAD_LEN_U64_MARKER`.
+        _ => {
             if buffer.len() < wire::FRAME_HEADER_MAX_LEN {
                 return Ok(None);
             }
@@ -102,7 +104,6 @@ fn parse_frame_len(
             }
             Ok(Some((10, payload_len)))
         },
-        _ => unreachable!("payload length marker is masked to 7 bits"),
     }
 }
 
