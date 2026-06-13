@@ -1,7 +1,7 @@
+use std::fmt;
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::ops::{BitOr, BitOrAssign};
-use std::{fmt, slice};
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -486,19 +486,10 @@ pub fn append_goaway(
 }
 
 pub fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
-    if !payload.len().is_multiple_of(SETTING_ENTRY_LEN) {
+    // `WireSetting` is `Unaligned + FromBytes`, so this is a zero-copy view;
+    // it fails exactly when the payload is not a whole number of entries.
+    let Ok(entries) = <[WireSetting]>::ref_from_bytes(payload) else {
         return H2Error::SettingsPayloadLengthInvalid.err();
-    }
-
-    // SAFETY: the length check above guarantees `payload` is an exact multiple of
-    // `size_of::<WireSetting>()`, `WireSetting` is `Unaligned`, and its zerocopy
-    // traits guarantee the byte representation can be viewed as `WireSetting`
-    // values.
-    let entries = unsafe {
-        slice::from_raw_parts(
-            payload.as_ptr().cast::<WireSetting>(),
-            payload.len() / SETTING_ENTRY_LEN,
-        )
     };
     let mut settings = Settings::default();
     for entry in entries {
