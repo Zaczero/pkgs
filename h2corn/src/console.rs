@@ -330,61 +330,58 @@ fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
 }
 
 pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
-    let io_summary = AccessLogIoSummary {
-        duration: entry.duration,
-        rx_bytes: entry.rx_bytes,
-        tx_bytes: entry.tx_bytes,
-    };
-    match *ACCESS_LOG_MODE {
-        AccessLogMode::Plain => {
-            emit_plain_access_log(
-                entry.client_label,
-                entry.request,
-                RequestSummaryKind::Http,
-                entry.status,
-                io_summary,
-            );
+    emit_access_log(
+        entry.client_label,
+        entry.request,
+        RequestSummaryKind::Http,
+        entry.status,
+        status_style(entry.status),
+        AccessLogIoSummary {
+            duration: entry.duration,
+            rx_bytes: entry.rx_bytes,
+            tx_bytes: entry.tx_bytes,
         },
-        AccessLogMode::Styled(choice) => {
-            let mut stderr = AutoStream::new(io::stderr(), choice).lock();
-            emit_styled_access_log(
-                &mut stderr,
-                entry.client_label,
-                entry.request,
-                RequestSummaryKind::Http,
-                entry.status,
-                status_style(entry.status),
-                io_summary,
-            );
-        },
-    }
+    );
 }
 
 pub fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
-    let io_summary = AccessLogIoSummary {
-        duration: entry.duration,
-        rx_bytes: entry.rx_bytes,
-        tx_bytes: entry.tx_bytes,
-    };
+    emit_access_log(
+        entry.client_label,
+        entry.request,
+        RequestSummaryKind::WebSocket,
+        entry.close_code,
+        websocket_close_style(entry.close_code),
+        AccessLogIoSummary {
+            duration: entry.duration,
+            rx_bytes: entry.rx_bytes,
+            tx_bytes: entry.tx_bytes,
+        },
+    );
+}
+
+fn emit_access_log<T>(
+    client_label: &str,
+    request: &AccessLogRequest,
+    summary_kind: RequestSummaryKind,
+    code: T,
+    code_style: Style,
+    io_summary: AccessLogIoSummary,
+) where
+    T: fmt::Display + Copy,
+{
     match *ACCESS_LOG_MODE {
         AccessLogMode::Plain => {
-            emit_plain_access_log(
-                entry.client_label,
-                entry.request,
-                RequestSummaryKind::WebSocket,
-                entry.close_code,
-                io_summary,
-            );
+            emit_plain_access_log(client_label, request, summary_kind, code, io_summary);
         },
         AccessLogMode::Styled(choice) => {
             let mut stderr = AutoStream::new(io::stderr(), choice).lock();
             emit_styled_access_log(
                 &mut stderr,
-                entry.client_label,
-                entry.request,
-                RequestSummaryKind::WebSocket,
-                entry.close_code,
-                websocket_close_style(entry.close_code),
+                client_label,
+                request,
+                summary_kind,
+                code,
+                code_style,
                 io_summary,
             );
         },
