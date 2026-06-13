@@ -25,7 +25,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use future::{AbortHook, ResolveOp, ResolvePayload, RustFuture, new_rust_future};
+pub use future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;

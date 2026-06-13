@@ -54,15 +54,6 @@ impl ResolvePayload {
     }
 }
 
-/// What `cancel()` aborts on the Rust side.
-pub enum AbortHook {
-    None,
-    /// Abort the tokio waiter task feeding this future. `AbortHandle::abort`
-    /// is sync and thread-safe; mpsc `recv().await` is cancel-safe, so an
-    /// aborted waiter never consumes an event.
-    Tokio(tokio::task::AbortHandle),
-}
-
 type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 
 enum FutState {
@@ -74,7 +65,10 @@ enum FutState {
 
 struct FutShared {
     state: Mutex<FutState>,
-    abort: Mutex<AbortHook>,
+    /// Abort handle for the tokio waiter task feeding this future.
+    /// `AbortHandle::abort` is sync and thread-safe; mpsc `recv().await` is
+    /// cancel-safe, so an aborted waiter never consumes an event.
+    abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
@@ -87,10 +81,10 @@ pub struct RustFuture {
 }
 
 impl RustFuture {
-    /// Attach the Rust-side cancellation hook (e.g. the waiter task's abort
-    /// handle). Called once right after creation.
-    pub fn set_abort(&self, hook: AbortHook) {
-        *self.shared.abort.lock() = hook;
+    /// Attach the waiter task's abort handle as the Rust-side cancellation
+    /// hook. Called once right after creation.
+    pub fn set_abort(&self, handle: tokio::task::AbortHandle) {
+        *self.shared.abort.lock() = Some(handle);
     }
 
     /// Pump-only: resolve and invoke stored callbacks directly. The caller
@@ -184,15 +178,7 @@ impl RustFuture {
                 return Ok(());
             }
         }
-        // Done futures schedule the callback for the next loop iteration,
-        // matching asyncio.Future semantics (and the re-entrancy rule).
-        let kwargs = PyDict::new(py);
-        kwargs.set_item(pyo3::intern!(py, "context"), context)?;
-        this.shard.call_soon().bind(py).call(
-            PyTuple::new(py, [callback.bind(py), self_.as_any()])?,
-            Some(&kwargs),
-        )?;
-        Ok(())
+        schedule_done_callback(this.shard, py, &callback, self_.as_any(), &context)
     }
 
     fn remove_done_callback(&self, py: Python<'_>, callback: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -231,20 +217,14 @@ impl RustFuture {
                 _ => return Ok(false),
             }
         };
-        let hook = std::mem::replace(&mut *this.shared.abort.lock(), AbortHook::None);
-        match hook {
-            AbortHook::None => {},
-            AbortHook::Tokio(handle) => handle.abort(),
+        let abort = this.shared.abort.lock().take();
+        if let Some(handle) = abort {
+            handle.abort();
         }
         // cancel() is typically invoked from inside Task.__step — callbacks
         // MUST be deferred to a plain loop callback (`_enter_task` guard).
         for (callback, context) in callbacks {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item(pyo3::intern!(py, "context"), context)?;
-            this.shard.call_soon().bind(py).call(
-                PyTuple::new(py, [callback.bind(py), self_.as_any()])?,
-                Some(&kwargs),
-            )?;
+            schedule_done_callback(this.shard, py, &callback, self_.as_any(), &context)?;
         }
         Ok(true)
     }
@@ -353,9 +333,31 @@ pub fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>>
             state: Mutex::new(FutState::Pending {
                 callbacks: SmallVec::new(),
             }),
-            abort: Mutex::new(AbortHook::None),
+            abort: Mutex::new(None),
         }),
         blocking: AtomicBool::new(false),
         shard,
     })
+}
+
+/// Schedule `callback(future)` on the next loop iteration under `context`,
+/// matching asyncio.Future semantics (and the re-entrancy rule: done-future
+/// callbacks never run inline).
+fn schedule_done_callback(
+    shard: Shard,
+    py: Python<'_>,
+    callback: &Py<PyAny>,
+    future: &Bound<'_, PyAny>,
+    context: &Py<PyAny>,
+) -> PyResult<()> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item(pyo3::intern!(py, "context"), context)?;
+    shard
+        .call_soon()
+        .bind(py)
+        .call(
+            PyTuple::new(py, [callback.bind(py), future])?,
+            Some(&kwargs),
+        )
+        .map(drop)
 }

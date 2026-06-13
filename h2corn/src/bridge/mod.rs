@@ -25,7 +25,7 @@ use crate::hpack::BytesStr;
 use crate::http::types::{
     HttpStatusCode, ResponseHeaderName, ResponseHeaderValue, ResponseHeaders,
 };
-use crate::pyloop::{AbortHook, ResolveOp, ResolvePayload, Shard, new_rust_future};
+use crate::pyloop::{ResolveOp, ResolvePayload, Shard, new_rust_future};
 use crate::python::{StaticPyKey, py_dict};
 use crate::websocket::WebSocketCloseCode;
 
@@ -450,7 +450,7 @@ where
             payload,
         });
     });
-    fut.get().set_abort(AbortHook::Tokio(join.abort_handle()));
+    fut.get().set_abort(join.abort_handle());
     Ok(fut.into_bound(py).into_any())
 }
 
@@ -644,7 +644,7 @@ pub fn try_send_or_await<'py, T: Send + 'static>(
                     payload,
                 });
             });
-            fut.get().set_abort(AbortHook::Tokio(join.abort_handle()));
+            fut.get().set_abort(join.abort_handle());
             Ok(fut.into_bound(py).into_any())
         },
         TryPush::Closed(_) => Err(into_pyerr(AsgiError::SendAfterClose)),
@@ -656,7 +656,8 @@ pub fn parse_http_outbound_event(
 ) -> Result<HttpOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
 
-    match message.message_type()? {
+    let message_type = message.message_type()?;
+    match message_type {
         "http.response.start" => {
             let status = message.status(AsgiContainer::HttpResponseStart)?;
             let headers = message.headers()?;
