@@ -48,6 +48,9 @@ use tokio::runtime::Builder as TokioRuntimeBuilder;
 use crate::pyloop::{PumpEvent, ResolvePayload, ShardHandle, new_rust_future};
 use crate::runtime::SharedApp;
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const TOKIO_EVENT_INTERVAL: u32 = 31;
 const TOKIO_GLOBAL_QUEUE_INTERVAL: u32 = 31;
 
