@@ -233,7 +233,7 @@ pub(super) async fn spawn_request_stream(
         stream
             .state
             .request_is_closed()
-            .then(|| stream.input.clone())
+            .then(|| stream.delivery.sender().cloned())
             .flatten()
     });
     if let Some(tx) = startup_tx {

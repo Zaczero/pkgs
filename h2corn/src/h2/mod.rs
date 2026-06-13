@@ -17,16 +17,16 @@ use request::{
 };
 use smallvec::SmallVec;
 use state::{
-    ConnectionDrainState, H2ConnectionState, InboundStream, ReceiveState, RequestInputClose,
-    RequestInputDeadline, RequestSpawnContext,
+    ConnectionDrainState, H2ConnectionState, InboundStream, QueueFlush, ReceiveState,
+    RequestInputClose, RequestInputDeadline, RequestSpawnContext, TerminalDelivery,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout, timeout_at};
 use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
 
-use crate::async_util::{TryPush, send_best_effort, send_with_backpressure, try_push};
+use crate::async_util::{send_best_effort, send_with_backpressure};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
 use crate::frame::{
     self, ErrorCode, FrameFlags, FrameType, PeerSettings, RawFrame, StreamId, WindowIncrement,
@@ -119,30 +119,131 @@ impl H2PeerFailure {
     }
 }
 
+impl<R, W> H2ConnectionState<R, W>
+where
+    W: WriteTarget,
+{
+    /// Send the `GOAWAY`/`RST_STREAM` for a peer protocol failure and propagate
+    /// connection-fatal errors.
+    async fn peer_failure(&mut self, failure: H2PeerFailure) -> Result<(), H2CornError> {
+        apply_peer_failure(&mut self.writer, self.last_client_stream_id, failure).await
+    }
+}
+
+impl<R, W> H2ConnectionState<R, W> {
+    /// Validate, account, and deliver one DATA frame in a single stream-map
+    /// lookup. Window updates and terminal actions are returned, never sent
+    /// while the map entry is borrowed.
+    fn receive_data_frame(
+        &mut self,
+        stream_id: StreamId,
+        data: Bytes,
+        flow_control_len: u32,
+        end_stream: bool,
+    ) -> DataIngress {
+        let connection_window_threshold = self
+            .context
+            .config
+            .http2
+            .initial_connection_window_size
+            .get()
+            / 2;
+        let stream_window_threshold =
+            self.context.config.http2.initial_stream_window_size.get() / 2;
+
+        let Some(stream) = self.streams.get_mut(&stream_id.get()) else {
+            return if self.receive_state(stream_id).is_idle() {
+                DataIngress::IdleStream
+            } else {
+                DataIngress::StreamClosed
+            };
+        };
+        if stream.state.request_is_closed() {
+            self.streams.remove(&stream_id.get());
+            return DataIngress::StreamClosed;
+        }
+        if self.connection_window.receive(flow_control_len).is_err()
+            || stream.receive_window.receive(flow_control_len).is_err()
+        {
+            return DataIngress::FlowControlViolation;
+        }
+        stream.last_input_read_at = TokioInstant::now();
+
+        if !data.is_empty() {
+            match stream.body.record_chunk(data.len() as u64) {
+                RequestBodyProgress::Continue => {},
+                RequestBodyProgress::SizeLimitExceeded
+                | RequestBodyProgress::ContentLengthExceeded => {
+                    let reset_tx = stream.delivery.take_sender();
+                    self.streams.remove(&stream_id.get());
+                    return DataIngress::BodyLimitExceeded { reset_tx };
+                },
+            }
+            stream.delivery.push(StreamInput::Data(data));
+        }
+
+        let stream_update = (!stream.delivery.has_backlog())
+            .then(|| stream.receive_window.take_update(stream_window_threshold))
+            .flatten();
+        let connection_update = self
+            .connection_window
+            .take_update(connection_window_threshold);
+
+        let end = end_stream.then(|| match self.finish_request_input(stream_id) {
+            Some(RequestInputClose::ContentLengthMismatch) => {
+                self.streams.remove(&stream_id.get());
+                DataEnd::ContentLengthMismatch
+            },
+            Some(RequestInputClose::Closed {
+                terminal: TerminalDelivery::SendNow(tx),
+                ..
+            }) => DataEnd::SendEndStream(tx),
+            Some(RequestInputClose::Closed { .. }) | None => DataEnd::Settled,
+        });
+
+        DataIngress::Accepted {
+            connection_update,
+            stream_update,
+            end,
+        }
+    }
+}
+
+/// Outcome of ingesting one DATA frame under a single stream-map lookup;
+/// the caller performs the async writer/app actions it names.
+enum DataIngress {
+    Accepted {
+        connection_update: Option<WindowIncrement>,
+        stream_update: Option<WindowIncrement>,
+        end: Option<DataEnd>,
+    },
+    /// DATA on a never-opened stream: connection protocol error.
+    IdleStream,
+    /// DATA on a closed or input-finished stream: reset it.
+    StreamClosed,
+    /// Receive flow-control window underflow: connection error.
+    FlowControlViolation,
+    /// Request body exceeded its limit: reset stream and app input.
+    BodyLimitExceeded {
+        reset_tx: Option<mpsc::Sender<StreamInput>>,
+    },
+}
+
+enum DataEnd {
+    /// No backlog: deliver `EndStream` directly.
+    SendEndStream(mpsc::Sender<StreamInput>),
+    /// Terminal delivery is queued behind the stream's backlog (or delivery
+    /// already stopped): nothing for the caller to do.
+    Settled,
+    /// Declared content-length was not met: reset the stream.
+    ContentLengthMismatch,
+}
+
 fn new_stream_map<T>(capacity: usize) -> StreamMap<T> {
     HashMap::with_capacity_and_hasher(
         capacity.min(LAZY_STREAM_CAPACITY),
         BuildNoHashHasher::default(),
     )
-}
-
-fn queue_stream_input(stream: &mut InboundStream, value: StreamInput) {
-    let Some(tx) = stream.input.as_ref() else {
-        stream.body.stop_delivering();
-        return;
-    };
-    if !stream.pending_input.is_empty() {
-        stream.pending_input.push_back(value);
-        return;
-    }
-    match try_push(tx, value) {
-        TryPush::Sent => {},
-        TryPush::Full(value) => stream.pending_input.push_back(value),
-        TryPush::Closed(_) => {
-            stream.body.stop_delivering();
-            stream.input = None;
-        },
-    }
 }
 
 async fn flush_pending_stream_inputs<R, W>(
@@ -155,26 +256,7 @@ where
     let stream_window_threshold = state.context.config.http2.initial_stream_window_size.get() / 2;
 
     for (&raw_stream_id, stream) in &mut state.streams {
-        let Some(tx) = stream.input.as_ref() else {
-            stream.pending_input.clear();
-            continue;
-        };
-        while let Some(value) = stream.pending_input.pop_front() {
-            match try_push(tx, value) {
-                TryPush::Sent => {},
-                TryPush::Full(value) => {
-                    stream.pending_input.push_front(value);
-                    break;
-                },
-                TryPush::Closed(_) => {
-                    stream.pending_input.clear();
-                    stream.body.stop_delivering();
-                    stream.input = None;
-                    break;
-                },
-            }
-        }
-        if stream.pending_input.is_empty()
+        if stream.delivery.flush()
             && let Some(increment) = stream.receive_window.take_update(stream_window_threshold)
         {
             stream_updates.push((
@@ -183,6 +265,9 @@ where
             ));
         }
     }
+    state
+        .draining_inputs
+        .retain_mut(|queued| matches!(queued.flush(), QueueFlush::Pending));
 
     for (stream_id, increment) in stream_updates {
         state
@@ -382,7 +467,7 @@ async fn seed_upgraded_request<R, W>(
         && let Some(tx) = connection
             .streams
             .get(&stream_id.get())
-            .and_then(|stream| stream.input.as_ref())
+            .and_then(|stream| stream.delivery.sender())
     {
         send_with_backpressure(tx, StreamInput::Data(body), || H2Error::StreamChannelClosed)
             .await?;
@@ -410,34 +495,28 @@ where
                     .await?;
                 state.remove_stream(stream_id);
             },
-            Some(RequestInputClose::Closed { tx: Some(tx), .. }) => {
+            Some(RequestInputClose::Closed {
+                terminal: TerminalDelivery::SendNow(tx),
+                ..
+            }) => {
                 send_best_effort(&tx, StreamInput::EndStream).await;
             },
-            Some(RequestInputClose::Closed { tx: None, .. }) | None => {},
+            Some(RequestInputClose::Closed { .. }) | None => {},
         },
         Err(RequestHeadError::Connection { error_code, error }) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::connection(error_code, error),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::connection(error_code, error))
+                .await?;
         },
         Err(RequestHeadError::Stream { error_code }) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, error_code),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, error_code))
+                .await?;
         },
         Err(RequestHeadError::Reject { .. }) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+                .await?;
         },
     }
     Ok(())
@@ -471,21 +550,18 @@ where
 {
     match receive_state {
         ReceiveState::RequestClosed => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED))
+                .await?;
             Ok(true)
         },
         ReceiveState::Closed => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::connection(ErrorCode::STREAM_CLOSED, H2Error::HeadersOnClosedStream),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::connection(
+                    ErrorCode::STREAM_CLOSED,
+                    H2Error::HeadersOnClosedStream,
+                ))
+                .await?;
             Ok(true)
         },
         ReceiveState::Idle | ReceiveState::Open | ReceiveState::ResponseClosed => Ok(false),
@@ -504,12 +580,9 @@ where
     if fragment.end_headers {
         let header_limits = state.header_limits();
         if state.header_block_too_large(fragment.block.len()) {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+                .await?;
             return Ok(());
         }
         start_request_stream_from_block(
@@ -534,12 +607,9 @@ where
         .await?;
     } else {
         if state.header_block_too_large(fragment.block.len()) {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+                .await?;
             return Ok(());
         }
         state.pending_headers = Some(PendingHeaders {
@@ -563,12 +633,9 @@ where
     let stream_id = match frame.header.stream_id {
         Some(stream_id) if stream_id.get() & 1 != 0 => stream_id,
         _ => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(H2Error::InvalidRequestStreamId),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::protocol(H2Error::InvalidRequestStreamId))
+                .await?;
             return Ok(());
         },
     };
@@ -582,12 +649,11 @@ where
             .last_client_stream_id
             .is_some_and(|last| stream_id.get() < last.get())
     {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::ClientStreamIdsNotIncreasing),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(
+                H2Error::ClientStreamIdsNotIncreasing,
+            ))
+            .await?;
         return Ok(());
     }
     if state.should_refuse_new_streams() && !has_stream {
@@ -601,12 +667,7 @@ where
     let fragment = match parse_header_block_fragment(frame) {
         Ok(fragment) => fragment,
         Err(err) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(err),
-            )
-            .await?;
+            state.peer_failure(H2PeerFailure::protocol(err)).await?;
             return Ok(());
         },
     };
@@ -614,12 +675,9 @@ where
         fragment.stream_dependency,
         Some(PriorityDependency::Stream(stream_dependency)) if stream_dependency == stream_id
     ) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+            .await?;
         return Ok(());
     }
 
@@ -637,12 +695,9 @@ where
 
     if state.active_stream_count() >= state.context.config.http2.max_concurrent_streams as usize {
         state.last_client_stream_id = Some(stream_id);
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(stream_id, ErrorCode::REFUSED_STREAM),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::REFUSED_STREAM))
+            .await?;
         return Ok(());
     }
     state.last_client_stream_id = Some(stream_id);
@@ -659,33 +714,31 @@ where
     W: WriteTarget,
 {
     let Some(mut pending) = state.pending_headers.take() else {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::UnexpectedContinuationFrame),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(
+                H2Error::UnexpectedContinuationFrame,
+            ))
+            .await?;
         return Ok(());
     };
     if frame.header.stream_id != Some(pending.stream_id) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::ContinuationStreamIdMismatch),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(
+                H2Error::ContinuationStreamIdMismatch,
+            ))
+            .await?;
         return Ok(());
     }
 
     pending.block.extend_from_slice(frame.payload.as_ref());
     pending.last_fragment_at = TokioInstant::now();
     if state.header_block_too_large(pending.block.len()) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(pending.stream_id, ErrorCode::PROTOCOL_ERROR),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::stream(
+                pending.stream_id,
+                ErrorCode::PROTOCOL_ERROR,
+            ))
+            .await?;
         return Ok(());
     }
     if frame.header.flags.contains(FrameFlags::END_HEADERS) {
@@ -717,171 +770,6 @@ where
     Ok(())
 }
 
-async fn reject_data_for_missing_stream<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    stream_id: StreamId,
-) -> Result<(), H2CornError>
-where
-    W: WriteTarget,
-{
-    match state.receive_state(stream_id) {
-        ReceiveState::Idle => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(H2Error::DataOnIdleStream),
-            )
-            .await
-        },
-        ReceiveState::Open
-        | ReceiveState::RequestClosed
-        | ReceiveState::ResponseClosed
-        | ReceiveState::Closed => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED),
-            )
-            .await
-        },
-    }
-}
-
-async fn apply_data_flow_control<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    stream_id: StreamId,
-    flow_control_len: u32,
-) -> Result<bool, H2CornError>
-where
-    W: WriteTarget,
-{
-    let Some(stream) = state.streams.get_mut(&stream_id.get()) else {
-        reject_data_for_missing_stream(state, stream_id).await?;
-        return Ok(false);
-    };
-    if stream.state.request_is_closed() {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED),
-        )
-        .await?;
-        state.remove_stream(stream_id);
-        return Ok(false);
-    }
-    if state.connection_window.receive(flow_control_len).is_err()
-        || stream.receive_window.receive(flow_control_len).is_err()
-    {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::connection(
-                ErrorCode::FLOW_CONTROL_ERROR,
-                H2Error::ReceiveFlowControlWindowUnderflow,
-            ),
-        )
-        .await?;
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-async fn record_data_chunk<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    stream_id: StreamId,
-    data: Bytes,
-) -> Result<bool, H2CornError>
-where
-    W: WriteTarget,
-{
-    if data.is_empty() {
-        return Ok(true);
-    }
-    let stream = state
-        .streams
-        .get_mut(&stream_id.get())
-        .expect("stream existence is validated before recording data");
-    match stream.body.record_chunk(data.len() as u64) {
-        RequestBodyProgress::Continue => {},
-        RequestBodyProgress::SizeLimitExceeded | RequestBodyProgress::ContentLengthExceeded => {
-            if let Some(tx) = stream.input.take() {
-                send_best_effort(&tx, StreamInput::Reset(ErrorCode::PROTOCOL_ERROR)).await;
-            }
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-            )
-            .await?;
-            state.remove_stream(stream_id);
-            return Ok(false);
-        },
-    }
-    if stream.body.should_deliver() {
-        queue_stream_input(stream, StreamInput::Data(data));
-    }
-    Ok(true)
-}
-
-async fn send_data_window_updates<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    stream_id: StreamId,
-) -> Result<(), H2CornError>
-where
-    W: WriteTarget,
-{
-    let http2 = &state.context.config.http2;
-    let connection_window_threshold = http2.initial_connection_window_size.get() / 2;
-    let stream_window_threshold = http2.initial_stream_window_size.get() / 2;
-    if let Some(increment) = state
-        .connection_window
-        .take_update(connection_window_threshold)
-    {
-        state
-            .writer
-            .send_window_update(WindowTarget::Connection, increment)
-            .await?;
-    }
-    let stream = state
-        .streams
-        .get_mut(&stream_id.get())
-        .expect("stream existence is validated before window updates");
-    if stream.pending_input.is_empty()
-        && let Some(increment) = stream.receive_window.take_update(stream_window_threshold)
-    {
-        state
-            .writer
-            .send_window_update(WindowTarget::Stream(stream_id), increment)
-            .await?;
-    }
-    Ok(())
-}
-
-async fn finish_data_stream<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-    stream_id: StreamId,
-) -> Result<(), H2CornError>
-where
-    W: WriteTarget,
-{
-    match state.finish_request_input(stream_id) {
-        Some(RequestInputClose::ContentLengthMismatch) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-            )
-            .await?;
-            state.remove_stream(stream_id);
-        },
-        Some(RequestInputClose::Closed { tx: Some(tx), .. }) => {
-            send_best_effort(&tx, StreamInput::EndStream).await;
-        },
-        Some(RequestInputClose::Closed { tx: None, .. }) | None => {},
-    }
-    Ok(())
-}
-
 async fn handle_data_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
@@ -894,42 +782,75 @@ where
     let (data, end_stream) = match parse_data_payload(frame.payload, header.flags) {
         Ok(parsed) => parsed,
         Err(err) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(err),
-            )
-            .await?;
+            state.peer_failure(H2PeerFailure::protocol(err)).await?;
             return Ok(());
         },
     };
     let Some(stream_id) = header.stream_id else {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::DataMustNotUseStreamZero),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(H2Error::DataMustNotUseStreamZero))
+            .await?;
         return Ok(());
     };
 
-    let flow_control_len = header.len as u32;
-    if !apply_data_flow_control(state, stream_id, flow_control_len).await? {
-        return Ok(());
+    match state.receive_data_frame(stream_id, data, header.len as u32, end_stream) {
+        DataIngress::IdleStream => {
+            state
+                .peer_failure(H2PeerFailure::protocol(H2Error::DataOnIdleStream))
+                .await
+        },
+        DataIngress::StreamClosed => {
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::STREAM_CLOSED))
+                .await
+        },
+        DataIngress::FlowControlViolation => {
+            state
+                .peer_failure(H2PeerFailure::connection(
+                    ErrorCode::FLOW_CONTROL_ERROR,
+                    H2Error::ReceiveFlowControlWindowUnderflow,
+                ))
+                .await
+        },
+        DataIngress::BodyLimitExceeded { reset_tx } => {
+            if let Some(tx) = reset_tx {
+                send_best_effort(&tx, StreamInput::Reset(ErrorCode::PROTOCOL_ERROR)).await;
+            }
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+                .await
+        },
+        DataIngress::Accepted {
+            connection_update,
+            stream_update,
+            end,
+        } => {
+            if let Some(increment) = connection_update {
+                state
+                    .writer
+                    .send_window_update(WindowTarget::Connection, increment)
+                    .await?;
+            }
+            if let Some(increment) = stream_update {
+                state
+                    .writer
+                    .send_window_update(WindowTarget::Stream(stream_id), increment)
+                    .await?;
+            }
+            match end {
+                None | Some(DataEnd::Settled) => Ok(()),
+                Some(DataEnd::SendEndStream(tx)) => {
+                    send_best_effort(&tx, StreamInput::EndStream).await;
+                    Ok(())
+                },
+                Some(DataEnd::ContentLengthMismatch) => {
+                    state
+                        .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+                        .await
+                },
+            }
+        },
     }
-    if let Some(stream) = state.streams.get_mut(&stream_id.get()) {
-        stream.last_input_read_at = TokioInstant::now();
-    }
-    if !record_data_chunk(state, stream_id, data).await? {
-        return Ok(());
-    }
-    send_data_window_updates(state, stream_id).await?;
-
-    if end_stream {
-        finish_data_stream(state, stream_id).await?;
-    }
-
-    Ok(())
 }
 
 async fn run_h2_connection<R, W>(mut state: Box<H2ConnectionState<R, W>>) -> Result<(), H2CornError>
@@ -1081,10 +1002,9 @@ where
             if let Some(stream) = state.streams.get_mut(&stream_id.get())
                 && !stream.state.request_is_closed()
             {
-                if let Some(tx) = stream.input.take() {
+                if let Some(tx) = stream.delivery.take_sender() {
                     send_best_effort(&tx, StreamInput::Reset(ErrorCode::CANCEL)).await;
                 }
-                stream.pending_input.clear();
                 state
                     .writer
                     .reset_stream(stream_id, ErrorCode::CANCEL)
@@ -1206,6 +1126,29 @@ where
     Ok(())
 }
 
+/// Wire-shape validation for `SETTINGS`; `Ok(None)` is a valid ACK.
+fn validate_settings_frame(frame: &RawFrame) -> Result<Option<PeerSettings>, H2PeerFailure> {
+    if frame.header.stream_id.is_some() {
+        return Err(H2PeerFailure::protocol(H2Error::SettingsMustUseStreamZero));
+    }
+    if frame.header.flags.contains(FrameFlags::ACK) {
+        if !frame.payload.is_empty() {
+            return Err(H2PeerFailure::frame_size(
+                H2Error::SettingsAckPayloadNotEmpty,
+            ));
+        }
+        return Ok(None);
+    }
+    if !frame.payload.len().is_multiple_of(frame::SETTING_ENTRY_LEN) {
+        return Err(H2PeerFailure::frame_size(
+            H2Error::SettingsPayloadLengthInvalid,
+        ));
+    }
+    frame::parse_settings_payload(frame.payload.as_ref())
+        .map(Some)
+        .map_err(|err| H2PeerFailure::protocol(H2Error::invalid_peer_settings(err)))
+}
+
 async fn handle_settings_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
@@ -1213,49 +1156,25 @@ async fn handle_settings_frame<R, W>(
 where
     W: WriteTarget,
 {
-    if frame.header.stream_id.is_some() {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::SettingsMustUseStreamZero),
-        )
-        .await?;
-        return Ok(());
-    }
-    if frame.header.flags.contains(FrameFlags::ACK) {
-        if !frame.payload.is_empty() {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::frame_size(H2Error::SettingsAckPayloadNotEmpty),
-            )
-            .await?;
-        }
-        return Ok(());
-    }
-    if !frame.payload.len().is_multiple_of(frame::SETTING_ENTRY_LEN) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::frame_size(H2Error::SettingsPayloadLengthInvalid),
-        )
-        .await?;
-        return Ok(());
-    }
-    let settings = match frame::parse_settings_payload(frame.payload.as_ref()) {
-        Ok(settings) => settings,
-        Err(err) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(H2Error::invalid_peer_settings(err)),
-            )
-            .await?;
-            return Ok(());
+    match validate_settings_frame(&frame) {
+        Err(failure) => state.peer_failure(failure).await,
+        Ok(None) => Ok(()),
+        Ok(Some(settings)) => {
+            state.writer.send_settings_ack().await?;
+            state.writer.update_peer_settings(settings).await
         },
+    }
+}
+
+/// Wire-shape validation for `PING`; `Ok(None)` is a valid ACK.
+fn validate_ping_frame(frame: &RawFrame) -> Result<Option<[u8; 8]>, H2PeerFailure> {
+    if frame.header.stream_id.is_some() {
+        return Err(H2PeerFailure::protocol(H2Error::PingMustUseStreamZero));
+    }
+    let Ok(payload) = <[u8; 8]>::try_from(frame.payload.as_ref()) else {
+        return Err(H2PeerFailure::frame_size(H2Error::PingPayloadInvalidLength));
     };
-    state.writer.send_settings_ack().await?;
-    state.writer.update_peer_settings(settings).await
+    Ok((!frame.header.flags.contains(FrameFlags::ACK)).then_some(payload))
 }
 
 async fn handle_ping_frame<R, W>(
@@ -1265,31 +1184,32 @@ async fn handle_ping_frame<R, W>(
 where
     W: WriteTarget,
 {
-    if frame.header.stream_id.is_some() {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::PingMustUseStreamZero),
-        )
-        .await?;
-        return Ok(());
+    match validate_ping_frame(&frame) {
+        Err(failure) => state.peer_failure(failure).await,
+        Ok(None) => Ok(()),
+        Ok(Some(payload)) => state.writer.ping_ack(payload).await,
     }
-    if frame.payload.len() != 8 {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::frame_size(H2Error::PingPayloadInvalidLength),
-        )
-        .await?;
-        return Ok(());
-    }
-    if !frame.header.flags.contains(FrameFlags::ACK) {
-        let payload = frame.payload[..8]
-            .try_into()
-            .expect("PING payload length is validated");
-        state.writer.ping_ack(payload).await?;
-    }
-    Ok(())
+}
+
+/// Wire-shape validation for `WINDOW_UPDATE`: length and non-zero increment.
+fn validate_window_update_frame(
+    frame: &RawFrame,
+) -> Result<(Option<StreamId>, WindowIncrement), H2PeerFailure> {
+    let Ok(raw) = <[u8; 4]>::try_from(frame.payload.as_ref()) else {
+        return Err(H2PeerFailure::frame_size(
+            H2Error::WindowUpdatePayloadInvalidLength,
+        ));
+    };
+    let stream_id = frame.header.stream_id;
+    WindowIncrement::new(u32::from_be_bytes(raw) & frame::MAX_FLOW_CONTROL_WINDOW).map_or_else(
+        || {
+            Err(stream_id.map_or_else(
+                || H2PeerFailure::protocol(H2Error::WindowUpdateIncrementZero),
+                |stream_id| H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
+            ))
+        },
+        |increment| Ok((stream_id, increment)),
+    )
 }
 
 async fn handle_window_update_frame<R, W>(
@@ -1299,53 +1219,18 @@ async fn handle_window_update_frame<R, W>(
 where
     W: WriteTarget,
 {
-    if frame.payload.len() != 4 {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::frame_size(H2Error::WindowUpdatePayloadInvalidLength),
-        )
-        .await?;
-        return Ok(false);
-    }
-    let Some(increment) = WindowIncrement::new(
-        u32::from_be_bytes(
-            frame.payload[..4]
-                .try_into()
-                .expect("WINDOW_UPDATE payload length is validated"),
-        ) & frame::MAX_FLOW_CONTROL_WINDOW,
-    ) else {
-        if frame.header.stream_id.is_none() {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(H2Error::WindowUpdateIncrementZero),
-            )
-            .await?;
+    let (stream_id, increment) = match validate_window_update_frame(&frame) {
+        Ok(update) => update,
+        Err(failure) => {
+            state.peer_failure(failure).await?;
             return Ok(false);
-        }
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(
-                frame
-                    .header
-                    .stream_id
-                    .expect("zero-stream case is already handled"),
-                ErrorCode::PROTOCOL_ERROR,
-            ),
-        )
-        .await?;
-        return Ok(false);
+        },
     };
-    if let Some(stream_id) = frame.header.stream_id {
+    if let Some(stream_id) = stream_id {
         if state.receive_state(stream_id).is_idle() {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::protocol(H2Error::WindowUpdateOnIdleStream),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::protocol(H2Error::WindowUpdateOnIdleStream))
+                .await?;
             return Ok(false);
         }
         state
@@ -1361,6 +1246,21 @@ where
     }
 }
 
+/// Wire-shape validation for `RST_STREAM`: non-zero stream and 4-byte payload.
+fn validate_rst_stream_frame(frame: &RawFrame) -> Result<(StreamId, ErrorCode), H2PeerFailure> {
+    let Some(stream_id) = frame.header.stream_id else {
+        return Err(H2PeerFailure::protocol(
+            H2Error::RstStreamMustNotUseStreamZero,
+        ));
+    };
+    let Ok(raw) = <[u8; 4]>::try_from(frame.payload.as_ref()) else {
+        return Err(H2PeerFailure::frame_size(
+            H2Error::RstStreamPayloadInvalidLength,
+        ));
+    };
+    Ok((stream_id, ErrorCode::new(u32::from_be_bytes(raw))))
+}
+
 async fn handle_rst_stream_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
@@ -1368,53 +1268,51 @@ async fn handle_rst_stream_frame<R, W>(
 where
     W: WriteTarget,
 {
-    let Some(stream_id) = frame.header.stream_id else {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::RstStreamMustNotUseStreamZero),
-        )
-        .await?;
-        return Ok(());
+    let (stream_id, error_code) = match validate_rst_stream_frame(&frame) {
+        Ok(reset) => reset,
+        Err(failure) => return state.peer_failure(failure).await,
     };
-    if frame.payload.len() != 4 {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::frame_size(H2Error::RstStreamPayloadInvalidLength),
-        )
-        .await?;
-        return Ok(());
-    }
     if state.receive_state(stream_id).is_idle() {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::RstStreamOnIdleStream),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(H2Error::RstStreamOnIdleStream))
+            .await?;
         return Ok(());
     }
     if state.reset_guard.note_reset() {
-        return apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::connection(ErrorCode::ENHANCE_YOUR_CALM, H2Error::PeerResetFlood),
-        )
-        .await;
+        return state
+            .peer_failure(H2PeerFailure::connection(
+                ErrorCode::ENHANCE_YOUR_CALM,
+                H2Error::PeerResetFlood,
+            ))
+            .await;
     }
-    let error_code = ErrorCode::new(u32::from_be_bytes(
-        frame.payload[..4]
-            .try_into()
-            .expect("RST_STREAM payload length is validated"),
-    ));
     if let Some(mut stream) = state.remove_stream(stream_id)
-        && let Some(tx) = stream.input.take()
+        && let Some(tx) = stream.delivery.take_sender()
     {
         send_best_effort(&tx, StreamInput::Reset(error_code)).await;
     }
     state.writer.drop_ingress_stream(stream_id).await;
     state.writer.peer_reset(stream_id).await
+}
+
+/// Wire-shape validation for `PRIORITY`, including the self-dependency rule.
+fn validate_priority_frame(frame: &RawFrame) -> Result<(), H2PeerFailure> {
+    let Some(stream_id) = frame.header.stream_id else {
+        return Err(H2PeerFailure::protocol(
+            H2Error::PriorityMustNotUseStreamZero,
+        ));
+    };
+    let Some((dependency, [_weight])) = frame.payload.as_ref().split_first_chunk::<4>() else {
+        return Err(H2PeerFailure::frame_size(
+            H2Error::PriorityPayloadInvalidLength,
+        ));
+    };
+    match PriorityDependency::from_wire(u32::from_be_bytes(*dependency)) {
+        PriorityDependency::Stream(dependency) if dependency == stream_id => {
+            Err(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
+        },
+        _ => Ok(()),
+    }
 }
 
 async fn handle_priority_frame<R, W>(
@@ -1424,36 +1322,10 @@ async fn handle_priority_frame<R, W>(
 where
     W: WriteTarget,
 {
-    let Some(stream_id) = frame.header.stream_id else {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::PriorityMustNotUseStreamZero),
-        )
-        .await?;
-        return Ok(());
-    };
-    if frame.payload.len() != 5 {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::frame_size(H2Error::PriorityPayloadInvalidLength),
-        )
-        .await?;
-        return Ok(());
+    match validate_priority_frame(&frame) {
+        Ok(()) => Ok(()),
+        Err(failure) => state.peer_failure(failure).await,
     }
-    if matches!(
-        parse_priority_dependency(frame.payload.as_ref())?,
-        PriorityDependency::Stream(stream_dependency) if stream_dependency == stream_id
-    ) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 async fn reject_oversized_frame<R, W>(
@@ -1469,12 +1341,12 @@ where
     let error_code = ErrorCode::FRAME_SIZE_ERROR;
     match frame.header.stream_id {
         None => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::connection(error_code, H2Error::FrameExceedsAdvertisedMaxSize),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::connection(
+                    error_code,
+                    H2Error::FrameExceedsAdvertisedMaxSize,
+                ))
+                .await?;
         },
         Some(_stream_id)
             if matches!(
@@ -1485,20 +1357,17 @@ where
                     | FrameType::SETTINGS
             ) =>
         {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::connection(error_code, H2Error::FrameExceedsAdvertisedMaxSize),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::connection(
+                    error_code,
+                    H2Error::FrameExceedsAdvertisedMaxSize,
+                ))
+                .await?;
         },
         Some(stream_id) => {
-            apply_peer_failure(
-                &mut state.writer,
-                state.last_client_stream_id,
-                H2PeerFailure::stream(stream_id, error_code),
-            )
-            .await?;
+            state
+                .peer_failure(H2PeerFailure::stream(stream_id, error_code))
+                .await?;
         },
     }
     Ok(true)
@@ -1512,33 +1381,28 @@ where
     W: WriteTarget,
 {
     if state.pending_headers.is_some() && frame.header.frame_type != FrameType::CONTINUATION {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::HeaderBlockInterrupted),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(H2Error::HeaderBlockInterrupted))
+            .await?;
         return Ok(false);
     }
     if state.saw_client_settings {
         return Ok(true);
     }
     if frame.header.frame_type != FrameType::SETTINGS {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::FirstClientFrameMustBeSettings),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(
+                H2Error::FirstClientFrameMustBeSettings,
+            ))
+            .await?;
         return Ok(false);
     }
     if frame.header.flags.contains(FrameFlags::ACK) {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::FirstClientSettingsMustNotAck),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(
+                H2Error::FirstClientSettingsMustNotAck,
+            ))
+            .await?;
         return Ok(false);
     }
     state.saw_client_settings = true;
@@ -1553,12 +1417,9 @@ where
     W: WriteTarget,
 {
     if frame.header.stream_id.is_some() || frame.payload.len() < 8 {
-        apply_peer_failure(
-            &mut state.writer,
-            state.last_client_stream_id,
-            H2PeerFailure::protocol(H2Error::InvalidGoawayFrame),
-        )
-        .await?;
+        state
+            .peer_failure(H2PeerFailure::protocol(H2Error::InvalidGoawayFrame))
+            .await?;
         return Ok(());
     }
     if state.drain_state == ConnectionDrainState::Accepting {
@@ -1571,12 +1432,9 @@ async fn reject_push_promise<R, W>(state: &mut H2ConnectionState<R, W>) -> Resul
 where
     W: WriteTarget,
 {
-    apply_peer_failure(
-        &mut state.writer,
-        state.last_client_stream_id,
-        H2PeerFailure::protocol(H2Error::UnexpectedPushPromise),
-    )
-    .await
+    state
+        .peer_failure(H2PeerFailure::protocol(H2Error::UnexpectedPushPromise))
+        .await
 }
 
 async fn advance_connection_with_peer_frame<R, W>(
@@ -1654,17 +1512,6 @@ fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool)
     ))
 }
 
-fn parse_priority_dependency(payload: &[u8]) -> Result<PriorityDependency, H2CornError> {
-    if payload.len() != 5 {
-        return H2Error::PriorityPayloadInvalidLength.err();
-    }
-    Ok(PriorityDependency::from_wire(u32::from_be_bytes(
-        payload[..4]
-            .try_into()
-            .expect("priority payload length is validated"),
-    )))
-}
-
 async fn apply_writer_response_closes<R, W>(state: &mut H2ConnectionState<R, W>)
 where
     W: WriteTarget,
@@ -1684,6 +1531,7 @@ mod tests {
     use tokio::io::{AsyncWrite, BufWriter};
 
     use super::*;
+    use crate::frame::FrameHeader;
 
     const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
     const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
@@ -1757,6 +1605,125 @@ mod tests {
         }
 
         updates
+    }
+
+    fn raw_frame(
+        frame_type: FrameType,
+        flags: FrameFlags,
+        stream_id: Option<StreamId>,
+        payload: &[u8],
+    ) -> RawFrame {
+        RawFrame {
+            header: FrameHeader {
+                len: payload.len(),
+                frame_type,
+                flags,
+                stream_id,
+            },
+            payload: Bytes::copy_from_slice(payload),
+        }
+    }
+
+    #[test]
+    fn settings_validation_maps_wire_shape_errors() {
+        let on_stream = raw_frame(FrameType::SETTINGS, FrameFlags::EMPTY, StreamId::new(1), &[
+        ]);
+        assert!(matches!(
+            validate_settings_frame(&on_stream),
+            Err(H2PeerFailure::Goaway { error_code, .. }) if error_code == ErrorCode::PROTOCOL_ERROR
+        ));
+
+        let ack_with_payload = raw_frame(FrameType::SETTINGS, FrameFlags::ACK, None, &[0]);
+        assert!(matches!(
+            validate_settings_frame(&ack_with_payload),
+            Err(H2PeerFailure::Goaway { error_code, .. })
+                if error_code == ErrorCode::FRAME_SIZE_ERROR
+        ));
+
+        let misaligned = raw_frame(FrameType::SETTINGS, FrameFlags::EMPTY, None, &[0; 5]);
+        assert!(matches!(
+            validate_settings_frame(&misaligned),
+            Err(H2PeerFailure::Goaway { error_code, .. })
+                if error_code == ErrorCode::FRAME_SIZE_ERROR
+        ));
+
+        let ack = raw_frame(FrameType::SETTINGS, FrameFlags::ACK, None, &[]);
+        assert!(matches!(validate_settings_frame(&ack), Ok(None)));
+    }
+
+    #[test]
+    fn ping_validation_extracts_payload_and_skips_acks() {
+        let ping = raw_frame(FrameType::PING, FrameFlags::EMPTY, None, &[7; 8]);
+        assert_eq!(validate_ping_frame(&ping).ok().flatten(), Some([7; 8]));
+
+        let ack = raw_frame(FrameType::PING, FrameFlags::ACK, None, &[7; 8]);
+        assert!(matches!(validate_ping_frame(&ack), Ok(None)));
+
+        let short = raw_frame(FrameType::PING, FrameFlags::EMPTY, None, &[7; 4]);
+        assert!(matches!(
+            validate_ping_frame(&short),
+            Err(H2PeerFailure::Goaway { error_code, .. })
+                if error_code == ErrorCode::FRAME_SIZE_ERROR
+        ));
+    }
+
+    #[test]
+    fn window_update_zero_increment_splits_by_stream() {
+        let conn_zero = raw_frame(FrameType::WINDOW_UPDATE, FrameFlags::EMPTY, None, &[0; 4]);
+        assert!(matches!(
+            validate_window_update_frame(&conn_zero),
+            Err(H2PeerFailure::Goaway { error_code, .. })
+                if error_code == ErrorCode::PROTOCOL_ERROR
+        ));
+
+        let stream_zero = raw_frame(
+            FrameType::WINDOW_UPDATE,
+            FrameFlags::EMPTY,
+            StreamId::new(3),
+            &[0; 4],
+        );
+        assert!(matches!(
+            validate_window_update_frame(&stream_zero),
+            Err(H2PeerFailure::Reset { error_code, .. })
+                if error_code == ErrorCode::PROTOCOL_ERROR
+        ));
+
+        let grant = raw_frame(
+            FrameType::WINDOW_UPDATE,
+            FrameFlags::EMPTY,
+            StreamId::new(3),
+            &1_u32.to_be_bytes(),
+        );
+        let Ok((stream_id, increment)) = validate_window_update_frame(&grant) else {
+            panic!("valid window update is accepted");
+        };
+        assert_eq!(stream_id, StreamId::new(3));
+        assert_eq!(increment.get(), 1);
+    }
+
+    #[test]
+    fn priority_validation_rejects_self_dependency() {
+        let mut payload = 3_u32.to_be_bytes().to_vec();
+        payload.push(0);
+        let self_dependent = raw_frame(
+            FrameType::PRIORITY,
+            FrameFlags::EMPTY,
+            StreamId::new(3),
+            &payload,
+        );
+        assert!(matches!(
+            validate_priority_frame(&self_dependent),
+            Err(H2PeerFailure::Reset { error_code, .. })
+                if error_code == ErrorCode::PROTOCOL_ERROR
+        ));
+
+        let other_dependency = raw_frame(
+            FrameType::PRIORITY,
+            FrameFlags::EMPTY,
+            StreamId::new(5),
+            &payload,
+        );
+        assert!(validate_priority_frame(&other_dependency).is_ok());
     }
 
     #[tokio::test]
