@@ -26,16 +26,6 @@ enum LiteralMode {
     NeverIndexed,
 }
 
-impl LiteralMode {
-    const fn prefix(self) -> (u8, u8) {
-        match self {
-            Self::IncrementalIndexing => (6, 0x40),
-            Self::WithoutIndexing => (4, 0x00),
-            Self::NeverIndexed => (4, 0x10),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LiteralName<'a> {
     Indexed(usize),
@@ -134,7 +124,13 @@ impl Encoder {
 
         if should_index_header(static_name, name.len(), value.len(), self.current_max_size) {
             encode_literal(literal_name, value, LiteralMode::IncrementalIndexing, dst);
-            insert_dynamic(&mut self.table, name, value);
+            self.table.insert(
+                DynamicEntry {
+                    name: Bytes::copy_from_slice(name),
+                    value: Bytes::copy_from_slice(value),
+                },
+                dynamic_entry_size(name.len(), value.len()),
+            );
             return;
         }
 
@@ -174,17 +170,6 @@ fn find_dynamic(
     (None, name_index)
 }
 
-fn insert_dynamic(table: &mut DynamicBuffer<DynamicEntry>, name: &[u8], value: &[u8]) {
-    let size = dynamic_entry_size(name.len(), value.len());
-    table.insert(
-        DynamicEntry {
-            name: Bytes::copy_from_slice(name),
-            value: Bytes::copy_from_slice(value),
-        },
-        size,
-    );
-}
-
 fn should_index_header(
     static_name: Option<StaticFieldEntry>,
     name_len: usize,
@@ -205,7 +190,11 @@ const fn dynamic_entry_size(name_len: usize, value_len: usize) -> usize {
 }
 
 fn encode_literal(name: LiteralName<'_>, value: &[u8], mode: LiteralMode, dst: &mut BytesMut) {
-    let (prefix_bits, prefix_mask) = mode.prefix();
+    let (prefix_bits, prefix_mask) = match mode {
+        LiteralMode::IncrementalIndexing => (6, 0x40),
+        LiteralMode::WithoutIndexing => (4, 0x00),
+        LiteralMode::NeverIndexed => (4, 0x10),
+    };
     match name {
         LiteralName::Indexed(name_index) => encode_int(name_index, prefix_bits, prefix_mask, dst),
         LiteralName::Literal(name) => {

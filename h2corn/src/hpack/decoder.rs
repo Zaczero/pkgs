@@ -108,7 +108,8 @@ impl Decoder {
             Representation::LiteralWithIndexing => {
                 *can_resize = false;
                 let entry = self.decode_literal::<6>(src).map_err(E::from)?;
-                insert_decoded(&mut self.table, entry.clone());
+                let size = entry.len();
+                self.table.insert(entry.clone(), size);
                 f(entry)?;
             },
             Representation::LiteralWithoutIndexing | Representation::LiteralNeverIndexed => {
@@ -172,21 +173,9 @@ impl Decoder {
         }
 
         if !huffman {
-            return Ok(Self::decode_raw_string(buf, len));
+            return Ok(buf.copy_to_bytes(len));
         }
 
-        Self::decode_huffman_string(buffer, buf, len)
-    }
-
-    fn decode_raw_string(buf: &mut Bytes, len: usize) -> Bytes {
-        buf.copy_to_bytes(len)
-    }
-
-    fn decode_huffman_string(
-        buffer: &mut BytesMut,
-        buf: &mut Bytes,
-        len: usize,
-    ) -> Result<Bytes, DecoderError> {
         let decoded = huffman::decode(&buf.chunk()[..len], buffer)?;
         buf.advance(len);
         Ok(decoded.freeze())
@@ -286,11 +275,6 @@ fn get_indexed_name(
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
         _ => Ok(dynamic_entry(table, index)?.owned_name()),
     }
-}
-
-fn insert_decoded(table: &mut DynamicBuffer<DynamicEntry>, header: Header) {
-    let size = header.len();
-    table.insert(header, size);
 }
 
 fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, DecoderError> {
