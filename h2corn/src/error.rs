@@ -253,16 +253,9 @@ impl AsgiError {
         Self::MissingField { container, field }
     }
 
-    pub(crate) fn unsupported_http_outbound_message(message_type: &str) -> Self {
+    pub(crate) fn unsupported_outbound_message(channel: AsgiChannel, message_type: &str) -> Self {
         Self::UnsupportedOutboundMessage {
-            channel: AsgiChannel::Http,
-            message_type: message_type.into(),
-        }
-    }
-
-    pub(crate) fn unsupported_websocket_outbound_message(message_type: &str) -> Self {
-        Self::UnsupportedOutboundMessage {
-            channel: AsgiChannel::WebSocket,
+            channel,
             message_type: message_type.into(),
         }
     }

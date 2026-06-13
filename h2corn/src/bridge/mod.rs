@@ -19,7 +19,7 @@ pub use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, We
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
-    AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError, into_pyerr,
+    AsgiChannel, AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError, into_pyerr,
 };
 use crate::hpack::BytesStr;
 use crate::http::types::{
@@ -684,7 +684,7 @@ pub fn parse_http_outbound_event(
                 more_trailers,
             })
         },
-        _ => AsgiError::unsupported_http_outbound_message(message.message_type()?).err(),
+        _ => AsgiError::unsupported_outbound_message(AsgiChannel::Http, message_type).err(),
     }
 }
 
@@ -693,7 +693,8 @@ pub fn parse_websocket_outbound_event(
 ) -> Result<WebSocketOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
 
-    match message.message_type()? {
+    let message_type = message.message_type()?;
+    match message_type {
         "websocket.accept" => {
             let subprotocol = message.subprotocol()?;
             let headers = message.headers()?;
@@ -721,7 +722,7 @@ pub fn parse_websocket_outbound_event(
             let more_body = message.more_body_flag()?;
             Ok(WebSocketOutboundEvent::HttpResponseBody { body, more_body })
         },
-        _ => AsgiError::unsupported_websocket_outbound_message(message.message_type()?).err(),
+        _ => AsgiError::unsupported_outbound_message(AsgiChannel::WebSocket, message_type).err(),
     }
 }
 
