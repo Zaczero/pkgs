@@ -69,28 +69,21 @@ impl AcceptedWebSocketState {
         self.close_code.map_or(fallback, NonZeroU16::get)
     }
 
-    pub(super) fn queue_close(
-        &mut self,
-        code: WebSocketCloseCode,
-        reason: &str,
-    ) -> Result<(), H2CornError> {
-        self.pending_close = Some(PendingClose::new(code, reason)?);
-        self.close_state = CloseState::CloseQueued;
-        self.set_close_code(code);
-        Ok(())
-    }
-
     pub(super) fn queue_close_if_open(
         &mut self,
         code: WebSocketCloseCode,
         reason: &str,
     ) -> Result<(), H2CornError> {
-        validate_close_code(code)?;
         if self.close_started() {
+            validate_close_code(code)?;
             self.set_close_code(code);
             return Ok(());
         }
-        self.queue_close(code, reason)
+        // `PendingClose::new` validates both the code and the reason.
+        self.pending_close = Some(PendingClose::new(code, reason)?);
+        self.close_state = CloseState::CloseQueued;
+        self.set_close_code(code);
+        Ok(())
     }
 
     pub(crate) const fn take_pending_close(&mut self) -> Option<PendingClose> {
@@ -382,7 +375,9 @@ mod tests {
         let mut state = AcceptedWebSocketState::default();
         let mut frame_buf = BytesMut::new();
 
-        state.queue_close(1000, "bye").expect("close is queued");
+        state
+            .queue_close_if_open(1000, "bye")
+            .expect("close is queued");
 
         let frame = take_pending_close_frame(&mut state, &mut frame_buf)
             .expect("close frame encodes")
@@ -397,7 +392,9 @@ mod tests {
     fn queue_close_if_open_rejects_invalid_code_after_close_started() {
         let mut state = AcceptedWebSocketState::default();
 
-        state.queue_close(1000, "bye").expect("close is queued");
+        state
+            .queue_close_if_open(1000, "bye")
+            .expect("close is queued");
 
         assert!(state.queue_close_if_open(0, "").is_err());
         assert_eq!(state.close_code_or(1001), 1000);
