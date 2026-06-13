@@ -5,9 +5,9 @@ servers across the workloads that matter: small JSON GETs, file
 serving, streaming, and WebSockets.
 
 The harness lives in [`bench/`](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench)
-and uses [k6](https://k6.io/) as the load generator against the same
-Starlette application served by each of `h2corn`, `uvicorn`,
-`hypercorn`, and `gunicorn`.
+and drives the same Starlette application served by each of `h2corn`,
+`uvicorn`, `hypercorn`, and `gunicorn` with [oha](https://github.com/hatoo/oha)
+(HTTP cells) and [k6](https://k6.io/) (WebSocket cells).
 
 !!! note "Local results"
     The numbers below are from a single development machine —
@@ -24,7 +24,7 @@ not from the application code.
 
 | Knob                     | Value                                                          |
 | ------------------------ | -------------------------------------------------------------- |
-| Load generator           | [k6](https://k6.io/) (one process, separate from the server)   |
+| Load generator           | [oha](https://github.com/hatoo/oha) (HTTP), [k6](https://k6.io/) (WebSocket) — separate process from the server |
 | Duration per scenario    | 10 s of sustained load                                         |
 | Concurrent VUs           | 100 (1 000 for streaming POST)                                 |
 | Workers                  | 1 and 4, side-by-side per scenario                             |
@@ -50,7 +50,7 @@ four workers — looks like this:
 
 ![HTTP/1 GET, 4 workers](assets/benchmarks/benchmark_http_1_get_4_workers.svg)
 
-`h2corn` reaches **~232k RPS at p99 0.9 ms** — about 10× the nearest
+`h2corn` reaches **~217k RPS at p99 0.9 ms** — more than 20× the nearest
 mainstream Python server on the same deployment shape, the same Starlette
 app, and the standard-library asyncio stack.
 

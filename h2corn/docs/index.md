@@ -70,8 +70,8 @@ p50–p99** than `uvicorn`, `hypercorn`, or `gunicorn`.
 The same shift shows up as capacity. Each worker absorbs several
 times the load of a pure-Python server, so traffic that used to need
 a dozen pods fits in a couple. Four workers serve a small JSON GET at
-**~232k RPS, p99 0.9 ms** — about **10×** the nearest alternative
-serving the identical Starlette app.
+**~217k RPS, p99 0.9 ms** — more than **20×** the nearest mainstream
+alternative serving the identical Starlette app.
 [See benchmarks](benchmarks.md).
 
 ### Modern protocols
