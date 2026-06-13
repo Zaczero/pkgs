@@ -22,15 +22,15 @@ use crate::http::app::{
     HttpRequestBody, RunningHttpRequest, drive_pinned_http_request, start_asgi_http_request,
     try_complete_http_request,
 };
-use crate::http::execution::{RequestExecution, RequestInputChannels, prepare_request_execution};
+use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
 use crate::http::pathsend::PathStreamer;
-use crate::http::planner::{RequestRejection, RequestRoute, plan_request};
+use crate::http::planner::{RequestRejection, plan_request};
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
 };
 use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput};
-use crate::websocket::{WebSocketContext, WebSocketRequestMeta, validate_websocket_request};
+use crate::websocket::{WebSocketContext, validate_websocket_request};
 
 struct H2HttpTransport<'a> {
     connection: &'a ConnectionHandle,
@@ -42,8 +42,7 @@ struct HttpRequestTask {
     ctx: Box<RequestContext>,
     connection: ConnectionHandle,
     admission: RequestAdmission,
-    body_bytes_read: Option<Arc<AtomicU64>>,
-    request_body_rx: Option<mpsc::Receiver<StreamInput>>,
+    input: AppRequestInput,
 }
 
 impl H2HttpTransport<'_> {
@@ -182,29 +181,54 @@ pub(super) async fn spawn_request_stream(
             .await?;
         return Ok(());
     };
-    let RequestExecution {
-        route,
-        admission,
-        input,
-    } = prepared;
-    register_inbound_stream(
-        &mut context,
-        stream_id,
-        end_stream,
-        content_length,
-        &route,
-        &input,
-        config.max_request_body_size.map(NonZeroU64::get),
-    );
-    launch_request_stream(
-        &context,
-        stream_id,
-        route,
-        request,
-        admission,
-        input,
-        connection.clone(),
-    );
+    let request = RequestContext::new(context.connection.clone(), request);
+    match prepared {
+        RequestExecution::Http { admission, input } => {
+            let (input_tx, app_input) = input.split();
+            register_inbound_stream(
+                &mut context,
+                stream_id,
+                end_stream,
+                content_length,
+                input_tx,
+                app_input.body_bytes_read(),
+                true,
+                config.max_request_body_size.map(NonZeroU64::get),
+            );
+            spawn(handle_http_request(stream_id, HttpRequestTask {
+                ctx: request,
+                connection: connection.clone(),
+                admission,
+                input: app_input,
+            }));
+        },
+        RequestExecution::WebSocket {
+            meta,
+            admission,
+            input,
+        } => {
+            register_inbound_stream(
+                &mut context,
+                stream_id,
+                end_stream,
+                content_length,
+                Some(input.tx.clone()),
+                None,
+                false,
+                config.max_request_body_size.map(NonZeroU64::get),
+            );
+            spawn(handle_websocket_request(
+                WebSocketContext {
+                    request,
+                    admission,
+                    meta,
+                },
+                stream_id,
+                input.rx,
+                connection.clone(),
+            ));
+        },
+    }
     let startup_tx = context.streams.get(&stream_id.get()).and_then(|stream| {
         stream
             .state
@@ -224,18 +248,19 @@ fn register_inbound_stream(
     stream_id: StreamId,
     end_stream: bool,
     content_length: Option<u64>,
-    route: &RequestRoute<WebSocketRequestMeta>,
-    input: &RequestInputChannels,
+    input_tx: Option<mpsc::Sender<StreamInput>>,
+    body_bytes_read: Option<Arc<AtomicU64>>,
+    is_http: bool,
     max_request_body_size: Option<u64>,
 ) {
     context.streams.insert(
         stream_id.get(),
         InboundStream::new(
-            input.tx.clone(),
-            *route == RequestRoute::Http,
+            input_tx,
+            is_http,
             end_stream,
             content_length,
-            input.body_bytes_read.clone(),
+            body_bytes_read,
             max_request_body_size,
             context
                 .connection
@@ -247,39 +272,6 @@ fn register_inbound_stream(
     );
 }
 
-fn launch_request_stream(
-    context: &RequestSpawnContext<'_>,
-    stream_id: StreamId,
-    route: RequestRoute<WebSocketRequestMeta>,
-    request: RequestHead,
-    admission: RequestAdmission,
-    input: RequestInputChannels,
-    connection: ConnectionHandle,
-) {
-    let request = RequestContext::new(context.connection.clone(), request);
-    match route {
-        RequestRoute::WebSocket(meta) => spawn(handle_websocket_request(
-            WebSocketContext {
-                request,
-                admission,
-                meta,
-            },
-            stream_id,
-            input
-                .rx
-                .expect("websocket requests always require a stream input channel"),
-            connection,
-        )),
-        RequestRoute::Http => spawn(handle_http_request(stream_id, HttpRequestTask {
-            ctx: request,
-            connection,
-            admission,
-            body_bytes_read: input.body_bytes_read,
-            request_body_rx: input.rx,
-        })),
-    };
-}
-
 async fn handle_http_request(
     stream_id: StreamId,
     task: HttpRequestTask,
@@ -289,7 +281,11 @@ async fn handle_http_request(
         stream_id,
         response_log: ResponseLogState::default(),
     };
-    let Some(request_body_rx) = task.request_body_rx else {
+    let AppRequestInput::Stream {
+        rx: request_body_rx,
+        body_bytes_read,
+    } = task.input
+    else {
         return run_no_body_http_request(task.ctx, task.admission, &mut transport).await;
     };
     run_http_request(
@@ -298,7 +294,7 @@ async fn handle_http_request(
         task.admission,
         &mut transport,
         move || {
-            task.body_bytes_read
+            body_bytes_read
                 .as_ref()
                 .map_or(0, |body_bytes| body_bytes.load(Ordering::Relaxed))
         },

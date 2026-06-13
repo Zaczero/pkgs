@@ -2,22 +2,19 @@ use std::num::NonZeroU64;
 
 use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RequestRoute<WebSocketMeta> {
-    Http,
-    WebSocket(WebSocketMeta),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestInputPlan {
     None,
     Stream { count_body_bytes: bool },
 }
 
+/// The launch decision couples each route with the input shape it requires:
+/// websocket sessions always stream their input, so the pairing is typed
+/// rather than re-checked at the launch site.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RequestLaunchPlan<WebSocketMeta> {
-    pub(crate) route: RequestRoute<WebSocketMeta>,
-    pub(crate) input: RequestInputPlan,
+pub enum RequestLaunchPlan<WebSocketMeta> {
+    Http { input: RequestInputPlan },
+    WebSocket { meta: WebSocketMeta },
 }
 
 #[derive(Debug)]
@@ -57,19 +54,13 @@ pub fn reject_oversized_request(
     }
 }
 
-pub const fn plan_request_input<WebSocketMeta>(
-    route: &RequestRoute<WebSocketMeta>,
-    input_finished: bool,
-    access_log: bool,
-) -> RequestInputPlan {
-    match route {
-        RequestRoute::WebSocket(_) => RequestInputPlan::Stream {
-            count_body_bytes: false,
-        },
-        RequestRoute::Http if input_finished => RequestInputPlan::None,
-        RequestRoute::Http => RequestInputPlan::Stream {
+pub const fn plan_http_input(input_finished: bool, access_log: bool) -> RequestInputPlan {
+    if input_finished {
+        RequestInputPlan::None
+    } else {
+        RequestInputPlan::Stream {
             count_body_bytes: access_log,
-        },
+        }
     }
 }
 
@@ -82,15 +73,14 @@ pub fn plan_request<WebSocketMeta>(
 ) -> Result<RequestLaunchPlan<WebSocketMeta>, RequestRejection> {
     reject_oversized_request(request, max_request_body_size)?;
 
-    let route = match websocket {
-        Some(Ok(meta)) => RequestRoute::WebSocket(meta),
-        Some(Err(rejection)) => return Err(rejection),
-        None if request.is_connect() => return Err(RequestRejection::not_implemented()),
-        None => RequestRoute::Http,
-    };
-
-    let input = plan_request_input(&route, input_finished, access_log);
-    Ok(RequestLaunchPlan { route, input })
+    match websocket {
+        Some(Ok(meta)) => Ok(RequestLaunchPlan::WebSocket { meta }),
+        Some(Err(rejection)) => Err(rejection),
+        None if request.is_connect() => Err(RequestRejection::not_implemented()),
+        None => Ok(RequestLaunchPlan::Http {
+            input: plan_http_input(input_finished, access_log),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -100,7 +90,8 @@ mod tests {
     use http::Method;
 
     use super::{
-        RequestInputPlan, RequestRoute, plan_request, plan_request_input, reject_oversized_request,
+        RequestInputPlan, RequestLaunchPlan, plan_http_input, plan_request,
+        reject_oversized_request,
     };
     use crate::ext::Protocol;
     use crate::hpack::BytesStr;
@@ -164,26 +155,17 @@ mod tests {
 
     #[test]
     fn http_input_without_body_is_none() {
-        assert_eq!(
-            plan_request_input(&RequestRoute::<()>::Http, true, true),
-            RequestInputPlan::None
-        );
+        assert_eq!(plan_http_input(true, true), RequestInputPlan::None);
     }
 
     #[test]
     fn http_stream_input_uses_access_log_policy() {
-        assert_eq!(
-            plan_request_input(&RequestRoute::<()>::Http, false, true),
-            RequestInputPlan::Stream {
-                count_body_bytes: true
-            }
-        );
-        assert_eq!(
-            plan_request_input(&RequestRoute::<()>::Http, false, false),
-            RequestInputPlan::Stream {
-                count_body_bytes: false
-            }
-        );
+        assert_eq!(plan_http_input(false, true), RequestInputPlan::Stream {
+            count_body_bytes: true
+        });
+        assert_eq!(plan_http_input(false, false), RequestInputPlan::Stream {
+            count_body_bytes: false
+        });
     }
 
     #[test]
@@ -192,10 +174,7 @@ mod tests {
         let plan = plan_request(&request, Some(Ok("meta")), true, true, None)
             .expect("websocket request is accepted");
 
-        assert_eq!(plan.route, RequestRoute::WebSocket("meta"));
-        assert_eq!(plan.input, RequestInputPlan::Stream {
-            count_body_bytes: false
-        });
+        assert_eq!(plan, RequestLaunchPlan::WebSocket { meta: "meta" });
     }
 
     #[test]

@@ -22,10 +22,8 @@ use crate::frame::PeerSettings;
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::http::app::HttpRequestBody;
 use crate::http::body::RequestBodyState;
-use crate::http::execution::prepare_request_input;
-use crate::http::planner::{
-    RequestInputPlan, RequestRoute, plan_request_input, reject_oversized_request,
-};
+use crate::http::execution::StreamRequestInput;
+use crate::http::planner::reject_oversized_request;
 use crate::http::response::HttpResponseTransport;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::runtime::{
@@ -39,13 +37,12 @@ const H1_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 
 struct ParsedRequest {
     request: RequestHead,
-    upgrade: UpgradeRequest,
+    upgrade: Option<UpgradeRequest>,
     body_kind: RequestBodyKind,
     persistence: ConnectionPersistence,
 }
 
 enum UpgradeRequest {
-    None,
     WebSocket {
         key: WebSocketKey,
         meta: WebSocketRequestMeta,
@@ -60,6 +57,14 @@ enum UpgradeRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestBodyKind {
     None,
+    ContentLength(NonZeroU64),
+    Chunked,
+}
+
+/// Body kind for requests that actually stream input — `RequestBodyKind`
+/// minus `None`, so the body-reading path has no dead no-body arm.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamedBodyKind {
     ContentLength(NonZeroU64),
     Chunked,
 }
@@ -133,7 +138,7 @@ where
             persistence,
         } = parsed;
         match upgrade {
-            UpgradeRequest::None => {
+            None => {
                 if handle_http_request(
                     RequestContext::new(connection.clone(), request),
                     body_kind,
@@ -150,7 +155,7 @@ where
                     break;
                 }
             },
-            upgrade => {
+            Some(upgrade) => {
                 return handle_upgrade_request(
                     request,
                     body_kind,
@@ -253,7 +258,6 @@ where
             ))
             .await
         },
-        UpgradeRequest::None => Ok(()),
     }
 }
 
@@ -312,11 +316,6 @@ where
         writer,
     } = io;
     let config = ctx.connection.config;
-    let input_plan = plan_request_input(
-        &RequestRoute::<()>::Http,
-        body_kind == RequestBodyKind::None,
-        config.access_log,
-    );
     if let Err(rejection) = reject_oversized_request(&ctx.request, config.max_request_body_size) {
         write_simple_response(
             writer,
@@ -346,8 +345,8 @@ where
         persistence == ConnectionPersistence::Close,
     );
 
-    match input_plan {
-        RequestInputPlan::None => {
+    let body_kind = match body_kind {
+        RequestBodyKind::None => {
             run_http_request(
                 ctx,
                 HttpRequestBody::NoBody,
@@ -356,26 +355,26 @@ where
                 || 0,
             )
             .await?;
-            Ok(persistence)
+            return Ok(persistence);
         },
-        RequestInputPlan::Stream { count_body_bytes } => {
-            handle_streaming_http_request(
-                ctx,
-                body_kind,
-                persistence,
-                count_body_bytes,
-                admission,
-                &mut transport,
-                H1BodyReadParts { reader, buffer },
-            )
-            .await
-        },
-    }
+        RequestBodyKind::ContentLength(len) => StreamedBodyKind::ContentLength(len),
+        RequestBodyKind::Chunked => StreamedBodyKind::Chunked,
+    };
+    handle_streaming_http_request(
+        ctx,
+        body_kind,
+        persistence,
+        config.access_log,
+        admission,
+        &mut transport,
+        H1BodyReadParts { reader, buffer },
+    )
+    .await
 }
 
 async fn handle_streaming_http_request<R, W>(
     ctx: Box<RequestContext>,
-    body_kind: RequestBodyKind,
+    body_kind: StreamedBodyKind,
     persistence: ConnectionPersistence,
     count_body_bytes: bool,
     admission: RequestAdmission,
@@ -401,14 +400,12 @@ where
         return Ok(persistence);
     }
 
-    let input = prepare_request_input(RequestInputPlan::Stream { count_body_bytes });
-    let access_log_body_bytes = input.body_bytes_read.clone();
-    let tx = input
-        .tx
-        .expect("streaming request inputs always allocate a send channel");
-    let request_body_rx = input
-        .rx
-        .expect("streaming request inputs always allocate a receive channel");
+    let StreamRequestInput {
+        tx,
+        rx: request_body_rx,
+        body_bytes_read,
+    } = StreamRequestInput::new(count_body_bytes);
+    let access_log_body_bytes = body_bytes_read.clone();
 
     let result = {
         let mut app_future = Box::pin(run_http_request(
@@ -429,10 +426,10 @@ where
             &tx,
             RequestBodyState::new(
                 match body_kind {
-                    RequestBodyKind::ContentLength(len) => Some(len.get()),
-                    RequestBodyKind::Chunked | RequestBodyKind::None => None,
+                    StreamedBodyKind::ContentLength(len) => Some(len.get()),
+                    StreamedBodyKind::Chunked => None,
                 },
-                input.body_bytes_read,
+                body_bytes_read,
                 config.max_request_body_size.map(NonZeroU64::get),
             ),
             config.timeout_request_body_idle,
@@ -457,10 +454,10 @@ where
 }
 
 fn take_buffered_request_body(
-    body_kind: RequestBodyKind,
+    body_kind: StreamedBodyKind,
     buffer: &mut BytesMut,
 ) -> Result<Option<Bytes>, H2CornError> {
-    let RequestBodyKind::ContentLength(len) = body_kind else {
+    let StreamedBodyKind::ContentLength(len) = body_kind else {
         return Ok(None);
     };
     let len = usize::try_from(len.get()).map_err(|_| Http1Error::RequestBodyTooLarge)?;
@@ -471,7 +468,7 @@ fn take_buffered_request_body(
 }
 
 async fn read_request_body<R>(
-    body_kind: RequestBodyKind,
+    body_kind: StreamedBodyKind,
     reader: &mut R,
     buffer: &mut BytesMut,
     tx: &mpsc::Sender<StreamInput>,
@@ -482,7 +479,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     match body_kind {
-        RequestBodyKind::ContentLength(len) => {
+        StreamedBodyKind::ContentLength(len) => {
             parse::read_fixed_body(
                 reader,
                 buffer,
@@ -493,11 +490,10 @@ where
             )
             .await?;
         },
-        RequestBodyKind::Chunked => {
+        StreamedBodyKind::Chunked => {
             parse::read_chunked_body(reader, buffer, tx, &mut body, timeout_request_body_idle)
                 .await?;
         },
-        RequestBodyKind::None => {},
     }
     send_best_effort(tx, StreamInput::EndStream).await;
     Ok(())

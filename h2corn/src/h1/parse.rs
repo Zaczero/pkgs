@@ -427,26 +427,26 @@ where
     let upgrade = if websocket_requested {
         let websocket = &request.header_meta.websocket;
         if !websocket.version_supported {
-            UpgradeRequest::WebSocketUnsupportedVersion
+            Some(UpgradeRequest::WebSocketUnsupportedVersion)
         } else if line.websocket_method_supported
             && !websocket.key_duplicate
             && let Some(key) = websocket.key
         {
-            UpgradeRequest::WebSocket {
+            Some(UpgradeRequest::WebSocket {
                 key,
                 meta: websocket.request.clone(),
-            }
+            })
         } else {
-            UpgradeRequest::WebSocketBadRequest
+            Some(UpgradeRequest::WebSocketBadRequest)
         }
     } else if let Some(settings) = http2_settings
         && upgrade.h2c
         && connection.upgrade
         && connection.http2_settings
     {
-        UpgradeRequest::H2c { settings }
+        Some(UpgradeRequest::H2c { settings })
     } else {
-        UpgradeRequest::None
+        None
     };
 
     Ok(Some(ParsedRequest {
@@ -1052,7 +1052,7 @@ mod tests {
             RequestBodyKind::ContentLength(7.try_into().unwrap())
         );
         assert_eq!(parsed.persistence, ConnectionPersistence::KeepAlive);
-        assert!(matches!(parsed.upgrade, UpgradeRequest::None));
+        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1064,7 +1064,7 @@ mod tests {
 
         assert_eq!(parsed.body_kind, RequestBodyKind::Chunked);
         assert_eq!(parsed.persistence, ConnectionPersistence::KeepAlive);
-        assert!(matches!(parsed.upgrade, UpgradeRequest::None));
+        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1075,7 +1075,7 @@ mod tests {
 
         assert_eq!(parsed.body_kind, RequestBodyKind::None);
         assert_eq!(parsed.persistence, ConnectionPersistence::Close);
-        assert!(matches!(parsed.upgrade, UpgradeRequest::None));
+        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1094,7 +1094,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(parsed.upgrade, UpgradeRequest::WebSocket { .. }));
+        assert!(matches!(
+            parsed.upgrade,
+            Some(UpgradeRequest::WebSocket { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1115,7 +1118,7 @@ mod tests {
 
         assert!(matches!(
             parsed.upgrade,
-            UpgradeRequest::WebSocketUnsupportedVersion
+            Some(UpgradeRequest::WebSocketUnsupportedVersion)
         ));
     }
 
@@ -1136,7 +1139,7 @@ mod tests {
 
         assert!(matches!(
             parsed.upgrade,
-            UpgradeRequest::WebSocketBadRequest
+            Some(UpgradeRequest::WebSocketBadRequest)
         ));
     }
 
@@ -1185,7 +1188,7 @@ mod tests {
 
         assert!(matches!(
             parsed.upgrade,
-            UpgradeRequest::WebSocketBadRequest
+            Some(UpgradeRequest::WebSocketBadRequest)
         ));
     }
 
@@ -1204,7 +1207,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(parsed.upgrade, UpgradeRequest::H2c { .. }));
+        assert!(matches!(parsed.upgrade, Some(UpgradeRequest::H2c { .. })));
     }
 
     #[tokio::test]
