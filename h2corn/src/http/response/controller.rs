@@ -16,6 +16,14 @@ enum ResponseState {
     Aborted,
 }
 
+impl ResponseState {
+    const fn waiting_for_trailers() -> Self {
+        Self::WaitingForTrailers {
+            buffered: http::types::ResponseHeaders::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StartedResponse {
     start: actions::ResponseStart,
@@ -157,9 +165,7 @@ impl ResponseController {
 
         self.state = if final_chunk {
             if started.expects_trailers {
-                ResponseState::WaitingForTrailers {
-                    buffered: http::types::ResponseHeaders::new(),
-                }
+                ResponseState::waiting_for_trailers()
             } else {
                 actions.push(actions::ResponseAction::Finish);
                 ResponseState::Complete
@@ -180,7 +186,6 @@ impl ResponseController {
             self.state = ResponseState::StartedStreaming(started);
             return error::HttpResponseError::PathsendMixedWithBody.err();
         }
-        drop(started);
         let start = actions::ResponseStart::new(status, http::types::ResponseHeaders::new());
         actions.push(actions::ResponseAction::Final {
             start,
@@ -220,9 +225,7 @@ impl ResponseController {
                     if !data.is_empty() {
                         actions.push(actions::ResponseAction::Body(data.into()));
                     }
-                    self.state = ResponseState::WaitingForTrailers {
-                        buffered: http::types::ResponseHeaders::new(),
-                    };
+                    self.state = ResponseState::waiting_for_trailers();
                 } else {
                     let body = if data.is_empty() {
                         actions::FinalResponseBody::Empty
@@ -237,9 +240,7 @@ impl ResponseController {
                 if started.expects_trailers {
                     actions.push(started.take_start_action());
                     actions.push(actions::ResponseAction::File { file, len });
-                    self.state = ResponseState::WaitingForTrailers {
-                        buffered: http::types::ResponseHeaders::new(),
-                    };
+                    self.state = ResponseState::waiting_for_trailers();
                 } else {
                     self.state = complete_response(
                         actions,
@@ -343,9 +344,7 @@ fn wait_for_trailers(
     started: &mut StartedResponse,
 ) -> ResponseState {
     actions.push(started.take_start_action());
-    ResponseState::WaitingForTrailers {
-        buffered: http::types::ResponseHeaders::new(),
-    }
+    ResponseState::waiting_for_trailers()
 }
 
 fn complete_response(
