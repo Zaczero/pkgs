@@ -1,3 +1,5 @@
+use std::io;
+
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
@@ -303,11 +305,50 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut prefix = [0_u8; 18];
-    writer
-        .write_all(chunk_prefix(chunk.len(), &mut prefix))
-        .await?;
-    writer.write_all(chunk).await?;
-    writer.write_all(b"\r\n").await?;
+    let prefix = chunk_prefix(chunk.len(), &mut prefix);
+    // Small chunks coalesce in the BufWriter (one syscall per flushed batch).
+    // A chunk at/over the buffer capacity would bypass the buffer anyway, so
+    // emit `prefix + chunk + CRLF` as a single `writev` instead of a
+    // buffer-flush plus a direct write — halving write syscalls for
+    // large-chunk streaming.
+    if chunk.len() < super::H1_WRITER_BUFFER_CAPACITY {
+        writer.write_all(prefix).await?;
+        writer.write_all(chunk).await?;
+        writer.write_all(b"\r\n").await?;
+        return Ok(());
+    }
+    writer.flush().await?;
+    let mut slices = [
+        io::IoSlice::new(prefix),
+        io::IoSlice::new(chunk),
+        io::IoSlice::new(b"\r\n"),
+    ];
+    write_all_vectored(writer.get_mut(), &mut slices).await
+}
+
+/// Drive `write_vectored` to completion over `slices`, advancing past partial
+/// writes. The caller must have flushed any buffered writer first so output
+/// order is preserved.
+async fn write_all_vectored<W>(
+    writer: &mut W,
+    slices: &mut [io::IoSlice<'_>],
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
+    let mut bufs = slices;
+    while remaining > 0 {
+        let written = writer.write_vectored(bufs).await?;
+        if written == 0 {
+            return Err(H2CornError::from(io::Error::from(io::ErrorKind::WriteZero)));
+        }
+        remaining -= written;
+        if remaining == 0 {
+            break;
+        }
+        io::IoSlice::advance_slices(&mut bufs, written);
+    }
     Ok(())
 }
 
