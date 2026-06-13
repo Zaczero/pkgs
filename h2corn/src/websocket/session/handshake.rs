@@ -2,12 +2,12 @@ use pyo3::pybacked::PyBackedStr;
 
 use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
-use crate::bridge::{HttpOutboundEvent, PayloadBytes, WebSocketOutboundEvent};
-use crate::console::{ResponseLogState, WebSocketAccessLogState};
+use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
+use crate::console::WebSocketAccessLogState;
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
 use crate::http::response::{
-    FinalResponseBody, HttpResponseTransport, ResponseActions, ResponseController, ResponseStart,
-    apply_http_event, finalize_response,
+    ResponseAction, ResponseActionSink, ResponseActions, ResponseController, apply_http_event,
+    finalize_response,
 };
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 
@@ -28,61 +28,49 @@ struct DenialHttpTransport<'a, T> {
     tx_bytes: u64,
 }
 
-impl<T> HttpResponseTransport for DenialHttpTransport<'_, T>
+impl<T> ResponseActionSink for DenialHttpTransport<'_, T>
 where
     T: WebSocketHandshakeTransport,
 {
-    async fn send_final_response(
+    async fn apply_response_actions(
         &mut self,
-        start: ResponseStart,
-        body: FinalResponseBody,
+        actions: &mut ResponseActions,
     ) -> Result<(), H2CornError> {
-        self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
-        let (status, headers) = start.into_status_headers();
-        self.transport
-            .send_final_denial_response(status, headers, body)
-            .await
-    }
-
-    async fn start_streaming_response(&mut self, start: ResponseStart) -> Result<(), H2CornError> {
-        let (status, headers) = start.into_status_headers();
-        self.transport.start_denial_response(status, headers).await
-    }
-
-    async fn send_streaming_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-        self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
-        self.transport.send_denial_body(body).await
-    }
-
-    async fn send_streaming_file(
-        &mut self,
-        _file: tokio::fs::File,
-        _len: usize,
-    ) -> Result<(), H2CornError> {
-        unreachable!("websocket denial responses never send files")
-    }
-
-    async fn finish_streaming_response(&mut self) -> Result<(), H2CornError> {
-        self.transport.finish_denial_response().await
-    }
-
-    async fn finish_streaming_with_trailers(
-        &mut self,
-        _trailers: ResponseHeaders,
-    ) -> Result<(), H2CornError> {
-        unreachable!("websocket denial responses never send trailers")
-    }
-
-    async fn send_internal_error_response(&mut self) -> Result<(), H2CornError> {
-        self.transport.send_internal_error_response().await
-    }
-
-    async fn abort_incomplete_response(&mut self) -> Result<(), H2CornError> {
-        self.transport.abort_denial_response().await
-    }
-
-    fn response_log_state(&self) -> ResponseLogState {
-        ResponseLogState::default()
+        for action in actions.drain(..) {
+            match action {
+                ResponseAction::Final { start, body } => {
+                    self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
+                    let (status, headers) = start.into_status_headers();
+                    self.transport
+                        .send_final_denial_response(status, headers, body)
+                        .await?;
+                },
+                ResponseAction::Start { start } => {
+                    let (status, headers) = start.into_status_headers();
+                    self.transport
+                        .start_denial_response(status, headers)
+                        .await?;
+                },
+                ResponseAction::Body(body) => {
+                    self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
+                    self.transport.send_denial_body(body).await?;
+                },
+                ResponseAction::Finish => self.transport.finish_denial_response().await?,
+                ResponseAction::InternalError => {
+                    self.transport.send_internal_error_response().await?;
+                },
+                ResponseAction::AbortIncomplete => {
+                    self.transport.abort_denial_response().await?;
+                },
+                // `parse_denial_body_event` admits only Start/Body events, so
+                // the pathsend and trailer actions can never be produced for
+                // a denial response; fail the session, never the process.
+                action @ (ResponseAction::File { .. } | ResponseAction::FinishWithTrailers(_)) => {
+                    return WebSocketError::unexpected_denial_body_event(&action).err();
+                },
+            }
+        }
+        Ok(())
     }
 }
 

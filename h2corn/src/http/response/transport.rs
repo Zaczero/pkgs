@@ -4,6 +4,27 @@ use crate::console::ResponseLogState;
 use crate::error::H2CornError;
 use crate::http::types::ResponseHeaders;
 
+/// The driver-facing seam: response progress is communicated as a batch of
+/// `ResponseAction`s, and each sink decides how to lower them onto its wire.
+/// Full HTTP transports get this via the blanket impl below; restricted sinks
+/// (websocket denial responses) implement it directly with a narrower action
+/// vocabulary.
+pub trait ResponseActionSink {
+    async fn apply_response_actions(
+        &mut self,
+        actions: &mut ResponseActions,
+    ) -> Result<(), H2CornError>;
+}
+
+impl<T: HttpResponseTransport> ResponseActionSink for T {
+    async fn apply_response_actions(
+        &mut self,
+        actions: &mut ResponseActions,
+    ) -> Result<(), H2CornError> {
+        HttpResponseTransport::apply_response_actions(self, actions).await
+    }
+}
+
 pub trait HttpResponseTransport {
     async fn send_final_response(
         &mut self,

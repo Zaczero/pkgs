@@ -16,7 +16,7 @@ pub async fn finalize_response<T>(
     app_result: Result<(), error::H2CornError>,
 ) -> Result<(), error::H2CornError>
 where
-    T: transport::HttpResponseTransport,
+    T: transport::ResponseActionSink,
 {
     let final_result = controller.finalize(actions, app_result);
     transport.apply_response_actions(actions).await?;
@@ -30,7 +30,7 @@ pub async fn apply_http_event<T>(
     event: bridge::HttpOutboundEvent,
 ) -> Result<(), error::H2CornError>
 where
-    T: transport::HttpResponseTransport,
+    T: transport::ResponseActionSink,
 {
     if let HttpEventEffect::PathSend(path) = handle_http_event_sync(controller, actions, event)? {
         match http::pathsend::open_pathsend_file(path, controller.pathsend_len_hint()).await {
