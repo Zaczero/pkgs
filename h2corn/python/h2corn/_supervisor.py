@@ -77,6 +77,28 @@ def _clone_config(config: Config, /, **overrides):
     return cloned
 
 
+def _install_parent_death_signal() -> None:
+    """Bind this worker's lifetime to the supervisor's (Linux only).
+
+    Ask the kernel to `SIGKILL` the worker the moment its supervisor dies for
+    any reason — graceful exit, crash, `SIGKILL`, or the OOM killer — so a
+    hard-killed supervisor can never leave orphaned workers behind. Must run
+    *after* any privilege drop: `setuid`/`setgid` clear `PDEATHSIG`.
+    """
+    if sys.platform != 'linux':
+        return
+    import ctypes
+
+    pr_set_pdeathsig = 1
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(pr_set_pdeathsig, signal.SIGKILL, 0, 0, 0) != 0:
+        return
+    # Close the fork→prctl race: if the supervisor already exited, the death
+    # signal was missed, so reparenting to init means we must stop now.
+    if os.getppid() == 1:
+        os._exit(0)
+
+
 def _worker_entry(
     app: ASGIApp | ImportSettings,
     config: Config,
@@ -91,6 +113,7 @@ def _worker_entry(
     )
 
     _drop_process_privileges(identity)
+    _install_parent_death_signal()
     _install_event_loop(config.loop)
     if isinstance(app, ImportSettings):
         app = _import_target(app)

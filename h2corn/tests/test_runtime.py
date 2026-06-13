@@ -688,3 +688,80 @@ async def test_reuse_port_allows_overlapping_server_generations(tmp_path: Path) 
             await _terminate_process(gen_b)
     finally:
         await _terminate_process(gen_a)
+
+
+def _worker_pids(supervisor_pid: int) -> list[int]:
+    """PIDs of the supervisor's forked worker children (Linux /proc scan)."""
+    children = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f'/proc/{entry}/status') as status:
+                ppid = next(
+                    int(line.split()[1])
+                    for line in status
+                    if line.startswith('PPid:')
+                )
+        except (OSError, StopIteration):
+            continue
+        if ppid == supervisor_pid:
+            children.append(int(entry))
+    return children
+
+
+def _all_dead(pids: list[int]) -> bool:
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            return False
+        else:
+            return False
+    return True
+
+
+@pytest.mark.skipif(
+    sys.platform != 'linux', reason='PR_SET_PDEATHSIG is Linux-only'
+)
+@pytest.mark.parametrize('workers', [1, 2])
+async def test_sigkilled_supervisor_leaves_no_orphan_workers(
+    tmp_path: Path,
+    workers: int,
+) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='orphan_app',
+        module_source="""
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': b'alive'})
+        """,
+        workers=workers,
+    )
+    try:
+        await wait_for_port(port)
+        await _wait_for_h2_success(port=port, body=b'alive')
+        worker_pids = _worker_pids(process.pid)
+        assert len(worker_pids) == workers
+
+        # Hard-kill the supervisor (no graceful teardown): PR_SET_PDEATHSIG
+        # must make the kernel reap every worker regardless.
+        process.kill()
+        await asyncio.wait_for(process.wait(), timeout=5)
+
+        deadline = asyncio.get_running_loop().time() + 5
+        while not _all_dead(worker_pids):
+            assert asyncio.get_running_loop().time() < deadline, (
+                f'workers orphaned after supervisor SIGKILL: {worker_pids}'
+            )
+            await asyncio.sleep(0.05)
+    finally:
+        await _terminate_process(process)
+        for pid in _worker_pids(process.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
