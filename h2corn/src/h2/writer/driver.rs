@@ -466,12 +466,13 @@ async fn force_reset_stream<W>(
     streams: &mut StreamMap<StreamWriteState>,
     response_closes: &mut ResponseCloseBatch,
     stream_id: StreamId,
+    error_code: ErrorCode,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {
     streams.remove(&stream_id.get());
-    frame::append_rst_stream(frame_buf, stream_id, ErrorCode::INTERNAL_ERROR);
+    frame::append_rst_stream(frame_buf, stream_id, error_code);
     write_frame_buf(writer, frame_buf).await?;
     notify_response_close(response_closes, stream_id);
     Ok(())
@@ -516,6 +517,7 @@ where
             context.streams,
             context.response_closes,
             stream_id,
+            ErrorCode::INTERNAL_ERROR,
         )
         .await;
         return Ok(());
@@ -548,6 +550,7 @@ where
             context.streams,
             context.response_closes,
             stream_id,
+            ErrorCode::INTERNAL_ERROR,
         )
         .await;
         return Ok(());
@@ -579,6 +582,7 @@ where
             context.streams,
             context.response_closes,
             stream_id,
+            ErrorCode::INTERNAL_ERROR,
         )
         .await;
         return Ok(());
@@ -608,6 +612,7 @@ where
             context.streams,
             context.response_closes,
             stream_id,
+            ErrorCode::INTERNAL_ERROR,
         )
         .await;
         return Ok(());
@@ -701,6 +706,7 @@ where
             context.streams,
             context.response_closes,
             stream_id,
+            ErrorCode::INTERNAL_ERROR,
         )
         .await;
         return Ok(());
@@ -717,11 +723,15 @@ async fn handle_send_reset<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    context.streams.remove(&stream_id.get());
-    frame::append_rst_stream(context.frame_buf, stream_id, error_code);
-    write_frame_buf(context.writer, context.frame_buf).await?;
-    notify_response_close(context.response_closes, stream_id);
-    Ok(())
+    force_reset_stream(
+        context.writer,
+        context.frame_buf,
+        context.streams,
+        context.response_closes,
+        stream_id,
+        error_code,
+    )
+    .await
 }
 
 async fn handle_grant_stream_window<W>(
