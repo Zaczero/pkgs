@@ -129,8 +129,6 @@ mod dict_api {
 
 use std::any::Any;
 use std::mem::MaybeUninit;
-#[cfg(Py_GIL_DISABLED)]
-use std::os::raw::c_int;
 
 use pyo3::prelude::*;
 pub use pyo3::sync::PyOnceLock;

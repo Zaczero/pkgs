@@ -33,6 +33,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBool, PyTuple};
 pub use slot::{SlotFuture, TaskSlot};
 
+use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
 use crate::python::py_vectorcall_kwnames;
 use crate::runtime::AppState;
@@ -192,6 +193,11 @@ pub struct ShardHandle {
     /// The bound pump callable handed to `call_soon*`. Set once right after
     /// construction (the pump pyclass needs the shard and vice versa).
     pump: PyOnceLock<Py<PyAny>>,
+    /// Cached `None`-resolving awaitable for synchronously-successful `send()`;
+    /// handed out by reference, so a buffered send allocates nothing. Every
+    /// ASGI response performs ≥2 sends, so this is the highest-frequency
+    /// per-request awaitable — a shared constant beats allocating each time.
+    ready_none: Py<ReadyNone>,
 }
 
 impl ShardHandle {
@@ -240,6 +246,7 @@ impl ShardHandle {
             ensure_future: asyncio.getattr("ensure_future")?.unbind(),
             eager,
             pump: PyOnceLock::new(),
+            ready_none: Py::new(py, ReadyNone)?,
         }));
 
         let pump = pump::Pump::into_callable(py, shard)?;
@@ -276,6 +283,7 @@ impl ShardHandle {
             ensure_future: py.None(),
             eager: false,
             pump: PyOnceLock::new(),
+            ready_none: Py::new(py, ReadyNone).expect("test ready_none"),
         }))
     }
 
@@ -378,6 +386,11 @@ impl ShardHandle {
 
     pub(crate) const fn call_soon(&self) -> &Py<PyAny> {
         &self.call_soon
+    }
+
+    /// This shard's cached `None`-resolving awaitable singleton.
+    pub(crate) const fn ready_none(&self) -> &Py<ReadyNone> {
+        &self.ready_none
     }
 
     /// Stop this shard's event loop from any thread. Errors are swallowed:

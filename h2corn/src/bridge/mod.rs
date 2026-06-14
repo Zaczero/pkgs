@@ -317,6 +317,38 @@ impl ReadyAwaitable {
     }
 }
 
+/// A stateless, re-awaitable awaitable that always resolves to `None`.
+///
+/// Every successful ASGI `send()` resolves to `None`, so instead of building a
+/// fresh awaitable per send we hand out a reference to one cached instance per
+/// shard (see [`ready_none`]). It holds no state and takes `&self`, so sharing
+/// it is sound even under repeated or concurrent awaits (including across
+/// free-threaded shard threads): `__next__` just raises `StopIteration(None)`
+/// synchronously, with nothing to corrupt.
+#[pyclass(frozen)]
+pub struct ReadyNone;
+
+#[pymethods]
+impl ReadyNone {
+    fn send(&self, py: Python<'_>, _value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        Err(PyStopIteration::new_err((py.None(),)))
+    }
+
+    const fn close(&self) {}
+
+    const fn __await__(self_: Py<Self>) -> Py<Self> {
+        self_
+    }
+
+    const fn __iter__(self_: Py<Self>) -> Py<Self> {
+        self_
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Err(PyStopIteration::new_err((py.None(),)))
+    }
+}
+
 /// Protocol-specific event pull. The cancel-race requeue invariant lives in
 /// [`Requeueable`], not in implementations of this trait.
 pub trait EventSource: Send + 'static {
@@ -404,13 +436,20 @@ pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, 
     .into_any())
 }
 
+/// The shard's cached `None`-resolving awaitable, for a `send()` that
+/// completed synchronously. No allocation — just a new reference to the shared
+/// [`ReadyNone`] singleton.
+pub fn ready_none(py: Python<'_>, shard: Shard) -> Bound<'_, PyAny> {
+    shard.ready_none().bind(py).clone().into_any()
+}
+
 pub fn buffered_or_send<T: Send + 'static>(
     py: Python<'_>,
     shard: Shard,
     forwarded: Option<(mpsc::Sender<T>, T)>,
 ) -> PyResult<Bound<'_, PyAny>> {
     forwarded.map_or_else(
-        || ready_awaitable(py, py.None()),
+        || Ok(ready_none(py, shard)),
         |(tx, event)| try_send_or_await(py, shard, &tx, event),
     )
 }
@@ -621,7 +660,7 @@ pub fn try_send_or_await<'py, T: Send + 'static>(
     event: T,
 ) -> PyResult<Bound<'py, PyAny>> {
     match try_push(tx, event) {
-        TryPush::Sent => ready_awaitable(py, py.None()),
+        TryPush::Sent => Ok(ready_none(py, shard)),
         TryPush::Full(event) => {
             // Backpressure wait as a duck future. Cancellation aborts the
             // waiter; an aborted `send` never enqueues, so the message is

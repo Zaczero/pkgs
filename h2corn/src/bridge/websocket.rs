@@ -7,7 +7,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
     EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent, buffered_or_send,
-    build_websocket_inbound_event, parse_websocket_outbound_event, ready_awaitable,
+    build_websocket_inbound_event, parse_websocket_outbound_event, ready_none,
     receive_or_await,
 };
 use crate::buffered_events::BufferedState;
@@ -220,7 +220,7 @@ impl PyWebSocketSend {
     ) -> PyResult<Bound<'py, PyAny>> {
         let event = parse_websocket_outbound_event(message).into_pyresult()?;
         match self.state.push_or_forward(event) {
-            WebSocketSendDisposition::Buffered => ready_awaitable(py, py.None()),
+            WebSocketSendDisposition::Buffered => Ok(ready_none(py, self.shard)),
             WebSocketSendDisposition::Forward(event) => {
                 buffered_or_send(py, self.shard, Some((self.tx.clone(), event)))
             },
