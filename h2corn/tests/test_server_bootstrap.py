@@ -160,6 +160,80 @@ def test_build_socket_sets_nonblocking_after_creation_off_linux(
     assert ('listen', (config.backlog,)) in calls
 
 
+def _tcp_fastopen_calls(
+    calls: list[tuple[str, tuple[Any, ...]]],
+) -> list[tuple[Any, ...]]:
+    from h2corn import _socket
+
+    return [
+        args
+        for name, args in calls
+        if name == 'setsockopt' and args[1] == _socket.socket.TCP_FASTOPEN
+    ]
+
+
+def test_build_socket_enables_tcp_fastopen_with_qlen_on_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    config = Config()
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
+    )
+
+    _socket._build_sockets(config)[0][0]
+
+    assert _tcp_fastopen_calls(calls) == [
+        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 512)
+    ]
+
+
+def test_build_socket_enables_tcp_fastopen_as_boolean_on_darwin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: macOS rejects the Linux accept-queue length with EINVAL; the
+    # listener must enable TFO with the boolean 1, never 512.
+    from h2corn import _socket
+
+    config = Config()
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'darwin')
+    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
+    )
+
+    _socket._build_sockets(config)[0][0]
+
+    assert _tcp_fastopen_calls(calls) == [
+        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 1)
+    ]
+
+
+def test_build_socket_skips_tcp_fastopen_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    config = Config()
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'win32')
+    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
+    )
+
+    _socket._build_sockets(config)[0][0]
+
+    assert _tcp_fastopen_calls(calls) == []
+
+
 def test_build_unix_socket_applies_owner_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

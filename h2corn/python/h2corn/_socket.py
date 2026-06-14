@@ -128,9 +128,17 @@ def _adopt_socket(fd: int):
 
 def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
     if reuse_port:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    sock.setsockopt(socket.SOL_TCP, socket.TCP_FASTOPEN, 512)
+
+    # TCP Fast Open level value differs by OS: a listener accept-queue length on Linux,
+    # a boolean enable on Darwin, and unsupported elsewhere.
+    if sys.platform == 'linux':
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, 512)
+    elif sys.platform == 'darwin':
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, 1)
+
     if sys.platform == 'linux':
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_DEFER_ACCEPT, 1)
