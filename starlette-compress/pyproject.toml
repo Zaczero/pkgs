@@ -56,7 +56,14 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/starlette-compress"
 
 [dependency-groups]
-dev = ["brotlicffi", "coverage", "httpx", "pytest", "trio", "uvloop"]
+dev = [
+  "brotlicffi",
+  "coverage",
+  "httpx",
+  "pytest",
+  "trio",
+  "uvloop; sys_platform != 'win32'",
+]
 
 [build-system]
 requires = ["hatchling"]

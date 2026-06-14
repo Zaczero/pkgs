@@ -257,9 +257,7 @@ def test_build_socket_skips_tcp_fastopen_when_constant_absent(
     _socket._build_sockets(config)[0][0]
 
     assert not [
-        args
-        for name, args in calls
-        if name == 'setsockopt' and args[1] == tcp_fastopen
+        args for name, args in calls if name == 'setsockopt' and args[1] == tcp_fastopen
     ]
 
 
@@ -795,7 +793,7 @@ def test_build_sockets_reuses_kernel_allocated_port_across_tcp_zero_binds(
     [
         (socket.AF_INET, False),
         pytest.param(
-            socket.AF_UNIX,
+            getattr(socket, 'AF_UNIX', None),
             True,
             marks=pytest.mark.skipif(
                 sys.platform == 'win32',

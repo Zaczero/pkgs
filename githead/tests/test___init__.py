@@ -32,7 +32,5 @@ def test_reference_not_found():
 
 def test_reference_outside_git():
     HEAD_PATH.write_text('ref: ../test___init__.py\n')
-    with pytest.raises(
-        ValueError, match='HEAD references outside of tests/git directory'
-    ):
+    with pytest.raises(ValueError, match='HEAD references outside of'):
         githead(GIT_PATH)
