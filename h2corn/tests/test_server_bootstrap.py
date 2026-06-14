@@ -215,7 +215,7 @@ def test_build_socket_enables_tcp_fastopen_as_boolean_on_darwin(
     ]
 
 
-def test_build_socket_skips_tcp_fastopen_on_windows(
+def test_build_socket_enables_tcp_fastopen_as_boolean_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _socket
@@ -231,7 +231,36 @@ def test_build_socket_skips_tcp_fastopen_on_windows(
 
     _socket._build_sockets(config)[0][0]
 
-    assert _tcp_fastopen_calls(calls) == []
+    assert _tcp_fastopen_calls(calls) == [
+        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 1)
+    ]
+
+
+def test_build_socket_skips_tcp_fastopen_when_constant_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Older Windows SDKs/Pythons lack socket.TCP_FASTOPEN; the hasattr probe
+    # must make the listener skip it rather than raise AttributeError.
+    from h2corn import _socket
+
+    tcp_fastopen = _socket.socket.TCP_FASTOPEN  # capture before deleting it
+    config = Config()
+    calls = []
+
+    monkeypatch.setattr(_socket.sys, 'platform', 'win32')
+    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
+    monkeypatch.delattr(_socket.socket, 'TCP_FASTOPEN', raising=False)
+    monkeypatch.setattr(
+        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
+    )
+
+    _socket._build_sockets(config)[0][0]
+
+    assert not [
+        args
+        for name, args in calls
+        if name == 'setsockopt' and args[1] == tcp_fastopen
+    ]
 
 
 def test_build_unix_socket_applies_owner_ids(

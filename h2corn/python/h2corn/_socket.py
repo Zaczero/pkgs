@@ -103,7 +103,7 @@ def _build_unix_socket(
 
     sock = socket.socket(
         socket.AF_UNIX,
-        socket.SOCK_STREAM | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
+        socket.SOCK_STREAM | getattr(socket, 'SOCK_NONBLOCK', 0),
     )
     sock.bind(uds_path)
     if owner_uid is not None or owner_gid is not None:
@@ -115,7 +115,7 @@ def _build_unix_socket(
     sock.listen(config.backlog)
     if config.uds_permissions is not None:
         os.chmod(uds_path, config.uds_permissions)
-    if sys.platform != 'linux':
+    if not getattr(socket, 'SOCK_NONBLOCK', 0):
         sock.setblocking(False)
     return sock
 
@@ -132,12 +132,11 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     if reuse_port:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
-    # TCP Fast Open level value differs by OS: a listener accept-queue length on Linux,
-    # a boolean enable on Darwin, and unsupported elsewhere.
-    if sys.platform == 'linux':
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, 512)
-    elif sys.platform == 'darwin':
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, 1)
+    value = 512 if sys.platform == 'linux' else 1
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, value)
+    except (OSError, AttributeError):
+        pass
 
     if sys.platform == 'linux':
         try:
@@ -148,7 +147,7 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
 
 def _finish_bound_socket(sock: socket.socket, backlog: int):
     sock.listen(backlog)
-    if sys.platform != 'linux':
+    if not getattr(socket, 'SOCK_NONBLOCK', 0):
         sock.setblocking(False)
     return sock
 
@@ -163,8 +162,7 @@ def _build_tcp_socket(host: str, port: int, config: Config):
     ):
         sock = socket.socket(
             family,
-            socket.SOCK_STREAM
-            | (socket.SOCK_NONBLOCK if sys.platform == 'linux' else 0),
+            socket.SOCK_STREAM | getattr(socket, 'SOCK_NONBLOCK', 0),
         )
         try:
             if family == socket.AF_INET6:

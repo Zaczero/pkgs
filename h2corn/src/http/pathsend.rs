@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use bytes::Bytes;
 #[cfg(target_os = "linux")]
 use rustix::fs::{Advice, fadvise};
+#[cfg(target_os = "macos")]
+use rustix::fs::fcntl_rdadvise;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::task::spawn_blocking;
@@ -136,8 +138,11 @@ pub async fn open_pathsend_file(
                 .map_err(pathsend_io_error)?;
             return Ok((PathSource::Buffered(data.into()), len));
         }
+        // Best-effort sequential read-ahead hint for the streamed file.
         #[cfg(target_os = "linux")]
         let _ = fadvise(&file, 0, None, Advice::Sequential);
+        #[cfg(target_os = "macos")]
+        let _ = fcntl_rdadvise(&file, 0, len as u64);
         Ok::<_, PathsendError>((PathSource::File(File::from_std(file)), len))
     })
     .await??)

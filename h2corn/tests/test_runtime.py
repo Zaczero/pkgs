@@ -19,8 +19,8 @@ from tests._support import (
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(
-        sys.platform != 'linux',
-        reason='supervisor suite is Linux-only (fork workers, /proc scan, PR_SET_PDEATHSIG)',
+        sys.platform == 'win32',
+        reason='POSIX worker supervisor (fork workers, signals, unix sockets)',
     ),
 ]
 
@@ -726,6 +726,10 @@ def _all_dead(pids: list[int]) -> bool:
     return True
 
 
+@pytest.mark.skipif(
+    sys.platform != 'linux',
+    reason='orphan reaping relies on the /proc scan and PR_SET_PDEATHSIG',
+)
 @pytest.mark.parametrize('workers', [1, 2])
 async def test_sigkilled_supervisor_leaves_no_orphan_workers(
     tmp_path: Path,
