@@ -156,7 +156,7 @@ async def tls_h2_request(
         return status, body
     finally:
         writer.close()
-        with suppress(ConnectionResetError, ssl.SSLError):
+        with suppress(ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             await writer.wait_closed()
 
 
@@ -371,7 +371,7 @@ async def test_tls_without_http1_rejects_http1_alpn_client(tmp_path: Path) -> No
         with suppress(ConnectionResetError, ConnectionAbortedError):
             assert await asyncio.wait_for(reader.read(1), timeout=5) == b''
         writer.close()
-        with suppress(ConnectionResetError, ssl.SSLError):
+        with suppress(ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             await writer.wait_closed()
 
 
@@ -434,7 +434,7 @@ async def test_tls_http1_websocket_scope_uses_wss(tmp_path: Path) -> None:
         await writer.drain()
         status, _, body, _ = await read_http1_response(reader)
         writer.close()
-        with suppress(ConnectionResetError, ssl.SSLError):
+        with suppress(ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             await writer.wait_closed()
 
     assert state == {'scheme': 'wss'}
@@ -492,7 +492,7 @@ async def test_tls_http2_websocket_scope_uses_wss(
         await writer.drain()
         status, body, _ = await read_h2_response(reader, writer, conn, stream_id)
         writer.close()
-        with suppress(ConnectionResetError, ssl.SSLError):
+        with suppress(ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             await writer.wait_closed()
 
     assert state == {'scheme': 'wss', 'http_version': '2'}
@@ -592,7 +592,7 @@ async def test_tls_without_http1_rejects_no_alpn_client(tmp_path: Path) -> None:
         with suppress(ConnectionResetError, ConnectionAbortedError):
             assert await asyncio.wait_for(reader.read(1), timeout=5) == b''
         writer.close()
-        with suppress(ConnectionResetError, ssl.SSLError):
+        with suppress(ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             await writer.wait_closed()
 
 
