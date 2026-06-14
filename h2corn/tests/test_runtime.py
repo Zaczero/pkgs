@@ -169,7 +169,7 @@ async def _wait_for_pid_change(
         await asyncio.sleep(0.05)
 
 
-async def test_unix_socket_serving(tmp_path: Path) -> None:
+async def test_unix_socket_serving(unix_socket_dir: Path) -> None:
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
@@ -178,7 +178,7 @@ async def test_unix_socket_serving(tmp_path: Path) -> None:
         })
         await send({'type': 'http.response.body', 'body': b'uds'})
 
-    socket_path = tmp_path / 'h2corn.sock'
+    socket_path = unix_socket_dir / 'h2corn.sock'
     config = Config(bind=(f'unix:{socket_path}',))
     async with running_server(app, config):
         status, body = await asyncio.wait_for(h2_request(uds=socket_path), timeout=5)
@@ -187,12 +187,14 @@ async def test_unix_socket_serving(tmp_path: Path) -> None:
     assert body == b'uds'
 
 
-async def test_unix_socket_cleanup_removes_owned_socket_path(tmp_path: Path) -> None:
+async def test_unix_socket_cleanup_removes_owned_socket_path(
+    unix_socket_dir: Path,
+) -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    socket_path = tmp_path / 'cleanup.sock'
+    socket_path = unix_socket_dir / 'cleanup.sock'
     config = Config(bind=(f'unix:{socket_path}',))
     async with running_server(app, config):
         assert socket_path.exists()
@@ -200,12 +202,14 @@ async def test_unix_socket_cleanup_removes_owned_socket_path(tmp_path: Path) -> 
     assert not socket_path.exists()
 
 
-async def test_unix_socket_umask_limits_created_mode(tmp_path: Path) -> None:
+async def test_unix_socket_umask_limits_created_mode(
+    unix_socket_dir: Path,
+) -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    socket_path = tmp_path / 'umask.sock'
+    socket_path = unix_socket_dir / 'umask.sock'
     config = Config(bind=(f'unix:{socket_path}',), umask=0o077)
     async with running_server(app, config):
         assert socket_path.stat().st_mode & 0o077 == 0

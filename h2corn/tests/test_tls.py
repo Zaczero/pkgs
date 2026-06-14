@@ -1,12 +1,12 @@
 import asyncio
 import ssl
-import subprocess
 from contextlib import suppress
 from pathlib import Path
 
 import h2.config
 import h2.connection
 import pytest
+import trustme
 from h2corn import Config
 
 from tests._support import (
@@ -22,119 +22,37 @@ pytestmark = pytest.mark.asyncio
 
 
 def write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
+    # Generated in-process with trustme so the certs are RFC-clean and identical
+    # on every OS (the host openssl/LibreSSL emits extensions rustls rejects).
+    ca = trustme.CA()
+    cert = ca.issue_cert('localhost', '127.0.0.1')
     certfile = tmp_path / 'server.crt'
     keyfile = tmp_path / 'server.key'
-    subprocess.run(
-        [
-            'openssl',
-            'req',
-            '-x509',
-            '-newkey',
-            'rsa:2048',
-            '-nodes',
-            '-keyout',
-            str(keyfile),
-            '-out',
-            str(certfile),
-            '-days',
-            '1',
-            '-subj',
-            '/CN=localhost',
-            '-addext',
-            'subjectAltName=DNS:localhost,IP:127.0.0.1',
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # The file carries the leaf plus the CA: the server presents the chain and
+    # the same file doubles as the client's trust anchor.
+    certfile.write_bytes(cert.cert_chain_pems[0].bytes() + ca.cert_pem.bytes())
+    cert.private_key_pem.write_to_path(str(keyfile))
     return certfile, keyfile
 
 
 def write_mutual_tls_certs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
+    # One trustme CA signs the server and client leaves. Each side trusts the CA;
+    # generation is in-process so it is RFC-clean and identical on every OS.
+    ca = trustme.CA()
+    server = ca.issue_cert('localhost', '127.0.0.1')
+    client = ca.issue_cert('h2corn-client@example.com')
+
     ca_cert = tmp_path / 'ca.crt'
-    ca_key = tmp_path / 'ca.key'
     server_cert = tmp_path / 'server.crt'
     server_key = tmp_path / 'server.key'
-    server_csr = tmp_path / 'server.csr'
-    server_ext = tmp_path / 'server.ext'
     client_cert = tmp_path / 'client.crt'
     client_key = tmp_path / 'client.key'
-    client_csr = tmp_path / 'client.csr'
-    client_ext = tmp_path / 'client.ext'
-    server_ext.write_text(
-        'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n'
-    )
-    client_ext.write_text('extendedKeyUsage=clientAuth\n')
-    subprocess.run(
-        [
-            'openssl',
-            'req',
-            '-x509',
-            '-newkey',
-            'rsa:2048',
-            '-nodes',
-            '-keyout',
-            str(ca_key),
-            '-out',
-            str(ca_cert),
-            '-days',
-            '1',
-            '-subj',
-            '/CN=h2corn test ca',
-            '-addext',
-            'basicConstraints=critical,CA:TRUE',
-            '-addext',
-            'keyUsage=critical,keyCertSign,cRLSign',
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for name, cert, key, csr, ext in (
-        ('localhost', server_cert, server_key, server_csr, server_ext),
-        ('h2corn client', client_cert, client_key, client_csr, client_ext),
-    ):
-        subprocess.run(
-            [
-                'openssl',
-                'req',
-                '-newkey',
-                'rsa:2048',
-                '-nodes',
-                '-keyout',
-                str(key),
-                '-out',
-                str(csr),
-                '-subj',
-                f'/CN={name}',
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        subprocess.run(
-            [
-                'openssl',
-                'x509',
-                '-req',
-                '-in',
-                str(csr),
-                '-CA',
-                str(ca_cert),
-                '-CAkey',
-                str(ca_key),
-                '-CAcreateserial',
-                '-out',
-                str(cert),
-                '-days',
-                '1',
-                '-extfile',
-                str(ext),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+
+    ca.cert_pem.write_to_path(str(ca_cert))
+    server.cert_chain_pems[0].write_to_path(str(server_cert))
+    server.private_key_pem.write_to_path(str(server_key))
+    client.cert_chain_pems[0].write_to_path(str(client_cert))
+    client.private_key_pem.write_to_path(str(client_key))
     return ca_cert, server_cert, server_key, client_cert, client_key
 
 

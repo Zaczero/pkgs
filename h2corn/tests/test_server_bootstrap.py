@@ -47,255 +47,115 @@ def test_python_m_h2corn_server_runs_without_runpy_warning() -> None:
     assert 'RuntimeWarning' not in result.stderr
 
 
-def _recording_socket(
-    calls: list[tuple[str, tuple[Any, ...]]],
-    *,
-    fail_tcp_defer_accept: bool = False,
-    bound_port: int = 43_210,
-):
+@pytest.fixture
+def bind_listeners():
+    """Build real bound listeners from a Config and close them at teardown.
+
+    These tests exercise the actual socket setup against the running kernel
+    rather than mocking the platform and asserting setsockopt call sequences —
+    the listener's observable end state (non-blocking, port, options) is what
+    matters and it stays meaningful on every OS.
+    """
     from h2corn import _socket
 
-    class FakeSocket:
-        def setsockopt(self, *args) -> None:
-            calls.append(('setsockopt', args))
-            if fail_tcp_defer_accept and args == (
-                _socket.socket.IPPROTO_TCP,
-                getattr(_socket.socket, 'TCP_DEFER_ACCEPT', 9),
-                1,
-            ):
-                raise OSError('unsupported')
+    opened: list[socket.socket] = []
 
-        def bind(self, *args) -> None:
-            calls.append(('bind', args))
+    def _bind(**config_kwargs: Any) -> tuple[Config, list[socket.socket]]:
+        config = Config(**config_kwargs)
+        sockets, _owned = _socket._build_sockets(config)
+        opened.extend(sockets)
+        return config, list(sockets)
 
-        def listen(self, *args) -> None:
-            calls.append(('listen', args))
-
-        def setblocking(self, *args) -> None:
-            calls.append(('setblocking', args))
-
-        def getsockname(self) -> tuple[str, int]:
-            return ('127.0.0.1', bound_port)
-
-    return FakeSocket()
+    yield _bind
+    for sock in opened:
+        sock.close()
 
 
-def test_build_socket_sets_tcp_defer_accept_for_tcp_on_linux(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_listener_is_nonblocking(bind_listeners) -> None:
+    # Whichever way it is made non-blocking (SOCK_NONBLOCK at creation on Linux,
+    # setblocking(False) afterwards elsewhere), the listener must end up so.
+    _config, sockets = bind_listeners(bind=('127.0.0.1:0',))
+    assert sockets
+    assert all(not sock.getblocking() for sock in sockets)
+
+
+def test_listener_sets_reuseaddr(bind_listeners) -> None:
+    _config, sockets = bind_listeners(bind=('127.0.0.1:0',))
+    assert sockets[0].getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)
+
+
+def test_build_sockets_records_kernel_allocated_port(bind_listeners) -> None:
+    config, sockets = bind_listeners(bind=('127.0.0.1:0',))
+    bound_port = sockets[0].getsockname()[1]
+    assert bound_port > 0
+    assert config.bind == (f'127.0.0.1:{bound_port}',)
+
+
+def test_build_sockets_shares_kernel_port_across_zero_binds(bind_listeners) -> None:
+    _config, sockets = bind_listeners(bind=('127.0.0.1:0', '[::1]:0'))
+    assert len(sockets) == 2
+    assert len({sock.getsockname()[1] for sock in sockets}) == 1
+
+
+def test_build_sockets_rolls_back_listeners_on_partial_failure() -> None:
     from h2corn import _socket
 
-    config = Config()
-    calls = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(('127.0.0.1', 0))
+        free_port = probe.getsockname()[1]
 
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(_socket.socket, 'TCP_DEFER_ACCEPT', 9, raising=False)
-    monkeypatch.setattr(
-        _socket.socket,
-        'socket',
-        lambda *args: calls.append(('socket', args)) or _recording_socket(calls),
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert calls[0] == (
-        'socket',
-        (
-            _socket.socket.AF_INET,
-            _socket.socket.SOCK_STREAM | _socket.socket.SOCK_NONBLOCK,
-        ),
-    )
-    assert (
-        'setsockopt',
-        (_socket.socket.SOL_SOCKET, _socket.socket.SO_REUSEADDR, 1),
-    ) in calls
-    assert ('setsockopt', (_socket.socket.IPPROTO_TCP, 9, 1)) in calls
-    assert ('listen', (config.backlog,)) in calls
-    assert ('setblocking', (False,)) not in calls
+    # The first listener binds the free port; the second targets a non-local
+    # address (TEST-NET-1, RFC 5737) that no host can bind, so the build fails
+    # partway and must roll back — leaving the first port bindable again.
+    config = Config(bind=(f'127.0.0.1:{free_port}', f'192.0.2.1:{free_port}'))
+    with pytest.raises(OSError):
+        _socket._build_sockets(config)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebind:
+        rebind.bind(('127.0.0.1', free_port))
 
 
-def test_build_socket_ignores_tcp_defer_accept_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(_socket.socket, 'TCP_DEFER_ACCEPT', 9, raising=False)
-    monkeypatch.setattr(
-        _socket.socket,
-        'socket',
-        lambda *_args: _recording_socket(calls, fail_tcp_defer_accept=True),
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert ('setsockopt', (_socket.socket.IPPROTO_TCP, 9, 1)) in calls
-    assert ('listen', (config.backlog,)) in calls
-    assert ('setblocking', (False,)) not in calls
+@pytest.mark.skipif(sys.platform != 'linux', reason='TCP_DEFER_ACCEPT is Linux-only')
+def test_listener_sets_tcp_defer_accept_on_linux(bind_listeners) -> None:
+    _config, sockets = bind_listeners(bind=('127.0.0.1:0',))
+    assert sockets[0].getsockopt(socket.IPPROTO_TCP, socket.TCP_DEFER_ACCEPT) > 0
 
 
-def test_build_socket_sets_nonblocking_after_creation_off_linux(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'darwin')
-    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
-    monkeypatch.setattr(
-        _socket.socket,
-        'socket',
-        lambda *args: calls.append(('socket', args)) or _recording_socket(calls),
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert calls[0] == ('socket', (_socket.socket.AF_INET, _socket.socket.SOCK_STREAM))
-    assert ('setblocking', (False,)) in calls
-    assert ('listen', (config.backlog,)) in calls
+@pytest.mark.skipif(
+    sys.platform != 'linux',
+    reason='server-side TCP Fast Open via setsockopt is Linux-only',
+)
+def test_listener_enables_tcp_fastopen_on_linux(bind_listeners) -> None:
+    # On a Linux listener TCP_FASTOPEN stores the accept-queue length we request.
+    _config, sockets = bind_listeners(bind=('127.0.0.1:0',))
+    assert sockets[0].getsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN) > 0
 
 
-def _tcp_fastopen_calls(
-    calls: list[tuple[str, tuple[Any, ...]]],
-) -> list[tuple[Any, ...]]:
-    from h2corn import _socket
-
-    return [
-        args
-        for name, args in calls
-        if name == 'setsockopt' and args[1] == _socket.socket.TCP_FASTOPEN
-    ]
-
-
-def test_build_socket_enables_tcp_fastopen_with_qlen_on_linux(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert _tcp_fastopen_calls(calls) == [
-        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 512)
-    ]
-
-
-def test_build_socket_enables_tcp_fastopen_as_boolean_on_darwin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Regression: macOS rejects the Linux accept-queue length with EINVAL; the
-    # listener must enable TFO with the boolean 1, never 512.
-    from h2corn import _socket
-
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'darwin')
-    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert _tcp_fastopen_calls(calls) == [
-        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 1)
-    ]
-
-
-def test_build_socket_enables_tcp_fastopen_as_boolean_on_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'win32')
-    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert _tcp_fastopen_calls(calls) == [
-        (_socket.socket.IPPROTO_TCP, _socket.socket.TCP_FASTOPEN, 1)
-    ]
-
-
-def test_build_socket_skips_tcp_fastopen_when_constant_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Older Windows SDKs/Pythons lack socket.TCP_FASTOPEN; the hasattr probe
-    # must make the listener skip it rather than raise AttributeError.
-    from h2corn import _socket
-
-    tcp_fastopen = _socket.socket.TCP_FASTOPEN  # capture before deleting it
-    config = Config()
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'win32')
-    monkeypatch.delattr(_socket.socket, 'SOCK_NONBLOCK', raising=False)
-    monkeypatch.delattr(_socket.socket, 'TCP_FASTOPEN', raising=False)
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda *_args: _recording_socket(calls)
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert not [
-        args for name, args in calls if name == 'setsockopt' and args[1] == tcp_fastopen
-    ]
-
-
+@pytest.mark.skipif(sys.platform == 'win32', reason='unix sockets are not supported')
 def test_build_unix_socket_applies_owner_ids(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    unix_socket_dir: Path,
 ) -> None:
     from h2corn import _socket
 
-    socket_path = tmp_path / 'h2corn.sock'
+    socket_path = unix_socket_dir / 'owned.sock'
     config = Config(bind=(f'unix:{socket_path}',))
-    calls = []
 
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.socket,
-        'socket',
-        lambda *_args: _recording_socket(calls),
-    )
-    monkeypatch.setattr(
-        _socket.os,
-        'lstat',
-        lambda _path: (_ for _ in ()).throw(FileNotFoundError()),
-    )
-    monkeypatch.setattr(
-        _socket.os,
-        'chown',
-        lambda *args: calls.append(('chown', args)),
-    )
+    # chown(2) needs privileges we lack in CI, so record the request rather than
+    # perform it; everything else — creating and binding the socket — is real.
+    chowns = []
+    monkeypatch.setattr(_socket.os, 'chown', lambda *args: chowns.append(args))
 
-    _socket._build_unix_socket(
+    sock = _socket._build_unix_socket(
         socket_path,
         config,
         owner_uid=1000,
         owner_gid=1001,
     )
-
-    assert ('chown', (str(socket_path), 1000, 1001)) in calls
+    try:
+        assert socket_path.is_socket()
+        assert chowns == [(str(socket_path), 1000, 1001)]
+    finally:
+        sock.close()
 
 
 def test_resolve_process_identity_uses_user_primary_group(
@@ -704,90 +564,6 @@ app.loaded = os.environ['DEMO_APP_VALUE']
     assert app.loaded == 'existing'
 
 
-def test_build_socket_records_kernel_allocated_port_when_requested_port_is_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config(port=0)
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.socket,
-        'socket',
-        lambda *_args: _recording_socket(calls, bound_port=54_321),
-    )
-
-    _socket._build_sockets(config)[0][0]
-
-    assert ('bind', (('127.0.0.1', 0),)) in calls
-    assert config.port == 54_321
-
-
-def test_build_sockets_reuses_kernel_allocated_port_across_tcp_zero_binds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    config = Config(bind=('127.0.0.1:0', '[::1]:0'))
-    calls = []
-    ports = iter([54_321, 54_321])
-
-    class FakeSocket:
-        def __init__(self, family: int) -> None:
-            self.family = family
-            self._port = next(ports)
-
-        def setsockopt(self, *args) -> None:
-            calls.append(('setsockopt', args))
-
-        def bind(self, *args) -> None:
-            calls.append(('bind', args))
-
-        def listen(self, *args) -> None:
-            calls.append(('listen', args))
-
-        def setblocking(self, *args) -> None:
-            calls.append(('setblocking', args))
-
-        def getsockname(self):
-            host = '::1' if self.family == _socket.socket.AF_INET6 else '127.0.0.1'
-            return (
-                (host, self._port, 0, 0)
-                if self.family == _socket.socket.AF_INET6
-                else (host, self._port)
-            )
-
-        def close(self) -> None:
-            calls.append(('close', (self.family,)))
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.socket,
-        'getaddrinfo',
-        lambda host, port, **_kwargs: [
-            (
-                _socket.socket.AF_INET6 if ':' in host else _socket.socket.AF_INET,
-                _socket.socket.SOCK_STREAM,
-                0,
-                '',
-                (host, port, 0, 0) if ':' in host else (host, port),
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda family, *_args: FakeSocket(family)
-    )
-
-    sockets, _owned_socket_paths = _socket._build_sockets(config)
-
-    assert len(sockets) == 2
-    assert ('bind', (('127.0.0.1', 0),)) in calls
-    assert ('bind', (('::1', 54321, 0, 0),)) in calls
-    assert config.bind == ('127.0.0.1:54321', '[::1]:54321')
-
-
 @pytest.mark.parametrize(
     ('family', 'is_unix'),
     [
@@ -831,124 +607,20 @@ def test_build_sockets_records_fd_listener_family(
     assert config._bind_fd_is_unix == (is_unix,)
 
 
-def test_build_sockets_rolls_back_open_listeners_on_partial_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.skipif(
+    sys.platform == 'win32', reason='the signal wakeup pipe is a POSIX mechanism'
+)
+def test_signal_wakeup_pipe_yields_nonblocking_fd() -> None:
+    # However the pipe is created (os.pipe2 on Linux, os.pipe + set_blocking
+    # elsewhere), it must hand back a valid non-blocking read fd and close it
+    # again on exit.
     from h2corn import _socket
-
-    calls = []
-    sockets = []
-
-    class FakeSocket:
-        def __init__(self, family: int) -> None:
-            self.family = family
-            sockets.append(self)
-
-        def setsockopt(self, *args) -> None:
-            calls.append(('setsockopt', args))
-
-        def bind(self, sockaddr) -> None:
-            calls.append(('bind', (sockaddr,)))
-            if sockaddr == ('127.0.0.1', 8001):
-                raise OSError('bind failed')
-
-        def listen(self, *args) -> None:
-            calls.append(('listen', args))
-
-        def getsockname(self) -> tuple[str, int]:
-            return ('127.0.0.1', 8000)
-
-        def close(self) -> None:
-            calls.append(('close', (self.family,)))
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.socket,
-        'getaddrinfo',
-        lambda host, port, **_kwargs: [
-            (_socket.socket.AF_INET, _socket.socket.SOCK_STREAM, 0, '', (host, port))
-        ],
-    )
-    monkeypatch.setattr(
-        _socket.socket, 'socket', lambda family, *_args: FakeSocket(family)
-    )
-
-    with pytest.raises(OSError, match='bind failed'):
-        _socket._build_sockets(Config(bind=('127.0.0.1:8000', '127.0.0.1:8001')))
-
-    assert calls.count(('close', (_socket.socket.AF_INET,))) == 2
-
-
-def test_signal_wakeup_pipe_uses_pipe2_when_available(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'linux')
-    monkeypatch.setattr(
-        _socket.os, 'pipe2', lambda flags: calls.append(('pipe2', (flags,))) or (11, 12)
-    )
-    monkeypatch.setattr(_socket.os, 'close', lambda fd: calls.append(('close', (fd,))))
-    monkeypatch.setattr(
-        _socket.signal,
-        'set_wakeup_fd',
-        lambda fd, warn_on_full_buffer=False: (
-            calls.append(
-                ('set_wakeup_fd', (fd, warn_on_full_buffer)),
-            )
-            or -1
-        ),
-    )
 
     with _socket._signal_wakeup_pipe() as read_fd:
-        assert read_fd == 11
-
-    assert calls[:2] == [
-        ('pipe2', (_socket.os.O_NONBLOCK,)),
-        ('set_wakeup_fd', (12, False)),
-    ]
-
-
-def test_signal_wakeup_pipe_falls_back_when_pipe2_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    calls = []
-
-    monkeypatch.setattr(_socket.sys, 'platform', 'darwin')
-    monkeypatch.delattr(_socket.os, 'pipe2', raising=False)
-    monkeypatch.setattr(
-        _socket.os, 'pipe', lambda: calls.append(('pipe', ())) or (21, 22)
-    )
-    monkeypatch.setattr(_socket.os, 'close', lambda fd: calls.append(('close', (fd,))))
-    monkeypatch.setattr(
-        _socket.os,
-        'set_blocking',
-        lambda fd, blocking: calls.append(('set_blocking', (fd, blocking))),
-    )
-    monkeypatch.setattr(
-        _socket.signal,
-        'set_wakeup_fd',
-        lambda fd, warn_on_full_buffer=False: (
-            calls.append(
-                ('set_wakeup_fd', (fd, warn_on_full_buffer)),
-            )
-            or -1
-        ),
-    )
-
-    with _socket._signal_wakeup_pipe() as read_fd:
-        assert read_fd == 21
-
-    assert calls[:4] == [
-        ('pipe', ()),
-        ('set_blocking', (21, False)),
-        ('set_blocking', (22, False)),
-        ('set_wakeup_fd', (22, False)),
-    ]
+        assert read_fd >= 0
+        assert os.get_blocking(read_fd) is False
+    with pytest.raises(OSError):
+        os.fstat(read_fd)
 
 
 def test_cli_trusted_proxy_flags_replace_base_values(

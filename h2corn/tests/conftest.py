@@ -11,9 +11,28 @@ guard) working on whichever loop a deployment picks.
 """
 
 import asyncio
+import shutil
+import tempfile
 import warnings
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def unix_socket_dir() -> Iterator[Path]:
+    """A short-lived directory for binding AF_UNIX sockets.
+
+    macOS caps the AF_UNIX `sun_path` at ~104 bytes and pytest's `tmp_path`
+    (under `/private/var/folders/...`) overflows it, so bind under a short
+    temp root instead.
+    """
+    socket_dir = Path(tempfile.mkdtemp(prefix='h2c-', dir='/tmp'))
+    try:
+        yield socket_dir
+    finally:
+        shutil.rmtree(socket_dir, ignore_errors=True)
 
 
 def _event_loop_policies():

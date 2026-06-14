@@ -64,6 +64,7 @@ dev = [
   "pytest>=9.0.0",
   "pytest-asyncio>=0.26.0",
   "starlette>=0.46.0",
+  "trustme>=1.2.0",
   "uvicorn>=0.43.0",
   "websockets>=16.0",
 ]
