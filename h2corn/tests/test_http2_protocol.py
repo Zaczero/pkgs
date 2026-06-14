@@ -1238,7 +1238,9 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
         )
         await writer.drain()
         try:
-            frames = await read_raw_h2_frames(reader, timeout=1.0, stop_at_goaway=False)
+            # The slower Windows runner needs more slack to stream the WINDOW_UPDATE
+            # frames back after consuming the ~8 MB padding flood.
+            frames = await read_raw_h2_frames(reader, timeout=3.0, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()

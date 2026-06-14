@@ -213,17 +213,20 @@ def _build_sockets(
                             owner_gid=owner_gid,
                         )
                     )
-                    resolved_binds.append(f'unix:{path}')
+                    resolved_binds.append(f'unix:{path.as_posix()}')
                     owned_socket_paths.append(path)
                     bind_fd_is_unix.append(False)
                 case FdBindSpec(fd):
                     sock = _adopt_socket(fd)
-                    if config.certfile is not None and sock.family == socket.AF_UNIX:
+                    # AF_UNIX is absent on Windows; an adopted fd there is never
+                    # a unix socket, so a missing constant compares unequal.
+                    af_unix = getattr(socket, 'AF_UNIX', None)
+                    if config.certfile is not None and sock.family == af_unix:
                         sock.close()
                         raise OSError('TLS is supported only on TCP listeners')
                     sockets.append(sock)
                     resolved_binds.append(f'fd://{fd}')
-                    bind_fd_is_unix.append(sock.family == socket.AF_UNIX)
+                    bind_fd_is_unix.append(sock.family == af_unix)
                 case bind_spec:
                     assert_never(bind_spec)
     except Exception:

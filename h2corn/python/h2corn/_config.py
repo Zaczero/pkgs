@@ -211,7 +211,7 @@ def _normalize_bind_specs(value: _BindValue):
                 normalized.append(_format_tcp_bind(host, port))
                 tcp_ports.add(port)
             case UnixBindSpec(path):
-                normalized.append(f'unix:{path}')
+                normalized.append(f'unix:{path.as_posix()}')
             case FdBindSpec(fd):
                 normalized.append(f'fd://{fd}')
             case bind_spec:

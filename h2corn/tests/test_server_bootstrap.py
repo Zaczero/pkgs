@@ -198,6 +198,7 @@ def test_resolve_process_identity_uses_user_primary_group(
     )
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX privilege drop')
 def test_drop_process_privileges_sets_groups_before_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,6 +234,7 @@ def test_drop_process_privileges_sets_groups_before_ids(
     ]
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX worker supervisor')
 def test_serve_cli_target_defers_import_when_privilege_drop_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -267,6 +269,7 @@ def test_serve_cli_target_defers_import_when_privilege_drop_is_configured(
     assert captured['supervisor'] == (import_settings, config)
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX worker supervisor')
 def test_worker_entry_imports_after_privilege_drop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -345,6 +348,10 @@ def test_pidfile_rejects_preexisting_symlink(tmp_path: Path) -> None:
     assert pid_path.is_symlink()
 
 
+@pytest.mark.skipif(
+    sys.platform == 'win32',
+    reason='an open pidfile cannot be replaced on Windows (it is locked)',
+)
 def test_pidfile_cleanup_keeps_replaced_path(tmp_path: Path) -> None:
     from h2corn import _server
 

@@ -83,22 +83,20 @@ def _pidfile(config: Config):
         0o666,
     )
 
-    def unlink_pidfile():
-        try:
-            current = os.lstat(path)
-            if os.path.samestat(os.fstat(fd), current):
-                path.unlink()
-        except OSError:
-            pass
-
     try:
         _ = os.write(fd, pid_text)
         yield
     finally:
         try:
-            unlink_pidfile()
-        finally:
-            os.close(fd)
+            is_ours = os.path.samestat(os.fstat(fd), os.lstat(path))
+        except OSError:
+            is_ours = False
+        os.close(fd)
+        if is_ours:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 @contextmanager

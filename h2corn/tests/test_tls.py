@@ -366,7 +366,9 @@ async def test_tls_without_http1_rejects_http1_alpn_client(tmp_path: Path) -> No
         assert writer.get_extra_info('ssl_object').selected_alpn_protocol() is None
         writer.write(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
         await writer.drain()
-        with suppress(ConnectionResetError):
+        # A rejected connection surfaces as a clean EOF, a reset (POSIX), or an
+        # abort (Windows, WinError 10053).
+        with suppress(ConnectionResetError, ConnectionAbortedError):
             assert await asyncio.wait_for(reader.read(1), timeout=5) == b''
         writer.close()
         with suppress(ConnectionResetError, ssl.SSLError):
@@ -585,7 +587,9 @@ async def test_tls_without_http1_rejects_no_alpn_client(tmp_path: Path) -> None:
         )
         writer.write(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
         await writer.drain()
-        with suppress(ConnectionResetError):
+        # A rejected connection surfaces as a clean EOF, a reset (POSIX), or an
+        # abort (Windows, WinError 10053).
+        with suppress(ConnectionResetError, ConnectionAbortedError):
             assert await asyncio.wait_for(reader.read(1), timeout=5) == b''
         writer.close()
         with suppress(ConnectionResetError, ssl.SSLError):
@@ -635,7 +639,12 @@ async def test_required_client_certificate_rejects_missing_client_cert(
     )
     context = client_context(ca_cert)
     async with running_server(app, config) as server:
-        with pytest.raises((ConnectionResetError, ssl.SSLError, TimeoutError)):
+        with pytest.raises((
+            ConnectionResetError,
+            ConnectionAbortedError,
+            ssl.SSLError,
+            TimeoutError,
+        )):
             await asyncio.wait_for(
                 tls_http1_request(server_port(server), context), timeout=5
             )
