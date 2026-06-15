@@ -70,5 +70,5 @@ unused_result_ok = "warn"
 verbose_file_reads = "warn"
 
 [profile.release]
-lto = "thin"
+lto = true
 codegen-units = 1
