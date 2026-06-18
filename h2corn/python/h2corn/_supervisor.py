@@ -36,6 +36,7 @@ _WORKER_FAILURE_BACKOFF_INITIAL = 0.1
 _WORKER_FAILURE_BACKOFF_MAX = 1.0
 _CONTROL_HEARTBEAT = b'H'
 _CONTROL_RETIRE = b'R'
+_CONTROL_READY = b'Y'
 _RESTART_SIGNAL = signal.SIGUSR1
 
 
@@ -89,13 +90,15 @@ def _install_parent_death_signal() -> None:
         return
     import ctypes
 
+    parent_pid = os.getppid()
     pr_set_pdeathsig = 1
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(pr_set_pdeathsig, signal.SIGKILL, 0, 0, 0) != 0:
         return
     # Close the fork→prctl race: if the supervisor already exited, the death
-    # signal was missed, so reparenting to init means we must stop now.
-    if os.getppid() == 1:
+    # signal was missed, so a parent PID change means we must stop now. A
+    # literal PID 1 is valid when h2corn itself is a container's init process.
+    if os.getppid() != parent_pid:
         os._exit(0)
 
 
@@ -139,33 +142,35 @@ def _worker_entry(
         loop.add_signal_handler(signal.SIGTERM, server.shutdown)
         if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
             loop.add_signal_handler(_RESTART_SIGNAL, server.restart)
+        _send_control(_CONTROL_READY)
+        await server._serve_fds(
+            app,
+            list(fds),
+            (lambda: _send_control(_CONTROL_RETIRE))
+            if config.max_requests > 0
+            else None,
+        )
+
+    async def _run_worker():
         heartbeat_task = (
             asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
             if config.timeout_worker_healthcheck > 0
             else None
         )
         try:
-            await server._serve_fds(
-                app,
-                list(fds),
-                (lambda: _send_control(_CONTROL_RETIRE))
-                if config.max_requests > 0
-                else None,
+            await _serve_with_lifespan(
+                server.app,
+                _serve_app,
+                mode=config.lifespan,
+                startup_timeout=config.timeout_lifespan_startup,
+                shutdown_timeout=config.timeout_lifespan_shutdown,
             )
         finally:
             await _cancel_task(heartbeat_task)
             if control_write_fd is not None:
                 os.close(control_write_fd)
 
-    asyncio.run(
-        _serve_with_lifespan(
-            server.app,
-            _serve_app,
-            mode=config.lifespan,
-            startup_timeout=config.timeout_lifespan_startup,
-            shutdown_timeout=config.timeout_lifespan_shutdown,
-        )
-    )
+    asyncio.run(_run_worker())
 
 
 def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
@@ -241,7 +246,7 @@ def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
 
         def _record_worker_failure(exitcode: int | None):
             nonlocal fatal_error, stopping, failure_backoff, respawn_at
-            if stopping or exitcode in {None, 0, -signal.SIGINT, -signal.SIGTERM}:
+            if stopping or exitcode is None:
                 return
             now = time.monotonic()
             failure_times.append(now)
@@ -300,13 +305,11 @@ def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
                     return
                 if not data:
                     return
-                if (
-                    config.timeout_worker_healthcheck > 0
-                    and _CONTROL_HEARTBEAT[0] in data
-                ):
+                if _CONTROL_HEARTBEAT[0] in data:
                     heartbeat_deadlines[sentinel] = (
                         time.monotonic() + config.timeout_worker_healthcheck
                     )
+                if _CONTROL_READY[0] in data:
                     any_worker_became_healthy = True
                 if _CONTROL_RETIRE[0] in data:
                     _schedule_worker_retire(sentinel)
@@ -453,7 +456,11 @@ def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
                                 pass
                             continue
                         worker.join()
-                        _retire_worker(worker, expected=fileobj in expected_exits)
+                        _retire_worker(
+                            worker,
+                            expected=fileobj in expected_exits
+                            or fileobj in reload_scheduled,
+                        )
                     _check_worker_healthchecks()
                     _reconcile()
             finally:

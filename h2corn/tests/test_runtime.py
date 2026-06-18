@@ -148,6 +148,50 @@ async def _spawn_server_process(
     return process, port
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux prctl parent-death signal')
+async def test_parent_death_signal_allows_pid_one_supervisor(monkeypatch) -> None:
+    from h2corn import _supervisor
+
+    class FakeLibc:
+        def prctl(self, *_args):
+            return 0
+
+    monkeypatch.setattr(_supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'), 'CDLL', lambda *_args, **_kwargs: FakeLibc())
+    monkeypatch.setattr(_supervisor.os, 'getppid', lambda: 1)
+
+    def fail_exit(code: int):
+        raise AssertionError(f'unexpected os._exit({code})')
+
+    monkeypatch.setattr(_supervisor.os, '_exit', fail_exit)
+
+    _supervisor._install_parent_death_signal()
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux prctl parent-death signal')
+async def test_parent_death_signal_exits_when_parent_changes(monkeypatch) -> None:
+    from h2corn import _supervisor
+
+    class FakeLibc:
+        def prctl(self, *_args):
+            return 0
+
+    parents = iter((1234, 1))
+    exit_codes: list[int] = []
+
+    def fake_exit(code: int):
+        exit_codes.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(_supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'), 'CDLL', lambda *_args, **_kwargs: FakeLibc())
+    monkeypatch.setattr(_supervisor.os, 'getppid', lambda: next(parents))
+    monkeypatch.setattr(_supervisor.os, '_exit', fake_exit)
+
+    with pytest.raises(SystemExit):
+        _supervisor._install_parent_death_signal()
+
+    assert exit_codes == [0]
+
+
 async def _wait_for_pid_change(
     *, port: int, previous_pid: bytes, timeout: float = 5.0
 ) -> bytes:
@@ -464,9 +508,43 @@ async def test_worker_supervisor_exits_on_worker_crash_loop(
     assert exit_code != 0
 
 
+@pytest.mark.parametrize('workers', [1, 2])
+async def test_worker_supervisor_exits_on_unexpected_clean_worker_exit(
+    tmp_path: Path,
+    workers: int,
+) -> None:
+    stderr_lines: list[bytes] = []
+    process, _ = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='clean_exit_app',
+        module_source="""
+        import os
+
+        async def app(scope, receive, send):
+            if scope['type'] == 'lifespan':
+                os._exit(0)
+        """,
+        workers=workers,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
+
+    try:
+        exit_code = await asyncio.wait_for(process.wait(), timeout=10)
+    finally:
+        await _terminate_process(process)
+        await asyncio.wait_for(stderr_task, timeout=5)
+
+    stderr = b''.join(stderr_lines).decode()
+    assert exit_code != 0
+    assert 'exited unexpectedly with code 0' in stderr
+    assert 'worker crash loop detected' in stderr
+
+
 async def test_worker_supervisor_recycles_workers_after_max_requests(
     tmp_path: Path,
 ) -> None:
+    stderr_lines: list[bytes] = []
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
         module_name='max_requests_app',
@@ -480,7 +558,9 @@ async def test_worker_supervisor_recycles_workers_after_max_requests(
         """,
         workers=1,
         extra_args=['--max-requests', '1', '--max-requests-jitter', '0'],
+        stderr=asyncio.subprocess.PIPE,
     )
+    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
 
     try:
         await wait_for_port(port)
@@ -491,6 +571,11 @@ async def test_worker_supervisor_recycles_workers_after_max_requests(
         assert process.returncode is None
     finally:
         await _terminate_process(process)
+        await asyncio.wait_for(stderr_task, timeout=5)
+
+    stderr = b''.join(stderr_lines).decode()
+    assert 'exited unexpectedly with code 0' not in stderr
+    assert 'Stopped worker' in stderr
 
 
 async def test_worker_supervisor_replaces_worker_after_healthcheck_timeout(
@@ -533,6 +618,48 @@ async def test_worker_supervisor_replaces_worker_after_healthcheck_timeout(
 
         next_pid = await _wait_for_pid_change(port=port, previous_pid=body, timeout=10)
         assert next_pid != body
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+async def test_worker_supervisor_healthcheck_allows_async_lifespan_startup(
+    tmp_path: Path,
+) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='slow_lifespan_app',
+        module_source="""
+        import asyncio
+
+        async def app(scope, receive, send):
+            if scope['type'] == 'lifespan':
+                while True:
+                    message = await receive()
+                    if message['type'] == 'lifespan.startup':
+                        await asyncio.sleep(0.6)
+                        await send({'type': 'lifespan.startup.complete'})
+                    elif message['type'] == 'lifespan.shutdown':
+                        await send({'type': 'lifespan.shutdown.complete'})
+                        return
+            elif scope['type'] == 'http':
+                await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+                await send({'type': 'http.response.body', 'body': b'after-lifespan'})
+        """,
+        workers=1,
+        extra_args=[
+            '--timeout-worker-healthcheck',
+            '0.2',
+            '--timeout-lifespan-startup',
+            '2',
+        ],
+    )
+
+    try:
+        await wait_for_port(port)
+        status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
+        assert status == 200
+        assert body == b'after-lifespan'
         assert process.returncode is None
     finally:
         await _terminate_process(process)
