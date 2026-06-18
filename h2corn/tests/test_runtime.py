@@ -26,15 +26,35 @@ pytestmark = [
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    async def _wait(timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except TimeoutError:
+            return process.returncode is not None
+        return True
+
+    def _signal(sig: int) -> None:
+        if sys.platform != 'win32':
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+            else:
+                return
+        process.send_signal(sig)
+
     if process.returncode is not None:
-        await asyncio.wait_for(process.wait(), timeout=5)
+        await _wait(5)
         return
-    process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=5)
-    except TimeoutError:
-        process.kill()
-        await asyncio.wait_for(process.wait(), timeout=5)
+
+    _signal(signal.SIGTERM)
+    if await _wait(5):
+        return
+
+    _signal(signal.SIGKILL)
+    await _wait(5)
 
 
 async def _wait_for_h2_success(
@@ -144,6 +164,7 @@ async def _spawn_server_process(
         env=env,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL if stderr is None else stderr,
+        start_new_session=sys.platform != 'win32',
     )
     return process, port
 
