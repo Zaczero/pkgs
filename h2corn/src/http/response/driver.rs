@@ -9,7 +9,7 @@ enum HttpEventEffect {
     PathSend(PathBuf),
 }
 
-pub async fn finalize_response<T>(
+pub(crate) async fn finalize_response<T>(
     controller: &mut controller::ResponseController,
     transport: &mut T,
     actions: &mut actions::ResponseActions,
@@ -23,7 +23,7 @@ where
     final_result
 }
 
-pub async fn apply_http_event<T>(
+pub(crate) async fn apply_http_event<T>(
     controller: &mut controller::ResponseController,
     transport: &mut T,
     actions: &mut actions::ResponseActions,

@@ -7,10 +7,10 @@ use tokio_rustls::TlsAcceptor;
 use crate::frame::DEFAULT_MAX_FRAME_SIZE;
 use crate::proxy::{ProxyProtocolMode, TrustedPeer};
 
-pub const PATHSEND_BUFFER_SIZE: usize = 128 * 1024;
+pub(crate) const PATHSEND_BUFFER_SIZE: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Default)]
-pub struct Http1Config {
+pub(crate) struct Http1Config {
     pub enabled: bool,
     pub limit_request_head_size: Option<NonZeroUsize>,
     pub limit_request_line: Option<NonZeroUsize>,
@@ -18,7 +18,7 @@ pub struct Http1Config {
 }
 
 #[derive(Clone, Debug)]
-pub struct Http2Config {
+pub(crate) struct Http2Config {
     pub max_concurrent_streams: u32,
     pub max_header_list_size: Option<NonZeroUsize>,
     pub max_header_block_size: Option<NonZeroUsize>,
@@ -49,26 +49,26 @@ impl Default for Http2Config {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProxyConfig {
+pub(crate) struct ProxyConfig {
     pub trust_headers: bool,
     pub trusted_peers: Box<[TrustedPeer]>,
     pub protocol: ProxyProtocolMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientCertMode {
+pub(crate) enum ClientCertMode {
     None,
     Optional,
     Required,
 }
 
 #[derive(Clone)]
-pub struct TlsConfig {
+pub(crate) struct TlsConfig {
     pub acceptor: TlsAcceptor,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct WebSocketConfig {
+pub(crate) struct WebSocketConfig {
     pub message_size_limit: Option<NonZeroUsize>,
     pub per_message_deflate: bool,
     pub ping_interval: Option<Duration>,
@@ -76,20 +76,20 @@ pub struct WebSocketConfig {
 }
 
 #[derive(Clone, Debug)]
-pub enum BindTarget {
+pub(crate) enum BindTarget {
     Tcp { host: Box<str>, port: u16 },
     Unix { path: Box<str> },
     Fd { fd: i64, is_unix: bool },
 }
 
 #[derive(Debug, Default)]
-pub struct ResponseHeaderConfig {
+pub(crate) struct ResponseHeaderConfig {
     pub server_header: bool,
     pub date_header: bool,
     pub extra_headers: Box<[(Bytes, Bytes)]>,
 }
 
-pub struct ServerConfig {
+pub(crate) struct ServerConfig {
     pub binds: Box<[BindTarget]>,
     pub access_log: bool,
     pub root_path: Box<str>,

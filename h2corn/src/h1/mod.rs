@@ -92,7 +92,7 @@ struct H1BodyReadParts<'a, R> {
     buffer: &'a mut BytesMut,
 }
 
-pub async fn serve_connection<R, W>(
+pub(crate) async fn serve_connection<R, W>(
     mut reader: R,
     mut buffer: BytesMut,
     writer: W,

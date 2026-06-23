@@ -34,7 +34,7 @@ const DECODE_LUT: [u8; 256] = {
     lut
 };
 
-pub fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, Error> {
     let bytes = encoded.as_bytes();
 
     let mut out = Vec::with_capacity(bytes.len() * 5 / 8);

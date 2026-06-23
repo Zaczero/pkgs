@@ -6,7 +6,7 @@ mod stream_state;
 
 use smallvec::SmallVec;
 
-pub use self::driver::{ConnectionHandle, WriterState, init_writer};
+pub(super) use self::driver::{ConnectionHandle, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::frame::{ErrorCode, PeerSettings, StreamId, WindowIncrement};
 use crate::http::pathsend::PathStreamer;
@@ -21,16 +21,16 @@ const H2_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
-pub type WriterCommandBatch = SmallVecDeque<WriterCommand, 3>;
+pub(super) type WriterCommandBatch = SmallVecDeque<WriterCommand, 3>;
 
 #[derive(Debug)]
-pub enum WindowTarget {
+pub(super) enum WindowTarget {
     Connection,
     Stream(StreamId),
 }
 
 #[derive(Debug)]
-pub enum WriterCommand {
+pub(super) enum WriterCommand {
     SendHeaders {
         stream_id: StreamId,
         status: HttpStatusCode,

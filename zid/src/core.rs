@@ -78,7 +78,7 @@ fn random_start_seq(max_start: u16) -> u16 {
     }
 }
 
-pub fn reserve_sequences(additional: u16) -> (u64, u16) {
+pub(crate) fn reserve_sequences(additional: u16) -> (u64, u16) {
     let now = time();
     let max_start = u16::MAX - additional;
     loop {
@@ -114,15 +114,15 @@ pub fn reserve_sequences(additional: u16) -> (u64, u16) {
     }
 }
 
-pub fn zid() -> u64 {
+pub(crate) fn zid() -> u64 {
     let (time, seq) = reserve_sequences(0);
     make_zid(time, seq)
 }
 
-pub const fn zid_from_time_and_sequence(time: u64, sequence: u16) -> u64 {
+pub(crate) const fn zid_from_time_and_sequence(time: u64, sequence: u16) -> u64 {
     make_zid(time, sequence)
 }
 
-pub const fn parse_zid_timestamp(zid: u64) -> u64 {
+pub(crate) const fn parse_zid_timestamp(zid: u64) -> u64 {
     zid >> 16
 }

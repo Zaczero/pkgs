@@ -1,21 +1,21 @@
-pub mod status_code {
+pub(crate) mod status_code {
     use super::HttpStatusCode;
 
-    pub const SWITCHING_PROTOCOLS: HttpStatusCode = 101;
-    pub const OK: HttpStatusCode = 200;
-    pub const NO_CONTENT: HttpStatusCode = 204;
-    pub const PARTIAL_CONTENT: HttpStatusCode = 206;
-    pub const NOT_MODIFIED: HttpStatusCode = 304;
-    pub const BAD_REQUEST: HttpStatusCode = 400;
-    pub const FORBIDDEN: HttpStatusCode = 403;
-    pub const NOT_FOUND: HttpStatusCode = 404;
-    pub const PAYLOAD_TOO_LARGE: HttpStatusCode = 413;
-    pub const URI_TOO_LONG: HttpStatusCode = 414;
-    pub const UPGRADE_REQUIRED: HttpStatusCode = 426;
-    pub const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode = 431;
-    pub const INTERNAL_SERVER_ERROR: HttpStatusCode = 500;
-    pub const NOT_IMPLEMENTED: HttpStatusCode = 501;
-    pub const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
+    pub(crate) const SWITCHING_PROTOCOLS: HttpStatusCode = 101;
+    pub(crate) const OK: HttpStatusCode = 200;
+    pub(crate) const NO_CONTENT: HttpStatusCode = 204;
+    pub(crate) const PARTIAL_CONTENT: HttpStatusCode = 206;
+    pub(crate) const NOT_MODIFIED: HttpStatusCode = 304;
+    pub(crate) const BAD_REQUEST: HttpStatusCode = 400;
+    pub(crate) const FORBIDDEN: HttpStatusCode = 403;
+    pub(crate) const NOT_FOUND: HttpStatusCode = 404;
+    pub(crate) const PAYLOAD_TOO_LARGE: HttpStatusCode = 413;
+    pub(crate) const URI_TOO_LONG: HttpStatusCode = 414;
+    pub(crate) const UPGRADE_REQUIRED: HttpStatusCode = 426;
+    pub(crate) const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode = 431;
+    pub(crate) const INTERNAL_SERVER_ERROR: HttpStatusCode = 500;
+    pub(crate) const NOT_IMPLEMENTED: HttpStatusCode = 501;
+    pub(crate) const SERVICE_UNAVAILABLE: HttpStatusCode = 503;
 }
 
 use std::str;
@@ -43,12 +43,12 @@ macro_rules! known_request_header_names {
         };
 
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub enum KnownRequestHeaderName {
+        pub(crate) enum KnownRequestHeaderName {
             $($($variant),+),+
         }
 
         impl KnownRequestHeaderName {
-            pub(crate) fn from_bytes(name: &[u8]) -> Option<Self> {
+            pub(crate) const fn from_bytes(name: &[u8]) -> Option<Self> {
                 match name {
                     $($($name => Some(Self::$variant),)+)+
                     _ => None,
@@ -85,12 +85,12 @@ macro_rules! known_request_header_names {
     };
 }
 
-pub type RequestHeaders = Vec<(RequestHeaderName, RequestHeaderValue)>;
-pub type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
-pub type HttpStatusCode = u16;
+pub(crate) type RequestHeaders = Vec<(RequestHeaderName, RequestHeaderValue)>;
+pub(crate) type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
+pub(crate) type HttpStatusCode = u16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RequestAuthority(BytesStr);
+pub(crate) struct RequestAuthority(BytesStr);
 
 impl RequestAuthority {
     pub(crate) const fn new(value: BytesStr) -> Self {
@@ -127,7 +127,7 @@ impl AsRef<str> for RequestAuthority {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RequestTarget {
+pub(crate) enum RequestTarget {
     Normal {
         scheme: BytesStr,
         path_and_query: BytesStr,
@@ -269,7 +269,7 @@ known_request_header_names! {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RequestHeaderName {
+pub(crate) enum RequestHeaderName {
     Known(KnownRequestHeaderName),
     Other(BytesStr),
 }
@@ -321,7 +321,7 @@ impl AsRef<str> for RequestHeaderName {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RequestHeaderValue(Bytes);
+pub(crate) struct RequestHeaderValue(Bytes);
 
 impl RequestHeaderValue {
     pub(crate) fn from_h1(head: &Bytes, value: &[u8]) -> Option<Self> {
@@ -397,7 +397,7 @@ impl From<PyBackedBytes> for HeaderBytes {
 }
 
 #[derive(Debug)]
-pub struct ResponseHeaderName(HeaderBytes);
+pub(crate) struct ResponseHeaderName(HeaderBytes);
 
 impl ResponseHeaderName {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
@@ -423,7 +423,7 @@ impl From<Bytes> for ResponseHeaderName {
 }
 
 #[derive(Debug)]
-pub struct ResponseHeaderValue(HeaderBytes);
+pub(crate) struct ResponseHeaderValue(HeaderBytes);
 
 impl ResponseHeaderValue {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
@@ -449,7 +449,7 @@ impl From<Bytes> for ResponseHeaderValue {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HttpVersion {
+pub(crate) enum HttpVersion {
     Http1_1,
     Http2,
 }
@@ -464,7 +464,7 @@ impl HttpVersion {
 }
 
 #[derive(Clone, Debug)]
-pub struct RequestHead {
+pub(crate) struct RequestHead {
     pub http_version: HttpVersion,
     pub method: Method,
     pub target: RequestTarget,
@@ -506,7 +506,7 @@ impl RequestHead {
     }
 }
 
-pub fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
+pub(crate) fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
     match value {
         b"GET" => Ok(Method::GET),
         b"POST" => Ok(Method::POST),

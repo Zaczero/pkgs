@@ -10,7 +10,7 @@ const DECODED: u8 = 2;
 const ERROR: u8 = 4;
 const MIN_CODE_BITS: usize = 5;
 
-pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
+pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
 
@@ -44,7 +44,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> 
     Ok(buf.split())
 }
 
-pub fn encoded_len(src: &[u8]) -> usize {
+pub(crate) fn encoded_len(src: &[u8]) -> usize {
     let mut bit_len = 0_usize;
     for &byte in src {
         bit_len += ENCODE_TABLE[usize::from(byte)].0;
@@ -53,11 +53,11 @@ pub fn encoded_len(src: &[u8]) -> usize {
 }
 
 #[cfg(test)]
-pub fn encode(src: &[u8], dst: &mut BytesMut) {
+pub(crate) fn encode(src: &[u8], dst: &mut BytesMut) {
     encode_with_len(src, encoded_len(src), dst);
 }
 
-pub fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
+pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
     dst.reserve(encoded_len);
 
     let mut bits: u64 = 0;

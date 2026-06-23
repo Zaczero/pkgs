@@ -50,7 +50,7 @@ enum RequestSummaryKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct AccessLogRequest {
+pub(crate) struct AccessLogRequest {
     method: Method,
     path_and_query: BytesStr,
     http_version: HttpVersion,
@@ -67,7 +67,7 @@ impl AccessLogRequest {
 }
 
 #[derive(Clone, Debug)]
-pub struct HttpAccessLogEntry<'a> {
+pub(crate) struct HttpAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
     pub status: HttpStatusCode,
@@ -77,7 +77,7 @@ pub struct HttpAccessLogEntry<'a> {
 }
 
 #[derive(Debug)]
-pub struct WebSocketAccessLogEntry<'a> {
+pub(crate) struct WebSocketAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
     pub close_code: WebSocketCloseCode,
@@ -171,7 +171,7 @@ impl ActiveAccessLog {
     }
 }
 
-pub struct HttpAccessLogState(Option<ActiveAccessLog>);
+pub(crate) struct HttpAccessLogState(Option<ActiveAccessLog>);
 
 impl HttpAccessLogState {
     pub(crate) fn new(ctx: &RequestContext) -> Self {
@@ -202,7 +202,7 @@ impl HttpAccessLogState {
     }
 }
 
-pub struct WebSocketAccessLogState(Option<ActiveAccessLog>);
+pub(crate) struct WebSocketAccessLogState(Option<ActiveAccessLog>);
 
 impl WebSocketAccessLogState {
     pub(crate) fn new(ctx: &RequestContext) -> Self {
@@ -249,7 +249,7 @@ impl WebSocketAccessLogState {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ResponseLogState {
+pub(crate) struct ResponseLogState {
     pub(crate) status: Option<NonZeroU16>,
     pub(crate) response_body_bytes: u64,
 }
@@ -269,7 +269,7 @@ impl ResponseLogState {
     }
 }
 
-pub async fn run_http_request<T, F>(
+pub(crate) async fn run_http_request<T, F>(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -286,7 +286,7 @@ where
     result
 }
 
-pub fn emit_banner(config: &ServerConfig) {
+pub(crate) fn emit_banner(config: &ServerConfig) {
     const LISTENING_PREFIX: &str = "Listening on ";
     const LISTENING_INDENT: &str = "             ";
 
@@ -329,7 +329,7 @@ fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
     );
 }
 
-pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
+pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
     emit_access_log(
         entry.client_label,
         entry.request,
@@ -344,7 +344,7 @@ pub fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
     );
 }
 
-pub fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
+pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
     emit_access_log(
         entry.client_label,
         entry.request,

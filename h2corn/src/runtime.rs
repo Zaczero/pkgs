@@ -14,7 +14,7 @@ use crate::http::types::RequestHead;
 use crate::proxy::ConnectionInfo;
 use crate::pyloop::{PumpEvent, Shard, SlotFuture, TaskSlot};
 
-pub struct SharedApp {
+pub(crate) struct SharedApp {
     pub app: Py<PyAny>,
     /// Loop shards; exactly one on GIL builds, `loop_threads` on
     /// free-threaded builds. Index 0 is the main (caller's) loop, which
@@ -25,7 +25,7 @@ pub struct SharedApp {
 }
 
 impl SharedApp {
-    pub fn new(app: Py<PyAny>, shards: Box<[Shard]>, limits: Option<Arc<RuntimeLimits>>) -> Self {
+    pub(crate) fn new(app: Py<PyAny>, shards: Box<[Shard]>, limits: Option<Arc<RuntimeLimits>>) -> Self {
         debug_assert!(!shards.is_empty());
         Self {
             app,
@@ -36,13 +36,13 @@ impl SharedApp {
     }
 
     /// The caller's loop: lifespan, shutdown trigger, server-done future.
-    pub fn main_shard(&self) -> Shard {
+    pub(crate) fn main_shard(&self) -> Shard {
         self.shards[0]
     }
 
     /// Round-robin shard pick; every Python object of one request binds to
     /// the picked shard so the request runs entirely on one loop.
-    pub fn pick_shard(&self) -> Shard {
+    pub(crate) fn pick_shard(&self) -> Shard {
         match self.shards.as_ref() {
             [single] => single,
             shards => {
@@ -56,17 +56,17 @@ impl SharedApp {
 /// Leaked to `'static` like the shards and `ServerConfig`: the app outlives
 /// every connection of its `serve()` call, so per-request handle copies are
 /// plain pointer copies instead of cross-thread `Arc` refcount traffic.
-pub type AppState = &'static SharedApp;
+pub(crate) type AppState = &'static SharedApp;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ShutdownKind {
+pub(crate) enum ShutdownKind {
     #[default]
     Stop,
     Restart,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ShutdownState {
+pub(crate) enum ShutdownState {
     #[default]
     Running,
     Graceful(ShutdownKind),
@@ -92,12 +92,12 @@ impl ShutdownKind {
 }
 
 #[derive(Default)]
-pub struct ConnectionScopeCache {
+pub(crate) struct ConnectionScopeCache {
     default_server: OnceLock<Py<PyAny>>,
     default_client: OnceLock<Option<Py<PyAny>>>,
 }
 
-pub struct RuntimeLimits {
+pub(crate) struct RuntimeLimits {
     concurrency: Option<Arc<Semaphore>>,
     max_requests: Option<NonZeroU64>,
     completed_tasks: AtomicU64,
@@ -142,7 +142,7 @@ impl RuntimeLimits {
 }
 
 #[derive(Default)]
-pub struct RequestAdmission {
+pub(crate) struct RequestAdmission {
     permit: Option<OwnedSemaphorePermit>,
     limits: Option<Arc<RuntimeLimits>>,
 }
@@ -157,7 +157,7 @@ impl Drop for RequestAdmission {
 }
 
 #[derive(Clone)]
-pub struct ConnectionContext {
+pub(crate) struct ConnectionContext {
     pub app: AppState,
     pub config: &'static ServerConfig,
     pub info: Arc<ConnectionInfo>,
@@ -224,7 +224,7 @@ impl ConnectionContext {
     }
 }
 
-pub struct RequestContext {
+pub(crate) struct RequestContext {
     pub connection: ConnectionContext,
     pub request: RequestHead,
     pub(crate) scope_overrides: ScopeOverrides,
@@ -246,13 +246,13 @@ impl RequestContext {
 }
 
 #[derive(Debug)]
-pub enum StreamInput {
+pub(crate) enum StreamInput {
     Data(Bytes),
     EndStream,
     Reset(ErrorCode),
 }
 
-pub fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmission> {
+pub(crate) fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
             permit: None,
@@ -274,7 +274,7 @@ pub fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmission> 
 /// the eager Task all run on the loop thread. This function never touches
 /// Python and never fails — startup errors arrive through the returned
 /// future like any other app failure.
-pub fn start_app_call<B>(app: AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
+pub(crate) fn start_app_call<B>(app: AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
 where
     B: for<'py> FnOnce(
             Python<'py>,
@@ -296,7 +296,7 @@ where
 }
 
 #[cfg(test)]
-pub mod test_fixtures {
+pub(crate) mod test_fixtures {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::num::NonZeroU32;
     use std::sync::Arc;
@@ -313,7 +313,7 @@ pub mod test_fixtures {
     use crate::frame::DEFAULT_MAX_FRAME_SIZE;
     use crate::proxy::{ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
 
-    pub fn server_config() -> &'static ServerConfig {
+    pub(crate) fn server_config() -> &'static ServerConfig {
         Box::leak(Box::new(ServerConfig {
             binds: Box::new([BindTarget::Tcp {
                 host: Box::from("127.0.0.1"),
@@ -358,7 +358,7 @@ pub mod test_fixtures {
         }))
     }
 
-    pub fn connection_context(py: Python<'_>) -> ConnectionContext {
+    pub(crate) fn connection_context(py: Python<'_>) -> ConnectionContext {
         let app: super::AppState = Box::leak(Box::new(SharedApp::new(
             py.None(),
             Box::new([crate::pyloop::ShardHandle::test_stub(py)]),

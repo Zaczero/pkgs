@@ -1,19 +1,19 @@
 // 64 chars to encode 6 bits.
-pub const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
+pub(crate) const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
 
-pub const X_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 360.0;
-pub const Y_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 180.0;
-pub const X_SCALE_INV: f64 = 360.0 / (u32::MAX as f64 + 1.0);
-pub const Y_SCALE_INV: f64 = 180.0 / (u32::MAX as f64 + 1.0);
+pub(crate) const X_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 360.0;
+pub(crate) const Y_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 180.0;
+pub(crate) const X_SCALE_INV: f64 = 360.0 / (u32::MAX as f64 + 1.0);
+pub(crate) const Y_SCALE_INV: f64 = 180.0 / (u32::MAX as f64 + 1.0);
 
-pub const DECODE_INVALID: u8 = 0xFF;
-pub const DECODE_OFFSET: u8 = 0xFE;
+pub(crate) const DECODE_INVALID: u8 = 0xFF;
+pub(crate) const DECODE_OFFSET: u8 = 0xFE;
 
 // LUT mapping ASCII byte -> packed (x_chunk | (y_chunk << 3)).
 // Special values:
 // - DECODE_INVALID: not a valid shortlink character
 // - DECODE_OFFSET: '-' or '=' offset (legacy) character
-pub const DECODE_LUT: [u8; 256] = {
+pub(crate) const DECODE_LUT: [u8; 256] = {
     let mut lut = [DECODE_INVALID; 256];
     lut[b'-' as usize] = DECODE_OFFSET;
     lut[b'=' as usize] = DECODE_OFFSET;

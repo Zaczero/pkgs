@@ -29,7 +29,7 @@ fn encode_value(out: &mut Vec<u8>, delta: i32) {
     out.push(value as u8 + ASCII_OFFSET);
 }
 
-pub fn encode<const LATLON: bool>(
+pub(crate) fn encode<const LATLON: bool>(
     coordinates: &Bound<'_, PyAny>,
     precision: i32,
 ) -> PyResult<String> {

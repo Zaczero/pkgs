@@ -9,7 +9,7 @@ use crate::websocket::{
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ProxyHeaderSlots {
+pub(crate) struct ProxyHeaderSlots {
     pub(crate) forwarded: Option<usize>,
     pub(crate) x_forwarded_for: Option<usize>,
     pub(crate) x_forwarded_proto: Option<usize>,
@@ -19,7 +19,7 @@ pub struct ProxyHeaderSlots {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct WebSocketHandshakeMeta {
+pub(crate) struct WebSocketHandshakeMeta {
     pub(crate) key: Option<[u8; WEBSOCKET_KEY_LEN]>,
     pub(crate) key_duplicate: bool,
     pub(crate) request: WebSocketRequestMeta,
@@ -27,7 +27,7 @@ pub struct WebSocketHandshakeMeta {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RequestHeaderMeta {
+pub(crate) struct RequestHeaderMeta {
     pub(crate) accepts_trailers: bool,
     pub(crate) content_length: Option<u64>,
     pub(crate) websocket: WebSocketHandshakeMeta,

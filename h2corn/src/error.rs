@@ -11,10 +11,10 @@ use tokio::task::JoinError;
 /// payload is boxed because errors are cold.
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct H2CornError(Box<ErrorKind>);
+pub(crate) struct H2CornError(Box<ErrorKind>);
 
 #[derive(Debug, Error)]
-pub enum ErrorKind {
+pub(crate) enum ErrorKind {
     #[error(transparent)]
     Python(#[from] PyErr),
     #[error(transparent)]
@@ -49,7 +49,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FailureDomain {
+pub(crate) enum FailureDomain {
     Configuration,
     PeerProtocol,
     TransportIo,
@@ -84,7 +84,7 @@ impl H2CornError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AsgiContainer {
+pub(crate) enum AsgiContainer {
     Message,
     HttpResponseStart,
     HttpResponsePathsend,
@@ -103,7 +103,7 @@ impl fmt::Display for AsgiContainer {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AsgiChannel {
+pub(crate) enum AsgiChannel {
     Http,
     WebSocket,
 }
@@ -118,7 +118,7 @@ impl fmt::Display for AsgiChannel {
 }
 
 #[derive(Debug, Error)]
-pub enum ConfigError {
+pub(crate) enum ConfigError {
     #[error("invalid trusted proxy entry: {value}")]
     InvalidTrustedProxyEntry { value: Box<str> },
     #[error("invalid trusted proxy CIDR prefix: {value}")]
@@ -231,7 +231,7 @@ impl ConfigError {
 }
 
 #[derive(Debug, Error)]
-pub enum AsgiError {
+pub(crate) enum AsgiError {
     #[error("ASGI send called after the stream closed")]
     SendAfterClose,
     #[error("{container} is missing required field: {field}")]
@@ -262,7 +262,7 @@ impl AsgiError {
 }
 
 #[derive(Clone, Copy, Debug, Error)]
-pub enum Http1Error {
+pub(crate) enum Http1Error {
     #[error("h2c upgrade with a request body is unsupported")]
     H2cUpgradeWithRequestBody,
     #[error("HTTP/1.1 request head timed out")]
@@ -316,7 +316,7 @@ pub enum Http1Error {
 }
 
 #[derive(Debug, Error)]
-pub enum HttpResponseError {
+pub(crate) enum HttpResponseError {
     #[error("http.response.start received more than once")]
     StartAlreadyReceived,
     #[error(
@@ -346,7 +346,7 @@ pub enum HttpResponseError {
 }
 
 #[derive(Debug, Error)]
-pub enum H2Error {
+pub(crate) enum H2Error {
     #[error("HTTP/2 handshake timed out")]
     ConnectionHandshakeTimedOut,
     #[error("invalid SETTINGS_ENABLE_PUSH value")]
@@ -479,7 +479,7 @@ impl H2Error {
 }
 
 #[derive(Debug, Error)]
-pub enum PathsendError {
+pub(crate) enum PathsendError {
     #[error("http.response.pathsend failed for file {path}: {source}")]
     OpenFailed {
         path: Box<str>,
@@ -508,7 +508,7 @@ impl PathsendError {
 }
 
 #[derive(Debug, Error)]
-pub enum ProxyError {
+pub(crate) enum ProxyError {
     #[error("PROXY protocol requires the connection peer to be trusted")]
     ProtocolRequiresTrustedPeer,
     #[error("connection closed before the PROXY or HTTP/2 preface arrived")]
@@ -564,7 +564,7 @@ pub enum ProxyError {
 }
 
 #[derive(Debug, Error)]
-pub enum WebSocketError {
+pub(crate) enum WebSocketError {
     #[error(transparent)]
     Protocol(#[from] WebSocketProtocolError),
     #[error("websocket handshake timed out")]
@@ -637,7 +637,7 @@ impl WebSocketError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WebSocketFrameKind {
+pub(crate) enum WebSocketFrameKind {
     Text,
     Binary,
 }
@@ -652,7 +652,7 @@ impl fmt::Display for WebSocketFrameKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WebSocketEventContext {
+pub(crate) enum WebSocketEventContext {
     BeforeHandshake,
     AfterAccept,
     DuringDenialResponse,
@@ -669,7 +669,7 @@ impl fmt::Display for WebSocketEventContext {
 }
 
 #[derive(Debug, Error)]
-pub enum WebSocketProtocolError {
+pub(crate) enum WebSocketProtocolError {
     #[error("websocket frame used non-canonical 16-bit length encoding")]
     NonCanonical16BitLengthEncoding,
     #[error("websocket frame used the reserved high bit in 64-bit length encoding")]
@@ -716,7 +716,7 @@ impl WebSocketProtocolError {
     }
 }
 
-pub trait ErrorExt: Into<H2CornError> + Sized {
+pub(crate) trait ErrorExt: Into<H2CornError> + Sized {
     fn into_error(self) -> H2CornError {
         self.into()
     }
@@ -728,7 +728,7 @@ pub trait ErrorExt: Into<H2CornError> + Sized {
 
 impl<E> ErrorExt for E where E: Into<H2CornError> {}
 
-pub trait IntoPyResult<T> {
+pub(crate) trait IntoPyResult<T> {
     fn into_pyresult(self) -> PyResult<T>;
 }
 
@@ -738,7 +738,7 @@ impl<T> IntoPyResult<T> for Result<T, H2CornError> {
     }
 }
 
-pub fn into_pyerr<E>(err: E) -> PyErr
+pub(crate) fn into_pyerr<E>(err: E) -> PyErr
 where
     E: Into<H2CornError>,
 {

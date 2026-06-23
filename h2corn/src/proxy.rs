@@ -49,14 +49,14 @@ const _: () = assert!(size_of::<ProxyV2Ipv4Addrs>() == 12);
 const _: () = assert!(size_of::<ProxyV2Ipv6Addrs>() == 36);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProxyProtocolMode {
+pub(crate) enum ProxyProtocolMode {
     Off,
     V1,
     V2,
 }
 
 #[derive(Clone, Debug)]
-pub enum TrustedPeer {
+pub(crate) enum TrustedPeer {
     Any,
     Unix,
     Ip(IpAddr),
@@ -85,13 +85,13 @@ enum ProxyV1Transport {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Cidr {
+pub(crate) enum Cidr {
     V4 { network: u32, mask: u32 },
     V6 { network: u128, mask: u128 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConnectionPeer {
+pub(crate) enum ConnectionPeer {
     Tcp(SocketAddr),
     /// Constructed only by the (unix-only) UDS accept path; the variant
     /// stays unconditional so peer handling reads platform-neutral.
@@ -100,36 +100,36 @@ pub enum ConnectionPeer {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DetectedProtocol {
+pub(crate) enum DetectedProtocol {
     Http1,
     Http2,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClientAddr {
+pub(crate) struct ClientAddr {
     pub host: Box<str>,
     pub port: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServerAddr {
+pub(crate) struct ServerAddr {
     pub host: Box<str>,
     pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ConnectionStart {
+pub(crate) struct ConnectionStart {
     pub proxy: Option<ProxyInfo>,
     pub protocol: DetectedProtocol,
 }
 
 #[derive(Clone, Debug)]
-pub struct ProxyInfo {
+pub(crate) struct ProxyInfo {
     pub client: Option<ClientAddr>,
     pub server: Option<ServerAddr>,
 }
 
-pub struct ConnectionInfo {
+pub(crate) struct ConnectionInfo {
     pub actual_peer: ConnectionPeer,
     pub actual_server: Option<ServerAddr>,
     pub proxy_headers_trusted: bool,
@@ -138,7 +138,7 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    pub fn from_peer(
+    pub(crate) fn from_peer(
         actual_peer: ConnectionPeer,
         actual_server: Option<ServerAddr>,
         proxy_headers_trusted: bool,
@@ -158,7 +158,7 @@ impl ConnectionInfo {
         }
     }
 
-    pub fn apply_proxy_info(&mut self, proxy: ProxyInfo) {
+    pub(crate) fn apply_proxy_info(&mut self, proxy: ProxyInfo) {
         if let Some(client) = proxy.client {
             self.client = Some(client);
         }
@@ -197,7 +197,7 @@ impl Cidr {
     }
 }
 
-pub fn parse_trusted_peer(value: &str) -> Result<TrustedPeer, H2CornError> {
+pub(crate) fn parse_trusted_peer(value: &str) -> Result<TrustedPeer, H2CornError> {
     if value == "*" {
         return Ok(TrustedPeer::Any);
     }
@@ -226,14 +226,14 @@ pub fn parse_trusted_peer(value: &str) -> Result<TrustedPeer, H2CornError> {
     Ok(TrustedPeer::Ip(ip))
 }
 
-pub fn peer_is_trusted(trusted: &[TrustedPeer], actual_peer: &ConnectionPeer) -> bool {
+pub(crate) fn peer_is_trusted(trusted: &[TrustedPeer], actual_peer: &ConnectionPeer) -> bool {
     match actual_peer {
         ConnectionPeer::Unix => trusted.iter().any(TrustedPeer::matches_unix),
         ConnectionPeer::Tcp(peer) => trusted.iter().any(|entry| entry.matches_ip(peer.ip())),
     }
 }
 
-pub fn trusted_host_matches(trusted: &[TrustedPeer], host: &str, is_unix: bool) -> bool {
+pub(crate) fn trusted_host_matches(trusted: &[TrustedPeer], host: &str, is_unix: bool) -> bool {
     if is_unix {
         return trusted.iter().any(TrustedPeer::matches_unix);
     }
@@ -261,7 +261,7 @@ where
     Ok(())
 }
 
-pub async fn read_proxy_v2<R>(
+pub(crate) async fn read_proxy_v2<R>(
     reader: &mut FrameReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
@@ -290,7 +290,7 @@ where
     Ok(proxy)
 }
 
-pub async fn read_proxy_v1<R>(
+pub(crate) async fn read_proxy_v1<R>(
     reader: &mut FrameReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
@@ -323,7 +323,7 @@ where
     }
 }
 
-pub async fn read_preamble_protocol<R, const HTTP1: bool>(
+pub(crate) async fn read_preamble_protocol<R, const HTTP1: bool>(
     reader: &mut FrameReader<R>,
 ) -> Result<DetectedProtocol, H2CornError>
 where
@@ -337,7 +337,7 @@ where
     }
 }
 
-pub async fn read_h2_preface<R>(reader: &mut FrameReader<R>) -> Result<(), H2CornError>
+pub(crate) async fn read_h2_preface<R>(reader: &mut FrameReader<R>) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin,
 {

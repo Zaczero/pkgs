@@ -58,7 +58,7 @@ impl StartedResponse {
     }
 }
 
-pub struct ResponseController {
+pub(crate) struct ResponseController {
     head_only: bool,
     supports_response_trailers: bool,
     state: ResponseState,

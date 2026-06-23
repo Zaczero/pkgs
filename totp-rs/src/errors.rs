@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("Invalid secret: invalid Base32 character at index {index}")]
     InvalidSecretChar { index: usize },
     #[error("Invalid secret: must be bytes or Base32 string")]

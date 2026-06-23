@@ -15,7 +15,7 @@ use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
 /// Transport capability for serving file bodies: true zero-copy kernel
 /// sendfile on plain TCP, buffered copy everywhere else. The caller owns
 /// framing and must flush the writer before calling `send_file`.
-pub trait WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
+pub(crate) trait WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
     const SUPPORTS_SENDFILE: bool;
 
     /// Send `len` bytes of `file` starting at `*offset`, advancing it.
@@ -57,7 +57,7 @@ impl WriteTarget for UnixOwnedWriteHalf {
 }
 
 /// Portable fallback: seek + bounded copy through the buffered writer.
-pub async fn copy_file_range_buffered<W>(
+pub(crate) async fn copy_file_range_buffered<W>(
     writer: &mut BufWriter<W>,
     file: &mut File,
     offset: &mut u64,
@@ -79,7 +79,7 @@ where
     clippy::needless_pass_by_ref_mut,
     reason = "signature matches the portable fallback and call sites that advance the offset"
 )]
-pub async fn sendfile_all_tcp(
+pub(crate) async fn sendfile_all_tcp(
     writer: &mut BufWriter<TcpOwnedWriteHalf>,
     file: &mut File,
     offset: &mut u64,

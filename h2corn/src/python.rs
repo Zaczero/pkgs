@@ -131,10 +131,10 @@ use std::any::Any;
 use std::mem::MaybeUninit;
 
 use pyo3::prelude::*;
-pub use pyo3::sync::PyOnceLock;
-pub use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
+pub(crate) use pyo3::sync::PyOnceLock;
+pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
 use pyo3::{IntoPyObject, IntoPyObjectExt};
-pub use pyo3::{Py, PyResult};
+pub(crate) use pyo3::{Py, PyResult};
 
 // Re-export crate-root macros (defined with `#[macro_export]` below) at this module path,
 // so existing `$crate::python::py_dict!(...)` paths inside macro bodies continue to resolve.
@@ -351,7 +351,7 @@ macro_rules! py_match_cached_bytes {
     }};
 }
 
-pub struct StaticPyKey {
+pub(crate) struct StaticPyKey {
     text: &'static str,
     cached: PyOnceLock<dict_api::CachedKey>,
 }
@@ -387,7 +387,7 @@ impl StaticPyKey {
     }
 }
 
-pub struct PyDictScratch<'py, const N: usize> {
+pub(crate) struct PyDictScratch<'py, const N: usize> {
     py: Python<'py>,
     len: usize,
     items: [MaybeUninit<PendingDictItem<'py>>; N],
@@ -459,7 +459,7 @@ impl<const N: usize> Drop for PyDictScratch<'_, N> {
     }
 }
 
-pub fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
     dict_api::new_dict(py, capacity)
 }
 
@@ -468,7 +468,7 @@ pub fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict
 /// cannot spell without building a kwargs dict per call. The only raw
 /// Python-call FFI in the crate lives here; everything else goes through
 /// pyo3's safe `call*` (which compiles to the same vectorcalls).
-pub fn py_vectorcall_kwnames<'py, const N: usize>(
+pub(crate) fn py_vectorcall_kwnames<'py, const N: usize>(
     callable: &Bound<'py, PyAny>,
     positional: usize,
     args: [&Bound<'py, PyAny>; N],
@@ -511,7 +511,7 @@ pub fn py_vectorcall_kwnames<'py, const N: usize>(
     }
 }
 
-pub fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
+pub(crate) fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
 where
     V: Copy + IntoPyObject<'py> + 'static,
 {

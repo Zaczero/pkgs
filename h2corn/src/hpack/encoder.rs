@@ -6,7 +6,7 @@ use super::static_table::{self, StaticFieldEntry};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
 
 #[derive(Debug)]
-pub struct Encoder {
+pub(crate) struct Encoder {
     table: DynamicBuffer<DynamicEntry>,
     committed_max_size: usize,
     current_max_size: usize,
@@ -33,7 +33,7 @@ enum LiteralName<'a> {
 }
 
 impl Encoder {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self::with_max_size(DEFAULT_HEADER_TABLE_SIZE)
     }
 
@@ -46,7 +46,7 @@ impl Encoder {
         }
     }
 
-    pub fn update_max_size(&mut self, size: usize) {
+    pub(crate) fn update_max_size(&mut self, size: usize) {
         if size == self.current_max_size {
             return;
         }
@@ -62,7 +62,7 @@ impl Encoder {
         self.pending_floor = Some(self.pending_floor.unwrap_or(size).min(size));
     }
 
-    pub fn begin_block(&mut self, dst: &mut BytesMut) {
+    pub(crate) fn begin_block(&mut self, dst: &mut BytesMut) {
         if self.current_max_size == self.committed_max_size {
             self.pending_floor = None;
             return;
@@ -80,11 +80,11 @@ impl Encoder {
         self.pending_floor = None;
     }
 
-    pub fn encode_indexed(&self, index: usize, dst: &mut BytesMut) {
+    pub(crate) fn encode_indexed(&self, index: usize, dst: &mut BytesMut) {
         encode_int(index, 7, 0x80, dst);
     }
 
-    pub fn encode_indexed_name_bytes(&self, index: usize, value: &[u8], dst: &mut BytesMut) {
+    pub(crate) fn encode_indexed_name_bytes(&self, index: usize, value: &[u8], dst: &mut BytesMut) {
         encode_literal(
             LiteralName::Indexed(index),
             value,
@@ -93,7 +93,7 @@ impl Encoder {
         );
     }
 
-    pub fn encode_field_bytes(&mut self, name: &[u8], value: &[u8], dst: &mut BytesMut) {
+    pub(crate) fn encode_field_bytes(&mut self, name: &[u8], value: &[u8], dst: &mut BytesMut) {
         let static_name = static_table::field_index_entry(name);
 
         if let Some(entry) = static_name {

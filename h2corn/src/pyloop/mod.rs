@@ -25,13 +25,13 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
+pub(crate) use future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBool, PyTuple};
-pub use slot::{SlotFuture, TaskSlot};
+pub(crate) use slot::{SlotFuture, TaskSlot};
 
 use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
@@ -47,7 +47,7 @@ static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Per-request closure that builds `(scope, receive, send)` under the GIL on
 /// the loop thread.
-pub type BuildArgs = Box<
+pub(crate) type BuildArgs = Box<
     dyn for<'py> FnOnce(
             Python<'py>,
             AppState,
@@ -61,9 +61,9 @@ pub type BuildArgs = Box<
 /// shuts down before process exit), so they are leaked to `'static` — every
 /// per-request handle copy is then a plain pointer copy instead of
 /// cross-thread `Arc` refcount traffic.
-pub type Shard = &'static ShardHandle;
+pub(crate) type Shard = &'static ShardHandle;
 
-pub type SlotHandle<T> = std::sync::Arc<TaskSlot<T>>;
+pub(crate) type SlotHandle<T> = std::sync::Arc<TaskSlot<T>>;
 
 /// Cross-thread pump wakeup, chosen per platform so the Linux hot path
 /// stays a single `write(2)`:
@@ -145,7 +145,7 @@ impl Doorbell {
     }
 }
 
-pub enum PumpEvent {
+pub(crate) enum PumpEvent {
     /// Start an ASGI app call: build args, vectorcall the app, create an
     /// eager task, deliver the outcome through the slot.
     StartTask {
@@ -169,7 +169,7 @@ pub enum PumpEvent {
 /// One Python event loop plus everything needed to feed it from tokio
 /// threads. Exactly one per worker on GIL builds; one per loop shard on
 /// free-threaded builds.
-pub struct ShardHandle {
+pub(crate) struct ShardHandle {
     queue: Mutex<VecDeque<PumpEvent>>,
     armed: AtomicBool,
     /// POSIX-only wakeup fd; see [`Doorbell`] for the per-platform ring
@@ -203,7 +203,7 @@ pub struct ShardHandle {
 impl ShardHandle {
     /// Capture the running event loop and cache every Python object the hot
     /// path needs. Must be called on the loop thread with the loop running.
-    pub fn from_running_loop(py: Python<'_>) -> PyResult<Shard> {
+    pub(crate) fn from_running_loop(py: Python<'_>) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = asyncio.call_method0("get_running_loop")?;
         Self::from_event_loop(py, &event_loop)
@@ -211,7 +211,7 @@ impl ShardHandle {
 
     /// Build a shard around an event loop that is not necessarily running
     /// yet (shard threads construct the handle before `run_forever`).
-    pub fn from_event_loop(py: Python<'_>, event_loop: &Bound<'_, PyAny>) -> PyResult<Shard> {
+    pub(crate) fn from_event_loop(py: Python<'_>, event_loop: &Bound<'_, PyAny>) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = event_loop.clone();
         #[cfg(unix)]
@@ -345,7 +345,7 @@ impl ShardHandle {
     /// not already scheduled. On POSIX the ring is a single `write(2)` —
     /// tokio threads never attach to Python; on Windows it is one coalesced
     /// `call_soon_threadsafe(pump)` per empty→non-empty transition.
-    pub fn push(&self, event: PumpEvent) {
+    pub(crate) fn push(&self, event: PumpEvent) {
         self.queue.lock().push_back(event);
         if !self.armed.swap(true, Ordering::AcqRel) {
             self.ring();
@@ -395,7 +395,7 @@ impl ShardHandle {
 
     /// Stop this shard's event loop from any thread. Errors are swallowed:
     /// a loop already closed during teardown is the expected benign case.
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         Python::attach(|py| {
             #[cfg(unix)]
             let removed = self.event_loop.bind(py).call_method1(
@@ -421,14 +421,14 @@ impl ShardHandle {
 }
 
 /// A loop shard running on its own Python thread (free-threaded builds).
-pub struct ShardThread {
+pub(crate) struct ShardThread {
     pub shard: Shard,
     join: std::thread::JoinHandle<()>,
 }
 
 impl ShardThread {
     /// Stop the shard's loop and join its thread.
-    pub fn shutdown(self) {
+    pub(crate) fn shutdown(self) {
         self.shard.stop();
         let _ = self.join.join();
     }
@@ -437,7 +437,7 @@ impl ShardThread {
 /// Spawn a dedicated Python thread running a fresh event loop with its own
 /// pump. Returns once the shard handle is constructed; the loop runs until
 /// [`ShardThread::shutdown`].
-pub fn spawn_shard_thread(index: usize) -> PyResult<ShardThread> {
+pub(crate) fn spawn_shard_thread(index: usize) -> PyResult<ShardThread> {
     let (tx, rx) = std::sync::mpsc::channel::<PyResult<Shard>>();
     let join = std::thread::Builder::new()
         .name(format!("h2corn-loop-{index}"))
@@ -474,14 +474,14 @@ pub fn spawn_shard_thread(index: usize) -> PyResult<ShardThread> {
 }
 
 /// Initialize the global tokio runtime exactly once.
-pub fn init_runtime(
+pub(crate) fn init_runtime(
     build: impl FnOnce() -> tokio::runtime::Runtime,
 ) -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME.get_or_init(build)
 }
 
 /// The global tokio runtime. Panics if [`init_runtime`] has not run.
-pub fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME
         .get()
         .expect("tokio runtime is initialized during server startup")

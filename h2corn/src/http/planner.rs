@@ -3,7 +3,7 @@ use std::num::NonZeroU64;
 use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RequestInputPlan {
+pub(crate) enum RequestInputPlan {
     None,
     Stream { count_body_bytes: bool },
 }
@@ -12,13 +12,13 @@ pub enum RequestInputPlan {
 /// websocket sessions always stream their input, so the pairing is typed
 /// rather than re-checked at the launch site.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RequestLaunchPlan<WebSocketMeta> {
+pub(crate) enum RequestLaunchPlan<WebSocketMeta> {
     Http { input: RequestInputPlan },
     WebSocket { meta: WebSocketMeta },
 }
 
 #[derive(Debug)]
-pub struct RequestRejection {
+pub(crate) struct RequestRejection {
     pub(crate) status: HttpStatusCode,
     pub(crate) headers: ResponseHeaders,
 }
@@ -39,7 +39,7 @@ impl RequestRejection {
     }
 }
 
-pub fn reject_oversized_request(
+pub(crate) fn reject_oversized_request(
     request: &RequestHead,
     max_request_body_size: Option<NonZeroU64>,
 ) -> Result<(), RequestRejection> {
@@ -54,7 +54,7 @@ pub fn reject_oversized_request(
     }
 }
 
-pub const fn plan_http_input(input_finished: bool, access_log: bool) -> RequestInputPlan {
+pub(crate) const fn plan_http_input(input_finished: bool, access_log: bool) -> RequestInputPlan {
     if input_finished {
         RequestInputPlan::None
     } else {
@@ -64,7 +64,7 @@ pub const fn plan_http_input(input_finished: bool, access_log: bool) -> RequestI
     }
 }
 
-pub fn plan_request<WebSocketMeta>(
+pub(crate) fn plan_request<WebSocketMeta>(
     request: &RequestHead,
     websocket: Option<Result<WebSocketMeta, RequestRejection>>,
     input_finished: bool,

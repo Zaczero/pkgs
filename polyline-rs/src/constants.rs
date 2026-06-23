@@ -1,11 +1,11 @@
 // Encoded polylines use printable ASCII by adding '?' (63) to each chunk.
-pub const ASCII_OFFSET: u8 = b'?';
+pub(crate) const ASCII_OFFSET: u8 = b'?';
 
 // A chunk contains 5 bits of payload and may set a continuation bit.
-pub const CHUNK_BITS: u32 = 5;
-pub const CHUNK_MASK: u8 = 0b1_1111;
+pub(crate) const CHUNK_BITS: u32 = 5;
+pub(crate) const CHUNK_MASK: u8 = 0b1_1111;
 
-pub const CONTINUATION_BIT: u8 = 0x20;
+pub(crate) const CONTINUATION_BIT: u8 = 0x20;
 
 const SCALE_TABLE_LEN: usize = 16;
 const SCALES: [f64; SCALE_TABLE_LEN] = {
@@ -32,10 +32,10 @@ fn cached_precision_value(table: &[f64; SCALE_TABLE_LEN], precision: i32) -> Opt
     table.get(index).copied()
 }
 
-pub fn scale_for_precision(precision: i32) -> f64 {
+pub(crate) fn scale_for_precision(precision: i32) -> f64 {
     cached_precision_value(&SCALES, precision).unwrap_or_else(|| 10_f64.powi(precision))
 }
 
-pub fn inv_scale_for_precision(precision: i32) -> f64 {
+pub(crate) fn inv_scale_for_precision(precision: i32) -> f64 {
     cached_precision_value(&INV_SCALES, precision).unwrap_or_else(|| 10_f64.powi(-precision))
 }

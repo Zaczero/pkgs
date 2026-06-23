@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{fmt, future};
 
 use bytes::Bytes;
-pub use http::{PyHttpReceive, PyHttpSend};
+pub(crate) use http::{PyHttpReceive, PyHttpSend};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
@@ -14,8 +14,8 @@ use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTupl
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, mpsc};
 #[cfg(test)]
-pub use websocket::WebSocketSendDisposition;
-pub use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
+pub(crate) use websocket::WebSocketSendDisposition;
+pub(crate) use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
@@ -39,16 +39,16 @@ macro_rules! asgi_item {
     };
 }
 
-pub const ASGI_QUEUE_CAPACITY: usize = 32;
+pub(crate) const ASGI_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug)]
-pub enum HttpInboundEvent {
+pub(crate) enum HttpInboundEvent {
     Request { body: Bytes, more_body: bool },
     HttpDisconnect,
 }
 
 #[derive(Debug)]
-pub enum WebSocketInboundEvent {
+pub(crate) enum WebSocketInboundEvent {
     Connect,
     ReceiveBytes(Bytes),
     ReceiveText(BytesStr),
@@ -59,7 +59,7 @@ pub enum WebSocketInboundEvent {
 }
 
 #[derive(Debug)]
-pub enum HttpOutboundEvent {
+pub(crate) enum HttpOutboundEvent {
     Start {
         status: HttpStatusCode,
         headers: ResponseHeaders,
@@ -79,7 +79,7 @@ pub enum HttpOutboundEvent {
 }
 
 #[derive(Debug)]
-pub enum WebSocketOutboundEvent {
+pub(crate) enum WebSocketOutboundEvent {
     Accept {
         subprotocol: Option<PyBackedStr>,
         headers: ResponseHeaders,
@@ -101,7 +101,7 @@ pub enum WebSocketOutboundEvent {
 }
 
 #[derive(Debug)]
-pub enum PayloadBytes {
+pub(crate) enum PayloadBytes {
     Rust(Bytes),
     Python(PyBackedBytes),
 }
@@ -351,7 +351,7 @@ impl ReadyNone {
 
 /// Protocol-specific event pull. The cancel-race requeue invariant lives in
 /// [`Requeueable`], not in implementations of this trait.
-pub trait EventSource: Send + 'static {
+pub(crate) trait EventSource: Send + 'static {
     type Event: Send + 'static;
 
     fn try_pull(&mut self) -> Option<Self::Event>;
@@ -363,7 +363,7 @@ pub trait EventSource: Send + 'static {
 /// for a future that got cancelled before resolution (`wait_for(receive())`
 /// and friends) is handed back and must be served before any new event —
 /// the no-event-loss invariant lives here, once.
-pub struct Requeueable<S: EventSource> {
+pub(crate) struct Requeueable<S: EventSource> {
     source: S,
     requeued: Option<S::Event>,
 }
@@ -378,7 +378,7 @@ impl<S: EventSource + fmt::Debug> fmt::Debug for Requeueable<S> {
 }
 
 impl<S: EventSource> Requeueable<S> {
-    pub const fn new(source: S) -> Self {
+    pub(crate) const fn new(source: S) -> Self {
         Self {
             source,
             requeued: None,
@@ -428,7 +428,7 @@ impl<S: EventSource> ResolveOp for ReceiveResolve<S> {
     }
 }
 
-pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
+pub(crate) fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, PyAny>> {
     Ok(Py::new(py, ReadyAwaitable {
         result: Some(result),
     })?
@@ -439,11 +439,11 @@ pub fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bound<'_, 
 /// The shard's cached `None`-resolving awaitable, for a `send()` that
 /// completed synchronously. No allocation — just a new reference to the shared
 /// [`ReadyNone`] singleton.
-pub fn ready_none(py: Python<'_>, shard: Shard) -> Bound<'_, PyAny> {
+pub(crate) fn ready_none(py: Python<'_>, shard: Shard) -> Bound<'_, PyAny> {
     shard.ready_none().bind(py).clone().into_any()
 }
 
-pub fn buffered_or_send<T: Send + 'static>(
+pub(crate) fn buffered_or_send<T: Send + 'static>(
     py: Python<'_>,
     shard: Shard,
     forwarded: Option<(mpsc::Sender<T>, T)>,
@@ -454,7 +454,7 @@ pub fn buffered_or_send<T: Send + 'static>(
     )
 }
 
-pub fn receive_or_await<'py, S>(
+pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
     shard: Shard,
     state: &Arc<Mutex<Requeueable<S>>>,
@@ -493,7 +493,7 @@ where
     Ok(fut.into_bound(py).into_any())
 }
 
-pub fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyResult<Py<PyAny>> {
+pub(crate) fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyResult<Py<PyAny>> {
     let dict = match event {
         HttpInboundEvent::Request { body, more_body } => py_dict!(py, {
             "type" => "http.request",
@@ -511,7 +511,7 @@ pub fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyRe
     Ok(dict.into_any().unbind())
 }
 
-pub fn build_websocket_inbound_event(
+pub(crate) fn build_websocket_inbound_event(
     py: Python<'_>,
     event: WebSocketInboundEvent,
 ) -> PyResult<Py<PyAny>> {
@@ -653,7 +653,7 @@ where
         .map_err(H2CornError::from)
 }
 
-pub fn try_send_or_await<'py, T: Send + 'static>(
+pub(crate) fn try_send_or_await<'py, T: Send + 'static>(
     py: Python<'py>,
     shard: Shard,
     tx: &mpsc::Sender<T>,
@@ -690,7 +690,7 @@ pub fn try_send_or_await<'py, T: Send + 'static>(
     }
 }
 
-pub fn parse_http_outbound_event(
+pub(crate) fn parse_http_outbound_event(
     message: &Bound<'_, PyDict>,
 ) -> Result<HttpOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
@@ -727,7 +727,7 @@ pub fn parse_http_outbound_event(
     }
 }
 
-pub fn parse_websocket_outbound_event(
+pub(crate) fn parse_websocket_outbound_event(
     message: &Bound<'_, PyDict>,
 ) -> Result<WebSocketOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;

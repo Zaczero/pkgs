@@ -10,46 +10,46 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::error::{ErrorExt, H2CornError, H2Error};
 
-pub const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
-pub const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
-pub const DEFAULT_MAX_FRAME_SIZE: usize = 0x4000;
+pub(crate) const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
+pub(crate) const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
+pub(crate) const DEFAULT_MAX_FRAME_SIZE: usize = 0x4000;
 /// Initial (and shrink-target) capacity of the connection read buffer.
-pub const READ_BUFFER_INITIAL_CAPACITY: usize = 4096;
-pub const MAX_FRAME_SIZE_UPPER_BOUND: usize = 0x00FF_FFFF;
-pub const MAX_FLOW_CONTROL_WINDOW: u32 = (1 << 31) - 1;
-pub const CONNECTION_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-pub const STREAM_ID_MASK: u32 = 0x7FFF_FFFF;
-pub const FRAME_HEADER_LEN: usize = 9;
-pub const GOAWAY_FIXED_PAYLOAD_LEN: usize = 8;
-pub const GOAWAY_FRAME_PREFIX_LEN: usize = FRAME_HEADER_LEN + GOAWAY_FIXED_PAYLOAD_LEN;
-pub const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
+pub(crate) const READ_BUFFER_INITIAL_CAPACITY: usize = 4096;
+pub(crate) const MAX_FRAME_SIZE_UPPER_BOUND: usize = 0x00FF_FFFF;
+pub(crate) const MAX_FLOW_CONTROL_WINDOW: u32 = (1 << 31) - 1;
+pub(crate) const CONNECTION_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+pub(crate) const STREAM_ID_MASK: u32 = 0x7FFF_FFFF;
+pub(crate) const FRAME_HEADER_LEN: usize = 9;
+pub(crate) const GOAWAY_FIXED_PAYLOAD_LEN: usize = 8;
+pub(crate) const GOAWAY_FRAME_PREFIX_LEN: usize = FRAME_HEADER_LEN + GOAWAY_FIXED_PAYLOAD_LEN;
+pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
 
 const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 
-pub type StreamId = NonZeroU32;
-pub type WindowIncrement = NonZeroU32;
+pub(crate) type StreamId = NonZeroU32;
+pub(crate) type WindowIncrement = NonZeroU32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct FrameFlags(u8);
+pub(crate) struct FrameFlags(u8);
 
 impl FrameFlags {
-    pub const EMPTY: Self = Self(0);
-    pub const ACK: Self = Self(0x01);
-    pub const END_STREAM: Self = Self(0x01);
-    pub const END_HEADERS: Self = Self(0x04);
-    pub const PADDED: Self = Self(0x08);
-    pub const PRIORITY: Self = Self(0x20);
+    pub(crate) const EMPTY: Self = Self(0);
+    pub(crate) const ACK: Self = Self(0x01);
+    pub(crate) const END_STREAM: Self = Self(0x01);
+    pub(crate) const END_HEADERS: Self = Self(0x04);
+    pub(crate) const PADDED: Self = Self(0x08);
+    pub(crate) const PRIORITY: Self = Self(0x20);
 
-    pub const fn new(bits: u8) -> Self {
+    pub(crate) const fn new(bits: u8) -> Self {
         Self(bits)
     }
 
-    pub const fn bits(self) -> u8 {
+    pub(crate) const fn bits(self) -> u8 {
         self.0
     }
 
-    pub const fn contains(self, other: Self) -> bool {
+    pub(crate) const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 }
@@ -70,50 +70,50 @@ impl BitOrAssign for FrameFlags {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct FrameType(u8);
+pub(crate) struct FrameType(u8);
 
 impl FrameType {
-    pub const DATA: Self = Self(0x00);
-    pub const HEADERS: Self = Self(0x01);
-    pub const PRIORITY: Self = Self(0x02);
-    pub const RST_STREAM: Self = Self(0x03);
-    pub const SETTINGS: Self = Self(0x04);
-    pub const PUSH_PROMISE: Self = Self(0x05);
-    pub const PING: Self = Self(0x06);
-    pub const GOAWAY: Self = Self(0x07);
-    pub const WINDOW_UPDATE: Self = Self(0x08);
-    pub const CONTINUATION: Self = Self(0x09);
+    pub(crate) const DATA: Self = Self(0x00);
+    pub(crate) const HEADERS: Self = Self(0x01);
+    pub(crate) const PRIORITY: Self = Self(0x02);
+    pub(crate) const RST_STREAM: Self = Self(0x03);
+    pub(crate) const SETTINGS: Self = Self(0x04);
+    pub(crate) const PUSH_PROMISE: Self = Self(0x05);
+    pub(crate) const PING: Self = Self(0x06);
+    pub(crate) const GOAWAY: Self = Self(0x07);
+    pub(crate) const WINDOW_UPDATE: Self = Self(0x08);
+    pub(crate) const CONTINUATION: Self = Self(0x09);
 
-    pub const fn new(bits: u8) -> Self {
+    pub(crate) const fn new(bits: u8) -> Self {
         Self(bits)
     }
 
-    pub const fn bits(self) -> u8 {
+    pub(crate) const fn bits(self) -> u8 {
         self.0
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct ErrorCode(u32);
+pub(crate) struct ErrorCode(u32);
 
 impl ErrorCode {
-    pub const NO_ERROR: Self = Self(0x0);
-    pub const PROTOCOL_ERROR: Self = Self(0x1);
-    pub const INTERNAL_ERROR: Self = Self(0x2);
-    pub const FLOW_CONTROL_ERROR: Self = Self(0x3);
-    pub const STREAM_CLOSED: Self = Self(0x5);
-    pub const FRAME_SIZE_ERROR: Self = Self(0x6);
-    pub const REFUSED_STREAM: Self = Self(0x7);
-    pub const CANCEL: Self = Self(0x8);
-    pub const COMPRESSION_ERROR: Self = Self(0x9);
-    pub const ENHANCE_YOUR_CALM: Self = Self(0xB);
+    pub(crate) const NO_ERROR: Self = Self(0x0);
+    pub(crate) const PROTOCOL_ERROR: Self = Self(0x1);
+    pub(crate) const INTERNAL_ERROR: Self = Self(0x2);
+    pub(crate) const FLOW_CONTROL_ERROR: Self = Self(0x3);
+    pub(crate) const STREAM_CLOSED: Self = Self(0x5);
+    pub(crate) const FRAME_SIZE_ERROR: Self = Self(0x6);
+    pub(crate) const REFUSED_STREAM: Self = Self(0x7);
+    pub(crate) const CANCEL: Self = Self(0x8);
+    pub(crate) const COMPRESSION_ERROR: Self = Self(0x9);
+    pub(crate) const ENHANCE_YOUR_CALM: Self = Self(0xB);
 
-    pub const fn new(value: u32) -> Self {
+    pub(crate) const fn new(value: u32) -> Self {
         Self(value)
     }
 
-    pub const fn to_be_bytes(self) -> [u8; 4] {
+    pub(crate) const fn to_be_bytes(self) -> [u8; 4] {
         self.0.to_be_bytes()
     }
 }
@@ -126,28 +126,28 @@ impl fmt::Display for ErrorCode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct SettingId(u16);
+pub(crate) struct SettingId(u16);
 
 impl SettingId {
-    pub const HEADER_TABLE_SIZE: Self = Self(0x01);
-    pub const ENABLE_PUSH: Self = Self(0x02);
-    pub const MAX_CONCURRENT_STREAMS: Self = Self(0x03);
-    pub const INITIAL_WINDOW_SIZE: Self = Self(0x04);
-    pub const MAX_FRAME_SIZE: Self = Self(0x05);
-    pub const MAX_HEADER_LIST_SIZE: Self = Self(0x06);
-    pub const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
+    pub(crate) const HEADER_TABLE_SIZE: Self = Self(0x01);
+    pub(crate) const ENABLE_PUSH: Self = Self(0x02);
+    pub(crate) const MAX_CONCURRENT_STREAMS: Self = Self(0x03);
+    pub(crate) const INITIAL_WINDOW_SIZE: Self = Self(0x04);
+    pub(crate) const MAX_FRAME_SIZE: Self = Self(0x05);
+    pub(crate) const MAX_HEADER_LIST_SIZE: Self = Self(0x06);
+    pub(crate) const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
 
-    pub const fn new(bits: u16) -> Self {
+    pub(crate) const fn new(bits: u16) -> Self {
         Self(bits)
     }
 
-    pub const fn bits(self) -> u16 {
+    pub(crate) const fn bits(self) -> u16 {
         self.0
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FrameHeader {
+pub(crate) struct FrameHeader {
     pub len: usize,
     pub frame_type: FrameType,
     pub flags: FrameFlags,
@@ -155,7 +155,7 @@ pub struct FrameHeader {
 }
 
 #[derive(Clone, Debug)]
-pub struct RawFrame {
+pub(crate) struct RawFrame {
     pub header: FrameHeader,
     pub payload: Bytes,
 }
@@ -168,7 +168,7 @@ struct WireSetting {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Settings {
+pub(crate) struct Settings {
     pub header_table_size: Option<u32>,
     pub enable_push: Option<bool>,
     pub max_concurrent_streams: Option<u32>,
@@ -179,7 +179,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn iter(self) -> impl Iterator<Item = (SettingId, u32)> {
+    pub(crate) fn iter(self) -> impl Iterator<Item = (SettingId, u32)> {
         [
             (SettingId::HEADER_TABLE_SIZE, self.header_table_size),
             (SettingId::ENABLE_PUSH, self.enable_push.map(u32::from)),
@@ -231,7 +231,7 @@ impl Settings {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct PeerSettings {
+pub(crate) struct PeerSettings {
     pub header_table_size: Option<usize>,
     pub initial_window_size: Option<u32>,
     pub max_frame_size: Option<NonZeroU32>,
@@ -263,7 +263,7 @@ impl TryFrom<Settings> for PeerSettings {
 }
 
 #[derive(Debug)]
-pub struct FrameReader<R> {
+pub(crate) struct FrameReader<R> {
     reader: R,
     buffer: BytesMut,
 }
@@ -369,7 +369,7 @@ const fn decode_u24(bytes: [u8; 3]) -> usize {
     ((b0 as usize) << 16) | ((b1 as usize) << 8) | (b2 as usize)
 }
 
-pub fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
+pub(crate) fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
     debug_assert!(header.len <= MAX_FRAME_SIZE_UPPER_BOUND);
     let len = (header.len as u32).to_be_bytes();
     let stream_id = header.stream_id.map_or(0, StreamId::get).to_be_bytes();
@@ -386,14 +386,14 @@ pub fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
     ]
 }
 
-pub fn append_frame(dst: &mut BytesMut, header: FrameHeader, payload: &[u8]) {
+pub(crate) fn append_frame(dst: &mut BytesMut, header: FrameHeader, payload: &[u8]) {
     assert_eq!(header.len, payload.len());
     dst.reserve(FRAME_HEADER_LEN + payload.len());
     dst.extend_from_slice(&encode_frame_header(header));
     dst.extend_from_slice(payload);
 }
 
-pub fn append_settings(dst: &mut BytesMut, settings: Settings) {
+pub(crate) fn append_settings(dst: &mut BytesMut, settings: Settings) {
     let payload_len = settings.iter().count() * size_of::<WireSetting>();
     dst.reserve(FRAME_HEADER_LEN + payload_len);
     dst.extend_from_slice(&encode_frame_header(FrameHeader {
@@ -411,7 +411,7 @@ pub fn append_settings(dst: &mut BytesMut, settings: Settings) {
     }
 }
 
-pub fn append_settings_ack(dst: &mut BytesMut) {
+pub(crate) fn append_settings_ack(dst: &mut BytesMut) {
     append_frame(
         dst,
         FrameHeader {
@@ -424,7 +424,7 @@ pub fn append_settings_ack(dst: &mut BytesMut) {
     );
 }
 
-pub fn append_window_update(
+pub(crate) fn append_window_update(
     dst: &mut BytesMut,
     stream_id: Option<StreamId>,
     increment: WindowIncrement,
@@ -441,7 +441,7 @@ pub fn append_window_update(
     );
 }
 
-pub fn append_ping_ack(dst: &mut BytesMut, payload: [u8; 8]) {
+pub(crate) fn append_ping_ack(dst: &mut BytesMut, payload: [u8; 8]) {
     append_frame(
         dst,
         FrameHeader {
@@ -454,7 +454,7 @@ pub fn append_ping_ack(dst: &mut BytesMut, payload: [u8; 8]) {
     );
 }
 
-pub fn append_rst_stream(dst: &mut BytesMut, stream_id: StreamId, error_code: ErrorCode) {
+pub(crate) fn append_rst_stream(dst: &mut BytesMut, stream_id: StreamId, error_code: ErrorCode) {
     append_frame(
         dst,
         FrameHeader {
@@ -467,7 +467,7 @@ pub fn append_rst_stream(dst: &mut BytesMut, stream_id: StreamId, error_code: Er
     );
 }
 
-pub fn append_goaway(
+pub(crate) fn append_goaway(
     dst: &mut BytesMut,
     last_stream_id: Option<StreamId>,
     error_code: ErrorCode,
@@ -485,7 +485,7 @@ pub fn append_goaway(
     dst.extend_from_slice(debug);
 }
 
-pub fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
+pub(crate) fn parse_settings_payload(payload: &[u8]) -> Result<PeerSettings, H2CornError> {
     // `WireSetting` is `Unaligned + FromBytes`, so this is a zero-copy view;
     // it fails exactly when the payload is not a whole number of entries.
     let Ok(entries) = <[WireSetting]>::ref_from_bytes(payload) else {

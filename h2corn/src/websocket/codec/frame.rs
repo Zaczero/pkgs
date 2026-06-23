@@ -151,7 +151,7 @@ pub(super) fn decode_control_frame(
     }
 }
 
-pub fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut BytesMut) {
+pub(crate) fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut BytesMut) {
     out.clear();
     out.reserve(payload.len() + wire::FRAME_HEADER_MAX_LEN);
     out.extend_from_slice(&[wire::FIN | opcode | if compressed { wire::RSV1 } else { 0x00 }]);
@@ -169,7 +169,7 @@ pub fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut
     out.extend_from_slice(payload);
 }
 
-pub fn encode_close_frame_into(
+pub(crate) fn encode_close_frame_into(
     code: WebSocketCloseCode,
     reason: &str,
     out: &mut BytesMut,
@@ -188,7 +188,7 @@ pub fn encode_close_frame_into(
     Ok(())
 }
 
-pub fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
+pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
     match code {
         close_code::NORMAL..=1003 | close_code::INVALID_FRAME_PAYLOAD_DATA..=1014 | 3000..=4999 => {
             Ok(())

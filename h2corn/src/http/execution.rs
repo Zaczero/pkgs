@@ -8,7 +8,7 @@ use crate::http::planner::{RequestInputPlan, RequestLaunchPlan};
 use crate::runtime::{AppState, RequestAdmission, StreamInput, try_acquire_request_admission};
 
 /// Allocated input channels for a request whose body streams to the app.
-pub struct StreamRequestInput {
+pub(crate) struct StreamRequestInput {
     pub(crate) tx: mpsc::Sender<StreamInput>,
     pub(crate) rx: mpsc::Receiver<StreamInput>,
     pub(crate) body_bytes_read: Option<Arc<AtomicU64>>,
@@ -25,7 +25,7 @@ impl StreamRequestInput {
     }
 }
 
-pub enum PreparedRequestInput {
+pub(crate) enum PreparedRequestInput {
     None,
     Stream(StreamRequestInput),
 }
@@ -61,7 +61,7 @@ impl PreparedRequestInput {
 
 /// The app-side half of a prepared request input: receiver plus body counter,
 /// never a sender.
-pub enum AppRequestInput {
+pub(crate) enum AppRequestInput {
     None,
     Stream {
         rx: mpsc::Receiver<StreamInput>,
@@ -84,7 +84,7 @@ impl AppRequestInput {
 
 /// Admitted request, ready to launch; the route carries exactly the input
 /// shape it requires, so launch sites never re-check channel presence.
-pub enum RequestExecution<WebSocketMeta> {
+pub(crate) enum RequestExecution<WebSocketMeta> {
     Http {
         admission: RequestAdmission,
         input: PreparedRequestInput,
@@ -96,7 +96,7 @@ pub enum RequestExecution<WebSocketMeta> {
     },
 }
 
-pub fn prepare_request_execution<WebSocketMeta>(
+pub(crate) fn prepare_request_execution<WebSocketMeta>(
     app: AppState,
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {

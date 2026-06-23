@@ -33,7 +33,7 @@ struct DecodeLayout {
     max_value: f32,
 }
 
-pub fn decode_rgb_into(
+pub(crate) fn decode_rgb_into(
     blurhash: &str,
     width: usize,
     height: usize,

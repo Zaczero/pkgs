@@ -19,10 +19,10 @@ use crate::error::{H2CornError, PathsendError};
 /// sendfile: peers cap DATA frames (typically 16 KiB), so per-frame sendfile
 /// costs ~2 syscalls per frame and never amortizes. Zero-copy still wins on
 /// large files where memory bandwidth dominates.
-pub const PATHSEND_SENDFILE_MIN: usize = 1 << 20;
+pub(crate) const PATHSEND_SENDFILE_MIN: usize = 1 << 20;
 
 #[derive(Debug)]
-pub struct PathStreamer {
+pub(crate) struct PathStreamer {
     file: File,
     buffer: Option<Box<[u8]>>,
     filled: usize,
@@ -36,7 +36,7 @@ pub struct PathStreamer {
 }
 
 impl PathStreamer {
-    pub const fn new(file: File, len: usize, end_stream: bool) -> Self {
+    pub(crate) const fn new(file: File, len: usize, end_stream: bool) -> Self {
         Self {
             file,
             buffer: None,
@@ -49,7 +49,7 @@ impl PathStreamer {
         }
     }
 
-    pub async fn fill(&mut self) -> Result<(), H2CornError> {
+    pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
         assert_eq!(self.offset, self.filled);
         let mut buffer = self
             .buffer
@@ -69,17 +69,17 @@ impl PathStreamer {
         Ok(())
     }
 
-    pub const fn is_drained(&self) -> bool {
+    pub(crate) const fn is_drained(&self) -> bool {
         self.offset == self.filled && self.remaining_len == 0
     }
 
-    pub fn remaining(&self) -> &[u8] {
+    pub(crate) fn remaining(&self) -> &[u8] {
         self.buffer
             .as_deref()
             .map_or(&[], |buffer| &buffer[self.offset..self.filled])
     }
 
-    pub const fn consume(&mut self, len: usize) {
+    pub(crate) const fn consume(&mut self, len: usize) {
         self.offset += len;
         if self.offset == self.filled {
             self.offset = 0;
@@ -87,19 +87,19 @@ impl PathStreamer {
         }
     }
 
-    pub const fn needs_fill(&self) -> bool {
+    pub(crate) const fn needs_fill(&self) -> bool {
         self.offset == self.filled && self.remaining_len != 0
     }
 
-    pub const fn sendfile_remaining_len(&self) -> usize {
+    pub(crate) const fn sendfile_remaining_len(&self) -> usize {
         self.remaining_len
     }
 
-    pub const fn sendfile_parts(&mut self) -> (&mut File, &mut u64) {
+    pub(crate) const fn sendfile_parts(&mut self) -> (&mut File, &mut u64) {
         (&mut self.file, &mut self.next_file_offset)
     }
 
-    pub fn advance_after_sendfile(&mut self, len: usize) {
+    pub(crate) fn advance_after_sendfile(&mut self, len: usize) {
         debug_assert!(len <= self.remaining_len);
         self.remaining_len -= len;
     }
@@ -107,7 +107,7 @@ impl PathStreamer {
 
 /// What [`open_pathsend_file`] produced in its single blocking hop.
 #[derive(Debug)]
-pub enum PathSource {
+pub(crate) enum PathSource {
     /// Whole file preloaded (≤ [`PATHSEND_BUFFER_SIZE`]) and already closed:
     /// served through the ordinary body path with the same per-stream memory
     /// bound as the rolling buffer, but open + read + close collapse into
@@ -118,7 +118,7 @@ pub enum PathSource {
     File(File),
 }
 
-pub async fn open_pathsend_file(
+pub(crate) async fn open_pathsend_file(
     path: PathBuf,
     len_hint: Option<usize>,
 ) -> Result<(PathSource, usize), H2CornError> {

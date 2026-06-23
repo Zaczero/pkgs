@@ -2,7 +2,7 @@ use std::fmt::{self, Debug, Formatter};
 
 use smallvec::SmallVec;
 
-pub struct SmallVecDeque<T, const N: usize> {
+pub(crate) struct SmallVecDeque<T, const N: usize> {
     items: SmallVec<[Option<T>; N]>,
     front: usize,
 }

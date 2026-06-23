@@ -3,7 +3,7 @@ mod buffered;
 use std::future::Future;
 use std::pin::Pin;
 
-pub use buffered::HttpSendState;
+pub(crate) use buffered::HttpSendState;
 use bytes::Bytes;
 use http::Method;
 use pyo3::Py;
@@ -18,24 +18,24 @@ use crate::error::H2CornError;
 use crate::http::scope::build_http_scope;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 
-pub enum HttpRequestBody {
+pub(crate) enum HttpRequestBody {
     NoBody,
     Single(Bytes),
     Stream(mpsc::Receiver<StreamInput>),
 }
 
-pub struct HttpRequestState {
+pub(crate) struct HttpRequestState {
     response: ResponseController,
     send_buffer: HttpSendBuffer,
     _admission: RequestAdmission,
 }
 
-pub struct RunningHttpRequest<F> {
+pub(crate) struct RunningHttpRequest<F> {
     pub(crate) state: HttpRequestState,
     pub(crate) app_task: F,
 }
 
-pub fn start_asgi_http_request(
+pub(crate) fn start_asgi_http_request(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -69,7 +69,7 @@ pub fn start_asgi_http_request(
     }
 }
 
-pub async fn run_asgi_http_request<T>(
+pub(crate) async fn run_asgi_http_request<T>(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
@@ -82,7 +82,7 @@ where
     drive_http_request(started, transport).await
 }
 
-pub async fn drive_http_request<T, F>(
+pub(crate) async fn drive_http_request<T, F>(
     started: RunningHttpRequest<F>,
     transport: &mut T,
 ) -> Result<(), H2CornError>
@@ -95,7 +95,7 @@ where
     drive_pinned_http_request(state, app_task.as_mut(), transport).await
 }
 
-pub async fn drive_pinned_http_request<T, F>(
+pub(crate) async fn drive_pinned_http_request<T, F>(
     state: HttpRequestState,
     app_task: Pin<&mut F>,
     transport: &mut T,
@@ -120,7 +120,7 @@ where
     .await
 }
 
-pub async fn try_complete_http_request<T>(
+pub(crate) async fn try_complete_http_request<T>(
     state: HttpRequestState,
     transport: &mut T,
     app_result: Result<(), H2CornError>,

@@ -18,7 +18,7 @@ fn sign_pow_05(v: f32) -> f32 {
     v.signum() * v.abs().sqrt()
 }
 
-pub fn encode_rgb(
+pub(crate) fn encode_rgb(
     rgb: &[u8],
     width: usize,
     height: usize,

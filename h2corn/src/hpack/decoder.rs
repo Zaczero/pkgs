@@ -9,7 +9,7 @@ use super::{Header, huffman, static_table};
 use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
 
 #[derive(Debug)]
-pub struct Decoder {
+pub(crate) struct Decoder {
     max_size_update: Option<usize>,
     last_max_update: usize,
     table: DynamicBuffer<DynamicEntry>,
@@ -17,7 +17,7 @@ pub struct Decoder {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum DecoderError {
+pub(crate) enum DecoderError {
     InvalidTableIndex,
     InvalidHuffmanCode,
     InvalidUtf8,
@@ -29,7 +29,7 @@ pub enum DecoderError {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum NeedMore {
+pub(crate) enum NeedMore {
     UnexpectedEndOfStream,
     IntegerUnderflow,
     StringUnderflow,
@@ -47,7 +47,7 @@ enum Representation {
 type DynamicEntry = Header;
 
 impl Decoder {
-    pub fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         Self {
             max_size_update: None,
             last_max_update: size,
@@ -57,7 +57,7 @@ impl Decoder {
     }
 
     #[cfg(test)]
-    pub fn decode_bytes<F>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), DecoderError>
+    pub(crate) fn decode_bytes<F>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), DecoderError>
     where
         F: FnMut(Header),
     {
@@ -73,7 +73,7 @@ impl Decoder {
         }
     }
 
-    pub fn decode_block<F, E>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), E>
+    pub(crate) fn decode_block<F, E>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), E>
     where
         F: FnMut(Header) -> Result<(), E>,
         E: From<DecoderError>,

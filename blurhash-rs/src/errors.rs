@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("Invalid RGB buffer length: expected {expected}, got {got}")]
     InvalidRGBBufferLength { expected: usize, got: usize },
     #[error("Invalid {axis} component count: expected 1..=9, got {got}")]

@@ -27,14 +27,14 @@ use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
 
 #[derive(Debug, Default)]
-pub struct AcceptedWebSocketState {
+pub(crate) struct AcceptedWebSocketState {
     pub(crate) close_state: CloseState,
     pub(crate) close_code: Option<NonZeroU16>,
     pending_close: Option<PendingClose>,
 }
 
 #[derive(Debug)]
-pub struct PendingClose {
+pub(crate) struct PendingClose {
     code: WebSocketCloseCode,
     reason: Box<str>,
 }
@@ -108,7 +108,7 @@ impl AcceptedWebSocketState {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum CloseState {
+pub(crate) enum CloseState {
     #[default]
     Open,
     CloseQueued,
@@ -117,7 +117,7 @@ pub enum CloseState {
 }
 
 #[derive(Debug)]
-pub enum TransportRead {
+pub(crate) enum TransportRead {
     Progress,
     PeerGone,
     PeerGoneSilent,
@@ -125,12 +125,12 @@ pub enum TransportRead {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameFlushMode {
+pub(crate) enum FrameFlushMode {
     Buffered,
     Immediate,
 }
 
-pub trait WebSocketHandshakeTransport {
+pub(crate) trait WebSocketHandshakeTransport {
     fn accept_status(&self) -> HttpStatusCode;
 
     async fn send_empty_response(&mut self, status: HttpStatusCode) -> Result<(), H2CornError>;
@@ -173,7 +173,7 @@ pub trait WebSocketHandshakeTransport {
     }
 }
 
-pub trait AcceptedWebSocketTransport {
+pub(crate) trait AcceptedWebSocketTransport {
     fn websocket_codec(&mut self, max_message_size: Option<NonZeroUsize>) -> WebSocketCodec;
 
     async fn send_frame(&mut self, frame: Bytes, flush: FrameFlushMode) -> Result<(), H2CornError>;
@@ -195,7 +195,7 @@ pub trait AcceptedWebSocketTransport {
     ) -> Result<(), H2CornError>;
 }
 
-pub struct WebSocketContext {
+pub(crate) struct WebSocketContext {
     pub(crate) request: Box<RequestContext>,
     pub(crate) admission: RequestAdmission,
     pub(crate) meta: WebSocketRequestMeta,
@@ -209,7 +209,7 @@ pub(super) struct AcceptedSessionConfig {
     pub(super) shutdown: watch::Receiver<ShutdownState>,
 }
 
-pub fn append_ws_accept_headers(
+pub(crate) fn append_ws_accept_headers(
     headers: &mut ResponseHeaders,
     subprotocol: Option<&str>,
     per_message_deflate: bool,
@@ -229,7 +229,7 @@ pub fn append_ws_accept_headers(
     }
 }
 
-pub fn take_pending_close_frame(
+pub(crate) fn take_pending_close_frame(
     state: &mut AcceptedWebSocketState,
     frame_buf: &mut BytesMut,
 ) -> Result<Option<Bytes>, H2CornError> {
@@ -241,14 +241,14 @@ pub fn take_pending_close_frame(
     Ok(None)
 }
 
-pub const fn shutdown_close_code(kind: ShutdownKind) -> WebSocketCloseCode {
+pub(crate) const fn shutdown_close_code(kind: ShutdownKind) -> WebSocketCloseCode {
     match kind {
         ShutdownKind::Stop => close_code::GOING_AWAY,
         ShutdownKind::Restart => close_code::SERVICE_RESTART,
     }
 }
 
-pub async fn run_websocket<T>(
+pub(crate) async fn run_websocket<T>(
     transport: &mut T,
     context: WebSocketContext,
 ) -> Result<(), H2CornError>

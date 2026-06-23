@@ -18,13 +18,13 @@ enum SlotState<T> {
 
 /// Single-value rendezvous filled by the pump (loop thread) and awaited by a
 /// tokio task. Also carries the `asyncio.Task` handle for cancellation.
-pub struct TaskSlot<T> {
+pub(crate) struct TaskSlot<T> {
     state: Mutex<SlotState<T>>,
     task: Mutex<Option<Py<PyAny>>>,
 }
 
 impl<T> TaskSlot<T> {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(SlotState::Pending(None)),
             task: Mutex::new(None),
@@ -32,7 +32,7 @@ impl<T> TaskSlot<T> {
     }
 
     /// Fill the slot and wake the awaiting tokio task. Called by the pump.
-    pub fn fill(&self, value: T) {
+    pub(crate) fn fill(&self, value: T) {
         let waker = {
             let mut state = self.state.lock();
             match &mut *state {
@@ -54,17 +54,17 @@ impl<T> TaskSlot<T> {
     /// Record the `asyncio.Task` driving this slot. The strong reference is
     /// load-bearing: event loops keep only weak references to tasks, so the
     /// slot anchors the Task for the lifetime of the request that awaits it.
-    pub fn set_task(&self, task: Py<PyAny>) {
+    pub(crate) fn set_task(&self, task: Py<PyAny>) {
         *self.task.lock() = Some(task);
     }
 
     /// Await the outcome from the tokio side.
-    pub fn wait(self: &Arc<Self>) -> SlotFuture<T> {
+    pub(crate) fn wait(self: &Arc<Self>) -> SlotFuture<T> {
         SlotFuture(Arc::clone(self))
     }
 }
 
-pub struct SlotFuture<T>(Arc<TaskSlot<T>>);
+pub(crate) struct SlotFuture<T>(Arc<TaskSlot<T>>);
 
 impl<T> Future for SlotFuture<T> {
     type Output = T;

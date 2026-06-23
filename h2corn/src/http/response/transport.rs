@@ -9,7 +9,7 @@ use crate::http::types::ResponseHeaders;
 /// Full HTTP transports get this via the blanket impl below; restricted sinks
 /// (websocket denial responses) implement it directly with a narrower action
 /// vocabulary.
-pub trait ResponseActionSink {
+pub(crate) trait ResponseActionSink {
     async fn apply_response_actions(
         &mut self,
         actions: &mut ResponseActions,
@@ -25,7 +25,7 @@ impl<T: HttpResponseTransport> ResponseActionSink for T {
     }
 }
 
-pub trait HttpResponseTransport {
+pub(crate) trait HttpResponseTransport {
     async fn send_final_response(
         &mut self,
         start: ResponseStart,

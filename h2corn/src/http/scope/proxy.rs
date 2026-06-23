@@ -11,7 +11,7 @@ use crate::http::types::{RequestHead, RequestHeaders};
 use crate::proxy::{ClientAddr, ConnectionInfo, ServerAddr};
 
 #[derive(Clone, Debug)]
-pub struct ScopeView<'a> {
+pub(crate) struct ScopeView<'a> {
     pub scheme: Cow<'a, str>,
     pub client: Option<(&'a str, u16)>,
     pub server: (&'a str, Option<u16>),
@@ -19,7 +19,7 @@ pub struct ScopeView<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ScopeOverrides {
+pub(crate) struct ScopeOverrides {
     pub(crate) scheme: Option<Box<str>>,
     pub(crate) client: Option<ClientAddr>,
     pub(crate) server: Option<ServerAddr>,
@@ -61,7 +61,7 @@ fn default_client(info: &ConnectionInfo) -> Option<(&str, u16)> {
         .map(|client| (client.host.as_ref(), client.port))
 }
 
-pub fn resolve_scope_view<'a>(
+pub(super) fn resolve_scope_view<'a>(
     request: &'a RequestHead,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
@@ -148,7 +148,7 @@ pub fn resolve_scope_view<'a>(
     view
 }
 
-pub fn resolve_scope_overrides(
+pub(crate) fn resolve_scope_overrides(
     request: &RequestHead,
     config: &ServerConfig,
     info: &ConnectionInfo,
@@ -202,7 +202,7 @@ fn proxy_header_value(headers: &RequestHeaders, index: Option<usize>) -> Option<
         .and_then(|(_, value)| header_value_text(value))
 }
 
-pub fn scope_view_from_parts<'a>(
+pub(crate) fn scope_view_from_parts<'a>(
     scheme: &'a str,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,

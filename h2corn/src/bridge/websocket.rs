@@ -15,15 +15,15 @@ use crate::error::{AsgiError, IntoPyResult, into_pyerr};
 use crate::pyloop::Shard;
 
 #[derive(Clone)]
-pub struct WebSocketSendState {
+pub(crate) struct WebSocketSendState {
     shared: Arc<BufferedState<WebSocketSendMode, WebSocketOutboundEvent, 2>>,
 }
 
-pub struct WebSocketSendBuffer {
+pub(crate) struct WebSocketSendBuffer {
     shared: Arc<BufferedState<WebSocketSendMode, WebSocketOutboundEvent, 2>>,
 }
 
-pub enum WebSocketSendDisposition {
+pub(crate) enum WebSocketSendDisposition {
     Buffered,
     Forward(WebSocketOutboundEvent),
     Closed,

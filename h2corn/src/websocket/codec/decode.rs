@@ -15,7 +15,7 @@ use crate::error::WebSocketProtocolError;
 use crate::hpack::BytesStr;
 
 #[derive(Debug, Default)]
-pub struct WebSocketCodec {
+pub(crate) struct WebSocketCodec {
     pub(crate) buffer: BytesMut,
     segmented: SegmentCursor<{ wire::SEGMENT_INLINE_CAPACITY }>,
     fragmented: FragmentState,

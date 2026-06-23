@@ -3,28 +3,28 @@ mod decode;
 mod frame;
 mod mask;
 
-pub mod close_code {
+pub(crate) mod close_code {
     use super::WebSocketCloseCode;
 
-    pub const NORMAL: WebSocketCloseCode = 1000;
-    pub const GOING_AWAY: WebSocketCloseCode = 1001;
-    pub const PROTOCOL_ERROR: WebSocketCloseCode = 1002;
-    pub const NO_STATUS_RECEIVED: WebSocketCloseCode = 1005;
-    pub const ABNORMAL_CLOSURE: WebSocketCloseCode = 1006;
-    pub const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode = 1007;
-    pub const MESSAGE_TOO_BIG: WebSocketCloseCode = 1009;
-    pub const INTERNAL_ERROR: WebSocketCloseCode = 1011;
-    pub const SERVICE_RESTART: WebSocketCloseCode = 1012;
+    pub(crate) const NORMAL: WebSocketCloseCode = 1000;
+    pub(crate) const GOING_AWAY: WebSocketCloseCode = 1001;
+    pub(crate) const PROTOCOL_ERROR: WebSocketCloseCode = 1002;
+    pub(crate) const NO_STATUS_RECEIVED: WebSocketCloseCode = 1005;
+    pub(crate) const ABNORMAL_CLOSURE: WebSocketCloseCode = 1006;
+    pub(crate) const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode = 1007;
+    pub(crate) const MESSAGE_TOO_BIG: WebSocketCloseCode = 1009;
+    pub(crate) const INTERNAL_ERROR: WebSocketCloseCode = 1011;
+    pub(crate) const SERVICE_RESTART: WebSocketCloseCode = 1012;
 }
 
 mod wire {
     pub(in crate::websocket::codec) mod opcode {
-        pub const CONTINUATION: u8 = 0x0;
-        pub const TEXT: u8 = 0x1;
-        pub const BINARY: u8 = 0x2;
-        pub const CLOSE: u8 = 0x8;
-        pub const PING: u8 = 0x9;
-        pub const PONG: u8 = 0xA;
+        pub(crate) const CONTINUATION: u8 = 0x0;
+        pub(crate) const TEXT: u8 = 0x1;
+        pub(crate) const BINARY: u8 = 0x2;
+        pub(crate) const CLOSE: u8 = 0x8;
+        pub(crate) const PING: u8 = 0x9;
+        pub(crate) const PONG: u8 = 0xA;
     }
 
     pub(super) const FIN: u8 = 0x80;
@@ -47,18 +47,18 @@ mod wire {
 use std::fmt;
 
 use bytes::Bytes;
-pub use decode::WebSocketCodec;
-pub use frame::{encode_close_frame_into, encode_frame_into, validate_close_code};
+pub(crate) use decode::WebSocketCodec;
+pub(super) use frame::{encode_close_frame_into, encode_frame_into, validate_close_code};
 
 use crate::error::WebSocketProtocolError;
 use crate::hpack::BytesStr;
 
-pub const MAX_CLOSE_REASON_LEN: usize = 123;
+pub(super) const MAX_CLOSE_REASON_LEN: usize = 123;
 
-pub type WebSocketCloseCode = u16;
+pub(crate) type WebSocketCloseCode = u16;
 
 #[derive(Debug)]
-pub enum DecodedFrame {
+pub(crate) enum DecodedFrame {
     Text(BytesStr),
     Binary(Bytes),
     Ping(Bytes),
@@ -70,7 +70,7 @@ pub enum DecodedFrame {
 }
 
 #[derive(Debug)]
-pub struct WebSocketDecodeError {
+pub(crate) struct WebSocketDecodeError {
     pub(crate) close_code: WebSocketCloseCode,
     pub(crate) error: WebSocketProtocolError,
 }

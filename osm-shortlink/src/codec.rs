@@ -9,7 +9,7 @@ use crate::errors::{DecodeError, EncodeError};
 const COORD_BITS: u8 = 32;
 const MIN_ZOOM_BIT_COUNT: u8 = 8;
 const BITS_PER_DIGIT: u8 = 3;
-pub const MAX_ZOOM: u8 = 22;
+pub(crate) const MAX_ZOOM: u8 = 22;
 const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
 const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT.is_multiple_of(BITS_PER_DIGIT));
@@ -25,7 +25,7 @@ fn interleave_bits(x: u32, y: u32) -> u64 {
     (sx << 1) | sy
 }
 
-pub fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
+pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
     if unlikely(zoom > MAX_ZOOM) {
         return Err(EncodeError::ZoomOutOfRange { zoom });
     }
@@ -72,7 +72,7 @@ pub fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
     Ok(out)
 }
 
-pub fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
+pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
     let mut x = 0;
     let mut y = 0;
     let mut z = 0_u8;

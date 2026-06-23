@@ -29,7 +29,7 @@ fn totp_code_with<M: Mac + KeyInit>(
     truncated % modulus
 }
 
-pub fn totp_code(secret: &[u8], counter: i64, modulus: NonZeroU32, algorithm: Algorithm) -> u32 {
+pub(crate) fn totp_code(secret: &[u8], counter: i64, modulus: NonZeroU32, algorithm: Algorithm) -> u32 {
     let counter_bytes = counter.to_be_bytes();
     match algorithm {
         Algorithm::Sha1 => totp_code_with::<Hmac<Sha1>>(secret, counter_bytes, modulus),
@@ -82,7 +82,7 @@ fn verify_with_mac<M: Mac + FixedOutputReset>(
     false
 }
 
-pub fn verify(
+pub(crate) fn verify(
     secret: &[u8],
     counter: i64,
     window: u8,

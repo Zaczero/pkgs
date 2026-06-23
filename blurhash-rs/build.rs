@@ -37,7 +37,7 @@ fn main() {
     let dest = out_dir.join("srgb_tables.rs");
 
     let mut out = String::new();
-    out.push_str("pub const SRGB_U8_TO_LINEAR: [f32; 256] = [\n");
+    out.push_str("pub(crate) const SRGB_U8_TO_LINEAR: [f32; 256] = [\n");
     for v in 0_u16..=255 {
         let lin = srgb_u8_to_linear(v as u8);
         writeln!(
@@ -51,7 +51,7 @@ fn main() {
 
     writeln!(
         out,
-        "pub const LINEAR_TO_SRGB_U8: [u8; {LINEAR_TO_SRGB_LUT_LEN}] = ["
+        "pub(crate) const LINEAR_TO_SRGB_U8: [u8; {LINEAR_TO_SRGB_LUT_LEN}] = ["
     )
     .expect("writing to String cannot fail");
     for i in 0..LINEAR_TO_SRGB_LUT_LEN {

@@ -119,13 +119,13 @@ impl RequestHeadError {
         }
     }
 
-    pub const fn stream_protocol() -> Self {
+    pub(super) const fn stream_protocol() -> Self {
         Self::Stream {
             error_code: ErrorCode::PROTOCOL_ERROR,
         }
     }
 
-    pub const fn reject(status: HttpStatusCode) -> Self {
+    pub(super) const fn reject(status: HttpStatusCode) -> Self {
         Self::Reject { status }
     }
 }

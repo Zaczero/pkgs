@@ -18,10 +18,10 @@ use smallvec::SmallVec;
 use super::Shard;
 
 /// Builds a future's result under the GIL on the loop thread.
-pub type Convert = Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send>;
+pub(super) type Convert = Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send>;
 
 /// Work delivered to the pump to resolve a pending [`RustFuture`].
-pub enum ResolvePayload {
+pub(crate) enum ResolvePayload {
     /// A consumed event that must be given back if the future was cancelled
     /// while this payload was in flight (body events must never be lost —
     /// `wait_for(receive(), ...)` is a common pattern).
@@ -32,7 +32,7 @@ pub enum ResolvePayload {
 }
 
 /// Exclusive either-convert-or-requeue ownership of a consumed event.
-pub trait ResolveOp {
+pub(crate) trait ResolveOp {
     /// Build the Python result under the GIL (e.g. the `http.request` dict).
     fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>>;
     /// Give the event back to its source after a cancellation race.
@@ -327,7 +327,7 @@ fn copy_context(py: Python<'_>) -> PyResult<Py<PyAny>> {
 }
 
 /// Create a pending future plus its resolve handle.
-pub fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>> {
+pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>> {
     Py::new(py, RustFuture {
         shared: Arc::new(FutShared {
             state: Mutex::new(FutState::Pending {

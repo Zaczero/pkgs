@@ -3,7 +3,7 @@ use std::simd::u8x32;
 
 const SIMD_WIDTH: usize = 32;
 
-pub fn header_value_is_valid(value: &[u8]) -> bool {
+pub(crate) fn header_value_is_valid(value: &[u8]) -> bool {
     if value.len() < SIMD_WIDTH {
         return header_value_is_valid_scalar(value);
     }

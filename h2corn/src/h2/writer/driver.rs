@@ -40,12 +40,12 @@ use crate::proxy::ProxyProtocolMode;
 use crate::sendfile::WriteTarget;
 
 #[derive(Clone)]
-pub struct ConnectionHandle {
+pub(crate) struct ConnectionHandle {
     ingress: Arc<WriterIngress>,
     config: &'static ServerConfig,
 }
 
-pub struct WriterState<W> {
+pub(crate) struct WriterState<W> {
     ingress: Arc<WriterIngress>,
     writer: BufWriter<W>,
     frame_buf: BytesMut,
@@ -959,7 +959,7 @@ where
     clippy::significant_drop_tightening,
     reason = "writer ingress is intentionally kept with the initialized writer state"
 )]
-pub async fn init_writer<W>(
+pub(crate) async fn init_writer<W>(
     writer: W,
     config: &'static ServerConfig,
     initial_peer_settings: Option<PeerSettings>,

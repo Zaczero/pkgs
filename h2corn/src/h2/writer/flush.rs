@@ -69,7 +69,7 @@ impl<'a> FrameBatch<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FlushPassResult {
+pub(crate) enum FlushPassResult {
     Continue,
     ConnectionBlocked,
 }
@@ -402,7 +402,7 @@ where
     Ok(())
 }
 
-pub async fn flush_pending_data<W>(
+pub(super) async fn flush_pending_data<W>(
     writer: &mut BufWriter<W>,
     streams: &mut StreamMap<StreamWriteState>,
     ready_streams: &mut VecDeque<u32>,
@@ -546,7 +546,7 @@ where
     Ok(())
 }
 
-pub async fn write_frame_buf<W>(writer: &mut W, frame_buf: &mut BytesMut) -> Result<(), H2CornError>
+pub(super) async fn write_frame_buf<W>(writer: &mut W, frame_buf: &mut BytesMut) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {

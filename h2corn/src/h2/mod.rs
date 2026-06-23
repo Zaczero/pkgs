@@ -47,7 +47,7 @@ const LAZY_STREAM_CAPACITY: usize = 8;
 type StreamMap<T> = HashMap<u32, T, BuildNoHashHasher<u32>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PriorityDependency {
+pub(crate) enum PriorityDependency {
     Root,
     Stream(StreamId),
 }
@@ -75,7 +75,7 @@ enum IngestEvent {
     ResponseStallTimeout(StreamId),
 }
 
-pub struct UpgradedH2Request {
+pub(crate) struct UpgradedH2Request {
     pub buffer: BytesMut,
     pub request: RequestHead,
     pub body: Bytes,
@@ -367,7 +367,7 @@ where
     Ok(())
 }
 
-pub async fn serve_h2_upgraded_connection<R, W>(
+pub(crate) async fn serve_h2_upgraded_connection<R, W>(
     reader: R,
     writer: W,
     connection: ConnectionContext,
@@ -400,7 +400,7 @@ where
     run_h2_connection(Box::new(connection)).await
 }
 
-pub async fn serve_connection<R, W>(
+pub(crate) async fn serve_connection<R, W>(
     reader: frame::FrameReader<R>,
     writer: W,
     context: ConnectionContext,

@@ -12,7 +12,7 @@ use crate::http::header::{
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 
 #[derive(Debug)]
-pub enum FinalResponseBody {
+pub(crate) enum FinalResponseBody {
     Empty,
     Bytes(PayloadBytes),
     // `File` is boxed: `tokio::fs::File` is ~104 bytes, and inlining it makes
@@ -33,7 +33,7 @@ impl FinalResponseBody {
 }
 
 #[derive(Debug)]
-pub struct ResponseStart {
+pub(crate) struct ResponseStart {
     status: HttpStatusCode,
     headers: ResponseHeaders,
     scan: ResponseHeaderScan,
@@ -85,7 +85,7 @@ impl ResponseStart {
 }
 
 #[derive(Debug)]
-pub enum ResponseAction {
+pub(crate) enum ResponseAction {
     Final {
         start: ResponseStart,
         body: FinalResponseBody,
@@ -104,7 +104,7 @@ pub enum ResponseAction {
     AbortIncomplete,
 }
 
-pub type ResponseActions = SmallVec<[ResponseAction; 2]>;
+pub(crate) type ResponseActions = SmallVec<[ResponseAction; 2]>;
 
 #[cfg(test)]
 mod tests {

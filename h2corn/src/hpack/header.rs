@@ -11,7 +11,7 @@ use crate::http::types::parse_request_method;
 
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Header {
+pub(crate) enum Header {
     Field { name: BytesStr, value: Bytes },
     Authority(BytesStr),
     Method(Method),
@@ -22,7 +22,7 @@ pub enum Header {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum OwnedName {
+pub(crate) enum OwnedName {
     Field(BytesStr),
     Authority,
     Method,
@@ -34,10 +34,10 @@ pub enum OwnedName {
 
 #[doc(hidden)]
 #[derive(Clone, Eq, PartialEq, Hash, Default)]
-pub struct BytesStr(Bytes);
+pub(crate) struct BytesStr(Bytes);
 
 impl Header {
-    pub fn new(name: Bytes, value: Bytes) -> Result<Self, DecoderError> {
+    pub(crate) fn new(name: Bytes, value: Bytes) -> Result<Self, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
@@ -86,7 +86,7 @@ impl Header {
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Field { name, value } => len(name, value),
             Self::Authority(v) => 32 + 10 + v.len(),
@@ -98,7 +98,7 @@ impl Header {
         }
     }
 
-    pub fn owned_name(&self) -> OwnedName {
+    pub(crate) fn owned_name(&self) -> OwnedName {
         match self {
             Self::Field { name, .. } => OwnedName::Field(name.clone()),
             Self::Authority(..) => OwnedName::Authority,
@@ -112,7 +112,7 @@ impl Header {
 }
 
 impl OwnedName {
-    pub fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
+    pub(crate) fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
         match self {
             Self::Field(name) => {
                 if !header_value_is_valid(value.as_ref()) {
@@ -209,6 +209,6 @@ impl fmt::Debug for BytesStr {
     }
 }
 
-pub fn len(name: &BytesStr, value: &Bytes) -> usize {
+pub(crate) fn len(name: &BytesStr, value: &Bytes) -> usize {
     32 + name.len() + value.len()
 }

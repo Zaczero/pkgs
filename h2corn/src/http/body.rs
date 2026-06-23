@@ -2,20 +2,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RequestBodyProgress {
+pub(crate) enum RequestBodyProgress {
     Continue,
     SizeLimitExceeded,
     ContentLengthExceeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RequestBodyFinish {
+pub(crate) enum RequestBodyFinish {
     Complete,
     ContentLengthMismatch,
 }
 
 #[derive(Debug)]
-pub struct RequestBodyState {
+pub(crate) struct RequestBodyState {
     expected_length: Option<u64>,
     received_length: u64,
     access_log_bytes: Option<Arc<AtomicU64>>,

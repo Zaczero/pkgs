@@ -24,7 +24,7 @@ const POW83: [u32; 5] = {
     out
 };
 
-pub const fn decode_byte(b: u8) -> Option<u8> {
+pub(crate) const fn decode_byte(b: u8) -> Option<u8> {
     let v = DECODE[b as usize];
     if unlikely(v == INVALID) {
         None
@@ -33,7 +33,7 @@ pub const fn decode_byte(b: u8) -> Option<u8> {
     }
 }
 
-pub fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<u32> {
+pub(crate) fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<u32> {
     let mut value = 0;
     for &b in bytes {
         let digit = u32::from(decode_byte(b)?);
@@ -42,7 +42,7 @@ pub fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<u32> {
     Some(value)
 }
 
-pub fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
+pub(crate) fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
     let mut i = LENGTH;
     while i > 0 {
         i -= 1;

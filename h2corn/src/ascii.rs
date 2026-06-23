@@ -1,17 +1,17 @@
-pub const INVALID_VALUE: u8 = u8::MAX;
+pub(crate) const INVALID_VALUE: u8 = u8::MAX;
 
-pub const HEADER_NAME_VALID: u8 = 1;
-pub const HEADER_NAME_UPPER: u8 = 2;
+pub(crate) const HEADER_NAME_VALID: u8 = 1;
+pub(crate) const HEADER_NAME_UPPER: u8 = 2;
 
-pub const HEX_VALUE: [u8; 256] = {
+pub(crate) const HEX_VALUE: [u8; 256] = {
     let table = [INVALID_VALUE; 256];
     let table = fill_linear_range(table, b'0', b'9', 0);
     let table = fill_linear_range(table, b'a', b'f', 10);
     fill_linear_range(table, b'A', b'F', 10)
 };
-pub const BASE64_VALUE: [u8; 256] = base64_value_table(b'+', b'/');
-pub const BASE64URL_VALUE: [u8; 256] = base64_value_table(b'-', b'_');
-pub const HEADER_NAME_FLAGS: [u8; 256] = {
+pub(crate) const BASE64_VALUE: [u8; 256] = base64_value_table(b'+', b'/');
+pub(crate) const BASE64URL_VALUE: [u8; 256] = base64_value_table(b'-', b'_');
+pub(crate) const HEADER_NAME_FLAGS: [u8; 256] = {
     let table = [0; 256];
     let table = fill_constant_range(table, b'0', b'9', HEADER_NAME_VALID);
     let table = fill_constant_range(table, b'a', b'z', HEADER_NAME_VALID);
@@ -19,7 +19,7 @@ pub const HEADER_NAME_FLAGS: [u8; 256] = {
     fill_bytes(table, b"!#$%&'*+-.^_`|~", HEADER_NAME_VALID)
 };
 
-pub const fn is_base64(byte: u8) -> bool {
+pub(crate) const fn is_base64(byte: u8) -> bool {
     BASE64_VALUE[byte as usize] != INVALID_VALUE
 }
 

@@ -65,7 +65,7 @@ fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, Error> {
     Ok(zigzag_decode(value))
 }
 
-pub fn decode<'py, const LATLON: bool>(
+pub(crate) fn decode<'py, const LATLON: bool>(
     py: Python<'py>,
     line: &str,
     precision: i32,

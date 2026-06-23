@@ -10,7 +10,7 @@ type CacheKey = (usize, usize);
 type CosAxisCache = ArrayVec<(CacheKey, Rc<[f32]>), 32>;
 type CosAxisSimdCache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
 
-pub fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
+pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
     let mut out = vec![0.0_f32; len * components];
     for p in 0..len {
@@ -31,7 +31,7 @@ thread_local! {
     static COS_AXIS_SIMD_CACHE: RefCell<CosAxisSimdCache> = RefCell::new(ArrayVec::new());
 }
 
-pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
+pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     let key = (len, components);
     COS_AXIS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -52,7 +52,7 @@ pub fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
     })
 }
 
-pub fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
+pub(crate) fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
     let key = (len, components);
     COS_AXIS_SIMD_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

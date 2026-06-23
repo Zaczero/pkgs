@@ -9,10 +9,10 @@ const TAIL: &[u8; 4] = b"\x00\x00\xff\xff";
 const FLATE_INITIAL_GROWTH_SLACK: usize = 16;
 const FLATE_MIN_GROWTH: usize = 256;
 
-pub const PERMESSAGE_DEFLATE_RESPONSE: &[u8] =
+pub(crate) const PERMESSAGE_DEFLATE_RESPONSE: &[u8] =
     b"permessage-deflate; server_no_context_takeover; client_no_context_takeover";
 
-pub trait PerMessageDeflateMode {
+pub(crate) trait PerMessageDeflateMode {
     type Inflater;
     type Deflater;
 
@@ -35,19 +35,19 @@ pub trait PerMessageDeflateMode {
 }
 
 #[derive(Debug)]
-pub struct PerMessageDeflateEnabled;
+pub(super) struct PerMessageDeflateEnabled;
 
 #[derive(Debug)]
-pub struct PerMessageDeflateDisabled;
+pub(super) struct PerMessageDeflateDisabled;
 
 #[derive(Debug)]
-pub struct MessageDeflater {
+pub(super) struct MessageDeflater {
     compressor: Compress,
     out: BytesMut,
 }
 
 #[derive(Debug)]
-pub struct MessageInflater {
+pub(super) struct MessageInflater {
     decoder: Decompress,
     out: BytesMut,
 }
@@ -228,7 +228,7 @@ impl PerMessageDeflateMode for PerMessageDeflateDisabled {
     }
 }
 
-pub fn requested_by_client(value: &[u8]) -> bool {
+pub(crate) fn requested_by_client(value: &[u8]) -> bool {
     let mut rest = Some(value);
     while let Some(current) = rest {
         let (extension, next) = memchr(b',', current).map_or((current, None), |index| {

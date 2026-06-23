@@ -221,7 +221,7 @@ impl ConnectionPreamble for PreambleV2 {
     }
 }
 
-pub async fn serve_from_fds(
+pub(crate) async fn serve_from_fds(
     app: AppState,
     fds: Box<[i64]>,
     config: &'static ServerConfig,

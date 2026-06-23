@@ -27,7 +27,7 @@ const INVALID: u32 = u32::MAX;
 /// indices so each node packs into 32 bytes; `INVALID` (`u32::MAX`) is reserved
 /// as the link sentinel, leaving `u32::MAX - 1` as the largest representable
 /// real index.
-pub const MAX_CAPACITY: usize = (u32::MAX - 1) as usize;
+pub(crate) const MAX_CAPACITY: usize = (u32::MAX - 1) as usize;
 
 struct Node {
     hash: Py_hash_t,
@@ -37,7 +37,7 @@ struct Node {
     next: u32,
 }
 
-pub struct Store {
+pub(crate) struct Store {
     table: HashTable<u32>,
     nodes: Box<[MaybeUninit<Node>]>,
     free: Vec<u32>,
@@ -53,13 +53,13 @@ pub struct Store {
 /// self-deadlock on the non-reentrant mutex.
 #[must_use = "displaced Python objects must be dropped outside the lock"]
 #[expect(dead_code, reason = "fields are read implicitly via Drop")]
-pub struct Displaced {
+pub(crate) struct Displaced {
     replaced: Option<Py<PyAny>>,
     evicted: Option<(Py<PyAny>, Py<PyAny>)>,
 }
 
 impl Store {
-    pub fn new(maxsize: NonZeroUsize) -> Self {
+    pub(crate) fn new(maxsize: NonZeroUsize) -> Self {
         let cap = maxsize.get().min(MAX_CAPACITY);
         let cap_u32 = cap as u32;
 
@@ -78,12 +78,12 @@ impl Store {
         }
     }
 
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Look up `key` and bump it to most-recently-used on a hit.
-    pub fn touch_get<F>(
+    pub(crate) fn touch_get<F>(
         &mut self,
         py: Python<'_>,
         hash: Py_hash_t,
@@ -102,7 +102,7 @@ impl Store {
     }
 
     /// Look up `key` without updating the LRU order.
-    pub fn peek_get<F>(&self, py: Python<'_>, hash: Py_hash_t, eq: F) -> PyResult<Option<Py<PyAny>>>
+    pub(crate) fn peek_get<F>(&self, py: Python<'_>, hash: Py_hash_t, eq: F) -> PyResult<Option<Py<PyAny>>>
     where
         F: FnMut(&Py<PyAny>) -> PyResult<bool>,
     {
@@ -114,7 +114,7 @@ impl Store {
         Ok(Some(value))
     }
 
-    pub fn contains<F>(&self, hash: Py_hash_t, eq: F) -> PyResult<bool>
+    pub(crate) fn contains<F>(&self, hash: Py_hash_t, eq: F) -> PyResult<bool>
     where
         F: FnMut(&Py<PyAny>) -> PyResult<bool>,
     {
@@ -123,7 +123,7 @@ impl Store {
 
     /// Insert or update. Evicts the LRU entry when a fresh insert would exceed
     /// `maxsize`.
-    pub fn put<F>(
+    pub(crate) fn put<F>(
         &mut self,
         hash: Py_hash_t,
         key: Py<PyAny>,
@@ -180,14 +180,14 @@ impl Store {
         })
     }
 
-    pub fn remove<F>(&mut self, hash: Py_hash_t, eq: F) -> PyResult<Option<(Py<PyAny>, Py<PyAny>)>>
+    pub(crate) fn remove<F>(&mut self, hash: Py_hash_t, eq: F) -> PyResult<Option<(Py<PyAny>, Py<PyAny>)>>
     where
         F: FnMut(&Py<PyAny>) -> PyResult<bool>,
     {
         Ok(self.find(hash, eq)?.map(|idx| self.detach(hash, idx)))
     }
 
-    pub fn clear(&mut self, _py: Python<'_>) {
+    pub(crate) fn clear(&mut self, _py: Python<'_>) {
         if self.len == 0 {
             return;
         }
@@ -211,7 +211,7 @@ impl Store {
         }
     }
 
-    pub fn pop_lru(&mut self) -> Option<(Py<PyAny>, Py<PyAny>)> {
+    pub(crate) fn pop_lru(&mut self) -> Option<(Py<PyAny>, Py<PyAny>)> {
         let idx = self.tail;
         if idx == INVALID {
             return None;
@@ -221,7 +221,7 @@ impl Store {
         Some(self.detach(hash, idx))
     }
 
-    pub const fn iter_keys(&self) -> StoreIter<'_> {
+    pub(crate) const fn iter_keys(&self) -> StoreIter<'_> {
         StoreIter {
             store: self,
             idx: self.tail,
@@ -342,7 +342,7 @@ impl Drop for Store {
     }
 }
 
-pub struct StoreIter<'a> {
+pub(crate) struct StoreIter<'a> {
     store: &'a Store,
     idx: u32,
     remaining: usize,

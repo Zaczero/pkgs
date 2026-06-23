@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::store::MAX_CAPACITY;
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum CacheError {
+pub(crate) enum CacheError {
     #[error("maxsize must be a positive integer")]
     MaxsizeMustBePositive,
     #[error("maxsize must be at most {MAX_CAPACITY}")]
@@ -16,7 +16,7 @@ pub enum CacheError {
 }
 
 impl CacheError {
-    pub fn into_pyerr(self) -> PyErr {
+    pub(crate) fn into_pyerr(self) -> PyErr {
         match self {
             Self::PopitemEmpty => PyKeyError::new_err(self.to_string()),
             Self::MaxsizeMustBePositive | Self::MaxsizeTooLarge => {
@@ -26,7 +26,7 @@ impl CacheError {
     }
 }
 
-pub fn missing_key(key: &Bound<'_, PyAny>) -> PyErr {
+pub(crate) fn missing_key(key: &Bound<'_, PyAny>) -> PyErr {
     let repr = key
         .repr()
         .map_or_else(|_| String::from("key not found"), |s| s.to_string());

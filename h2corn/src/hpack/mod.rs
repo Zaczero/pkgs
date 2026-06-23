@@ -1,10 +1,10 @@
 mod decoder;
 mod dynamic_table;
 mod encoder;
-pub mod header;
-pub mod huffman;
+pub(crate) mod header;
+pub(crate) mod huffman;
 mod static_table;
 
-pub use self::decoder::{Decoder, DecoderError, NeedMore};
-pub use self::encoder::Encoder;
-pub use self::header::{BytesStr, Header};
+pub(crate) use self::decoder::{Decoder, DecoderError, NeedMore};
+pub(crate) use self::encoder::Encoder;
+pub(crate) use self::header::{BytesStr, Header};

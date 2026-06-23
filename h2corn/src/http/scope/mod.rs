@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use http::Method;
 use memchr::memchr;
-pub use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+pub(crate) use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
@@ -59,7 +59,7 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     String::from_utf8(out).map_or_else(|_| Cow::Borrowed(raw_path), Cow::Owned)
 }
 
-pub fn build_http_scope<'py>(
+pub(crate) fn build_http_scope<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -71,7 +71,7 @@ pub fn build_http_scope<'py>(
     )
 }
 
-pub fn build_websocket_scope<'py>(
+pub(crate) fn build_websocket_scope<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
     requested_subprotocols: &[BytesStr],
@@ -166,7 +166,7 @@ fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     })
 }
 
-pub fn headers_to_python<'py>(
+pub(crate) fn headers_to_python<'py>(
     py: Python<'py>,
     headers: &RequestHeaders,
 ) -> PyResult<Bound<'py, PyList>> {
