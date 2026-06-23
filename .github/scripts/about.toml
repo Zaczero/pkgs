@@ -1,0 +1,32 @@
+# Shared cargo-about config for every rusty package in the monorepo.
+#
+# Each maturin package ships a statically linked cdylib, so every crate linked
+# into it is redistributed in binary form. `gen_third_party_licenses.py` runs
+# cargo-about with this config + about.hbs against each package's Cargo.lock and
+# writes <package>/LICENSE-THIRD-PARTY.md.
+
+# The distributed cdylib excludes the dev/build-only graph.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+# The local package is licensed by its own metadata, not as a third party.
+private = { ignore = true }
+
+# Permissive licenses accepted for the linked dependency graphs. A crate under a
+# license not listed here makes generation FAIL loudly — an unexpected (e.g.
+# copyleft) license must be reviewed before it ships, not silently bundled.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MITNFA",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "BSL-1.0",
+  "CC0-1.0",
+  "MPL-2.0",
+  "0BSD",
+]

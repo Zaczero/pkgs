@@ -26,6 +26,7 @@ let
     };
 
   packages' = with pkgs; [
+    cargo-about
     coreutils
     curl
     gnugrep
