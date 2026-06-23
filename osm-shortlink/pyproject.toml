@@ -44,10 +44,10 @@ module-name = "osm_shortlink._lib"
 python-source = "python"
 
 [tool.pyright]
-include = ["tests"]
+include = ["python/osm_shortlink", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.9"
-strict = []
+strict = ["python/osm_shortlink"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

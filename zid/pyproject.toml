@@ -44,10 +44,10 @@ module-name = "zid._lib"
 python-source = "python"
 
 [tool.pyright]
-include = ["tests", "zid"]
+include = ["python/zid", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.9"
-strict = ["zid"]
+strict = ["python/zid"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -21,11 +21,11 @@ classifiers = [
   "Framework :: AsyncIO",
   "Intended Audience :: Developers",
   "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX",
   "Operating System :: POSIX :: Linux",
   "Operating System :: Unix",
-  "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -60,7 +60,6 @@ dev = [
   "hpack>=4.1.0",
   "hypercorn>=0.18.0",
   "matplotlib>=3.10.8",
-  "maturin>=1.12.6,<2",
   "pytest>=9.0.0",
   "pytest-asyncio>=0.26.0",
   "starlette>=0.46.0",
@@ -79,13 +78,19 @@ docs = [
 ]
 
 [build-system]
-requires = ["maturin>=1.9,<2"]
+requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
 module-name = "h2corn._lib"
 python-source = "python"
+
+[tool.pyright]
+include = ["python/h2corn", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.11"
+strict = ["python/h2corn"]
 
 [tool.pytest.ini_options]
 filterwarnings = [

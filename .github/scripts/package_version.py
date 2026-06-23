@@ -65,10 +65,32 @@ def cargo_package_info(path: Path) -> dict[str, str]:
     fail(f'Cargo metadata did not include package manifest {path}')
 
 
+def list_packages() -> list[str]:
+    """Release packages: top-level dirs whose pyproject declares a dynamic version.
+
+    This is the single source of truth for "what is a CI/release package" (used by
+    the detect job). Dev-only tooling like `pyo3stubs` pins a static version and is
+    deliberately excluded — it is built/tested only as a dependency of its consumers.
+    """
+    packages = []
+    for pyproject in sorted(Path('.').glob('*/pyproject.toml')):
+        data = load_toml(pyproject)
+        if 'version' in data.get('project', {}).get('dynamic', []):
+            packages.append(pyproject.parent.name)
+    return packages
+
+
 def package_info(package: str) -> dict[str, str]:
     path = package_path(package)
     pyproject = load_toml(path / 'pyproject.toml')
-    requires_python = pyproject['project'].get('requires-python', '')
+    project = pyproject['project']
+    requires_python = project.get('requires-python', '')
+    pypy = (
+        'true'
+        if 'Programming Language :: Python :: Implementation :: PyPy'
+        in project.get('classifiers', [])
+        else 'false'
+    )
     cargo_toml = path / 'Cargo.toml'
 
     if cargo_toml.is_file():
@@ -78,6 +100,7 @@ def package_info(package: str) -> dict[str, str]:
             'import-name': module_name.split('.', maxsplit=1)[0],
             'is-rusty': 'true',
             'package': package,
+            'pypy': pypy,
             'requires-python': requires_python,
             'type': 'python-rust',
             'version': cargo['version'],
@@ -90,6 +113,7 @@ def package_info(package: str) -> dict[str, str]:
         'import-name': version_path.relative_to(path).parts[0],
         'is-rusty': 'false',
         'package': package,
+        'pypy': pypy,
         'requires-python': requires_python,
         'type': 'python',
         'version': read_python_version(version_path),
@@ -136,6 +160,11 @@ def write_outputs(outputs: dict[str, str]) -> None:
                 file.write(f'{key}={value}\n')
 
 
+def command_list(args: argparse.Namespace) -> None:
+    for name in list_packages():
+        print(name)
+
+
 def command_info(args: argparse.Namespace) -> None:
     write_outputs(package_info(args.package))
 
@@ -171,6 +200,9 @@ def command_check(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
+
+    list_parser = subparsers.add_parser('list')
+    list_parser.set_defaults(func=command_list)
 
     info_parser = subparsers.add_parser('info')
     info_parser.add_argument('package')

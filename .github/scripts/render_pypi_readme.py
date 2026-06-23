@@ -1,3 +1,4 @@
+import os
 import re
 import sys
 from pathlib import Path
@@ -5,8 +6,9 @@ from urllib.parse import urljoin
 
 package = Path(sys.argv[1])
 ref = sys.argv[2] if len(sys.argv) > 2 else 'main'
+repo = os.environ.get('GITHUB_REPOSITORY', 'Zaczero/pkgs')
 readme = package / 'README.md'
-base = f'https://raw.githubusercontent.com/Zaczero/pkgs/{ref}/{package.as_posix()}/'
+base = f'https://raw.githubusercontent.com/{repo}/{ref}/{package.as_posix()}/'
 text = re.sub(
     r'(!?\[[^\]]*\]\()([^)]+)(\))',
     lambda match: (

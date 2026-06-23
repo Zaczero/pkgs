@@ -17,6 +17,7 @@ jobs:
       build-runners: ${{ steps.resolve.outputs.build-runners }}
       import-name: ${{ steps.resolve.outputs.import-name }}
       is-rusty: ${{ steps.resolve.outputs.is-rusty }}
+      pypy: ${{ steps.resolve.outputs.pypy }}
       python-versions: ${{ steps.resolve.outputs.python-versions }}
       primary-python-version: ${{ steps.resolve.outputs.primary-python-version }}
       rust-toolchain: ${{ steps.resolve.outputs.rust-toolchain }}
@@ -159,12 +160,14 @@ jobs:
           rustflags: ""
 
       - name: Install h2spec
-        if: env.PACKAGE == 'h2corn' && runner.os == 'Linux'
+        if: env.PACKAGE == 'h2corn' && runner.os == 'Linux' && runner.arch == 'X64'
+        env:
+          H2SPEC_VERSION: "2.6.0"
         shell: bash
         run: |
           set -euo pipefail
           curl -sSL \
-            https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz \
+            "https://github.com/summerwind/h2spec/releases/download/v${H2SPEC_VERSION}/h2spec_linux_amd64.tar.gz" \
             | tar -xzf - h2spec
           sudo mv h2spec /usr/local/bin/
 
@@ -185,13 +188,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE: ${{ inputs.package }}
+      CIBUILDWHEEL_VERSION: "4.1.0"
       CIBW_ARCHS_WINDOWS: "AMD64"
       CIBW_BUILD_VERBOSITY: "1"
-      CIBW_ENABLE: "cpython-freethreading pypy"
+      CIBW_ENABLE: ${{ needs.resolve.outputs.pypy == 'true' && 'pypy' || '' }}
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: RUSTUP_TOOLCHAIN
-      CIBW_SKIP: "pp39-* pp310-*"
+      CIBW_SKIP: ${{ needs.resolve.outputs.pypy == 'true' && '' || 'pp*' }}
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       CIBW_BEFORE_ALL_LINUX:
@@ -243,7 +247,7 @@ jobs:
         shell: bash
         run: |
           uv tool run \
-            --from "cibuildwheel==3.4.1" cibuildwheel \
+            --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
             --output-dir dist \
             "$PACKAGE"
 
