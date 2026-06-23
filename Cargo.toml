@@ -19,12 +19,24 @@ cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
+# These crates' `///` comments are the SOURCE for Python numpydoc docstrings
+# (gen_stub_docs.py): Parameters/Returns tables need bare `name : type`, but
+# doc_markdown wants every kwarg/type backticked and `clippy --fix` would break
+# the docs. properdocs --strict is the real doc gate, so this lint is off here.
+doc_markdown = "allow"
+# Same reason: the `///` first paragraph IS the numpydoc summary, whose length is
+# governed by the docs site, not rustdoc's paragraph heuristic.
+too_long_first_doc_paragraph = "allow"
 future_not_send = "allow"
 imprecise_flops = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 missing_safety_doc = "allow"
 must_use_candidate = "allow"
+# These crates are never published — only their Python wheels are — so explicit
+# `pub(crate)` is the accurate, intentional visibility for cross-module internals,
+# not redundancy. (The inverse, `unreachable_pub` below, narrows stray `pub`.)
+redundant_pub_crate = "allow"
 return_self_not_must_use = "allow"
 struct_field_names = "allow"
 suboptimal_flops = "allow"
@@ -39,7 +51,6 @@ decimal_literal_representation = "warn"
 empty_drop = "warn"
 empty_enum_variants_with_brackets = "warn"
 empty_structs_with_brackets = "warn"
-error_impl_error = "warn"
 exit = "warn"
 float_cmp_const = "warn"
 fn_to_numeric_cast_any = "warn"
@@ -73,6 +84,13 @@ unseparated_literal_suffix = "warn"
 unused_async_trait_impl = "allow"
 unused_result_ok = "warn"
 verbose_file_reads = "warn"
+
+[workspace.lints.rust]
+# Crates are unpublished (only the Python wheels ship), so the narrowest accurate
+# visibility is the goal: an item not reachable from the crate's real public API
+# should be `pub(crate)`, not `pub`. This drives that narrowing; pair with the
+# clippy `redundant_pub_crate = "allow"` above (the two are inverses).
+unreachable_pub = "warn"
 
 [profile.release]
 lto = true
