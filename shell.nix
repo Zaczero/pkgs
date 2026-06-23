@@ -33,6 +33,7 @@ let
     hatch
     jq
     k6
+    cmake
     openssh
     pyright
     rsync

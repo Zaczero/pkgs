@@ -20,6 +20,7 @@ cast_possible_wrap = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
 future_not_send = "allow"
+imprecise_flops = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 missing_safety_doc = "allow"
@@ -66,6 +67,10 @@ unnecessary_safety_doc = "warn"
 unnecessary_self_imports = "warn"
 unneeded_field_pattern = "warn"
 unseparated_literal_suffix = "warn"
+# New in clippy 2026: fires on sync impls of async trait methods, but its
+# suggested rewrites then trip manual_async_fn / impl-trait-signature-match.
+# Until the lint family is coherent, keep idiomatic `async fn` impls.
+unused_async_trait_impl = "allow"
 unused_result_ok = "warn"
 verbose_file_reads = "warn"
 
