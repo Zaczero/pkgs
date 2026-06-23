@@ -100,6 +100,13 @@ jobs:
           # .cargo/config.toml (env beats target config) — never set it.
           rustflags: ""
 
+      - name: Clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          cargo clippy --all-targets -- -D warnings
+
       - name: Test Rust debug
         shell: bash
         run: |
