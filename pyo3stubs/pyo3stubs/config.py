@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pyo3stubcheck.protocols import Check
+    from pathlib import Path
+
+    from pyo3stubs.protocols import Check
 
 
 @dataclass(frozen=True)
-class StubCheckConfig:
+class StubConfig:
     """Everything a PyO3 project must supply to run the universal gates.
 
     Parameters

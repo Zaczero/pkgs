@@ -6,11 +6,12 @@ import ast
 import inspect
 import re
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyo3stubcheck.config import StubCheckConfig
+    from pathlib import Path
+
+    from pyo3stubs.config import StubConfig
 
 DEFAULT_PYCLASS_NAME = re.compile(
     r'#\s*\[\s*pyclass\s*\((?:[^)]|\n)*?\bname\s*=\s*"([^"]+)"',
@@ -89,11 +90,7 @@ def _registered_class_names(runtime_module: object) -> set[str]:
 
 def _stub_class_names(stub_path: Path) -> set[str]:
     tree = ast.parse(stub_path.read_text())
-    return {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef)
-    }
+    return {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
 
 
 def _public_stub_class_names(stub_path: Path) -> set[str]:
@@ -162,7 +159,9 @@ def _collect_stub_signature_leaks(
             for base in node.bases:
                 check_refs(f'class {node.name}', _annotation_type_names(base))
             for child in node.body:
-                if isinstance(child, ast.FunctionDef) and not child.name.startswith('_'):
+                if isinstance(child, ast.FunctionDef) and not child.name.startswith(
+                    '_'
+                ):
                     refs = _annotation_type_names(child.returns)
                     for arg in child.args.args:
                         refs |= _annotation_type_names(arg.annotation)
@@ -180,7 +179,7 @@ def _collect_stub_signature_leaks(
     return errors
 
 
-def collect_errors(cfg: StubCheckConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> list[str]:
     """Flag registration leaks and stub reachability leaks."""
     import importlib
 
@@ -190,11 +189,7 @@ def collect_errors(cfg: StubCheckConfig) -> list[str]:
     pyclass_names = set(pyclass_map)
     registered = _registered_class_names(runtime)
     public_stub_classes = _public_stub_class_names(cfg.stub_path)
-    ignored = (
-        cfg.ignored_type_names
-        if cfg.ignored_type_names
-        else DEFAULT_IGNORED_TYPE_NAMES
-    )
+    ignored = cfg.ignored_type_names or DEFAULT_IGNORED_TYPE_NAMES
     errors: list[str] = []
 
     for name, rel_path in sorted(pyclass_map.items()):
@@ -223,10 +218,10 @@ def collect_errors(cfg: StubCheckConfig) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubCheckConfig`."""
+    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
     _ = argv
     print(
-        'pyo3stubcheck.leaked_types: supply a project shim that builds StubCheckConfig',
+        'pyo3stubs.leaked_types: supply a project shim that builds StubConfig',
         file=sys.stderr,
     )
     return 2

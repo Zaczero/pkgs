@@ -7,15 +7,16 @@ import re
 import typing
 from dataclasses import dataclass
 
-from pyo3stubcheck.config import StubCheckConfig
-from pyo3stubcheck.context import CheckContext
+if typing.TYPE_CHECKING:
+    from pyo3stubs.config import StubConfig
+    from pyo3stubs.context import CheckContext
 
 
 @dataclass(frozen=True)
 class TokenVocabularyCheck:
     """Compare stub ``Literal`` unions to runtime token-enum exports."""
 
-    def collect(self, cfg: StubCheckConfig, ctx: CheckContext) -> list[str]:
+    def collect(self, cfg: StubConfig, ctx: CheckContext) -> list[str]:
         if not cfg.types_module or not cfg.token_vocabulary_export:
             return []
 

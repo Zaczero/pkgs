@@ -7,7 +7,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyo3stubcheck.config import StubCheckConfig
+    from pyo3stubs.config import StubConfig
 
 Param = tuple[str, str, str]
 Blocks = tuple[int, tuple[Param, ...]]
@@ -57,7 +57,7 @@ def _blocks(func: object) -> Blocks | None:
     return data, options
 
 
-def collect_errors(cfg: StubCheckConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> list[str]:
     """Flag unregistered cross-surface option-block drift."""
     surfaces = [(label, _callables(owner)) for label, owner in cfg.surfaces]
     shared: dict[str, list[tuple[str, Blocks]]] = {}
@@ -90,10 +90,10 @@ def collect_errors(cfg: StubCheckConfig) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubCheckConfig`."""
+    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
     _ = argv
     print(
-        'pyo3stubcheck.surface_parity: supply a project shim that builds StubCheckConfig',
+        'pyo3stubs.surface_parity: supply a project shim that builds StubConfig',
         file=sys.stderr,
     )
     return 2

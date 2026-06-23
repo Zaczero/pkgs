@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from pyo3stubcheck.config import StubCheckConfig
-from pyo3stubcheck.context import CheckContext
+if TYPE_CHECKING:
+    from pyo3stubs.config import StubConfig
+    from pyo3stubs.context import CheckContext
 
 
 def _attr_params(inner: str) -> list[str]:
@@ -37,7 +39,7 @@ def _attr_params(inner: str) -> list[str]:
 class RustTextSignatureCheck:
     """A manual ``text_signature`` must not contradict the real ``signature``."""
 
-    def collect(self, cfg: StubCheckConfig, ctx: CheckContext) -> list[str]:
+    def collect(self, cfg: StubConfig, ctx: CheckContext) -> list[str]:
         errors: list[str] = []
         root = cfg.src_root
         repo_root = root.parent

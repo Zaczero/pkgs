@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from pyo3stubcheck.config import StubCheckConfig
-from pyo3stubcheck.context import CheckContext
+if TYPE_CHECKING:
+    from pyo3stubs.config import StubConfig
+    from pyo3stubs.context import CheckContext
 
 
 @dataclass(frozen=True)
 class NamespaceFacadeCheck:
     """Gate ``package.<ns>`` re-exports of ``_lib.<prefix>*`` under short aliases."""
 
-    def collect(self, cfg: StubCheckConfig, ctx: CheckContext) -> list[str]:
+    def collect(self, cfg: StubConfig, ctx: CheckContext) -> list[str]:
         if not cfg.package_module or not cfg.namespace_modules:
             return []
 

@@ -8,7 +8,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyo3stubcheck.config import StubCheckConfig
+    from pyo3stubs.config import StubConfig
 
 
 def _doc_of(obj: object) -> str | None:
@@ -27,7 +27,7 @@ def _has_docstring(node: ast.FunctionDef) -> bool:
     )
 
 
-def collect_doc_contract_errors(cfg: StubCheckConfig) -> list[str]:
+def collect_doc_contract_errors(cfg: StubConfig) -> list[str]:
     """Flag public runtime symbols missing docs and stub overrides without prose."""
     runtime = importlib.import_module(cfg.module)
     tree = ast.parse(cfg.stub_path.read_text())
@@ -90,16 +90,16 @@ def _check_function(
         missing.append(f'{qualname}: runtime docstring missing or empty')
 
 
-def collect_errors(cfg: StubCheckConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> list[str]:
     """Alias for :func:`collect_doc_contract_errors`."""
     return collect_doc_contract_errors(cfg)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubCheckConfig`."""
+    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
     _ = argv
     print(
-        'pyo3stubcheck.stub_docs: supply a project shim that builds StubCheckConfig',
+        'pyo3stubs.stub_docs: supply a project shim that builds StubConfig',
         file=sys.stderr,
     )
     return 2

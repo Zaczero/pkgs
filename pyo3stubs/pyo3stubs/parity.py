@@ -7,10 +7,10 @@ import inspect
 import sys
 from typing import TYPE_CHECKING
 
-from pyo3stubcheck.context import CheckContext
+from pyo3stubs.context import CheckContext
 
 if TYPE_CHECKING:
-    from pyo3stubcheck.config import StubCheckConfig
+    from pyo3stubs.config import StubConfig
 
 # Runtime-only dunders PyO3/CPython add that a stub never declares.
 DEFAULT_IGNORED_RUNTIME_NAMES = frozenset({
@@ -326,16 +326,12 @@ def _check_class_bases(
     )
 
 
-def collect_errors(cfg: StubCheckConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> list[str]:
     """Compare the stub against the compiled module; run plugins first."""
     ctx = CheckContext(cfg)
     runtime = ctx.runtime_module
     module = ctx.stub_ast
-    ignored = (
-        cfg.ignored_runtime_names
-        if cfg.ignored_runtime_names
-        else DEFAULT_IGNORED_RUNTIME_NAMES
-    )
+    ignored = cfg.ignored_runtime_names or DEFAULT_IGNORED_RUNTIME_NAMES
     errors: list[str] = []
     for plugin in cfg.plugins:
         errors.extend(plugin.collect(cfg, ctx))
@@ -367,21 +363,17 @@ def collect_errors(cfg: StubCheckConfig) -> list[str]:
     for name, node in sorted(stub_classes.items()):
         cls = getattr(runtime, name, None)
         if isinstance(cls, type):
-            _check_class(
-                name, node, cls, ignored_names=ignored, errors=errors
-            )
-            _check_class_bases(
-                name, node, cls, set(stub_classes), runtime, errors
-            )
+            _check_class(name, node, cls, ignored_names=ignored, errors=errors)
+            _check_class_bases(name, node, cls, set(stub_classes), runtime, errors)
 
     return errors
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubCheckConfig`."""
+    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
     _ = argv
     print(
-        'pyo3stubcheck.stub_parity: supply a project shim that builds StubCheckConfig',
+        'pyo3stubs.stub_parity: supply a project shim that builds StubConfig',
         file=sys.stderr,
     )
     return 2

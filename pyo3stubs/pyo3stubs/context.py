@@ -5,17 +5,20 @@ from __future__ import annotations
 import ast
 import importlib
 from dataclasses import dataclass
-from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
-from pyo3stubcheck.config import StubCheckConfig
+if TYPE_CHECKING:
+    from pathlib import Path
+    from types import ModuleType
+
+    from pyo3stubs.config import StubConfig
 
 
 @dataclass
 class CheckContext:
     """Lazy-loaded artifacts reused across universal checks and plugins."""
 
-    cfg: StubCheckConfig
+    cfg: StubConfig
     _runtime_module: ModuleType | None = None
     _stub_ast: ast.Module | None = None
 
