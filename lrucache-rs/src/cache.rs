@@ -41,6 +41,12 @@ use pyo3::{Py, ffi};
 use crate::errors::{CacheError, missing_key};
 use crate::store::Store;
 
+/// A thread-safe LRU cache with a fixed maximum size.
+///
+/// A ``MutableMapping``: reads and writes mark the key as most recently
+/// used, and inserting past ``maxsize`` evicts the least recently used
+/// entry. Construct with ``LRUCache(maxsize)``; ``LRUCache[K, V]`` works
+/// for type hints.
 #[pyclass(frozen, module = "lrucache_rs._lib")]
 pub struct LRUCache {
     inner: Mutex<Store>,
@@ -57,6 +63,7 @@ impl LRUCache {
         cls.clone().unbind()
     }
 
+    /// Create a cache holding at most ``maxsize`` entries.
     #[new]
     fn new(maxsize: usize) -> PyResult<Self> {
         let maxsize = NonZeroUsize::new(maxsize)
@@ -137,6 +144,8 @@ impl LRUCache {
     }
 
     #[pyo3(signature = (key, /, default=None))]
+    /// Retrieve the value for ``key``, marking it most recently used;
+    /// ``default`` (``None`` if omitted) when the key is absent.
     fn get(
         &self,
         py: Python<'_>,
@@ -166,6 +175,7 @@ impl LRUCache {
             .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
     }
 
+    /// Remove all entries from the cache.
     fn clear(&self, py: Python<'_>) {
         self.inner.lock_py_attached(py).clear(py);
     }
@@ -182,6 +192,7 @@ impl LRUCache {
         pair.into_pyobject(py)
     }
 
+    /// The configured maximum number of entries.
     #[getter]
     const fn maxsize(&self) -> usize {
         self.maxsize.get()

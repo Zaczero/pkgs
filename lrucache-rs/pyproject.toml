@@ -31,7 +31,10 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/lrucache-rs"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "pyo3stubs; python_version >= '3.11'"]
+
+[tool.uv]
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]

@@ -12,11 +12,11 @@ hashbrown = { version = "0.15", default-features = false, features = [
   "inline-more"
 ] }
 parking_lot = "0.12.5"
-pyo3 = { version = "0.28.3", features = ["parking_lot"] }
+pyo3 = { version = "0.29.0", features = ["parking_lot"] }
 thiserror = "2.0"
 
 [build-dependencies]
-pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
+pyo3-build-config = { version = "0.29.0", features = ["resolve-config"] }
 
 [lints]
 workspace = true

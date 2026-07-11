@@ -1,81 +1,75 @@
 from collections.abc import Hashable, Iterator, MutableMapping
-from typing import TypeVar, overload
+from typing import TypeVar, final, overload
+
+__all__ = ['LRUCache']
 
 _K = TypeVar('_K', bound=Hashable)
 _V = TypeVar('_V')
 _D = TypeVar('_D')
 
+@final
 class LRUCache(MutableMapping[_K, _V]):
-    def __init__(self, maxsize: int) -> None:
-        """Initialize the LRUCache with a specified maximum size."""
+    """A thread-safe LRU cache with a fixed maximum size.
+
+    A ``MutableMapping``: reads and writes mark the key as most recently
+    used, and inserting past ``maxsize`` evicts the least recently used
+    entry. Construct with ``LRUCache(maxsize)``; ``LRUCache[K, V]`` works
+    for type hints.
+    """
+    def __class_getitem__(cls, _item: object) -> type[LRUCache[_K, _V]]:
+        """Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at
+        runtime.
+        """
+
+    def __new__(cls, maxsize: int) -> LRUCache[_K, _V]:
+        """Create and return a new object.  See help(type) for accurate signature."""
 
     @property
     def maxsize(self) -> int:
         """The configured maximum number of entries."""
 
     def __len__(self) -> int:
-        """Return the number of items currently in the cache."""
+        """Return len(self)."""
 
     def __contains__(self, key: object, /) -> bool:
-        """Check if the given key is present in the cache."""
+        """Return bool(key in self)."""
 
     def __iter__(self) -> Iterator[_K]:
-        """
-        Return an iterator over the keys, in order from least to most recently used.
-
-        The iterator captures a snapshot of the keys at call time; subsequent mutations
-        to the cache do not affect iteration.
-        """
+        """Implement iter(self)."""
 
     def __setitem__(self, key: _K, value: _V, /) -> None:
-        """
-        Add or update the value for a given key in the cache.
-
-        If the cache reaches its maximum size, the least recently used item is automatically evicted.
-        """
+        """Set self[key] to value."""
 
     def __getitem__(self, key: _K, /) -> _V:
-        """
-        Retrieve the value associated with the given key, marking it as most recently used.
-
-        :raises KeyError: If the key is not found.
-        """
+        """Return self[key]."""
 
     def __delitem__(self, key: _K, /) -> None:
-        """
-        Remove the value associated with the given key.
-
-        :raises KeyError: If the key is not found.
-        """
+        """Delete self[key]."""
 
     @overload
     def get(self, key: _K, /) -> _V | None: ...
     @overload
     def get(self, key: _K, /, default: _D) -> _V | _D: ...
+    @overload
     def get(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
-        """
-        Retrieve the value associated with the given key, marking it as most recently used.
-
-        If the key is not found, the default value is returned.
+        """Retrieve the value for ``key``, marking it most recently used;
+        ``default`` (``None`` if omitted) when the key is absent.
         """
 
     @overload
     def peek(self, key: _K, /) -> _V | None: ...
     @overload
     def peek(self, key: _K, /, default: _D) -> _V | _D: ...
+    @overload
     def peek(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
-        """
-        Retrieve the value associated with the given key without updating the LRU order.
-
-        If the key is not found, the default value is returned.
+        """Read without bumping recency. Useful for instrumentation that should not
+        perturb the LRU order; the convention is borrowed from `cachetools`.
         """
 
     def clear(self) -> None:
         """Remove all entries from the cache."""
 
     def popitem(self) -> tuple[_K, _V]:
-        """
-        Remove and return the least recently used `(key, value)` pair.
-
-        :raises KeyError: If the cache is empty.
+        """Remove and return the least-recently-used `(key, value)` pair, raising
+        `KeyError` if empty.
         """

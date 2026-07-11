@@ -102,7 +102,12 @@ impl Store {
     }
 
     /// Look up `key` without updating the LRU order.
-    pub(crate) fn peek_get<F>(&self, py: Python<'_>, hash: Py_hash_t, eq: F) -> PyResult<Option<Py<PyAny>>>
+    pub(crate) fn peek_get<F>(
+        &self,
+        py: Python<'_>,
+        hash: Py_hash_t,
+        eq: F,
+    ) -> PyResult<Option<Py<PyAny>>>
     where
         F: FnMut(&Py<PyAny>) -> PyResult<bool>,
     {
@@ -180,7 +185,11 @@ impl Store {
         })
     }
 
-    pub(crate) fn remove<F>(&mut self, hash: Py_hash_t, eq: F) -> PyResult<Option<(Py<PyAny>, Py<PyAny>)>>
+    pub(crate) fn remove<F>(
+        &mut self,
+        hash: Py_hash_t,
+        eq: F,
+    ) -> PyResult<Option<(Py<PyAny>, Py<PyAny>)>>
     where
         F: FnMut(&Py<PyAny>) -> PyResult<bool>,
     {
