@@ -73,8 +73,8 @@ let
     '')
 
     # docs-{serve,build,deploy} act on the package in CWD. Each requires a
-    # properdocs.yml and a [dependency-groups] docs = [...] section in
-    # pyproject.toml. Convention: site_url in properdocs.yml is the canonical
+    # properdocs.yml and docs tooling in the default dev dependency group.
+    # Convention: site_url in properdocs.yml is the canonical
     # hostname; deploy rsyncs the build into edge:/var/www/<that-host>/. The
     # Caddyfile entry for the host is maintained by hand on edge.
     (makeScript "docs-serve" ''
@@ -84,7 +84,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --group docs --quiet
+      uv sync --quiet
       exec uv run --no-sync properdocs serve --no-strict --dev-addr 127.0.0.1:8765 "$@"
     '')
 
@@ -95,7 +95,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --group docs --quiet
+      uv sync --quiet
       exec uv run --no-sync properdocs build --strict --clean "$@"
     '')
 
@@ -119,7 +119,7 @@ let
         echo "DRY RUN: nothing will be written to edge."
       fi
 
-      uv sync --group docs --quiet
+      uv sync --quiet
       uv run --no-sync properdocs build --strict --clean
 
       echo "Target: edge:/var/www/$host/"
