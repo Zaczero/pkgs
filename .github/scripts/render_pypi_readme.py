@@ -13,7 +13,7 @@ text = re.sub(
     r'(!?\[[^\]]*\]\()([^)]+)(\))',
     lambda match: (
         f'{match.group(1)}'
-        f"{match.group(2) if match.group(2).startswith(('http://', 'https://', 'mailto:', '#', '/')) else urljoin(base, match.group(2))}"
+        f'{match.group(2) if match.group(2).startswith(("http://", "https://", "mailto:", "#", "/")) else urljoin(base, match.group(2))}'
         f'{match.group(3)}'
     ),
     readme.read_text(),

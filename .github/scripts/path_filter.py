@@ -8,12 +8,12 @@ import re
 import sys
 
 IGNORE = re.compile(
-    r"^(?:"
-    r"[^/]+/(?:docs|overrides|_snippets|assets)/"  # per-package docs and theme
-    r"|[^/]+/properdocs\.yml$"                     # per-package docs site config
-    r"|[^/]+\.md$"                                 # repo-root markdown
-    r"|Cargo\.lock$"                               # workspace Cargo lockfile
-    r")"
+    r'^(?:'
+    r'[^/]+/(?:docs|overrides|_snippets|assets)/'  # per-package docs and theme
+    r'|[^/]+/properdocs\.yml$'  # per-package docs site config
+    r'|[^/]+\.md$'  # repo-root markdown
+    r'|Cargo\.lock$'  # workspace Cargo lockfile
+    r')'
 )
 
 for line in sys.stdin:

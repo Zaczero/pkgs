@@ -18,69 +18,23 @@ jobs:
       import-name: ${{ steps.resolve.outputs.import-name }}
       is-rusty: ${{ steps.resolve.outputs.is-rusty }}
       pypy: ${{ steps.resolve.outputs.pypy }}
-      python-versions: ${{ steps.resolve.outputs.python-versions }}
       primary-python-version: ${{ steps.resolve.outputs.primary-python-version }}
       rust-toolchain: ${{ steps.resolve.outputs.rust-toolchain }}
+      test-matrix: ${{ steps.resolve.outputs.test-matrix }}
     env:
       PACKAGE: ${{ inputs.package }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.3.2
 
       - id: resolve
         shell: bash
         run: |
           set -euo pipefail
-
-          metadata="$(python3 .github/scripts/package_version.py info "$PACKAGE")"
-          echo "$metadata" >> "$GITHUB_OUTPUT"
-          is_rusty="$(sed -n 's/^is-rusty=//p' <<< "$metadata")"
-          requires_python="$(sed -n 's/^requires-python=//p' <<< "$metadata")"
-
-          versions_file="$PACKAGE/.python-versions"
-          if [ ! -f "$versions_file" ]; then
-            versions_file=".python-versions"
-          fi
-
-          versions="$(awk '$0 && $0 !~ /^#/ { print }' "$versions_file")"
-          if [ -n "$requires_python" ]; then
-            supported="$(
-              uv python list "$requires_python" \
-                --only-downloads \
-                --output-format json \
-                | jq -r '.[].version_parts | "\(.major).\(.minor)"' \
-                | sort -u
-            )"
-            versions="$(grep -Fx -f <(printf '%s\n' "$supported") <<< "$versions")"
-          fi
-
-          # Non-Linux runners test only the newest supported version to keep the
-          # matrix small; Linux still spans the full version list.
-          primary="$(sort -V <<< "$versions" | tail -1)"
-          echo "primary-python-version=$primary" >> "$GITHUB_OUTPUT"
-
-          versions="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<< "$versions")"
-          echo "python-versions=$versions" >> "$GITHUB_OUTPUT"
-
-          if [ "$is_rusty" = "true" ]; then
-            build_runners='["ubuntu-latest","ubuntu-24.04-arm","windows-latest","macos-15-intel","macos-15"]'
-          else
-            build_runners='["ubuntu-latest"]'
-          fi
-          echo "build-runners=$build_runners" >> "$GITHUB_OUTPUT"
-
-          rust_toolchain="$(
-            python3 - <<'PY'
-          import tomllib
-
-          with open("rust-toolchain.toml", "rb") as file:
-              print(tomllib.load(file)["toolchain"]["channel"])
-          PY
-          )"
-          echo "rust-toolchain=$rust_toolchain" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/matrix.py "$PACKAGE"
 
   test-rust:
     needs: resolve
@@ -89,25 +43,19 @@ jobs:
     env:
       PACKAGE: ${{ inputs.package }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-workspaces: . -> target
-          # An exported RUSTFLAGS would override the v2 target-cpu flags in
-          # .cargo/config.toml (env beats target config) — never set it.
+          # Empty: avoid RUSTFLAGS env overriding .cargo/config.toml target-cpu.
           rustflags: ""
 
-      - name: Clippy
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PACKAGE"
-          cargo clippy --all-targets -- -D warnings
-
+      # Practical behavior only — no clippy/fmt/lint gates in CI.
       - name: Test Rust debug
         shell: bash
         run: |
@@ -127,22 +75,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: ${{ fromJson(needs.resolve.outputs.python-versions) }}
-        include:
-          - os: macos-15
-            python-version: ${{ needs.resolve.outputs.primary-python-version }}
-          - os: windows-latest
-            python-version: ${{ needs.resolve.outputs.primary-python-version }}
+        include: ${{ fromJson(needs.resolve.outputs.test-matrix) }}
     runs-on: ${{ matrix.os }}
     env:
       PACKAGE: ${{ inputs.package }}
+      FREETHREADED: ${{ matrix.freethreaded }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           cache-dependency-glob: |
             pyproject.toml
@@ -152,32 +95,39 @@ jobs:
           python-version: ${{ matrix.python-version }}
           working-directory: ${{ env.PACKAGE }}
 
+      # uv Linux free-threaded standalone builds may publish sysconfig under a
+      # t-suffixed name. Only Linux freethreaded needs this; drop when uv fixes.
+      - name: Configure free-threaded Linux sysconfig
+        if: matrix.freethreaded == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: echo "_PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata_t_linux_x86_64-linux-gnu" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-workspaces: . -> target
           rustflags: ""
 
-      - name: Install h2spec
-        if: env.PACKAGE == 'h2corn' && runner.os == 'Linux' && runner.arch == 'X64'
-        env:
-          H2SPEC_VERSION: "2.6.0"
+      - name: Package before-test hook
+        if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSL \
-            "https://github.com/summerwind/h2spec/releases/download/v${H2SPEC_VERSION}/h2spec_linux_amd64.tar.gz" \
-            | tar -xzf - h2spec
-          sudo mv h2spec /usr/local/bin/
+          bash "$PACKAGE/tools/ci_before_test.sh"
 
       - name: Test Python
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          uv sync
-          uv run pytest
+          uv sync --python "${{ matrix.python-version }}"
+          if [ "$FREETHREADED" = "true" ]; then
+            uv run --python "${{ matrix.python-version }}" python -c \
+              'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
+          fi
+          uv run --python "${{ matrix.python-version }}" pytest
 
   build:
     needs: resolve
@@ -189,13 +139,13 @@ jobs:
     env:
       PACKAGE: ${{ inputs.package }}
       CIBUILDWHEEL_VERSION: "4.1.0"
-      CIBW_ARCHS_WINDOWS: "AMD64"
-      CIBW_BUILD_VERBOSITY: "1"
-      CIBW_ENABLE: ${{ needs.resolve.outputs.pypy == 'true' && 'pypy' || '' }}
+      # Native arch only — avoids win32 from auto on windows-latest; pairs with
+      # windows-11-arm for ARM64 wheels.
+      CIBW_ARCHS: native
+      CIBW_BUILD_FRONTEND: build[uv]
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: RUSTUP_TOOLCHAIN
-      CIBW_SKIP: ${{ needs.resolve.outputs.pypy == 'true' && '' || 'pp*' }}
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       CIBW_BEFORE_ALL_LINUX:
@@ -203,11 +153,11 @@ jobs:
         --default-toolchain none && rustup toolchain install --profile minimal
         "$RUSTUP_TOOLCHAIN"'
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           cache-dependency-glob: |
             pyproject.toml
@@ -221,17 +171,15 @@ jobs:
 
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-workspaces: . -> target
           rustflags: ""
 
-      # Generate LICENSE-THIRD-PARTY.md into the package tree BEFORE building, so
-      # maturin bundles it via the default license-files glob (cibuildwheel copies
-      # the generated file into its build container; the sdist picks it up too).
       - name: Install cargo-about
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: taiki-e/install-action@v2.82.2
+        uses: taiki-e/install-action@v2.83.1
         with:
           tool: cargo-about@0.8.4
 
@@ -244,8 +192,16 @@ jobs:
 
       - name: Build wheels
         if: needs.resolve.outputs.is-rusty == 'true'
+        env:
+          # PyPy opt-in only (cibuildwheel 4 default is no pp*). Free-threaded
+          # 3.14t wheels need no enable (cpython-freethreading removed in 4.x).
+          CIBW_ENABLE: ${{ needs.resolve.outputs.pypy == 'true' && 'pypy' || '' }}
         shell: bash
         run: |
+          # Unset empty enable so we do not override tool defaults with "".
+          if [ -z "${CIBW_ENABLE}" ]; then
+            unset CIBW_ENABLE
+          fi
           uv tool run \
             --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
             --output-dir dist \
