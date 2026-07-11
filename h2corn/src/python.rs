@@ -149,6 +149,8 @@ mod dict_api {
 }
 
 use std::any::Any;
+use std::mem::MaybeUninit;
+use std::slice::from_raw_parts;
 
 use pyo3::prelude::*;
 pub(crate) use pyo3::sync::PyOnceLock;
@@ -198,11 +200,15 @@ macro_rules! py_dict {
     }};
     (@push $scratch:ident, $index:expr;) => {};
     (@push $scratch:ident, $index:expr; $key:literal => true $(, $($rest:tt)*)?) => {{
-        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), true)?;
+        // SAFETY: macro expansion assigns each lexical field one static slot
+        // and visits it at most once.
+        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), true)? };
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => false $(, $($rest:tt)*)?) => {{
-        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), false)?;
+        // SAFETY: macro expansion assigns each lexical field one static slot
+        // and visits it at most once.
+        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), false)? };
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
@@ -221,11 +227,15 @@ macro_rules! py_dict {
             )?
             .bind($scratch.py())
             .clone();
-        $scratch.push_bound_at::<{ $index }>($crate::python::py_static_key!($key), value);
+        // SAFETY: macro expansion assigns each lexical field one static slot
+        // and visits it at most once.
+        unsafe { $scratch.push_bound_at::<{ $index }>($crate::python::py_static_key!($key), value) };
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
-        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), $value)?;
+        // SAFETY: macro expansion assigns each lexical field one static slot
+        // and visits it at most once.
+        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), $value)? };
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
@@ -384,7 +394,7 @@ impl StaticPyKey {
 pub(crate) struct PyDictScratch<'py, const N: usize> {
     py: Python<'py>,
     len: usize,
-    items: [Option<PendingDictItem<'py>>; N],
+    items: [MaybeUninit<PendingDictItem<'py>>; N],
 }
 
 impl<'py, const N: usize> PyDictScratch<'py, N> {
@@ -392,11 +402,15 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
         Self {
             py,
             len: 0,
-            items: [const { None }; N],
+            items: [const { MaybeUninit::uninit() }; N],
         }
     }
 
-    pub(crate) fn push_at<const I: usize, V>(
+    /// # Safety
+    ///
+    /// Macro expansion must visit lexical slot `I` at most once and in field
+    /// order. This makes the number of prior successful pushes at most `I`.
+    pub(crate) unsafe fn push_at<const I: usize, V>(
         &mut self,
         key: &'static StaticPyKey,
         value: V,
@@ -405,16 +419,25 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
         V: IntoPyObject<'py>,
     {
         let value = value.into_bound_py_any(self.py)?;
-        self.push_bound_at::<I>(key, value);
+        // SAFETY: forwarded from this function's contract.
+        unsafe { self.push_bound_at::<I>(key, value) };
         Ok(())
     }
 
-    pub(crate) fn push_bound_at<const I: usize>(
+    /// # Safety
+    ///
+    /// Macro expansion must visit lexical slot `I` at most once and in field
+    /// order. This makes the number of prior successful pushes at most `I`.
+    pub(crate) unsafe fn push_bound_at<const I: usize>(
         &mut self,
         key: &'static StaticPyKey,
         value: Bound<'py, PyAny>,
     ) {
-        self.items[I] = Some(PendingDictItem { key, value });
+        const { assert!(I < N) };
+        debug_assert!(self.len <= I);
+        // SAFETY: `len <= I < N` by the macro contract and const assertion.
+        unsafe { self.items.get_unchecked_mut(self.len) }.write(PendingDictItem { key, value });
+        // Publish the new live prefix only after initialization completes.
         self.len += 1;
     }
 
@@ -423,17 +446,41 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
     }
 
     pub(crate) fn finish(self) -> PyResult<Bound<'py, PyDict>> {
-        let dict = py_new_dict(self.py, self.len)?;
-        for item in self.items.iter().flatten() {
-            item.key.set_item(self.py, &dict, &item.value)?;
+        // SAFETY: `len` is advanced only after initializing a slot and the
+        // macro contract prevents it from exceeding `N`.
+        let items = unsafe { from_raw_parts(self.items.as_ptr(), self.len) };
+        finish_pending_dict(self.py, items)
+    }
+}
+
+impl<const N: usize> Drop for PyDictScratch<'_, N> {
+    fn drop(&mut self) {
+        while self.len != 0 {
+            self.len -= 1;
+            // SAFETY: `0..len` is exactly the initialized prefix. Decrementing
+            // first ensures a panicking item destructor cannot be visited a
+            // second time if cleanup resumes.
+            unsafe { self.items.get_unchecked_mut(self.len).assume_init_drop() };
         }
-        Ok(dict)
     }
 }
 
 struct PendingDictItem<'py> {
     key: &'static StaticPyKey,
     value: Bound<'py, PyAny>,
+}
+
+fn finish_pending_dict<'py>(
+    py: Python<'py>,
+    items: &[MaybeUninit<PendingDictItem<'py>>],
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = py_new_dict(py, items.len())?;
+    for item in items {
+        // SAFETY: callers expose only the initialized prefix.
+        let item = unsafe { item.assume_init_ref() };
+        item.key.set_item(py, &dict, &item.value)?;
+    }
+    Ok(dict)
 }
 
 pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
@@ -464,9 +511,7 @@ mod tests {
     use pyo3::types::{PyAnyMethods, PyBool, PyBytes, PyBytesMethods, PyDictMethods};
     use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
 
-    use super::PyString;
-    #[cfg(Py_GIL_DISABLED)]
-    use super::StaticPyKey;
+    use super::{PyDictScratch, PyString, StaticPyKey};
 
     fn init_python() {
         Python::initialize();
@@ -560,6 +605,33 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[cfg(not(Py_GIL_DISABLED))]
+    #[test]
+    fn py_dict_scratch_partial_drop_releases_every_initialized_value() {
+        static FIRST: StaticPyKey = StaticPyKey::new("first");
+        static THIRD: StaticPyKey = StaticPyKey::new("third");
+
+        init_python();
+        Python::attach(|py| {
+            let value = PyBytes::new(py, b"owned").into_any();
+            // SAFETY: `value` is live under the attached interpreter.
+            let baseline = unsafe { ffi::Py_REFCNT(value.as_ptr()) };
+            {
+                let mut scratch = PyDictScratch::<3>::new(py);
+                // SAFETY: lexical slots 0 and 2 are visited once and in order;
+                // the skipped middle slot models a false conditional field.
+                unsafe {
+                    scratch.push_bound_at::<0>(&FIRST, value.clone());
+                    scratch.push_bound_at::<2>(&THIRD, value.clone());
+                }
+                // SAFETY: `value` remains live under the attached interpreter.
+                assert_eq!(unsafe { ffi::Py_REFCNT(value.as_ptr()) }, baseline + 2);
+            }
+            // SAFETY: `value` remains live under the attached interpreter.
+            assert_eq!(unsafe { ffi::Py_REFCNT(value.as_ptr()) }, baseline);
+        });
     }
 
     #[cfg(Py_GIL_DISABLED)]

@@ -160,14 +160,18 @@ impl RuntimeLimits {
 
 #[derive(Default)]
 pub(crate) struct RequestAdmission {
-    permit: Option<OwnedSemaphorePermit>,
-    limits: Option<Arc<RuntimeLimits>>,
+    // Fields drop in declaration order: return the concurrency permit before
+    // completion can request worker retirement.
+    _permit: Option<OwnedSemaphorePermit>,
+    _completion: RequestCompletion,
 }
 
-impl Drop for RequestAdmission {
+#[derive(Default)]
+struct RequestCompletion(Option<Arc<RuntimeLimits>>);
+
+impl Drop for RequestCompletion {
     fn drop(&mut self) {
-        let _ = self.permit.take();
-        if let Some(limits) = self.limits.as_ref() {
+        if let Some(limits) = self.0.as_ref() {
             limits.on_task_complete();
         }
     }
@@ -463,8 +467,8 @@ impl StreamInput {
 pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
-            permit: None,
-            limits: None,
+            _permit: None,
+            _completion: RequestCompletion(None),
         });
     };
     let permit = if let Some(semaphore) = limits.concurrency.as_ref() {
@@ -473,8 +477,8 @@ pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestA
         None
     };
     Some(RequestAdmission {
-        permit,
-        limits: limits.max_requests.map(|_| Arc::clone(limits)),
+        _permit: permit,
+        _completion: RequestCompletion(limits.max_requests.map(|_| Arc::clone(limits))),
     })
 }
 
@@ -582,15 +586,38 @@ pub(crate) mod test_fixtures {
 #[cfg(test)]
 mod tests {
 
-    use std::num::NonZeroU32;
+    use std::num::{NonZeroU32, NonZeroU64};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
 
+    use tokio::sync::Semaphore;
     use tokio::time::timeout;
 
-    use super::H2InputCreditQueue;
+    use super::{H2InputCreditQueue, RequestAdmission, RequestCompletion, RuntimeLimits};
     use crate::h2_frame::StreamId;
+
+    #[test]
+    fn request_admission_releases_permit_and_records_completion_once() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&semaphore).try_acquire_owned().unwrap();
+        let limits = Arc::new(RuntimeLimits {
+            concurrency: Some(Arc::clone(&semaphore)),
+            max_requests: NonZeroU64::new(2),
+            completed_tasks: AtomicU64::new(0),
+            retire_requested: AtomicBool::new(false),
+            retire_trigger: None,
+        });
+        let admission = RequestAdmission {
+            _permit: Some(permit),
+            _completion: RequestCompletion(Some(Arc::clone(&limits))),
+        };
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(admission);
+        assert_eq!(semaphore.available_permits(), 1);
+        assert_eq!(limits.completed_tasks.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn explicit_release_enqueues_exactly_once() {
