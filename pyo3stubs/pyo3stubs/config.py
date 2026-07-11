@@ -30,6 +30,18 @@ class StubConfig:
         Deliberate cross-surface option-block divergences keyed by op name.
     leak_allowlist:
         Public ``pyclass`` names exempt from registration (reason per name).
+    stubtest_allowlist:
+        Optional ``mypy.stubtest`` allowlist file (one error-summary regex per
+        line); entries that stop matching fail the run, so the list cannot rot.
+    mypy_config:
+        Optional mypy config file (e.g. the project ``pyproject.toml``) applied
+        to both the validity gate and stubtest, so error-code policy lives in
+        one place.
+    mypy_args:
+        Extra mypy flags for the stub validity gate (e.g. a python-version pin).
+    uninspectable_allowlist:
+        Public runtime callables where ``inspect.signature`` legitimately fails
+        (reason per qualname); anything else uninspectable is a hard error.
     plugins:
         Optional project-specific checks (token vocab, namespace facades, …).
     package_module:
@@ -46,13 +58,21 @@ class StubConfig:
         Callable on the runtime module returning token vocabulary tuples.
     token_enum_macro:
         Rust macro name declaring token enums (default ``"token_enum!"``).
-    ignored_runtime_names:
-        Runtime-only dunders omitted from stub parity comparison.
     ignored_type_names:
         Annotation names skipped by the leaked-types reachability scan.
     pyclass_patterns:
         Extra ``re.Pattern`` objects scanning ``src_root`` for exported
-        Python class names beyond ``#[pyclass(name = "...")]``.
+        Python class names beyond ``#[pyclass]`` attributes.
+    duality_pairs:
+        ``(scalar_class, array_class)`` stub-class pairs whose same-name
+        methods form a scalar<->array duality: the array method's return must
+        be ``Self`` exactly when the scalar's is kind-preserving
+        (``Self``/element TypeVar), else ``ArrayClass[<scalar return>]``.
+    duality_exempt:
+        Method names exempt from the duality return rule (reason per name).
+    duality_self_atoms:
+        Scalar return atoms treated as kind-preserving besides ``Self``
+        (e.g. the element TypeVar free functions thread through).
     """
 
     module: str
@@ -61,6 +81,10 @@ class StubConfig:
     surfaces: tuple[tuple[str, Any], ...] = ()
     known_divergences: dict[str, str] = field(default_factory=dict)
     leak_allowlist: dict[str, str] = field(default_factory=dict)
+    stubtest_allowlist: Path | None = None
+    mypy_config: Path | None = None
+    mypy_args: tuple[str, ...] = ()
+    uninspectable_allowlist: dict[str, str] = field(default_factory=dict)
     plugins: tuple[Check, ...] = ()
     package_module: str | None = None
     types_module: str | None = None
@@ -68,6 +92,8 @@ class StubConfig:
     namespace_prefix_template: str = '{namespace}_'
     token_vocabulary_export: str | None = None
     token_enum_macro: str = 'token_enum!'
-    ignored_runtime_names: frozenset[str] = field(default_factory=frozenset)
     ignored_type_names: frozenset[str] = field(default_factory=frozenset)
     pyclass_patterns: tuple[Any, ...] = ()
+    duality_pairs: tuple[tuple[str, str], ...] = ()
+    duality_exempt: dict[str, str] = field(default_factory=dict)
+    duality_self_atoms: frozenset[str] = field(default_factory=frozenset)

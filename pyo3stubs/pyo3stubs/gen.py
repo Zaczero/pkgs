@@ -5,13 +5,15 @@ Docstrings live once, in the Rust ``///`` doc comments on the PyO3 surface, and
 become the compiled extension's ``__doc__``. :func:`render_stub_with_docs` copies
 each symbol's runtime ``__doc__`` into the hand-authored stub so IDE hover and the
 docs site render the prose, while preserving the hand-written signatures,
-overloads, and typed annotations untouched. Two contracts are enforced (returned
-as ``missing``):
+overloads, and typed annotations untouched.
 
-* a public runtime symbol with a deleted/empty docstring fails (stale stub prose
-  must never outlive its source);
-* a stub-only override of an inherited runtime member keeps — and must carry — its
-  own hand-written docstring.
+Placement contract: **exactly one docstring per symbol.** A non-overloaded def
+carries it directly; an overload set carries it on the *last* variant — the
+canonical union signature (stubs must not have a bare implementation def per
+PEP 484, and duplicating prose across variants is drift surface). Earlier
+variants are stripped. Stub-only overrides of inherited runtime members keep
+their hand-written prose untouched (they narrow types, so they document
+themselves — the doc-contract check enforces their presence).
 
 Requires ``libcst``. The runtime module and stub path come from the project's
 :class:`~pyo3stubs.config.StubConfig`.
@@ -19,7 +21,9 @@ Requires ``libcst``. The runtime module and stub path come from the project's
 
 from __future__ import annotations
 
+import ast
 import importlib
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import libcst as cst
@@ -98,30 +102,31 @@ def _without_docstring(node: cst.FunctionDef) -> cst.FunctionDef:
     return node.with_changes(body=cst.IndentedBlock(body=stmts))
 
 
-def _is_overload(node: cst.FunctionDef) -> bool:
-    for decorator in node.decorators:
-        value = decorator.decorator
-        if isinstance(value, cst.Name) and value.value == 'overload':
-            return True
-        if isinstance(value, cst.Attribute) and value.attr.value == 'overload':
-            return True
-    return False
-
-
-def _has_docstring(node: cst.FunctionDef) -> bool:
-    body = node.body
-    return isinstance(body, cst.IndentedBlock) and _is_string_expr(body.body[0])
+def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
+    """``(scope, name) -> def count`` for module- and class-level functions."""
+    totals: Counter[tuple[str, str]] = Counter()
+    for node in ast.parse(stub_source).body:
+        if isinstance(node, ast.FunctionDef):
+            totals[('', node.name)] += 1
+        elif isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if isinstance(stmt, ast.FunctionDef):
+                    totals[(node.name, stmt.name)] += 1
+    return totals
 
 
 class DocInjector(cst.CSTTransformer):
-    """Copy ``runtime.__doc__`` onto each matching stub symbol; record contract
-    violations in :attr:`missing`.
-    """
+    """Copy ``runtime.__doc__`` onto each symbol's docstring-carrier def."""
 
-    def __init__(self, runtime: types.ModuleType) -> None:
+    def __init__(
+        self,
+        runtime: types.ModuleType,
+        totals: Counter[tuple[str, str]],
+    ) -> None:
         self._runtime = runtime
+        self._totals = totals
+        self._seen: Counter[tuple[str, str]] = Counter()
         self._stack: list[str] = []
-        self.missing: list[str] = []
 
     def visit_ClassDef(self, node: cst.ClassDef) -> None:  # noqa: N802
         self._stack.append(node.name.value)
@@ -135,53 +140,44 @@ class DocInjector(cst.CSTTransformer):
         doc = _doc_of(obj)
         if doc:
             return _apply(updated, doc, '    ' * (len(self._stack) + 1))
-        if not name.startswith('_'):
-            self.missing.append(f'{name}: runtime docstring missing or empty')
         return updated
 
     def leave_FunctionDef(self, original, updated):  # noqa: N802
-        if _is_overload(original):
-            return _without_docstring(updated)
         name = original.name.value
+        scope = self._stack[-1] if self._stack else ''
+        key = (scope, name)
+        self._seen[key] += 1
+        carrier = self._seen[key] == self._totals[key]
         if self._stack:
-            qualname = f'{self._stack[-1]}.{name}'
             indent = '    ' * (len(self._stack) + 1)
-            cls = getattr(self._runtime, self._stack[-1], None)
+            cls = getattr(self._runtime, scope, None)
             if cls is None:
                 return updated  # stub-only typing helper (protocols)
             if name not in vars(cls):
                 # Stub-only override of an inherited runtime member: it narrows
-                # types, so it documents itself — require prose, leave untouched.
-                if not _has_docstring(original) and not name.startswith('__'):
-                    self.missing.append(
-                        f'{qualname}: stub override needs its own docstring'
-                    )
+                # types, so it documents itself — leave the group untouched.
                 return updated
             obj = getattr(cls, name, None)
         else:
-            qualname = name
             indent = '    '
             obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper
+        if not carrier:
+            return _without_docstring(updated)
         doc = _doc_of(obj)
         if doc:
             return _apply(updated, doc, indent)
-        if not name.startswith('_'):
-            self.missing.append(f'{qualname}: runtime docstring missing or empty')
         return updated
 
 
-def render_stub_with_docs(cfg: StubConfig) -> tuple[str, list[str]]:
-    """Return ``(rendered_stub_code, contract_violations)`` for ``cfg``.
+def render_stub_with_docs(cfg: StubConfig) -> str:
+    """Return the stub source with runtime docstrings injected; does not write.
 
-    Imports ``cfg.module`` for its runtime docstrings and injects them into
-    ``cfg.stub_path``; does not write. An empty ``violations`` list means the
-    docstring contract holds.
+    Docstring-presence violations are the doc-contract check's job
+    (:func:`pyo3stubs.doc_contract.collect_errors`) — the CLI runs both.
     """
     runtime = importlib.import_module(cfg.module)
-    injector = DocInjector(runtime)
-    code = (
-        cst.parse_module(cfg.stub_path.read_text(encoding='utf-8')).visit(injector).code
-    )
-    return code, injector.missing
+    source = cfg.stub_path.read_text(encoding='utf-8')
+    injector = DocInjector(runtime, _def_totals(source))
+    return cst.parse_module(source).visit(injector).code

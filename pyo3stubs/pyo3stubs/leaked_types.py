@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import inspect
 import re
-import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,10 +12,15 @@ if TYPE_CHECKING:
 
     from pyo3stubs.config import StubConfig
 
-DEFAULT_PYCLASS_NAME = re.compile(
-    r'#\s*\[\s*pyclass\s*\((?:[^)]|\n)*?\bname\s*=\s*"([^"]+)"',
-    re.MULTILINE,
+# Any `#[pyclass]` attribute (with or without arguments) followed by its
+# struct/enum declaration, tolerating other attributes in between. The Python
+# name is the `name = "..."` argument when present, else the Rust identifier —
+# an unnamed `#[pyclass]` exports under its struct name and leaks just the same.
+from pyo3stubs.rust_scan import (  # noqa: F401 — re-exported
+    DEFAULT_PYCLASS,
+    PYCLASS_NAME_ARG,
 )
+from pyo3stubs.rust_scan import pyclass_names as collect_pyclass_names
 
 DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
     'Any',
@@ -64,22 +68,6 @@ DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
 })
 
 
-def _collect_pyclass_names(
-    src_root: Path,
-    patterns: tuple[re.Pattern[str], ...],
-) -> dict[str, str]:
-    """Map Python class name -> defining source path (relative to ``src/``)."""
-    names: dict[str, str] = {}
-    for path in sorted(src_root.rglob('*.rs')):
-        rel = path.relative_to(src_root).as_posix()
-        text = path.read_text()
-        for pattern in patterns:
-            for match in pattern.finditer(text):
-                py_name = match.group(1)
-                names.setdefault(py_name, rel)
-    return names
-
-
 def _registered_class_names(runtime_module: object) -> set[str]:
     return {
         name
@@ -100,6 +88,12 @@ def _public_stub_class_names(stub_path: Path) -> set[str]:
 def _annotation_type_names(node: ast.expr | None) -> set[str]:
     if node is None:
         return set()
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # Quoted forward reference: parse and recurse.
+        try:
+            return _annotation_type_names(ast.parse(node.value, mode='eval').body)
+        except SyntaxError:
+            return set()
     if isinstance(node, ast.Name):
         return {node.id}
     if isinstance(node, ast.Attribute):
@@ -168,6 +162,13 @@ def _collect_stub_signature_leaks(
                     for arg in child.args.kwonlyargs:
                         refs |= _annotation_type_names(arg.annotation)
                     check_refs(f'{node.name}.{child.name}', refs)
+                elif isinstance(child, ast.AnnAssign) and isinstance(
+                    child.target, ast.Name
+                ):
+                    check_refs(
+                        f'{node.name}.{child.target.id}',
+                        _annotation_type_names(child.annotation),
+                    )
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('_'):
             refs = _annotation_type_names(node.returns)
             for arg in node.args.args:
@@ -175,6 +176,8 @@ def _collect_stub_signature_leaks(
             for arg in node.args.kwonlyargs:
                 refs |= _annotation_type_names(arg.annotation)
             check_refs(node.name, refs)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            check_refs(node.target.id, _annotation_type_names(node.annotation))
 
     return errors
 
@@ -184,8 +187,7 @@ def collect_errors(cfg: StubConfig) -> list[str]:
     import importlib
 
     runtime = importlib.import_module(cfg.module)
-    patterns = (DEFAULT_PYCLASS_NAME, *cfg.pyclass_patterns)
-    pyclass_map = _collect_pyclass_names(cfg.src_root, patterns)
+    pyclass_map = collect_pyclass_names(cfg)
     pyclass_names = set(pyclass_map)
     registered = _registered_class_names(runtime)
     public_stub_classes = _public_stub_class_names(cfg.stub_path)
@@ -215,13 +217,3 @@ def collect_errors(cfg: StubConfig) -> list[str]:
         )
     )
     return errors
-
-
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
-    _ = argv
-    print(
-        'pyo3stubs.leaked_types: supply a project shim that builds StubConfig',
-        file=sys.stderr,
-    )
-    return 2

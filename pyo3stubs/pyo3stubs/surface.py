@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,7 +18,12 @@ def _callables(owner: object) -> dict[str, object]:
     for name in dir(owner):
         if name.startswith('_'):
             continue
-        value = inspect.getattr_static(owner, name)
+        try:
+            value = inspect.getattr_static(owner, name)
+        except AttributeError:
+            # PEP 562 lazy exports (``__getattr__``) are visible in ``dir`` but
+            # not in the module dict until accessed — skip them here.
+            continue
         if inspect.isclass(value) or isinstance(value, property):
             continue
         if callable(getattr(owner, name)):
@@ -87,13 +91,3 @@ def collect_errors(cfg: StubConfig) -> list[str]:
         if len(shared.get(name, [])) < 2
     )
     return errors
-
-
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — requires a project shim to build :class:`StubConfig`."""
-    _ = argv
-    print(
-        'pyo3stubs.surface_parity: supply a project shim that builds StubConfig',
-        file=sys.stderr,
-    )
-    return 2
