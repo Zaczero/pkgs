@@ -14,7 +14,11 @@ fn time_seconds_or_default(time: Option<f64>) -> i64 {
     }
 }
 
-pub(crate) fn time_window_from_time(time: Option<f64>, step_seconds: i64, t0: i64) -> Result<i64, Error> {
+pub(crate) fn time_window_from_time(
+    time: Option<f64>,
+    step_seconds: i64,
+    t0: i64,
+) -> Result<i64, Error> {
     if unlikely(step_seconds == 0) {
         return Err(Error::StepSecondsMustBeNonZero);
     }
