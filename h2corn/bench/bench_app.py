@@ -46,6 +46,22 @@ async def streaming_post(request):
     return StreamingResponse(chunks(), media_type='text/plain')
 
 
+async def streaming_post_fast(request):
+    body_len = 0
+    async for chunk in request.stream():
+        body_len += len(chunk)
+    return Response(str(body_len).encode(), media_type='text/plain')
+
+
+async def streaming_download(request):
+    async def chunks():
+        for _ in range(8):
+            yield b'x' * (16 * 1024)
+            await asyncio.sleep(0)
+
+    return StreamingResponse(chunks(), media_type='application/octet-stream')
+
+
 async def websocket_endpoint(websocket):
     await websocket.accept()
     while True:
@@ -61,6 +77,8 @@ app = Starlette(
         Route('/', homepage),
         Route('/static-file', static_file),
         Route('/streaming-post', streaming_post, methods=['POST']),
+        Route('/streaming-post-fast', streaming_post_fast, methods=['POST']),
+        Route('/streaming-download', streaming_download),
         WebSocketRoute('/ws', websocket_endpoint),
     ]
 )

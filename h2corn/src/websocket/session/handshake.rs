@@ -2,8 +2,8 @@ use pyo3::pybacked::PyBackedStr;
 
 use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
+use crate::access_log::WebSocketAccessLogState;
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
-use crate::console::WebSocketAccessLogState;
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
 use crate::http::response::{
     ResponseAction, ResponseActionSink, ResponseActions, ResponseController, apply_http_event,
@@ -188,6 +188,7 @@ mod tests {
 
     use bytes::Bytes;
     use tokio::sync::mpsc;
+    use tokio::task::JoinHandle;
 
     use super::{HandshakeEvent, drive_denial_response, receive_handshake_event};
     use crate::bridge::{
@@ -196,7 +197,7 @@ mod tests {
     };
     use crate::error::{ErrorKind, H2CornError, HttpResponseError};
     use crate::http::response::FinalResponseBody;
-    use crate::http::types::{ResponseHeaders, status_code};
+    use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
     use crate::runtime::RequestAdmission;
     use crate::websocket::RequestedSubprotocols;
     use crate::websocket::app::{AppHandle, RunningWebSocketApp};
@@ -210,11 +211,14 @@ mod tests {
     }
 
     impl WebSocketHandshakeTransport for RecordingHandshakeTransport {
-        fn accept_status(&self) -> u16 {
+        fn accept_status(&self) -> HttpStatusCode {
             status_code::SWITCHING_PROTOCOLS
         }
 
-        async fn send_empty_response(&mut self, _status: u16) -> Result<(), H2CornError> {
+        async fn send_empty_response(
+            &mut self,
+            _status: HttpStatusCode,
+        ) -> Result<(), H2CornError> {
             self.calls.push("send_empty_response");
             Ok(())
         }
@@ -231,7 +235,7 @@ mod tests {
 
         async fn send_final_denial_response(
             &mut self,
-            _status: u16,
+            _status: HttpStatusCode,
             _headers: ResponseHeaders,
             body: FinalResponseBody,
         ) -> Result<(), H2CornError> {
@@ -248,7 +252,7 @@ mod tests {
 
         async fn start_denial_response(
             &mut self,
-            _status: u16,
+            _status: HttpStatusCode,
             _headers: ResponseHeaders,
         ) -> Result<(), H2CornError> {
             self.calls.push("start_denial_response");
@@ -274,7 +278,7 @@ mod tests {
 
     fn running_app_with_buffered_event(
         event: WebSocketOutboundEvent,
-        app_task: tokio::task::JoinHandle<Result<(), H2CornError>>,
+        app_task: JoinHandle<Result<(), H2CornError>>,
     ) -> RunningWebSocketApp {
         let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
         let (_send_tx, send_rx) = mpsc::channel(1);

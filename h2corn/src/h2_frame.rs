@@ -26,18 +26,68 @@ pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
 
 const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 
-pub(crate) type StreamId = NonZeroU32;
-pub(crate) type WindowIncrement = NonZeroU32;
+/// A valid HTTP/2 stream identifier.
+///
+/// The wire field is 31 bits wide and zero denotes the connection, not a
+/// stream. Keeping both constraints in the type prevents masked/raw integers
+/// from entering stream-keyed state after frame parsing.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub(crate) struct StreamId(NonZeroU32);
+
+impl StreamId {
+    pub(crate) const fn new(value: u32) -> Option<Self> {
+        match NonZeroU32::new(value) {
+            Some(value) if value.get() <= STREAM_ID_MASK => Some(Self(value)),
+            Some(_) | None => None,
+        }
+    }
+
+    pub(crate) const fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    pub(crate) const fn is_client_initiated(self) -> bool {
+        self.get() & 1 != 0
+    }
+}
+
+// `StreamId` hashes exactly as its wrapped integer. Opting into nohash-hasher
+// is therefore sound and lets stream maps retain integer-key lookup cost.
+impl nohash_hasher::IsEnabled for StreamId {}
+
+/// A legal HTTP/2 WINDOW_UPDATE increment (RFC 9113: 1..=2^31-1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub(crate) struct WindowIncrement(NonZeroU32);
+
+impl WindowIncrement {
+    pub(crate) const fn new(value: u32) -> Option<Self> {
+        match NonZeroU32::new(value) {
+            Some(value) if value.get() <= MAX_FLOW_CONTROL_WINDOW => Some(Self(value)),
+            Some(_) | None => None,
+        }
+    }
+
+    pub(crate) const fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+const _: () = assert!(size_of::<StreamId>() == size_of::<u32>());
+const _: () = assert!(size_of::<Option<StreamId>>() == size_of::<u32>());
+const _: () = assert!(size_of::<WindowIncrement>() == size_of::<u32>());
+const _: () = assert!(size_of::<Option<WindowIncrement>>() == size_of::<u32>());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub(crate) struct FrameFlags(u8);
 
 impl FrameFlags {
-    pub(crate) const EMPTY: Self = Self(0);
     pub(crate) const ACK: Self = Self(0x01);
-    pub(crate) const END_STREAM: Self = Self(0x01);
+    pub(crate) const EMPTY: Self = Self(0);
     pub(crate) const END_HEADERS: Self = Self(0x04);
+    pub(crate) const END_STREAM: Self = Self(0x01);
     pub(crate) const PADDED: Self = Self(0x08);
     pub(crate) const PRIORITY: Self = Self(0x20);
 
@@ -73,16 +123,16 @@ impl BitOrAssign for FrameFlags {
 pub(crate) struct FrameType(u8);
 
 impl FrameType {
+    pub(crate) const CONTINUATION: Self = Self(0x09);
     pub(crate) const DATA: Self = Self(0x00);
+    pub(crate) const GOAWAY: Self = Self(0x07);
     pub(crate) const HEADERS: Self = Self(0x01);
+    pub(crate) const PING: Self = Self(0x06);
     pub(crate) const PRIORITY: Self = Self(0x02);
+    pub(crate) const PUSH_PROMISE: Self = Self(0x05);
     pub(crate) const RST_STREAM: Self = Self(0x03);
     pub(crate) const SETTINGS: Self = Self(0x04);
-    pub(crate) const PUSH_PROMISE: Self = Self(0x05);
-    pub(crate) const PING: Self = Self(0x06);
-    pub(crate) const GOAWAY: Self = Self(0x07);
     pub(crate) const WINDOW_UPDATE: Self = Self(0x08);
-    pub(crate) const CONTINUATION: Self = Self(0x09);
 
     pub(crate) const fn new(bits: u8) -> Self {
         Self(bits)
@@ -98,16 +148,16 @@ impl FrameType {
 pub(crate) struct ErrorCode(u32);
 
 impl ErrorCode {
-    pub(crate) const NO_ERROR: Self = Self(0x0);
-    pub(crate) const PROTOCOL_ERROR: Self = Self(0x1);
-    pub(crate) const INTERNAL_ERROR: Self = Self(0x2);
-    pub(crate) const FLOW_CONTROL_ERROR: Self = Self(0x3);
-    pub(crate) const STREAM_CLOSED: Self = Self(0x5);
-    pub(crate) const FRAME_SIZE_ERROR: Self = Self(0x6);
-    pub(crate) const REFUSED_STREAM: Self = Self(0x7);
     pub(crate) const CANCEL: Self = Self(0x8);
     pub(crate) const COMPRESSION_ERROR: Self = Self(0x9);
     pub(crate) const ENHANCE_YOUR_CALM: Self = Self(0xB);
+    pub(crate) const FLOW_CONTROL_ERROR: Self = Self(0x3);
+    pub(crate) const FRAME_SIZE_ERROR: Self = Self(0x6);
+    pub(crate) const INTERNAL_ERROR: Self = Self(0x2);
+    pub(crate) const NO_ERROR: Self = Self(0x0);
+    pub(crate) const PROTOCOL_ERROR: Self = Self(0x1);
+    pub(crate) const REFUSED_STREAM: Self = Self(0x7);
+    pub(crate) const STREAM_CLOSED: Self = Self(0x5);
 
     pub(crate) const fn new(value: u32) -> Self {
         Self(value)
@@ -129,13 +179,13 @@ impl fmt::Display for ErrorCode {
 pub(crate) struct SettingId(u16);
 
 impl SettingId {
-    pub(crate) const HEADER_TABLE_SIZE: Self = Self(0x01);
+    pub(crate) const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
     pub(crate) const ENABLE_PUSH: Self = Self(0x02);
-    pub(crate) const MAX_CONCURRENT_STREAMS: Self = Self(0x03);
+    pub(crate) const HEADER_TABLE_SIZE: Self = Self(0x01);
     pub(crate) const INITIAL_WINDOW_SIZE: Self = Self(0x04);
+    pub(crate) const MAX_CONCURRENT_STREAMS: Self = Self(0x03);
     pub(crate) const MAX_FRAME_SIZE: Self = Self(0x05);
     pub(crate) const MAX_HEADER_LIST_SIZE: Self = Self(0x06);
-    pub(crate) const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
 
     pub(crate) const fn new(bits: u16) -> Self {
         Self(bits)
@@ -148,7 +198,6 @@ impl SettingId {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameHeader {
-    pub len: usize,
     pub frame_type: FrameType,
     pub flags: FrameFlags,
     pub stream_id: Option<StreamId>,
@@ -354,7 +403,6 @@ where
 
         Ok(Some(RawFrame {
             header: FrameHeader {
-                len: payload_len,
                 frame_type,
                 flags,
                 stream_id,
@@ -369,9 +417,9 @@ const fn decode_u24(bytes: [u8; 3]) -> usize {
     ((b0 as usize) << 16) | ((b1 as usize) << 8) | (b2 as usize)
 }
 
-pub(crate) fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
-    debug_assert!(header.len <= MAX_FRAME_SIZE_UPPER_BOUND);
-    let len = (header.len as u32).to_be_bytes();
+pub(crate) fn encode_frame_header(header: FrameHeader, payload_len: usize) -> [u8; 9] {
+    assert!(payload_len <= MAX_FRAME_SIZE_UPPER_BOUND);
+    let len = (payload_len as u32).to_be_bytes();
     let stream_id = header.stream_id.map_or(0, StreamId::get).to_be_bytes();
     [
         len[1],
@@ -387,21 +435,22 @@ pub(crate) fn encode_frame_header(header: FrameHeader) -> [u8; 9] {
 }
 
 pub(crate) fn append_frame(dst: &mut BytesMut, header: FrameHeader, payload: &[u8]) {
-    assert_eq!(header.len, payload.len());
     dst.reserve(FRAME_HEADER_LEN + payload.len());
-    dst.extend_from_slice(&encode_frame_header(header));
+    dst.extend_from_slice(&encode_frame_header(header, payload.len()));
     dst.extend_from_slice(payload);
 }
 
 pub(crate) fn append_settings(dst: &mut BytesMut, settings: Settings) {
     let payload_len = settings.iter().count() * size_of::<WireSetting>();
     dst.reserve(FRAME_HEADER_LEN + payload_len);
-    dst.extend_from_slice(&encode_frame_header(FrameHeader {
-        len: payload_len,
-        frame_type: FrameType::SETTINGS,
-        flags: FrameFlags::EMPTY,
-        stream_id: None,
-    }));
+    dst.extend_from_slice(&encode_frame_header(
+        FrameHeader {
+            frame_type: FrameType::SETTINGS,
+            flags: FrameFlags::EMPTY,
+            stream_id: None,
+        },
+        payload_len,
+    ));
     for (id, value) in settings.iter() {
         let entry = WireSetting {
             id: U16::new(id.bits()),
@@ -415,7 +464,6 @@ pub(crate) fn append_settings_ack(dst: &mut BytesMut) {
     append_frame(
         dst,
         FrameHeader {
-            len: 0,
             frame_type: FrameType::SETTINGS,
             flags: FrameFlags::ACK,
             stream_id: None,
@@ -432,7 +480,6 @@ pub(crate) fn append_window_update(
     append_frame(
         dst,
         FrameHeader {
-            len: 4,
             frame_type: FrameType::WINDOW_UPDATE,
             flags: FrameFlags::EMPTY,
             stream_id,
@@ -445,7 +492,6 @@ pub(crate) fn append_ping_ack(dst: &mut BytesMut, payload: [u8; 8]) {
     append_frame(
         dst,
         FrameHeader {
-            len: 8,
             frame_type: FrameType::PING,
             flags: FrameFlags::ACK,
             stream_id: None,
@@ -458,7 +504,6 @@ pub(crate) fn append_rst_stream(dst: &mut BytesMut, stream_id: StreamId, error_c
     append_frame(
         dst,
         FrameHeader {
-            len: 4,
             frame_type: FrameType::RST_STREAM,
             flags: FrameFlags::EMPTY,
             stream_id: Some(stream_id),
@@ -474,12 +519,14 @@ pub(crate) fn append_goaway(
     debug: &[u8],
 ) {
     dst.reserve(GOAWAY_FRAME_PREFIX_LEN + debug.len());
-    dst.extend_from_slice(&encode_frame_header(FrameHeader {
-        len: 8 + debug.len(),
-        frame_type: FrameType::GOAWAY,
-        flags: FrameFlags::EMPTY,
-        stream_id: None,
-    }));
+    dst.extend_from_slice(&encode_frame_header(
+        FrameHeader {
+            frame_type: FrameType::GOAWAY,
+            flags: FrameFlags::EMPTY,
+            stream_id: None,
+        },
+        8 + debug.len(),
+    ));
     dst.extend_from_slice(&last_stream_id.map_or(0, StreamId::get).to_be_bytes());
     dst.extend_from_slice(&error_code.to_be_bytes());
     dst.extend_from_slice(debug);
@@ -504,7 +551,9 @@ mod tests {
 
     fn parse_wire_settings(bytes: &[u8]) -> Vec<(u16, u32)> {
         bytes
-            .chunks_exact(SETTING_ENTRY_LEN)
+            .as_chunks::<SETTING_ENTRY_LEN>()
+            .0
+            .iter()
             .map(|entry| {
                 (
                     u16::from_be_bytes([entry[0], entry[1]]),
@@ -512,6 +561,27 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn stream_id_rejects_connection_and_reserved_bit_values() {
+        assert_eq!(StreamId::new(0), None);
+        assert_eq!(StreamId::new(STREAM_ID_MASK + 1), None);
+        assert_eq!(StreamId::new(u32::MAX), None);
+        assert_eq!(StreamId::new(STREAM_ID_MASK).unwrap().get(), STREAM_ID_MASK);
+        assert!(StreamId::new(1).unwrap().is_client_initiated());
+        assert!(!StreamId::new(2).unwrap().is_client_initiated());
+    }
+
+    #[test]
+    fn window_increment_rejects_zero_and_reserved_bit_values() {
+        assert_eq!(WindowIncrement::new(0), None);
+        assert_eq!(
+            WindowIncrement::new(MAX_FLOW_CONTROL_WINDOW).unwrap().get(),
+            MAX_FLOW_CONTROL_WINDOW
+        );
+        assert_eq!(WindowIncrement::new(MAX_FLOW_CONTROL_WINDOW + 1), None);
+        assert_eq!(WindowIncrement::new(u32::MAX), None);
     }
 
     #[test]
@@ -555,13 +625,15 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_header_uses_usize_length() {
-        let encoded = encode_frame_header(FrameHeader {
-            len: 0x4000,
-            frame_type: FrameType::DATA,
-            flags: FrameFlags::EMPTY,
-            stream_id: Some(StreamId::new(1).unwrap()),
-        });
+    fn encode_frame_header_uses_explicit_payload_length() {
+        let encoded = encode_frame_header(
+            FrameHeader {
+                frame_type: FrameType::DATA,
+                flags: FrameFlags::EMPTY,
+                stream_id: Some(StreamId::new(1).unwrap()),
+            },
+            0x4000,
+        );
         assert_eq!(&encoded[..3], &[0x00, 0x40, 0x00]);
     }
 

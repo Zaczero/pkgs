@@ -1,9 +1,12 @@
 import asyncio
+import gc
 import os
 import re
 import signal
+import socket
 import sys
 import textwrap
+import weakref
 from pathlib import Path
 
 import pytest
@@ -14,6 +17,7 @@ from tests._support import (
     h2_request,
     running_server,
     wait_for_port,
+    wait_for_server,
 )
 
 pytestmark = [
@@ -23,6 +27,71 @@ pytestmark = [
         reason='POSIX worker supervisor (fork workers, signals, unix sockets)',
     ),
 ]
+
+
+async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
+    class App:
+        async def __call__(self, scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b''})
+
+    async def run_once() -> weakref.ReferenceType[App]:
+        app = App()
+        app_ref = weakref.ref(app)
+        server = Server(
+            app,
+            Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+        )
+        task = asyncio.create_task(server.serve())
+        await wait_for_server(server, task)
+        server.shutdown()
+        await asyncio.wait_for(task, timeout=2)
+        return app_ref
+
+    # Warm the process-global Tokio runtime before measuring per-serve state.
+    warm_ref = await run_once()
+    gc.collect()
+    assert warm_ref() is None
+
+    fd_baseline = len(os.listdir('/proc/self/fd')) if sys.platform == 'linux' else None
+    refs = [await run_once() for _ in range(6)]
+    await asyncio.sleep(0)
+    gc.collect()
+
+    assert all(ref() is None for ref in refs)
+    if fd_baseline is not None:
+        assert len(os.listdir('/proc/self/fd')) == fd_baseline
+
+
+async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
+    from h2corn._lib import serve_fds
+
+    async def app(scope, receive, send):
+        raise AssertionError('listener adoption must fail before app dispatch')
+
+    async def attempt(raw_fds: list[int]) -> None:
+        shutdown = asyncio.create_task(asyncio.sleep(60))
+        config = Config(
+            bind=('127.0.0.1:1', '127.0.0.2:1'),
+            access_log=False,
+            lifespan='off',
+        )
+        try:
+            with pytest.raises((OSError, RuntimeError)):
+                await serve_fds(app, raw_fds, config, shutdown, None)
+        finally:
+            shutdown.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await shutdown
+        for fd in raw_fds:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    listener.setblocking(False)
+    await attempt([listener.detach()])
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
@@ -177,7 +246,11 @@ async def test_parent_death_signal_allows_pid_one_supervisor(monkeypatch) -> Non
         def prctl(self, *_args):
             return 0
 
-    monkeypatch.setattr(_supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'), 'CDLL', lambda *_args, **_kwargs: FakeLibc())
+    monkeypatch.setattr(
+        _supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'),
+        'CDLL',
+        lambda *_args, **_kwargs: FakeLibc(),
+    )
     monkeypatch.setattr(_supervisor.os, 'getppid', lambda: 1)
 
     def fail_exit(code: int):
@@ -203,7 +276,11 @@ async def test_parent_death_signal_exits_when_parent_changes(monkeypatch) -> Non
         exit_codes.append(code)
         raise SystemExit(code)
 
-    monkeypatch.setattr(_supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'), 'CDLL', lambda *_args, **_kwargs: FakeLibc())
+    monkeypatch.setattr(
+        _supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'),
+        'CDLL',
+        lambda *_args, **_kwargs: FakeLibc(),
+    )
     monkeypatch.setattr(_supervisor.os, 'getppid', lambda: next(parents))
     monkeypatch.setattr(_supervisor.os, '_exit', fake_exit)
 
@@ -854,9 +931,7 @@ def _worker_pids(supervisor_pid: int) -> list[int]:
         try:
             with open(f'/proc/{entry}/status') as status:
                 ppid = next(
-                    int(line.split()[1])
-                    for line in status
-                    if line.startswith('PPid:')
+                    int(line.split()[1]) for line in status if line.startswith('PPid:')
                 )
         except (OSError, StopIteration):
             continue

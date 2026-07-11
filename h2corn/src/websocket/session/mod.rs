@@ -2,7 +2,8 @@ mod accepted;
 mod handshake;
 
 use std::num::{NonZeroU16, NonZeroUsize};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use tokio::sync::watch;
@@ -14,12 +15,13 @@ use self::handshake::{
 };
 use super::app::start_websocket_app;
 use super::codec::{
-    MAX_CLOSE_REASON_LEN, WebSocketCodec, encode_close_frame_into, validate_close_code,
+    EncodedFrameHeader, MAX_CLOSE_REASON_LEN, WebSocketCodec, encode_close_frame_into,
+    encode_frame_header, validate_close_code,
 };
 use super::request::{validate_accept_headers, validate_accepted_subprotocol};
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
+use crate::access_log::WebSocketAccessLogState;
 use crate::bridge::PayloadBytes;
-use crate::console::WebSocketAccessLogState;
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
 use crate::hpack::BytesStr;
 use crate::http::response::FinalResponseBody;
@@ -130,6 +132,29 @@ pub(crate) enum FrameFlushMode {
     Immediate,
 }
 
+#[derive(Debug)]
+pub(crate) enum EncodedWebSocketFrame {
+    Contiguous(Bytes),
+    Segmented {
+        header: EncodedFrameHeader,
+        payload: PayloadBytes,
+    },
+}
+
+impl EncodedWebSocketFrame {
+    pub(crate) fn segmented(opcode: u8, payload: PayloadBytes, compressed: bool) -> Self {
+        let header = encode_frame_header(opcode, payload.len(), compressed);
+        Self::Segmented { header, payload }
+    }
+
+    pub(crate) fn segments(&self) -> (&[u8], Option<&[u8]>) {
+        match self {
+            Self::Contiguous(frame) => (frame.as_ref(), None),
+            Self::Segmented { header, payload } => (header.as_slice(), Some(payload.as_ref())),
+        }
+    }
+}
+
 pub(crate) trait WebSocketHandshakeTransport {
     fn accept_status(&self) -> HttpStatusCode;
 
@@ -176,7 +201,11 @@ pub(crate) trait WebSocketHandshakeTransport {
 pub(crate) trait AcceptedWebSocketTransport {
     fn websocket_codec(&mut self, max_message_size: Option<NonZeroUsize>) -> WebSocketCodec;
 
-    async fn send_frame(&mut self, frame: Bytes, flush: FrameFlushMode) -> Result<(), H2CornError>;
+    async fn send_frame(
+        &mut self,
+        frame: EncodedWebSocketFrame,
+        flush: FrameFlushMode,
+    ) -> Result<(), H2CornError>;
 
     async fn flush_buffered_frames(&mut self) -> Result<(), H2CornError> {
         Ok(())
@@ -204,8 +233,8 @@ pub(crate) struct WebSocketContext {
 pub(super) struct AcceptedSessionConfig {
     pub(super) max_message_size: Option<NonZeroUsize>,
     pub(super) per_message_deflate: bool,
-    pub(super) ping_interval: Option<std::time::Duration>,
-    pub(super) ping_timeout: Option<std::time::Duration>,
+    pub(super) ping_interval: Option<Duration>,
+    pub(super) ping_timeout: Option<Duration>,
     pub(super) shutdown: watch::Receiver<ShutdownState>,
 }
 
@@ -257,7 +286,7 @@ where
 {
     let request = &context.request;
     let connection = &request.connection;
-    let config = connection.config;
+    let config = Arc::clone(&connection.config);
     let access_log = WebSocketAccessLogState::new(request);
     let per_message_deflate =
         config.websocket.per_message_deflate && context.meta.per_message_deflate;
@@ -350,12 +379,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
     use bytes::BytesMut;
 
     use super::{
-        AcceptedWebSocketState, CloseState, PERMESSAGE_DEFLATE_RESPONSE, append_ws_accept_headers,
-        take_pending_close_frame,
+        AcceptedWebSocketState, CloseState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE,
+        append_ws_accept_headers, take_pending_close_frame,
     };
+
+    #[test]
+    fn encoded_frame_owner_stays_within_inline_queue_budget() {
+        assert!(size_of::<EncodedWebSocketFrame>() <= 64);
+    }
 
     #[test]
     fn accept_headers_append_subprotocol_and_deflate_once() {

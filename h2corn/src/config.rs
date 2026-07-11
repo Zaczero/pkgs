@@ -4,10 +4,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio_rustls::TlsAcceptor;
 
-use crate::frame::DEFAULT_MAX_FRAME_SIZE;
-use crate::proxy::{ProxyProtocolMode, TrustedPeer};
+use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
+use crate::http::types::ResponseHeaderKind;
+use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer};
 
-pub(crate) const PATHSEND_BUFFER_SIZE: usize = 128 * 1024;
+pub(crate) const PATHSEND_PRELOAD_MAX: usize = 128 * 1024;
+pub(crate) const PATHSEND_READ_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Http1Config {
@@ -86,7 +88,21 @@ pub(crate) enum BindTarget {
 pub(crate) struct ResponseHeaderConfig {
     pub server_header: bool,
     pub date_header: bool,
-    pub extra_headers: Box<[(Bytes, Bytes)]>,
+    pub extra_headers: Box<[ConfiguredResponseHeader]>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ConfiguredResponseHeader {
+    pub name: Bytes,
+    pub value: Bytes,
+    pub kind: ResponseHeaderKind,
+}
+
+impl ConfiguredResponseHeader {
+    pub(crate) fn new(name: Bytes, value: Bytes) -> Self {
+        let kind = ResponseHeaderKind::from_bytes(name.as_ref());
+        Self { name, value, kind }
+    }
 }
 
 pub(crate) struct ServerConfig {

@@ -93,14 +93,16 @@ mod tests {
         RequestInputPlan, RequestLaunchPlan, plan_http_input, plan_request,
         reject_oversized_request,
     };
-    use crate::ext::Protocol;
     use crate::hpack::BytesStr;
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
-        HttpVersion, RequestAuthority, RequestHead, RequestTarget, status_code,
+        HttpVersion, Protocol, RequestAuthority, RequestHead, RequestHeaders, RequestTarget,
+        status_code,
     };
 
     fn http_request(content_length: Option<u64>) -> RequestHead {
+        let mut header_meta = RequestHeaderMeta::default();
+        header_meta.set_content_length(content_length);
         RequestHead {
             http_version: HttpVersion::Http1_1,
             method: Method::GET,
@@ -108,11 +110,8 @@ mod tests {
                 BytesStr::from_static("http"),
                 BytesStr::from_static("/demo"),
             ),
-            headers: Vec::new(),
-            header_meta: RequestHeaderMeta {
-                content_length,
-                ..RequestHeaderMeta::default()
-            },
+            headers: RequestHeaders::default(),
+            header_meta,
         }
     }
 
@@ -126,7 +125,7 @@ mod tests {
                 BytesStr::from_static("https"),
                 BytesStr::from_static("/chat"),
             ),
-            headers: Vec::new(),
+            headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
     }
@@ -138,7 +137,7 @@ mod tests {
             target: RequestTarget::connect(RequestAuthority::new(BytesStr::from_static(
                 "example.com:443",
             ))),
-            headers: Vec::new(),
+            headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
     }

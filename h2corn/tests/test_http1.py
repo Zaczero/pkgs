@@ -781,6 +781,34 @@ async def test_http1_synchronous_app_failure_returns_500() -> None:
     assert status == 500
 
 
+async def test_http1_app_failure_does_not_wait_for_incomplete_upload() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            while True:
+                message = await receive()
+                if message['type'] == 'lifespan.startup':
+                    await send({'type': 'lifespan.startup.complete'})
+                elif message['type'] == 'lifespan.shutdown':
+                    await send({'type': 'lifespan.shutdown.complete'})
+                    return
+        raise RuntimeError('request failed before consuming the upload')
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        writer.write(
+            f'POST / HTTP/1.1\r\nHost: 127.0.0.1:{server_port(server)}\r\nContent-Length: 1000000\r\n\r\npart1'.encode()
+        )
+        await writer.drain()
+        status, _headers, _body, _ = await asyncio.wait_for(
+            read_http1_response(reader), timeout=5
+        )
+        assert status == 500
+        assert await asyncio.wait_for(reader.read(), timeout=5) == b''
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_http1_large_streaming_body_to_prevent_oom() -> None:
     events = []
 

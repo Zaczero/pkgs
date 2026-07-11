@@ -1,5 +1,11 @@
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::env::temp_dir;
+#[cfg(test)]
+use std::fs::{File, remove_file, write};
 use std::io;
+#[cfg(test)]
+use std::process::id;
 #[cfg(test)]
 use std::{
     pin::Pin,
@@ -10,23 +16,24 @@ use std::{
 use bytes::Bytes;
 use bytes::BytesMut;
 use smallvec::SmallVec;
-#[cfg(test)]
-use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::time::Instant;
 
 use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
 use super::stream_state::writer_stream;
-use super::stream_state::{PendingChunks, StreamBodyState, StreamWriteState};
-use super::{FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch};
-use crate::error::H2CornError;
-use crate::frame::{
-    self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FrameType, StreamId,
+use super::stream_state::{PendingChunk, PendingChunks, StreamBodyState, StreamWriteState};
+use super::{
+    FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch,
+    ResponseDeadlineUpdateBatch,
 };
+use crate::error::H2CornError;
 use crate::h2::StreamMap;
 #[cfg(test)]
 use crate::h2::new_stream_map;
+use crate::h2_frame::{
+    self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FrameType, StreamId,
+};
 use crate::http::pathsend::PathStreamer;
 use crate::sendfile::WriteTarget;
 
@@ -38,17 +45,23 @@ enum FlushBodyProgress {
 
 struct FlushBodyParts<'a, W> {
     writer: &'a mut BufWriter<W>,
-    ready_streams: &'a mut VecDeque<u32>,
+    ready_streams: &'a mut VecDeque<StreamId>,
     connection_send_window: &'a mut i64,
     data_frame_size: usize,
     stream_budget: usize,
     response_closes: &'a mut ResponseCloseBatch,
 }
 
+pub(super) struct FlushTracking<'a> {
+    pub(super) deadline_updates: &'a mut ResponseDeadlineUpdateBatch,
+    pub(super) response_closes: &'a mut ResponseCloseBatch,
+}
+
 /// One vectored-write's worth of DATA frames collected over body segments.
 struct FrameBatch<'a> {
     headers: SmallVec<[[u8; FRAME_HEADER_LEN]; 9]>,
-    payloads: SmallVec<[&'a [u8]; 9]>,
+    payloads: SmallVec<[&'a [u8]; 18]>,
+    payload_counts: SmallVec<[u8; 9]>,
     /// Window consumption (sum of payload lengths).
     total: usize,
     /// Leading segments fully consumed by this batch.
@@ -64,7 +77,26 @@ struct FrameBatch<'a> {
 impl<'a> FrameBatch<'a> {
     fn push(&mut self, header: [u8; FRAME_HEADER_LEN], payload: &'a [u8]) {
         self.headers.push(header);
-        self.payloads.push(payload);
+        if payload.is_empty() {
+            self.payload_counts.push(0);
+        } else {
+            self.payloads.push(payload);
+            self.payload_counts.push(1);
+        }
+    }
+
+    fn push_pair(&mut self, header: [u8; FRAME_HEADER_LEN], first: &'a [u8], second: &'a [u8]) {
+        self.headers.push(header);
+        let mut count = 0;
+        if !first.is_empty() {
+            self.payloads.push(first);
+            count += 1;
+        }
+        if !second.is_empty() {
+            self.payloads.push(second);
+            count += 1;
+        }
+        self.payload_counts.push(count);
     }
 }
 
@@ -126,16 +158,15 @@ where
     // multi-chunk streamed body becomes a single writev instead of a
     // flush+write pair per frame.
     let (total, drained_segments, tail_consumed, ended_stream, connection_blocked) = {
-        let batch = collect_data_frames(
-            context,
-            stream,
-            stream_id,
-            pending
-                .iter()
-                .map(|chunk| (chunk.remaining(), chunk.end_stream)),
-        );
+        let batch = collect_chunk_data_frames(context, stream, stream_id, pending.iter());
         if !batch.headers.is_empty() {
-            write_frames_vectored(context.writer, &batch.headers, &batch.payloads).await?;
+            write_frames_vectored(
+                context.writer,
+                &batch.headers,
+                &batch.payloads,
+                &batch.payload_counts,
+            )
+            .await?;
         }
         (
             batch.total,
@@ -199,16 +230,18 @@ where
             let remaining = streamer.sendfile_remaining_len();
             let chunk_len = context.next_body_write_len(limit, remaining);
             let end_stream = streamer.end_stream && chunk_len == remaining;
-            let header = frame::encode_frame_header(FrameHeader {
-                len: chunk_len,
-                frame_type: FrameType::DATA,
-                flags: if end_stream {
-                    FrameFlags::END_STREAM
-                } else {
-                    FrameFlags::EMPTY
+            let header = h2_frame::encode_frame_header(
+                FrameHeader {
+                    frame_type: FrameType::DATA,
+                    flags: if end_stream {
+                        FrameFlags::END_STREAM
+                    } else {
+                        FrameFlags::EMPTY
+                    },
+                    stream_id: Some(stream_id),
                 },
-                stream_id: Some(stream_id),
-            });
+                chunk_len,
+            );
             let (file, offset) = streamer.sendfile_parts();
             context.writer.write_all(&header).await?;
             context.writer.flush().await?;
@@ -255,7 +288,13 @@ where
             let may_end = streamer.end_stream && streamer.sendfile_remaining_len() == 0;
             let batch = collect_data_frames(context, stream, stream_id, [(remaining, may_end)]);
             if !batch.headers.is_empty() {
-                write_frames_vectored(context.writer, &batch.headers, &batch.payloads).await?;
+                write_frames_vectored(
+                    context.writer,
+                    &batch.headers,
+                    &batch.payloads,
+                    &batch.payload_counts,
+                )
+                .await?;
             }
             (batch.total, batch.ended_stream, batch.connection_blocked)
         };
@@ -282,16 +321,18 @@ where
 }
 
 fn data_frame_header(len: usize, end_stream: bool, stream_id: StreamId) -> [u8; FRAME_HEADER_LEN] {
-    frame::encode_frame_header(FrameHeader {
-        len,
-        frame_type: FrameType::DATA,
-        flags: if end_stream {
-            FrameFlags::END_STREAM
-        } else {
-            FrameFlags::EMPTY
+    h2_frame::encode_frame_header(
+        FrameHeader {
+            frame_type: FrameType::DATA,
+            flags: if end_stream {
+                FrameFlags::END_STREAM
+            } else {
+                FrameFlags::EMPTY
+            },
+            stream_id: Some(stream_id),
         },
-        stream_id: Some(stream_id),
-    })
+        len,
+    )
 }
 
 /// Collect DATA frames over body segments until the windows, the fair-write
@@ -307,6 +348,7 @@ fn collect_data_frames<'a, W>(
     let mut batch = FrameBatch {
         headers: SmallVec::new(),
         payloads: SmallVec::new(),
+        payload_counts: SmallVec::new(),
         total: 0,
         drained_segments: 0,
         tail_consumed: 0,
@@ -367,6 +409,84 @@ fn collect_data_frames<'a, W>(
     batch
 }
 
+/// Collect DATA frames from logical chunks that may have two physically
+/// separate buffers. A prefixed WebSocket message therefore remains one H2
+/// DATA frame when it fits the peer/window limit, while writev retains the
+/// original payload owner.
+fn collect_chunk_data_frames<'a, W>(
+    context: &mut FlushBodyParts<'_, W>,
+    stream: &StreamWriteState,
+    stream_id: StreamId,
+    chunks: impl IntoIterator<Item = &'a PendingChunk>,
+) -> FrameBatch<'a> {
+    let mut batch = FrameBatch {
+        headers: SmallVec::new(),
+        payloads: SmallVec::new(),
+        payload_counts: SmallVec::new(),
+        total: 0,
+        drained_segments: 0,
+        tail_consumed: 0,
+        ended_stream: false,
+        connection_blocked: false,
+    };
+    'chunks: for chunk in chunks {
+        let remaining_len = chunk.remaining_len();
+        if remaining_len == 0 {
+            batch.push(data_frame_header(0, chunk.end_stream, stream_id), &[]);
+            batch.drained_segments += 1;
+            if chunk.end_stream {
+                batch.ended_stream = true;
+                break;
+            }
+            continue;
+        }
+
+        let mut pos = 0;
+        loop {
+            if *context.connection_send_window - batch.total as i64 <= 0 {
+                batch.connection_blocked = true;
+                batch.tail_consumed = pos;
+                break 'chunks;
+            }
+            let Some(limit) = send_limit(
+                *context.connection_send_window - batch.total as i64,
+                stream.send_window - batch.total as i64,
+                context.data_frame_size,
+            ) else {
+                batch.tail_consumed = pos;
+                break 'chunks;
+            };
+            let chunk_len = context.next_body_write_len(limit, remaining_len - pos);
+            let end_stream = chunk.end_stream && pos + chunk_len == remaining_len;
+            let (first, second) = chunk.remaining_slices(pos, chunk_len);
+            batch.push_pair(
+                data_frame_header(chunk_len, end_stream, stream_id),
+                first,
+                second,
+            );
+            batch.total += chunk_len;
+            pos += chunk_len;
+            if end_stream {
+                batch.drained_segments += 1;
+                batch.ended_stream = true;
+                break 'chunks;
+            }
+            if pos == remaining_len {
+                batch.drained_segments += 1;
+                if context.budget_exhausted() {
+                    break 'chunks;
+                }
+                continue 'chunks;
+            }
+            if context.budget_exhausted() {
+                batch.tail_consumed = pos;
+                break 'chunks;
+            }
+        }
+    }
+    batch
+}
+
 /// Write `[header|payload]*` as one vectored write sequence: flush the
 /// buffered writer first, then drive `write_vectored` over the raw target
 /// with `IoSlice::advance_slices` handling partial writes.
@@ -374,18 +494,22 @@ async fn write_frames_vectored<W>(
     writer: &mut BufWriter<W>,
     headers: &[[u8; FRAME_HEADER_LEN]],
     payloads: &[&[u8]],
+    payload_counts: &[u8],
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {
     writer.flush().await?;
     let mut slices: SmallVec<[io::IoSlice<'_>; 18]> = SmallVec::new();
-    for (header, payload) in headers.iter().zip(payloads) {
+    let mut payload_index = 0;
+    for (header, payload_count) in headers.iter().zip(payload_counts) {
         slices.push(io::IoSlice::new(header));
-        if !payload.is_empty() {
+        for payload in &payloads[payload_index..payload_index + usize::from(*payload_count)] {
             slices.push(io::IoSlice::new(payload));
         }
+        payload_index += usize::from(*payload_count);
     }
+    debug_assert_eq!(payload_index, payloads.len());
     let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
     let mut bufs = slices.as_mut_slice();
     while remaining > 0 {
@@ -402,14 +526,14 @@ where
     Ok(())
 }
 
-pub(super) async fn flush_pending_data<W>(
+pub(super) async fn flush_pending_data_tracked<W>(
     writer: &mut BufWriter<W>,
     streams: &mut StreamMap<StreamWriteState>,
-    ready_streams: &mut VecDeque<u32>,
+    ready_streams: &mut VecDeque<StreamId>,
     connection_send_window: &mut i64,
     peer_max_frame_size: usize,
     header_state: &mut HeaderEncodeState,
-    response_closes: &mut ResponseCloseBatch,
+    tracking: FlushTracking<'_>,
 ) -> Result<FlushPassResult, H2CornError>
 where
     W: WriteTarget,
@@ -422,14 +546,13 @@ where
 
     while ready_turns > 0 {
         ready_turns -= 1;
-        let Some(stream_id_raw) = ready_streams.pop_front() else {
+        let Some(stream_id) = ready_streams.pop_front() else {
             break;
         };
-        // SAFETY: ready_streams only stores ids produced from existing StreamId values.
-        let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
-        let Some(stream) = streams.get_mut(&stream_id_raw) else {
+        let Some(stream) = streams.get_mut(&stream_id) else {
             continue;
         };
+        let deadline_before = stream.pending_body_since();
         stream.scheduled = false;
 
         if *connection_send_window <= 0 && stream.has_pending_output() {
@@ -444,7 +567,7 @@ where
             connection_send_window,
             data_frame_size,
             stream_budget: fair_write_quantum(data_frame_size),
-            response_closes,
+            response_closes: tracking.response_closes,
         };
         let mut body = stream.take_body();
         let progress = match &mut body {
@@ -459,9 +582,15 @@ where
 
         stream.restore_body(body);
         if let Some(trailers) = stream.take_trailers_if_body_idle() {
-            let block = header_state.encode_trailers(&trailers)?;
+            let block = header_state.encode_trailers(&trailers);
             write_header_block(writer, stream_id, true, block, peer_max_frame_size).await?;
-            stream.finish(stream_id, response_closes);
+            stream.finish(stream_id, tracking.response_closes);
+        }
+
+        if deadline_before != stream.pending_body_since()
+            && !tracking.deadline_updates.contains(&stream_id)
+        {
+            tracking.deadline_updates.push(stream_id);
         }
 
         if progress == FlushBodyProgress::ConnectionBlocked {
@@ -480,9 +609,41 @@ where
     }
 
     for stream_id in finished {
-        streams.remove(&stream_id.get());
+        streams.remove(&stream_id);
+        if !tracking.deadline_updates.contains(&stream_id) {
+            tracking.deadline_updates.push(stream_id);
+        }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+async fn flush_pending_data<W>(
+    writer: &mut BufWriter<W>,
+    streams: &mut StreamMap<StreamWriteState>,
+    ready_streams: &mut VecDeque<StreamId>,
+    connection_send_window: &mut i64,
+    peer_max_frame_size: usize,
+    header_state: &mut HeaderEncodeState,
+    response_closes: &mut ResponseCloseBatch,
+) -> Result<FlushPassResult, H2CornError>
+where
+    W: WriteTarget,
+{
+    let mut deadline_updates = ResponseDeadlineUpdateBatch::new();
+    flush_pending_data_tracked(
+        writer,
+        streams,
+        ready_streams,
+        connection_send_window,
+        peer_max_frame_size,
+        header_state,
+        FlushTracking {
+            deadline_updates: &mut deadline_updates,
+            response_closes,
+        },
+    )
+    .await
 }
 
 fn write_empty_data_frame<W>(
@@ -496,7 +657,6 @@ where
     write_frame(
         writer,
         FrameHeader {
-            len: 0,
             frame_type: FrameType::DATA,
             flags: if end_stream {
                 FrameFlags::END_STREAM
@@ -520,7 +680,6 @@ where
     write_frame(
         writer,
         FrameHeader {
-            len: 4,
             frame_type: FrameType::RST_STREAM,
             flags: FrameFlags::EMPTY,
             stream_id: Some(stream_id),
@@ -538,7 +697,7 @@ pub(super) async fn write_frame<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let header = frame::encode_frame_header(header);
+    let header = h2_frame::encode_frame_header(header, payload.len());
     writer.write_all(&header).await?;
     if !payload.is_empty() {
         writer.write_all(payload).await?;
@@ -546,7 +705,10 @@ where
     Ok(())
 }
 
-pub(super) async fn write_frame_buf<W>(writer: &mut W, frame_buf: &mut BytesMut) -> Result<(), H2CornError>
+pub(super) async fn write_frame_buf<W>(
+    writer: &mut W,
+    frame_buf: &mut BytesMut,
+) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {
@@ -558,6 +720,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::PayloadBytes;
+    use crate::h2::writer::PrefixedData;
 
     const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
     const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
@@ -613,7 +777,7 @@ mod tests {
                 bytes[cursor + 6],
                 bytes[cursor + 7],
                 bytes[cursor + 8],
-            ]) & frame::STREAM_ID_MASK;
+            ]) & h2_frame::STREAM_ID_MASK;
 
             if frame_type == 0 {
                 stream_ids.push(stream_id);
@@ -640,7 +804,7 @@ mod tests {
                 bytes[cursor + 6],
                 bytes[cursor + 7],
                 bytes[cursor + 8],
-            ]) & frame::STREAM_ID_MASK;
+            ]) & h2_frame::STREAM_ID_MASK;
 
             if frame_type == 0 {
                 frames.push((len, flags, stream_id));
@@ -653,12 +817,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prefixed_payload_is_one_h2_data_frame_without_joining_buffers() {
+        let stream_id = StreamId::new(1).unwrap();
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let payload = Bytes::from_static(b"body");
+        let stream = writer_stream(
+            &mut streams,
+            stream_id,
+            i64::from(INITIAL_STREAM_WINDOW_SIZE),
+        );
+        stream.open_response(false).unwrap();
+        stream
+            .queue_prefixed_data(
+                Box::new(PrefixedData::new(b"\x82\x04", PayloadBytes::from(payload))),
+                false,
+            )
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let mut writer = BufWriter::new(RecordingWriter::default());
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![(
+            6,
+            0,
+            stream_id.get()
+        )]);
+        assert_eq!(parse_data_payload(&writer.get_ref().bytes), b"\x82\x04body");
+    }
+
+    #[tokio::test]
+    async fn prefixed_payload_resumes_across_prefix_window_boundary() {
+        let stream_id = StreamId::new(1).unwrap();
+        let mut streams = new_stream_map(1);
+        let mut ready_streams = VecDeque::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+
+        let stream = writer_stream(&mut streams, stream_id, 1);
+        stream.open_response(false).unwrap();
+        stream
+            .queue_prefixed_data(
+                Box::new(PrefixedData::new(
+                    b"\x82\x04",
+                    PayloadBytes::from(Bytes::from_static(b"body")),
+                )),
+                true,
+            )
+            .unwrap();
+        stream.schedule(&mut ready_streams, stream_id, false);
+
+        let mut writer = BufWriter::new(RecordingWriter::default());
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+        assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![(1, 0, 1)]);
+
+        let stream = streams.get_mut(&stream_id).unwrap();
+        stream.send_window += 8;
+        stream.schedule(&mut ready_streams, stream_id, false);
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            16 * 1024,
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![
+            (1, 0, 1),
+            (5, FrameFlags::END_STREAM.bits(), 1)
+        ]);
+        assert_eq!(parse_data_payload(&writer.get_ref().bytes), b"\x82\x04body");
+        assert!(streams.is_empty());
+    }
+
+    #[tokio::test]
     async fn pathsend_final_buffered_chunk_carries_end_stream() {
         let stream_id = StreamId::new(1).unwrap();
-        let path =
-            std::env::temp_dir().join(format!("h2corn-flush-pathsend-{}", std::process::id()));
-        std::fs::write(&path, b"abc").unwrap();
-        let file = File::open(&path).await.unwrap();
+        let path = temp_dir().join(format!("h2corn-flush-pathsend-{}", id()));
+        write(&path, b"abc").unwrap();
+        let file = File::open(&path).unwrap();
 
         let mut streams = new_stream_map(1);
         let mut ready_streams = VecDeque::new();
@@ -673,7 +943,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_path(Box::new(PathStreamer::new(file, b"abc".len(), true)))
+            .queue_path(PathStreamer::new(file, b"abc".len(), true))
             .unwrap();
         stream.schedule(&mut ready_streams, stream_id, false);
 
@@ -703,7 +973,7 @@ mod tests {
         assert!(streams.is_empty());
         assert_eq!(response_closes.as_slice(), &[stream_id]);
 
-        std::fs::remove_file(path).unwrap();
+        remove_file(path).unwrap();
     }
 
     /// Reconstruct the concatenated DATA payload bytes for one stream.
@@ -889,7 +1159,7 @@ mod tests {
         assert!(response_closes.as_slice().is_empty());
 
         // Window grant -> the remaining 4 KiB flushes with END_STREAM.
-        let stream = streams.get_mut(&stream_id.get()).unwrap();
+        let stream = streams.get_mut(&stream_id).unwrap();
         stream.send_window += window;
         stream.schedule(&mut ready_streams, stream_id, false);
 
@@ -970,8 +1240,8 @@ mod tests {
 
         let stream_ids = parse_data_stream_ids(&writer.get_ref().bytes);
         assert_eq!(stream_ids, vec![stream_a.get(), stream_b.get()]);
-        assert_eq!(ready_streams, VecDeque::from([stream_a.get()]));
-        assert!(streams.contains_key(&stream_a.get()));
+        assert_eq!(ready_streams, VecDeque::from([stream_a]));
+        assert!(streams.contains_key(&stream_a));
         assert_eq!(response_closes.as_slice(), &[stream_b]);
         response_closes.clear();
 

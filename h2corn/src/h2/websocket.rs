@@ -7,15 +7,15 @@ use super::ConnectionHandle;
 use super::http::send_final_response;
 use crate::bridge::PayloadBytes;
 use crate::error::H2CornError;
-use crate::frame::{ErrorCode, StreamId};
+use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::StreamInput;
 use crate::websocket::WebSocketCodec;
 use crate::websocket::session::{
-    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, FrameFlushMode, TransportRead,
-    WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers, run_websocket,
-    take_pending_close_frame,
+    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, EncodedWebSocketFrame,
+    FrameFlushMode, TransportRead, WebSocketContext, WebSocketHandshakeTransport,
+    append_ws_accept_headers, run_websocket, take_pending_close_frame,
 };
 
 const INITIAL_FRAME_BUF_CAPACITY: usize = 256;
@@ -96,12 +96,21 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
 
     async fn send_frame(
         &mut self,
-        frame: Bytes,
+        frame: EncodedWebSocketFrame,
         _flush: FrameFlushMode,
     ) -> Result<(), H2CornError> {
-        self.connection
-            .send_data(self.stream_id, frame, false)
-            .await
+        match frame {
+            EncodedWebSocketFrame::Contiguous(frame) => {
+                self.connection
+                    .send_data(self.stream_id, frame, false)
+                    .await
+            },
+            EncodedWebSocketFrame::Segmented { header, payload } => {
+                self.connection
+                    .send_prefixed_data(self.stream_id, header.as_slice(), payload, false)
+                    .await
+            },
+        }
     }
 
     async fn flush_buffered_frames(&mut self) -> Result<(), H2CornError> {
@@ -117,8 +126,20 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
         codec: &mut WebSocketCodec,
     ) -> Result<TransportRead, H2CornError> {
         match self.stream_rx.recv().await {
-            Some(StreamInput::Data(data)) => {
-                codec.push_segment(data);
+            Some(StreamInput::Data { body, credit }) => {
+                codec.push_segment(body);
+                if let Some(credit) = credit {
+                    credit.release();
+                }
+                Ok(TransportRead::Progress)
+            },
+            Some(StreamInput::HttpDataBatch { bodies, credit }) => {
+                for body in *bodies {
+                    codec.push_segment(body);
+                }
+                if let Some(credit) = credit {
+                    credit.release();
+                }
                 Ok(TransportRead::Progress)
             },
             Some(StreamInput::EndStream) => Ok(TransportRead::PeerGone),

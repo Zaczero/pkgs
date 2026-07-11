@@ -11,6 +11,34 @@ import pytest
 from h2corn import Config
 
 
+def _ipv6_loopback_is_bindable() -> bool:
+    """Whether this kernel namespace has IPv6 enabled, not merely compiled."""
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(('::1', 0))
+    except OSError:
+        return False
+    return True
+
+
+def test_event_loop_factory_selection_is_explicit() -> None:
+    import asyncio
+
+    from h2corn._server import _event_loop_factory
+
+    assert _event_loop_factory('asyncio') is asyncio.new_event_loop
+    auto = _event_loop_factory('auto')
+    try:
+        import uvloop
+    except ImportError:
+        assert auto is asyncio.new_event_loop
+    else:
+        assert auto is uvloop.new_event_loop
+        assert _event_loop_factory('uvloop') is uvloop.new_event_loop
+
+
 def test_python_m_h2corn_runs_cli_without_target() -> None:
     result = subprocess.run(
         [sys.executable, '-Werror', '-m', 'h2corn', '--check-config'],
@@ -91,6 +119,10 @@ def test_build_sockets_records_kernel_allocated_port(bind_listeners) -> None:
     assert config.bind == (f'127.0.0.1:{bound_port}',)
 
 
+@pytest.mark.skipif(
+    not _ipv6_loopback_is_bindable(),
+    reason='IPv6 loopback is disabled in this kernel namespace',
+)
 def test_build_sockets_shares_kernel_port_across_zero_binds(bind_listeners) -> None:
     _config, sockets = bind_listeners(bind=('127.0.0.1:0', '[::1]:0'))
     assert len(sockets) == 2

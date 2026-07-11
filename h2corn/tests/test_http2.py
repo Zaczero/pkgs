@@ -1,4 +1,6 @@
 import asyncio
+import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -258,6 +260,126 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
     assert seen == ['startup', 'shutdown']
 
 
+@pytest.mark.skipif(
+    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None:
+    main_loop_id = id(asyncio.get_running_loop())
+    lock = threading.Lock()
+    startups: list[int] = []
+    shutdowns: list[int] = []
+    loop_modules: list[str] = []
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            loop_id = id(asyncio.get_running_loop())
+            scope['state']['loop_id'] = loop_id
+            with lock:
+                startups.append(loop_id)
+                loop_modules.append(type(asyncio.get_running_loop()).__module__)
+            assert (await receive())['type'] == 'lifespan.startup'
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            with lock:
+                shutdowns.append(loop_id)
+            return
+
+        body = str(scope['state']['loop_id']).encode()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(port=0, loop_threads=4, lifespan='on', access_log=False)
+    async with running_server(app, config) as server:
+        bodies = []
+        for _ in range(8):
+            status, body = await h2_request(port=server_port(server))
+            assert status == 200
+            bodies.append(int(body))
+
+        assert startups[0] == main_loop_id
+        assert len(set(startups)) == 4
+        assert set(bodies) == set(startups)
+        main_family = type(asyncio.get_running_loop()).__module__.split('.', 1)[0]
+        assert {module.split('.', 1)[0] for module in loop_modules} == {main_family}
+
+    assert set(shutdowns) == set(startups)
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
+    main_loop_id = id(asyncio.get_running_loop())
+    lock = threading.Lock()
+    startups: list[int] = []
+    shutdowns: list[int] = []
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'lifespan'
+        loop_id = id(asyncio.get_running_loop())
+        with lock:
+            startups.append(loop_id)
+            startup_ordinal = len(startups)
+        assert (await receive())['type'] == 'lifespan.startup'
+        if startup_ordinal == 4:
+            await send({'type': 'lifespan.startup.failed', 'message': 'secondary'})
+            return
+        await send({'type': 'lifespan.startup.complete'})
+        assert (await receive())['type'] == 'lifespan.shutdown'
+        await send({'type': 'lifespan.shutdown.complete'})
+        with lock:
+            shutdowns.append(loop_id)
+
+    server = Server(
+        app,
+        Config(port=0, loop_threads=4, lifespan='on', access_log=False),
+    )
+    with pytest.raises(RuntimeError, match='lifespan startup failed: secondary'):
+        await server.serve()
+
+    assert startups[0] == main_loop_id
+    assert len(set(startups)) == 4
+    assert set(shutdowns) == set(startups[:-1])
+    assert startups[-1] not in shutdowns
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_uvloop_secondary_factory_mismatch_fails_transactionally(
+    monkeypatch,
+) -> None:
+    if type(asyncio.get_running_loop()).__module__ != 'uvloop':
+        pytest.skip('requires the uvloop test-loop variant')
+
+    import uvloop
+
+    monkeypatch.setattr(uvloop, 'new_event_loop', asyncio.SelectorEventLoop)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        await send({'type': 'lifespan.startup.complete'})
+        assert (await receive())['type'] == 'lifespan.shutdown'
+        await send({'type': 'lifespan.shutdown.complete'})
+
+    server = Server(
+        app,
+        Config(port=0, loop_threads=2, lifespan='on', access_log=False),
+    )
+    with pytest.raises(
+        RuntimeError,
+        match='Uvloop secondary-loop factory returned Asyncio loop',
+    ):
+        await server.serve()
+
+    assert server.addresses == ()
+
+
 async def test_fastapi_request_headers_work_with_tuple_backed_scope_headers() -> None:
     fastapi_app = FastAPI()
 
@@ -451,12 +573,22 @@ async def test_request_body_can_be_consumed_across_multiple_data_frames() -> Non
 
 
 async def test_request_body_can_be_consumed_across_delayed_small_data_frames() -> None:
-    async def app(scope, receive, send):
-        body = await read_http_request_body(receive)
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': body})
+    chunk_seen = asyncio.Queue()
 
-    config = Config(port=0)
+    async def app(scope, receive, send):
+        body = bytearray()
+        while True:
+            message = await receive()
+            chunk = message.get('body', b'')
+            body.extend(chunk)
+            if chunk:
+                chunk_seen.put_nowait(len(chunk))
+            if not message.get('more_body', False):
+                break
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': bytes(body)})
+
+    config = Config(port=0, lifespan='off')
     async with running_server(app, config) as server:
         reader, writer, conn, authority = await open_h2_connection(
             port=server_port(server)
@@ -484,7 +616,7 @@ async def test_request_body_can_be_consumed_across_delayed_small_data_frames() -
                 )
                 writer.write(conn.data_to_send())
                 await writer.drain()
-                await asyncio.sleep(0.01)
+                assert await asyncio.wait_for(chunk_seen.get(), timeout=1) == 1
 
             status, body, trailers = await read_h2_response(
                 reader,

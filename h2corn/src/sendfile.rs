@@ -1,37 +1,42 @@
+use std::fs::File;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::io::{Error, ErrorKind};
 
 #[cfg(target_os = "linux")]
 use rustix::fs::sendfile;
-use tokio::fs::File;
-#[cfg(not(target_os = "linux"))]
-use tokio::io::copy;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, BufWriter};
 use tokio::net::tcp::OwnedWriteHalf as TcpOwnedWriteHalf;
 #[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
 
-/// Transport capability for serving file bodies: true zero-copy kernel
-/// sendfile on plain TCP, buffered copy everywhere else. The caller owns
-/// framing and must flush the writer before calling `send_file`.
+/// Transport capability for serving file bodies. Only targets with a true
+/// capability use this method; all others stay on the rolling-read path.
+/// The caller owns framing and must flush before calling `send_file`.
 pub(crate) trait WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
     const SUPPORTS_SENDFILE: bool;
 
     /// Send `len` bytes of `file` starting at `*offset`, advancing it.
     async fn send_file(
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        offset: &mut u64,
-        len: usize,
+        _writer: &mut BufWriter<Self>,
+        _file: &mut File,
+        _offset: &mut u64,
+        _len: usize,
     ) -> io::Result<()>
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "transport does not support sendfile",
+        ))
+    }
 }
 
 impl WriteTarget for TcpOwnedWriteHalf {
     const SUPPORTS_SENDFILE: bool = cfg!(target_os = "linux");
 
+    #[cfg(target_os = "linux")]
     async fn send_file(
         writer: &mut BufWriter<Self>,
         file: &mut File,
@@ -45,39 +50,12 @@ impl WriteTarget for TcpOwnedWriteHalf {
 #[cfg(unix)]
 impl WriteTarget for UnixOwnedWriteHalf {
     const SUPPORTS_SENDFILE: bool = false;
-
-    async fn send_file(
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        offset: &mut u64,
-        len: usize,
-    ) -> io::Result<()> {
-        copy_file_range_buffered(writer, file, offset, len).await
-    }
-}
-
-/// Portable fallback: seek + bounded copy through the buffered writer.
-pub(crate) async fn copy_file_range_buffered<W>(
-    writer: &mut BufWriter<W>,
-    file: &mut File,
-    offset: &mut u64,
-    len: usize,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    file.seek(io::SeekFrom::Start(*offset)).await?;
-    let mut limited = AsyncReadExt::take(file, len as u64);
-    let copied = tokio::io::copy(&mut limited, writer).await?;
-    *offset += copied;
-    writer.flush().await?;
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
 #[expect(
     clippy::needless_pass_by_ref_mut,
-    reason = "signature matches the portable fallback and call sites that advance the offset"
+    reason = "the shared transport capability passes and advances an explicit offset"
 )]
 pub(crate) async fn sendfile_all_tcp(
     writer: &mut BufWriter<TcpOwnedWriteHalf>,
@@ -101,16 +79,5 @@ pub(crate) async fn sendfile_all_tcp(
             Err(err) => return Err(err.into()),
         }
     }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) async fn sendfile_all_tcp(
-    writer: &mut BufWriter<TcpOwnedWriteHalf>,
-    file: &mut File,
-    _offset: &mut u64,
-    _len: usize,
-) -> io::Result<()> {
-    copy(file, writer.get_mut()).await?;
     Ok(())
 }

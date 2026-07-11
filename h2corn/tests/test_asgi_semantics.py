@@ -231,6 +231,68 @@ async def test_app_timer_and_sleep_interleave_with_pump() -> None:
     assert all(status == 200 and body == b'slept' for status, body in bodies)
 
 
+async def test_scope_metadata_mutation_is_request_local() -> None:
+    requests = 0
+
+    async def app(scope, receive, send):
+        nonlocal requests
+        if requests == 0:
+            scope['asgi']['version'] = 'application-mutated'
+            scope['extensions']['application.private'] = {}
+            scope['extensions']['http.response.pathsend']['application.private'] = True
+        else:
+            assert scope['asgi']['version'] == '3.0'
+            assert 'application.private' not in scope['extensions']
+            assert (
+                'application.private'
+                not in scope['extensions']['http.response.pathsend']
+            )
+        requests += 1
+        await _respond(send, b'ok')
+
+    async with running_server(app, _config()) as server:
+        first = await h2_request(port=server_port(server))
+        second = await h2_request(port=server_port(server))
+
+    assert first == (200, b'ok')
+    assert second == (200, b'ok')
+    assert requests == 2
+
+
+async def test_peer_disconnect_cancels_abandoned_application_task() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def app(scope, receive, send):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async with running_server(app, _config()) as server:
+        _reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+            ],
+            end_stream=True,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        await asyncio.wait_for(started.wait(), timeout=5)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.wait_for(cancelled.wait(), timeout=5)
+
+
 async def test_app_exception_after_cancelled_receive_yields_500() -> None:
     async def app(scope, receive, send):
         try:

@@ -2,26 +2,30 @@ mod buffered;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
-pub(crate) use buffered::HttpSendState;
+pub(crate) use buffered::{HttpSendDisposition, HttpSendState};
 use bytes::Bytes;
 use http::Method;
-use pyo3::Py;
 use tokio::sync::mpsc;
 
 use self::buffered::HttpSendBuffer;
 use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
-use crate::bridge::{PyHttpReceive, PyHttpSend};
+use crate::app_call::AppCallArgs;
+use crate::bridge::HttpDisconnectSignal;
 use crate::error::H2CornError;
-use crate::http::scope::build_http_scope;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 
 pub(crate) enum HttpRequestBody {
     NoBody,
     Single(Bytes),
-    Stream(mpsc::Receiver<StreamInput>),
+    Stream {
+        rx: mpsc::Receiver<StreamInput>,
+        disconnect: Arc<HttpDisconnectSignal>,
+    },
 }
 
 pub(crate) struct HttpRequestState {
@@ -35,6 +39,20 @@ pub(crate) struct RunningHttpRequest<F> {
     pub(crate) app_task: F,
 }
 
+/// Poll an app driver exactly once without yielding to the scheduler.
+///
+/// Connection protocols use this before work that can reject synchronously,
+/// ensuring the admitted app call has been handed to its loop while retaining
+/// normal concurrent driving once it suspends.
+pub(crate) fn poll_app_task_once<F>(mut task: Pin<&mut F>) -> Poll<F::Output>
+where
+    F: Future,
+{
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    task.as_mut().poll(&mut cx)
+}
+
 pub(crate) fn start_asgi_http_request(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
@@ -43,21 +61,9 @@ pub(crate) fn start_asgi_http_request(
     let head_only = ctx.request.method == Method::HEAD;
     let supports_response_trailers = ctx.request.accepts_trailers();
     let (send_state, send_buffer) = HttpSendState::new();
-    let app = ctx.connection.app;
+    let app = Arc::clone(&ctx.connection.app);
 
-    let app_task = start_app_call(app, move |py, _app, shard| {
-        let scope = build_http_scope(py, &ctx)?.into_any();
-        let receive = match request_body {
-            HttpRequestBody::NoBody => PyHttpReceive::new_no_body(shard),
-            HttpRequestBody::Single(body) => PyHttpReceive::new_single(shard, body),
-            HttpRequestBody::Stream(stream_rx) => PyHttpReceive::new_stream(shard, stream_rx),
-        };
-        let receive = Py::new(py, receive)?.into_bound(py).into_any();
-        let send = Py::new(py, PyHttpSend::new(shard, send_state))?
-            .into_bound(py)
-            .into_any();
-        Ok((scope, receive, send))
-    });
+    let app_task = start_app_call(app, AppCallArgs::http(ctx, request_body, send_state));
 
     RunningHttpRequest {
         state: HttpRequestState {

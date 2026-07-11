@@ -9,11 +9,10 @@ use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
 
 use crate::ascii;
-use crate::config::ServerConfig;
-use crate::ext::Protocol;
+use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::http::digits;
-use crate::http::types::{RequestHeaderValue, ResponseHeaders};
-use crate::proxy::trusted_host_matches;
+use crate::http::types::{Protocol, ResponseHeaderKind, ResponseHeaderName, ResponseHeaders};
+use crate::proxy_protocol::trusted_host_matches;
 
 const SECONDS_PER_DAY: u64 = 86_400;
 const HTTP_DATE_TEMPLATE: [u8; 29] = *b"Thu, 01 Jan 1970 00:00:00 GMT";
@@ -24,6 +23,12 @@ const MONTHS: [[u8; 3]; 12] = [
     *b"Jan", *b"Feb", *b"Mar", *b"Apr", *b"May", *b"Jun", *b"Jul", *b"Aug", *b"Sep", *b"Oct",
     *b"Nov", *b"Dec",
 ];
+const RESPONSE_HAS_SERVER: u8 = 1 << 0;
+const RESPONSE_HAS_DATE: u8 = 1 << 1;
+const RESPONSE_CONTENT_LENGTH_SCANNED: u8 = 1 << 2;
+const RESPONSE_HAS_CONTENT_LENGTH: u8 = 1 << 3;
+const RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE: u8 = 1 << 4;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConnectionHeaderTokens {
     pub close: bool,
@@ -31,9 +36,8 @@ pub(crate) struct ConnectionHeaderTokens {
     pub http2_settings: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResponseContentLength {
-    #[default]
     Missing,
     Valid(usize),
     NeedsRewrite,
@@ -41,26 +45,63 @@ enum ResponseContentLength {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ResponseHeaderScan {
-    pub has_server: bool,
-    pub has_date: bool,
-    content_length: Option<ResponseContentLength>,
+    content_length: usize,
+    flags: u8,
 }
 
 impl ResponseHeaderScan {
+    const fn has_server(self) -> bool {
+        self.flags & RESPONSE_HAS_SERVER != 0
+    }
+
+    const fn has_date(self) -> bool {
+        self.flags & RESPONSE_HAS_DATE != 0
+    }
+
+    const fn content_length_state(self) -> ResponseContentLength {
+        assert!(
+            self.flags & RESPONSE_CONTENT_LENGTH_SCANNED != 0,
+            "response content-length must be scanned before reading",
+        );
+        if self.flags & RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE != 0 {
+            ResponseContentLength::NeedsRewrite
+        } else if self.flags & RESPONSE_HAS_CONTENT_LENGTH != 0 {
+            ResponseContentLength::Valid(self.content_length)
+        } else {
+            ResponseContentLength::Missing
+        }
+    }
+
     pub(crate) const fn content_length(self) -> Option<usize> {
-        match self
-            .content_length
-            .expect("response content-length must be scanned before reading")
-        {
+        match self.content_length_state() {
             ResponseContentLength::Valid(len) => Some(len),
             ResponseContentLength::Missing | ResponseContentLength::NeedsRewrite => None,
         }
     }
 
-    pub(crate) fn ensure_content_length_scanned(&mut self, headers: &ResponseHeaders) {
-        if self.content_length.is_none() {
-            self.content_length = Some(inspect_response_content_length(headers));
+    fn observe_content_length(&mut self, value: &[u8]) {
+        if self.flags & (RESPONSE_HAS_CONTENT_LENGTH | RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE) != 0 {
+            self.flags |= RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
+            return;
         }
+        if let Some(len) =
+            parse_content_length_header(value).and_then(|len| usize::try_from(len).ok())
+        {
+            self.content_length = len;
+            self.flags |= RESPONSE_HAS_CONTENT_LENGTH;
+        } else {
+            self.flags |= RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
+        }
+    }
+
+    const fn finish_content_length_scan(&mut self) {
+        self.flags |= RESPONSE_CONTENT_LENGTH_SCANNED;
+    }
+
+    const fn set_content_length(&mut self, len: usize) {
+        self.content_length = len;
+        self.flags |= RESPONSE_CONTENT_LENGTH_SCANNED | RESPONSE_HAS_CONTENT_LENGTH;
+        self.flags &= !RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
     }
 }
 
@@ -164,9 +205,9 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
     let mut scan = ResponseHeaderScan::default();
 
     for (name, _) in headers {
-        match name.as_bytes() {
-            b"server" => scan.has_server = true,
-            b"date" => scan.has_date = true,
+        match name.kind() {
+            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
+            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
             _ => {},
         }
     }
@@ -174,34 +215,19 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
     scan
 }
 
-#[cfg(test)]
 pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
-    let mut scan = inspect_response_default_headers(headers);
-    scan.ensure_content_length_scanned(headers);
-    scan
-}
-
-fn inspect_response_content_length(headers: &ResponseHeaders) -> ResponseContentLength {
-    let mut content_length = ResponseContentLength::Missing;
+    let mut scan = ResponseHeaderScan::default();
 
     for (name, value) in headers {
-        if name.as_bytes() != b"content-length" {
-            continue;
+        match name.kind() {
+            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
+            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
+            ResponseHeaderKind::ContentLength => scan.observe_content_length(value.as_bytes()),
+            _ => {},
         }
-        content_length = match content_length {
-            ResponseContentLength::Missing => parse_content_length_header(value.as_bytes())
-                .and_then(|len| usize::try_from(len).ok())
-                .map_or(
-                    ResponseContentLength::NeedsRewrite,
-                    ResponseContentLength::Valid,
-                ),
-            ResponseContentLength::Valid(_) | ResponseContentLength::NeedsRewrite => {
-                ResponseContentLength::NeedsRewrite
-            },
-        };
     }
-
-    content_length
+    scan.finish_content_length_scan();
+    scan
 }
 
 pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
@@ -209,9 +235,7 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
     scan: &mut ResponseHeaderScan,
     len: usize,
 ) {
-    let content_length = scan
-        .content_length
-        .expect("response content-length must be scanned before canonicalizing");
+    let content_length = scan.content_length_state();
     if content_length == ResponseContentLength::Valid(len) {
         return;
     }
@@ -228,13 +252,13 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
             Bytes::from_static(b"content-length").into(),
             len_value.into(),
         ));
-        scan.content_length = Some(ResponseContentLength::Valid(len));
+        scan.set_content_length(len);
         return;
     }
 
     let mut seen = false;
     headers.retain_mut(|(name, value)| {
-        if name.as_bytes() != b"content-length" {
+        if name.kind() != ResponseHeaderKind::ContentLength {
             return true;
         }
         if seen {
@@ -245,7 +269,7 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
         true
     });
     debug_assert!(seen);
-    scan.content_length = Some(ResponseContentLength::Valid(len));
+    scan.set_content_length(len);
 }
 
 fn cached_date_value() -> Bytes {
@@ -320,27 +344,59 @@ pub(crate) fn apply_default_response_headers_with_scan(
 ) {
     let defaults = &config.response_headers;
     headers.reserve(
-        usize::from(defaults.server_header && !scan.has_server)
-            + usize::from(defaults.date_header && !scan.has_date)
+        usize::from(defaults.server_header && !scan.has_server())
+            + usize::from(defaults.date_header && !scan.has_date())
             + defaults.extra_headers.len(),
     );
-    if defaults.server_header && !scan.has_server {
+    append_default_response_headers(headers, scan, defaults);
+}
+
+fn append_default_response_headers(
+    headers: &mut ResponseHeaders,
+    scan: &mut ResponseHeaderScan,
+    defaults: &ResponseHeaderConfig,
+) {
+    if defaults.server_header && !scan.has_server() {
         headers.push((
             Bytes::from_static(b"server").into(),
             Bytes::from_static(b"h2corn").into(),
         ));
-        scan.has_server = true;
+        scan.flags |= RESPONSE_HAS_SERVER;
     }
-    if defaults.date_header && !scan.has_date {
+    if defaults.date_header && !scan.has_date() {
         headers.push((
             Bytes::from_static(b"date").into(),
             cached_date_value().into(),
         ));
-        scan.has_date = true;
+        scan.flags |= RESPONSE_HAS_DATE;
     }
-    for (name, value) in &defaults.extra_headers {
-        headers.push((Bytes::clone(name).into(), Bytes::clone(value).into()));
+    for header in &defaults.extra_headers {
+        match header.kind {
+            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
+            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
+            ResponseHeaderKind::ContentLength => scan.observe_content_length(header.value.as_ref()),
+            _ => {},
+        }
+        headers.push((
+            ResponseHeaderName::from_configured(Bytes::clone(&header.name), header.kind),
+            Bytes::clone(&header.value).into(),
+        ));
     }
+}
+
+pub(crate) fn prepare_fixed_length_response_headers_with_scan(
+    headers: &mut ResponseHeaders,
+    scan: &mut ResponseHeaderScan,
+    defaults: &ResponseHeaderConfig,
+    len: usize,
+) {
+    let additional = usize::from(defaults.server_header && !scan.has_server())
+        + usize::from(defaults.date_header && !scan.has_date())
+        + defaults.extra_headers.len()
+        + usize::from(scan.content_length_state() == ResponseContentLength::Missing);
+    headers.reserve(additional);
+    append_default_response_headers(headers, scan, defaults);
+    canonicalize_fixed_length_response_headers_with_scan(headers, scan, len);
 }
 
 pub(crate) fn apply_default_response_headers(headers: &mut ResponseHeaders, config: &ServerConfig) {
@@ -383,8 +439,8 @@ pub(crate) fn protocol_is_websocket(protocol: &Protocol) -> bool {
     protocol.as_str() == "websocket"
 }
 
-pub(crate) fn header_value_text(value: &RequestHeaderValue) -> Option<&str> {
-    let value = str::from_utf8(value.as_bytes()).ok()?.trim_ascii();
+pub(crate) fn header_value_text(value: &[u8]) -> Option<&str> {
+    let value = str::from_utf8(value).ok()?.trim_ascii();
     (!value.is_empty()).then_some(value)
 }
 
@@ -416,7 +472,10 @@ pub(crate) fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
     })
 }
 
-pub(crate) fn parse_x_forwarded_for_value<'a>(value: &'a str, config: &ServerConfig) -> Option<&'a str> {
+pub(crate) fn parse_x_forwarded_for_value<'a>(
+    value: &'a str,
+    config: &ServerConfig,
+) -> Option<&'a str> {
     let mut furthest_host = None;
 
     for host in value.rsplit(',').map(normalize_forwarded_value) {
@@ -481,8 +540,10 @@ mod tests {
     use super::{
         ResponseContentLength, civil_from_days, format_http_date, inspect_response_headers,
         last_csv_token, parse_content_length_header, parse_host_port,
+        prepare_fixed_length_response_headers_with_scan,
     };
-    use crate::header_value::header_value_is_valid;
+    use crate::config::{ConfiguredResponseHeader, ResponseHeaderConfig};
+    use crate::http::header_value::header_value_is_valid;
     use crate::http::types::ResponseHeaders;
 
     #[test]
@@ -565,9 +626,12 @@ mod tests {
 
         let scan = inspect_response_headers(&headers);
 
-        assert!(scan.has_server);
-        assert!(scan.has_date);
-        assert_eq!(scan.content_length, Some(ResponseContentLength::Valid(42)));
+        assert!(scan.has_server());
+        assert!(scan.has_date());
+        assert_eq!(
+            scan.content_length_state(),
+            ResponseContentLength::Valid(42)
+        );
         assert_eq!(scan.content_length(), Some(42));
     }
 
@@ -587,8 +651,8 @@ mod tests {
         let scan = inspect_response_headers(&headers);
 
         assert_eq!(
-            scan.content_length,
-            Some(ResponseContentLength::NeedsRewrite)
+            scan.content_length_state(),
+            ResponseContentLength::NeedsRewrite
         );
         assert_eq!(scan.content_length(), None);
     }
@@ -603,10 +667,103 @@ mod tests {
         let scan = inspect_response_headers(&headers);
 
         assert_eq!(
-            scan.content_length,
-            Some(ResponseContentLength::NeedsRewrite)
+            scan.content_length_state(),
+            ResponseContentLength::NeedsRewrite
         );
         assert_eq!(scan.content_length(), None);
+    }
+
+    #[test]
+    fn fixed_length_preparation_preserves_order_and_canonicalizes_duplicates() {
+        let mut headers: ResponseHeaders = vec![
+            (
+                Bytes::from_static(b"x-first").into(),
+                Bytes::from_static(b"one").into(),
+            ),
+            (
+                Bytes::from_static(b"content-length").into(),
+                Bytes::from_static(b"9").into(),
+            ),
+            (
+                Bytes::from_static(b"content-length").into(),
+                Bytes::from_static(b"9").into(),
+            ),
+            (
+                Bytes::from_static(b"date").into(),
+                Bytes::from_static(b"Fri, 17 Apr 2026 12:00:00 GMT").into(),
+            ),
+        ];
+        let defaults = ResponseHeaderConfig {
+            server_header: true,
+            date_header: true,
+            extra_headers: Box::new([ConfiguredResponseHeader::new(
+                Bytes::from_static(b"x-extra"),
+                Bytes::from_static(b"two"),
+            )]),
+        };
+        let mut scan = inspect_response_headers(&headers);
+
+        prepare_fixed_length_response_headers_with_scan(&mut headers, &mut scan, &defaults, 5);
+
+        let names: Vec<&[u8]> = headers.iter().map(|(name, _)| name.as_bytes()).collect();
+        assert_eq!(names, [
+            b"x-first".as_slice(),
+            b"content-length".as_slice(),
+            b"date".as_slice(),
+            b"server".as_slice(),
+            b"x-extra".as_slice(),
+        ]);
+        assert_eq!(headers[1].1.as_bytes(), b"5");
+        assert_eq!(scan.content_length(), Some(5));
+    }
+
+    #[test]
+    fn fixed_length_preparation_appends_defaults_then_canonical_length() {
+        let mut headers = ResponseHeaders::new();
+        let defaults = ResponseHeaderConfig {
+            server_header: true,
+            date_header: true,
+            extra_headers: Box::new([]),
+        };
+        let mut scan = inspect_response_headers(&headers);
+
+        prepare_fixed_length_response_headers_with_scan(&mut headers, &mut scan, &defaults, 0);
+
+        let names: Vec<&[u8]> = headers.iter().map(|(name, _)| name.as_bytes()).collect();
+        assert_eq!(names, [
+            b"server".as_slice(),
+            b"date".as_slice(),
+            b"content-length".as_slice(),
+        ]);
+        assert_eq!(headers[2].1.as_bytes(), b"0");
+    }
+
+    #[test]
+    fn fixed_length_preparation_canonicalizes_configured_content_length() {
+        let mut headers = ResponseHeaders::new();
+        let defaults = ResponseHeaderConfig {
+            server_header: false,
+            date_header: false,
+            extra_headers: Box::new([
+                ConfiguredResponseHeader::new(
+                    Bytes::from_static(b"x-extra"),
+                    Bytes::from_static(b"before"),
+                ),
+                ConfiguredResponseHeader::new(
+                    Bytes::from_static(b"content-length"),
+                    Bytes::from_static(b"999"),
+                ),
+            ]),
+        };
+        let mut scan = inspect_response_headers(&headers);
+
+        prepare_fixed_length_response_headers_with_scan(&mut headers, &mut scan, &defaults, 5);
+
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].0.as_bytes(), b"x-extra");
+        assert_eq!(headers[1].0.as_bytes(), b"content-length");
+        assert_eq!(headers[1].1.as_bytes(), b"5");
+        assert_eq!(scan.content_length(), Some(5));
     }
 
     #[test]

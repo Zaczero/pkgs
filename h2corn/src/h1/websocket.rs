@@ -1,7 +1,9 @@
 mod accept {
+    use crate::websocket::WEBSOCKET_KEY_LEN;
+
     pub(super) const LEN: usize = 28;
     pub(super) const GUID: &[u8; 36] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    pub(super) const INPUT_LEN: usize = crate::websocket::WEBSOCKET_KEY_LEN + GUID.len();
+    pub(super) const INPUT_LEN: usize = WEBSOCKET_KEY_LEN + GUID.len();
     pub(super) const INITIAL_STATE: [u32; 5] = [
         0x6745_2301_u32,
         0xEFCD_AB89,
@@ -14,7 +16,7 @@ mod accept {
         let mut index = 0;
         while index < GUID.len() / 4 {
             let offset = index * 4;
-            block[crate::websocket::WEBSOCKET_KEY_LEN / 4 + index] = u32::from_be_bytes([
+            block[WEBSOCKET_KEY_LEN / 4 + index] = u32::from_be_bytes([
                 GUID[offset],
                 GUID[offset + 1],
                 GUID[offset + 2],
@@ -37,10 +39,11 @@ mod b64 {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 }
 
-use std::mem;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::{io, mem};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
@@ -56,9 +59,9 @@ use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::sendfile::WriteTarget;
 use crate::websocket::session::{
-    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, FrameFlushMode, TransportRead,
-    WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers, run_websocket,
-    take_pending_close_frame,
+    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, EncodedWebSocketFrame,
+    FrameFlushMode, TransportRead, WebSocketContext, WebSocketHandshakeTransport,
+    append_ws_accept_headers, run_websocket, take_pending_close_frame,
 };
 use crate::websocket::{WEBSOCKET_KEY_LEN, WebSocketCodec, WebSocketKey};
 
@@ -68,12 +71,12 @@ const HANDSHAKE_BUF_CAPACITY: usize = 512;
 type HandshakeBuf = SmallVec<[u8; HANDSHAKE_BUF_CAPACITY]>;
 
 struct H1WebSocketTransport<R, W> {
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     key: WebSocketKey,
     reader: R,
     buffer: BytesMut,
     frame_buf: BytesMut,
-    frame_flush_pending: bool,
+    pending_frames: SmallVec<[EncodedWebSocketFrame; 4]>,
     writer: BufWriter<W>,
 }
 
@@ -87,7 +90,7 @@ where
     }
 
     async fn send_empty_response(&mut self, status: HttpStatusCode) -> Result<(), H2CornError> {
-        write_empty_response(&mut self.writer, self.config, status, true).await
+        write_empty_response(&mut self.writer, &self.config, status, true).await
     }
 
     async fn send_accept(
@@ -98,7 +101,7 @@ where
     ) -> Result<(), H2CornError> {
         write_websocket_accept(
             &mut self.writer,
-            self.config,
+            &self.config,
             &self.key,
             subprotocol,
             headers,
@@ -121,7 +124,7 @@ where
         status: HttpStatusCode,
         mut headers: ResponseHeaders,
     ) -> Result<(), H2CornError> {
-        apply_default_response_headers(&mut headers, self.config);
+        apply_default_response_headers(&mut headers, &self.config);
         write_response_head(
             &mut self.writer,
             status,
@@ -155,23 +158,24 @@ where
         codec
     }
 
-    async fn send_frame(&mut self, frame: Bytes, flush: FrameFlushMode) -> Result<(), H2CornError> {
-        self.writer.write_all(frame.as_ref()).await?;
+    async fn send_frame(
+        &mut self,
+        frame: EncodedWebSocketFrame,
+        flush: FrameFlushMode,
+    ) -> Result<(), H2CornError> {
+        self.pending_frames.push(frame);
         if flush == FrameFlushMode::Immediate {
-            self.writer.flush().await?;
-            self.frame_flush_pending = false;
-        } else {
-            self.frame_flush_pending = true;
+            self.flush_buffered_frames().await?;
         }
         Ok(())
     }
 
     async fn flush_buffered_frames(&mut self) -> Result<(), H2CornError> {
-        if !self.frame_flush_pending {
+        if self.pending_frames.is_empty() {
             return Ok(());
         }
-        self.writer.flush().await?;
-        self.frame_flush_pending = false;
+        write_websocket_frames_vectored(&mut self.writer, &self.pending_frames).await?;
+        self.pending_frames.clear();
         Ok(())
     }
 
@@ -199,7 +203,11 @@ where
             assert_ne!(state.close_state, CloseState::CloseQueued);
             return Ok(());
         };
-        self.send_frame(frame, FrameFlushMode::Immediate).await?;
+        self.send_frame(
+            EncodedWebSocketFrame::Contiguous(frame),
+            FrameFlushMode::Immediate,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -216,15 +224,46 @@ where
     W: WriteTarget,
 {
     let mut transport = H1WebSocketTransport {
-        config: context.request.connection.config,
+        config: Arc::clone(&context.request.connection.config),
         key,
         reader,
         buffer,
         frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
-        frame_flush_pending: false,
+        pending_frames: SmallVec::new(),
         writer,
     };
     run_websocket(&mut transport, context).await
+}
+
+async fn write_websocket_frames_vectored<W>(
+    writer: &mut BufWriter<W>,
+    frames: &[EncodedWebSocketFrame],
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    writer.flush().await?;
+    let mut slices = SmallVec::<[io::IoSlice<'_>; 8]>::new();
+    for frame in frames {
+        let (header, payload) = frame.segments();
+        slices.push(io::IoSlice::new(header));
+        if let Some(payload) = payload.filter(|payload| !payload.is_empty()) {
+            slices.push(io::IoSlice::new(payload));
+        }
+    }
+
+    let mut remaining = slices.iter().map(|slice| slice.len()).sum::<usize>();
+    let mut slices = slices.as_mut_slice();
+    while remaining != 0 {
+        let written = writer.get_mut().write_vectored(slices).await?;
+        if written == 0 {
+            return Err(io::Error::from(io::ErrorKind::WriteZero).into());
+        }
+        remaining -= written;
+        io::IoSlice::advance_slices(&mut slices, written);
+    }
+    writer.get_mut().flush().await?;
+    Ok(())
 }
 
 async fn write_websocket_accept<W>(
@@ -342,7 +381,85 @@ const fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::websocket_accept;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use bytes::Bytes;
+    use tokio::io::{AsyncWrite, BufWriter};
+
+    use super::{websocket_accept, write_websocket_frames_vectored};
+    use crate::bridge::PayloadBytes;
+    use crate::websocket::session::EncodedWebSocketFrame;
+
+    #[derive(Default)]
+    struct PartialVectoredWriter {
+        bytes: Vec<u8>,
+        vectored_calls: usize,
+    }
+
+    impl AsyncWrite for PartialVectoredWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let written = buf.len().min(3);
+            self.bytes.extend_from_slice(&buf[..written]);
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.vectored_calls += 1;
+            let mut remaining = 3;
+            let mut written = 0;
+            for buf in bufs {
+                let take = remaining.min(buf.len());
+                self.bytes.extend_from_slice(&buf[..take]);
+                written += take;
+                remaining -= take;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn h1_vectored_frames_preserve_segments_and_handle_partial_writes() {
+        let payload = Bytes::from_static(b"payload");
+        let payload_ptr = payload.as_ptr();
+        let frames = [
+            EncodedWebSocketFrame::Contiguous(Bytes::from_static(b"\x89\x00")),
+            EncodedWebSocketFrame::segmented(0x2, PayloadBytes::from(payload), false),
+        ];
+        assert_eq!(frames[1].segments().1.unwrap().as_ptr(), payload_ptr);
+
+        let mut writer = BufWriter::new(PartialVectoredWriter::default());
+        write_websocket_frames_vectored(&mut writer, &frames)
+            .await
+            .unwrap();
+
+        assert_eq!(writer.get_ref().bytes, b"\x89\x00\x82\x07payload");
+        assert!(writer.get_ref().vectored_calls > 1);
+    }
 
     #[test]
     fn websocket_accept_matches_rfc_example() {

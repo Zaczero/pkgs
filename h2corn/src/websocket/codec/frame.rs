@@ -16,6 +16,18 @@ pub(super) struct ParsedFrameHeader {
     pub(super) payload_len: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EncodedFrameHeader {
+    bytes: [u8; wire::FRAME_HEADER_MAX_LEN],
+    len: u8,
+}
+
+impl EncodedFrameHeader {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
 pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
     buffer: &[u8],
 ) -> Result<Option<ParsedFrameHeader>, WebSocketDecodeError> {
@@ -169,6 +181,35 @@ pub(crate) fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, ou
     out.extend_from_slice(payload);
 }
 
+pub(crate) fn encode_frame_header(
+    opcode: u8,
+    payload_len: usize,
+    compressed: bool,
+) -> EncodedFrameHeader {
+    let mut bytes = [0; wire::FRAME_HEADER_MAX_LEN];
+    bytes[0] = wire::FIN | opcode | if compressed { wire::RSV1 } else { 0x00 };
+    let len = match payload_len {
+        len if len <= wire::INLINE_PAYLOAD_LEN_MAX => {
+            bytes[1] = len as u8;
+            2
+        },
+        len if len < 0x0001_0000 => {
+            bytes[1] = wire::PAYLOAD_LEN_U16_MARKER;
+            bytes[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+            4
+        },
+        len => {
+            bytes[1] = wire::PAYLOAD_LEN_U64_MARKER;
+            bytes[2..].copy_from_slice(&(len as u64).to_be_bytes());
+            wire::FRAME_HEADER_MAX_LEN
+        },
+    };
+    EncodedFrameHeader {
+        bytes,
+        len: len as u8,
+    }
+}
+
 pub(crate) fn encode_close_frame_into(
     code: WebSocketCloseCode,
     reason: &str,
@@ -199,9 +240,31 @@ pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2Corn
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
     use bytes::BytesMut;
 
-    use super::{MAX_CLOSE_REASON_LEN, close_code, encode_close_frame_into, opcode, wire};
+    use super::{
+        MAX_CLOSE_REASON_LEN, close_code, encode_close_frame_into, encode_frame_header, opcode,
+        wire,
+    };
+
+    #[test]
+    fn segmented_frame_header_covers_all_wire_lengths_compactly() {
+        assert_eq!(size_of::<super::EncodedFrameHeader>(), 11);
+        assert_eq!(
+            encode_frame_header(opcode::BINARY, 125, false).as_slice(),
+            [0x82, 125]
+        );
+        assert_eq!(
+            encode_frame_header(opcode::BINARY, 126, false).as_slice(),
+            [0x82, 126, 0, 126]
+        );
+        assert_eq!(
+            encode_frame_header(opcode::TEXT, 0x0001_0000, true).as_slice(),
+            [0xC1, 127, 0, 0, 0, 0, 0, 1, 0, 0]
+        );
+    }
 
     #[test]
     fn close_frame_encodes_max_legal_reason() {

@@ -3,7 +3,7 @@ use bytes::{Bytes, BytesMut};
 use super::dynamic_table::DynamicBuffer;
 use super::huffman;
 use super::static_table::{self, StaticFieldEntry};
-use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
+use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
 
 #[derive(Debug)]
 pub(crate) struct Encoder {
@@ -246,7 +246,7 @@ fn encode_int(value: usize, prefix: u8, mask: u8, dst: &mut BytesMut) {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use bytes::BytesMut;
 
     use super::*;

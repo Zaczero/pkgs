@@ -1,0 +1,129 @@
+schema_version = 1
+
+[defaults]
+duration = "5s"
+concurrency = 100
+workers = [1, 4]
+loop_threads = [1, 4]
+
+[[families]]
+id = "h1-tcp-unary"
+description = "HTTP/1.1 unary response over TCP"
+transport = "tcp"
+protocol = "h1"
+workload = "unary"
+path = "/"
+load_driver = "oha"
+default = true
+
+[[families]]
+id = "h1-uds-unary"
+description = "HTTP/1.1 unary response over a Unix-domain socket"
+transport = "uds"
+protocol = "h1"
+workload = "unary"
+path = "/"
+load_driver = "oha"
+
+[[families]]
+id = "h2-tcp-unary"
+description = "Cleartext prior-knowledge HTTP/2 unary response"
+transport = "tcp"
+protocol = "h2"
+workload = "unary"
+path = "/"
+load_driver = "oha"
+
+[[families]]
+id = "tls-h1-unary"
+description = "TLS with ALPN HTTP/1.1"
+transport = "tls"
+protocol = "h1"
+workload = "unary"
+path = "/"
+load_driver = "oha"
+
+[[families]]
+id = "tls-h2-unary"
+description = "TLS with ALPN HTTP/2"
+transport = "tls"
+protocol = "h2"
+workload = "unary"
+path = "/"
+load_driver = "oha"
+
+[[families]]
+id = "h1-tcp-stream-upload"
+description = "HTTP/1.1 streaming request consumption"
+transport = "tcp"
+protocol = "h1"
+workload = "stream-upload"
+path = "/streaming-post"
+load_driver = "oha"
+method = "POST"
+body_size = 16384
+
+[[families]]
+id = "h2-tcp-stream-upload"
+description = "HTTP/2 streaming request consumption"
+transport = "tcp"
+protocol = "h2"
+workload = "stream-upload"
+path = "/streaming-post"
+load_driver = "oha"
+method = "POST"
+body_size = 16384
+
+[[families]]
+id = "h1-tcp-stream-download"
+description = "HTTP/1.1 multi-event streaming response"
+transport = "tcp"
+protocol = "h1"
+workload = "stream-download"
+path = "/streaming-download"
+load_driver = "oha"
+
+[[families]]
+id = "h2-tcp-stream-download"
+description = "HTTP/2 multi-event streaming response"
+transport = "tcp"
+protocol = "h2"
+workload = "stream-download"
+path = "/streaming-download"
+load_driver = "oha"
+
+[[families]]
+id = "h1-tcp-pathsend"
+description = "HTTP/1.1 FileResponse using ASGI pathsend"
+transport = "tcp"
+protocol = "h1"
+workload = "pathsend"
+path = "/static-file"
+load_driver = "oha"
+
+[[families]]
+id = "h2-tcp-pathsend"
+description = "HTTP/2 FileResponse using ASGI pathsend"
+transport = "tcp"
+protocol = "h2"
+workload = "pathsend"
+path = "/static-file"
+load_driver = "oha"
+
+[[families]]
+id = "h1-tcp-websocket"
+description = "HTTP/1.1 WebSocket echo session"
+transport = "tcp"
+protocol = "h1"
+workload = "websocket"
+path = "/ws"
+load_driver = "k6"
+
+[[families]]
+id = "tls-h1-websocket"
+description = "TLS HTTP/1.1 WebSocket echo session"
+transport = "tls"
+protocol = "h1"
+workload = "websocket"
+path = "/ws"
+load_driver = "k6"

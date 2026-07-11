@@ -3,8 +3,8 @@ use tokio::io::AsyncWrite;
 
 use super::ENCODED_HEADER_BLOCK_CAPACITY;
 use super::flush::write_frame;
-use crate::error::{ErrorExt, H2CornError, HttpResponseError};
-use crate::frame::{FrameFlags, FrameHeader, FrameType, StreamId};
+use crate::error::H2CornError;
+use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, StreamId};
 use crate::hpack::Encoder;
 use crate::http::digits;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
@@ -26,21 +26,18 @@ impl HeaderEncodeState {
         &mut self,
         status: HttpStatusCode,
         headers: &ResponseHeaders,
-    ) -> Result<&[u8], H2CornError> {
+    ) -> &[u8] {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
-        encode_header_block(&mut self.encoder, &mut self.block, Some(status), headers)?;
-        Ok(self.block.as_ref())
+        encode_header_block(&mut self.encoder, &mut self.block, Some(status), headers);
+        self.block.as_ref()
     }
 
-    pub(super) fn encode_trailers(
-        &mut self,
-        headers: &ResponseHeaders,
-    ) -> Result<&[u8], H2CornError> {
+    pub(super) fn encode_trailers(&mut self, headers: &ResponseHeaders) -> &[u8] {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
-        encode_header_block(&mut self.encoder, &mut self.block, None, headers)?;
-        Ok(self.block.as_ref())
+        encode_header_block(&mut self.encoder, &mut self.block, None, headers);
+        self.block.as_ref()
     }
 
     pub(super) fn update_max_size(&mut self, size: usize) {
@@ -62,7 +59,6 @@ where
         return write_frame(
             writer,
             FrameHeader {
-                len: header_block.len(),
                 frame_type: FrameType::HEADERS,
                 flags: FrameFlags::END_HEADERS
                     | if end_stream {
@@ -104,7 +100,6 @@ where
         write_frame(
             writer,
             FrameHeader {
-                len: chunk.len(),
                 frame_type,
                 flags,
                 stream_id: Some(stream_id),
@@ -123,21 +118,16 @@ where
 fn encode_header_block(
     encoder: &mut Encoder,
     out: &mut BytesMut,
-    status: Option<u16>,
+    status: Option<HttpStatusCode>,
     headers: &ResponseHeaders,
-) -> Result<(), H2CornError> {
+) {
     if let Some(status) = status {
-        encode_status_header(encoder, out, status)?;
+        encode_status_header(encoder, out, status);
     }
     encode_header_fields(encoder, out, headers);
-    Ok(())
 }
 
-fn encode_status_header(
-    encoder: &Encoder,
-    out: &mut BytesMut,
-    status: HttpStatusCode,
-) -> Result<(), H2CornError> {
+fn encode_status_header(encoder: &Encoder, out: &mut BytesMut, status: HttpStatusCode) {
     match status {
         status_code::OK => out.extend_from_slice(&[0x88]),
         status_code::NO_CONTENT => out.extend_from_slice(&[0x89]),
@@ -146,12 +136,8 @@ fn encode_status_header(
         status_code::BAD_REQUEST => out.extend_from_slice(&[0x8C]),
         status_code::NOT_FOUND => out.extend_from_slice(&[0x8D]),
         status_code::INTERNAL_SERVER_ERROR => out.extend_from_slice(&[0x8E]),
-        100..=999 => encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status), out),
-        _ => {
-            return HttpResponseError::StatusMustBeThreeDigitCode.err();
-        },
+        _ => encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status.get()), out),
     }
-    Ok(())
 }
 
 fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &ResponseHeaders) {
@@ -172,11 +158,9 @@ mod tests {
 
         let first_len = state
             .encode_response(status_code::OK, &ResponseHeaders::new())
-            .unwrap()
             .len();
         let second_len = state
             .encode_response(status_code::OK, &ResponseHeaders::new())
-            .unwrap()
             .len();
 
         assert_ne!(first_len, 0);
@@ -188,9 +172,7 @@ mod tests {
     fn common_status_uses_static_table_index() {
         let mut state = HeaderEncodeState::new();
 
-        let block = state
-            .encode_response(status_code::NOT_FOUND, &ResponseHeaders::new())
-            .unwrap();
+        let block = state.encode_response(status_code::NOT_FOUND, &ResponseHeaders::new());
 
         assert_eq!(block, &[0x8D]);
     }

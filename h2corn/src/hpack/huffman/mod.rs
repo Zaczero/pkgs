@@ -9,6 +9,8 @@ const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
 const ERROR: u8 = 4;
 const MIN_CODE_BITS: usize = 5;
+const ENCODE_CODE_MASK: u64 = u32::MAX as u64;
+const ENCODE_LENGTH_SHIFT: u32 = u32::BITS;
 
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
@@ -47,7 +49,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 pub(crate) fn encoded_len(src: &[u8]) -> usize {
     let mut bit_len = 0_usize;
     for &byte in src {
-        bit_len += ENCODE_TABLE[usize::from(byte)].0;
+        bit_len += (ENCODE_TABLE[usize::from(byte)] >> ENCODE_LENGTH_SHIFT) as usize;
     }
     (bit_len + 7) >> 3
 }
@@ -64,7 +66,9 @@ pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut
     let mut bits_left = 40;
 
     for &byte in src {
-        let (code_bits, code) = ENCODE_TABLE[usize::from(byte)];
+        let packed = ENCODE_TABLE[usize::from(byte)];
+        let code_bits = (packed >> ENCODE_LENGTH_SHIFT) as usize;
+        let code = packed & ENCODE_CODE_MASK;
         bits |= code << (bits_left - code_bits);
         bits_left -= code_bits;
 
@@ -82,7 +86,7 @@ pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     fn decode_bytes(src: &[u8]) -> Result<BytesMut, DecoderError> {
@@ -124,7 +128,7 @@ mod test {
         assert_eq!(
             ENCODE_TABLE
                 .iter()
-                .map(|(code_bits, _)| *code_bits)
+                .map(|packed| (packed >> ENCODE_LENGTH_SHIFT) as usize)
                 .min()
                 .unwrap(),
             MIN_CODE_BITS

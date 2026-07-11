@@ -6,9 +6,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use super::{
-    EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent, buffered_or_send,
-    build_websocket_inbound_event, parse_websocket_outbound_event, ready_none,
-    receive_or_await,
+    EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent,
+    build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
 };
 use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, IntoPyResult, into_pyerr};
@@ -190,7 +189,12 @@ impl PyWebSocketReceive {
 #[pymethods]
 impl PyWebSocketReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        receive_or_await(py, self.shard, &self.state, build_websocket_inbound_event)
+        receive_or_await(
+            py,
+            Arc::clone(&self.shard),
+            &self.state,
+            build_websocket_inbound_event,
+        )
     }
 }
 
@@ -220,9 +224,9 @@ impl PyWebSocketSend {
     ) -> PyResult<Bound<'py, PyAny>> {
         let event = parse_websocket_outbound_event(message).into_pyresult()?;
         match self.state.push_or_forward(event) {
-            WebSocketSendDisposition::Buffered => Ok(ready_none(py, self.shard)),
+            WebSocketSendDisposition::Buffered => Ok(ready_none(py, &self.shard)),
             WebSocketSendDisposition::Forward(event) => {
-                buffered_or_send(py, self.shard, Some((self.tx.clone(), event)))
+                super::try_send_or_await(py, Arc::clone(&self.shard), &self.tx, event)
             },
             WebSocketSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }

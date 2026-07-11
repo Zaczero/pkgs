@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use super::{actions, controller, transport};
@@ -49,10 +50,8 @@ fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatu
         return None;
     };
     match err.io_error_kind() {
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
-            Some(status_code::NOT_FOUND)
-        },
-        std::io::ErrorKind::PermissionDenied => Some(status_code::FORBIDDEN),
+        ErrorKind::NotFound | ErrorKind::NotADirectory => Some(status_code::NOT_FOUND),
+        ErrorKind::PermissionDenied => Some(status_code::FORBIDDEN),
         _ => None,
     }
 }

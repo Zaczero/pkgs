@@ -3,20 +3,26 @@ use std::mem;
 
 use tokio::time::Instant;
 
-use super::ResponseCloseBatch;
+use super::{PrefixedData, ResponseCloseBatch};
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
-use crate::frame::StreamId;
 use crate::h2::StreamMap;
+use crate::h2_frame::StreamId;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::ResponseHeaders;
 use crate::smallvec_deque::SmallVecDeque;
 
 #[derive(Debug)]
 pub(super) struct PendingChunk {
-    bytes: PayloadBytes,
+    data: PendingChunkData,
     offset: usize,
     pub(super) end_stream: bool,
+}
+
+#[derive(Debug)]
+enum PendingChunkData {
+    Plain(PayloadBytes),
+    Prefixed(Box<PrefixedData>),
 }
 
 pub(super) type PendingChunks = SmallVecDeque<PendingChunk, 2>;
@@ -25,9 +31,10 @@ pub(super) type PendingChunks = SmallVecDeque<PendingChunk, 2>;
 pub(super) enum StreamBodyState {
     Idle,
     Chunks(PendingChunks),
-    // `PathStreamer` is 160+ bytes, vs `PendingChunks` at ~88; boxing it keeps
-    // `StreamWriteState` (held per-stream in the writer's `StreamMap`) small.
-    Path(Box<PathStreamer>),
+    // The one-buffer std-file streamer is 64 bytes, smaller than the common
+    // inline chunk queue, so storing it directly removes one pathsend-only
+    // allocation without growing `StreamWriteState`.
+    Path(PathStreamer),
 }
 
 #[derive(Debug)]
@@ -86,7 +93,7 @@ impl StreamWriteState {
 
     pub(super) fn schedule(
         &mut self,
-        ready_streams: &mut VecDeque<u32>,
+        ready_streams: &mut VecDeque<StreamId>,
         stream_id: StreamId,
         front: bool,
     ) {
@@ -95,9 +102,9 @@ impl StreamWriteState {
         }
         self.scheduled = true;
         if front {
-            ready_streams.push_front(stream_id.get());
+            ready_streams.push_front(stream_id);
         } else {
-            ready_streams.push_back(stream_id.get());
+            ready_streams.push_back(stream_id);
         }
     }
 
@@ -163,6 +170,26 @@ impl StreamWriteState {
         data: PayloadBytes,
         end_stream: bool,
     ) -> Result<(), H2CornError> {
+        self.queue_chunk(PendingChunk {
+            data: PendingChunkData::Plain(data),
+            offset: 0,
+            end_stream,
+        })
+    }
+
+    pub(super) fn queue_prefixed_data(
+        &mut self,
+        data: Box<PrefixedData>,
+        end_stream: bool,
+    ) -> Result<(), H2CornError> {
+        self.queue_chunk(PendingChunk {
+            data: PendingChunkData::Prefixed(data),
+            offset: 0,
+            end_stream,
+        })
+    }
+
+    fn queue_chunk(&mut self, chunk: PendingChunk) -> Result<(), H2CornError> {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders => {
                 return H2Error::DataBeforeResponseHeaders.err();
@@ -172,11 +199,6 @@ impl StreamWriteState {
             },
             ResponseWriteState::Open { body, .. } => {
                 let was_idle = body.is_idle();
-                let chunk = PendingChunk {
-                    bytes: data,
-                    offset: 0,
-                    end_stream,
-                };
                 match body {
                     StreamBodyState::Idle => {
                         let mut chunks = PendingChunks::new();
@@ -196,7 +218,7 @@ impl StreamWriteState {
         Ok(())
     }
 
-    pub(super) fn queue_path(&mut self, streamer: Box<PathStreamer>) -> Result<(), H2CornError> {
+    pub(super) fn queue_path(&mut self, streamer: PathStreamer) -> Result<(), H2CornError> {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders => {
                 return H2Error::PathDataBeforeResponseHeaders.err();
@@ -246,8 +268,35 @@ impl StreamBodyState {
 }
 
 impl PendingChunk {
-    pub(super) fn remaining(&self) -> &[u8] {
-        &self.bytes.as_ref()[self.offset..]
+    pub(super) fn remaining_len(&self) -> usize {
+        self.len() - self.offset
+    }
+
+    fn len(&self) -> usize {
+        match &self.data {
+            PendingChunkData::Plain(bytes) => bytes.len(),
+            PendingChunkData::Prefixed(data) => data.len(),
+        }
+    }
+
+    pub(super) fn remaining_slices(&self, additional_offset: usize, len: usize) -> (&[u8], &[u8]) {
+        let offset = self.offset + additional_offset;
+        match &self.data {
+            PendingChunkData::Plain(bytes) => (&bytes.as_ref()[offset..offset + len], &[]),
+            PendingChunkData::Prefixed(data) => {
+                let prefix = data.prefix();
+                if offset >= prefix.len() {
+                    let payload_offset = offset - prefix.len();
+                    return (&data.payload()[payload_offset..payload_offset + len], &[]);
+                }
+                let prefix_len = len.min(prefix.len() - offset);
+                let payload_len = len - prefix_len;
+                (
+                    &prefix[offset..offset + prefix_len],
+                    &data.payload()[..payload_len],
+                )
+            },
+        }
     }
 
     pub(super) const fn consume(&mut self, len: usize) {
@@ -261,7 +310,7 @@ pub(super) fn writer_stream(
     initial_stream_send_window: i64,
 ) -> &mut StreamWriteState {
     streams
-        .entry(stream_id.get())
+        .entry(stream_id)
         .or_insert_with(|| StreamWriteState::new(initial_stream_send_window))
 }
 

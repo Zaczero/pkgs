@@ -1,17 +1,21 @@
-use std::num::NonZeroU64;
+use std::mem::{swap, take};
+use std::num::{NonZeroU32, NonZeroU64};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use parking_lot::Mutex;
 use pyo3::prelude::*;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use pyo3::sync::PyOnceLock;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, watch};
 
+use crate::app_call::AppCallArgs;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
-use crate::frame::ErrorCode;
+use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use crate::http::types::RequestHead;
-use crate::proxy::ConnectionInfo;
+use crate::proxy_protocol::ConnectionInfo;
 use crate::pyloop::{PumpEvent, Shard, SlotFuture, TaskSlot};
 
 pub(crate) struct SharedApp {
@@ -25,7 +29,11 @@ pub(crate) struct SharedApp {
 }
 
 impl SharedApp {
-    pub(crate) fn new(app: Py<PyAny>, shards: Box<[Shard]>, limits: Option<Arc<RuntimeLimits>>) -> Self {
+    pub(crate) fn new(
+        app: Py<PyAny>,
+        shards: Box<[Shard]>,
+        limits: Option<Arc<RuntimeLimits>>,
+    ) -> Self {
         debug_assert!(!shards.is_empty());
         Self {
             app,
@@ -37,26 +45,29 @@ impl SharedApp {
 
     /// The caller's loop: lifespan, shutdown trigger, server-done future.
     pub(crate) fn main_shard(&self) -> Shard {
-        self.shards[0]
+        Arc::clone(&self.shards[0])
     }
 
     /// Round-robin shard pick; every Python object of one request binds to
     /// the picked shard so the request runs entirely on one loop.
     pub(crate) fn pick_shard(&self) -> Shard {
         match self.shards.as_ref() {
-            [single] => single,
+            [single] => Arc::clone(single),
             shards => {
                 let index = self.next_shard.fetch_add(1, Ordering::Relaxed);
-                shards[index % shards.len()]
+                Arc::clone(&shards[index % shards.len()])
             },
         }
     }
+
+    pub(crate) fn into_teardown(self) -> (Py<PyAny>, Option<Arc<RuntimeLimits>>, Box<[Shard]>) {
+        (self.app, self.limits, self.shards)
+    }
 }
 
-/// Leaked to `'static` like the shards and `ServerConfig`: the app outlives
-/// every connection of its `serve()` call, so per-request handle copies are
-/// plain pointer copies instead of cross-thread `Arc` refcount traffic.
-pub(crate) type AppState = &'static SharedApp;
+/// Scoped worker state. Clones are confined to connection/request ownership
+/// boundaries and disappear when an embedded `serve()` has fully drained.
+pub(crate) type AppState = Arc<SharedApp>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ShutdownKind {
@@ -91,10 +102,18 @@ impl ShutdownKind {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct ConnectionScopeCache {
-    default_server: OnceLock<Py<PyAny>>,
-    default_client: OnceLock<Option<Py<PyAny>>>,
+    default_server: PyOnceLock<Py<PyAny>>,
+    default_client: PyOnceLock<Option<Py<PyAny>>>,
+}
+
+impl Default for ConnectionScopeCache {
+    fn default() -> Self {
+        Self {
+            default_server: PyOnceLock::new(),
+            default_client: PyOnceLock::new(),
+        }
+    }
 }
 
 pub(crate) struct RuntimeLimits {
@@ -106,10 +125,7 @@ pub(crate) struct RuntimeLimits {
 }
 
 impl RuntimeLimits {
-    pub(crate) fn new(
-        config: &'static ServerConfig,
-        retire_trigger: Option<Py<PyAny>>,
-    ) -> Option<Self> {
+    pub(crate) fn new(config: &ServerConfig, retire_trigger: Option<Py<PyAny>>) -> Option<Self> {
         if config.limit_concurrency.is_none() && config.max_requests.is_none() {
             return None;
         }
@@ -159,7 +175,7 @@ impl Drop for RequestAdmission {
 #[derive(Clone)]
 pub(crate) struct ConnectionContext {
     pub app: AppState,
-    pub config: &'static ServerConfig,
+    pub config: Arc<ServerConfig>,
     pub info: Arc<ConnectionInfo>,
     pub shutdown: watch::Receiver<ShutdownState>,
     pub(crate) scope_cache: Arc<ConnectionScopeCache>,
@@ -168,7 +184,7 @@ pub(crate) struct ConnectionContext {
 impl ConnectionContext {
     pub(crate) fn new(
         app: AppState,
-        config: &'static ServerConfig,
+        config: Arc<ServerConfig>,
         info: Arc<ConnectionInfo>,
         shutdown: watch::Receiver<ShutdownState>,
     ) -> Self {
@@ -182,7 +198,7 @@ impl ConnectionContext {
     }
 
     pub(crate) fn default_server_scope_value<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        let value = self.scope_cache.default_server.get_or_init(|| {
+        let value = self.scope_cache.default_server.get_or_init(py, || {
             self.with_default_scope_endpoints(|_, server| {
                 server
                     .into_pyobject(py)
@@ -198,7 +214,7 @@ impl ConnectionContext {
         &self,
         py: Python<'py>,
     ) -> Option<Bound<'py, PyAny>> {
-        let value = self.scope_cache.default_client.get_or_init(|| {
+        let value = self.scope_cache.default_client.get_or_init(py, || {
             self.with_default_scope_endpoints(|client, _| {
                 client.map(|client| {
                     client
@@ -218,8 +234,7 @@ impl ConnectionContext {
         &self,
         f: impl FnOnce(Option<(&str, u16)>, (&str, Option<u16>)) -> T,
     ) -> T {
-        let overrides = ScopeOverrides::default();
-        let view = scope_view_from_parts("", self.config, &self.info, &overrides);
+        let view = scope_view_from_parts("", &self.config, &self.info, None);
         f(view.client, view.server)
     }
 }
@@ -227,16 +242,16 @@ impl ConnectionContext {
 pub(crate) struct RequestContext {
     pub connection: ConnectionContext,
     pub request: RequestHead,
-    pub(crate) scope_overrides: ScopeOverrides,
+    pub(crate) scope_overrides: Option<Box<ScopeOverrides>>,
 }
 
 impl RequestContext {
-    /// Boxed at creation: at 608 bytes, moving this by value through the
+    /// Boxed at creation: moving this by value through the
     /// per-request future chain would otherwise replicate it in every
     /// suspended layer of the spawned task.
     pub(crate) fn new(connection: ConnectionContext, request: RequestHead) -> Box<Self> {
         let scope_overrides =
-            resolve_scope_overrides(&request, connection.config, &connection.info);
+            resolve_scope_overrides(&request, &connection.config, &connection.info);
         Box::new(Self {
             connection,
             request,
@@ -246,13 +261,182 @@ impl RequestContext {
 }
 
 #[derive(Debug)]
+pub(crate) struct H2InputCreditRelease {
+    pub(crate) stream_id: StreamId,
+    pub(crate) len: NonZeroU32,
+}
+
+/// Cross-thread handoff from ASGI input consumption back to the owning H2
+/// connection. Releases are coalesced behind one notification so the
+/// connection wakes once and touches only streams that made progress.
+#[derive(Debug, Default)]
+pub(crate) struct H2InputFlowControl {
+    released: Mutex<Vec<H2InputCreditRelease>>,
+    pending: AtomicBool,
+    notify: Notify,
+}
+
+impl H2InputFlowControl {
+    pub(crate) fn credit(self: &Arc<Self>, stream_id: StreamId, len: NonZeroU32) -> H2InputCredit {
+        H2InputCredit {
+            flow: Arc::clone(self),
+            stream_id,
+            len: Some(len),
+        }
+    }
+
+    fn release(&self, stream_id: StreamId, len: NonZeroU32) {
+        let mut released = self.released.lock();
+        if let Some(last) = released.last_mut()
+            && last.stream_id == stream_id
+            && let Some(combined) = last.len.get().checked_add(len.get())
+        {
+            // Both operands are non-zero, so a non-overflowing sum is too.
+            last.len = NonZeroU32::new(combined).expect("sum of non-zero credits is non-zero");
+        } else {
+            released.push(H2InputCreditRelease { stream_id, len });
+        }
+        // The queue and its wakeup state are one synchronization domain. If
+        // the transition happened after unlocking, a drainer could clear
+        // `pending` after this producer suppressed its notification and leave
+        // receive-window credit stranded indefinitely.
+        let notify = !self.pending.swap(true, Ordering::AcqRel);
+        drop(released);
+        if notify {
+            self.notify.notify_one();
+        }
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn notified(&self) {
+        self.notify.notified().await;
+    }
+
+    pub(crate) fn drain_into(&self, target: &mut Vec<H2InputCreditRelease>) {
+        self.drain_into_inner(target, || {});
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the queue lock must cover the pending-state transition to prevent lost wakeups"
+    )]
+    fn drain_into_inner(&self, target: &mut Vec<H2InputCreditRelease>, drained: impl FnOnce()) {
+        debug_assert!(target.is_empty());
+        let mut released = self.released.lock();
+        swap(&mut *released, target);
+        drained();
+        self.pending.store(false, Ordering::Release);
+    }
+}
+
+/// Ownership token for bytes charged against an H2 receive window. Moving
+/// the token through the channel and cancellation requeue keeps the charge;
+/// successful ASGI materialization or any drop path returns it exactly once.
+#[derive(Debug)]
+pub(crate) struct H2InputCredit {
+    flow: Arc<H2InputFlowControl>,
+    stream_id: StreamId,
+    len: Option<NonZeroU32>,
+}
+
+impl H2InputCredit {
+    /// Merge adjacent credit from the same stream into this ownership token.
+    /// Request-body batching never crosses a stream, so a mismatch is an
+    /// internal flow-control corruption rather than a recoverable condition.
+    fn merge(&mut self, mut other: Self) {
+        debug_assert!(
+            Arc::ptr_eq(&self.flow, &other.flow) && self.stream_id == other.stream_id,
+            "HTTP/2 input credit cannot cross a connection or stream"
+        );
+        let left = self.len.expect("live credit has a non-zero charge");
+        let right = other.len.take().expect("live credit has a non-zero charge");
+        let combined = left
+            .get()
+            .checked_add(right.get())
+            .expect("batched credit cannot exceed the receive-window charge");
+        self.len = NonZeroU32::new(combined);
+    }
+
+    pub(crate) fn release(self) {
+        drop(self);
+    }
+}
+
+impl Drop for H2InputCredit {
+    fn drop(&mut self) {
+        if let Some(len) = self.len.take() {
+            self.flow.release(self.stream_id, len);
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum StreamInput {
-    Data(Bytes),
+    Data {
+        body: Bytes,
+        credit: Option<H2InputCredit>,
+    },
+    /// Two already-backlogged HTTP body frames. The boxed handles retain the
+    /// original payloads without copying or growing every channel slot; Python
+    /// materialization writes both directly into one bytes object.
+    HttpDataBatch {
+        bodies: Box<[Bytes; 2]>,
+        credit: Option<H2InputCredit>,
+    },
     EndStream,
     Reset(ErrorCode),
 }
 
-pub(crate) fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmission> {
+impl StreamInput {
+    pub(crate) const fn data(body: Bytes) -> Self {
+        Self::Data { body, credit: None }
+    }
+
+    pub(crate) const fn h2_data(body: Bytes, credit: H2InputCredit) -> Self {
+        Self::Data {
+            body,
+            credit: Some(credit),
+        }
+    }
+
+    pub(crate) fn try_batch_http(&mut self, next: Self, max_bytes: usize) -> Result<(), Self> {
+        let Self::Data {
+            body: first_body,
+            credit: first_credit,
+        } = self
+        else {
+            return Err(next);
+        };
+        let (second_body, second_credit) = match next {
+            Self::Data { body, credit } => (body, credit),
+            other => return Err(other),
+        };
+        if first_body.len().saturating_add(second_body.len()) > max_bytes {
+            return Err(Self::Data {
+                body: second_body,
+                credit: second_credit,
+            });
+        }
+
+        let mut credit = first_credit.take();
+        match (&mut credit, second_credit) {
+            (Some(first), Some(second)) => first.merge(second),
+            (None, Some(second)) => credit = Some(second),
+            (Some(_) | None, None) => {},
+        }
+        let first_body = take(first_body);
+        *self = Self::HttpDataBatch {
+            bodies: Box::new([first_body, second_body]),
+            credit,
+        };
+        Ok(())
+    }
+}
+
+pub(crate) fn try_acquire_request_admission(app: &SharedApp) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
             permit: None,
@@ -274,25 +458,18 @@ pub(crate) fn try_acquire_request_admission(app: AppState) -> Option<RequestAdmi
 /// the eager Task all run on the loop thread. This function never touches
 /// Python and never fails — startup errors arrive through the returned
 /// future like any other app failure.
-pub(crate) fn start_app_call<B>(app: AppState, build_args: B) -> SlotFuture<Result<(), H2CornError>>
-where
-    B: for<'py> FnOnce(
-            Python<'py>,
-            AppState,
-            Shard,
-        )
-            -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>
-        + Send
-        + 'static,
-{
+pub(crate) fn start_app_call(
+    app: AppState,
+    args: Box<AppCallArgs>,
+) -> SlotFuture<Result<(), H2CornError>> {
     let slot = TaskSlot::new();
     let shard = app.pick_shard();
     shard.push(PumpEvent::StartTask {
         app,
-        build_args: Box::new(build_args),
+        args,
         slot: Arc::clone(&slot),
     });
-    slot.wait()
+    slot.wait(shard)
 }
 
 #[cfg(test)]
@@ -310,11 +487,12 @@ pub(crate) mod test_fixtures {
         BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
         WebSocketConfig,
     };
-    use crate::frame::DEFAULT_MAX_FRAME_SIZE;
-    use crate::proxy::{ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
+    use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
+    use crate::proxy_protocol::{ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
+    use crate::pyloop::ShardHandle;
 
-    pub(crate) fn server_config() -> &'static ServerConfig {
-        Box::leak(Box::new(ServerConfig {
+    pub(crate) fn server_config() -> Arc<ServerConfig> {
+        Arc::new(ServerConfig {
             binds: Box::new([BindTarget::Tcp {
                 host: Box::from("127.0.0.1"),
                 port: 8000,
@@ -355,15 +533,15 @@ pub(crate) mod test_fixtures {
             tls: None,
             timeout_handshake: Duration::from_secs(5),
             response_headers: ResponseHeaderConfig::default(),
-        }))
+        })
     }
 
     pub(crate) fn connection_context(py: Python<'_>) -> ConnectionContext {
-        let app: super::AppState = Box::leak(Box::new(SharedApp::new(
+        let app: super::AppState = Arc::new(SharedApp::new(
             py.None(),
-            Box::new([crate::pyloop::ShardHandle::test_stub(py)]),
+            Box::new([ShardHandle::test_stub(py)]),
             None,
-        )));
+        ));
         let info = Arc::new(ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
             Some(ServerAddr {
@@ -374,5 +552,150 @@ pub(crate) mod test_fixtures {
         ));
         let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
         ConnectionContext::new(app, server_config(), info, shutdown_rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::num::NonZeroU32;
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+
+    use super::H2InputFlowControl;
+    use crate::h2_frame::StreamId;
+
+    #[test]
+    fn explicit_release_enqueues_exactly_once() {
+        let flow = Arc::new(H2InputFlowControl::default());
+        flow.credit(StreamId::new(1).unwrap(), NonZeroU32::new(16).unwrap())
+            .release();
+
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, StreamId::new(1).unwrap());
+        assert_eq!(released[0].len.get(), 16);
+    }
+
+    #[test]
+    fn merged_credit_releases_the_exact_combined_charge_once() {
+        let flow = Arc::new(H2InputFlowControl::default());
+        let stream_id = StreamId::new(1).unwrap();
+        let mut credit = flow.credit(stream_id, NonZeroU32::new(7).unwrap());
+        credit.merge(flow.credit(stream_id, NonZeroU32::new(11).unwrap()));
+        assert!(!flow.has_pending(), "merging must retain ownership");
+        assert_eq!(
+            Arc::strong_count(&flow),
+            2,
+            "merging must release the consumed token's flow reference"
+        );
+
+        credit.release();
+        assert_eq!(Arc::strong_count(&flow), 1);
+
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].len.get(), 18);
+    }
+
+    #[tokio::test]
+    async fn concurrent_release_after_drain_keeps_its_wakeup() {
+        let flow = Arc::new(H2InputFlowControl::default());
+        let stream_id = StreamId::new(1).unwrap();
+        flow.credit(stream_id, NonZeroU32::new(7).unwrap())
+            .release();
+        // Consume the first release's permit so only the concurrent release
+        // can satisfy the notification checked below.
+        flow.notified().await;
+
+        let (start_tx, start_rx) = mpsc::channel();
+        let (attempting_tx, attempting_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let producer_flow = Arc::clone(&flow);
+        let producer = thread::spawn(move || {
+            start_rx.recv().unwrap();
+            attempting_tx.send(()).unwrap();
+            producer_flow
+                .credit(stream_id, NonZeroU32::new(11).unwrap())
+                .release();
+            finished_tx.send(()).unwrap();
+        });
+
+        let mut first = Vec::new();
+        flow.drain_into_inner(&mut first, || {
+            start_tx.send(()).unwrap();
+            attempting_rx.recv().unwrap();
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "a producer cannot change wakeup state while the queue drains"
+            );
+        });
+        producer.join().unwrap();
+
+        timeout(Duration::from_secs(1), flow.notified())
+            .await
+            .expect("the concurrent release must publish a new wakeup");
+        let mut second = Vec::new();
+        flow.drain_into(&mut second);
+        assert_eq!(first[0].len.get(), 7);
+        assert_eq!(second[0].len.get(), 11);
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    mod free_threaded {
+
+        use std::sync::{Arc, Barrier};
+
+        use pyo3::{PyResult, Python};
+
+        use super::super::test_fixtures;
+
+        #[test]
+        fn connection_scope_cache_initializes_concurrently_while_attached() {
+            const THREADS: usize = 8;
+            const ITERATIONS: usize = 1_000;
+
+            Python::initialize();
+            let connection = Arc::new(Python::attach(test_fixtures::connection_context));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let workers = (0..THREADS)
+                .map(|_| {
+                    let connection = Arc::clone(&connection);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || -> PyResult<(usize, usize)> {
+                        barrier.wait();
+                        Python::attach(|py| {
+                            let mut pointers = None;
+                            for _ in 0..ITERATIONS {
+                                let server = connection.default_server_scope_value(py);
+                                let client = connection
+                                    .default_client_scope_value(py)
+                                    .expect("test connection has a client address");
+                                let current = (server.as_ptr() as usize, client.as_ptr() as usize);
+                                assert_eq!(*pointers.get_or_insert(current), current);
+                            }
+                            Ok(pointers.expect("at least one cache lookup runs"))
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let pointers = workers
+                .into_iter()
+                .map(|worker| {
+                    worker
+                        .join()
+                        .expect("scope-cache worker does not panic")
+                        .expect("scope-cache lookup succeeds")
+                })
+                .collect::<Vec<_>>();
+            assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
+        }
     }
 }

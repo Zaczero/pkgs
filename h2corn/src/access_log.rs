@@ -1,6 +1,5 @@
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
-use std::num::NonZeroU16;
 use std::str;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -12,14 +11,11 @@ use owo_colors::{OwoColorize, Stream, Style};
 use smallvec::SmallVec;
 
 use crate::config::{BindTarget, ServerConfig};
-use crate::error::H2CornError;
 use crate::hpack::BytesStr;
-use crate::http::app::{HttpRequestBody, run_asgi_http_request};
-use crate::http::response::HttpResponseTransport;
 use crate::http::scope::scope_view_from_parts;
 use crate::http::types::{HttpStatusCode, HttpVersion, RequestHead, status_code};
-use crate::proxy::{ConnectionInfo, ConnectionPeer};
-use crate::runtime::{RequestAdmission, RequestContext};
+use crate::proxy_protocol::{ConnectionInfo, ConnectionPeer};
+use crate::runtime::RequestContext;
 use crate::websocket::{WebSocketCloseCode, close_code};
 
 const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
@@ -193,7 +189,7 @@ impl HttpAccessLogState {
             emit_http_access_log(&HttpAccessLogEntry {
                 request: &state.request,
                 client_label: state.client_label.as_str(),
-                status: status.get(),
+                status,
                 duration: state.started_at.elapsed(),
                 rx_bytes: read_body_bytes(),
                 tx_bytes: log_state.response_body_bytes,
@@ -250,14 +246,13 @@ impl WebSocketAccessLogState {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ResponseLogState {
-    pub(crate) status: Option<NonZeroU16>,
+    pub(crate) status: Option<HttpStatusCode>,
     pub(crate) response_body_bytes: u64,
 }
 
 impl ResponseLogState {
     pub(crate) const fn started(&mut self, status: HttpStatusCode) {
-        self.status =
-            Some(NonZeroU16::new(status).expect("response status codes are always non-zero"));
+        self.status = Some(status);
     }
 
     pub(crate) const fn sent_body(&mut self, len: usize) {
@@ -267,23 +262,6 @@ impl ResponseLogState {
     pub(crate) const fn internal_error(&mut self) {
         self.started(status_code::INTERNAL_SERVER_ERROR);
     }
-}
-
-pub(crate) async fn run_http_request<T, F>(
-    ctx: Box<RequestContext>,
-    request_body: HttpRequestBody,
-    admission: RequestAdmission,
-    transport: &mut T,
-    read_body_bytes: F,
-) -> Result<(), H2CornError>
-where
-    T: HttpResponseTransport,
-    F: FnOnce() -> u64,
-{
-    let access_log = HttpAccessLogState::new(&ctx);
-    let result = run_asgi_http_request(ctx, request_body, admission, transport).await;
-    access_log.emit_http_response(transport.response_log_state(), read_body_bytes);
-    result
 }
 
 pub(crate) fn emit_banner(config: &ServerConfig) {
@@ -466,9 +444,9 @@ fn append_log_client(out: &mut impl fmt::Write, ctx: &RequestContext) -> fmt::Re
     let connection = &ctx.connection;
     let view = scope_view_from_parts(
         ctx.request.scheme_str(),
-        connection.config,
+        &connection.config,
         &connection.info,
-        &ctx.scope_overrides,
+        ctx.scope_overrides.as_deref(),
     );
     if let Some((host, port)) = view.client {
         if port == 0 {
@@ -630,7 +608,7 @@ fn write_two_digits(out: &mut impl fmt::Write, value: u8) -> fmt::Result {
 
 const fn status_style(status: HttpStatusCode) -> Style {
     let style = Style::new();
-    match status {
+    match status.get() {
         200..=299 => style.green(),
         300..=399 => style.cyan(),
         400..=499 => style.yellow(),
@@ -664,7 +642,7 @@ mod tests {
     };
     use crate::hpack::BytesStr;
     use crate::http::types::HttpVersion;
-    use crate::proxy::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
+    use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
 
     fn render(f: impl FnOnce(&mut String)) -> String {
         let mut out = String::new();

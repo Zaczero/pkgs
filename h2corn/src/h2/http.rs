@@ -1,33 +1,30 @@
+use std::fs::File;
 use std::num::NonZeroU64;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll, Waker};
+use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use bytes::Bytes;
-use tokio::fs::File;
 use tokio::sync::mpsc;
-use tokio::task::spawn;
 
+use super::state::RequestTaskCancellation;
 use super::websocket::handle_request as handle_websocket_request;
 use super::writer::{WriterCommand, WriterCommandBatch};
 use super::{ConnectionHandle, InboundStream, RequestSpawnContext};
-use crate::async_util::send_best_effort;
+use crate::access_log::{HttpAccessLogState, ResponseLogState};
 use crate::bridge::PayloadBytes;
-use crate::config::ServerConfig;
-use crate::console::{HttpAccessLogState, ResponseLogState, run_http_request};
+use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::H2CornError;
-use crate::frame::{ErrorCode, StreamId};
+use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::{
-    HttpRequestBody, RunningHttpRequest, drive_pinned_http_request, start_asgi_http_request,
-    try_complete_http_request,
+    HttpRequestBody, RunningHttpRequest, drive_pinned_http_request, poll_app_task_once,
+    start_asgi_http_request, try_complete_http_request,
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
-use crate::http::pathsend::PathStreamer;
 use crate::http::planner::{RequestRejection, plan_request};
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
 };
+use crate::http::run_request::run_http_request;
 use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput};
 use crate::websocket::{WebSocketContext, validate_websocket_request};
@@ -145,9 +142,29 @@ pub(super) async fn spawn_request_stream(
     request: RequestHead,
     end_stream: bool,
     connection: &ConnectionHandle,
-    mut context: RequestSpawnContext<'_>,
+    context: RequestSpawnContext<'_>,
 ) -> Result<(), H2CornError> {
-    let config = context.connection.config;
+    if let Some(RequestRejection { status, headers }) =
+        prepare_and_spawn_request(stream_id, request, end_stream, connection, context)
+    {
+        connection
+            .send_headers(stream_id, status, headers, true)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Perform the common request planning, registration, and task launch without
+/// suspension. Only the uncommon immediate-response path is returned to the
+/// connection future for asynchronous writer backpressure.
+fn prepare_and_spawn_request(
+    stream_id: StreamId,
+    request: RequestHead,
+    end_stream: bool,
+    connection: &ConnectionHandle,
+    mut context: RequestSpawnContext<'_>,
+) -> Option<RequestRejection> {
+    let config = &context.connection.config;
     let content_length = request.content_length();
     let websocket = request.protocol_is_websocket().then(|| {
         validate_websocket_request(&request).map_err(|rejection| RequestRejection {
@@ -163,44 +180,41 @@ pub(super) async fn spawn_request_stream(
         config.max_request_body_size,
     ) {
         Ok(plan) => plan,
-        Err(RequestRejection { status, headers }) => {
-            connection
-                .send_headers(stream_id, status, headers, true)
-                .await?;
-            return Ok(());
-        },
+        Err(rejection) => return Some(rejection),
     };
-    let Some(prepared) = prepare_request_execution(context.connection.app, plan) else {
-        connection
-            .send_headers(
-                stream_id,
-                status_code::SERVICE_UNAVAILABLE,
-                ResponseHeaders::new(),
-                true,
-            )
-            .await?;
-        return Ok(());
+    let Some(prepared) = prepare_request_execution(&context.connection.app, plan) else {
+        return Some(RequestRejection {
+            status: status_code::SERVICE_UNAVAILABLE,
+            headers: ResponseHeaders::new(),
+        });
     };
     let request = RequestContext::new(context.connection.clone(), request);
     match prepared {
         RequestExecution::Http { admission, input } => {
             let (input_tx, app_input) = input.split();
+            let cancellation = app_input.disconnect_signal().map_or(
+                RequestTaskCancellation::Immediate,
+                RequestTaskCancellation::AfterPendingReceive,
+            );
             register_inbound_stream(
                 &mut context,
                 stream_id,
-                end_stream,
-                content_length,
-                input_tx,
-                app_input.body_bytes_read(),
-                true,
-                config.max_request_body_size.map(NonZeroU64::get),
+                InboundStream::new(
+                    input_tx,
+                    true,
+                    end_stream,
+                    content_length,
+                    app_input.body_bytes_read(),
+                    config.max_request_body_size.map(NonZeroU64::get),
+                    config.http2.initial_stream_window_size.get(),
+                ),
             );
-            spawn(handle_http_request(stream_id, HttpRequestTask {
+            spawn_http_request(context.tasks, stream_id, cancellation, HttpRequestTask {
                 ctx: request,
                 connection: connection.clone(),
                 admission,
                 input: app_input,
-            }));
+            });
         },
         RequestExecution::WebSocket {
             meta,
@@ -210,14 +224,18 @@ pub(super) async fn spawn_request_stream(
             register_inbound_stream(
                 &mut context,
                 stream_id,
-                end_stream,
-                content_length,
-                Some(input.tx.clone()),
-                None,
-                false,
-                config.max_request_body_size.map(NonZeroU64::get),
+                InboundStream::new(
+                    Some(input.tx.clone()),
+                    false,
+                    end_stream,
+                    content_length,
+                    None,
+                    config.max_request_body_size.map(NonZeroU64::get),
+                    config.http2.initial_stream_window_size.get(),
+                ),
             );
-            spawn(handle_websocket_request(
+            spawn_websocket_request(
+                context.tasks,
                 WebSocketContext {
                     request,
                     admission,
@@ -226,50 +244,55 @@ pub(super) async fn spawn_request_stream(
                 stream_id,
                 input.rx,
                 connection.clone(),
-            ));
+            );
         },
     }
-    let startup_tx = context.streams.get(&stream_id.get()).and_then(|stream| {
-        stream
-            .state
-            .request_is_closed()
-            .then(|| stream.delivery.sender().cloned())
-            .flatten()
-    });
-    if let Some(tx) = startup_tx {
-        send_best_effort(&tx, StreamInput::EndStream).await;
-    }
+    None
+}
 
-    Ok(())
+/// Keep construction of the sizeable HTTP task future out of the H2
+/// connection poll frame. This adds one request-scoped allocation; the exact
+/// no-box A/B is recorded in the performance ledger because LTO otherwise
+/// reconstructs the task future on the connection stack.
+fn spawn_http_request(
+    tasks: &mut super::state::RequestTasks,
+    stream_id: StreamId,
+    cancellation: RequestTaskCancellation,
+    task: HttpRequestTask,
+) {
+    tasks.spawn(stream_id, cancellation, async move {
+        let _ = Box::pin(handle_http_request(stream_id, task)).await;
+    });
+}
+
+/// As above, isolate the mutually exclusive WebSocket future construction so
+/// the connection stack never reserves space for both request engines.
+fn spawn_websocket_request(
+    tasks: &mut super::state::RequestTasks,
+    context: WebSocketContext,
+    stream_id: StreamId,
+    input: mpsc::Receiver<StreamInput>,
+    connection: ConnectionHandle,
+) {
+    // WebSocket sessions are long-lived and their protocol future is much
+    // larger than an ordinary HTTP request. One session-scoped box keeps that
+    // rare state out of the H2 connection poll stack; Tokio's task allocation
+    // then contains only the pointer. Ordinary HTTP requests remain on the
+    // existing single-allocation Tokio task path.
+    tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
+        let _ = Box::pin(handle_websocket_request(
+            context, stream_id, input, connection,
+        ))
+        .await;
+    });
 }
 
 fn register_inbound_stream(
     context: &mut RequestSpawnContext<'_>,
     stream_id: StreamId,
-    end_stream: bool,
-    content_length: Option<u64>,
-    input_tx: Option<mpsc::Sender<StreamInput>>,
-    body_bytes_read: Option<Arc<AtomicU64>>,
-    is_http: bool,
-    max_request_body_size: Option<u64>,
+    stream: InboundStream,
 ) {
-    context.streams.insert(
-        stream_id.get(),
-        InboundStream::new(
-            input_tx,
-            is_http,
-            end_stream,
-            content_length,
-            body_bytes_read,
-            max_request_body_size,
-            context
-                .connection
-                .config
-                .http2
-                .initial_stream_window_size
-                .get(),
-        ),
-    );
+    context.streams.insert(stream_id, stream);
 }
 
 async fn handle_http_request(
@@ -284,13 +307,17 @@ async fn handle_http_request(
     let AppRequestInput::Stream {
         rx: request_body_rx,
         body_bytes_read,
+        disconnect,
     } = task.input
     else {
         return run_no_body_http_request(task.ctx, task.admission, &mut transport).await;
     };
     run_http_request(
         task.ctx,
-        HttpRequestBody::Stream(request_body_rx),
+        HttpRequestBody::Stream {
+            rx: request_body_rx,
+            disconnect,
+        },
         task.admission,
         &mut transport,
         move || {
@@ -300,15 +327,6 @@ async fn handle_http_request(
         },
     )
     .await
-}
-
-fn poll_app_task_once<F>(mut task: Pin<&mut F>) -> Poll<Result<(), H2CornError>>
-where
-    F: Future<Output = Result<(), H2CornError>>,
-{
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    task.as_mut().poll(&mut cx)
 }
 
 async fn run_no_body_http_request(
@@ -333,8 +351,9 @@ fn push_final_response_commands(
     commands: &mut WriterCommandBatch,
     mut start: ResponseStart,
     body: FinalResponseBody,
+    defaults: &ResponseHeaderConfig,
 ) {
-    start.canonicalize_known_length(body.len());
+    start.prepare_known_length(defaults, body.len());
     let (status, headers) = start.into_status_headers();
     match body {
         FinalResponseBody::Empty | FinalResponseBody::Suppressed { .. } => {
@@ -360,7 +379,9 @@ fn push_final_response_commands(
             });
             commands.push_back(WriterCommand::SendPath {
                 stream_id,
-                streamer: Box::new(PathStreamer::new(*file, len, true)),
+                file,
+                len,
+                end_stream: true,
             });
         },
     }
@@ -370,13 +391,17 @@ fn append_response_action(
     stream_id: StreamId,
     commands: &mut WriterCommandBatch,
     action: ResponseAction,
-    config: &'static ServerConfig,
+    config: &ServerConfig,
 ) {
     match action {
         ResponseAction::Final { start, body } => {
-            let mut start = start;
-            start.apply_default_headers(config);
-            push_final_response_commands(stream_id, commands, start, body);
+            push_final_response_commands(
+                stream_id,
+                commands,
+                start,
+                body,
+                &config.response_headers,
+            );
         },
         ResponseAction::Start { mut start } => {
             start.apply_default_headers(config);
@@ -395,7 +420,9 @@ fn append_response_action(
         }),
         ResponseAction::File { file, len } => commands.push_back(WriterCommand::SendPath {
             stream_id,
-            streamer: Box::new(PathStreamer::new(*file, len, false)),
+            file,
+            len,
+            end_stream: false,
         }),
         ResponseAction::Finish => commands.push_back(WriterCommand::SendData {
             stream_id,
@@ -446,31 +473,37 @@ pub(super) async fn send_final_response(
     headers: ResponseHeaders,
     body: FinalResponseBody,
 ) -> Result<(), H2CornError> {
-    let mut start = ResponseStart::new(status, headers);
-    start.apply_default_headers(connection.config());
+    let start = ResponseStart::new(status, headers);
     let mut commands = WriterCommandBatch::new();
-    push_final_response_commands(stream_id, &mut commands, start, body);
+    push_final_response_commands(
+        stream_id,
+        &mut commands,
+        start,
+        body,
+        &connection.config().response_headers,
+    );
     connection.send_commands(stream_id, commands).await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::env::temp_dir;
     use std::fs;
+    use std::fs::File;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    use tokio::fs::File;
 
     use super::{
         FinalResponseBody, WriterCommand, WriterCommandBatch, push_final_response_commands,
     };
-    use crate::frame::StreamId;
+    use crate::config::ResponseHeaderConfig;
+    use crate::h2_frame::StreamId;
     use crate::http::header::inspect_response_headers;
     use crate::http::response::ResponseStart;
     use crate::http::types::{ResponseHeaders, status_code};
 
     #[test]
     fn final_file_response_batches_headers_then_pathsend() {
-        let path = std::env::temp_dir().join(format!(
+        let path = temp_dir().join(format!(
             "h2corn-final-response-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -478,7 +511,7 @@ mod tests {
                 .as_nanos(),
         ));
         fs::write(&path, b"x").unwrap();
-        let file = File::from_std(fs::File::open(&path).unwrap());
+        let file = File::open(&path).unwrap();
 
         let mut commands = WriterCommandBatch::new();
         push_final_response_commands(
@@ -489,6 +522,7 @@ mod tests {
                 file: Box::new(file),
                 len: 1,
             },
+            &ResponseHeaderConfig::default(),
         );
 
         match commands
@@ -524,6 +558,7 @@ mod tests {
             &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
             FinalResponseBody::Empty,
+            &ResponseHeaderConfig::default(),
         );
 
         match commands

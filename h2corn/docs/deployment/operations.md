@@ -69,6 +69,9 @@ application on several event loops in parallel:
 h2corn hello:app --loop-threads 4
 ```
 
+PyPI publishes distinct `cp3XXt` wheels for supported free-threaded CPython
+releases. Importing h2corn does not silently re-enable the GIL.
+
 Requests are balanced across the loops round-robin, and each request
 runs entirely on one loop. A single process scales across cores with
 shared memory — on a CPU-bound JSON endpoint, four loop threads deliver

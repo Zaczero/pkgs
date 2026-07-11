@@ -54,27 +54,26 @@ uvloop = ["uvloop>=0.21.0; sys_platform != 'win32'"]
 [dependency-groups]
 dev = [
   "fastapi>=0.118.0",
+  "griffe-inherited-docstrings>=1.0",
   "gunicorn>=25.3.0",
   "h2>=4.2.0",
   "h2corn[uvloop]",
   "hpack>=4.1.0",
   "hypercorn>=0.18.0",
   "matplotlib>=3.10.8",
-  "pytest>=9.0.0",
-  "pytest-asyncio>=0.26.0",
-  "starlette>=0.46.0",
-  "trustme>=1.2.0",
-  "uvicorn>=0.43.0",
-  "websockets>=16.0",
-]
-docs = [
-  "griffe-inherited-docstrings>=1.0",
   "mkdocs-gen-files>=0.5",
   "mkdocs-material>=9.5",
   "mkdocs-minify-plugin>=0.8",
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
+  "pytest-asyncio>=0.26.0",
+  "pytest>=9.0.0",
+  "ruff>=0.9",
+  "starlette>=0.46.0",
+  "trustme>=1.2.0",
+  "uvicorn>=0.43.0",
+  "websockets>=16.0",
 ]
 
 [build-system]
@@ -94,11 +93,13 @@ strict = ["python/h2corn"]
 
 [tool.pytest.ini_options]
 filterwarnings = [
-  # uvloop installs its policy through the deprecated asyncio policy API
-  # (the only way to do it until 3.16); upstream noise, not ours.
+  # Tests parametrize uvloop via EventLoopPolicy (pytest-asyncio); that
+  # still hits asyncio's deprecated policy API. Production uses an
+  # explicit loop factory and never installs a global policy.
   "ignore:'asyncio.(set_event_loop_policy|DefaultEventLoopPolicy)':DeprecationWarning",
 ]
 minversion = "9.0"
+pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff]

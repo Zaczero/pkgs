@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
+use std::fs::File;
 use std::future::Future;
 use std::mem;
+use std::mem::take;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 #[cfg(test)]
@@ -13,15 +15,15 @@ use tokio::sync::futures::Notified;
 use tokio::time::Instant as TokioInstant;
 
 use super::flush::{
-    FlushPassResult, flush_pending_data, outbound_data_frame_size, send_limit, write_frame,
-    write_frame_buf,
+    FlushPassResult, FlushTracking, flush_pending_data_tracked, outbound_data_frame_size,
+    send_limit, write_frame, write_frame_buf,
 };
 use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
 use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
 use super::{
-    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, ResponseCloseBatch, WindowTarget,
-    WriterCommand, WriterCommandBatch,
+    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, PrefixedData, ResponseCloseBatch,
+    ResponseDeadlineUpdateBatch, WindowTarget, WriterCommand, WriterCommandBatch,
 };
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
@@ -30,41 +32,44 @@ use crate::config::{
     BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, WebSocketConfig,
 };
 use crate::error::H2CornError;
-use crate::frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
+use crate::h2::deadline::DeadlineQueue;
 use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
+use crate::h2_frame::{self, ErrorCode, PeerSettings, Settings, StreamId, WindowIncrement};
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 #[cfg(test)]
-use crate::proxy::ProxyProtocolMode;
+use crate::proxy_protocol::ProxyProtocolMode;
 use crate::sendfile::WriteTarget;
 
 #[derive(Clone)]
 pub(crate) struct ConnectionHandle {
     ingress: Arc<WriterIngress>,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
 }
 
 pub(crate) struct WriterState<W> {
     ingress: Arc<WriterIngress>,
     writer: BufWriter<W>,
     frame_buf: BytesMut,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     streams: StreamMap<StreamWriteState>,
-    ready_streams: VecDeque<u32>,
+    ready_streams: VecDeque<StreamId>,
     drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
     response_closes: ResponseCloseBatch,
     connection_send_window: i64,
     initial_stream_send_window: i64,
     peer_max_frame_size: usize,
     header_state: HeaderEncodeState,
+    response_deadlines: DeadlineQueue<StreamId>,
+    response_deadline_updates: ResponseDeadlineUpdateBatch,
 }
 
 struct WriterSendParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
     streams: &'a mut StreamMap<StreamWriteState>,
-    ready_streams: &'a mut VecDeque<u32>,
+    ready_streams: &'a mut VecDeque<StreamId>,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
     initial_stream_send_window: i64,
@@ -76,12 +81,13 @@ struct WriterLoopParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
     streams: &'a mut StreamMap<StreamWriteState>,
-    ready_streams: &'a mut VecDeque<u32>,
+    ready_streams: &'a mut VecDeque<StreamId>,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
     initial_stream_send_window: &'a mut i64,
     peer_max_frame_size: &'a mut usize,
     header_state: &'a mut HeaderEncodeState,
+    response_deadline_updates: &'a mut ResponseDeadlineUpdateBatch,
 }
 
 impl<W> WriterLoopParts<'_, W> {
@@ -117,8 +123,8 @@ impl ConnectionHandle {
         self.ingress.enqueue_batch(stream_id, commands)
     }
 
-    pub(crate) const fn config(&self) -> &'static ServerConfig {
-        self.config
+    pub(crate) fn config(&self) -> &ServerConfig {
+        &self.config
     }
 
     pub(crate) fn send_headers(
@@ -128,7 +134,7 @@ impl ConnectionHandle {
         mut headers: ResponseHeaders,
         end_stream: bool,
     ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
-        apply_default_response_headers(&mut headers, self.config);
+        apply_default_response_headers(&mut headers, &self.config);
         self.send_command(stream_id, WriterCommand::SendHeaders {
             stream_id,
             status,
@@ -146,6 +152,20 @@ impl ConnectionHandle {
         self.send_command(stream_id, WriterCommand::SendData {
             stream_id,
             data: data.into(),
+            end_stream,
+        })
+    }
+
+    pub(crate) fn send_prefixed_data(
+        &self,
+        stream_id: StreamId,
+        prefix: &[u8],
+        payload: PayloadBytes,
+        end_stream: bool,
+    ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
+        self.send_command(stream_id, WriterCommand::SendPrefixedData {
+            stream_id,
+            data: Box::new(PrefixedData::new(prefix, payload)),
             end_stream,
         })
     }
@@ -186,7 +206,7 @@ where
             ingress: WriterIngress::new(max_concurrent_streams as usize),
             writer: BufWriter::new(writer),
             frame_buf: BytesMut::with_capacity(FRAME_BUFFER_CAPACITY),
-            config: Box::leak(Box::new(ServerConfig {
+            config: Arc::new(ServerConfig {
                 binds: Box::new([BindTarget::Tcp {
                     host: Box::from("127.0.0.1"),
                     port: 8000,
@@ -199,8 +219,10 @@ where
                     max_concurrent_streams,
                     max_header_list_size: None,
                     max_header_block_size: None,
-                    max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
-                        .expect("default HTTP/2 frame size is non-zero"),
+                    max_inbound_frame_size: NonZeroU32::new(
+                        h2_frame::DEFAULT_MAX_FRAME_SIZE as u32,
+                    )
+                    .expect("default HTTP/2 frame size is non-zero"),
                     initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
                     initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
                     timeout_response_stall: None,
@@ -224,15 +246,17 @@ where
                 tls: None,
                 timeout_handshake: Duration::from_secs(5),
                 response_headers: ResponseHeaderConfig::default(),
-            })),
+            }),
             streams: new_stream_map(max_concurrent_streams as usize),
             ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
             drained_app_writes: Vec::with_capacity(max_concurrent_streams as usize),
             response_closes: ResponseCloseBatch::new(),
-            connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-            initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-            peer_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
+            connection_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
+            initial_stream_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
+            peer_max_frame_size: h2_frame::DEFAULT_MAX_FRAME_SIZE,
             header_state: HeaderEncodeState::new(),
+            response_deadlines: DeadlineQueue::default(),
+            response_deadline_updates: ResponseDeadlineUpdateBatch::new(),
         }
     }
 
@@ -252,12 +276,48 @@ where
             initial_stream_send_window: &mut self.initial_stream_send_window,
             peer_max_frame_size: &mut self.peer_max_frame_size,
             header_state: &mut self.header_state,
+            response_deadline_updates: &mut self.response_deadline_updates,
         }
     }
 
     async fn process_command(&mut self, command: WriterCommand) -> Result<bool, H2CornError> {
-        let mut context = self.command_context();
-        process_writer_command(&mut context, command).await
+        let response_stream_id = command.response_stream_id();
+        let result = {
+            let mut context = self.command_context();
+            process_writer_command(&mut context, command).await
+        };
+        if let Some(stream_id) = response_stream_id {
+            self.refresh_response_deadline(stream_id);
+        }
+        self.apply_response_deadline_updates();
+        result
+    }
+
+    fn refresh_response_deadline(&mut self, stream_id: StreamId) {
+        let deadline = self
+            .config
+            .http2
+            .timeout_response_stall
+            .and_then(|timeout| {
+                self.streams
+                    .get(&stream_id)
+                    .and_then(StreamWriteState::pending_body_since)
+                    .map(|since| since + timeout)
+            });
+        if let Some(deadline) = deadline {
+            self.response_deadlines.schedule(stream_id, deadline);
+        } else {
+            self.response_deadlines.cancel(stream_id);
+        }
+    }
+
+    fn apply_response_deadline_updates(&mut self) {
+        let updates = take(&mut self.response_deadline_updates);
+        for stream_id in updates.iter().copied() {
+            self.refresh_response_deadline(stream_id);
+        }
+        self.response_deadline_updates = updates;
+        self.response_deadline_updates.clear();
     }
 
     pub(crate) async fn drain_app_writes(&mut self) -> Result<bool, H2CornError> {
@@ -311,22 +371,15 @@ where
         self.ingress.notify.notified()
     }
 
-    pub(crate) fn next_response_stall_deadline(
-        &self,
-        timeout_duration: Option<std::time::Duration>,
+    pub(crate) fn next_response_stall_deadline(&mut self) -> Option<(StreamId, TokioInstant)> {
+        self.response_deadlines.next()
+    }
+
+    pub(crate) fn pop_expired_response_stall_deadline(
+        &mut self,
+        now: TokioInstant,
     ) -> Option<(StreamId, TokioInstant)> {
-        let timeout_duration = timeout_duration?;
-        self.streams
-            .iter()
-            .filter_map(|(&stream_id, stream)| {
-                stream.pending_body_since().map(|since| {
-                    (
-                        StreamId::new(stream_id).expect("stored stream id is non-zero"),
-                        since + timeout_duration,
-                    )
-                })
-            })
-            .min_by_key(|(_, deadline)| *deadline)
+        self.response_deadlines.pop_expired(now)
     }
 
     pub(crate) async fn flush(&mut self) -> Result<(), H2CornError> {
@@ -364,7 +417,7 @@ where
         mut headers: ResponseHeaders,
         end_stream: bool,
     ) -> Result<(), H2CornError> {
-        apply_default_response_headers(&mut headers, self.config);
+        apply_default_response_headers(&mut headers, &self.config);
         self.process_command(WriterCommand::SendHeaders {
             stream_id,
             status,
@@ -447,16 +500,21 @@ where
     }
 
     pub(crate) async fn flush_pending_output(&mut self) -> Result<FlushPassResult, H2CornError> {
-        flush_pending_data(
+        let result = flush_pending_data_tracked(
             &mut self.writer,
             &mut self.streams,
             &mut self.ready_streams,
             &mut self.connection_send_window,
             self.peer_max_frame_size,
             &mut self.header_state,
-            &mut self.response_closes,
+            FlushTracking {
+                deadline_updates: &mut self.response_deadline_updates,
+                response_closes: &mut self.response_closes,
+            },
         )
-        .await
+        .await;
+        self.apply_response_deadline_updates();
+        result
     }
 }
 
@@ -471,8 +529,8 @@ async fn force_reset_stream<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    streams.remove(&stream_id.get());
-    frame::append_rst_stream(frame_buf, stream_id, error_code);
+    streams.remove(&stream_id);
+    h2_frame::append_rst_stream(frame_buf, stream_id, error_code);
     write_frame_buf(writer, frame_buf).await?;
     notify_response_close(response_closes, stream_id);
     Ok(())
@@ -510,18 +568,7 @@ async fn handle_send_headers<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let Ok(block) = context.header_state.encode_response(status, &headers) else {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
-        return Ok(());
-    };
+    let block = context.header_state.encode_response(status, &headers);
 
     if write_header_block(
         context.writer,
@@ -533,7 +580,7 @@ where
     .await
     .is_err()
     {
-        context.streams.remove(&stream_id.get());
+        context.streams.remove(&stream_id);
         notify_response_close(context.response_closes, stream_id);
         return Ok(());
     }
@@ -621,6 +668,36 @@ where
     Ok(())
 }
 
+async fn handle_send_prefixed_data<W>(
+    context: &mut WriterSendParts<'_, W>,
+    stream_id: StreamId,
+    data: Box<PrefixedData>,
+    end_stream: bool,
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let stream = writer_stream(
+        context.streams,
+        stream_id,
+        context.initial_stream_send_window,
+    );
+    if stream.queue_prefixed_data(data, end_stream).is_err() {
+        let _ = force_reset_stream(
+            context.writer,
+            context.frame_buf,
+            context.streams,
+            context.response_closes,
+            stream_id,
+            ErrorCode::INTERNAL_ERROR,
+        )
+        .await;
+        return Ok(());
+    }
+    stream.schedule(context.ready_streams, stream_id, false);
+    Ok(())
+}
+
 async fn handle_send_final<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
@@ -633,7 +710,7 @@ where
 {
     let end_stream = data.is_empty();
     if !end_stream
-        && !context.streams.contains_key(&stream_id.get())
+        && !context.streams.contains_key(&stream_id)
         && send_limit(
             *context.connection_send_window,
             context.initial_stream_send_window,
@@ -641,10 +718,7 @@ where
         )
         .is_some_and(|limit| data.len() <= limit)
     {
-        let Ok(block) = context.header_state.encode_response(status, &headers) else {
-            notify_response_close(context.response_closes, stream_id);
-            return Ok(());
-        };
+        let block = context.header_state.encode_response(status, &headers);
 
         if write_header_block(
             context.writer,
@@ -664,10 +738,9 @@ where
         // coalesce with the HEADERS frame into one sendto on flush.
         write_frame(
             context.writer,
-            frame::FrameHeader {
-                len: data.len(),
-                frame_type: frame::FrameType::DATA,
-                flags: frame::FrameFlags::END_STREAM,
+            h2_frame::FrameHeader {
+                frame_type: h2_frame::FrameType::DATA,
+                flags: h2_frame::FrameFlags::END_STREAM,
                 stream_id: Some(stream_id),
             },
             data.as_ref(),
@@ -689,7 +762,9 @@ where
 async fn handle_send_path<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
-    streamer: Box<PathStreamer>,
+    file: Box<File>,
+    len: usize,
+    end_stream: bool,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
@@ -699,7 +774,10 @@ where
         stream_id,
         context.initial_stream_send_window,
     );
-    if stream.queue_path(streamer).is_err() {
+    if stream
+        .queue_path(PathStreamer::new(*file, len, end_stream))
+        .is_err()
+    {
         let _ = force_reset_stream(
             context.writer,
             context.frame_buf,
@@ -742,11 +820,10 @@ async fn handle_grant_stream_window<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let stream_key = stream_id.get();
-    let overflow = match context.streams.entry(stream_key) {
+    let overflow = match context.streams.entry(stream_id) {
         Entry::Occupied(mut entry) => {
             let stream = entry.get_mut();
-            if stream.send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+            if stream.send_window > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment {
                 true
             } else {
                 stream.send_window += increment;
@@ -758,7 +835,7 @@ where
         },
         Entry::Vacant(entry) => {
             let stream = entry.insert(StreamWriteState::new(*context.initial_stream_send_window));
-            if stream.send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+            if stream.send_window > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment {
                 true
             } else {
                 stream.send_window += increment;
@@ -767,8 +844,8 @@ where
         },
     };
     if overflow {
-        context.streams.remove(&stream_key);
-        frame::append_rst_stream(context.frame_buf, stream_id, ErrorCode::FLOW_CONTROL_ERROR);
+        context.streams.remove(&stream_id);
+        h2_frame::append_rst_stream(context.frame_buf, stream_id, ErrorCode::FLOW_CONTROL_ERROR);
         write_frame_buf(context.writer, context.frame_buf).await?;
         notify_response_close(context.response_closes, stream_id);
     }
@@ -782,8 +859,8 @@ async fn handle_grant_connection_window<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    if *context.connection_send_window > i64::from(frame::MAX_FLOW_CONTROL_WINDOW) - increment {
-        frame::append_goaway(
+    if *context.connection_send_window > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+        h2_frame::append_goaway(
             context.frame_buf,
             None,
             ErrorCode::FLOW_CONTROL_ERROR,
@@ -805,7 +882,7 @@ async fn handle_grant_send_window<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let increment = std::num::NonZeroI64::from(increment).get();
+    let increment = i64::from(increment.get());
     match target {
         WindowTarget::Stream(stream_id) => {
             handle_grant_stream_window(context, stream_id, increment).await?;
@@ -821,14 +898,17 @@ async fn flush_buffered_writer_output<W>(
 where
     W: WriteTarget,
 {
-    let _ = flush_pending_data(
+    let _ = flush_pending_data_tracked(
         context.writer,
         context.streams,
         context.ready_streams,
         context.connection_send_window,
         *context.peer_max_frame_size,
         context.header_state,
-        context.response_closes,
+        FlushTracking {
+            deadline_updates: context.response_deadline_updates,
+            response_closes: context.response_closes,
+        },
     )
     .await?;
     context.writer.flush().await?;
@@ -843,7 +923,7 @@ async fn send_window_update<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    frame::append_window_update(
+    h2_frame::append_window_update(
         context.frame_buf,
         match target {
             WindowTarget::Connection => None,
@@ -854,6 +934,10 @@ where
     write_frame_buf(context.writer, context.frame_buf).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match keeps the closed writer-command dispatcher auditable"
+)]
 async fn process_writer_command<W>(
     context: &mut WriterLoopParts<'_, W>,
     command: WriterCommand,
@@ -863,7 +947,7 @@ where
 {
     match command {
         WriterCommand::SendSettingsAck => {
-            frame::append_settings_ack(context.frame_buf);
+            h2_frame::append_settings_ack(context.frame_buf);
             write_frame_buf(context.writer, context.frame_buf).await?;
         },
         WriterCommand::UpdatePeerSettings(settings) => {
@@ -902,15 +986,24 @@ where
             data,
             end_stream,
         } => {
-            let mut send = context.send_context();
-            handle_send_data(&mut send, stream_id, data, end_stream).await?;
+            handle_send_data(&mut context.send_context(), stream_id, data, end_stream).await?;
+        },
+        WriterCommand::SendPrefixedData {
+            stream_id,
+            data,
+            end_stream,
+        } => {
+            handle_send_prefixed_data(&mut context.send_context(), stream_id, data, end_stream)
+                .await?;
         },
         WriterCommand::SendPath {
             stream_id,
-            streamer,
+            file,
+            len,
+            end_stream,
         } => {
             let mut send = context.send_context();
-            handle_send_path(&mut send, stream_id, streamer).await?;
+            handle_send_path(&mut send, stream_id, file, len, end_stream).await?;
         },
         WriterCommand::FlushBufferedOutput => {
             flush_buffered_writer_output(context).await?;
@@ -923,7 +1016,7 @@ where
             handle_send_reset(context, stream_id, error_code).await?;
         },
         WriterCommand::PeerReset { stream_id } => {
-            context.streams.remove(&stream_id.get());
+            context.streams.remove(&stream_id);
         },
         WriterCommand::GrantSendWindow { target, increment } => {
             if handle_grant_send_window(context, target, increment).await? {
@@ -934,7 +1027,7 @@ where
             send_window_update(context, target, increment).await?;
         },
         WriterCommand::PingAck(payload) => {
-            frame::append_ping_ack(context.frame_buf, payload);
+            h2_frame::append_ping_ack(context.frame_buf, payload);
             write_frame_buf(context.writer, context.frame_buf).await?;
         },
         WriterCommand::Goaway {
@@ -943,7 +1036,7 @@ where
             debug,
             close,
         } => {
-            frame::append_goaway(context.frame_buf, last_stream_id, error_code, &debug);
+            h2_frame::append_goaway(context.frame_buf, last_stream_id, error_code, &debug);
             write_frame_buf(context.writer, context.frame_buf).await?;
             if close {
                 context.writer.flush().await?;
@@ -961,7 +1054,7 @@ where
 )]
 pub(crate) async fn init_writer<W>(
     writer: W,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     initial_peer_settings: Option<PeerSettings>,
 ) -> Result<(WriterState<W>, ConnectionHandle), H2CornError>
 where
@@ -971,7 +1064,7 @@ where
     let mut writer = BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer);
     let mut frame_buf = BytesMut::with_capacity(FRAME_BUFFER_CAPACITY);
     let initial_settings = Settings {
-        header_table_size: Some(frame::DEFAULT_HEADER_TABLE_SIZE as u32),
+        header_table_size: Some(h2_frame::DEFAULT_HEADER_TABLE_SIZE as u32),
         enable_push: Some(false),
         max_concurrent_streams: Some(config.http2.max_concurrent_streams),
         initial_window_size: Some(config.http2.initial_stream_window_size.get()),
@@ -983,37 +1076,36 @@ where
             .map(|value| value as u32),
         enable_connect_protocol: Some(true),
     };
-    frame::append_settings(&mut frame_buf, initial_settings);
+    h2_frame::append_settings(&mut frame_buf, initial_settings);
     write_frame_buf(&mut writer, &mut frame_buf).await?;
     let initial_connection_window = config.http2.initial_connection_window_size.get();
-    if initial_connection_window > frame::DEFAULT_WINDOW_SIZE {
-        frame::append_window_update(
+    if initial_connection_window > h2_frame::DEFAULT_WINDOW_SIZE {
+        h2_frame::append_window_update(
             &mut frame_buf,
             None,
-            WindowIncrement::new(initial_connection_window - frame::DEFAULT_WINDOW_SIZE)
+            WindowIncrement::new(initial_connection_window - h2_frame::DEFAULT_WINDOW_SIZE)
                 .expect("increment is positive"),
         );
         write_frame_buf(&mut writer, &mut frame_buf).await?;
     }
     writer.flush().await?;
 
+    let stream_capacity = config.http2.max_concurrent_streams as usize;
     let mut writer_state = WriterState {
         ingress,
         writer,
         frame_buf,
-        config,
-        streams: new_stream_map(config.http2.max_concurrent_streams as usize),
-        ready_streams: VecDeque::with_capacity(
-            (config.http2.max_concurrent_streams as usize).min(LAZY_STREAM_CAPACITY),
-        ),
-        drained_app_writes: Vec::with_capacity(
-            (config.http2.max_concurrent_streams as usize).min(LAZY_STREAM_CAPACITY),
-        ),
+        config: Arc::clone(&config),
+        streams: new_stream_map(stream_capacity),
+        ready_streams: VecDeque::with_capacity(stream_capacity.min(LAZY_STREAM_CAPACITY)),
+        drained_app_writes: Vec::with_capacity(stream_capacity.min(LAZY_STREAM_CAPACITY)),
         response_closes: ResponseCloseBatch::new(),
-        connection_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-        initial_stream_send_window: i64::from(frame::DEFAULT_WINDOW_SIZE),
-        peer_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
+        connection_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
+        initial_stream_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
+        peer_max_frame_size: h2_frame::DEFAULT_MAX_FRAME_SIZE,
         header_state: HeaderEncodeState::new(),
+        response_deadlines: DeadlineQueue::default(),
+        response_deadline_updates: ResponseDeadlineUpdateBatch::new(),
     };
 
     if let Some(settings) = initial_peer_settings {

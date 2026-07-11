@@ -9,7 +9,7 @@ use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::error::{ConfigError, ErrorExt, H2CornError, ProxyError};
-use crate::frame::{CONNECTION_PREFACE, FrameReader};
+use crate::h2_frame::{CONNECTION_PREFACE, FrameReader};
 
 const PROXY_V1_MAX_LEN: usize = 107;
 const HTTP2_PREFACE_LEAD: &[u8] = b"PRI * HTTP/2.0";
@@ -323,13 +323,14 @@ where
     }
 }
 
-pub(crate) async fn read_preamble_protocol<R, const HTTP1: bool>(
+pub(crate) async fn read_preamble_protocol<R>(
     reader: &mut FrameReader<R>,
+    http1: bool,
 ) -> Result<DetectedProtocol, H2CornError>
 where
     R: AsyncRead + Unpin,
 {
-    if HTTP1 {
+    if http1 {
         detect_protocol(reader).await
     } else {
         read_h2_preface(reader).await?;
@@ -567,7 +568,7 @@ mod tests {
 
     use super::*;
     use crate::error::ErrorKind;
-    use crate::frame::FrameReader;
+    use crate::h2_frame::FrameReader;
 
     #[test]
     fn trusted_peer_cidr_matches_ipv4_and_ipv6() {

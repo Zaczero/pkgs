@@ -15,16 +15,16 @@ use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
-use crate::frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
+use crate::h2_frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::hpack::BytesStr;
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 use crate::http::header::{
     header_contains_token, header_is_single_token, parse_connection_header_tokens,
-    parse_content_length_header,
+    parse_content_length_header, request_header_name_needs_lowercase,
 };
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::types::{
-    HttpVersion, KnownRequestHeaderName, RequestHead, RequestHeaderName, RequestHeaderValue,
+    H1RequestHeaders, HttpStatusCode, HttpVersion, KnownRequestHeaderName, RequestHead,
     RequestHeaders, RequestTarget as DomainRequestTarget, parse_request_method, status_code,
 };
 use crate::runtime::StreamInput;
@@ -82,7 +82,7 @@ struct UpgradeHeaderFlags {
 }
 
 struct HeaderParseState {
-    headers: RequestHeaders,
+    headers: H1RequestHeaders,
     host_header_index: Option<usize>,
     connection: ConnectionHeaderFlags,
     upgrade: UpgradeHeaderFlags,
@@ -106,9 +106,9 @@ struct RequestLineParts<'a> {
 }
 
 impl HeaderParseState {
-    fn new() -> Self {
+    fn new(head: Bytes) -> Self {
         Self {
-            headers: RequestHeaders::with_capacity(16),
+            headers: H1RequestHeaders::new(head),
             host_header_index: None,
             connection: ConnectionHeaderFlags::default(),
             upgrade: UpgradeHeaderFlags::default(),
@@ -135,84 +135,94 @@ impl HeaderParseState {
         too_many_header_fields || limit_request_field_size.is_some_and(|limit| line.len() > limit)
     }
 
-    fn push_header(&mut self, head: &Bytes, line: &[u8]) -> Result<(), H2CornError> {
+    fn push_header(&mut self, line: &[u8]) -> Result<(), H2CornError> {
         let Some(colon) = memchr(b':', line) else {
             return Http1Error::MalformedHeaderLine.err();
         };
         let name = &line[..colon];
         let value = line[colon + 1..].trim_ascii();
-        let header_name =
-            RequestHeaderName::from_h1(head, name).ok_or(Http1Error::InvalidHeaderName)?;
-        let header_value =
-            RequestHeaderValue::from_h1(head, value).ok_or(Http1Error::InvalidHeaderValue)?;
-        let value = header_value.as_bytes();
-
-        if let RequestHeaderName::Known(known_name) = &header_name {
-            self.header_meta.observe_known_header(
-                *known_name,
-                header_value.inner(),
-                self.headers.len(),
-            );
-            match known_name {
-                KnownRequestHeaderName::Host => {
-                    if self.host_header_index.is_some() {
-                        return Http1Error::ConflictingAbsoluteFormAuthority.err();
-                    }
-                    self.host_header_index = Some(self.headers.len());
-                },
-                KnownRequestHeaderName::Connection => {
-                    let tokens = parse_connection_header_tokens(value);
-                    self.connection.close |= tokens.close;
-                    self.connection.upgrade |= tokens.upgrade;
-                    self.connection.http2_settings |= tokens.http2_settings;
-                },
-                KnownRequestHeaderName::Upgrade => {
-                    self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
-                    self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
-                },
-                KnownRequestHeaderName::Te => {
-                    self.header_meta.accepts_trailers |= header_contains_token(value, b"trailers");
-                },
-                KnownRequestHeaderName::ContentLength => {
-                    if self.body_kind == RequestBodyKind::Chunked {
-                        return Http1Error::InvalidContentLength.err();
-                    }
-                    let parsed = parse_content_length_header(value)
-                        .ok_or(Http1Error::InvalidContentLength)?;
-                    if self
-                        .header_meta
-                        .content_length
-                        .is_some_and(|existing| existing != parsed)
-                    {
-                        return Http1Error::InvalidContentLength.err();
-                    }
-                    self.header_meta.content_length = Some(parsed);
-                    self.body_kind = NonZeroU64::new(parsed)
-                        .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
-                },
-                KnownRequestHeaderName::TransferEncoding => {
-                    if self.body_kind == RequestBodyKind::Chunked
-                        || self.header_meta.content_length.is_some()
-                        || !header_is_single_token(value, b"chunked")
-                    {
-                        return Http1Error::MalformedHeaderLine.err();
-                    }
-                    self.body_kind = RequestBodyKind::Chunked;
-                    self.header_meta.content_length = None;
-                },
-                KnownRequestHeaderName::Expect => {
-                    self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
-                },
-                KnownRequestHeaderName::Http2Settings if self.http2_settings.is_none() => {
-                    self.http2_settings = Some(parse_http2_settings(value)?);
-                },
-                _ => {},
+        let known_name = self.headers.push(name, value).map_err(|()| {
+            if request_header_name_needs_lowercase(name).is_none() {
+                Http1Error::InvalidHeaderName
+            } else {
+                Http1Error::InvalidHeaderValue
             }
-        }
+        })?;
+        let Some(known_name) = known_name else {
+            return Ok(());
+        };
 
-        self.headers.push((header_name, header_value));
+        self.header_meta
+            .observe_known_header_slice(known_name, value, self.headers.len() - 1);
+        match known_name {
+            KnownRequestHeaderName::Host => {
+                if self.host_header_index.is_some() {
+                    return Http1Error::ConflictingAbsoluteFormAuthority.err();
+                }
+                self.host_header_index = Some(self.headers.len() - 1);
+            },
+            KnownRequestHeaderName::Connection => {
+                let tokens = parse_connection_header_tokens(value);
+                self.connection.close |= tokens.close;
+                self.connection.upgrade |= tokens.upgrade;
+                self.connection.http2_settings |= tokens.http2_settings;
+            },
+            KnownRequestHeaderName::Upgrade => {
+                self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
+                self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
+            },
+            KnownRequestHeaderName::Te => {
+                if header_contains_token(value, b"trailers") {
+                    self.header_meta.set_accepts_trailers();
+                }
+            },
+            KnownRequestHeaderName::ContentLength => {
+                if self.body_kind == RequestBodyKind::Chunked {
+                    return Http1Error::InvalidContentLength.err();
+                }
+                let parsed =
+                    parse_content_length_header(value).ok_or(Http1Error::InvalidContentLength)?;
+                if self
+                    .header_meta
+                    .content_length()
+                    .is_some_and(|existing| existing != parsed)
+                {
+                    return Http1Error::InvalidContentLength.err();
+                }
+                self.header_meta.set_content_length(Some(parsed));
+                self.body_kind = NonZeroU64::new(parsed)
+                    .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
+            },
+            KnownRequestHeaderName::TransferEncoding => {
+                if self.body_kind == RequestBodyKind::Chunked
+                    || self.header_meta.content_length().is_some()
+                    || !header_is_single_token(value, b"chunked")
+                {
+                    return Http1Error::MalformedHeaderLine.err();
+                }
+                self.body_kind = RequestBodyKind::Chunked;
+                self.header_meta.set_content_length(None);
+            },
+            KnownRequestHeaderName::Expect => {
+                self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
+            },
+            KnownRequestHeaderName::Http2Settings if self.http2_settings.is_none() => {
+                self.http2_settings = Some(parse_http2_settings(value)?);
+            },
+            _ => {},
+        }
         Ok(())
     }
+}
+
+enum HeadParseOutcome<T> {
+    Parsed(T),
+    Reject(HttpStatusCode),
+}
+
+struct ParsedHead {
+    request: ParsedRequest,
+    expect_continue: bool,
 }
 
 fn head_lines(head: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -294,84 +304,60 @@ where
     Ok(Some(head.freeze()))
 }
 
-async fn parse_request_line_or_reject<'a, W>(
-    request_line: &'a [u8],
-    writer: &mut BufWriter<W>,
-    config: &ServerConfig,
+fn parse_request_line_or_reject(
+    request_line: &[u8],
     limit_request_line: Option<usize>,
-) -> Result<Option<RequestLineParts<'a>>, H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
+) -> Result<HeadParseOutcome<RequestLineParts<'_>>, H2CornError> {
     if limit_request_line.is_some_and(|limit| request_line.len() > limit) {
-        write_empty_response(writer, config, status_code::URI_TOO_LONG, true).await?;
-        return Ok(None);
+        return Ok(HeadParseOutcome::Reject(status_code::URI_TOO_LONG));
     }
     let (method, target, version) = parse_request_line(request_line)?;
     match version {
         b"HTTP/1.1" => {},
         [b'H', b'T', b'T', b'P', b'/', b'1', b'.', ..] => {
-            write_empty_response(writer, config, 505, true).await?;
-            return Ok(None);
+            return Ok(HeadParseOutcome::Reject(
+                status_code::HTTP_VERSION_NOT_SUPPORTED,
+            ));
         },
         _ => {
-            write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
-            return Ok(None);
+            return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
         },
     }
     let websocket_method_supported = method == Method::GET;
-    Ok(Some(RequestLineParts {
+    Ok(HeadParseOutcome::Parsed(RequestLineParts {
         method,
         target,
         websocket_method_supported,
     }))
 }
 
-async fn parse_headers_or_reject<W>(
-    lines: impl Iterator<Item = &'_ [u8]>,
+fn parse_headers_or_reject<'a>(
+    lines: impl Iterator<Item = &'a [u8]>,
     head: &Bytes,
-    writer: &mut BufWriter<W>,
-    config: &ServerConfig,
     limit_request_fields: Option<usize>,
     limit_request_field_size: Option<usize>,
-) -> Result<Option<HeaderParseState>, H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
-    let mut header_state = HeaderParseState::new();
+) -> HeadParseOutcome<HeaderParseState> {
+    let mut header_state = HeaderParseState::new(head.clone());
     for line in lines {
         if line.is_empty() {
             continue;
         }
         if header_state.header_too_large(line, limit_request_fields, limit_request_field_size) {
-            write_empty_response(
-                writer,
-                config,
-                status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                true,
-            )
-            .await?;
-            return Ok(None);
+            return HeadParseOutcome::Reject(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE);
         }
-        if header_state.push_header(head, line).is_err() {
-            write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
-            return Ok(None);
+        if header_state.push_header(line).is_err() {
+            return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
         }
     }
-    Ok(Some(header_state))
+    HeadParseOutcome::Parsed(header_state)
 }
 
-async fn parsed_request_from_head<W>(
+fn parsed_request_from_head(
     head: &Bytes,
     line: RequestLineParts<'_>,
     mut header_state: HeaderParseState,
-    writer: &mut BufWriter<W>,
-    config: &ServerConfig,
     secure: bool,
-) -> Result<Option<ParsedRequest>, H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
+) -> Result<HeadParseOutcome<ParsedHead>, H2CornError> {
     let scheme = BytesStr::from_static(if secure { "https" } else { "http" });
     let request_target = match parse_request_target(
         line.target,
@@ -385,16 +371,14 @@ where
                 ErrorKind::Http1(Http1Error::ConflictingAbsoluteFormAuthority)
             ) =>
         {
-            write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
-            return Ok(None);
+            return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
         },
         Err(err) => return Err(err),
     };
     if !matches!(request_target, ParsedRequestTarget::Absolute(_))
         && header_state.host_header_index.is_none()
     {
-        write_empty_response(writer, config, status_code::BAD_REQUEST, true).await?;
-        return Ok(None);
+        return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
     }
     let path_and_query = match request_target {
         ParsedRequestTarget::Origin(path) => BytesStr::try_from(head.slice_ref(path))
@@ -413,22 +397,24 @@ where
         body_kind,
         http2_settings,
         header_meta,
+        expect_continue,
         ..
     } = header_state;
     let request = RequestHead {
         http_version: HttpVersion::Http1_1,
         method: line.method,
         target: DomainRequestTarget::normal(scheme, path_and_query),
-        headers,
+        headers: RequestHeaders::from_h1(headers),
         header_meta,
     };
 
     let websocket_requested = upgrade.websocket && connection.upgrade;
     let upgrade = if websocket_requested {
-        let websocket = &request.header_meta.websocket;
-        if !websocket.version_supported {
+        let websocket = request.header_meta.websocket();
+        if !websocket.is_some_and(|websocket| websocket.version_supported) {
             Some(UpgradeRequest::WebSocketUnsupportedVersion)
-        } else if line.websocket_method_supported
+        } else if let Some(websocket) = websocket
+            && line.websocket_method_supported
             && !websocket.key_duplicate
             && let Some(key) = websocket.key
         {
@@ -449,15 +435,18 @@ where
         None
     };
 
-    Ok(Some(ParsedRequest {
-        request,
-        upgrade,
-        body_kind,
-        persistence: if connection.close {
-            ConnectionPersistence::Close
-        } else {
-            ConnectionPersistence::KeepAlive
+    Ok(HeadParseOutcome::Parsed(ParsedHead {
+        request: ParsedRequest {
+            request,
+            upgrade,
+            body_kind,
+            persistence: if connection.close {
+                ConnectionPersistence::Close
+            } else {
+                ConnectionPersistence::KeepAlive
+            },
         },
+        expect_continue,
     }))
 }
 
@@ -495,30 +484,36 @@ where
     let Some(request_line) = lines.next() else {
         return Http1Error::EmptyRequestHead.err();
     };
-    let Some(line) =
-        parse_request_line_or_reject(request_line, writer, config, limit_request_line).await?
-    else {
-        return Ok(None);
+    let line = match parse_request_line_or_reject(request_line, limit_request_line)? {
+        HeadParseOutcome::Parsed(line) => line,
+        HeadParseOutcome::Reject(status) => {
+            write_empty_response(writer, config, status, true).await?;
+            return Ok(None);
+        },
     };
-    let Some(header_state) = parse_headers_or_reject(
-        lines,
-        &head,
-        writer,
-        config,
-        limit_request_fields,
-        limit_request_field_size,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
+    let header_state =
+        match parse_headers_or_reject(lines, &head, limit_request_fields, limit_request_field_size)
+        {
+            HeadParseOutcome::Parsed(header_state) => header_state,
+            HeadParseOutcome::Reject(status) => {
+                write_empty_response(writer, config, status, true).await?;
+                return Ok(None);
+            },
+        };
 
-    if header_state.expect_continue && header_state.body_kind != RequestBodyKind::None {
+    let parsed = match parsed_request_from_head(&head, line, header_state, secure)? {
+        HeadParseOutcome::Parsed(parsed) => parsed,
+        HeadParseOutcome::Reject(status) => {
+            write_empty_response(writer, config, status, true).await?;
+            return Ok(None);
+        },
+    };
+    if parsed.expect_continue && parsed.request.body_kind != RequestBodyKind::None {
         writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
         writer.flush().await?;
     }
 
-    parsed_request_from_head(&head, line, header_state, writer, config, secure).await
+    Ok(Some(parsed.request))
 }
 
 pub(super) async fn read_fixed_body<R>(
@@ -620,7 +615,7 @@ async fn consume_body_bytes(
     }
     if body.should_deliver() {
         let chunk = buffer.split_to(chunk_len).freeze();
-        if !send_if_open(tx, StreamInput::Data(chunk)).await {
+        if !send_if_open(tx, StreamInput::data(chunk)).await {
             body.stop_delivering();
         }
     } else {
@@ -758,7 +753,7 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
 
 fn parse_request_target<'a>(
     target: &'a [u8],
-    headers: &mut RequestHeaders,
+    headers: &mut H1RequestHeaders,
     host_header_index: Option<usize>,
 ) -> Result<ParsedRequestTarget<'a>, H2CornError> {
     match target {
@@ -772,21 +767,19 @@ fn parse_request_target<'a>(
         .map_err(|_| Http1Error::InvalidAbsoluteFormTarget)?;
     if let Some(host_header_index) = host_header_index
         && let Some(authority) = uri.authority()
-        && !headers[host_header_index]
-            .1
-            .as_bytes()
+        && !headers
+            .get(host_header_index)
+            .expect("recorded host index must exist")
+            .value()
             .eq_ignore_ascii_case(authority.as_str().as_bytes())
     {
         return Http1Error::ConflictingAbsoluteFormAuthority.err();
     }
     if host_header_index.is_none()
         && let Some(authority) = uri.authority()
+        && !headers.push_synthetic(KnownRequestHeaderName::Host, authority.as_str().as_bytes())
     {
-        headers.push((
-            KnownRequestHeaderName::Host.into(),
-            RequestHeaderValue::from_bytes(Bytes::copy_from_slice(authority.as_str().as_bytes()))
-                .ok_or(Http1Error::InvalidAbsoluteFormAuthority)?,
-        ));
+        return Http1Error::InvalidAbsoluteFormAuthority.err();
     }
     Ok(ParsedRequestTarget::Absolute(uri))
 }
@@ -896,7 +889,7 @@ mod tests {
 
     use bytes::BytesMut;
     use http::Method;
-    use tokio::io::{AsyncWriteExt, BufWriter, duplex};
+    use tokio::io::{AsyncWriteExt, BufWriter, duplex, sink};
     use tokio::spawn;
     use tokio::sync::mpsc;
 
@@ -905,12 +898,15 @@ mod tests {
         parse_chunk_size, parse_http2_settings, read_chunk_size_line, read_chunked_body,
         read_request,
     };
-    use crate::config::{BindTarget, Http1Config, Http2Config, ProxyConfig, ServerConfig};
+    use crate::config::{
+        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
+        WebSocketConfig,
+    };
     use crate::error::{ErrorKind, H2CornError, Http1Error};
-    use crate::frame;
     use crate::h1::{ConnectionPersistence, RequestBodyKind, UpgradeRequest};
+    use crate::h2_frame;
     use crate::http::body::RequestBodyState;
-    use crate::proxy::ProxyProtocolMode;
+    use crate::proxy_protocol::ProxyProtocolMode;
     use crate::runtime::StreamInput;
 
     fn test_server_config() -> &'static ServerConfig {
@@ -930,7 +926,7 @@ mod tests {
                 max_concurrent_streams: 8,
                 max_header_list_size: None,
                 max_header_block_size: None,
-                max_inbound_frame_size: NonZeroU32::new(frame::DEFAULT_MAX_FRAME_SIZE as u32)
+                max_inbound_frame_size: NonZeroU32::new(h2_frame::DEFAULT_MAX_FRAME_SIZE as u32)
                     .expect("default HTTP/2 frame size is non-zero"),
                 initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
                 initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
@@ -946,7 +942,7 @@ mod tests {
             max_requests: None,
             runtime_threads: 2,
             loop_threads: 1,
-            websocket: crate::config::WebSocketConfig::default(),
+            websocket: WebSocketConfig::default(),
             proxy: ProxyConfig {
                 trust_headers: false,
                 trusted_peers: Box::new([]),
@@ -954,7 +950,7 @@ mod tests {
             },
             tls: None,
             timeout_handshake: Duration::from_secs(5),
-            response_headers: crate::config::ResponseHeaderConfig::default(),
+            response_headers: ResponseHeaderConfig::default(),
         }))
     }
 
@@ -962,7 +958,7 @@ mod tests {
         request: &[u8],
     ) -> Result<Option<super::ParsedRequest>, H2CornError> {
         let (mut client, mut server) = duplex(512);
-        let mut writer = BufWriter::new(tokio::io::sink());
+        let mut writer = BufWriter::new(sink());
         let request = request.to_vec();
         let write_task = spawn(async move {
             client
@@ -1229,7 +1225,7 @@ mod tests {
         writer.await.expect("writer task finishes");
 
         match rx.try_recv().expect("body chunk is forwarded") {
-            StreamInput::Data(chunk) => assert_eq!(chunk.as_ref(), b"abc"),
+            StreamInput::Data { body, credit: None } => assert_eq!(body.as_ref(), b"abc"),
             _ => panic!("expected body data event"),
         }
         rx.try_recv().unwrap_err();
@@ -1253,10 +1249,18 @@ mod tests {
             .expect("chunk extensions and trailers are accepted");
         writer.await.expect("writer task finishes");
 
-        let StreamInput::Data(first) = rx.try_recv().expect("first body chunk exists") else {
+        let StreamInput::Data {
+            body: first,
+            credit: None,
+        } = rx.try_recv().expect("first body chunk exists")
+        else {
             panic!("expected first body chunk");
         };
-        let StreamInput::Data(second) = rx.try_recv().expect("second body chunk exists") else {
+        let StreamInput::Data {
+            body: second,
+            credit: None,
+        } = rx.try_recv().expect("second body chunk exists")
+        else {
             panic!("expected second body chunk");
         };
         assert_eq!(first.as_ref(), b"abc");

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{fmt, future};
 
 use bytes::Bytes;
-pub(crate) use http::{PyHttpReceive, PyHttpSend};
+pub(crate) use http::{HttpDisconnectSignal, PyHttpReceive, PyHttpSend};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
@@ -15,7 +15,9 @@ use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, mpsc};
 #[cfg(test)]
 pub(crate) use websocket::WebSocketSendDisposition;
-pub(crate) use websocket::{PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState};
+pub(crate) use websocket::{
+    PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState,
+};
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
@@ -25,8 +27,9 @@ use crate::hpack::BytesStr;
 use crate::http::types::{
     HttpStatusCode, ResponseHeaderName, ResponseHeaderValue, ResponseHeaders,
 };
-use crate::pyloop::{ResolveOp, ResolvePayload, Shard, new_rust_future};
+use crate::pyloop::{PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, runtime};
 use crate::python::{StaticPyKey, py_dict};
+use crate::runtime::H2InputCredit;
 use crate::websocket::WebSocketCloseCode;
 
 macro_rules! asgi_item {
@@ -43,7 +46,16 @@ pub(crate) const ASGI_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug)]
 pub(crate) enum HttpInboundEvent {
-    Request { body: Bytes, more_body: bool },
+    Request {
+        body: Bytes,
+        more_body: bool,
+        credit: Option<H2InputCredit>,
+    },
+    RequestBatch {
+        bodies: Box<[Bytes; 2]>,
+        more_body: bool,
+        credit: Option<H2InputCredit>,
+    },
     HttpDisconnect,
 }
 
@@ -217,10 +229,12 @@ impl<'py> AsgiMessage<'py> {
         parse_headers(self.headers_item()?)
     }
 
-    fn status(&self, container: AsgiContainer) -> Result<u16, H2CornError> {
-        Self::require(container, "status", self.status_item()?)?
+    fn status(&self, container: AsgiContainer) -> Result<HttpStatusCode, H2CornError> {
+        let status = Self::require(container, "status", self.status_item()?)?
             .extract::<u16>()
-            .map_err(H2CornError::from)
+            .map_err(H2CornError::from)?;
+        HttpStatusCode::new(status)
+            .ok_or_else(|| HttpResponseError::StatusMustBeThreeDigitCode.into_error())
     }
 
     fn trailers_flag(&self) -> Result<bool, H2CornError> {
@@ -354,9 +368,16 @@ impl ReadyNone {
 pub(crate) trait EventSource: Send + 'static {
     type Event: Send + 'static;
 
+    fn pull(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
+
     fn try_pull(&mut self) -> Option<Self::Event>;
 
-    fn pull(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
+    /// Mark a slow-path waiter as live. HTTP request ownership uses this to
+    /// distinguish an application already awaiting disconnect from an
+    /// abandoned task that can be cancelled immediately.
+    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+        None
+    }
 }
 
 /// Wraps an [`EventSource`] with the requeued-event slot: an event consumed
@@ -400,6 +421,10 @@ impl<S: EventSource> Requeueable<S> {
         debug_assert!(self.requeued.is_none(), "at most one receive in flight");
         self.requeued = Some(event);
     }
+
+    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+        self.source.wait_signal()
+    }
 }
 
 /// Resolve payload for a consumed receive event: convert on the loop thread,
@@ -421,7 +446,7 @@ impl<S: EventSource> ResolveOp for ReceiveResolve<S> {
             guard.requeue(event);
         } else {
             // A new waiter already holds the lock; queue behind it.
-            crate::pyloop::runtime().spawn(async move {
+            runtime().spawn(async move {
                 state.lock().await.requeue(event);
             });
         }
@@ -439,19 +464,8 @@ pub(crate) fn ready_awaitable(py: Python<'_>, result: Py<PyAny>) -> PyResult<Bou
 /// The shard's cached `None`-resolving awaitable, for a `send()` that
 /// completed synchronously. No allocation — just a new reference to the shared
 /// [`ReadyNone`] singleton.
-pub(crate) fn ready_none(py: Python<'_>, shard: Shard) -> Bound<'_, PyAny> {
+pub(crate) fn ready_none<'py>(py: Python<'py>, shard: &Shard) -> Bound<'py, PyAny> {
     shard.ready_none().bind(py).clone().into_any()
-}
-
-pub(crate) fn buffered_or_send<T: Send + 'static>(
-    py: Python<'_>,
-    shard: Shard,
-    forwarded: Option<(mpsc::Sender<T>, T)>,
-) -> PyResult<Bound<'_, PyAny>> {
-    forwarded.map_or_else(
-        || Ok(ready_none(py, shard)),
-        |(tx, event)| try_send_or_await(py, shard, &tx, event),
-    )
 }
 
 pub(crate) fn receive_or_await<'py, S>(
@@ -463,51 +477,105 @@ pub(crate) fn receive_or_await<'py, S>(
 where
     S: EventSource,
 {
-    if let Ok(mut guard) = state.try_lock()
-        && let Some(event) = guard.try_next()
-    {
-        return ready_awaitable(py, build_event(py, event)?);
-    }
+    let wait_signal = if let Ok(mut guard) = state.try_lock() {
+        if let Some(event) = guard.try_next() {
+            return ready_awaitable(py, build_event(py, event)?);
+        }
+        guard.wait_signal()
+    } else {
+        None
+    };
+    // Register the common uncontended waiter before returning the awaitable
+    // to Python. A peer can close immediately after receive() is called; the
+    // producer must not mistake that scheduling window for an abandoned app.
+    let wait_guard = wait_signal.map(|signal| signal.begin_wait());
 
     // Slow path: a duck future resolved through the pump. The waiter task
     // owns the event between consumption and resolution; cancellation either
     // aborts the waiter before it consumes (mpsc recv is cancel-safe) or the
     // pump requeues the in-flight event.
-    let fut = new_rust_future(py, shard)?;
+    let fut = new_rust_future(py, Arc::clone(&shard))?;
     let waiter_fut = fut.clone_ref(py);
     let waiter_shard = shard;
     let state = Arc::clone(state);
-    let join = crate::pyloop::runtime().spawn(async move {
-        let event = state.lock().await.next().await;
+    let join = runtime().spawn(async move {
+        let mut guard = state.lock().await;
+        let wait_guard =
+            wait_guard.or_else(|| guard.wait_signal().map(|signal| signal.begin_wait()));
+        let event = guard.next().await;
+        drop(guard);
         let payload = ResolvePayload::Op(Box::new(ReceiveResolve {
             event,
             state,
             build_event,
         }));
-        waiter_shard.push(crate::pyloop::PumpEvent::Resolve {
+        waiter_shard.push(PumpEvent::Resolve {
             fut: waiter_fut,
             payload,
         });
+        // Completing the guard after push is the cancellation ordering
+        // handshake. Its Drop also runs when this waiter is aborted, so a
+        // producer can never wait forever on a stale "receive pending" bit.
+        drop(wait_guard);
     });
     fut.get().set_abort(join.abort_handle());
     Ok(fut.into_bound(py).into_any())
 }
 
-pub(crate) fn build_http_inbound_event(py: Python<'_>, event: HttpInboundEvent) -> PyResult<Py<PyAny>> {
-    let dict = match event {
-        HttpInboundEvent::Request { body, more_body } => py_dict!(py, {
-            "type" => "http.request",
-            if !body.is_empty() => {
-                "body" => PyBytes::new(py, body.as_ref()),
-            },
-            if more_body => {
-                "more_body" => true,
-            },
-        }),
-        HttpInboundEvent::HttpDisconnect => py_dict!(py, {
-            "type" => "http.disconnect",
-        }),
+pub(crate) fn build_http_inbound_event(
+    py: Python<'_>,
+    event: HttpInboundEvent,
+) -> PyResult<Py<PyAny>> {
+    let (dict, credit) = match event {
+        HttpInboundEvent::Request {
+            body,
+            more_body,
+            credit,
+        } => (
+            py_dict!(py, {
+                "type" => "http.request",
+                if !body.is_empty() => {
+                    "body" => PyBytes::new(py, body.as_ref()),
+                },
+                if more_body => {
+                    "more_body" => true,
+                },
+            }),
+            credit,
+        ),
+        HttpInboundEvent::RequestBatch {
+            bodies,
+            more_body,
+            credit,
+        } => {
+            let body_len = bodies.iter().map(Bytes::len).sum();
+            let body = PyBytes::new_with_writer(py, body_len, |writer| {
+                for body in &*bodies {
+                    writer.write_all(body.as_ref())?;
+                }
+                Ok(())
+            })?;
+            (
+                py_dict!(py, {
+                    "type" => "http.request",
+                    "body" => body,
+                    if more_body => {
+                        "more_body" => true,
+                    },
+                }),
+                credit,
+            )
+        },
+        HttpInboundEvent::HttpDisconnect => (
+            py_dict!(py, {
+                "type" => "http.disconnect",
+            }),
+            None,
+        ),
     };
+    if let Some(credit) = credit {
+        credit.release();
+    }
     Ok(dict.into_any().unbind())
 }
 
@@ -660,34 +728,42 @@ pub(crate) fn try_send_or_await<'py, T: Send + 'static>(
     event: T,
 ) -> PyResult<Bound<'py, PyAny>> {
     match try_push(tx, event) {
-        TryPush::Sent => Ok(ready_none(py, shard)),
-        TryPush::Full(event) => {
-            // Backpressure wait as a duck future. Cancellation aborts the
-            // waiter; an aborted `send` never enqueues, so the message is
-            // consistently "not sent".
-            let fut = new_rust_future(py, shard)?;
-            let waiter_fut = fut.clone_ref(py);
-            let waiter_shard = shard;
-            let tx = tx.clone();
-            let join = crate::pyloop::runtime().spawn(async move {
-                let sent = tx.send(event).await.is_ok();
-                let payload = ResolvePayload::Simple(Box::new(move |py| {
-                    if sent {
-                        Ok(py.None())
-                    } else {
-                        Err(into_pyerr(AsgiError::SendAfterClose))
-                    }
-                }));
-                waiter_shard.push(crate::pyloop::PumpEvent::Resolve {
-                    fut: waiter_fut,
-                    payload,
-                });
-            });
-            fut.get().set_abort(join.abort_handle());
-            Ok(fut.into_bound(py).into_any())
-        },
+        TryPush::Sent => Ok(ready_none(py, &shard)),
+        TryPush::Full(event) => send_after_full(py, shard, tx.clone(), event),
         TryPush::Closed(_) => Err(into_pyerr(AsgiError::SendAfterClose)),
     }
+}
+
+/// Install a waiter after a bounded channel has already reported full.
+/// Taking the sender by value makes the refcount transition explicit and
+/// keeps clones out of the uncontended path.
+pub(crate) fn send_after_full<T: Send + 'static>(
+    py: Python<'_>,
+    shard: Shard,
+    tx: mpsc::Sender<T>,
+    event: T,
+) -> PyResult<Bound<'_, PyAny>> {
+    // Cancellation aborts the waiter; an aborted `send` never enqueues, so the
+    // message is consistently "not sent".
+    let fut = new_rust_future(py, Arc::clone(&shard))?;
+    let waiter_fut = fut.clone_ref(py);
+    let waiter_shard = shard;
+    let join = runtime().spawn(async move {
+        let sent = tx.send(event).await.is_ok();
+        let payload = ResolvePayload::Simple(Box::new(move |py| {
+            if sent {
+                Ok(py.None())
+            } else {
+                Err(into_pyerr(AsgiError::SendAfterClose))
+            }
+        }));
+        waiter_shard.push(PumpEvent::Resolve {
+            fut: waiter_fut,
+            payload,
+        });
+    });
+    fut.get().set_abort(join.abort_handle());
+    Ok(fut.into_bound(py).into_any())
 }
 
 pub(crate) fn parse_http_outbound_event(
@@ -767,16 +843,38 @@ pub(crate) fn parse_websocket_outbound_event(
 
 #[cfg(test)]
 mod tests {
+    use std::future::pending;
+    use std::num::NonZeroU32;
+    use std::sync::Arc;
+
     use bytes::Bytes;
-    use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyTuple};
+    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyTuple};
     use pyo3::{PyResult, Python};
 
     use super::{
-        HttpInboundEvent, WebSocketOutboundEvent, build_http_inbound_event,
-        parse_http_outbound_event, parse_websocket_outbound_event,
+        EventSource, HttpInboundEvent, Requeueable, WebSocketOutboundEvent,
+        build_http_inbound_event, parse_http_outbound_event, parse_websocket_outbound_event,
     };
-    use crate::error::{AsgiContainer, AsgiError, ErrorKind};
+    use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError};
+    use crate::h2_frame::StreamId;
+    use crate::http::types::status_code;
     use crate::python::py_dict;
+    use crate::runtime::H2InputFlowControl;
+
+    #[derive(Debug)]
+    struct NeverEventSource;
+
+    impl EventSource for NeverEventSource {
+        type Event = HttpInboundEvent;
+
+        fn try_pull(&mut self) -> Option<Self::Event> {
+            None
+        }
+
+        async fn pull(&mut self) -> Self::Event {
+            pending().await
+        }
+    }
 
     fn init_python() {
         Python::initialize();
@@ -872,11 +970,31 @@ mod tests {
             let event = parse_http_outbound_event(&message).unwrap();
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { status: 200, trailers: false, headers }
-                    if headers.len() == 1
+                super::HttpOutboundEvent::Start { status, trailers: false, headers }
+                    if status == status_code::OK && headers.len() == 1
                         && headers[0].0.as_ref() == b"content-length"
                         && headers[0].1.as_ref() == b"2"
             ));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn response_status_is_validated_once_at_the_python_boundary() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            for status in [99_u16, 1000] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => status,
+                });
+                let err = parse_http_outbound_event(&message).unwrap_err();
+                assert!(matches!(
+                    err.kind(),
+                    ErrorKind::HttpResponse(HttpResponseError::StatusMustBeThreeDigitCode)
+                ));
+            }
             Ok(())
         })
         .unwrap();
@@ -897,8 +1015,8 @@ mod tests {
             let event = parse_http_outbound_event(&message).unwrap();
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { status: 200, trailers: false, ref headers }
-                    if headers.len() == 1
+                super::HttpOutboundEvent::Start { status, trailers: false, ref headers }
+                    if status == status_code::OK && headers.len() == 1
                         && headers[0].0.as_ref() == b"x-demo"
                         && headers[0].1.as_ref() == b"1"
             ));
@@ -914,6 +1032,7 @@ mod tests {
             let event = build_http_inbound_event(py, HttpInboundEvent::Request {
                 body: Bytes::new(),
                 more_body: false,
+                credit: None,
             })?
             .bind(py)
             .clone()
@@ -925,5 +1044,69 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn batched_http_request_materializes_one_contiguous_python_body() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let event = build_http_inbound_event(py, HttpInboundEvent::RequestBatch {
+                bodies: Box::new([
+                    Bytes::from_static(b"segmented-"),
+                    Bytes::from_static(b"body"),
+                ]),
+                more_body: true,
+                credit: None,
+            })?
+            .bind(py)
+            .clone()
+            .cast_into::<PyDict>()?;
+
+            assert_eq!(
+                event
+                    .get_item("body")?
+                    .expect("body is present")
+                    .extract::<Vec<u8>>()?,
+                b"segmented-body"
+            );
+            assert!(
+                event
+                    .get_item("more_body")?
+                    .expect("more_body is present")
+                    .extract::<bool>()?
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cancelled_receive_requeue_retains_h2_credit_until_conversion() {
+        init_python();
+        let flow = Arc::new(H2InputFlowControl::default());
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+        let mut receive = Requeueable::new(NeverEventSource);
+        receive.requeue(HttpInboundEvent::Request {
+            body: Bytes::from_static(b"body"),
+            more_body: true,
+            credit: Some(flow.credit(stream_id, NonZeroU32::new(4).unwrap())),
+        });
+
+        assert!(!flow.has_pending(), "requeue must retain receive credit");
+        let event = receive
+            .try_next()
+            .expect("requeued event is returned first");
+        assert!(
+            !flow.has_pending(),
+            "pulling alone must retain receive credit"
+        );
+        Python::attach(|py| build_http_inbound_event(py, event)).expect("event converts");
+
+        assert!(flow.has_pending(), "conversion commits receive credit");
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].len.get(), 4);
     }
 }

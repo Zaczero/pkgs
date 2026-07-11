@@ -4,10 +4,9 @@ use bytes::Bytes;
 use http::{Method, StatusCode};
 
 use super::{DecoderError, NeedMore};
-use crate::ext::Protocol;
-use crate::header_value::header_value_is_valid;
 use crate::http::header::lowercase_header_name_is_valid;
-use crate::http::types::parse_request_method;
+use crate::http::header_value::header_value_is_valid;
+use crate::http::types::{Protocol, parse_request_method};
 
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -165,6 +164,7 @@ impl BytesStr {
 
 impl ops::Deref for BytesStr {
     type Target = str;
+
     fn deref(&self) -> &str {
         self.as_str()
     }

@@ -48,7 +48,10 @@ use std::fmt;
 
 use bytes::Bytes;
 pub(crate) use decode::WebSocketCodec;
-pub(super) use frame::{encode_close_frame_into, encode_frame_into, validate_close_code};
+pub(super) use frame::{
+    EncodedFrameHeader, encode_close_frame_into, encode_frame_header, encode_frame_into,
+    validate_close_code,
+};
 
 use crate::error::WebSocketProtocolError;
 use crate::hpack::BytesStr;

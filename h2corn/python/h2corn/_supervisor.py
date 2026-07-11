@@ -111,13 +111,13 @@ def _worker_entry(
     from ._server import (
         Server,
         _drop_process_privileges,
+        _event_loop_factory,
         _import_target,
-        _install_event_loop,
     )
 
     _drop_process_privileges(identity)
     _install_parent_death_signal()
-    _install_event_loop(config.loop)
+    loop_factory = _event_loop_factory(config.loop)
     if isinstance(app, ImportSettings):
         app = _import_target(app)
     server = Server(app, _clone_config(config, workers=1))
@@ -170,7 +170,8 @@ def _worker_entry(
             if control_write_fd is not None:
                 os.close(control_write_fd)
 
-    asyncio.run(_run_worker())
+    with asyncio.Runner(loop_factory=loop_factory) as runner:
+        runner.run(_run_worker())
 
 
 def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
@@ -184,9 +185,7 @@ def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
         from ._lib import emit_banner
 
         # Banner shows the RESOLVED addresses (meaningful when binding port 0).
-        emit_banner(
-            replace(config, bind=_bound_addresses(socks), host=None, port=None)
-        )
+        emit_banner(replace(config, bind=_bound_addresses(socks), host=None, port=None))
         fds = tuple(sock.fileno() for sock in socks)
         workers: dict[int, BaseProcess] = {}
         worker_controls: dict[int, int] = {}

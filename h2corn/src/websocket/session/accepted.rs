@@ -1,5 +1,6 @@
 use std::future::pending;
 use std::ops::ControlFlow;
+use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::pybacked::PyBackedStr;
@@ -9,8 +10,8 @@ use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use super::super::app::RunningWebSocketApp;
 use super::{
-    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport, FrameFlushMode,
-    TransportRead, shutdown_close_code,
+    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport,
+    EncodedWebSocketFrame, FrameFlushMode, TransportRead, shutdown_close_code,
 };
 use crate::async_util::{send_best_effort, send_with_backpressure};
 use crate::bridge::{PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent};
@@ -42,8 +43,8 @@ enum AcceptedOutboundEvent {
 struct PingState {
     next_ping: Option<TokioInstant>,
     pong_deadline: Option<TokioInstant>,
-    interval: Option<std::time::Duration>,
-    timeout: Option<std::time::Duration>,
+    interval: Option<Duration>,
+    timeout: Option<Duration>,
 }
 
 /// The accepted-session driver: owns the codec, compression state, ping
@@ -124,7 +125,7 @@ where
         let pong_timeout = sleep_until_or_pending(self.ping.pong_deadline);
 
         tokio::select! {
-            () = self.running_app.app.join_store(), if !self.running_app.app.joined() => {
+            () = self.running_app.app.join_store(), if !self.running_app.app.is_joined() => {
                 // Messages the app sent just before returning may have become
                 // ready in the same instant as its completion — drain them onto
                 // the wire before acting on the result, or the final sends of a
@@ -240,7 +241,7 @@ where
             },
             AcceptedOutboundEvent::SendBytes(data) => {
                 self.tx_bytes = self.tx_bytes.saturating_add(data.len() as u64);
-                self.send_message_frame(0x2, data.as_ref()).await?;
+                self.send_binary_message_frame(data).await?;
                 Ok(ControlFlow::Continue(()))
             },
             AcceptedOutboundEvent::Close { code, reason } => {
@@ -269,6 +270,37 @@ where
             compressed,
         )
         .await
+    }
+
+    async fn send_binary_message_frame(
+        &mut self,
+        payload: PayloadBytes,
+    ) -> Result<(), H2CornError> {
+        let compressed_payload: Option<Bytes> =
+            M::compress(&mut self.deflater, payload.as_ref())
+                .map_err(|_| WebSocketError::CompressionFailed.into_error())?;
+        match compressed_payload {
+            Some(compressed) => {
+                send_segmented_frame(
+                    self.transport,
+                    0x2,
+                    compressed.into(),
+                    FrameFlushMode::Buffered,
+                    true,
+                )
+                .await
+            },
+            None => {
+                send_segmented_frame(
+                    self.transport,
+                    0x2,
+                    payload,
+                    FrameFlushMode::Buffered,
+                    false,
+                )
+                .await
+            },
+        }
     }
 
     async fn send_ping_and_arm_timeout(&mut self) -> Result<(), H2CornError> {
@@ -479,7 +511,27 @@ where
         encode_frame_into(opcode, payload, compressed, frame_buf);
         frame_buf.split().freeze()
     };
-    transport.send_frame(frame, flush).await
+    transport
+        .send_frame(EncodedWebSocketFrame::Contiguous(frame), flush)
+        .await
+}
+
+async fn send_segmented_frame<T>(
+    transport: &mut T,
+    opcode: u8,
+    payload: PayloadBytes,
+    flush: FrameFlushMode,
+    compressed: bool,
+) -> Result<(), H2CornError>
+where
+    T: AcceptedWebSocketTransport,
+{
+    transport
+        .send_frame(
+            EncodedWebSocketFrame::segmented(opcode, payload, compressed),
+            flush,
+        )
+        .await
 }
 
 pub(super) async fn run_accepted_session<T>(
@@ -501,7 +553,7 @@ where
     }
 }
 
-fn next_ping_deadline(ping_interval: Option<std::time::Duration>) -> Option<TokioInstant> {
+fn next_ping_deadline(ping_interval: Option<Duration>) -> Option<TokioInstant> {
     let now = TokioInstant::now();
     ping_interval.map(|interval| now + interval)
 }

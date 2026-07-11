@@ -15,7 +15,8 @@
     ```
 
 `h2corn` requires **Python 3.11+**. Wheels are published for Linux,
-macOS, and Windows; the multi-worker supervisor is Unix-only — see
+macOS, and Windows, including ABI-matched free-threaded CPython (`cp3XXt`)
+builds. The multi-worker supervisor is Unix-only — see
 [Operations](deployment/operations.md).
 
 ## Run your first server

@@ -4,7 +4,8 @@
 //! their `call_soon_threadsafe` wakeups: resolution happens in the pump,
 //! which invokes the stored done-callbacks directly.
 
-use std::sync::Arc;
+use std::fmt::{self, Formatter};
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
@@ -12,8 +13,9 @@ use pyo3::exceptions::PyStopIteration;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::PyDict;
 use smallvec::SmallVec;
+use tokio::task::AbortHandle;
 
 use super::Shard;
 
@@ -57,25 +59,22 @@ impl ResolvePayload {
 type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 
 enum FutState {
-    Pending { callbacks: Callbacks },
+    Pending {
+        callbacks: Callbacks,
+        abort: Option<AbortHandle>,
+    },
     Ready(Py<PyAny>),
     Failed(Py<PyAny>),
-    Cancelled { msg: Option<Py<PyAny>> },
-}
-
-struct FutShared {
-    state: Mutex<FutState>,
-    /// Abort handle for the tokio waiter task feeding this future.
-    /// `AbortHandle::abort` is sync and thread-safe; mpsc `recv().await` is
-    /// cancel-safe, so an aborted waiter never consumes an event.
-    abort: Mutex<Option<tokio::task::AbortHandle>>,
+    Cancelled {
+        msg: Option<Py<PyAny>>,
+    },
 }
 
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
 /// app task. Created pending; resolved exclusively by the pump.
 #[pyclass(frozen)]
 pub struct RustFuture {
-    shared: Arc<FutShared>,
+    state: Mutex<FutState>,
     blocking: AtomicBool,
     shard: Shard,
 }
@@ -83,8 +82,19 @@ pub struct RustFuture {
 impl RustFuture {
     /// Attach the waiter task's abort handle as the Rust-side cancellation
     /// hook. Called once right after creation.
-    pub fn set_abort(&self, handle: tokio::task::AbortHandle) {
-        *self.shared.abort.lock() = Some(handle);
+    pub fn set_abort(&self, handle: AbortHandle) {
+        let mut state = self.state.lock();
+        match &mut *state {
+            FutState::Pending { abort, .. } => {
+                debug_assert!(abort.is_none(), "future waiter is installed once");
+                *abort = Some(handle);
+            },
+            FutState::Cancelled { .. } => {
+                drop(state);
+                handle.abort();
+            },
+            FutState::Ready(_) | FutState::Failed(_) => {},
+        }
     }
 
     /// Pump-only: resolve and invoke stored callbacks directly. The caller
@@ -92,14 +102,14 @@ impl RustFuture {
     pub(super) fn resolve(self_: &Py<Self>, py: Python<'_>, payload: ResolvePayload) {
         let this = self_.get();
         let callbacks = {
-            let mut state = this.shared.state.lock();
+            let mut state = this.state.lock();
             match &mut *state {
                 // Convert under the lock: all state transitions happen on
                 // the loop thread and `convert` builds plain objects (never
                 // re-entering this future), so no ordering window exists in
                 // which a cancellation could lose the event.
-                FutState::Pending { callbacks } => {
-                    let callbacks = std::mem::take(callbacks);
+                FutState::Pending { callbacks, .. } => {
+                    let callbacks = mem::take(callbacks);
                     *state = match payload.convert(py) {
                         Ok(value) => FutState::Ready(value),
                         Err(err) => FutState::Failed(err.value(py).clone().unbind().into_any()),
@@ -129,12 +139,14 @@ impl RustFuture {
     }
 
     fn take_step_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.current_result(py)
-            .map_or_else(Err, |value| Err(PyStopIteration::new_err((value,))))
+        match self.current_result(py) {
+            Ok(value) => Err(PyStopIteration::new_err((value,))),
+            Err(err) => Err(err),
+        }
     }
 
     fn current_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &*self.shared.state.lock() {
+        match &*self.state.lock() {
             FutState::Pending { .. } => Err(InvalidStateError::new_err("result is not set")),
             FutState::Ready(value) => Ok(value.clone_ref(py)),
             FutState::Failed(exc) => Err(PyErr::from_value(exc.bind(py).clone())),
@@ -172,20 +184,20 @@ impl RustFuture {
             None => copy_context(py)?,
         };
         {
-            let mut state = this.shared.state.lock();
-            if let FutState::Pending { callbacks } = &mut *state {
+            let mut state = this.state.lock();
+            if let FutState::Pending { callbacks, .. } = &mut *state {
                 callbacks.push((callback, context));
                 return Ok(());
             }
         }
-        schedule_done_callback(this.shard, py, &callback, self_.as_any(), &context)
+        schedule_done_callback(&this.shard, py, &callback, self_.as_any(), &context)
     }
 
     fn remove_done_callback(&self, py: Python<'_>, callback: &Bound<'_, PyAny>) -> PyResult<usize> {
         let mut error = None;
         let removed = {
-            let mut state = self.shared.state.lock();
-            if let FutState::Pending { callbacks } = &mut *state {
+            let mut state = self.state.lock();
+            if let FutState::Pending { callbacks, .. } = &mut *state {
                 let before = callbacks.len();
                 callbacks.retain(|(existing, _)| match existing.bind(py).eq(callback) {
                     Ok(equal) => !equal,
@@ -206,25 +218,26 @@ impl RustFuture {
     fn cancel(self_: &Bound<'_, Self>, msg: Option<Py<PyAny>>) -> PyResult<bool> {
         let py = self_.py();
         let this = self_.get();
-        let callbacks = {
-            let mut state = this.shared.state.lock();
+        let (callbacks, abort) = {
+            let mut state = this.state.lock();
             match &mut *state {
-                FutState::Pending { callbacks } => {
-                    let callbacks = std::mem::take(callbacks);
+                FutState::Pending { callbacks, abort } => {
+                    let callbacks = mem::take(callbacks);
+                    let abort = abort.take();
                     *state = FutState::Cancelled { msg };
-                    callbacks
+                    drop(state);
+                    (callbacks, abort)
                 },
                 _ => return Ok(false),
             }
         };
-        let abort = this.shared.abort.lock().take();
         if let Some(handle) = abort {
             handle.abort();
         }
         // cancel() is typically invoked from inside Task.__step — callbacks
         // MUST be deferred to a plain loop callback (`_enter_task` guard).
         for (callback, context) in callbacks {
-            schedule_done_callback(this.shard, py, &callback, self_.as_any(), &context)?;
+            schedule_done_callback(&this.shard, py, &callback, self_.as_any(), &context)?;
         }
         Ok(true)
     }
@@ -234,7 +247,7 @@ impl RustFuture {
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let state = self.shared.state.lock();
+        let state = self.state.lock();
         match &*state {
             FutState::Pending { .. } => Err(InvalidStateError::new_err("exception is not set")),
             FutState::Ready(_) => Ok(None),
@@ -244,11 +257,11 @@ impl RustFuture {
     }
 
     fn done(&self) -> bool {
-        !matches!(&*self.shared.state.lock(), FutState::Pending { .. })
+        !matches!(&*self.state.lock(), FutState::Pending { .. })
     }
 
     fn cancelled(&self) -> bool {
-        matches!(&*self.shared.state.lock(), FutState::Cancelled { .. })
+        matches!(&*self.state.lock(), FutState::Cancelled { .. })
     }
 
     const fn __await__(self_: Py<Self>) -> Py<Self> {
@@ -262,7 +275,7 @@ impl RustFuture {
     fn __next__(self_: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = self_.py();
         let this = self_.get();
-        if matches!(&*this.shared.state.lock(), FutState::Pending { .. }) {
+        if matches!(&*this.state.lock(), FutState::Pending { .. }) {
             // First poll while pending: yield self with the blocking flag
             // set, so Task.__step registers __wakeup and suspends.
             this.blocking.store(true, Ordering::Relaxed);
@@ -289,17 +302,14 @@ impl RustFuture {
         ))
     }
 
-    fn close(&self) {
-        let mut state = self.shared.state.lock();
-        if matches!(&*state, FutState::Pending { .. }) {
-            *state = FutState::Cancelled { msg: None };
-        }
+    fn close(self_: &Bound<'_, Self>) -> PyResult<()> {
+        Self::cancel(self_, None).map(drop)
     }
 }
 
-impl std::fmt::Debug for RustFuture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = match &*self.shared.state.lock() {
+impl fmt::Debug for RustFuture {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let state = match &*self.state.lock() {
             FutState::Pending { .. } => "pending",
             FutState::Ready(_) => "ready",
             FutState::Failed(_) => "failed",
@@ -329,11 +339,9 @@ fn copy_context(py: Python<'_>) -> PyResult<Py<PyAny>> {
 /// Create a pending future plus its resolve handle.
 pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>> {
     Py::new(py, RustFuture {
-        shared: Arc::new(FutShared {
-            state: Mutex::new(FutState::Pending {
-                callbacks: SmallVec::new(),
-            }),
-            abort: Mutex::new(None),
+        state: Mutex::new(FutState::Pending {
+            callbacks: SmallVec::new(),
+            abort: None,
         }),
         blocking: AtomicBool::new(false),
         shard,
@@ -344,7 +352,7 @@ pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustF
 /// matching asyncio.Future semantics (and the re-entrancy rule: done-future
 /// callbacks never run inline).
 fn schedule_done_callback(
-    shard: Shard,
+    shard: &Shard,
     py: Python<'_>,
     callback: &Py<PyAny>,
     future: &Bound<'_, PyAny>,
@@ -355,9 +363,6 @@ fn schedule_done_callback(
     shard
         .call_soon()
         .bind(py)
-        .call(
-            PyTuple::new(py, [callback.bind(py), future])?,
-            Some(&kwargs),
-        )
+        .call((callback.bind(py), future), Some(&kwargs))
         .map(drop)
 }

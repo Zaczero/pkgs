@@ -1,18 +1,20 @@
-mod proxy;
+mod forwarded;
 
 use std::borrow::Cow;
 
+pub(crate) use forwarded::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use http::Method;
 use memchr::memchr;
-pub(crate) use proxy::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 
 use crate::ascii;
 use crate::hpack::BytesStr;
-use crate::http::types::{HttpVersion, KnownRequestHeaderName, RequestHeaderName, RequestHeaders};
-use crate::python::{py_cached_dict, py_dict, py_match_cached_bytes, py_match_cached_string};
+use crate::http::types::{
+    HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaders,
+};
+use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
 
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
@@ -93,9 +95,9 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     let request = &ctx.request;
     let view = scope_view_from_parts(
         request.scheme().map_or("", BytesStr::as_str),
-        ctx.connection.config,
+        &ctx.connection.config,
         &ctx.connection.info,
-        &ctx.scope_overrides,
+        ctx.scope_overrides.as_deref(),
     );
     let path_and_query = request.path_and_query().map_or("", BytesStr::as_str);
     let (raw_path, query) = path_and_query
@@ -142,28 +144,28 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
 
 fn http_scope_extensions(py: Python<'_>, accepts_trailers: bool) -> PyResult<Bound<'_, PyDict>> {
     if accepts_trailers {
-        py_cached_dict!(py, {
+        Ok(py_dict!(py, {
             "http.response.pathsend" => py_dict!(py, {}),
             "http.response.trailers" => py_dict!(py, {}),
-        })
+        }))
     } else {
-        py_cached_dict!(py, {
+        Ok(py_dict!(py, {
             "http.response.pathsend" => py_dict!(py, {}),
-        })
+        }))
     }
 }
 
 fn websocket_scope_extensions(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    py_cached_dict!(py, {
+    Ok(py_dict!(py, {
         "websocket.http.response" => py_dict!(py, {}),
-    })
+    }))
 }
 
 fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    py_cached_dict!(py, {
+    Ok(py_dict!(py, {
         "version" => "3.0",
         "spec_version" => "2.5",
-    })
+    }))
 }
 
 pub(crate) fn headers_to_python<'py>(
@@ -175,10 +177,10 @@ pub(crate) fn headers_to_python<'py>(
     // sequence a hand-rolled fill would use.
     PyList::new(
         py,
-        headers.iter().map(|(name, value)| {
+        headers.iter().map(|header| {
             (
-                header_name_to_python(py, name),
-                PyBytes::new(py, value.as_bytes()),
+                header_name_to_python(py, header.name()),
+                PyBytes::new(py, header.value()),
             )
         }),
     )
@@ -192,10 +194,13 @@ fn scope_type_to_python<const IS_HTTP: bool>(py: Python<'_>) -> Bound<'_, PyStri
     }
 }
 
-fn header_name_to_python<'py>(py: Python<'py>, name: &RequestHeaderName) -> Bound<'py, PyBytes> {
+fn header_name_to_python<'py>(
+    py: Python<'py>,
+    name: RequestHeaderNameRef<'_>,
+) -> Bound<'py, PyBytes> {
     match name {
-        RequestHeaderName::Known(name) => known_header_name_to_python(py, *name),
-        RequestHeaderName::Other(name) => PyBytes::new(py, name.as_ref()),
+        RequestHeaderNameRef::Known(name) => known_header_name_to_python(py, name),
+        RequestHeaderNameRef::Other(name) => PyBytes::new(py, name.as_bytes()),
     }
 }
 
@@ -204,16 +209,29 @@ fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> 
         py,
         name,
         {
+            KnownRequestHeaderName::Accept => b"accept",
+            KnownRequestHeaderName::AcceptEncoding => b"accept-encoding",
+            KnownRequestHeaderName::AcceptLanguage => b"accept-language",
+            KnownRequestHeaderName::Authorization => b"authorization",
+            KnownRequestHeaderName::CacheControl => b"cache-control",
             KnownRequestHeaderName::Host => b"host",
             KnownRequestHeaderName::Connection => b"connection",
+            KnownRequestHeaderName::ContentType => b"content-type",
+            KnownRequestHeaderName::Cookie => b"cookie",
             KnownRequestHeaderName::ProxyConnection => b"proxy-connection",
             KnownRequestHeaderName::KeepAlive => b"keep-alive",
             KnownRequestHeaderName::Upgrade => b"upgrade",
+            KnownRequestHeaderName::UserAgent => b"user-agent",
             KnownRequestHeaderName::Te => b"te",
             KnownRequestHeaderName::ContentLength => b"content-length",
             KnownRequestHeaderName::TransferEncoding => b"transfer-encoding",
             KnownRequestHeaderName::Expect => b"expect",
             KnownRequestHeaderName::Http2Settings => b"http2-settings",
+            KnownRequestHeaderName::IfModifiedSince => b"if-modified-since",
+            KnownRequestHeaderName::IfNoneMatch => b"if-none-match",
+            KnownRequestHeaderName::Origin => b"origin",
+            KnownRequestHeaderName::Pragma => b"pragma",
+            KnownRequestHeaderName::Referer => b"referer",
             KnownRequestHeaderName::Forwarded => b"forwarded",
             KnownRequestHeaderName::XForwardedFor => b"x-forwarded-for",
             KnownRequestHeaderName::XForwardedProto => b"x-forwarded-proto",
@@ -237,7 +255,11 @@ fn server_scope_value<'py>(
     ctx: &RequestContext,
     server: (&str, Option<u16>),
 ) -> PyResult<Bound<'py, PyAny>> {
-    if ctx.scope_overrides.server.is_some() {
+    if ctx
+        .scope_overrides
+        .as_deref()
+        .is_some_and(|overrides| overrides.server.is_some())
+    {
         Ok(server.into_pyobject(py)?.into_any())
     } else {
         Ok(ctx.connection.default_server_scope_value(py))
@@ -249,7 +271,11 @@ fn client_scope_value<'py>(
     ctx: &RequestContext,
     client: Option<(&str, u16)>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
-    if ctx.scope_overrides.client.is_some() {
+    if ctx
+        .scope_overrides
+        .as_deref()
+        .is_some_and(|overrides| overrides.client.is_some())
+    {
         Ok(Some(
             client
                 .expect("client overrides should resolve to a client")
@@ -284,14 +310,14 @@ mod tests {
     use std::borrow::Cow;
 
     use http::Method;
-    use pyo3::types::{PyAnyMethods, PyDictMethods};
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use pyo3::{PyResult, Python};
 
-    use super::{build_http_scope, decode_path};
+    use super::{build_http_scope, build_websocket_scope, decode_path};
     use crate::hpack::BytesStr;
     use crate::http::header_meta::RequestHeaderMeta;
-    use crate::http::types::{HttpVersion, RequestHead, RequestTarget};
-    use crate::proxy::{ClientAddr, ServerAddr};
+    use crate::http::types::{HttpVersion, RequestHead, RequestHeaders, RequestTarget};
+    use crate::proxy_protocol::{ClientAddr, ServerAddr};
     use crate::runtime::{ConnectionContext, RequestContext};
 
     fn init_python() {
@@ -312,7 +338,7 @@ mod tests {
                 BytesStr::from_static("http"),
                 BytesStr::from_static("/"),
             ),
-            headers: Vec::new(),
+            headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
     }
@@ -322,8 +348,9 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let connection = test_connection(py);
-            let scope_one =
-                build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
+            let request_one = RequestContext::new(connection.clone(), test_request());
+            assert!(request_one.scope_overrides.is_none());
+            let scope_one = build_http_scope(py, &request_one)?;
             let scope_two = build_http_scope(py, &RequestContext::new(connection, test_request()))?;
 
             assert_eq!(
@@ -356,11 +383,12 @@ mod tests {
                 build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
 
             let mut overridden = RequestContext::new(connection, test_request());
-            overridden.scope_overrides.client = Some(ClientAddr {
+            let overrides = overridden.scope_overrides.get_or_insert_with(Box::default);
+            overrides.client = Some(ClientAddr {
                 host: "10.0.0.9".into(),
                 port: 9001,
             });
-            overridden.scope_overrides.server = Some(ServerAddr {
+            overrides.server = Some(ServerAddr {
                 host: "edge.internal".into(),
                 port: Some(8443),
             });
@@ -381,6 +409,103 @@ mod tests {
                 overridden_client.extract::<(String, u16)>()?,
                 ("10.0.0.9".to_owned(), 9001),
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn http_scope_metadata_dicts_are_isolated_per_request() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let connection = test_connection(py);
+            let scope_one =
+                build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
+            let scope_two = build_http_scope(py, &RequestContext::new(connection, test_request()))?;
+
+            let asgi_one = scope_one
+                .get_item("asgi")?
+                .expect("asgi exists")
+                .cast_into::<PyDict>()?;
+            let asgi_two = scope_two
+                .get_item("asgi")?
+                .expect("asgi exists")
+                .cast_into::<PyDict>()?;
+            let extensions_one = scope_one
+                .get_item("extensions")?
+                .expect("extensions exists")
+                .cast_into::<PyDict>()?;
+            let extensions_two = scope_two
+                .get_item("extensions")?
+                .expect("extensions exists")
+                .cast_into::<PyDict>()?;
+            let pathsend_one = extensions_one
+                .get_item("http.response.pathsend")?
+                .expect("pathsend extension exists")
+                .cast_into::<PyDict>()?;
+            let pathsend_two = extensions_two
+                .get_item("http.response.pathsend")?
+                .expect("pathsend extension exists")
+                .cast_into::<PyDict>()?;
+
+            assert!(!asgi_one.is(&asgi_two));
+            assert!(!extensions_one.is(&extensions_two));
+            assert!(!pathsend_one.is(&pathsend_two));
+
+            asgi_one.set_item("version", "mutated")?;
+            extensions_one.set_item("application.private", true)?;
+            pathsend_one.set_item("application.private", true)?;
+
+            assert_eq!(
+                asgi_two
+                    .get_item("version")?
+                    .expect("ASGI version exists")
+                    .extract::<&str>()?,
+                "3.0",
+            );
+            assert!(extensions_two.get_item("application.private")?.is_none());
+            assert!(pathsend_two.get_item("application.private")?.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn websocket_scope_metadata_dicts_are_isolated_per_request() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let connection = test_connection(py);
+            let scope_one = build_websocket_scope(
+                py,
+                &RequestContext::new(connection.clone(), test_request()),
+                &[],
+            )?;
+            let scope_two =
+                build_websocket_scope(py, &RequestContext::new(connection, test_request()), &[])?;
+
+            let extensions_one = scope_one
+                .get_item("extensions")?
+                .expect("extensions exists")
+                .cast_into::<PyDict>()?;
+            let extensions_two = scope_two
+                .get_item("extensions")?
+                .expect("extensions exists")
+                .cast_into::<PyDict>()?;
+            let response_one = extensions_one
+                .get_item("websocket.http.response")?
+                .expect("HTTP response extension exists")
+                .cast_into::<PyDict>()?;
+            let response_two = extensions_two
+                .get_item("websocket.http.response")?
+                .expect("HTTP response extension exists")
+                .cast_into::<PyDict>()?;
+
+            assert!(!extensions_one.is(&extensions_two));
+            assert!(!response_one.is(&response_two));
+            extensions_one.set_item("application.private", true)?;
+            response_one.set_item("application.private", true)?;
+            assert!(extensions_two.get_item("application.private")?.is_none());
+            assert!(response_two.get_item("application.private")?.is_none());
             Ok(())
         })
         .unwrap();

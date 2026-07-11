@@ -3,15 +3,16 @@ use std::sync::atomic::AtomicU64;
 
 use tokio::sync::mpsc;
 
-use crate::bridge::ASGI_QUEUE_CAPACITY;
+use crate::bridge::{ASGI_QUEUE_CAPACITY, HttpDisconnectSignal};
 use crate::http::planner::{RequestInputPlan, RequestLaunchPlan};
-use crate::runtime::{AppState, RequestAdmission, StreamInput, try_acquire_request_admission};
+use crate::runtime::{RequestAdmission, SharedApp, StreamInput, try_acquire_request_admission};
 
 /// Allocated input channels for a request whose body streams to the app.
 pub(crate) struct StreamRequestInput {
     pub(crate) tx: mpsc::Sender<StreamInput>,
     pub(crate) rx: mpsc::Receiver<StreamInput>,
     pub(crate) body_bytes_read: Option<Arc<AtomicU64>>,
+    pub(crate) disconnect: Arc<HttpDisconnectSignal>,
 }
 
 impl StreamRequestInput {
@@ -21,6 +22,7 @@ impl StreamRequestInput {
             tx,
             rx,
             body_bytes_read: count_body_bytes.then(|| Arc::new(AtomicU64::new(0))),
+            disconnect: Arc::default(),
         }
     }
 }
@@ -51,9 +53,11 @@ impl PreparedRequestInput {
                 tx,
                 rx,
                 body_bytes_read,
+                disconnect,
             }) => (Some(tx), AppRequestInput::Stream {
                 rx,
                 body_bytes_read,
+                disconnect,
             }),
         }
     }
@@ -66,6 +70,7 @@ pub(crate) enum AppRequestInput {
     Stream {
         rx: mpsc::Receiver<StreamInput>,
         body_bytes_read: Option<Arc<AtomicU64>>,
+        disconnect: Arc<HttpDisconnectSignal>,
     },
 }
 
@@ -78,6 +83,13 @@ impl AppRequestInput {
             Self::Stream {
                 body_bytes_read, ..
             } => body_bytes_read.clone(),
+        }
+    }
+
+    pub(crate) fn disconnect_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+        match self {
+            Self::None => None,
+            Self::Stream { disconnect, .. } => Some(Arc::clone(disconnect)),
         }
     }
 }
@@ -97,7 +109,7 @@ pub(crate) enum RequestExecution<WebSocketMeta> {
 }
 
 pub(crate) fn prepare_request_execution<WebSocketMeta>(
-    app: AppState,
+    app: &SharedApp,
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {
     let admission = try_acquire_request_admission(app)?;

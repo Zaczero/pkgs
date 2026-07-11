@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,8 +7,8 @@ use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt, H2CornError, H2Error};
-use crate::frame::StreamId;
 use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
+use crate::h2_frame::StreamId;
 use crate::smallvec_deque::SmallVecDeque;
 
 #[derive(Debug)]
@@ -21,15 +22,17 @@ pub(super) type DrainedIngressWrites = Vec<(StreamId, QueuedStreamCommands)>;
 
 #[derive(Debug, Default)]
 struct PendingAppWrites {
-    enqueued: bool,
     commands: QueuedStreamCommands,
 }
 
-#[derive(Default)]
-struct WriterIngressQueue {
-    closed: bool,
-    ready_streams: VecDeque<u32>,
+struct OpenWriterIngressQueue {
+    ready_streams: VecDeque<StreamId>,
     streams: StreamMap<PendingAppWrites>,
+}
+
+enum WriterIngressQueue {
+    Open(OpenWriterIngressQueue),
+    Closed,
 }
 
 pub(super) struct WriterIngress {
@@ -39,21 +42,22 @@ pub(super) struct WriterIngress {
     permits: Arc<Semaphore>,
 }
 
-impl WriterIngressQueue {
+impl OpenWriterIngressQueue {
     fn enqueue_batch(&mut self, stream_id: StreamId, batch: QueuedCommandBatch) {
-        let stream_id_raw = stream_id.get();
-        let newly_enqueued = {
-            let stream = self.streams.entry(stream_id_raw).or_default();
-            stream.commands.push_back(batch);
-            if stream.enqueued {
+        let newly_enqueued = match self.streams.entry(stream_id) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().commands.push_back(batch);
                 false
-            } else {
-                stream.enqueued = true;
+            },
+            Entry::Vacant(entry) => {
+                let mut stream = PendingAppWrites::default();
+                stream.commands.push_back(batch);
+                entry.insert(stream);
                 true
-            }
+            },
         };
         if newly_enqueued {
-            self.ready_streams.push_back(stream_id_raw);
+            self.ready_streams.push_back(stream_id);
         }
     }
 
@@ -61,16 +65,13 @@ impl WriterIngressQueue {
         drained.clear();
         drained.reserve(self.ready_streams.len());
 
-        while let Some(stream_id_raw) = self.ready_streams.pop_front() {
-            let Some(stream) = self.streams.remove(&stream_id_raw) else {
+        while let Some(stream_id) = self.ready_streams.pop_front() {
+            let Some(stream) = self.streams.remove(&stream_id) else {
                 continue;
             };
             if stream.commands.is_empty() {
                 continue;
             }
-            // SAFETY: ready_streams only stores ids enqueued from validated StreamId
-            // values.
-            let stream_id = unsafe { StreamId::new_unchecked(stream_id_raw) };
             drained.push((stream_id, stream.commands));
         }
     }
@@ -81,22 +82,22 @@ impl WriterIngressQueue {
                 continue;
             }
 
-            let stream_id_raw = stream_id.get();
-            let newly_enqueued = {
-                let stream = self.streams.entry(stream_id_raw).or_default();
-                while let Some(existing) = stream.commands.pop_front() {
-                    commands.push_back(existing);
-                }
-                stream.commands = commands;
-                if stream.enqueued {
+            let newly_enqueued = match self.streams.entry(stream_id) {
+                Entry::Occupied(mut entry) => {
+                    let stream = entry.get_mut();
+                    while let Some(existing) = stream.commands.pop_front() {
+                        commands.push_back(existing);
+                    }
+                    stream.commands = commands;
                     false
-                } else {
-                    stream.enqueued = true;
+                },
+                Entry::Vacant(entry) => {
+                    entry.insert(PendingAppWrites { commands });
                     true
-                }
+                },
             };
             if newly_enqueued {
-                self.ready_streams.push_back(stream_id_raw);
+                self.ready_streams.push_back(stream_id);
             }
         }
     }
@@ -106,26 +107,32 @@ impl WriterIngressQueue {
     }
 
     fn drop_stream(&mut self, stream_id: StreamId) {
-        self.streams.remove(&stream_id.get());
+        self.streams.remove(&stream_id);
+    }
+}
+
+impl WriterIngressQueue {
+    fn has_pending(&self) -> bool {
+        match self {
+            Self::Open(queue) => queue.has_pending(),
+            Self::Closed => false,
+        }
     }
 
     fn close(&mut self) {
-        self.closed = true;
-        self.ready_streams.clear();
-        self.streams.clear();
+        *self = Self::Closed;
     }
 }
 
 impl WriterIngress {
     pub(super) fn new(max_concurrent_streams: usize) -> Arc<Self> {
         Arc::new(Self {
-            queue: Mutex::new(WriterIngressQueue {
-                closed: false,
+            queue: Mutex::new(WriterIngressQueue::Open(OpenWriterIngressQueue {
                 ready_streams: VecDeque::with_capacity(
                     max_concurrent_streams.min(LAZY_STREAM_CAPACITY),
                 ),
                 streams: new_stream_map(max_concurrent_streams),
-            }),
+            })),
             has_pending: AtomicBool::new(false),
             notify: Notify::new(),
             permits: Arc::new(Semaphore::new(WRITER_CHANNEL_CAPACITY)),
@@ -158,24 +165,26 @@ impl WriterIngress {
             .await
             .map_err(|_| H2Error::ConnectionWriterClosed)?;
 
-        let mut queue = self.queue.lock().await;
-        if queue.closed {
+        let mut guard = self.queue.lock().await;
+        let WriterIngressQueue::Open(queue) = &mut *guard else {
             return H2Error::ConnectionWriterClosed.err();
-        }
-
+        };
         queue.enqueue_batch(stream_id, QueuedCommandBatch {
             commands,
             _permit: permit,
         });
         self.has_pending.store(true, Ordering::Release);
-        drop(queue);
+        drop(guard);
         self.notify.notify_one();
         Ok(())
     }
 
     pub(super) async fn drain_into(&self, drained: &mut DrainedIngressWrites) {
         let mut queue = self.queue.lock().await;
-        queue.drain_ready_into(drained);
+        match &mut *queue {
+            WriterIngressQueue::Open(queue) => queue.drain_ready_into(drained),
+            WriterIngressQueue::Closed => drained.clear(),
+        }
         self.has_pending
             .store(queue.has_pending(), Ordering::Release);
         drop(queue);
@@ -187,7 +196,9 @@ impl WriterIngress {
         }
 
         let mut queue = self.queue.lock().await;
-        queue.restore_drained(drained);
+        if let WriterIngressQueue::Open(queue) = &mut *queue {
+            queue.restore_drained(drained);
+        }
         self.has_pending
             .store(queue.has_pending(), Ordering::Release);
         drop(queue);
@@ -199,7 +210,9 @@ impl WriterIngress {
 
     pub(super) async fn drop_stream(&self, stream_id: StreamId) {
         let mut queue = self.queue.lock().await;
-        queue.drop_stream(stream_id);
+        if let WriterIngressQueue::Open(queue) = &mut *queue {
+            queue.drop_stream(stream_id);
+        }
         drop(queue);
     }
 
@@ -208,5 +221,67 @@ impl WriterIngress {
         queue.close();
         drop(queue);
         self.has_pending.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::task::yield_now;
+
+    use super::{WRITER_CHANNEL_CAPACITY, WriterIngress};
+    use crate::h2::writer::WriterCommand;
+    use crate::h2_frame::StreamId;
+
+    #[tokio::test]
+    async fn closed_typestate_rejects_new_commands() {
+        let ingress = WriterIngress::new(1);
+        ingress.close().await;
+
+        assert!(
+            ingress
+                .enqueue(
+                    StreamId::new(1).expect("non-zero stream id"),
+                    WriterCommand::FlushBufferedOutput,
+                )
+                .await
+                .is_err()
+        );
+        assert!(!ingress.has_pending());
+        drop(ingress);
+    }
+
+    #[tokio::test]
+    async fn command_capacity_backpressures_and_close_releases_waiters() {
+        let ingress = WriterIngress::new(1);
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+
+        for _ in 0..WRITER_CHANNEL_CAPACITY {
+            ingress
+                .enqueue(stream_id, WriterCommand::FlushBufferedOutput)
+                .await
+                .expect("capacity command accepted");
+        }
+        assert_eq!(ingress.permits.available_permits(), 0);
+
+        let blocked_ingress = ingress.clone();
+        let blocked = tokio::spawn(async move {
+            blocked_ingress
+                .enqueue(stream_id, WriterCommand::FlushBufferedOutput)
+                .await
+        });
+        yield_now().await;
+        assert!(!blocked.is_finished(), "command 65 must wait for capacity");
+
+        ingress.close().await;
+        assert!(
+            blocked
+                .await
+                .expect("blocked producer task completed")
+                .is_err(),
+            "shutdown must reject rather than strand a blocked producer"
+        );
+        assert_eq!(ingress.permits.available_permits(), WRITER_CHANNEL_CAPACITY);
+        assert!(!ingress.has_pending());
+        drop(ingress);
     }
 }

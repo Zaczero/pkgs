@@ -2,8 +2,11 @@ mod http;
 mod parse;
 mod websocket;
 
+use std::future::Future;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -16,15 +19,15 @@ use self::http::{
 };
 use crate::async_util::send_best_effort;
 use crate::config::ServerConfig;
-use crate::console::run_http_request;
 use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
-use crate::frame::PeerSettings;
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
-use crate::http::app::HttpRequestBody;
+use crate::h2_frame::PeerSettings;
+use crate::http::app::{HttpRequestBody, poll_app_task_once};
 use crate::http::body::RequestBodyState;
 use crate::http::execution::StreamRequestInput;
 use crate::http::planner::reject_oversized_request;
 use crate::http::response::HttpResponseTransport;
+use crate::http::run_request::run_http_request;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::runtime::{
     ConnectionContext, RequestAdmission, RequestContext, ShutdownState, StreamInput,
@@ -92,7 +95,30 @@ struct H1BodyReadParts<'a, R> {
     buffer: &'a mut BytesMut,
 }
 
-pub(crate) async fn serve_connection<R, W>(
+pub(crate) fn serve_connection<R, W>(
+    reader: R,
+    buffer: BytesMut,
+    writer: W,
+    connection: ConnectionContext,
+    secure: bool,
+    shutdown: watch::Receiver<ShutdownState>,
+) -> impl Future<Output = Result<(), H2CornError>>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: WriteTarget,
+{
+    // The connection state machine has several mutually exclusive, sizeable
+    // protocol branches. Store it once per accepted connection instead of
+    // embedding the full enum of async states in its caller (and therefore in
+    // every Tokio task allocation and poll stack frame). The concrete future
+    // remains statically dispatched; this is one allocation per connection,
+    // never per request or per poll.
+    Box::pin(drive_connection(
+        reader, buffer, writer, connection, secure, shutdown,
+    ))
+}
+
+async fn drive_connection<R, W>(
     mut reader: R,
     mut buffer: BytesMut,
     writer: W,
@@ -123,9 +149,9 @@ where
                 &mut reader,
                 &mut buffer,
                 &mut writer,
-                connection.config,
+                &connection.config,
                 secure,
-                request_head_timeout(connection.config, first_request),
+                request_head_timeout(&connection.config, first_request),
             ) => parsed,
         }?;
 
@@ -206,10 +232,10 @@ where
 {
     match upgrade {
         UpgradeRequest::WebSocket { key, meta } => {
-            let Some(admission) = try_acquire_request_admission(context.connection.app) else {
+            let Some(admission) = try_acquire_request_admission(&context.connection.app) else {
                 write_empty_response(
                     &mut writer,
-                    context.connection.config,
+                    &context.connection.config,
                     status_code::SERVICE_UNAVAILABLE,
                     true,
                 )
@@ -233,7 +259,7 @@ where
             let response = HandshakeRejection::unsupported_version();
             write_simple_response(
                 &mut writer,
-                context.connection.config,
+                &context.connection.config,
                 response.status,
                 response.headers,
                 &[],
@@ -245,7 +271,7 @@ where
         UpgradeRequest::WebSocketBadRequest => {
             write_empty_response(
                 &mut writer,
-                context.connection.config,
+                &context.connection.config,
                 status_code::BAD_REQUEST,
                 true,
             )
@@ -278,7 +304,7 @@ where
     if body_kind != RequestBodyKind::None {
         return Http1Error::H2cUpgradeWithRequestBody.err();
     }
-    write_h2c_upgrade_response(&mut writer, context.connection.config).await?;
+    write_h2c_upgrade_response(&mut writer, &context.connection.config).await?;
     let H1UpgradeContext {
         connection,
         secure,
@@ -315,11 +341,11 @@ where
         buffer,
         writer,
     } = io;
-    let config = ctx.connection.config;
+    let config = Arc::clone(&ctx.connection.config);
     if let Err(rejection) = reject_oversized_request(&ctx.request, config.max_request_body_size) {
         write_simple_response(
             writer,
-            config,
+            &config,
             rejection.status,
             rejection.headers,
             &[],
@@ -329,10 +355,10 @@ where
         return Ok(ConnectionPersistence::Close);
     }
 
-    let Some(admission) = try_acquire_request_admission(ctx.connection.app) else {
+    let Some(admission) = try_acquire_request_admission(&ctx.connection.app) else {
         write_empty_response(
             writer,
-            ctx.connection.config,
+            &ctx.connection.config,
             status_code::SERVICE_UNAVAILABLE,
             true,
         )
@@ -341,7 +367,7 @@ where
     };
     let mut transport = H1HttpTransport::new(
         writer,
-        ctx.connection.config,
+        Arc::clone(&ctx.connection.config),
         persistence == ConnectionPersistence::Close,
     );
 
@@ -385,7 +411,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: WriteTarget,
 {
-    let config = ctx.connection.config;
+    let config = Arc::clone(&ctx.connection.config);
     let H1BodyReadParts { reader, buffer } = read_parts;
     if let Some(body) = take_buffered_request_body(body_kind, buffer)? {
         let read_body_bytes = body.len() as u64;
@@ -404,13 +430,17 @@ where
         tx,
         rx: request_body_rx,
         body_bytes_read,
+        disconnect,
     } = StreamRequestInput::new(count_body_bytes);
     let access_log_body_bytes = body_bytes_read.clone();
 
     let result = {
         let mut app_future = Box::pin(run_http_request(
             ctx,
-            HttpRequestBody::Stream(request_body_rx),
+            HttpRequestBody::Stream {
+                rx: request_body_rx,
+                disconnect: Arc::clone(&disconnect),
+            },
             admission,
             transport,
             move || {
@@ -419,7 +449,12 @@ where
                     .map_or(0, |bytes| bytes.load(Ordering::Relaxed))
             },
         ));
-        let body_future = read_request_body(
+        // Start request ownership before polling a buffered body parser that
+        // can reject synchronously. This is one poll, not a scheduler yield:
+        // every admitted request invokes the app while body parsing and app
+        // execution remain concurrent afterwards.
+        let app_ready = poll_app_task_once(app_future.as_mut());
+        let mut body_future = Box::pin(read_request_body(
             body_kind,
             reader,
             buffer,
@@ -433,8 +468,47 @@ where
                 config.max_request_body_size.map(NonZeroU64::get),
             ),
             config.timeout_request_body_idle,
-        );
-        tokio::try_join!(app_future.as_mut(), body_future)
+        ));
+
+        match app_ready {
+            Poll::Ready(app_result) => {
+                // A successfully completed response may still need the body
+                // drained before this HTTP/1 connection is reusable. An app
+                // failure is terminal: do not let a peer keep the failed
+                // request task alive by withholding the rest of its upload.
+                app_result?;
+                body_future.as_mut().await.map(|()| ((), ()))
+            },
+            Poll::Pending => tokio::select! {
+                app_result = app_future.as_mut() => {
+                    app_result?;
+                    body_future.as_mut().await.map(|()| ((), ()))
+                }
+                body_result = body_future.as_mut() => {
+                    match body_result {
+                        Ok(()) => app_future.as_mut().await.map(|()| ((), ())),
+                        Err(err) => {
+                            // Closing the sole producer makes an application
+                            // already suspended in receive() observe
+                            // `http.disconnect`. Wait only until that event has
+                            // been queued to its loop, then dropping the app
+                            // future queues cancellation behind the resolution.
+                            // An app not awaiting receive is cancelled
+                            // immediately; no peer-controlled grace timer or
+                            // leaked connection task exists.
+                            drop(body_future);
+                            drop(tx);
+                            disconnect.wait_app_started().await;
+                            if let Some(pending) = disconnect.pending_resolution() {
+                                pending.wait().await;
+                            }
+                            drop(app_future);
+                            Err(err)
+                        }
+                    }
+                }
+            },
+        }
     };
     match result {
         Ok(((), ())) => Ok(persistence),
@@ -473,7 +547,7 @@ async fn read_request_body<R>(
     buffer: &mut BytesMut,
     tx: &mpsc::Sender<StreamInput>,
     mut body: RequestBodyState,
-    timeout_request_body_idle: Option<std::time::Duration>,
+    timeout_request_body_idle: Option<Duration>,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,

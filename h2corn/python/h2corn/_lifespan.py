@@ -46,6 +46,14 @@ async def _serve_with_lifespan(
         await lifespan._discard_task()
         raise
     try:
+        # Rust recognizes this private handoff and calls the original app
+        # directly, copying loop-local state while it builds each scope. The
+        # wrapper remains the portable fallback for alternative runtimes.
+        lifespan.app.__h2corn_lifespan_app__ = app
+        lifespan.app.__h2corn_lifespan_state__ = lifespan._state
+        lifespan.app.__h2corn_lifespan_required__ = mode == 'on'
+        lifespan.app.__h2corn_lifespan_startup_timeout__ = startup_timeout
+        lifespan.app.__h2corn_lifespan_shutdown_timeout__ = shutdown_timeout
         await serve(lifespan.app)
     finally:
         try:
@@ -211,3 +219,39 @@ class _LifespanRunner:
         finally:
             self._task = None
             self._active = False
+
+
+async def _start_lifespan_runner(
+    runner: _LifespanRunner,
+    *,
+    required: bool,
+    startup_timeout: float | None,
+) -> _LifespanRunner:
+    """Start one secondary-loop runner and return its owning object."""
+    try:
+        await _await_with_timeout(
+            runner.startup(required=required),
+            startup_timeout,
+            'lifespan startup timed out',
+        )
+    except BaseException:
+        await runner._discard_task()
+        raise
+    return runner
+
+
+async def _stop_lifespan_runner(
+    runner: _LifespanRunner,
+    *,
+    shutdown_timeout: float | None,
+) -> None:
+    """Stop one secondary-loop runner, always cleaning up its app task."""
+    try:
+        await _await_with_timeout(
+            runner.shutdown(),
+            shutdown_timeout,
+            'lifespan shutdown timed out',
+        )
+    except BaseException:
+        await runner._discard_task()
+        raise

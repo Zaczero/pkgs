@@ -1,25 +1,42 @@
+use std::fs::File;
 use std::io;
+use std::sync::Arc;
 
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
-use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
+use crate::access_log::ResponseLogState;
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
-use crate::console::ResponseLogState;
 use crate::error::H2CornError;
 use crate::http::digits;
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseStart};
-use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+use crate::http::types::{HttpStatusCode, ResponseHeaderKind, ResponseHeaders, status_code};
 use crate::sendfile::WriteTarget;
 
 const RESPONSE_BUF_CAPACITY: usize = 512;
 
 type ResponseBuf = SmallVec<[u8; RESPONSE_BUF_CAPACITY]>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileTransferMode {
+    Buffered,
+    Sendfile,
+}
+
+impl FileTransferMode {
+    const fn for_target<W: WriteTarget>(len: usize) -> Self {
+        if W::SUPPORTS_SENDFILE && len >= PATHSEND_SENDFILE_MIN {
+            Self::Sendfile
+        } else {
+            Self::Buffered
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BodyFraming {
@@ -29,7 +46,7 @@ pub(super) enum BodyFraming {
 
 pub(super) struct H1HttpTransport<'a, W> {
     writer: &'a mut BufWriter<W>,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     close_after: bool,
     response_log: ResponseLogState,
 }
@@ -40,7 +57,7 @@ where
 {
     pub(super) fn new(
         writer: &'a mut BufWriter<W>,
-        config: &'static ServerConfig,
+        config: Arc<ServerConfig>,
         close_after: bool,
     ) -> Self {
         Self {
@@ -56,7 +73,7 @@ where
         status: HttpStatusCode,
         close_after: bool,
     ) -> Result<(), H2CornError> {
-        write_empty_response(self.writer, self.config, status, close_after).await
+        write_empty_response(self.writer, &self.config, status, close_after).await
     }
 }
 
@@ -76,7 +93,7 @@ where
         ) {
             self.response_log.sent_body(body.len());
         }
-        start.apply_default_headers(self.config);
+        start.apply_default_headers(&self.config);
         let (status, headers) = start.into_status_headers();
         write_final_response(self.writer, status, headers, body, self.close_after).await
     }
@@ -86,7 +103,7 @@ where
         mut start: ResponseStart,
     ) -> Result<(), H2CornError> {
         self.response_log.started(start.status());
-        start.apply_default_headers(self.config);
+        start.apply_default_headers(&self.config);
         let (status, headers) = start.into_status_headers();
         write_response_head(
             self.writer,
@@ -138,7 +155,7 @@ where
         self.response_log.internal_error();
         write_empty_response(
             self.writer,
-            self.config,
+            &self.config,
             status_code::INTERNAL_SERVER_ERROR,
             true,
         )
@@ -229,26 +246,31 @@ where
             )
             .await?;
             let mut file = *file;
-            if len < PATHSEND_SENDFILE_MIN {
-                // Small files: one buffered read + ordinary writes beat a
-                // per-response sendfile setup (measured: sendfile's loopback
-                // skb handling is the hot path at this size).
-                let mut streamer = PathStreamer::new(file, len, true);
-                while !streamer.is_drained() {
-                    streamer.fill().await?;
-                    let chunk = streamer.remaining();
-                    if chunk.is_empty() {
-                        break;
+            match FileTransferMode::for_target::<W>(len) {
+                FileTransferMode::Buffered => {
+                    // Small files: one buffered read + ordinary writes beat a
+                    // per-response sendfile setup (measured: sendfile's loopback
+                    // skb handling is the hot path at this size). Transports that
+                    // cannot sendfile stay on this 128 KiB rolling path at every
+                    // size instead of falling into Tokio's generic 8 KiB copy.
+                    let mut streamer = PathStreamer::new(file, len, true);
+                    while !streamer.is_drained() {
+                        streamer.fill().await?;
+                        let chunk = streamer.remaining();
+                        if chunk.is_empty() {
+                            break;
+                        }
+                        let chunk_len = chunk.len();
+                        writer.write_all(chunk).await?;
+                        streamer.consume(chunk_len);
                     }
-                    let chunk_len = chunk.len();
-                    writer.write_all(chunk).await?;
-                    streamer.consume(chunk_len);
-                }
-                writer.flush().await?;
-            } else {
-                writer.flush().await?;
-                let mut offset = 0_u64;
-                W::send_file(writer, &mut file, &mut offset, len).await?;
+                    writer.flush().await?;
+                },
+                FileTransferMode::Sendfile => {
+                    writer.flush().await?;
+                    let mut offset = 0_u64;
+                    W::send_file(writer, &mut file, &mut offset, len).await?;
+                },
             }
             Ok(())
         },
@@ -399,53 +421,60 @@ where
 
 pub(super) fn append_header_lines(dst: &mut ResponseBuf, headers: &ResponseHeaders) {
     for (name, value) in headers {
-        let name = name.as_bytes();
-        if name == b"content-length" || name == b"transfer-encoding" || name == b"connection" {
+        if matches!(
+            name.kind(),
+            ResponseHeaderKind::ContentLength
+                | ResponseHeaderKind::TransferEncoding
+                | ResponseHeaderKind::Connection
+        ) {
             continue;
         }
-        append_header_line(dst, name, value.as_bytes());
+        append_header_line(dst, name.as_bytes(), value.as_bytes());
     }
 }
 
 fn append_status_line(dst: &mut ResponseBuf, status: HttpStatusCode) {
+    if let Some(line) = common_status_line(status) {
+        dst.extend_from_slice(line);
+        return;
+    }
     dst.extend_from_slice(b"HTTP/1.1 ");
     append_status_code(dst, status);
     dst.push(b' ');
-    if let Some(reason) = reason_phrase(status) {
+    if let Some(reason) = StandardStatusCode::from_u16(status.get())
+        .ok()
+        .and_then(|status| status.canonical_reason())
+    {
         dst.extend_from_slice(reason.as_bytes());
     }
     dst.extend_from_slice(b"\r\n");
 }
 
-fn reason_phrase(status: HttpStatusCode) -> Option<&'static str> {
+const fn common_status_line(status: HttpStatusCode) -> Option<&'static [u8]> {
     match status {
-        status_code::SWITCHING_PROTOCOLS => Some("Switching Protocols"),
-        status_code::OK => Some("OK"),
-        status_code::NO_CONTENT => Some("No Content"),
-        status_code::PARTIAL_CONTENT => Some("Partial Content"),
-        status_code::NOT_MODIFIED => Some("Not Modified"),
-        status_code::BAD_REQUEST => Some("Bad Request"),
-        status_code::FORBIDDEN => Some("Forbidden"),
-        status_code::NOT_FOUND => Some("Not Found"),
-        status_code::PAYLOAD_TOO_LARGE => Some("Payload Too Large"),
-        status_code::URI_TOO_LONG => Some("URI Too Long"),
-        status_code::UPGRADE_REQUIRED => Some("Upgrade Required"),
-        status_code::REQUEST_HEADER_FIELDS_TOO_LARGE => Some("Request Header Fields Too Large"),
-        status_code::INTERNAL_SERVER_ERROR => Some("Internal Server Error"),
-        status_code::NOT_IMPLEMENTED => Some("Not Implemented"),
-        status_code::SERVICE_UNAVAILABLE => Some("Service Unavailable"),
-        _ => StandardStatusCode::from_u16(status)
-            .ok()
-            .and_then(|status_code| status_code.canonical_reason()),
+        status_code::SWITCHING_PROTOCOLS => Some(b"HTTP/1.1 101 Switching Protocols\r\n"),
+        status_code::OK => Some(b"HTTP/1.1 200 OK\r\n"),
+        status_code::NO_CONTENT => Some(b"HTTP/1.1 204 No Content\r\n"),
+        status_code::PARTIAL_CONTENT => Some(b"HTTP/1.1 206 Partial Content\r\n"),
+        status_code::NOT_MODIFIED => Some(b"HTTP/1.1 304 Not Modified\r\n"),
+        status_code::BAD_REQUEST => Some(b"HTTP/1.1 400 Bad Request\r\n"),
+        status_code::FORBIDDEN => Some(b"HTTP/1.1 403 Forbidden\r\n"),
+        status_code::NOT_FOUND => Some(b"HTTP/1.1 404 Not Found\r\n"),
+        status_code::PAYLOAD_TOO_LARGE => Some(b"HTTP/1.1 413 Payload Too Large\r\n"),
+        status_code::URI_TOO_LONG => Some(b"HTTP/1.1 414 URI Too Long\r\n"),
+        status_code::UPGRADE_REQUIRED => Some(b"HTTP/1.1 426 Upgrade Required\r\n"),
+        status_code::REQUEST_HEADER_FIELDS_TOO_LARGE => {
+            Some(b"HTTP/1.1 431 Request Header Fields Too Large\r\n")
+        },
+        status_code::INTERNAL_SERVER_ERROR => Some(b"HTTP/1.1 500 Internal Server Error\r\n"),
+        status_code::NOT_IMPLEMENTED => Some(b"HTTP/1.1 501 Not Implemented\r\n"),
+        status_code::SERVICE_UNAVAILABLE => Some(b"HTTP/1.1 503 Service Unavailable\r\n"),
+        _ => None,
     }
 }
 
 fn append_status_code(dst: &mut ResponseBuf, status: HttpStatusCode) {
-    if (100..=999).contains(&status) {
-        dst.extend_from_slice(&digits::three_digit_bytes(status));
-    } else {
-        append_decimal_usize(dst, usize::from(status));
-    }
+    dst.extend_from_slice(&digits::three_digit_bytes(status.get()));
 }
 
 fn append_response_headers(
@@ -510,17 +539,79 @@ fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::reason_phrase;
-    use crate::http::types::status_code;
+    use std::fs::File;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncWrite, BufWriter};
+    use tokio::net::tcp::OwnedWriteHalf;
+
+    use super::{FileTransferMode, PATHSEND_SENDFILE_MIN, ResponseBuf, append_status_line};
+    use crate::http::types::{HttpStatusCode, status_code};
+    use crate::sendfile::WriteTarget;
+
+    struct BufferedOnly;
+
+    impl AsyncWrite for BufferedOnly {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            unreachable!("the transfer-mode test performs no I/O")
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            unreachable!("the transfer-mode test performs no I/O")
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            unreachable!("the transfer-mode test performs no I/O")
+        }
+    }
+
+    impl WriteTarget for BufferedOnly {
+        const SUPPORTS_SENDFILE: bool = false;
+
+        async fn send_file(
+            _writer: &mut BufWriter<Self>,
+            _file: &mut File,
+            _offset: &mut u64,
+            _len: usize,
+        ) -> io::Result<()> {
+            unreachable!("a buffered-only target cannot select sendfile")
+        }
+    }
 
     #[test]
-    fn reason_phrase_keeps_common_fast_path_and_fallback() {
-        assert_eq!(reason_phrase(status_code::OK), Some("OK"));
+    fn status_line_keeps_common_precomputed_and_standard_fallback_paths() {
+        let mut out = ResponseBuf::new();
+        append_status_line(&mut out, status_code::OK);
+        assert_eq!(out.as_slice(), b"HTTP/1.1 200 OK\r\n");
+
+        out.clear();
+        append_status_line(&mut out, HttpStatusCode::new(418).unwrap());
+        assert_eq!(out.as_slice(), b"HTTP/1.1 418 I'm a teapot\r\n");
+
+        out.clear();
+        append_status_line(&mut out, HttpStatusCode::new(999).unwrap());
+        assert_eq!(out.as_slice(), b"HTTP/1.1 999 \r\n");
+    }
+
+    #[test]
+    fn targets_without_sendfile_never_select_the_sendfile_tier() {
         assert_eq!(
-            reason_phrase(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE),
-            Some("Request Header Fields Too Large")
+            FileTransferMode::for_target::<BufferedOnly>(usize::MAX),
+            FileTransferMode::Buffered,
         );
-        assert_eq!(reason_phrase(418), Some("I'm a teapot"));
-        assert_eq!(reason_phrase(999), None);
+        assert_eq!(
+            FileTransferMode::for_target::<OwnedWriteHalf>(PATHSEND_SENDFILE_MIN,),
+            if cfg!(target_os = "linux") {
+                FileTransferMode::Sendfile
+            } else {
+                FileTransferMode::Buffered
+            },
+        );
     }
 }

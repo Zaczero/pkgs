@@ -1,8 +1,8 @@
 use std::cmp::min;
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 
-use super::mask::apply_websocket_mask_phase;
+use super::mask::{MaskKey, apply_websocket_mask_phase};
 use crate::smallvec_deque::SmallVecDeque;
 
 #[derive(Debug, Default)]
@@ -70,6 +70,31 @@ impl<const N: usize> SegmentCursor<N> {
 
     pub(super) fn take_masked_payload(&mut self, len: usize, mask: [u8; 4]) -> Bytes {
         debug_assert!(len <= self.len);
+        let key = MaskKey::new(mask);
+
+        // A transport segment commonly contains exactly one complete WebSocket
+        // frame. When its backing allocation is no longer shared with the
+        // transport read buffer, take that allocation and unmask the payload in
+        // place. `is_unique` is stable here: the cursor has exclusive access to
+        // the only handle that another thread could clone.
+        if self
+            .segments
+            .front()
+            .is_some_and(|segment| segment.len() - self.offset == len && segment.is_unique())
+        {
+            let segment = self
+                .segments
+                .pop_front()
+                .expect("unique payload segment is present");
+            let mut payload = segment
+                .try_into_mut()
+                .expect("uniquely owned Bytes converts without copying");
+            payload.advance(self.offset);
+            self.offset = 0;
+            self.len -= len;
+            apply_websocket_mask_phase(payload.as_mut(), key, 0);
+            return payload.freeze();
+        }
 
         let mut out = BytesMut::with_capacity(len);
         let mut remaining = len;
@@ -84,7 +109,7 @@ impl<const N: usize> SegmentCursor<N> {
             let take = min(available.len(), remaining);
             let start = out.len();
             out.extend_from_slice(&available[..take]);
-            phase = apply_websocket_mask_phase(&mut out[start..start + take], mask, phase);
+            phase = apply_websocket_mask_phase(&mut out[start..start + take], key, phase);
             remaining -= take;
             if take == available.len() {
                 self.segments.pop_front();
@@ -94,5 +119,59 @@ impl<const N: usize> SegmentCursor<N> {
             }
         }
         out.freeze()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::SegmentCursor;
+
+    #[test]
+    fn complete_unique_segment_is_unmasked_in_place() {
+        let mask = [1_u8, 2, 3, 4];
+        let prefix_len = 6;
+        let mut wire = vec![0xAA; prefix_len];
+        wire.extend(
+            b"payload"
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index & 3]),
+        );
+        let segment = Bytes::from(wire);
+        let payload_ptr = segment[prefix_len..].as_ptr();
+        let mut cursor = SegmentCursor::<2>::default();
+        cursor.push(segment);
+        cursor.skip(prefix_len);
+
+        let payload = cursor.take_masked_payload(7, mask);
+
+        assert_eq!(payload.as_ref(), b"payload");
+        assert_eq!(
+            payload.as_ptr(),
+            payload_ptr,
+            "payload allocation was copied"
+        );
+        assert_eq!(cursor.len(), 0);
+    }
+
+    #[test]
+    fn shared_segment_falls_back_without_mutating_another_owner() {
+        let mask = [1_u8, 2, 3, 4];
+        let masked = b"payload"
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index & 3])
+            .collect::<Vec<_>>();
+        let segment = Bytes::from(masked);
+        let other_owner = segment.clone();
+        let mut cursor = SegmentCursor::<2>::default();
+        cursor.push(segment);
+
+        let payload = cursor.take_masked_payload(7, mask);
+
+        assert_eq!(payload.as_ref(), b"payload");
+        assert_ne!(other_owner.as_ref(), b"payload");
     }
 }

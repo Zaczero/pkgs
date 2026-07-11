@@ -436,8 +436,12 @@ async def _h2_open_websocket_stream(
     # same socket flight as the response headers — carry them (and any
     # residual partial-frame bytes) forward so no frame is ever dropped at
     # the handshake handoff.
-    return reader, writer, conn, stream_id, _H2WsHandshake(
-        None, None, initial_frames, ws_buffer
+    return (
+        reader,
+        writer,
+        conn,
+        stream_id,
+        _H2WsHandshake(None, None, initial_frames, ws_buffer),
     )
 
 
@@ -1680,7 +1684,13 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
     config = Config(port=0, timeout_graceful_shutdown=0.2)
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, _conn, stream_id, handshake = await _h2_open_websocket_stream(
+            (
+                reader,
+                writer,
+                _conn,
+                stream_id,
+                handshake,
+            ) = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )
@@ -1735,7 +1745,13 @@ async def test_websocket_send_after_disconnect_raises_oserror(
     config = Config(port=0)
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+            (
+                reader,
+                writer,
+                conn,
+                stream_id,
+                handshake,
+            ) = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )

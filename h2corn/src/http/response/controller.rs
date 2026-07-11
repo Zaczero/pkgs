@@ -53,7 +53,7 @@ impl StartedResponse {
         }
     }
 
-    fn pathsend_len_hint(&mut self) -> Option<usize> {
+    const fn pathsend_len_hint(&self) -> Option<usize> {
         self.start.content_length_hint()
     }
 }
@@ -87,8 +87,8 @@ impl ResponseController {
         }
     }
 
-    pub(crate) fn pathsend_len_hint(&mut self) -> Option<usize> {
-        match &mut self.state {
+    pub(crate) const fn pathsend_len_hint(&self) -> Option<usize> {
+        match &self.state {
             ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
                 started.pathsend_len_hint()
             },
@@ -236,7 +236,6 @@ impl ResponseController {
                 }
             },
             http::pathsend::PathSource::File(file) => {
-                let file = Box::new(file);
                 if started.expects_trailers {
                     actions.push(started.take_start_action());
                     actions.push(actions::ResponseAction::File { file, len });
@@ -370,10 +369,13 @@ fn complete_or_wait_for_trailers(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::env::temp_dir;
+    use std::fs::{File, remove_file, write};
+    use std::io::{Error, ErrorKind};
+    use std::path::{Path, PathBuf};
+    use std::process::id;
 
     use bytes::Bytes;
-    use tokio::fs::File;
 
     use super::ResponseController;
     use crate::{bridge, error, http};
@@ -415,7 +417,7 @@ mod tests {
                 &mut controller,
                 &mut actions,
                 bridge::HttpOutboundEvent::Start {
-                    status: 200,
+                    status: http::types::status_code::OK,
                     headers: vec![(
                         Bytes::from_static(b"x-demo").into(),
                         Bytes::from_static(b"1").into(),
@@ -443,7 +445,7 @@ mod tests {
         match actions.pop().expect("final action is buffered") {
             http::response::ResponseAction::Final { start, body } => {
                 let (status, headers) = start.into_status_headers();
-                assert_eq!(status, 200);
+                assert_eq!(status, http::types::status_code::OK);
                 assert_eq!(headers.len(), 1);
                 assert_eq!(headers[0].0.as_ref(), b"x-demo");
                 assert_eq!(headers[0].1.as_ref(), b"1");
@@ -467,7 +469,7 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: 200,
+                status: http::types::status_code::OK,
                 headers: Vec::new(),
                 trailers: true,
             },
@@ -488,7 +490,7 @@ mod tests {
         match actions.pop().expect("streaming start action exists") {
             http::response::ResponseAction::Start { start } => {
                 let (status, headers) = start.into_status_headers();
-                assert_eq!(status, 200);
+                assert_eq!(status, http::types::status_code::OK);
                 assert!(headers.is_empty());
             },
             _ => panic!("expected streaming start action"),
@@ -528,7 +530,7 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: 200,
+                status: http::types::status_code::OK,
                 headers: Vec::new(),
                 trailers: false,
             },
@@ -589,7 +591,7 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: 200,
+                status: http::types::status_code::OK,
                 headers: Vec::new(),
                 trailers: false,
             },
@@ -605,14 +607,13 @@ mod tests {
             ),
             Ok(true)
         ));
-        let temp_path =
-            std::env::temp_dir().join(format!("h2corn-response-test-{}", std::process::id()));
-        std::fs::write(&temp_path, b"demo").expect("temp file is created");
+        let temp_path = temp_dir().join(format!("h2corn-response-test-{}", id()));
+        write(&temp_path, b"demo").expect("temp file is created");
         controller
             .handle_pathsend(
                 &mut actions,
-                http::pathsend::PathSource::File(File::from_std(
-                    std::fs::File::open(&temp_path).expect("temp file opens"),
+                http::pathsend::PathSource::File(Box::new(
+                    File::open(&temp_path).expect("temp file opens"),
                 )),
                 4,
             )
@@ -636,7 +637,7 @@ mod tests {
                     | error::HttpResponseError::PathsendMixedWithBody
             )
         ));
-        let _ = std::fs::remove_file(temp_path);
+        let _ = remove_file(temp_path);
     }
 
     fn start_unary(
@@ -644,7 +645,7 @@ mod tests {
         actions: &mut http::response::ResponseActions,
     ) {
         event_requests_pathsend(controller, actions, bridge::HttpOutboundEvent::Start {
-            status: 200,
+            status: http::types::status_code::OK,
             headers: vec![(
                 Bytes::from_static(b"content-type").into(),
                 Bytes::from_static(b"image/png").into(),
@@ -684,7 +685,7 @@ mod tests {
             .handle_pathsend_substitute(&mut actions, http::types::status_code::NOT_FOUND)
             .expect("missing file substitutes 404");
         assert!(controller.is_complete());
-        assert_substitute_final_response(&mut actions, 404);
+        assert_substitute_final_response(&mut actions, http::types::status_code::NOT_FOUND);
     }
 
     #[test]
@@ -697,7 +698,7 @@ mod tests {
             .handle_pathsend_substitute(&mut actions, http::types::status_code::FORBIDDEN)
             .expect("unreadable file substitutes 403");
         assert!(controller.is_complete());
-        assert_substitute_final_response(&mut actions, 403);
+        assert_substitute_final_response(&mut actions, http::types::status_code::FORBIDDEN);
     }
 
     #[test]
@@ -724,7 +725,7 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: 200,
+                status: http::types::status_code::OK,
                 headers: Vec::new(),
                 trailers: false,
             },
@@ -753,14 +754,14 @@ mod tests {
 
     #[test]
     fn pathsend_error_predicates_classify_open_failures() {
-        let path = std::path::Path::new("/definitely/does/not/exist/h2corn-test");
+        let path = Path::new("/definitely/does/not/exist/h2corn-test");
         for kind in [
-            std::io::ErrorKind::NotFound,
-            std::io::ErrorKind::PermissionDenied,
-            std::io::ErrorKind::NotADirectory,
-            std::io::ErrorKind::Other,
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::NotADirectory,
+            ErrorKind::Other,
         ] {
-            let err = error::PathsendError::open_failed(path, std::io::Error::from(kind));
+            let err = error::PathsendError::open_failed(path, Error::from(kind));
             assert_eq!(err.io_error_kind(), kind);
         }
     }
@@ -774,7 +775,7 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: 200,
+                status: http::types::status_code::OK,
                 headers: Vec::new(),
                 trailers: false,
             },

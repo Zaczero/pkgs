@@ -10,6 +10,7 @@ mod dict_api {
 
     unsafe extern "C" {
         fn _PyDict_NewPresized(minused: ffi::Py_ssize_t) -> *mut ffi::PyObject;
+        #[cfg(not(Py_GIL_DISABLED))]
         fn _PyDict_GetItem_KnownHash(
             mp: *mut ffi::PyObject,
             key: *mut ffi::PyObject,
@@ -25,7 +26,8 @@ mod dict_api {
 
     pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
         let key = PyString::intern(py, text).unbind();
-        // SAFETY: `key` is a live Python object created while the GIL is held by `py`.
+        // SAFETY: `key` is a live Python object and the current thread is attached
+        // to the interpreter through `py`.
         let hash = unsafe { ffi::PyObject_Hash(key.as_ptr()) };
         if hash == -1 {
             Err(PyErr::fetch(py))
@@ -40,15 +42,17 @@ mod dict_api {
         }
 
         let capacity = capacity.min(ffi::PY_SSIZE_T_MAX as usize).cast_signed();
-        // SAFETY: the GIL is held by `py`; `_PyDict_NewPresized` returns a new
-        // owned dict pointer or sets a Python exception; and the result is
-        // converted immediately into `Bound<PyDict>` before exposure.
+        // SAFETY: the current thread is attached through `py`;
+        // `_PyDict_NewPresized` returns a new owned dict pointer or sets a
+        // Python exception; and the result is converted immediately into
+        // `Bound<PyDict>` before exposure.
         unsafe {
             Bound::from_owned_ptr_or_err(py, _PyDict_NewPresized(capacity))
                 .map(|dict| dict.cast_into_unchecked::<PyDict>())
         }
     }
 
+    #[cfg(not(Py_GIL_DISABLED))]
     pub(super) fn get_item<'py>(
         py: Python<'py>,
         dict: &Bound<'py, PyDict>,
@@ -73,6 +77,22 @@ mod dict_api {
         }
     }
 
+    #[cfg(Py_GIL_DISABLED)]
+    pub(super) fn get_item<'py>(
+        py: Python<'py>,
+        dict: &Bound<'py, PyDict>,
+        (key, _hash): &CachedKey,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        use pyo3::types::PyDictMethods;
+
+        // A borrowed dict value can be invalidated by another thread between
+        // lookup and INCREF on free-threaded CPython. PyO3's safe path uses
+        // `PyDict_GetItemRef`, which returns a strong reference atomically with
+        // the lookup. The cached interned key still avoids key construction and
+        // its hash is already cached by CPython.
+        dict.get_item(key.bind(py))
+    }
+
     pub(super) fn set_item<'py>(
         py: Python<'py>,
         dict: &Bound<'py, PyDict>,
@@ -80,9 +100,10 @@ mod dict_api {
         value: &Bound<'py, PyAny>,
     ) -> PyResult<()> {
         let key = key.bind(py);
-        // SAFETY: the GIL is held by `py`; `dict`, `key`, and `value` are live bound
-        // Python objects; the cached hash was computed for this exact interned
-        // key.
+        // SAFETY: the current thread is attached through `py`; `dict`, `key`,
+        // and `value` are live bound Python objects; the cached hash was
+        // computed for this exact interned key. CPython's function enters the
+        // dict critical section on free-threaded builds.
         if unsafe { _PyDict_SetItem_KnownHash(dict.as_ptr(), key.as_ptr(), value.as_ptr(), *hash) }
             == -1
         {
@@ -139,8 +160,7 @@ pub(crate) use pyo3::{Py, PyResult};
 // Re-export crate-root macros (defined with `#[macro_export]` below) at this module path,
 // so existing `$crate::python::py_dict!(...)` paths inside macro bodies continue to resolve.
 pub(crate) use crate::{
-    py_cached_dict, py_dict, py_dict_slots, py_match_cached_bytes, py_match_cached_string,
-    py_static_key,
+    py_dict, py_dict_slots, py_match_cached_bytes, py_match_cached_string, py_static_key,
 };
 
 #[macro_export]
@@ -221,30 +241,6 @@ macro_rules! py_dict {
             $crate::python::py_dict!(@push $scratch, $($body)*);
         }
         $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
-    }};
-}
-
-#[macro_export]
-macro_rules! py_cached_dict {
-    ($py:expr, { $($key:literal => $value:expr),* $(,)? }) => {{
-        static CACHED: $crate::python::PyOnceLock<
-            $crate::python::Py<$crate::python::PyDict>,
-        > = $crate::python::PyOnceLock::new();
-        {
-            let dict = CACHED.get_or_try_init(
-                $py,
-                || -> $crate::python::PyResult<$crate::python::Py<$crate::python::PyDict>> {
-                    let dict = $crate::python::py_dict!($py, {
-                        $($key => $value),*
-                    });
-                    Ok(dict.unbind())
-                },
-            )?;
-            ::std::result::Result::<
-                ::pyo3::Bound<'_, $crate::python::PyDict>,
-                ::pyo3::PyErr,
-            >::Ok(dict.bind($py).clone())
-        }
     }};
 }
 
@@ -463,55 +459,10 @@ pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_,
     dict_api::new_dict(py, capacity)
 }
 
-/// Vectorcall `callable(args[..positional], **kwnames=args[positional..])`
-/// with a cached kwnames tuple — the keyword-call shape pyo3's safe API
-/// cannot spell without building a kwargs dict per call. The only raw
-/// Python-call FFI in the crate lives here; everything else goes through
-/// pyo3's safe `call*` (which compiles to the same vectorcalls).
-pub(crate) fn py_vectorcall_kwnames<'py, const N: usize>(
-    callable: &Bound<'py, PyAny>,
-    positional: usize,
-    args: [&Bound<'py, PyAny>; N],
-    kwnames: &Bound<'py, pyo3::types::PyTuple>,
-) -> PyResult<Bound<'py, PyAny>> {
-    use pyo3::ffi;
-    use pyo3::types::PyTupleMethods;
-    debug_assert_eq!(kwnames.len(), N - positional);
-
-    const {
-        assert!(N < 9, "py_vectorcall_kwnames supports at most 8 arguments");
-    }
-    // Fixed-capacity buffer; only slots `1..=N` (the arguments) are written.
-    // Slot 0 is the `PY_VECTORCALL_ARGUMENTS_OFFSET` scratch slot and stays
-    // uninitialized: the flag grants the callee write-only access (e.g.
-    // `method_vectorcall` prepends `self` there) — it is never read. The
-    // `MaybeUninit` shape keeps codegen at exactly `N` stores — a plain
-    // `[null; 9]` init emits five extra vector zero-stores the optimizer
-    // cannot elide because the buffer escapes into the call.
-    let mut buffer = [MaybeUninit::<*mut ffi::PyObject>::uninit(); 9];
-    for (slot, arg) in buffer[1..=N].iter_mut().zip(args) {
-        slot.write(arg.as_ptr());
-    }
-    // SAFETY: the GIL is held via the bound arguments; all argument pointers
-    // are live borrowed objects valid for the call; `buffer[0]` is the
-    // write-only offset-flag scratch slot; `kwnames` names exactly the
-    // trailing `N - positional` values, so the callee reads only the `N`
-    // initialized slots; the call returns a new owned reference or sets a
-    // Python exception.
-    unsafe {
-        Bound::from_owned_ptr_or_err(
-            callable.py(),
-            ffi::PyObject_Vectorcall(
-                callable.as_ptr(),
-                buffer.as_mut_ptr().add(1).cast::<*mut ffi::PyObject>(),
-                positional | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                kwnames.as_ptr(),
-            ),
-        )
-    }
-}
-
-pub(crate) fn py_dict_literal_value<'py, V>(py: Python<'py>, value: V) -> PyResult<Bound<'py, PyAny>>
+pub(crate) fn py_dict_literal_value<'py, V>(
+    py: Python<'py>,
+    value: V,
+) -> PyResult<Bound<'py, PyAny>>
 where
     V: Copy + IntoPyObject<'py> + 'static,
 {
@@ -524,10 +475,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[cfg(Py_GIL_DISABLED)]
+    use std::sync::{Arc, Barrier};
+
+    #[cfg(Py_GIL_DISABLED)]
+    use pyo3::types::{PyAnyMethods, PyDict};
     use pyo3::types::{PyBool, PyBytes, PyBytesMethods, PyDictMethods};
     use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
 
     use super::PyString;
+    #[cfg(Py_GIL_DISABLED)]
+    use super::StaticPyKey;
 
     fn init_python() {
         Python::initialize();
@@ -600,5 +558,61 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    #[test]
+    fn static_key_lookup_survives_concurrent_dict_mutation() {
+        static VALUE_KEY: StaticPyKey = StaticPyKey::new("value");
+        const ITERATIONS: usize = 50_000;
+        const READERS: usize = 3;
+
+        init_python();
+        let dict = Arc::new(Python::attach(|py| PyDict::new(py).unbind()));
+        let barrier = Arc::new(Barrier::new(READERS + 1));
+
+        let writer_dict = Arc::clone(&dict);
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = std::thread::spawn(move || -> PyResult<()> {
+            writer_barrier.wait();
+            Python::attach(|py| {
+                let dict = writer_dict.bind(py);
+                let key = PyString::intern(py, "value");
+                for value in 0..ITERATIONS {
+                    dict.set_item(&key, value)?;
+                    dict.del_item(&key)?;
+                }
+                Ok(())
+            })
+        });
+
+        let readers = (0..READERS)
+            .map(|_| {
+                let dict = Arc::clone(&dict);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || -> PyResult<()> {
+                    barrier.wait();
+                    Python::attach(|py| {
+                        for _ in 0..ITERATIONS {
+                            if let Some(value) = VALUE_KEY.get_item(py, dict.bind(py))? {
+                                let _ = value.extract::<usize>()?;
+                            }
+                        }
+                        Ok(())
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        writer
+            .join()
+            .expect("writer thread does not panic")
+            .unwrap();
+        for reader in readers {
+            reader
+                .join()
+                .expect("reader thread does not panic")
+                .unwrap();
+        }
     }
 }

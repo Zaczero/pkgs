@@ -2,17 +2,15 @@ use std::num::NonZeroUsize;
 
 use bytes::{Bytes, BytesMut};
 use http::Method;
-use tokio::time::Instant;
 
 use super::PriorityDependency;
 use crate::error::{ErrorExt, H2CornError, H2Error};
-use crate::ext::Protocol;
-use crate::frame::{self, ErrorCode, RawFrame, StreamId};
+use crate::h2_frame::{self, ErrorCode, RawFrame, StreamId};
 use crate::hpack::{BytesStr, Decoder, DecoderError, Header};
 use crate::http::header::{header_is_single_token, parse_content_length_header};
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::types::{
-    HttpStatusCode, HttpVersion, KnownRequestHeaderName, RequestAuthority, RequestHead,
+    HttpStatusCode, HttpVersion, KnownRequestHeaderName, Protocol, RequestAuthority, RequestHead,
     RequestHeaderName, RequestHeaderValue, RequestHeaders, RequestTarget, status_code,
 };
 
@@ -87,7 +85,6 @@ pub(super) struct PendingHeaders {
     pub stream_id: StreamId,
     pub end_stream: bool,
     pub block: BytesMut,
-    pub last_fragment_at: Instant,
 }
 
 pub(super) struct HeaderBlockFragment {
@@ -142,7 +139,7 @@ struct RequestHeadBuilder {
     authority: Option<BytesStr>,
     path: Option<BytesStr>,
     protocol: Option<Protocol>,
-    regular_headers: RequestHeaders,
+    regular_headers: Vec<(RequestHeaderName, RequestHeaderValue)>,
     section: HeaderSection,
     host_header_index: Option<usize>,
     budget: HeaderBudget,
@@ -165,7 +162,7 @@ impl RequestHeadBuilder {
             authority: None,
             path: None,
             protocol: None,
-            regular_headers: RequestHeaders::with_capacity(16),
+            regular_headers: Vec::with_capacity(16),
             section: HeaderSection::default(),
             host_header_index: None,
             budget: HeaderBudget::new(limits),
@@ -237,18 +234,18 @@ impl RequestHeadBuilder {
                 if !header_is_single_token(value_bytes, b"trailers") {
                     return Err(());
                 }
-                self.header_meta.accepts_trailers = true;
+                self.header_meta.set_accepts_trailers();
             },
             Some(KnownRequestHeaderName::ContentLength) => {
                 let parsed = parse_content_length_header(value_bytes).ok_or(())?;
                 if self
                     .header_meta
-                    .content_length
+                    .content_length()
                     .is_some_and(|existing| existing != parsed)
                 {
                     return Err(());
                 }
-                self.header_meta.content_length = Some(parsed);
+                self.header_meta.set_content_length(Some(parsed));
             },
             _ => {},
         }
@@ -305,7 +302,10 @@ impl RequestHeadBuilder {
 
         if let (Some(authority), Some(host_header_index)) =
             (&self.authority, self.host_header_index)
-            && !self.regular_headers[host_header_index]
+            && !self
+                .regular_headers
+                .get(host_header_index)
+                .expect("recorded host index must exist")
                 .1
                 .as_bytes()
                 .eq_ignore_ascii_case(authority.as_ref())
@@ -340,7 +340,7 @@ impl RequestHeadBuilder {
             http_version: HttpVersion::Http2,
             method,
             target,
-            headers: self.regular_headers,
+            headers: RequestHeaders::from_h2(self.regular_headers),
             header_meta: self.header_meta,
         })
     }
@@ -373,8 +373,8 @@ pub(super) fn parse_header_block_fragment(
     let payload = frame.payload;
     let payload_bytes = payload.as_ref();
     let mut payload_offset = 0;
-    let padded = header.flags.contains(frame::FrameFlags::PADDED);
-    let priority = header.flags.contains(frame::FrameFlags::PRIORITY);
+    let padded = header.flags.contains(h2_frame::FrameFlags::PADDED);
+    let priority = header.flags.contains(h2_frame::FrameFlags::PRIORITY);
     let priority_offset = usize::from(padded);
 
     if padded {
@@ -415,8 +415,8 @@ pub(super) fn parse_header_block_fragment(
         } else {
             payload.slice(payload_offset..block_end)
         },
-        end_headers: header.flags.contains(frame::FrameFlags::END_HEADERS),
-        end_stream: header.flags.contains(frame::FrameFlags::END_STREAM),
+        end_headers: header.flags.contains(h2_frame::FrameFlags::END_HEADERS),
+        end_stream: header.flags.contains(h2_frame::FrameFlags::END_STREAM),
         stream_dependency,
     })
 }
@@ -490,7 +490,7 @@ mod tests {
 
     use super::{HeaderLimits, RequestHeadError, decode_request_head, decode_trailer_block};
     use crate::hpack::{BytesStr, Decoder, Encoder, Header};
-    use crate::http::types::status_code;
+    use crate::http::types::{KnownRequestHeaderName, RequestHeaderNameRef, status_code};
 
     fn encode_request_block(headers: &[(&[u8], &[u8])]) -> Bytes {
         let mut encoder = Encoder::new();
@@ -560,8 +560,12 @@ mod tests {
         .expect("received header list size should ignore synthesized host");
 
         assert_eq!(request.headers.len(), 1);
-        assert_eq!(request.headers[0].0.as_str(), "host");
-        assert_eq!(request.headers[0].1.as_bytes(), b"example.com");
+        let host = request.headers.get(0).expect("synthesized host exists");
+        assert_eq!(
+            host.name(),
+            RequestHeaderNameRef::Known(KnownRequestHeaderName::Host)
+        );
+        assert_eq!(host.value(), b"example.com");
     }
 
     #[test]

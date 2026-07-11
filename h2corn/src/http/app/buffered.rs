@@ -2,12 +2,26 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::async_util::{TryPush, try_push};
 use crate::bridge::{ASGI_QUEUE_CAPACITY, HttpOutboundEvent};
 use crate::buffered_events::BufferedState;
 
 enum HttpSendMode {
     Buffering,
     Streaming { tx: mpsc::Sender<HttpOutboundEvent> },
+}
+
+/// Result of handing an ASGI event to the response driver. The common
+/// buffered and sent states carry no channel owner; only a channel proven full
+/// transfers one sender clone into a backpressure waiter.
+pub(crate) enum HttpSendDisposition {
+    Buffered,
+    Sent,
+    Backpressured {
+        tx: mpsc::Sender<HttpOutboundEvent>,
+        event: HttpOutboundEvent,
+    },
+    Closed,
 }
 
 #[derive(Clone)]
@@ -32,19 +46,23 @@ impl HttpSendState {
         (send_state, send_buffer)
     }
 
-    pub(crate) fn push_or_forward(
-        &self,
-        event: HttpOutboundEvent,
-    ) -> Option<(mpsc::Sender<HttpOutboundEvent>, HttpOutboundEvent)> {
+    pub(crate) fn push_or_forward(&self, event: HttpOutboundEvent) -> HttpSendDisposition {
         let mut inner = self.shared.lock();
         match &inner.state {
             HttpSendMode::Buffering => {
                 inner.queue.push_back(event);
                 drop(inner);
                 self.shared.notify_ready();
-                None
+                HttpSendDisposition::Buffered
             },
-            HttpSendMode::Streaming { tx } => Some((tx.clone(), event)),
+            HttpSendMode::Streaming { tx } => match try_push(tx, event) {
+                TryPush::Sent => HttpSendDisposition::Sent,
+                TryPush::Full(event) => HttpSendDisposition::Backpressured {
+                    tx: tx.clone(),
+                    event,
+                },
+                TryPush::Closed(_) => HttpSendDisposition::Closed,
+            },
         }
     }
 }
@@ -90,8 +108,8 @@ impl HttpSendBuffer {
 mod tests {
     use bytes::Bytes;
 
-    use super::HttpSendState;
-    use crate::bridge::{HttpOutboundEvent, PayloadBytes};
+    use super::{HttpSendDisposition, HttpSendState};
+    use crate::bridge::{ASGI_QUEUE_CAPACITY, HttpOutboundEvent, PayloadBytes};
 
     fn body_event(body: &'static [u8]) -> HttpOutboundEvent {
         HttpOutboundEvent::Body {
@@ -113,8 +131,14 @@ mod tests {
     #[test]
     fn buffered_events_drain_before_streaming_mode_forwards_new_events() {
         let (send_state, mut send_buffer) = HttpSendState::new();
-        assert!(send_state.push_or_forward(body_event(b"first")).is_none());
-        assert!(send_state.push_or_forward(body_event(b"second")).is_none());
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"first")),
+            HttpSendDisposition::Buffered
+        ));
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"second")),
+            HttpSendDisposition::Buffered
+        ));
 
         assert_body_event(
             send_buffer
@@ -133,10 +157,16 @@ mod tests {
             "draining buffered events transitions the send state into streaming mode"
         );
 
-        let (_tx, event) = send_state
-            .push_or_forward(body_event(b"third"))
-            .expect("new events are forwarded once streaming begins");
-        assert_body_event(event, b"third");
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"third")),
+            HttpSendDisposition::Sent
+        ));
+        assert_body_event(
+            send_buffer
+                .take_ready(true)
+                .expect("the streaming receiver owns the directly sent event"),
+            b"third",
+        );
     }
 
     #[test]
@@ -147,9 +177,46 @@ mod tests {
             "empty buffer flips directly into streaming mode"
         );
 
-        let (_tx, event) = send_state
-            .push_or_forward(body_event(b"live"))
-            .expect("streaming mode forwards live events immediately");
-        assert_body_event(event, b"live");
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"live")),
+            HttpSendDisposition::Sent
+        ));
+        assert_body_event(
+            send_buffer
+                .take_ready(true)
+                .expect("the streaming receiver owns the directly sent event"),
+            b"live",
+        );
+    }
+
+    #[test]
+    fn streaming_sender_clones_only_after_the_channel_is_full() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        assert!(send_buffer.take_ready(true).is_none());
+
+        let internal_count = || {
+            let inner = send_state.shared.lock();
+            match &inner.state {
+                super::HttpSendMode::Streaming { tx } => tx.strong_count(),
+                super::HttpSendMode::Buffering => panic!("streaming mode was enabled"),
+            }
+        };
+        assert_eq!(internal_count(), 1);
+        for _ in 0..ASGI_QUEUE_CAPACITY {
+            assert!(matches!(
+                send_state.push_or_forward(body_event(b"queued")),
+                HttpSendDisposition::Sent
+            ));
+            assert_eq!(internal_count(), 1, "uncontended sends must not clone");
+        }
+
+        let HttpSendDisposition::Backpressured { tx, .. } =
+            send_state.push_or_forward(body_event(b"waiting"))
+        else {
+            panic!("a full channel transfers one sender to the waiter")
+        };
+        assert_eq!(tx.strong_count(), 2);
+        drop(tx);
+        assert_eq!(internal_count(), 1);
     }
 }

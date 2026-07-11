@@ -124,7 +124,9 @@ def render() -> str:
         for name in group.options:
             option = next((o for o in config_options() if o.name == name), None)
             if option is None:
-                raise RuntimeError(f'unknown option in config reference group: {name!r}')
+                raise RuntimeError(
+                    f'unknown option in config reference group: {name!r}'
+                )
             parts.append(_option_section(option))
             seen.add(name)
 

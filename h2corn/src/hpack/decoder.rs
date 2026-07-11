@@ -6,7 +6,9 @@ use http::{header, method, status};
 use super::dynamic_table::DynamicBuffer;
 use super::header::OwnedName;
 use super::{Header, huffman, static_table};
-use crate::frame::DEFAULT_HEADER_TABLE_SIZE;
+use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
+
+const HUFFMAN_ARENA_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
 pub(crate) struct Decoder {
@@ -52,7 +54,7 @@ impl Decoder {
             max_size_update: None,
             last_max_update: size,
             table: DynamicBuffer::new(size),
-            buffer: BytesMut::with_capacity(4096),
+            buffer: BytesMut::new(),
         }
     }
 
@@ -176,6 +178,9 @@ impl Decoder {
             return Ok(buf.copy_to_bytes(len));
         }
 
+        if buffer.capacity() == 0 {
+            buffer.reserve(HUFFMAN_ARENA_CAPACITY);
+        }
         let decoded = huffman::decode(&buf.chunk()[..len], buffer)?;
         buf.advance(len);
         Ok(decoded.freeze())
@@ -313,7 +318,7 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use crate::hpack::Encoder;
 
@@ -340,6 +345,30 @@ mod test {
         let mut decoder = Decoder::new(0);
         let mut bytes = Bytes::new();
         decoder.decode_bytes(&mut bytes, |_| {}).unwrap();
+    }
+
+    #[test]
+    fn huffman_arena_is_allocated_only_on_first_huffman_string() {
+        let mut decoder = Decoder::new(0);
+        assert_eq!(decoder.buffer.capacity(), 0);
+
+        let mut plain = Bytes::from_static(b"\x03abc");
+        assert_eq!(decoder.decode_string(&mut plain).unwrap(), b"abc"[..]);
+        assert_eq!(decoder.buffer.capacity(), 0);
+
+        let mut encoded = BytesMut::new();
+        huffman::encode(b"custom-header-value", &mut encoded);
+        let encoded_len = u8::try_from(encoded.len()).unwrap();
+        let mut huffman = BytesMut::with_capacity(encoded.len() + 1);
+        huffman.extend_from_slice(&[0x80 | encoded_len]);
+        huffman.extend_from_slice(&encoded);
+        let mut huffman = huffman.freeze();
+
+        assert_eq!(
+            decoder.decode_string(&mut huffman).unwrap(),
+            b"custom-header-value"[..]
+        );
+        assert!(decoder.buffer.capacity() >= HUFFMAN_ARENA_CAPACITY / 2);
     }
 
     #[test]

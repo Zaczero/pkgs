@@ -30,14 +30,16 @@ not from the application code.
 | Workers                  | 1 and 4, side-by-side per scenario                             |
 | Transports               | HTTP/1.1 over TCP, HTTP/1.1 over UDS, HTTP/2, WebSocket        |
 | Server side              | `h2corn`, `uvicorn`, `hypercorn`, `gunicorn` (uvicorn workers) |
-| Reverse proxy            | None — k6 talks directly to each server                        |
+| Reverse proxy            | None — the load generator talks directly to each server        |
 | Servers compared on HTTP/2 | `h2corn` and `hypercorn` only (the other two don't speak HTTP/2) |
 
 Each server starts cold per scenario and is given a moment to settle
-before k6 begins; both processes run on the same host with no CPU
-pinning or governor tuning. The plots show a single observed run —
-intended to surface relative ordering at a glance, not to publish
-production capacity guidance.
+before the load generator begins; both processes run on the same host
+with no CPU pinning or governor tuning. The plots show a single
+observed run — intended to surface relative ordering at a glance, not
+to publish production capacity guidance or validate a performance
+change. Hardware and kernel for the displayed run are recorded as a
+header on each plot.
 
 Hardware and kernel for the displayed run are recorded as a header on
 each plot. To reproduce on your own box, see
@@ -141,5 +143,5 @@ uv sync
 uv run python bench/bench.py
 ```
 
-The harness records per-scenario k6 summaries and renders the SVGs you
-see above. Output lands in `bench/results/`.
+The plotting harness drives oha and k6 against each server and renders the
+SVGs above. Generated output lands in `bench/results/`.

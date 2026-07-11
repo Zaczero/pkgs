@@ -11,6 +11,7 @@ guard) working on whichever loop a deployment picks.
 """
 
 import asyncio
+import inspect
 import shutil
 import tempfile
 import warnings
@@ -49,6 +50,22 @@ def _event_loop_policies():
         return [*params, pytest.param(uvloop.EventLoopPolicy(), id='uvloop')]
 
 
-@pytest.fixture(params=_event_loop_policies())
+def pytest_generate_tests(metafunc):
+    """Run coroutine tests under each loop without duplicating sync tests."""
+    if (
+        'event_loop_policy' in metafunc.fixturenames
+        and inspect.iscoroutinefunction(metafunc.function)
+    ):
+        metafunc.parametrize(
+            'event_loop_policy', _event_loop_policies(), indirect=True
+        )
+
+
+@pytest.fixture
 def event_loop_policy(request):
-    return request.param
+    """Select the parametrized policy, or asyncio for a sync fixture user."""
+    if hasattr(request, 'param'):
+        return request.param
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        return asyncio.DefaultEventLoopPolicy()

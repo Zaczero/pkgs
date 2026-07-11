@@ -1,13 +1,13 @@
+use std::fs::File;
 use std::mem;
 
 use smallvec::SmallVec;
-use tokio::fs::File;
 
 use crate::bridge::PayloadBytes;
-use crate::config::ServerConfig;
+use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::http::header::{
-    ResponseHeaderScan, apply_default_response_headers_with_scan,
-    canonicalize_fixed_length_response_headers_with_scan, inspect_response_default_headers,
+    ResponseHeaderScan, apply_default_response_headers_with_scan, inspect_response_headers,
+    prepare_fixed_length_response_headers_with_scan,
 };
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
 
@@ -15,9 +15,8 @@ use crate::http::types::{HttpStatusCode, ResponseHeaders};
 pub(crate) enum FinalResponseBody {
     Empty,
     Bytes(PayloadBytes),
-    // `File` is boxed: `tokio::fs::File` is ~104 bytes, and inlining it makes
-    // this enum the largest variant of `ResponseAction`, inflating every
-    // `ResponseActions` slot. Pathsend is rare relative to byte/empty bodies.
+    // File bodies are rare relative to byte/empty bodies; retain the box so
+    // the handle never sets the common response-action enum layout.
     File { file: Box<File>, len: usize },
     Suppressed { len: usize },
 }
@@ -41,7 +40,7 @@ pub(crate) struct ResponseStart {
 
 impl ResponseStart {
     pub(crate) fn new(status: HttpStatusCode, headers: ResponseHeaders) -> Self {
-        let scan = inspect_response_default_headers(&headers);
+        let scan = inspect_response_headers(&headers);
         Self {
             status,
             headers,
@@ -53,8 +52,7 @@ impl ResponseStart {
         self.status
     }
 
-    pub(crate) fn content_length_hint(&mut self) -> Option<usize> {
-        self.scan.ensure_content_length_scanned(&self.headers);
+    pub(crate) const fn content_length_hint(&self) -> Option<usize> {
         self.scan.content_length()
     }
 
@@ -62,11 +60,11 @@ impl ResponseStart {
         apply_default_response_headers_with_scan(&mut self.headers, &mut self.scan, config);
     }
 
-    pub(crate) fn canonicalize_known_length(&mut self, len: usize) {
-        self.scan.ensure_content_length_scanned(&self.headers);
-        canonicalize_fixed_length_response_headers_with_scan(
+    pub(crate) fn prepare_known_length(&mut self, config: &ResponseHeaderConfig, len: usize) {
+        prepare_fixed_length_response_headers_with_scan(
             &mut self.headers,
             &mut self.scan,
+            config,
             len,
         );
     }
@@ -111,11 +109,12 @@ mod tests {
     use bytes::Bytes;
 
     use super::ResponseStart;
+    use crate::config::ResponseHeaderConfig;
     use crate::http;
 
     #[test]
     fn response_start_keeps_content_length_hint() {
-        let mut start = ResponseStart::new(200, vec![(
+        let start = ResponseStart::new(http::types::status_code::OK, vec![(
             Bytes::from_static(b"content-length").into(),
             Bytes::from_static(b"42").into(),
         )]);
@@ -125,7 +124,7 @@ mod tests {
 
     #[test]
     fn response_start_canonicalizes_duplicate_content_length_once() {
-        let mut start = ResponseStart::new(200, vec![
+        let mut start = ResponseStart::new(http::types::status_code::OK, vec![
             (
                 Bytes::from_static(b"content-length").into(),
                 Bytes::from_static(b"1").into(),
@@ -136,7 +135,7 @@ mod tests {
             ),
         ]);
 
-        start.canonicalize_known_length(7);
+        start.prepare_known_length(&ResponseHeaderConfig::default(), 7);
         let (_, headers) = start.into_status_headers();
 
         assert_eq!(
@@ -154,12 +153,12 @@ mod tests {
 
     #[test]
     fn response_start_adds_missing_content_length() {
-        let mut start = ResponseStart::new(200, vec![(
+        let mut start = ResponseStart::new(http::types::status_code::OK, vec![(
             Bytes::from_static(b"content-type").into(),
             Bytes::from_static(b"text/plain").into(),
         )]);
 
-        start.canonicalize_known_length(5);
+        start.prepare_known_length(&ResponseHeaderConfig::default(), 5);
         let (_, headers) = start.into_status_headers();
 
         assert_eq!(

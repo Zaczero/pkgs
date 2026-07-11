@@ -1,26 +1,108 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 
 use super::{
-    EventSource, HttpInboundEvent, Requeueable, buffered_or_send, build_http_inbound_event,
+    EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
-use crate::error::IntoPyResult;
-use crate::http::app::HttpSendState;
+use crate::error::{AsgiError, IntoPyResult, into_pyerr};
+use crate::http::app::{HttpSendDisposition, HttpSendState};
 use crate::pyloop::Shard;
 use crate::runtime::StreamInput;
 
 #[derive(Debug)]
 struct HttpReceiveState {
-    rx: mpsc::Receiver<StreamInput>,
-    disconnected: bool,
+    input: HttpReceiveInput,
+    disconnect: Arc<HttpDisconnectSignal>,
+}
+
+#[derive(Debug)]
+enum HttpReceiveInput {
+    Open(mpsc::Receiver<StreamInput>),
+    Disconnected,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct HttpDisconnectSignal {
+    app_started: OnceLock<()>,
+    started: AtomicU64,
+    queued: AtomicU64,
+    notify: Notify,
+}
+
+impl HttpDisconnectSignal {
+    pub(crate) fn mark_app_started(&self) {
+        let _ = self.app_started.set(());
+        self.notify.notify_one();
+    }
+
+    pub(crate) async fn wait_app_started(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.app_started.get().is_some() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) fn pending_resolution(self: &Arc<Self>) -> Option<PendingHttpDisconnect> {
+        let started = self.started.load(Ordering::Acquire);
+        (self.queued.load(Ordering::Acquire) < started).then(|| PendingHttpDisconnect {
+            signal: Arc::clone(self),
+            generation: started,
+        })
+    }
+
+    pub(super) fn begin_wait(self: &Arc<Self>) -> HttpReceiveWaitGuard {
+        let ticket = self.started.fetch_add(1, Ordering::AcqRel) + 1;
+        HttpReceiveWaitGuard {
+            signal: Arc::clone(self),
+            ticket,
+        }
+    }
+}
+
+/// Single-owner proof that a receive resolution was pending when input
+/// ownership closed. It cannot be mixed with another request's signal or
+/// reused after cancellation has been ordered.
+pub(crate) struct PendingHttpDisconnect {
+    signal: Arc<HttpDisconnectSignal>,
+    generation: u64,
+}
+
+impl PendingHttpDisconnect {
+    pub(crate) async fn wait(self) {
+        loop {
+            let notified = self.signal.notify.notified();
+            if self.signal.queued.load(Ordering::Acquire) >= self.generation {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub(super) struct HttpReceiveWaitGuard {
+    signal: Arc<HttpDisconnectSignal>,
+    ticket: u64,
+}
+
+impl Drop for HttpReceiveWaitGuard {
+    fn drop(&mut self) {
+        self.signal.queued.fetch_max(self.ticket, Ordering::Release);
+        // `notify_one` retains a permit if the owner observes the generation
+        // before its Notified future is first polled. `notify_waiters` would
+        // lose that narrow check-to-poll race.
+        self.signal.notify.notify_one();
+    }
 }
 
 #[derive(Debug)]
@@ -33,16 +115,27 @@ enum HttpReceiveKind {
 impl HttpReceiveState {
     fn map_input(&mut self, input: Option<StreamInput>) -> HttpInboundEvent {
         match input {
-            Some(StreamInput::Data(body)) => HttpInboundEvent::Request {
+            Some(StreamInput::Data { body, credit }) => HttpInboundEvent::Request {
                 body,
                 more_body: true,
+                credit,
+            },
+            Some(StreamInput::HttpDataBatch { bodies, credit }) => HttpInboundEvent::RequestBatch {
+                bodies,
+                more_body: true,
+                credit,
             },
             Some(StreamInput::EndStream) => HttpInboundEvent::Request {
                 body: Bytes::new(),
                 more_body: false,
+                credit: None,
             },
             Some(StreamInput::Reset(_)) | None => {
-                self.disconnected = true;
+                // Dropping the receiver here releases queued body owners and
+                // their HTTP/2 credits immediately. A separate boolean left
+                // an unreachable "disconnected but still retaining input"
+                // state until the Python receive object itself was dropped.
+                self.input = HttpReceiveInput::Disconnected;
                 HttpInboundEvent::HttpDisconnect
             },
         }
@@ -53,19 +146,27 @@ impl EventSource for HttpReceiveState {
     type Event = HttpInboundEvent;
 
     fn try_pull(&mut self) -> Option<Self::Event> {
-        if self.disconnected {
-            return Some(HttpInboundEvent::HttpDisconnect);
-        }
-        match self.rx.try_recv() {
-            Ok(input) => Some(self.map_input(Some(input))),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(self.map_input(None)),
-        }
+        let input = match &mut self.input {
+            HttpReceiveInput::Disconnected => return Some(HttpInboundEvent::HttpDisconnect),
+            HttpReceiveInput::Open(rx) => match rx.try_recv() {
+                Ok(input) => Some(input),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => None,
+            },
+        };
+        Some(self.map_input(input))
     }
 
     async fn pull(&mut self) -> Self::Event {
-        let input = self.rx.recv().await;
+        let input = match &mut self.input {
+            HttpReceiveInput::Disconnected => return HttpInboundEvent::HttpDisconnect,
+            HttpReceiveInput::Open(rx) => rx.recv().await,
+        };
         self.map_input(input)
+    }
+
+    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+        Some(Arc::clone(&self.disconnect))
     }
 }
 
@@ -83,13 +184,17 @@ impl PyHttpReceive {
         }
     }
 
-    pub(crate) fn new_stream(shard: Shard, rx: mpsc::Receiver<StreamInput>) -> Self {
+    pub(crate) fn new_stream(
+        shard: Shard,
+        rx: mpsc::Receiver<StreamInput>,
+        disconnect: Arc<HttpDisconnectSignal>,
+    ) -> Self {
         Self {
             shard,
             kind: HttpReceiveKind::Stream(Arc::new(AsyncMutex::new(Requeueable::new(
                 HttpReceiveState {
-                    rx,
-                    disconnected: false,
+                    input: HttpReceiveInput::Open(rx),
+                    disconnect,
                 },
             )))),
         }
@@ -100,6 +205,41 @@ impl PyHttpReceive {
             shard,
             kind: HttpReceiveKind::Single(Mutex::new(Some(body))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::mpsc;
+
+    use super::{
+        EventSource, HttpDisconnectSignal, HttpInboundEvent, HttpReceiveInput, HttpReceiveState,
+    };
+    use crate::h2_frame::ErrorCode;
+    use crate::runtime::StreamInput;
+
+    #[test]
+    fn terminal_input_drops_the_receiver_and_queued_owners_immediately() {
+        let (tx, rx) = mpsc::channel(2);
+        tx.try_send(StreamInput::Reset(ErrorCode::CANCEL)).unwrap();
+        tx.try_send(StreamInput::data(bytes::Bytes::from_static(b"queued")))
+            .unwrap();
+        let mut state = HttpReceiveState {
+            input: HttpReceiveInput::Open(rx),
+            disconnect: Arc::new(HttpDisconnectSignal::default()),
+        };
+
+        assert!(matches!(
+            state.try_pull(),
+            Some(HttpInboundEvent::HttpDisconnect)
+        ));
+        assert!(
+            tx.is_closed(),
+            "terminal input must drop the receiver immediately"
+        );
+        assert!(matches!(state.input, HttpReceiveInput::Disconnected));
     }
 }
 
@@ -114,6 +254,7 @@ impl PyHttpReceive {
                     HttpInboundEvent::Request {
                         body: Bytes::new(),
                         more_body: false,
+                        credit: None,
                     }
                 }
             },
@@ -122,10 +263,16 @@ impl PyHttpReceive {
                 |body| HttpInboundEvent::Request {
                     body,
                     more_body: false,
+                    credit: None,
                 },
             ),
             HttpReceiveKind::Stream(state) => {
-                return receive_or_await(py, self.shard, state, build_http_inbound_event);
+                return receive_or_await(
+                    py,
+                    Arc::clone(&self.shard),
+                    state,
+                    build_http_inbound_event,
+                );
             },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)
@@ -152,6 +299,14 @@ impl PyHttpSend {
         message: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let event = parse_http_outbound_event(message).into_pyresult()?;
-        buffered_or_send(py, self.shard, self.state.push_or_forward(event))
+        match self.state.push_or_forward(event) {
+            HttpSendDisposition::Buffered | HttpSendDisposition::Sent => {
+                Ok(super::ready_none(py, &self.shard))
+            },
+            HttpSendDisposition::Backpressured { tx, event } => {
+                super::send_after_full(py, Arc::clone(&self.shard), tx, event)
+            },
+            HttpSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
+        }
     }
 }

@@ -43,6 +43,7 @@ macro_rules! static_field_data {
                 _ => unreachable!(),
             }
         }
+
     };
 }
 
@@ -244,7 +245,7 @@ pub(super) fn field_exact_index_bytes(name: &[u8], value: &[u8]) -> Option<usize
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use bytes::Bytes;
 
     use super::*;

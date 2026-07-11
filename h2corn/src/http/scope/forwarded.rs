@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 
 use atoi_simd::parse_pos;
 
@@ -7,8 +8,9 @@ use crate::http::header::{
     header_value_text, last_csv_token, normalize_scheme, parse_forwarded_value, parse_host_port,
     parse_x_forwarded_for_value,
 };
+use crate::http::header_meta::ProxyHeaderSlots;
 use crate::http::types::{RequestHead, RequestHeaders};
-use crate::proxy::{ClientAddr, ConnectionInfo, ServerAddr};
+use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ServerAddr};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScopeView<'a> {
@@ -24,6 +26,15 @@ pub(crate) struct ScopeOverrides {
     pub(crate) client: Option<ClientAddr>,
     pub(crate) server: Option<ServerAddr>,
     pub(crate) root_path: Option<Box<str>>,
+}
+
+impl ScopeOverrides {
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.scheme.is_none()
+            && self.client.is_none()
+            && self.server.is_none()
+            && self.root_path.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,7 +163,11 @@ pub(crate) fn resolve_scope_overrides(
     request: &RequestHead,
     config: &ServerConfig,
     info: &ConnectionInfo,
-) -> ScopeOverrides {
+) -> Option<Box<ScopeOverrides>> {
+    if !info.proxy_headers_trusted || request.header_meta.proxy_headers().is_none() {
+        return None;
+    }
+
     let default_server = default_server(config, info);
     let default_client = default_client(info);
     let view = resolve_scope_view(request, config, info);
@@ -179,12 +194,14 @@ pub(crate) fn resolve_scope_overrides(
         overrides.root_path = Some(view.root_path.into_owned().into_boxed_str());
     }
 
-    overrides
+    (!overrides.is_empty()).then(|| Box::new(overrides))
 }
 
 fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     let headers = &request.headers;
-    let slots = &request.header_meta.proxy_headers;
+    let Some(slots) = request.header_meta.proxy_headers() else {
+        return ProxyHeaderView::default();
+    };
 
     ProxyHeaderView {
         forwarded: proxy_header_value(headers, slots.forwarded),
@@ -196,35 +213,34 @@ fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     }
 }
 
-fn proxy_header_value(headers: &RequestHeaders, index: Option<usize>) -> Option<&str> {
-    index
+fn proxy_header_value(headers: &RequestHeaders, index: Option<NonZeroU32>) -> Option<&str> {
+    ProxyHeaderSlots::index(index)
         .and_then(|index| headers.get(index))
-        .and_then(|(_, value)| header_value_text(value))
+        .and_then(|header| header_value_text(header.value()))
 }
 
 pub(crate) fn scope_view_from_parts<'a>(
     scheme: &'a str,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
-    overrides: &'a ScopeOverrides,
+    overrides: Option<&'a ScopeOverrides>,
 ) -> ScopeView<'a> {
     ScopeView {
         scheme: overrides
-            .scheme
-            .as_deref()
+            .and_then(|overrides| overrides.scheme.as_deref())
             .map_or(Cow::Borrowed(scheme), Cow::Borrowed),
         client: overrides
-            .client
-            .as_ref()
+            .and_then(|overrides| overrides.client.as_ref())
             .map(|client| (client.host.as_ref(), client.port))
             .or_else(|| default_client(info)),
-        server: overrides.server.as_ref().map_or_else(
-            || default_server(config, info),
-            |server| (server.host.as_ref(), server.port),
-        ),
+        server: overrides
+            .and_then(|overrides| overrides.server.as_ref())
+            .map_or_else(
+                || default_server(config, info),
+                |server| (server.host.as_ref(), server.port),
+            ),
         root_path: overrides
-            .root_path
-            .as_deref()
+            .and_then(|overrides| overrides.root_path.as_deref())
             .map_or_else(|| Cow::Borrowed(config.root_path.as_ref()), Cow::Borrowed),
     }
 }

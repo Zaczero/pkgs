@@ -22,20 +22,26 @@ mod slot;
 use std::collections::VecDeque;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, OnceLock};
+use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
 pub(crate) use future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAnyMethods, PyBool, PyTuple};
+use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyDictMethods};
+#[cfg(unix)]
+use rustix::io::{Result as RustixResult, read, write};
 pub(crate) use slot::{SlotFuture, TaskSlot};
+use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
 
+use crate::app_call::AppCallArgs;
 use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
-use crate::python::py_vectorcall_kwnames;
 use crate::runtime::AppState;
 
 /// Maximum events processed per pump invocation before yielding back to the
@@ -43,27 +49,54 @@ use crate::runtime::AppState;
 const PUMP_BATCH_MAX: usize = 64;
 
 /// The tokio runtime owned by h2corn (replaces pyo3-async-runtimes' global).
-static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-/// Per-request closure that builds `(scope, receive, send)` under the GIL on
-/// the loop thread.
-pub(crate) type BuildArgs = Box<
-    dyn for<'py> FnOnce(
-            Python<'py>,
-            AppState,
-            Shard,
-        )
-            -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)>
-        + Send,
->;
+pub(crate) type BuildAwaitable =
+    Box<dyn for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send>;
 
-/// Shards live for the worker's whole life (the event loop they wrap never
-/// shuts down before process exit), so they are leaked to `'static` — every
-/// per-request handle copy is then a plain pointer copy instead of
-/// cross-thread `Arc` refcount traffic.
-pub(crate) type Shard = &'static ShardHandle;
+/// Scoped ownership of one loop-affine bridge. Requests clone this handle only
+/// when they cross an ownership boundary; the pump keeps a `Weak` reference so
+/// a completed embedded `serve()` can release the doorbell and Python caches.
+pub(crate) type Shard = Arc<ShardHandle>;
 
-pub(crate) type SlotHandle<T> = std::sync::Arc<TaskSlot<T>>;
+pub(crate) type SlotHandle<T> = Arc<TaskSlot<T>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SecondaryLoopFactory {
+    Asyncio,
+    Uvloop,
+    /// An embedded/custom main loop with no safe general constructor. Such a
+    /// server remains single-loop instead of silently mixing implementations.
+    Custom,
+}
+
+impl SecondaryLoopFactory {
+    fn from_module(module: &str) -> Self {
+        if module == "uvloop" || module.starts_with("uvloop.") {
+            Self::Uvloop
+        } else if module == "asyncio" || module.starts_with("asyncio.") {
+            Self::Asyncio
+        } else {
+            Self::Custom
+        }
+    }
+
+    fn classify(event_loop: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let module_obj = event_loop.get_type().module()?;
+        let module: &str = module_obj.extract()?;
+        Ok(Self::from_module(module))
+    }
+
+    fn create(self, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        match self {
+            Self::Asyncio => py.import("asyncio")?.call_method0("new_event_loop"),
+            Self::Uvloop => py.import("uvloop")?.call_method0("new_event_loop"),
+            Self::Custom => Err(PyRuntimeError::new_err(
+                "custom event loops cannot create secondary loop threads",
+            )),
+        }
+    }
+}
 
 /// Cross-thread pump wakeup, chosen per platform so the Linux hot path
 /// stays a single `write(2)`:
@@ -89,7 +122,7 @@ struct Doorbell {
 
 #[cfg(unix)]
 impl Doorbell {
-    fn new() -> rustix::io::Result<Self> {
+    fn new() -> RustixResult<Self> {
         #[cfg(target_os = "linux")]
         {
             use rustix::event::{EventfdFlags, eventfd};
@@ -123,9 +156,9 @@ impl Doorbell {
     /// reading: both are safe to ignore.
     fn ring(&self) {
         #[cfg(target_os = "linux")]
-        let _ = rustix::io::write(&self.fd, &1_u64.to_ne_bytes());
+        let _ = write(&self.fd, &1_u64.to_ne_bytes());
         #[cfg(not(target_os = "linux"))]
-        let _ = rustix::io::write(&self.write, &[1_u8]);
+        let _ = write(&self.write, &[1_u8]);
     }
 
     /// Drain pending wakeups; called by the pump before processing. The
@@ -135,12 +168,12 @@ impl Doorbell {
         #[cfg(target_os = "linux")]
         {
             let mut buf = [0_u8; 8];
-            let _ = rustix::io::read(&self.fd, &mut buf);
+            let _ = read(&self.fd, &mut buf);
         }
         #[cfg(not(target_os = "linux"))]
         {
             let mut buf = [0_u8; 64];
-            while matches!(rustix::io::read(&self.read, &mut buf), Ok(n) if n == buf.len()) {}
+            while matches!(read(&self.read, &mut buf), Ok(n) if n == buf.len()) {}
         }
     }
 }
@@ -150,7 +183,7 @@ pub(crate) enum PumpEvent {
     /// eager task, deliver the outcome through the slot.
     StartTask {
         app: AppState,
-        build_args: BuildArgs,
+        args: Box<AppCallArgs>,
         slot: SlotHandle<Result<(), H2CornError>>,
     },
     /// Resolve a pending duck future with a payload produced by Rust I/O.
@@ -164,6 +197,26 @@ pub(crate) enum PumpEvent {
         awaitable: Py<PyAny>,
         slot: SlotHandle<PyResult<Py<PyAny>>>,
     },
+    /// Construct and run an awaitable on this loop. Used for transactional
+    /// secondary-loop lifecycle operations; construction is loop-affine.
+    CallAwaitable {
+        build: BuildAwaitable,
+        slot: SlotHandle<PyResult<Py<PyAny>>>,
+    },
+    /// Drop a fallback shared-app owner on the main loop, then acknowledge so
+    /// secondary shards can be stopped without cross-loop final destruction.
+    ReleaseApp {
+        app: AppState,
+        done: oneshot::Sender<()>,
+    },
+    /// Cancel an abandoned Python task on the event loop that owns it.
+    CancelTask { task: Py<PyAny> },
+    /// Unregister this shard's doorbell from its owning loop. Used by the
+    /// caller-owned main loop when an embedded serve completes.
+    Detach,
+    /// Unregister the doorbell and stop a dedicated secondary loop. The event
+    /// is processed on that loop, never through cross-thread Python calls.
+    StopLoop,
 }
 
 /// One Python event loop plus everything needed to feed it from tokio
@@ -176,20 +229,18 @@ pub(crate) struct ShardHandle {
     /// strategy (Windows rings through `call_soon_threadsafe` instead).
     #[cfg(unix)]
     doorbell: Doorbell,
+    #[cfg(windows)]
     call_soon_threadsafe: Py<PyAny>,
     call_soon: Py<PyAny>,
     event_loop: Py<PyAny>,
     /// `asyncio.tasks.Task` type object (C-accelerated).
     task_type: Py<PyAny>,
-    /// Kwnames for direct Task construction: `("loop", "eager_start",
-    /// "name")` on 3.12+, `("loop", "name")` on 3.11.
-    task_kwnames: Py<PyTuple>,
-    /// Interned `"h2corn.request"` task name.
-    task_name: Py<PyAny>,
+    /// Immutable keyword arguments reused by every Task construction on this
+    /// shard. CPython's type call must materialize the positional tuple, but
+    /// the loop/eager/name dictionary need not be rebuilt per request.
+    task_kwargs: Py<PyDict>,
     /// `asyncio.ensure_future` (cold path: [`PumpEvent::SpawnAwaitable`]).
     ensure_future: Py<PyAny>,
-    /// Whether Task construction passes `eager_start=True` (3.12+).
-    eager: bool,
     /// The bound pump callable handed to `call_soon*`. Set once right after
     /// construction (the pump pyclass needs the shard and vice versa).
     pump: PyOnceLock<Py<PyAny>>,
@@ -198,20 +249,27 @@ pub(crate) struct ShardHandle {
     /// ASGI response performs ≥2 sends, so this is the highest-frequency
     /// per-request awaitable — a shared constant beats allocating each time.
     ready_none: Py<ReadyNone>,
+    /// Mutable lifespan state owned by this loop. The pump shallow-copies it
+    /// into each request scope; no cross-loop asyncio object is shared.
+    scope_state: PyOnceLock<Py<PyDict>>,
 }
 
 impl ShardHandle {
     /// Capture the running event loop and cache every Python object the hot
     /// path needs. Must be called on the loop thread with the loop running.
-    pub(crate) fn from_running_loop(py: Python<'_>) -> PyResult<Shard> {
+    pub(crate) fn from_running_loop(py: Python<'_>) -> PyResult<(Shard, SecondaryLoopFactory)> {
         let asyncio = py.import("asyncio")?;
         let event_loop = asyncio.call_method0("get_running_loop")?;
-        Self::from_event_loop(py, &event_loop)
+        let factory = SecondaryLoopFactory::classify(&event_loop)?;
+        Ok((Self::from_event_loop(py, &event_loop)?, factory))
     }
 
     /// Build a shard around an event loop that is not necessarily running
     /// yet (shard threads construct the handle before `run_forever`).
-    pub(crate) fn from_event_loop(py: Python<'_>, event_loop: &Bound<'_, PyAny>) -> PyResult<Shard> {
+    pub(crate) fn from_event_loop(
+        py: Python<'_>,
+        event_loop: &Bound<'_, PyAny>,
+    ) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = event_loop.clone();
         #[cfg(unix)]
@@ -221,47 +279,52 @@ impl ShardHandle {
         let tasks_mod = py.import("asyncio.tasks")?;
         let task_type = tasks_mod.getattr("Task")?;
         let eager = py.version_info() >= (3, 12);
-        let task_kwnames = if eager {
-            PyTuple::new(py, ["loop", "eager_start", "name"])?
-        } else {
-            PyTuple::new(py, ["loop", "name"])?
-        };
+        let task_kwargs = PyDict::new(py);
+        task_kwargs.set_item(pyo3::intern!(py, "loop"), &event_loop)?;
+        task_kwargs.set_item(
+            pyo3::intern!(py, "name"),
+            pyo3::intern!(py, "h2corn.request"),
+        )?;
+        if eager {
+            task_kwargs.set_item(pyo3::intern!(py, "eager_start"), PyBool::new(py, true))?;
+        }
 
+        #[cfg(windows)]
         let call_soon_threadsafe = event_loop.getattr("call_soon_threadsafe")?.unbind();
         let call_soon = event_loop.getattr("call_soon")?.unbind();
-        let shard: Shard = Box::leak(Box::new(Self {
+        let shard: Shard = Arc::new(Self {
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
             #[cfg(unix)]
             doorbell,
+            #[cfg(windows)]
             call_soon_threadsafe,
             call_soon,
             event_loop: event_loop.unbind(),
             task_type: task_type.unbind(),
-            task_kwnames: task_kwnames.unbind(),
-            task_name: pyo3::intern!(py, "h2corn.request")
-                .clone()
-                .into_any()
-                .unbind(),
+            task_kwargs: task_kwargs.unbind(),
             ensure_future: asyncio.getattr("ensure_future")?.unbind(),
-            eager,
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone)?,
-        }));
+            scope_state: PyOnceLock::new(),
+        });
 
-        let pump = pump::Pump::into_callable(py, shard)?;
+        let pump = pump::Pump::into_callable(py, &shard)?;
+        shard
+            .pump
+            .set(py, pump)
+            .map_err(|_| PyRuntimeError::new_err("pump already initialized"))?;
         // The pump doubles as the doorbell reader callback. On Windows there
         // is no fd to watch (Proactor has no `add_reader`); rings go through
         // `call_soon_threadsafe` instead.
         #[cfg(unix)]
         shard.event_loop.bind(py).call_method1(
             pyo3::intern!(py, "add_reader"),
-            (shard.doorbell.reader_fd(), pump.bind(py)),
+            (
+                shard.doorbell.reader_fd(),
+                shard.pump.get(py).expect("pump was initialized").bind(py),
+            ),
         )?;
-        shard
-            .pump
-            .set(py, pump)
-            .map_err(|_| PyRuntimeError::new_err("pump already initialized"))?;
         Ok(shard)
     }
 
@@ -269,50 +332,36 @@ impl ShardHandle {
     /// for code paths that carry a shard without scheduling on it.
     #[cfg(test)]
     pub(crate) fn test_stub(py: Python<'_>) -> Shard {
-        Box::leak(Box::new(Self {
+        Arc::new(Self {
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
             #[cfg(unix)]
             doorbell: Doorbell::new().expect("test doorbell"),
+            #[cfg(windows)]
             call_soon_threadsafe: py.None(),
             call_soon: py.None(),
             event_loop: py.None(),
             task_type: py.None(),
-            task_kwnames: PyTuple::empty(py).unbind(),
-            task_name: py.None(),
+            task_kwargs: PyDict::new(py).unbind(),
             ensure_future: py.None(),
-            eager: false,
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone).expect("test ready_none"),
-        }))
+            scope_state: PyOnceLock::new(),
+        })
     }
 
     /// Construct `asyncio.tasks.Task(coro, loop=..., [eager_start=True,]
-    /// name="h2corn.request")` via a single vectorcall with cached kwnames.
+    /// name="h2corn.request")` through PyO3's vectorcall-dict path, with a
+    /// cached immutable kwargs dictionary and no positional tuple allocation.
     /// Pump-only: must run from a plain loop callback.
     pub(super) fn construct_task<'py>(
         &self,
         py: Python<'py>,
         coroutine: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Positional (coro,); keyword values follow in `task_kwnames`
-        // order — ("loop", "eager_start", "name") on 3.12+, ("loop", "name")
-        // on 3.11.
-        let task_type = self.task_type.bind(py);
-        let event_loop = self.event_loop.bind(py);
-        let task_name = self.task_name.bind(py);
-        let kwnames = self.task_kwnames.bind(py);
-        if self.eager {
-            let eager_start = PyBool::new(py, true).to_owned().into_any();
-            py_vectorcall_kwnames(
-                task_type,
-                1,
-                [coroutine, event_loop, &eager_start, task_name],
-                kwnames,
-            )
-        } else {
-            py_vectorcall_kwnames(task_type, 1, [coroutine, event_loop, task_name], kwnames)
-        }
+        self.task_type
+            .bind(py)
+            .call((coroutine,), Some(self.task_kwargs.bind(py)))
     }
 
     /// Cold path: `asyncio.ensure_future(awaitable, loop=...)`.
@@ -393,22 +442,46 @@ impl ShardHandle {
         &self.ready_none
     }
 
-    /// Stop this shard's event loop from any thread. Errors are swallowed:
-    /// a loop already closed during teardown is the expected benign case.
-    pub(crate) fn stop(&self) {
-        Python::attach(|py| {
-            #[cfg(unix)]
-            let removed = self.event_loop.bind(py).call_method1(
+    pub(crate) fn install_scope_state(&self, py: Python<'_>, state: Py<PyDict>) -> PyResult<()> {
+        self.scope_state
+            .set(py, state)
+            .map_err(|_| PyRuntimeError::new_err("lifespan state already initialized"))
+    }
+
+    pub(super) fn copy_scope_state<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(state) = self.scope_state.get(py) else {
+            return Ok(None);
+        };
+        let state = state.bind(py);
+        if state.is_empty() {
+            return Ok(None);
+        }
+        state.copy().map(Some)
+    }
+
+    /// Unregister the POSIX doorbell. Pump-only: event-loop reader ownership
+    /// is loop-affine even on free-threaded Python.
+    pub(crate) fn detach(&self, py: Python<'_>) {
+        #[cfg(unix)]
+        {
+            let _ = self.event_loop.bind(py).call_method1(
                 pyo3::intern!(py, "remove_reader"),
                 (self.doorbell.reader_fd(),),
             );
-            #[cfg(windows)]
-            let removed: PyResult<()> = Ok(());
-            let result = removed
-                .and_then(|_| self.event_loop.bind(py).getattr(pyo3::intern!(py, "stop")))
-                .and_then(|stop| self.call_soon_threadsafe.bind(py).call1((stop,)));
-            drop(result);
-        });
+        }
+        #[cfg(windows)]
+        let _ = py;
+    }
+
+    pub(super) fn stop_loop(&self, py: Python<'_>) {
+        self.detach(py);
+        let _ = self
+            .event_loop
+            .bind(py)
+            .call_method0(pyo3::intern!(py, "stop"));
     }
 
     /// Drain up to [`PUMP_BATCH_MAX`] events; report whether more remain.
@@ -422,41 +495,73 @@ impl ShardHandle {
 
 /// A loop shard running on its own Python thread (free-threaded builds).
 pub(crate) struct ShardThread {
-    pub shard: Shard,
-    join: std::thread::JoinHandle<()>,
+    shard: Option<Shard>,
+    join: Option<JoinHandle<()>>,
 }
 
 impl ShardThread {
+    pub(crate) const fn shard(&self) -> &Shard {
+        self.shard.as_ref().expect("live shard thread has a handle")
+    }
+
     /// Stop the shard's loop and join its thread.
-    pub(crate) fn shutdown(self) {
-        self.shard.stop();
-        let _ = self.join.join();
+    pub(crate) fn shutdown(mut self) {
+        self.shutdown_inner();
+    }
+
+    fn shutdown_inner(&mut self) {
+        let Some(shard) = self.shard.take() else {
+            return;
+        };
+        shard.push(PumpEvent::StopLoop);
+        // The loop thread retains its own handle until after `loop.close()`.
+        // Drop this cross-thread owner before joining so Python caches and the
+        // doorbell are finally destroyed on their owning loop thread.
+        drop(shard);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for ShardThread {
+    fn drop(&mut self) {
+        self.shutdown_inner();
     }
 }
 
 /// Spawn a dedicated Python thread running a fresh event loop with its own
 /// pump. Returns once the shard handle is constructed; the loop runs until
 /// [`ShardThread::shutdown`].
-pub(crate) fn spawn_shard_thread(index: usize) -> PyResult<ShardThread> {
-    let (tx, rx) = std::sync::mpsc::channel::<PyResult<Shard>>();
-    let join = std::thread::Builder::new()
+pub(crate) fn spawn_shard_thread(
+    index: usize,
+    factory: SecondaryLoopFactory,
+) -> PyResult<ShardThread> {
+    let (tx, rx) = channel::<PyResult<Shard>>();
+    let join = ThreadBuilder::new()
         .name(format!("h2corn-loop-{index}"))
         .spawn(move || {
             Python::attach(|py| {
                 let setup = || -> PyResult<(Shard, Py<PyAny>)> {
-                    let asyncio = py.import("asyncio")?;
-                    let event_loop = asyncio.call_method0("new_event_loop")?;
-                    asyncio.call_method1("set_event_loop", (&event_loop,))?;
+                    let event_loop = factory.create(py)?;
+                    let actual = SecondaryLoopFactory::classify(&event_loop)?;
+                    if actual != factory {
+                        let _ = event_loop.call_method0("close");
+                        return Err(PyRuntimeError::new_err(format!(
+                            "{factory:?} secondary-loop factory returned {actual:?} loop"
+                        )));
+                    }
                     let shard = ShardHandle::from_event_loop(py, &event_loop)?;
                     Ok((shard, event_loop.unbind()))
                 };
                 match setup() {
                     Ok((shard, event_loop)) => {
-                        let _ = tx.send(Ok(shard));
+                        let _ = tx.send(Ok(Arc::clone(&shard)));
                         // Blocks this thread until ShardHandle::stop.
                         let result = event_loop.bind(py).call_method0("run_forever");
                         drop(result);
                         let _ = event_loop.bind(py).call_method0("close");
+                        drop(shard);
                     },
                     Err(err) => {
                         let _ = tx.send(Err(err));
@@ -464,25 +569,88 @@ pub(crate) fn spawn_shard_thread(index: usize) -> PyResult<ShardThread> {
                 }
             });
         })
-        .map_err(|err| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to spawn loop thread: {err}"))
-        })?;
-    let shard = rx.recv().map_err(|_| {
-        pyo3::exceptions::PyRuntimeError::new_err("loop thread exited before initializing")
-    })??;
-    Ok(ShardThread { shard, join })
+        .map_err(|err| PyRuntimeError::new_err(format!("failed to spawn loop thread: {err}")))?;
+    let initialized = rx
+        .recv()
+        .map_err(|_| PyRuntimeError::new_err("loop thread exited before initializing"));
+    match initialized {
+        Ok(Ok(shard)) => Ok(ShardThread {
+            shard: Some(shard),
+            join: Some(join),
+        }),
+        Ok(Err(err)) | Err(err) => {
+            let _ = join.join();
+            Err(err)
+        },
+    }
 }
 
 /// Initialize the global tokio runtime exactly once.
-pub(crate) fn init_runtime(
-    build: impl FnOnce() -> tokio::runtime::Runtime,
-) -> &'static tokio::runtime::Runtime {
+pub(crate) fn init_runtime(build: impl FnOnce() -> Runtime) -> &'static Runtime {
     TOKIO_RUNTIME.get_or_init(build)
 }
 
 /// The global tokio runtime. Panics if [`init_runtime`] has not run.
-pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static Runtime {
     TOKIO_RUNTIME
         .get()
         .expect("tokio runtime is initialized during server startup")
+}
+
+/// Construct and await a lifecycle operation on its owning Python loop.
+pub(crate) fn call_awaitable<B>(shard: Shard, build: B) -> SlotFuture<PyResult<Py<PyAny>>>
+where
+    B: for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send + 'static,
+{
+    let slot = TaskSlot::new();
+    shard.push(PumpEvent::CallAwaitable {
+        build: Box::new(build),
+        slot: Arc::clone(&slot),
+    });
+    slot.wait(shard)
+}
+
+pub(crate) async fn release_app(shard: Shard, app: AppState) {
+    let (done, wait) = oneshot::channel();
+    shard.push(PumpEvent::ReleaseApp { app, done });
+    let _ = wait.await;
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(Py_GIL_DISABLED)]
+    use std::sync::Arc;
+
+    use super::SecondaryLoopFactory;
+
+    #[test]
+    fn module_family_selection_is_explicit_and_conservative() {
+        assert_eq!(
+            SecondaryLoopFactory::from_module("asyncio.unix_events"),
+            SecondaryLoopFactory::Asyncio
+        );
+        assert_eq!(
+            SecondaryLoopFactory::from_module("asyncio.windows_events"),
+            SecondaryLoopFactory::Asyncio
+        );
+        assert_eq!(
+            SecondaryLoopFactory::from_module("uvloop"),
+            SecondaryLoopFactory::Uvloop
+        );
+        assert_eq!(
+            SecondaryLoopFactory::from_module("vendor.custom_loop"),
+            SecondaryLoopFactory::Custom
+        );
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    #[test]
+    fn dropping_shard_thread_stops_loop_and_releases_handle() {
+        pyo3::Python::initialize();
+        let thread = super::spawn_shard_thread(999, super::SecondaryLoopFactory::Asyncio)
+            .expect("secondary loop starts");
+        let weak = Arc::downgrade(thread.shard());
+        drop(thread);
+        assert!(weak.upgrade().is_none());
+    }
 }

@@ -1,18 +1,19 @@
+use std::mem;
+use std::sync::Arc;
 use std::time::Duration;
 
-use pyo3::prelude::*;
 use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, spawn};
+use tokio::task::{JoinError, JoinHandle, spawn};
 use tokio::time::timeout;
 
 use super::RequestedSubprotocols;
 use super::session::WebSocketContext;
+use crate::app_call::AppCallArgs;
 use crate::bridge::{
-    ASGI_QUEUE_CAPACITY, PyWebSocketReceive, PyWebSocketSend, WebSocketInboundEvent,
-    WebSocketOutboundEvent, WebSocketSendBuffer, WebSocketSendState,
+    ASGI_QUEUE_CAPACITY, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendBuffer,
+    WebSocketSendState,
 };
 use crate::error::{ErrorExt, H2CornError};
-use crate::http::scope::build_websocket_scope;
 use crate::runtime::{RequestAdmission, start_app_call};
 
 /// The app task, encapsulated so session code can never race or misuse the
@@ -22,55 +23,70 @@ use crate::runtime::{RequestAdmission, start_app_call};
 /// buffered outbound events always win over task completion, because the
 /// app's sends happen-before its return.
 pub(super) struct AppHandle {
-    task: JoinHandle<Result<(), H2CornError>>,
-    /// `Some` once the task has been polled to completion; the result waits
-    /// here until [`Self::settle`] (or a step API) surfaces it.
-    outcome: Option<Result<(), H2CornError>>,
-    /// The task has been polled to completion (even if `outcome` was taken).
-    joined: bool,
+    state: AppTaskState,
+}
+
+/// Exclusive ownership states for the application's Tokio task.
+///
+/// A raw handle and a joined outcome can no longer coexist, and a surfaced or
+/// aborted task cannot accidentally be polled again. The old representation
+/// encoded those constraints as a coupled `joined` flag plus an optional
+/// result while retaining the handle in every state.
+enum AppTaskState {
+    Running(JoinHandle<Result<(), H2CornError>>),
+    Joined(Result<(), H2CornError>),
+    Settled,
 }
 
 impl AppHandle {
     pub(super) const fn new(task: JoinHandle<Result<(), H2CornError>>) -> Self {
         Self {
-            task,
-            outcome: None,
-            joined: false,
+            state: AppTaskState::Running(task),
         }
     }
 
     /// True once the task's completion has been observed by a join; used as
     /// a `select!` branch guard so the handle is never re-polled.
-    pub(super) const fn joined(&self) -> bool {
-        self.joined
+    pub(super) const fn is_joined(&self) -> bool {
+        !matches!(self.state, AppTaskState::Running(_))
     }
 
     /// Wait for the task and store its outcome. Callers surface the result
     /// via [`Self::take_outcome`] or [`Self::settle`] — after draining any
     /// outbound events the app sent before returning.
     pub(super) async fn join_store(&mut self) {
-        debug_assert!(!self.joined, "app task joined twice");
-        let result = flatten_app_result((&mut self.task).await);
-        self.joined = true;
-        self.outcome = Some(result);
+        let AppTaskState::Running(task) = &mut self.state else {
+            debug_assert!(false, "app task joined twice");
+            return;
+        };
+        let result = flatten_app_result((&mut *task).await);
+        self.state = AppTaskState::Joined(result);
     }
 
-    pub(super) const fn take_outcome(&mut self) -> Option<Result<(), H2CornError>> {
-        self.outcome.take()
+    pub(super) fn take_outcome(&mut self) -> Option<Result<(), H2CornError>> {
+        match mem::replace(&mut self.state, AppTaskState::Settled) {
+            AppTaskState::Joined(outcome) => Some(outcome),
+            state => {
+                self.state = state;
+                None
+            },
+        }
     }
 
     /// Surface the app result: a stored outcome first, otherwise wait up to
     /// `grace` for completion, aborting on timeout.
     pub(super) async fn settle(&mut self, grace: Duration) -> Result<(), H2CornError> {
-        if let Some(outcome) = self.outcome.take() {
-            return outcome;
+        match mem::replace(&mut self.state, AppTaskState::Settled) {
+            AppTaskState::Joined(outcome) => return outcome,
+            AppTaskState::Settled => return Ok(()),
+            AppTaskState::Running(task) => self.state = AppTaskState::Running(task),
         }
-        if self.joined {
-            // The result was already surfaced through a step API.
-            return Ok(());
-        }
-        if let Ok(result) = timeout(grace, &mut self.task).await {
-            self.joined = true;
+
+        let AppTaskState::Running(task) = &mut self.state else {
+            unreachable!("running state was restored above")
+        };
+        if let Ok(result) = timeout(grace, &mut *task).await {
+            self.state = AppTaskState::Settled;
             flatten_app_result(result)
         } else {
             self.abort().await;
@@ -80,12 +96,12 @@ impl AppHandle {
 
     /// Abort the task and wait for it to settle. Safe in every state.
     pub(super) async fn abort(&mut self) {
-        self.task.abort();
-        if !self.joined {
-            let _ = (&mut self.task).await;
-            self.joined = true;
-            self.outcome = None;
-        }
+        let AppTaskState::Running(task) = &mut self.state else {
+            return;
+        };
+        task.abort();
+        let _ = (&mut *task).await;
+        self.state = AppTaskState::Settled;
     }
 }
 
@@ -120,7 +136,7 @@ impl RunningWebSocketApp {
             if let Some(event) = self.send_buffer.take_ready() {
                 return AppStep::Event(event);
             }
-            if self.app.joined() {
+            if self.app.is_joined() {
                 return AppStep::Done(self.app.take_outcome().unwrap_or(Ok(())));
             }
             tokio::select! {
@@ -132,7 +148,7 @@ impl RunningWebSocketApp {
 }
 
 pub(super) fn flatten_app_result(
-    result: Result<Result<(), H2CornError>, tokio::task::JoinError>,
+    result: Result<Result<(), H2CornError>, JoinError>,
 ) -> Result<(), H2CornError> {
     match result {
         Ok(result) => result,
@@ -151,19 +167,13 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
     let (send_state, send_buffer) = WebSocketSendState::new();
     let requested_subprotocols = meta.requested_subprotocols;
     let scope_subprotocols = requested_subprotocols.clone();
-    let app = ctx.connection.app;
+    let app = Arc::clone(&ctx.connection.app);
     let task_send_state = send_state.clone();
 
-    let app_task = spawn(start_app_call(app, move |py, _app, shard| {
-        let scope = build_websocket_scope(py, &ctx, scope_subprotocols.as_ref())?;
-        let receive = Py::new(py, PyWebSocketReceive::new_stream(shard, recv_rx))?
-            .into_bound(py)
-            .into_any();
-        let send = Py::new(py, PyWebSocketSend::new(shard, task_send_state, send_tx))?
-            .into_bound(py)
-            .into_any();
-        Ok((scope.into_any(), receive, send))
-    }));
+    let app_task = spawn(start_app_call(
+        app,
+        AppCallArgs::websocket(ctx, scope_subprotocols, recv_rx, task_send_state, send_tx),
+    ));
 
     RunningWebSocketApp {
         recv_tx,
@@ -173,5 +183,36 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
         send_rx,
         app: AppHandle::new(app_task),
         _admission: admission,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::time::Duration;
+
+    use tokio::spawn;
+
+    use super::AppHandle;
+
+    #[tokio::test]
+    async fn joined_outcome_is_terminal_and_surfaced_once() {
+        let mut app = AppHandle::new(spawn(async { Ok(()) }));
+        assert!(!app.is_joined());
+        app.join_store().await;
+        assert!(app.is_joined());
+        app.take_outcome()
+            .expect("joined outcome is retained")
+            .unwrap();
+        assert!(app.take_outcome().is_none());
+        app.settle(Duration::ZERO).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_transitions_running_task_to_terminal_state() {
+        let mut app = AppHandle::new(spawn(pending()));
+        app.abort().await;
+        assert!(app.is_joined());
+        assert!(app.take_outcome().is_none());
     }
 }

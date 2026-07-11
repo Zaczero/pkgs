@@ -28,11 +28,12 @@ impl HandshakeRejection {
 pub(crate) fn validate_websocket_request(
     request: &RequestHead,
 ) -> Result<WebSocketRequestMeta, HandshakeRejection> {
-    if request.header_meta.websocket.version_supported {
-        Ok(request.header_meta.websocket.request.clone())
-    } else {
-        Err(HandshakeRejection::unsupported_version())
-    }
+    request
+        .header_meta
+        .websocket()
+        .filter(|websocket| websocket.version_supported)
+        .map(|websocket| websocket.request.clone())
+        .ok_or_else(HandshakeRejection::unsupported_version)
 }
 
 pub(super) fn validate_accept_headers(headers: &ResponseHeaders) -> Result<(), H2CornError> {

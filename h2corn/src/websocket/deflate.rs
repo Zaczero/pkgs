@@ -176,24 +176,29 @@ impl Default for MessageInflater {
 }
 
 impl PerMessageDeflateMode for PerMessageDeflateEnabled {
-    type Inflater = MessageInflater;
-    type Deflater = MessageDeflater;
+    type Inflater = Option<MessageInflater>;
+    type Deflater = Option<MessageDeflater>;
 
     const ENABLED: bool = true;
 
     fn new_inflater() -> Self::Inflater {
-        MessageInflater::new()
+        None
     }
 
     fn new_deflater() -> Self::Deflater {
-        MessageDeflater::new()
+        None
     }
 
     fn compress(
         deflater: &mut Self::Deflater,
         payload: &[u8],
     ) -> Result<Option<Bytes>, flate2::CompressError> {
-        deflater.compress(payload)
+        if payload.is_empty() {
+            return Ok(None);
+        }
+        deflater
+            .get_or_insert_with(MessageDeflater::new)
+            .compress(payload)
     }
 
     fn decompress(
@@ -201,7 +206,9 @@ impl PerMessageDeflateMode for PerMessageDeflateEnabled {
         payload: &[u8],
         max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
-        inflater.decompress(payload, max_message_size)
+        inflater
+            .get_or_insert_with(MessageInflater::new)
+            .decompress(payload, max_message_size)
     }
 }
 
@@ -254,7 +261,30 @@ fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::requested_by_client;
+    use super::{PerMessageDeflateEnabled, PerMessageDeflateMode, requested_by_client};
+
+    #[test]
+    fn negotiated_codec_state_is_lazy_and_directional() {
+        let inflater = PerMessageDeflateEnabled::new_inflater();
+        let mut deflater = PerMessageDeflateEnabled::new_deflater();
+        assert!(inflater.is_none());
+        assert!(deflater.is_none());
+
+        assert!(
+            PerMessageDeflateEnabled::compress(&mut deflater, b"")
+                .unwrap()
+                .is_none()
+        );
+        assert!(deflater.is_none(), "empty sends do not need zlib state");
+
+        let _ = PerMessageDeflateEnabled::compress(&mut deflater, b"compressible compressible")
+            .unwrap();
+        assert!(deflater.is_some());
+        assert!(
+            inflater.is_none(),
+            "outbound traffic does not allocate an inflater"
+        );
+    }
 
     #[test]
     fn requested_by_client_matches_permessage_deflate_in_any_position() {

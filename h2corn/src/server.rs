@@ -1,8 +1,16 @@
-use std::future::{Future, poll_fn, ready};
+#[cfg(all(test, unix))]
+#[path = "server_tests.rs"]
+mod tests;
+
+use std::future::{Future, poll_fn};
 use std::io;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 #[cfg(unix)]
+use std::os::fd::{FromRawFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawSocket, OwnedSocket};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -11,9 +19,7 @@ use bytes::{Buf, BytesMut};
 use pyo3::prelude::*;
 #[cfg(target_os = "linux")]
 use rustix::net::sockopt::set_tcp_quickack;
-use smallvec::SmallVec;
-use tokio::fs::File;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter, ReadBuf, WriteHalf, split};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf, split};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -25,49 +31,42 @@ use tokio_rustls::server::TlsStream;
 
 use crate::config::{BindTarget, ServerConfig};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error, ProxyError};
-use crate::frame::{self, ErrorCode, FrameReader};
-use crate::proxy::{
+use crate::h2_frame::{self, ErrorCode, FrameReader};
+use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
     ProxyProtocolMode, ServerAddr, TrustedPeer, peer_is_trusted, read_h2_preface,
     read_preamble_protocol, read_proxy_v1, read_proxy_v2,
 };
+use crate::pyloop::{PumpEvent, Shard, TaskSlot};
 use crate::runtime::{AppState, ConnectionContext, ShutdownKind, ShutdownState};
 use crate::sendfile::WriteTarget;
 use crate::{h1, h2, tls};
 
-macro_rules! serve_with_proxy_protocol {
-    (
-        $mode:expr,
-        $serve:ident,
-        $listener:expr,
-        $app:expr,
-        $config:expr,
-        $shutdown:expr,
-        $http1:ident,
-        $tls:ident
-    ) => {
-        match $mode {
-            ProxyProtocolMode::Off => {
-                $serve::<PreambleOff, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            },
-            ProxyProtocolMode::V1 => {
-                $serve::<PreambleV1, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            },
-            ProxyProtocolMode::V2 => {
-                $serve::<PreambleV2, { $http1 }, { $tls }>($listener, $app, $config, $shutdown)
-                    .await
-            },
-        }
-    };
-}
-
+pub(crate) type ListenerFd = OwnedFd;
+#[cfg(windows)]
+pub(crate) type ListenerFd = OwnedSocket;
 type TlsWriteHalf = WriteHalf<TlsStream<PrefixedIo>>;
+type TlsReadHalf = ReadHalf<TlsStream<PrefixedIo>>;
+type NegotiatedTlsConnection = (
+    Option<ProxyInfo>,
+    DetectedProtocol,
+    FrameReader<TlsReadHalf>,
+    TlsWriteHalf,
+);
 
 struct PrefixedIo {
     stream: TcpStream,
     prefix: Option<BytesMut>,
+}
+
+struct ConnectionArgs {
+    app: AppState,
+    config: Arc<ServerConfig>,
+    actual_peer: ConnectionPeer,
+    actual_server: Option<ServerAddr>,
+    shutdown: watch::Receiver<ShutdownState>,
+    preamble: ConnectionPreamble,
+    http1: bool,
 }
 
 impl PrefixedIo {
@@ -116,15 +115,6 @@ impl AsyncWrite for PrefixedIo {
 
 impl WriteTarget for TlsWriteHalf {
     const SUPPORTS_SENDFILE: bool = false;
-
-    async fn send_file(
-        writer: &mut BufWriter<Self>,
-        file: &mut File,
-        offset: &mut u64,
-        len: usize,
-    ) -> io::Result<()> {
-        crate::sendfile::copy_file_range_buffered(writer, file, offset, len).await
-    }
 }
 
 enum ListenerSource {
@@ -168,137 +158,78 @@ impl ListenerSource {
     }
 }
 
-trait ConnectionPreamble {
-    fn read_proxy<R>(
+#[derive(Clone, Copy)]
+enum ConnectionPreamble {
+    Off,
+    V1,
+    V2,
+}
+
+impl ConnectionPreamble {
+    const fn from_mode(mode: ProxyProtocolMode) -> Self {
+        match mode {
+            ProxyProtocolMode::Off => Self::Off,
+            ProxyProtocolMode::V1 => Self::V1,
+            ProxyProtocolMode::V2 => Self::V2,
+        }
+    }
+
+    async fn read_proxy<R>(
+        self,
         reader: &mut FrameReader<R>,
         actual_peer: &ConnectionPeer,
         trusted: &[TrustedPeer],
-    ) -> impl Future<Output = Result<Option<ProxyInfo>, H2CornError>> + Send
-    where
-        R: AsyncRead + Unpin + Send;
-}
-
-struct PreambleOff;
-struct PreambleV1;
-struct PreambleV2;
-
-impl ConnectionPreamble for PreambleOff {
-    fn read_proxy<R>(
-        _: &mut FrameReader<R>,
-        _: &ConnectionPeer,
-        _: &[TrustedPeer],
-    ) -> impl Future<Output = Result<Option<ProxyInfo>, H2CornError>> + Send
+    ) -> Result<Option<ProxyInfo>, H2CornError>
     where
         R: AsyncRead + Unpin + Send,
     {
-        ready(Ok(None))
+        match self {
+            Self::Off => Ok(None),
+            Self::V1 => read_proxy_v1(reader, actual_peer, trusted).await,
+            Self::V2 => read_proxy_v2(reader, actual_peer, trusted).await,
+        }
     }
 }
 
-impl ConnectionPreamble for PreambleV1 {
-    fn read_proxy<R>(
-        reader: &mut FrameReader<R>,
-        actual_peer: &ConnectionPeer,
-        trusted: &[TrustedPeer],
-    ) -> impl Future<Output = Result<Option<ProxyInfo>, H2CornError>> + Send
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        read_proxy_v1(reader, actual_peer, trusted)
-    }
-}
-
-impl ConnectionPreamble for PreambleV2 {
-    fn read_proxy<R>(
-        reader: &mut FrameReader<R>,
-        actual_peer: &ConnectionPeer,
-        trusted: &[TrustedPeer],
-    ) -> impl Future<Output = Result<Option<ProxyInfo>, H2CornError>> + Send
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        read_proxy_v2(reader, actual_peer, trusted)
-    }
+pub(crate) fn own_listener_fds(fds: Vec<i64>) -> Box<[ListenerFd]> {
+    fds.into_iter()
+        .map(|fd| {
+            #[cfg(unix)]
+            // SAFETY: Python transfers each socket exactly once with
+            // `socket.detach()` before entering Rust.
+            return unsafe { OwnedFd::from_raw_fd(fd as i32) };
+            #[cfg(windows)]
+            // SAFETY: same transfer invariant as the Unix branch.
+            return unsafe { OwnedSocket::from_raw_socket(fd as usize) };
+        })
+        .collect()
 }
 
 pub(crate) async fn serve_from_fds(
     app: AppState,
-    fds: Box<[i64]>,
-    config: &'static ServerConfig,
+    fds: Box<[ListenerFd]>,
+    config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
 ) -> Result<(), H2CornError> {
-    let listeners = adopt_listeners(&config.binds, &fds)?;
-    match (config.http1.enabled, config.tls.is_some()) {
-        (true, true) => serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_listeners,
-            listeners,
-            app,
-            config,
-            shutdown_trigger,
-            true,
-            true
-        ),
-        (true, false) => serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_listeners,
-            listeners,
-            app,
-            config,
-            shutdown_trigger,
-            true,
-            false
-        ),
-        (false, true) => serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_listeners,
-            listeners,
-            app,
-            config,
-            shutdown_trigger,
-            false,
-            true
-        ),
-        (false, false) => serve_with_proxy_protocol!(
-            config.proxy.protocol,
-            serve_listeners,
-            listeners,
-            app,
-            config,
-            shutdown_trigger,
-            false,
-            false
-        ),
-    }
+    let listeners = adopt_listeners(&config.binds, fds)?;
+    serve_listeners(listeners, app, config, shutdown_trigger).await
 }
 
 #[cfg(unix)]
-fn adopt_unix_listener(fd: i64) -> io::Result<UnixListener> {
-    use std::os::fd::{FromRawFd, RawFd};
-
-    // SAFETY: `fd` comes from the Python socket builder and ownership is
-    // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { StdUnixListener::from_raw_fd(fd as RawFd) };
+fn adopt_unix_listener(fd: ListenerFd) -> io::Result<UnixListener> {
+    let listener = StdUnixListener::from(fd);
     UnixListener::from_std(listener)
 }
 
 #[cfg(windows)]
-fn adopt_tcp_listener(fd: i64) -> io::Result<TcpListener> {
-    use std::os::windows::io::{FromRawSocket, RawSocket};
-
-    // SAFETY: `fd` comes from the Python socket builder and ownership is
-    // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { StdTcpListener::from_raw_socket(fd as RawSocket) };
+fn adopt_tcp_listener(fd: ListenerFd) -> io::Result<TcpListener> {
+    let listener = StdTcpListener::from(fd);
     TcpListener::from_std(listener)
 }
 
 #[cfg(unix)]
-fn adopt_tcp_listener(fd: i64) -> io::Result<TcpListener> {
-    use std::os::fd::{FromRawFd, RawFd};
-
-    // SAFETY: `fd` comes from the Python socket builder and ownership is
-    // transferred exactly once into this function for listener adoption.
-    let listener = unsafe { StdTcpListener::from_raw_fd(fd as RawFd) };
+fn adopt_tcp_listener(fd: ListenerFd) -> io::Result<TcpListener> {
+    let listener = StdTcpListener::from(fd);
     TcpListener::from_std(listener)
 }
 
@@ -308,15 +239,15 @@ fn configure_tcp_stream(stream: &TcpStream) {
     let _ = set_tcp_quickack(stream, true);
 }
 
-fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
+fn spawn_connection(
     tasks: &mut JoinSet<()>,
     app: AppState,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
-) where
-    P: ConnectionPreamble,
-{
+    preamble: ConnectionPreamble,
+    http1: bool,
+) {
     match accepted {
         AcceptedConnection::Tcp(stream, peer) => {
             configure_tcp_stream(&stream);
@@ -324,45 +255,42 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
                 host: addr.ip().to_string().into(),
                 port: Some(addr.port()),
             });
-            if TLS {
-                let acceptor = config
-                    .tls
-                    .as_ref()
-                    .expect("TLS listener mode requires TLS config")
-                    .acceptor
-                    .clone();
+            if let Some(acceptor) = config.tls.as_ref().map(|tls| tls.acceptor.clone()) {
                 tasks.spawn(async move {
-                    let _ = serve_tls_connection::<P, HTTP1>(
-                        stream,
-                        acceptor,
+                    let _ = serve_tls_connection(stream, acceptor, ConnectionArgs {
                         app,
                         config,
-                        ConnectionPeer::Tcp(peer),
+                        actual_peer: ConnectionPeer::Tcp(peer),
                         actual_server,
                         shutdown,
-                    )
+                        preamble,
+                        http1,
+                    })
                     .await;
                 });
             } else {
                 let (reader, writer) = stream.into_split();
                 tasks.spawn(async move {
-                    let _ = serve_connection::<_, _, P, HTTP1>(
-                        reader,
-                        writer,
+                    let _ = serve_connection(reader, writer, ConnectionArgs {
                         app,
                         config,
-                        ConnectionPeer::Tcp(peer),
+                        actual_peer: ConnectionPeer::Tcp(peer),
                         actual_server,
                         shutdown,
-                    )
+                        preamble,
+                        http1,
+                    })
                     .await;
                 });
             }
         },
         #[cfg(unix)]
         AcceptedConnection::Unix { stream, path } => {
-            debug_assert!(!TLS, "TLS listener mode only supports TCP listeners");
-            if TLS {
+            debug_assert!(
+                config.tls.is_none(),
+                "TLS listener mode only supports TCP listeners"
+            );
+            if config.tls.is_some() {
                 return;
             }
             let actual_server = path.map(|path| ServerAddr {
@@ -371,15 +299,15 @@ fn spawn_connection<P, const HTTP1: bool, const TLS: bool>(
             });
             let (reader, writer) = stream.into_split();
             tasks.spawn(async move {
-                let _ = serve_connection::<_, _, P, HTTP1>(
-                    reader,
-                    writer,
+                let _ = serve_connection(reader, writer, ConnectionArgs {
                     app,
                     config,
-                    ConnectionPeer::Unix,
+                    actual_peer: ConnectionPeer::Unix,
                     actual_server,
                     shutdown,
-                )
+                    preamble,
+                    http1,
+                })
                 .await;
             });
         },
@@ -406,15 +334,14 @@ async fn accept_one(
     .await
 }
 
-async fn serve_listeners<P, const HTTP1: bool, const TLS: bool>(
+async fn serve_listeners(
     listeners: Box<[ListenerSource]>,
     app: AppState,
-    config: &'static ServerConfig,
+    config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
-) -> Result<(), H2CornError>
-where
-    P: ConnectionPreamble,
-{
+) -> Result<(), H2CornError> {
+    let preamble = ConnectionPreamble::from_mode(config.proxy.protocol);
+    let http1 = config.http1.enabled;
     let mut accept_start = 0;
     let shutdown = shutdown_future(shutdown_trigger, app.main_shard());
     tokio::pin!(shutdown);
@@ -445,70 +372,91 @@ where
         };
         accept_start = next_accept_start;
 
-        spawn_connection::<P, HTTP1, TLS>(&mut tasks, app, config, accepted, shutdown_rx.clone());
+        spawn_connection(
+            &mut tasks,
+            Arc::clone(&app),
+            Arc::clone(&config),
+            accepted,
+            shutdown_rx.clone(),
+            preamble,
+            http1,
+        );
     }
 
     Ok(())
 }
 
-fn adopt_listeners(binds: &[BindTarget], fds: &[i64]) -> io::Result<Box<[ListenerSource]>> {
+fn adopt_listeners(
+    binds: &[BindTarget],
+    fds: Box<[ListenerFd]>,
+) -> io::Result<Box<[ListenerSource]>> {
+    adopt_all(binds, fds, |bind, fd| match bind {
+        BindTarget::Tcp { .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
+        #[cfg(unix)]
+        BindTarget::Unix { path } => Ok(ListenerSource::Unix {
+            listener: adopt_unix_listener(fd)?,
+            path: Some(Arc::from(path.as_ref())),
+        }),
+        #[cfg(unix)]
+        BindTarget::Fd { is_unix: true, .. } => Ok(ListenerSource::Unix {
+            listener: adopt_unix_listener(fd)?,
+            path: None,
+        }),
+        BindTarget::Fd { is_unix: false, .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
+        #[cfg(not(unix))]
+        BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. } => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix listeners are not supported on this platform",
+        )),
+    })
+}
+
+fn adopt_all<T>(
+    binds: &[BindTarget],
+    fds: Box<[ListenerFd]>,
+    mut adopt: impl FnMut(&BindTarget, ListenerFd) -> io::Result<T>,
+) -> io::Result<Box<[T]>> {
     if binds.len() != fds.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "listener FD count does not match configured binds",
         ));
     }
-    let mut listeners = SmallVec::<[ListenerSource; 4]>::new();
-    for (bind, &fd) in binds.iter().zip(fds.iter()) {
-        match bind {
-            BindTarget::Tcp { .. } => listeners.push(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
-            #[cfg(unix)]
-            BindTarget::Unix { path } => listeners.push(ListenerSource::Unix {
-                listener: adopt_unix_listener(fd)?,
-                path: Some(Arc::from(path.as_ref())),
-            }),
-            #[cfg(unix)]
-            BindTarget::Fd { is_unix: true, .. } => listeners.push(ListenerSource::Unix {
-                listener: adopt_unix_listener(fd)?,
-                path: None,
-            }),
-            BindTarget::Fd { is_unix: false, .. } => {
-                listeners.push(ListenerSource::Tcp(adopt_tcp_listener(fd)?));
-            },
-            #[cfg(not(unix))]
-            BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. } => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "unix listeners are not supported on this platform",
-                ));
-            },
-        }
+    let mut listeners = Vec::with_capacity(binds.len());
+    for (bind, fd) in binds.iter().zip(fds.into_vec()) {
+        listeners.push(adopt(bind, fd)?);
     }
-    Ok(listeners.into_vec().into_boxed_slice())
+    Ok(listeners.into_boxed_slice())
 }
 
-async fn serve_connection<R, W, P, const HTTP1: bool>(
+async fn serve_connection<R, W>(
     reader: R,
     mut writer: W,
-    app: AppState,
-    config: &'static ServerConfig,
-    actual_peer: ConnectionPeer,
-    actual_server: Option<ServerAddr>,
-    shutdown: watch::Receiver<ShutdownState>,
+    args: ConnectionArgs,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
-    P: ConnectionPreamble,
 {
+    let ConnectionArgs {
+        app,
+        config,
+        actual_peer,
+        actual_server,
+        shutdown,
+        preamble,
+        http1,
+    } = args;
     let mut reader = FrameReader::new(reader);
     let proxy_headers_trusted =
         config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
     let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
 
     let connection_start = timeout(config.timeout_handshake, async {
-        let proxy = P::read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers).await?;
-        let protocol = read_preamble_protocol::<R, HTTP1>(&mut reader).await?;
+        let proxy = preamble
+            .read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers)
+            .await?;
+        let protocol = read_preamble_protocol(&mut reader, http1).await?;
         Ok::<_, H2CornError>(ConnectionStart { proxy, protocol })
     })
     .await
@@ -543,43 +491,37 @@ where
     .await
 }
 
-async fn serve_tls_connection<P, const HTTP1: bool>(
+async fn serve_tls_connection(
     stream: TcpStream,
     acceptor: TlsAcceptor,
-    app: AppState,
-    config: &'static ServerConfig,
-    actual_peer: ConnectionPeer,
-    actual_server: Option<ServerAddr>,
-    shutdown: watch::Receiver<ShutdownState>,
-) -> Result<(), H2CornError>
-where
-    P: ConnectionPreamble,
-{
+    args: ConnectionArgs,
+) -> Result<(), H2CornError> {
+    let ConnectionArgs {
+        app,
+        config,
+        actual_peer,
+        actual_server,
+        shutdown,
+        preamble,
+        http1,
+    } = args;
     let proxy_headers_trusted =
         config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
     let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
 
-    let connection_start = timeout(config.timeout_handshake, async {
-        let mut reader = FrameReader::with_buffer(stream, BytesMut::new());
-        let proxy = P::read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers).await?;
-        let (stream, buffer) = reader.into_parts();
-        let stream = PrefixedIo::new(stream, buffer);
-        let tls_stream = acceptor.accept(stream).await?;
-        let protocol = match tls_stream.get_ref().1.alpn_protocol() {
-            Some(protocol) if protocol == tls::ALPN_H2 => DetectedProtocol::Http2,
-            Some(protocol) if protocol == tls::ALPN_HTTP1 && HTTP1 => DetectedProtocol::Http1,
-            None if HTTP1 => DetectedProtocol::Http1,
-            _ => return Ok(None),
-        };
-        let (reader, writer) = split(tls_stream);
-        let mut reader = FrameReader::new(reader);
-        if protocol == DetectedProtocol::Http2 {
-            read_h2_preface(&mut reader).await?;
-        }
-        Ok::<_, H2CornError>(Some((proxy, protocol, reader, writer)))
-    })
-    .await
-    .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
+    let negotiation: Pin<
+        Box<dyn Future<Output = Result<Option<NegotiatedTlsConnection>, H2CornError>> + Send + '_>,
+    > = Box::pin(negotiate_tls_connection(
+        stream,
+        acceptor,
+        &config,
+        actual_peer,
+        preamble,
+        http1,
+    ));
+    let connection_start = timeout(config.timeout_handshake, negotiation)
+        .await
+        .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
     let Some((proxy, protocol, reader, writer)) = connection_start? else {
         return Ok(());
     };
@@ -590,6 +532,38 @@ where
     let connection_ctx = ConnectionContext::new(app, config, info.clone(), shutdown.clone());
 
     serve_detected_connection(reader, writer, protocol, connection_ctx, true, shutdown).await
+}
+
+/// TLS negotiation is a cold, once-per-connection phase with a large rustls
+/// state machine. Keep it behind one connection-scoped box so the long-lived
+/// connection task and its hot poll frame retain only a pointer after accept.
+async fn negotiate_tls_connection(
+    stream: TcpStream,
+    acceptor: TlsAcceptor,
+    config: &ServerConfig,
+    actual_peer: ConnectionPeer,
+    preamble: ConnectionPreamble,
+    http1: bool,
+) -> Result<Option<NegotiatedTlsConnection>, H2CornError> {
+    let mut reader = FrameReader::with_buffer(stream, BytesMut::new());
+    let proxy = preamble
+        .read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers)
+        .await?;
+    let (stream, buffer) = reader.into_parts();
+    let stream = PrefixedIo::new(stream, buffer);
+    let tls_stream = acceptor.accept(stream).await?;
+    let protocol = match tls_stream.get_ref().1.alpn_protocol() {
+        Some(protocol) if protocol == tls::ALPN_H2 => DetectedProtocol::Http2,
+        Some(protocol) if protocol == tls::ALPN_HTTP1 && http1 => DetectedProtocol::Http1,
+        None if http1 => DetectedProtocol::Http1,
+        _ => return Ok(None),
+    };
+    let (reader, writer) = split(tls_stream);
+    let mut reader = FrameReader::new(reader);
+    if protocol == DetectedProtocol::Http2 {
+        read_h2_preface(&mut reader).await?;
+    }
+    Ok(Some((proxy, protocol, reader, writer)))
 }
 
 async fn serve_detected_connection<R, W>(
@@ -619,20 +593,20 @@ async fn write_invalid_h2_preface_goaway<W>(writer: &mut W) -> Result<(), H2Corn
 where
     W: AsyncWrite + Unpin,
 {
-    let mut frame = bytes::BytesMut::with_capacity(frame::GOAWAY_FRAME_PREFIX_LEN);
-    frame::append_goaway(&mut frame, None, ErrorCode::PROTOCOL_ERROR, b"");
+    let mut frame = bytes::BytesMut::with_capacity(h2_frame::GOAWAY_FRAME_PREFIX_LEN);
+    h2_frame::append_goaway(&mut frame, None, ErrorCode::PROTOCOL_ERROR, b"");
     writer.write_all(frame.as_ref()).await?;
     writer.flush().await?;
     Ok(())
 }
 
-async fn shutdown_future(trigger: Py<PyAny>, shard: crate::pyloop::Shard) -> ShutdownKind {
-    let slot = crate::pyloop::TaskSlot::new();
-    shard.push(crate::pyloop::PumpEvent::SpawnAwaitable {
+async fn shutdown_future(trigger: Py<PyAny>, shard: Shard) -> ShutdownKind {
+    let slot = TaskSlot::new();
+    shard.push(PumpEvent::SpawnAwaitable {
         awaitable: trigger,
         slot: Arc::clone(&slot),
     });
-    if let Ok(value) = slot.wait().await {
+    if let Ok(value) = slot.wait(shard).await {
         return Python::attach(|py| {
             value
                 .bind(py)

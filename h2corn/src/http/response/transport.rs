@@ -1,6 +1,8 @@
+use std::fs::File;
+
 use super::actions::{FinalResponseBody, ResponseAction, ResponseActions, ResponseStart};
+use crate::access_log::ResponseLogState;
 use crate::bridge::PayloadBytes;
-use crate::console::ResponseLogState;
 use crate::error::H2CornError;
 use crate::http::types::ResponseHeaders;
 
@@ -36,11 +38,7 @@ pub(crate) trait HttpResponseTransport {
 
     async fn send_streaming_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError>;
 
-    async fn send_streaming_file(
-        &mut self,
-        file: tokio::fs::File,
-        len: usize,
-    ) -> Result<(), H2CornError>;
+    async fn send_streaming_file(&mut self, file: File, len: usize) -> Result<(), H2CornError>;
 
     async fn finish_streaming_response(&mut self) -> Result<(), H2CornError>;
 
