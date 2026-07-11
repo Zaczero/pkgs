@@ -1,6 +1,4 @@
-// Canonical checked-in HPACK Huffman tables from RFC 7541 Appendix B. The
-// historical `util/genhuff` generator is no longer present in this repository,
-// so representation changes and value updates are maintained and tested here.
+// Canonical checked-in HPACK Huffman tables from RFC 7541 Appendix B.
 
 // The low 32 bits contain the code and bits 32..=36 contain its length. HPACK
 // codes are at most 30 bits wide, so one u64 entry halves this hot table's

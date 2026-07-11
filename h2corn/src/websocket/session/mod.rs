@@ -1,6 +1,7 @@
 mod accepted;
 mod handshake;
 
+use std::mem;
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,9 +31,20 @@ use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownSta
 
 #[derive(Debug, Default)]
 pub(crate) struct AcceptedWebSocketState {
-    pub(crate) close_state: CloseState,
-    pub(crate) close_code: Option<NonZeroU16>,
-    pending_close: Option<PendingClose>,
+    close: CloseLifecycle,
+}
+
+#[derive(Debug, Default)]
+enum CloseLifecycle {
+    #[default]
+    Open,
+    Queued {
+        frame: PendingClose,
+        reported_code: NonZeroU16,
+    },
+    Sent(NonZeroU16),
+    PeerGone(NonZeroU16),
+    PeerReset(NonZeroU16),
 }
 
 #[derive(Debug)]
@@ -63,12 +75,14 @@ impl PendingClose {
 }
 
 impl AcceptedWebSocketState {
-    pub(super) const fn set_close_code(&mut self, code: WebSocketCloseCode) {
-        self.close_code = NonZeroU16::new(code);
-    }
-
-    pub(crate) fn close_code_or(&self, fallback: WebSocketCloseCode) -> WebSocketCloseCode {
-        self.close_code.map_or(fallback, NonZeroU16::get)
+    pub(crate) const fn close_code_or(&self, fallback: WebSocketCloseCode) -> WebSocketCloseCode {
+        match &self.close {
+            CloseLifecycle::Open => fallback,
+            CloseLifecycle::Queued { reported_code, .. } => reported_code.get(),
+            CloseLifecycle::Sent(code)
+            | CloseLifecycle::PeerGone(code)
+            | CloseLifecycle::PeerReset(code) => code.get(),
+        }
     }
 
     pub(super) fn queue_close_if_open(
@@ -76,46 +90,82 @@ impl AcceptedWebSocketState {
         code: WebSocketCloseCode,
         reason: &str,
     ) -> Result<(), H2CornError> {
-        if self.close_started() {
+        if matches!(
+            self.close,
+            CloseLifecycle::Queued { .. } | CloseLifecycle::Sent(_)
+        ) {
             validate_close_code(code)?;
-            self.set_close_code(code);
+            let reported_code = NonZeroU16::new(code).expect("validated close codes are non-zero");
+            match &mut self.close {
+                CloseLifecycle::Queued {
+                    reported_code: current,
+                    ..
+                }
+                | CloseLifecycle::Sent(current) => *current = reported_code,
+                CloseLifecycle::Open
+                | CloseLifecycle::PeerGone(_)
+                | CloseLifecycle::PeerReset(_) => unreachable!(),
+            }
             return Ok(());
         }
         // `PendingClose::new` validates both the code and the reason.
-        self.pending_close = Some(PendingClose::new(code, reason)?);
-        self.close_state = CloseState::CloseQueued;
-        self.set_close_code(code);
+        let frame = PendingClose::new(code, reason)?;
+        self.close = CloseLifecycle::Queued {
+            reported_code: NonZeroU16::new(code).expect("validated close codes are non-zero"),
+            frame,
+        };
         Ok(())
     }
 
-    pub(crate) const fn take_pending_close(&mut self) -> Option<PendingClose> {
-        self.pending_close.take()
+    pub(crate) fn take_pending_close(&mut self) -> Option<PendingClose> {
+        match mem::replace(&mut self.close, CloseLifecycle::Open) {
+            CloseLifecycle::Queued {
+                frame,
+                reported_code,
+            } => {
+                self.close = CloseLifecycle::Sent(reported_code);
+                Some(frame)
+            },
+            lifecycle => {
+                self.close = lifecycle;
+                None
+            },
+        }
     }
 
     pub(super) const fn close_started(&self) -> bool {
         matches!(
-            self.close_state,
-            CloseState::CloseQueued | CloseState::CloseSent
+            self.close,
+            CloseLifecycle::Queued { .. } | CloseLifecycle::Sent(_)
         )
     }
 
-    pub(crate) const fn mark_close_sent(&mut self) {
-        self.close_state = CloseState::CloseSent;
+    pub(crate) const fn has_queued_close(&self) -> bool {
+        matches!(self.close, CloseLifecycle::Queued { .. })
     }
 
-    pub(super) const fn mark_peer_reset(&mut self, code: WebSocketCloseCode) {
-        self.set_close_code(code);
-        self.close_state = CloseState::PeerReset;
+    pub(crate) const fn should_reset_h2_stream(&self) -> bool {
+        matches!(
+            self.close,
+            CloseLifecycle::Open | CloseLifecycle::PeerGone(_)
+        )
     }
-}
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum CloseState {
-    #[default]
-    Open,
-    CloseQueued,
-    CloseSent,
-    PeerReset,
+    pub(crate) const fn is_peer_reset(&self) -> bool {
+        matches!(self.close, CloseLifecycle::PeerReset(_))
+    }
+
+    pub(super) fn mark_peer_gone(&mut self, code: WebSocketCloseCode) {
+        self.close = CloseLifecycle::PeerGone(
+            NonZeroU16::new(code).expect("terminal websocket close codes are non-zero"),
+        );
+    }
+
+    pub(super) fn mark_peer_reset(&mut self, code: WebSocketCloseCode) {
+        self.close = CloseLifecycle::PeerReset(
+            NonZeroU16::new(code).expect("terminal websocket close codes are non-zero"),
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -264,7 +314,6 @@ pub(crate) fn take_pending_close_frame(
 ) -> Result<Option<Bytes>, H2CornError> {
     if let Some(close) = state.take_pending_close() {
         encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
-        state.mark_close_sent();
         return Ok(Some(frame_buf.split().freeze()));
     }
     Ok(None)
@@ -291,7 +340,7 @@ where
     let per_message_deflate =
         config.websocket.per_message_deflate && context.meta.per_message_deflate;
     let timeout_handshake = config.timeout_handshake;
-    let max_message_size: Option<NonZeroUsize> = config.websocket.message_size_limit;
+    let max_message_size: Option<NonZeroUsize> = config.websocket.max_message_size;
     let timeout_graceful_shutdown = config.timeout_graceful_shutdown;
     let ping_interval = config.websocket.ping_interval;
     let ping_timeout = config.websocket.ping_timeout;
@@ -336,14 +385,14 @@ where
         HandshakeEvent::Close => {
             transport.send_forbidden_response().await?;
             access_log.emit_http_response(status_code::FORBIDDEN, 0);
-            running_app.app.settle(timeout_graceful_shutdown).await?;
+            running_app.task.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
         HandshakeEvent::DenialStart { status, headers } => {
             let (tx_bytes, _) =
                 drive_denial_response(transport, status, headers, &mut running_app).await?;
             access_log.emit_http_response(status, tx_bytes);
-            running_app.app.settle(timeout_graceful_shutdown).await?;
+            running_app.task.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
     }
@@ -359,11 +408,11 @@ where
     .await?;
 
     transport.finish_session(&mut outcome.state).await?;
-    running_app.app.settle(timeout_graceful_shutdown).await?;
+    running_app.task.settle(timeout_graceful_shutdown).await?;
     access_log.emit_session(
         outcome
             .state
-            .close_code_or(if outcome.state.close_state == CloseState::PeerReset {
+            .close_code_or(if outcome.state.is_peer_reset() {
                 close_code::ABNORMAL_CLOSURE
             } else {
                 close_code::NO_STATUS_RECEIVED
@@ -384,13 +433,18 @@ mod tests {
     use bytes::BytesMut;
 
     use super::{
-        AcceptedWebSocketState, CloseState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE,
+        AcceptedWebSocketState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE,
         append_ws_accept_headers, take_pending_close_frame,
     };
 
     #[test]
     fn encoded_frame_owner_stays_within_inline_queue_budget() {
         assert!(size_of::<EncodedWebSocketFrame>() <= 64);
+    }
+
+    #[test]
+    fn accepted_close_lifecycle_preserves_state_layout_budget() {
+        assert!(size_of::<AcceptedWebSocketState>() <= 32);
     }
 
     #[test]
@@ -419,7 +473,7 @@ mod tests {
             .expect("close frame encodes")
             .expect("queued close produces a frame");
 
-        assert_eq!(state.close_state, CloseState::CloseSent);
+        assert!(!state.has_queued_close());
         assert_eq!(frame.as_ref(), b"\x88\x05\x03\xe8bye");
         assert!(frame_buf.is_empty());
     }
@@ -434,5 +488,36 @@ mod tests {
 
         assert!(state.queue_close_if_open(0, "").is_err());
         assert_eq!(state.close_code_or(1001), 1000);
+    }
+
+    #[test]
+    fn queued_close_keeps_first_frame_and_latest_reported_code() {
+        let mut state = AcceptedWebSocketState::default();
+        state
+            .queue_close_if_open(1000, "first")
+            .expect("first close is queued");
+        state
+            .queue_close_if_open(1001, "second")
+            .expect("a later valid close is harmless");
+
+        let close = state.take_pending_close().expect("close remains queued");
+        assert_eq!(close.code(), 1000);
+        assert_eq!(close.reason(), "first");
+        assert_eq!(state.close_code_or(1002), 1001);
+        assert!(state.take_pending_close().is_none());
+    }
+
+    #[test]
+    fn peer_terminal_states_cannot_contain_a_queued_close() {
+        let mut gone = AcceptedWebSocketState::default();
+        gone.mark_peer_gone(1005);
+        assert!(!gone.has_queued_close());
+        assert!(gone.should_reset_h2_stream());
+
+        let mut reset = AcceptedWebSocketState::default();
+        reset.mark_peer_reset(1006);
+        assert!(!reset.has_queued_close());
+        assert!(!reset.should_reset_h2_stream());
+        assert!(reset.is_peer_reset());
     }
 }

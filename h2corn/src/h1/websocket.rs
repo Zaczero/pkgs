@@ -59,9 +59,9 @@ use crate::http::response::FinalResponseBody;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::sendfile::WriteTarget;
 use crate::websocket::session::{
-    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, EncodedWebSocketFrame,
-    FrameFlushMode, TransportRead, WebSocketContext, WebSocketHandshakeTransport,
-    append_ws_accept_headers, run_websocket, take_pending_close_frame,
+    AcceptedWebSocketState, AcceptedWebSocketTransport, EncodedWebSocketFrame, FrameFlushMode,
+    TransportRead, WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers,
+    run_websocket, take_pending_close_frame,
 };
 use crate::websocket::{WEBSOCKET_KEY_LEN, WebSocketCodec, WebSocketKey};
 
@@ -200,7 +200,7 @@ where
         state: &mut AcceptedWebSocketState,
     ) -> Result<(), H2CornError> {
         let Some(frame) = take_pending_close_frame(state, self.frame_buf())? else {
-            assert_ne!(state.close_state, CloseState::CloseQueued);
+            debug_assert!(!state.has_queued_close());
             return Ok(());
         };
         self.send_frame(

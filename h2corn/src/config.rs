@@ -71,7 +71,7 @@ pub(crate) struct TlsConfig {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct WebSocketConfig {
-    pub message_size_limit: Option<NonZeroUsize>,
+    pub max_message_size: Option<NonZeroUsize>,
     pub per_message_deflate: bool,
     pub ping_interval: Option<Duration>,
     pub ping_timeout: Option<Duration>,

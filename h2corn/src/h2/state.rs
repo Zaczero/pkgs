@@ -3,7 +3,6 @@ use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::mem::{replace, size_of};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -14,15 +13,15 @@ use tokio::time::Instant as TokioInstant;
 use super::StreamMap;
 use super::deadline::DeadlineQueue;
 use super::request::{HeaderLimits, PendingHeaders};
-use super::writer::{ConnectionHandle, WriterState};
+use super::writer::{H2WriterHandle, WriterState};
 use crate::async_util::{TryPush, try_push};
-use crate::bridge::HttpDisconnectSignal;
+use crate::bridge::{RequestBodyCounter, RequestInputShared};
 use crate::h2::new_stream_map;
 use crate::h2_frame::{self, StreamId, WindowIncrement};
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
 use crate::runtime::{
-    ConnectionContext, H2InputCredit, H2InputCreditRelease, H2InputFlowControl, ShutdownState,
+    ConnectionContext, H2InputCredit, H2InputCreditQueue, ReleasedH2InputCredit, ShutdownState,
     StreamInput,
 };
 
@@ -318,7 +317,7 @@ struct RequestTask {
 
 pub(super) enum RequestTaskCancellation {
     Immediate,
-    AfterPendingReceive(Arc<HttpDisconnectSignal>),
+    AfterPendingReceive(Arc<RequestInputShared>),
 }
 
 impl RequestTask {
@@ -420,8 +419,8 @@ impl Drop for RequestTasks {
 }
 
 pub(super) struct H2ConnectionState<R, W> {
-    pub(super) reader: h2_frame::FrameReader<R>,
-    pub(super) connection: ConnectionHandle,
+    pub(super) reader: h2_frame::BufferedConnectionReader<R>,
+    pub(super) connection: H2WriterHandle,
     pub(super) writer: WriterState<W>,
     pub(super) context: ConnectionContext,
     pub(super) secure: bool,
@@ -435,8 +434,8 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) client_preface: ClientPrefaceState,
     pub(super) drain_state: ConnectionDrainState,
     pub(super) reset_guard: RapidResetGuard,
-    pub(super) input_flow: Arc<H2InputFlowControl>,
-    pub(super) released_input_credits: Vec<H2InputCreditRelease>,
+    pub(super) input_flow: Arc<H2InputCreditQueue>,
+    pub(super) released_input_credits: Vec<ReleasedH2InputCredit>,
     pub(super) request_deadlines: DeadlineQueue<RequestInputDeadlineKey>,
     pub(super) request_tasks: RequestTasks,
 }
@@ -497,7 +496,7 @@ impl InboundStream {
         counts_toward_read_timeout: bool,
         end_stream: bool,
         expected_content_length: Option<u64>,
-        body_bytes: Option<Arc<AtomicU64>>,
+        body_bytes: Option<RequestBodyCounter>,
         max_request_body_size: Option<u64>,
         initial_window: u32,
     ) -> Self {
@@ -560,8 +559,8 @@ impl InboundStream {
 
 impl<R, W> H2ConnectionState<R, W> {
     pub(super) fn new(
-        reader: h2_frame::FrameReader<R>,
-        connection: ConnectionHandle,
+        reader: h2_frame::BufferedConnectionReader<R>,
+        connection: H2WriterHandle,
         writer: WriterState<W>,
         context: ConnectionContext,
         secure: bool,
@@ -773,7 +772,7 @@ mod tests {
         RequestTaskCancellation, RequestTasks,
     };
     use crate::h2_frame::{StreamId, WindowIncrement};
-    use crate::runtime::{H2InputFlowControl, StreamInput};
+    use crate::runtime::{H2InputCreditQueue, StreamInput};
 
     fn data(byte: &'static [u8]) -> StreamInput {
         StreamInput::data(Bytes::from_static(byte))
@@ -976,7 +975,7 @@ mod tests {
 
     #[test]
     fn h2_credit_releases_exactly_once() {
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         flow.credit(stream_id, NonZeroU32::new(7).unwrap())
             .release();
@@ -986,13 +985,13 @@ mod tests {
         flow.drain_into(&mut released);
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].stream_id, stream_id);
-        assert_eq!(released[0].len.get(), 7);
+        assert_eq!(released[0].bytes.get(), 7);
         assert!(!flow.has_pending());
     }
 
     #[test]
     fn receiver_close_releases_channel_and_backlog_credit() {
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let (tx, rx) = mpsc::channel(1);
         let mut delivery = InputDelivery::new(Some(tx));
@@ -1016,7 +1015,7 @@ mod tests {
         assert_eq!(
             released
                 .iter()
-                .map(|release| release.len.get())
+                .map(|release| release.bytes.get())
                 .sum::<u32>(),
             9,
         );

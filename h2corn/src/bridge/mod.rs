@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{fmt, future};
 
 use bytes::Bytes;
-pub(crate) use http::{HttpDisconnectSignal, PyHttpReceive, PyHttpSend};
+pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
@@ -375,7 +375,7 @@ pub(crate) trait EventSource: Send + 'static {
     /// Mark a slow-path waiter as live. HTTP request ownership uses this to
     /// distinguish an application already awaiting disconnect from an
     /// abandoned task that can be cancelled immediately.
-    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+    fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {
         None
     }
 }
@@ -422,7 +422,7 @@ impl<S: EventSource> Requeueable<S> {
         self.requeued = Some(event);
     }
 
-    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+    fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {
         self.source.wait_signal()
     }
 }
@@ -859,7 +859,7 @@ mod tests {
     use crate::h2_frame::StreamId;
     use crate::http::types::status_code;
     use crate::python::py_dict;
-    use crate::runtime::H2InputFlowControl;
+    use crate::runtime::H2InputCreditQueue;
 
     #[derive(Debug)]
     struct NeverEventSource;
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn cancelled_receive_requeue_retains_h2_credit_until_conversion() {
         init_python();
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let mut receive = Requeueable::new(NeverEventSource);
         receive.requeue(HttpInboundEvent::Request {
@@ -1107,6 +1107,6 @@ mod tests {
         flow.drain_into(&mut released);
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].stream_id, stream_id);
-        assert_eq!(released[0].len.get(), 4);
+        assert_eq!(released[0].bytes.get(), 4);
     }
 }

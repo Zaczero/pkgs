@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
-use super::ConnectionHandle;
+use super::H2WriterHandle;
 use super::http::send_final_response;
 use crate::bridge::PayloadBytes;
 use crate::error::H2CornError;
@@ -13,15 +13,15 @@ use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::StreamInput;
 use crate::websocket::WebSocketCodec;
 use crate::websocket::session::{
-    AcceptedWebSocketState, AcceptedWebSocketTransport, CloseState, EncodedWebSocketFrame,
-    FrameFlushMode, TransportRead, WebSocketContext, WebSocketHandshakeTransport,
-    append_ws_accept_headers, run_websocket, take_pending_close_frame,
+    AcceptedWebSocketState, AcceptedWebSocketTransport, EncodedWebSocketFrame, FrameFlushMode,
+    TransportRead, WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers,
+    run_websocket, take_pending_close_frame,
 };
 
 const INITIAL_FRAME_BUF_CAPACITY: usize = 256;
 
 struct H2WebSocketTransport {
-    connection: ConnectionHandle,
+    connection: H2WriterHandle,
     stream_id: StreamId,
     stream_rx: mpsc::Receiver<StreamInput>,
     frame_buf: BytesMut,
@@ -164,8 +164,8 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             return Ok(());
         }
 
-        assert_ne!(state.close_state, CloseState::CloseQueued);
-        if state.close_state == CloseState::Open {
+        debug_assert!(!state.has_queued_close());
+        if state.should_reset_h2_stream() {
             let _ = self
                 .connection
                 .reset_stream(self.stream_id, ErrorCode::NO_ERROR)
@@ -179,7 +179,7 @@ pub(super) async fn handle_request(
     context: WebSocketContext,
     stream_id: StreamId,
     stream_rx: mpsc::Receiver<StreamInput>,
-    connection: ConnectionHandle,
+    connection: H2WriterHandle,
 ) -> Result<(), H2CornError> {
     let mut transport = H2WebSocketTransport {
         connection,

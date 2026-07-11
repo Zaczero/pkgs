@@ -27,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout, timeout_at};
-use writer::{ConnectionHandle, WindowTarget, WriterState, init_writer};
+use writer::{H2WriterHandle, WindowTarget, WriterState, init_writer};
 
 use crate::async_util::{send_best_effort, send_with_backpressure};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
@@ -87,6 +87,30 @@ enum ConnectionDeadline {
     ResponseStall(TokioInstant),
 }
 
+enum SettingsFrame {
+    Ack,
+    Update(PeerSettings),
+}
+
+enum PingFrame {
+    Ack,
+    Request([u8; 8]),
+}
+
+struct WindowUpdateFrame {
+    stream_id: Option<StreamId>,
+    increment: WindowIncrement,
+}
+
+struct ResetStreamFrame {
+    stream_id: StreamId,
+    error_code: ErrorCode,
+}
+
+struct PriorityFrame;
+
+struct GoawayFrame;
+
 impl ConnectionDeadline {
     const fn instant(self) -> TokioInstant {
         match self {
@@ -107,7 +131,7 @@ pub(crate) struct UpgradedH2Request {
 
 struct RequestStartContext<'a, W> {
     writer: &'a mut WriterState<W>,
-    connection: &'a ConnectionHandle,
+    connection: &'a H2WriterHandle,
     spawn: RequestSpawnContext<'a>,
     last_client_stream_id: Option<StreamId>,
 }
@@ -351,10 +375,10 @@ where
             .input_flow
             .drain_into(&mut state.released_input_credits);
         for release in &state.released_input_credits {
-            state.connection_window.release(release.len.get());
+            state.connection_window.release(release.bytes.get());
             let stream_id = release.stream_id;
             if let Some(stream) = state.streams.get_mut(&stream_id) {
-                stream.receive_window.release(release.len.get());
+                stream.receive_window.release(release.bytes.get());
                 streams_with_credit.push(stream_id);
                 ready_streams.push(stream_id);
             }
@@ -528,7 +552,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
-    let mut reader = h2_frame::FrameReader::with_buffer(reader, upgraded.buffer);
+    let mut reader = h2_frame::BufferedConnectionReader::with_buffer(reader, upgraded.buffer);
     timeout(
         connection.config.timeout_handshake,
         read_h2_preface(&mut reader),
@@ -550,7 +574,7 @@ where
 }
 
 pub(crate) fn serve_connection<R, W>(
-    reader: h2_frame::FrameReader<R>,
+    reader: h2_frame::BufferedConnectionReader<R>,
     writer: W,
     context: ConnectionContext,
     secure: bool,
@@ -567,7 +591,7 @@ where
 }
 
 async fn drive_connection<R, W>(
-    reader: h2_frame::FrameReader<R>,
+    reader: h2_frame::BufferedConnectionReader<R>,
     writer: W,
     context: ConnectionContext,
     secure: bool,
@@ -582,7 +606,7 @@ where
 }
 
 async fn start_h2_connection<R, W>(
-    reader: h2_frame::FrameReader<R>,
+    reader: h2_frame::BufferedConnectionReader<R>,
     writer: W,
     context: ConnectionContext,
     secure: bool,
@@ -1335,7 +1359,7 @@ where
 }
 
 /// Wire-shape validation for `SETTINGS`; `Ok(None)` is a valid ACK.
-fn validate_settings_frame(frame: &RawFrame) -> Result<Option<PeerSettings>, H2PeerFailure> {
+fn validate_settings_frame(frame: &RawFrame) -> Result<SettingsFrame, H2PeerFailure> {
     if frame.header.stream_id.is_some() {
         return Err(H2PeerFailure::protocol(H2Error::SettingsMustUseStreamZero));
     }
@@ -1345,7 +1369,7 @@ fn validate_settings_frame(frame: &RawFrame) -> Result<Option<PeerSettings>, H2P
                 H2Error::SettingsAckPayloadNotEmpty,
             ));
         }
-        return Ok(None);
+        return Ok(SettingsFrame::Ack);
     }
     if !frame
         .payload
@@ -1357,7 +1381,7 @@ fn validate_settings_frame(frame: &RawFrame) -> Result<Option<PeerSettings>, H2P
         ));
     }
     h2_frame::parse_settings_payload(frame.payload.as_ref())
-        .map(Some)
+        .map(SettingsFrame::Update)
         .map_err(|err| H2PeerFailure::protocol(H2Error::invalid_peer_settings(err)))
 }
 
@@ -1370,8 +1394,8 @@ where
 {
     match validate_settings_frame(&frame) {
         Err(failure) => state.peer_failure(failure).await,
-        Ok(None) => Ok(()),
-        Ok(Some(settings)) => {
+        Ok(SettingsFrame::Ack) => Ok(()),
+        Ok(SettingsFrame::Update(settings)) => {
             state.writer.send_settings_ack().await?;
             state.writer.update_peer_settings(settings).await
         },
@@ -1379,14 +1403,18 @@ where
 }
 
 /// Wire-shape validation for `PING`; `Ok(None)` is a valid ACK.
-fn validate_ping_frame(frame: &RawFrame) -> Result<Option<[u8; 8]>, H2PeerFailure> {
+fn validate_ping_frame(frame: &RawFrame) -> Result<PingFrame, H2PeerFailure> {
     if frame.header.stream_id.is_some() {
         return Err(H2PeerFailure::protocol(H2Error::PingMustUseStreamZero));
     }
     let Ok(payload) = <[u8; 8]>::try_from(frame.payload.as_ref()) else {
         return Err(H2PeerFailure::frame_size(H2Error::PingPayloadInvalidLength));
     };
-    Ok((!frame.header.flags.contains(FrameFlags::ACK)).then_some(payload))
+    Ok(if frame.header.flags.contains(FrameFlags::ACK) {
+        PingFrame::Ack
+    } else {
+        PingFrame::Request(payload)
+    })
 }
 
 async fn handle_ping_frame<R, W>(
@@ -1398,15 +1426,13 @@ where
 {
     match validate_ping_frame(&frame) {
         Err(failure) => state.peer_failure(failure).await,
-        Ok(None) => Ok(()),
-        Ok(Some(payload)) => state.writer.ping_ack(payload).await,
+        Ok(PingFrame::Ack) => Ok(()),
+        Ok(PingFrame::Request(payload)) => state.writer.ping_ack(payload).await,
     }
 }
 
 /// Wire-shape validation for `WINDOW_UPDATE`: length and non-zero increment.
-fn validate_window_update_frame(
-    frame: &RawFrame,
-) -> Result<(Option<StreamId>, WindowIncrement), H2PeerFailure> {
+fn validate_window_update_frame(frame: &RawFrame) -> Result<WindowUpdateFrame, H2PeerFailure> {
     let Ok(raw) = <[u8; 4]>::try_from(frame.payload.as_ref()) else {
         return Err(H2PeerFailure::frame_size(
             H2Error::WindowUpdatePayloadInvalidLength,
@@ -1420,7 +1446,12 @@ fn validate_window_update_frame(
                 |stream_id| H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR),
             ))
         },
-        |increment| Ok((stream_id, increment)),
+        |increment| {
+            Ok(WindowUpdateFrame {
+                stream_id,
+                increment,
+            })
+        },
     )
 }
 
@@ -1431,7 +1462,10 @@ async fn handle_window_update_frame<R, W>(
 where
     W: WriteTarget,
 {
-    let (stream_id, increment) = match validate_window_update_frame(&frame) {
+    let WindowUpdateFrame {
+        stream_id,
+        increment,
+    } = match validate_window_update_frame(&frame) {
         Ok(update) => update,
         Err(failure) => {
             state.peer_failure(failure).await?;
@@ -1459,7 +1493,7 @@ where
 }
 
 /// Wire-shape validation for `RST_STREAM`: non-zero stream and 4-byte payload.
-fn validate_rst_stream_frame(frame: &RawFrame) -> Result<(StreamId, ErrorCode), H2PeerFailure> {
+fn validate_rst_stream_frame(frame: &RawFrame) -> Result<ResetStreamFrame, H2PeerFailure> {
     let Some(stream_id) = frame.header.stream_id else {
         return Err(H2PeerFailure::protocol(
             H2Error::RstStreamMustNotUseStreamZero,
@@ -1470,7 +1504,10 @@ fn validate_rst_stream_frame(frame: &RawFrame) -> Result<(StreamId, ErrorCode), 
             H2Error::RstStreamPayloadInvalidLength,
         ));
     };
-    Ok((stream_id, ErrorCode::new(u32::from_be_bytes(raw))))
+    Ok(ResetStreamFrame {
+        stream_id,
+        error_code: ErrorCode::new(u32::from_be_bytes(raw)),
+    })
 }
 
 async fn handle_rst_stream_frame<R, W>(
@@ -1480,7 +1517,10 @@ async fn handle_rst_stream_frame<R, W>(
 where
     W: WriteTarget,
 {
-    let (stream_id, error_code) = match validate_rst_stream_frame(&frame) {
+    let ResetStreamFrame {
+        stream_id,
+        error_code,
+    } = match validate_rst_stream_frame(&frame) {
         Ok(reset) => reset,
         Err(failure) => return state.peer_failure(failure).await,
     };
@@ -1509,7 +1549,7 @@ where
 }
 
 /// Wire-shape validation for `PRIORITY`, including the self-dependency rule.
-fn validate_priority_frame(frame: &RawFrame) -> Result<(), H2PeerFailure> {
+fn validate_priority_frame(frame: &RawFrame) -> Result<PriorityFrame, H2PeerFailure> {
     let Some(stream_id) = frame.header.stream_id else {
         return Err(H2PeerFailure::protocol(
             H2Error::PriorityMustNotUseStreamZero,
@@ -1524,7 +1564,7 @@ fn validate_priority_frame(frame: &RawFrame) -> Result<(), H2PeerFailure> {
         PriorityDependency::Stream(dependency) if dependency == stream_id => {
             Err(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
         },
-        _ => Ok(()),
+        _ => Ok(PriorityFrame),
     }
 }
 
@@ -1536,7 +1576,7 @@ where
     W: WriteTarget,
 {
     match validate_priority_frame(&frame) {
-        Ok(()) => Ok(()),
+        Ok(PriorityFrame) => Ok(()),
         Err(failure) => state.peer_failure(failure).await,
     }
 }
@@ -1622,6 +1662,13 @@ where
     Ok(true)
 }
 
+fn validate_goaway_frame(frame: &RawFrame) -> Result<GoawayFrame, H2PeerFailure> {
+    if frame.header.stream_id.is_some() || frame.payload.len() < 8 {
+        return Err(H2PeerFailure::protocol(H2Error::InvalidGoawayFrame));
+    }
+    Ok(GoawayFrame)
+}
+
 async fn handle_goaway_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
@@ -1629,12 +1676,10 @@ async fn handle_goaway_frame<R, W>(
 where
     W: WriteTarget,
 {
-    if frame.header.stream_id.is_some() || frame.payload.len() < 8 {
-        state
-            .peer_failure(H2PeerFailure::protocol(H2Error::InvalidGoawayFrame))
-            .await?;
-        return Ok(());
-    }
+    let GoawayFrame = match validate_goaway_frame(&frame) {
+        Ok(frame) => frame,
+        Err(failure) => return state.peer_failure(failure).await,
+    };
     if state.drain_state == ConnectionDrainState::Accepting {
         state.drain_state = ConnectionDrainState::Draining { deadline: None };
     }
@@ -1861,16 +1906,22 @@ mod tests {
         ));
 
         let ack = raw_frame(FrameType::SETTINGS, FrameFlags::ACK, None, &[]);
-        assert!(matches!(validate_settings_frame(&ack), Ok(None)));
+        assert!(matches!(
+            validate_settings_frame(&ack),
+            Ok(SettingsFrame::Ack)
+        ));
     }
 
     #[test]
     fn ping_validation_extracts_payload_and_skips_acks() {
         let ping = raw_frame(FrameType::PING, FrameFlags::EMPTY, None, &[7; 8]);
-        assert_eq!(validate_ping_frame(&ping).ok().flatten(), Some([7; 8]));
+        assert!(matches!(
+            validate_ping_frame(&ping),
+            Ok(PingFrame::Request(payload)) if payload == [7; 8]
+        ));
 
         let ack = raw_frame(FrameType::PING, FrameFlags::ACK, None, &[7; 8]);
-        assert!(matches!(validate_ping_frame(&ack), Ok(None)));
+        assert!(matches!(validate_ping_frame(&ack), Ok(PingFrame::Ack)));
 
         let short = raw_frame(FrameType::PING, FrameFlags::EMPTY, None, &[7; 4]);
         assert!(matches!(
@@ -1907,7 +1958,11 @@ mod tests {
             StreamId::new(3),
             &1_u32.to_be_bytes(),
         );
-        let Ok((stream_id, increment)) = validate_window_update_frame(&grant) else {
+        let Ok(WindowUpdateFrame {
+            stream_id,
+            increment,
+        }) = validate_window_update_frame(&grant)
+        else {
             panic!("valid window update is accepted");
         };
         assert_eq!(stream_id, StreamId::new(3));

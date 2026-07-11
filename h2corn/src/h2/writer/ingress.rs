@@ -9,7 +9,7 @@ use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt, H2CornError, H2Error};
 use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
 use crate::h2_frame::StreamId;
-use crate::smallvec_deque::SmallVecDeque;
+use crate::inline_fifo::InlineFifo;
 
 #[derive(Debug)]
 pub(super) struct QueuedCommandBatch {
@@ -17,7 +17,7 @@ pub(super) struct QueuedCommandBatch {
     _permit: OwnedSemaphorePermit,
 }
 
-pub(super) type QueuedStreamCommands = SmallVecDeque<QueuedCommandBatch, 2>;
+pub(super) type QueuedStreamCommands = InlineFifo<QueuedCommandBatch, 2>;
 pub(super) type DrainedIngressWrites = Vec<(StreamId, QueuedStreamCommands)>;
 
 #[derive(Debug, Default)]

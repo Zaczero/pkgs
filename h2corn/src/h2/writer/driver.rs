@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::future::Future;
@@ -20,7 +19,9 @@ use super::flush::{
 };
 use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
-use super::stream_state::{StreamWriteState, notify_response_close, writer_stream};
+use super::stream_state::{
+    ReadyStreamQueue, StreamWriteState, notify_response_close, writer_stream,
+};
 use super::{
     FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, PrefixedData, ResponseCloseBatch,
     ResponseDeadlineUpdateBatch, WindowTarget, WriterCommand, WriterCommandBatch,
@@ -43,7 +44,7 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::sendfile::WriteTarget;
 
 #[derive(Clone)]
-pub(crate) struct ConnectionHandle {
+pub(crate) struct H2WriterHandle {
     ingress: Arc<WriterIngress>,
     config: Arc<ServerConfig>,
 }
@@ -54,7 +55,7 @@ pub(crate) struct WriterState<W> {
     frame_buf: BytesMut,
     config: Arc<ServerConfig>,
     streams: StreamMap<StreamWriteState>,
-    ready_streams: VecDeque<StreamId>,
+    ready_streams: ReadyStreamQueue,
     drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
     response_closes: ResponseCloseBatch,
     connection_send_window: i64,
@@ -69,7 +70,7 @@ struct WriterSendParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
     streams: &'a mut StreamMap<StreamWriteState>,
-    ready_streams: &'a mut VecDeque<StreamId>,
+    ready_streams: &'a mut ReadyStreamQueue,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
     initial_stream_send_window: i64,
@@ -81,7 +82,7 @@ struct WriterLoopParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     frame_buf: &'a mut BytesMut,
     streams: &'a mut StreamMap<StreamWriteState>,
-    ready_streams: &'a mut VecDeque<StreamId>,
+    ready_streams: &'a mut ReadyStreamQueue,
     response_closes: &'a mut ResponseCloseBatch,
     connection_send_window: &'a mut i64,
     initial_stream_send_window: &'a mut i64,
@@ -106,7 +107,7 @@ impl<W> WriterLoopParts<'_, W> {
     }
 }
 
-impl ConnectionHandle {
+impl H2WriterHandle {
     fn send_command(
         &self,
         stream_id: StreamId,
@@ -248,7 +249,7 @@ where
                 response_headers: ResponseHeaderConfig::default(),
             }),
             streams: new_stream_map(max_concurrent_streams as usize),
-            ready_streams: VecDeque::with_capacity(max_concurrent_streams as usize),
+            ready_streams: ReadyStreamQueue::with_capacity(max_concurrent_streams as usize),
             drained_app_writes: Vec::with_capacity(max_concurrent_streams as usize),
             response_closes: ResponseCloseBatch::new(),
             connection_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
@@ -634,7 +635,7 @@ where
         .await;
         return Ok(());
     }
-    stream.schedule(context.ready_streams, stream_id, true);
+    context.ready_streams.schedule(stream, stream_id, true);
     Ok(())
 }
 
@@ -664,7 +665,7 @@ where
         .await;
         return Ok(());
     }
-    stream.schedule(context.ready_streams, stream_id, false);
+    context.ready_streams.schedule(stream, stream_id, false);
     Ok(())
 }
 
@@ -694,7 +695,7 @@ where
         .await;
         return Ok(());
     }
-    stream.schedule(context.ready_streams, stream_id, false);
+    context.ready_streams.schedule(stream, stream_id, false);
     Ok(())
 }
 
@@ -789,7 +790,7 @@ where
         .await;
         return Ok(());
     }
-    stream.schedule(context.ready_streams, stream_id, false);
+    context.ready_streams.schedule(stream, stream_id, false);
     Ok(())
 }
 
@@ -828,7 +829,7 @@ where
             } else {
                 stream.send_window += increment;
                 if stream.has_pending_output() && !stream.is_closed() {
-                    stream.schedule(context.ready_streams, stream_id, false);
+                    context.ready_streams.schedule(stream, stream_id, false);
                 }
                 false
             }
@@ -1056,7 +1057,7 @@ pub(crate) async fn init_writer<W>(
     writer: W,
     config: Arc<ServerConfig>,
     initial_peer_settings: Option<PeerSettings>,
-) -> Result<(WriterState<W>, ConnectionHandle), H2CornError>
+) -> Result<(WriterState<W>, H2WriterHandle), H2CornError>
 where
     W: WriteTarget,
 {
@@ -1097,7 +1098,7 @@ where
         frame_buf,
         config: Arc::clone(&config),
         streams: new_stream_map(stream_capacity),
-        ready_streams: VecDeque::with_capacity(stream_capacity.min(LAZY_STREAM_CAPACITY)),
+        ready_streams: ReadyStreamQueue::with_capacity(stream_capacity.min(LAZY_STREAM_CAPACITY)),
         drained_app_writes: Vec::with_capacity(stream_capacity.min(LAZY_STREAM_CAPACITY)),
         response_closes: ResponseCloseBatch::new(),
         connection_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
@@ -1120,7 +1121,7 @@ where
         }
     }
 
-    let connection = ConnectionHandle {
+    let connection = H2WriterHandle {
         ingress: Arc::clone(&writer_state.ingress),
         config,
     };

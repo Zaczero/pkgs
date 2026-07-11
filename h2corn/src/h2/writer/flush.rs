@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 #[cfg(test)]
 use std::env::temp_dir;
 #[cfg(test)]
@@ -22,7 +21,9 @@ use tokio::time::Instant;
 use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
 use super::stream_state::writer_stream;
-use super::stream_state::{PendingChunk, PendingChunks, StreamBodyState, StreamWriteState};
+use super::stream_state::{
+    PendingChunk, PendingChunks, ReadyStreamQueue, StreamBodyState, StreamWriteState,
+};
 use super::{
     FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch,
     ResponseDeadlineUpdateBatch,
@@ -34,7 +35,7 @@ use crate::h2::new_stream_map;
 use crate::h2_frame::{
     self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FrameType, StreamId,
 };
-use crate::http::pathsend::PathStreamer;
+use crate::http::pathsend::{PathStreamer, SendfileCursor};
 use crate::sendfile::WriteTarget;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,9 +44,14 @@ enum FlushBodyProgress {
     ConnectionBlocked,
 }
 
+enum SendfileProgress {
+    Continue,
+    Done(FlushBodyProgress),
+}
+
 struct FlushBodyParts<'a, W> {
     writer: &'a mut BufWriter<W>,
-    ready_streams: &'a mut VecDeque<StreamId>,
+    ready_streams: &'a mut ReadyStreamQueue,
     connection_send_window: &'a mut i64,
     data_frame_size: usize,
     stream_budget: usize,
@@ -194,7 +200,7 @@ where
     if ended_stream {
         stream.finish(stream_id, context.response_closes);
     } else if connection_blocked {
-        stream.schedule(context.ready_streams, stream_id, true);
+        context.ready_streams.schedule(stream, stream_id, true);
         return Ok(FlushBodyProgress::ConnectionBlocked);
     }
     Ok(FlushBodyProgress::Continue)
@@ -214,53 +220,16 @@ where
             return Ok(FlushBodyProgress::Continue);
         }
 
-        if W::SUPPORTS_SENDFILE && streamer.prefers_sendfile && streamer.needs_fill() {
-            if *context.connection_send_window <= 0 {
-                stream.schedule(context.ready_streams, stream_id, true);
-                return Ok(FlushBodyProgress::ConnectionBlocked);
+        let path_ends_stream = streamer.end_stream;
+        if W::SUPPORTS_SENDFILE
+            && let Some(sendfile) = streamer.sendfile_cursor()
+        {
+            match flush_sendfile_chunk(context, sendfile, path_ends_stream, stream_id, stream)
+                .await?
+            {
+                SendfileProgress::Continue => continue,
+                SendfileProgress::Done(progress) => return Ok(progress),
             }
-            let Some(limit) = send_limit(
-                *context.connection_send_window,
-                stream.send_window,
-                context.data_frame_size,
-            ) else {
-                return Ok(FlushBodyProgress::Continue);
-            };
-
-            let remaining = streamer.sendfile_remaining_len();
-            let chunk_len = context.next_body_write_len(limit, remaining);
-            let end_stream = streamer.end_stream && chunk_len == remaining;
-            let header = h2_frame::encode_frame_header(
-                FrameHeader {
-                    frame_type: FrameType::DATA,
-                    flags: if end_stream {
-                        FrameFlags::END_STREAM
-                    } else {
-                        FrameFlags::EMPTY
-                    },
-                    stream_id: Some(stream_id),
-                },
-                chunk_len,
-            );
-            let (file, offset) = streamer.sendfile_parts();
-            context.writer.write_all(&header).await?;
-            context.writer.flush().await?;
-            W::send_file(context.writer, file, offset, chunk_len).await?;
-
-            let chunk_len = chunk_len as i64;
-            *context.connection_send_window -= chunk_len;
-            stream.send_window -= chunk_len;
-            streamer.advance_after_sendfile(chunk_len as usize);
-            stream.note_body_progress(Instant::now());
-
-            if end_stream {
-                stream.finish(stream_id, context.response_closes);
-                return Ok(FlushBodyProgress::Continue);
-            }
-            if context.budget_exhausted() {
-                return Ok(FlushBodyProgress::Continue);
-            }
-            continue;
         }
 
         if streamer.needs_fill()
@@ -285,7 +254,7 @@ where
         // instead of 8 flush+write pairs.
         let (total, ended_stream, connection_blocked) = {
             let remaining = streamer.remaining();
-            let may_end = streamer.end_stream && streamer.sendfile_remaining_len() == 0;
+            let may_end = streamer.end_stream && streamer.buffered_is_final();
             let batch = collect_data_frames(context, stream, stream_id, [(remaining, may_end)]);
             if !batch.headers.is_empty() {
                 write_frames_vectored(
@@ -311,13 +280,71 @@ where
             return Ok(FlushBodyProgress::Continue);
         }
         if connection_blocked {
-            stream.schedule(context.ready_streams, stream_id, true);
+            context.ready_streams.schedule(stream, stream_id, true);
             return Ok(FlushBodyProgress::ConnectionBlocked);
         }
         if total == 0 || context.budget_exhausted() {
             return Ok(FlushBodyProgress::Continue);
         }
     }
+}
+
+async fn flush_sendfile_chunk<W>(
+    context: &mut FlushBodyParts<'_, W>,
+    mut sendfile: SendfileCursor<'_>,
+    path_ends_stream: bool,
+    stream_id: StreamId,
+    stream: &mut StreamWriteState,
+) -> Result<SendfileProgress, H2CornError>
+where
+    W: AsyncWrite + Unpin + WriteTarget,
+{
+    if *context.connection_send_window <= 0 {
+        context.ready_streams.schedule(stream, stream_id, true);
+        return Ok(SendfileProgress::Done(FlushBodyProgress::ConnectionBlocked));
+    }
+    let Some(limit) = send_limit(
+        *context.connection_send_window,
+        stream.send_window,
+        context.data_frame_size,
+    ) else {
+        return Ok(SendfileProgress::Done(FlushBodyProgress::Continue));
+    };
+
+    let remaining = sendfile.remaining();
+    let chunk_len = context.next_body_write_len(limit, remaining);
+    let end_stream = path_ends_stream && chunk_len == remaining;
+    let header = h2_frame::encode_frame_header(
+        FrameHeader {
+            frame_type: FrameType::DATA,
+            flags: if end_stream {
+                FrameFlags::END_STREAM
+            } else {
+                FrameFlags::EMPTY
+            },
+            stream_id: Some(stream_id),
+        },
+        chunk_len,
+    );
+    let (file, offset) = sendfile.parts();
+    context.writer.write_all(&header).await?;
+    context.writer.flush().await?;
+    W::send_file(context.writer, file, offset, chunk_len).await?;
+    drop(sendfile);
+
+    let chunk_len = chunk_len as i64;
+    *context.connection_send_window -= chunk_len;
+    stream.send_window -= chunk_len;
+    stream.note_body_progress(Instant::now());
+
+    if end_stream {
+        stream.finish(stream_id, context.response_closes);
+        return Ok(SendfileProgress::Done(FlushBodyProgress::Continue));
+    }
+    if context.budget_exhausted() {
+        return Ok(SendfileProgress::Done(FlushBodyProgress::Continue));
+    }
+    Ok(SendfileProgress::Continue)
 }
 
 fn data_frame_header(len: usize, end_stream: bool, stream_id: StreamId) -> [u8; FRAME_HEADER_LEN] {
@@ -529,7 +556,7 @@ where
 pub(super) async fn flush_pending_data_tracked<W>(
     writer: &mut BufWriter<W>,
     streams: &mut StreamMap<StreamWriteState>,
-    ready_streams: &mut VecDeque<StreamId>,
+    ready_streams: &mut ReadyStreamQueue,
     connection_send_window: &mut i64,
     peer_max_frame_size: usize,
     header_state: &mut HeaderEncodeState,
@@ -546,17 +573,16 @@ where
 
     while ready_turns > 0 {
         ready_turns -= 1;
-        let Some(stream_id) = ready_streams.pop_front() else {
+        let Some(stream_id) = ready_streams.pop_scheduled(streams) else {
             break;
         };
         let Some(stream) = streams.get_mut(&stream_id) else {
-            continue;
+            unreachable!("ready queue returns only live streams")
         };
         let deadline_before = stream.pending_body_since();
-        stream.scheduled = false;
 
         if *connection_send_window <= 0 && stream.has_pending_output() {
-            stream.schedule(ready_streams, stream_id, true);
+            ready_streams.schedule(stream, stream_id, true);
             result = FlushPassResult::ConnectionBlocked;
             break;
         }
@@ -604,7 +630,7 @@ where
             && *connection_send_window > 0
             && stream.send_window > 0
         {
-            stream.schedule(ready_streams, stream_id, false);
+            ready_streams.schedule(stream, stream_id, false);
         }
     }
 
@@ -621,7 +647,7 @@ where
 async fn flush_pending_data<W>(
     writer: &mut BufWriter<W>,
     streams: &mut StreamMap<StreamWriteState>,
-    ready_streams: &mut VecDeque<StreamId>,
+    ready_streams: &mut ReadyStreamQueue,
     connection_send_window: &mut i64,
     peer_max_frame_size: usize,
     header_state: &mut HeaderEncodeState,
@@ -820,7 +846,7 @@ mod tests {
     async fn prefixed_payload_is_one_h2_data_frame_without_joining_buffers() {
         let stream_id = StreamId::new(1).unwrap();
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -838,7 +864,7 @@ mod tests {
                 false,
             )
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let mut writer = BufWriter::new(RecordingWriter::default());
         flush_pending_data(
@@ -866,7 +892,7 @@ mod tests {
     async fn prefixed_payload_resumes_across_prefix_window_boundary() {
         let stream_id = StreamId::new(1).unwrap();
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -882,7 +908,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let mut writer = BufWriter::new(RecordingWriter::default());
         flush_pending_data(
@@ -901,7 +927,7 @@ mod tests {
 
         let stream = streams.get_mut(&stream_id).unwrap();
         stream.send_window += 8;
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
         flush_pending_data(
             &mut writer,
             &mut streams,
@@ -931,7 +957,7 @@ mod tests {
         let file = File::open(&path).unwrap();
 
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -945,7 +971,7 @@ mod tests {
         stream
             .queue_path(PathStreamer::new(file, b"abc".len(), true))
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let recording = RecordingWriter::default();
         let mut writer = BufWriter::new(recording);
@@ -1001,7 +1027,7 @@ mod tests {
         let frame_size = 16 * 1024;
 
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -1024,7 +1050,7 @@ mod tests {
         stream
             .queue_data(Bytes::from(chunk_c.clone()).into(), true)
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let recording = RecordingWriter::default();
         let mut writer = BufWriter::new(recording);
@@ -1067,7 +1093,7 @@ mod tests {
         let stream_id = StreamId::new(1).unwrap();
 
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -1087,7 +1113,7 @@ mod tests {
         stream
             .queue_data(Bytes::from_static(b"").into(), true)
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let recording = RecordingWriter::default();
         let mut writer = BufWriter::new(recording);
@@ -1123,7 +1149,7 @@ mod tests {
         let body = vec![b'z'; 12 * 1024];
 
         let mut streams = new_stream_map(1);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -1133,7 +1159,7 @@ mod tests {
         stream
             .queue_data(Bytes::from(body.clone()).into(), true)
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         let recording = RecordingWriter::default();
         let mut writer = BufWriter::new(recording);
@@ -1161,7 +1187,7 @@ mod tests {
         // Window grant -> the remaining 4 KiB flushes with END_STREAM.
         let stream = streams.get_mut(&stream_id).unwrap();
         stream.send_window += window;
-        stream.schedule(&mut ready_streams, stream_id, false);
+        ready_streams.schedule(stream, stream_id, false);
 
         flush_pending_data(
             &mut writer,
@@ -1192,7 +1218,7 @@ mod tests {
         let stream_b = StreamId::new(3).unwrap();
 
         let mut streams = new_stream_map(2);
-        let mut ready_streams = VecDeque::new();
+        let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
@@ -1209,7 +1235,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_a, false);
+        ready_streams.schedule(stream, stream_a, false);
 
         let stream = writer_stream(
             &mut streams,
@@ -1220,7 +1246,7 @@ mod tests {
         stream
             .queue_data(Bytes::from_static(b"tiny").into(), true)
             .unwrap();
-        stream.schedule(&mut ready_streams, stream_b, false);
+        ready_streams.schedule(stream, stream_b, false);
 
         let recording = RecordingWriter::default();
         let mut writer = BufWriter::new(recording);
@@ -1240,7 +1266,7 @@ mod tests {
 
         let stream_ids = parse_data_stream_ids(&writer.get_ref().bytes);
         assert_eq!(stream_ids, vec![stream_a.get(), stream_b.get()]);
-        assert_eq!(ready_streams, VecDeque::from([stream_a]));
+        assert_eq!(ready_streams.iter().collect::<Vec<_>>(), [stream_a]);
         assert!(streams.contains_key(&stream_a));
         assert_eq!(response_closes.as_slice(), &[stream_b]);
         response_closes.clear();

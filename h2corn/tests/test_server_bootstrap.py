@@ -267,7 +267,7 @@ def test_drop_process_privileges_sets_groups_before_ids(
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX worker supervisor')
-def test_serve_cli_target_defers_import_when_privilege_drop_is_configured(
+def test_serve_import_target_defers_import_when_privilege_drop_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import _server
@@ -288,14 +288,14 @@ def test_serve_cli_target_defers_import_when_privilege_drop_is_configured(
 
     monkeypatch.setattr(
         _supervisor,
-        '_serve_supervisor',
+        '_serve_with_supervisor',
         lambda app, config: captured.setdefault('supervisor', (app, config)),
     )
 
     import_settings = ImportSettings(target='example:app')
     config = Config(user='www-data')
 
-    _server._serve_cli_target(import_settings, config)
+    _server._serve_import_target(import_settings, config)
 
     assert imported is False
     assert captured['supervisor'] == (import_settings, config)

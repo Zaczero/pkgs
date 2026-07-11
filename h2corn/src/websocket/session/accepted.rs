@@ -125,7 +125,7 @@ where
         let pong_timeout = sleep_until_or_pending(self.ping.pong_deadline);
 
         tokio::select! {
-            () = self.running_app.app.join_store(), if !self.running_app.app.is_joined() => {
+            () = self.running_app.task.join_store(), if !self.running_app.task.is_joined() => {
                 // Messages the app sent just before returning may have become
                 // ready in the same instant as its completion — drain them onto
                 // the wire before acting on the result, or the final sends of a
@@ -133,7 +133,7 @@ where
                 if let ControlFlow::Break(result) = self.process_outbound_batch(None).await? {
                     return Ok(ControlFlow::Break(result));
                 }
-                self.running_app.app.take_outcome().unwrap_or(Ok(()))?;
+                self.running_app.task.take_outcome().unwrap_or(Ok(()))?;
                 if !self.state.close_started() {
                     self.state.queue_close_if_open(close_code::NORMAL, "")?;
                 }
@@ -323,7 +323,7 @@ where
             reason: Some("ping timeout".into()),
         })
         .await;
-        self.running_app.app.abort().await;
+        self.running_app.task.abort().await;
     }
 
     async fn initiate_server_shutdown(&mut self, kind: ShutdownKind) -> Result<(), H2CornError> {
@@ -368,7 +368,7 @@ where
                         state.queue_close_if_open(code, "")
                     })
                     .await?;
-                    self.running_app.app.abort().await;
+                    self.running_app.task.abort().await;
                     return Ok(ControlFlow::Break(
                         WebSocketError::Protocol(err.error).err(),
                     ));
@@ -390,7 +390,7 @@ where
             TransportRead::PeerGone => {
                 let code = close_code::NO_STATUS_RECEIVED;
                 self.terminate_session(code, None, |state, code| {
-                    state.set_close_code(code);
+                    state.mark_peer_gone(code);
                     Ok(())
                 })
                 .await?;
@@ -398,7 +398,7 @@ where
             },
             TransportRead::PeerGoneSilent => {
                 self.running_app.close_outbound();
-                self.state.set_close_code(close_code::NO_STATUS_RECEIVED);
+                self.state.mark_peer_gone(close_code::NO_STATUS_RECEIVED);
                 Ok(ControlFlow::Break(Ok(())))
             },
             TransportRead::PeerReset { reason } => {
@@ -455,7 +455,6 @@ where
             },
             DecodedFrame::Close { code, reason } => {
                 self.terminate_session(code, reason, |state, code| {
-                    state.set_close_code(code);
                     state.queue_close_if_open(code, "")
                 })
                 .await?;
@@ -478,7 +477,7 @@ where
             | FailureDomain::InternalInvariant => close_code::INTERNAL_ERROR,
         };
         self.state.queue_close_if_open(close_code, "")?;
-        self.running_app.app.abort().await;
+        self.running_app.task.abort().await;
         Ok(ControlFlow::Break(Err(err)))
     }
 }

@@ -28,7 +28,7 @@ use crate::pyloop::{
     PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
     call_awaitable, init_runtime, new_rust_future, release_app, runtime, spawn_shard_thread,
 };
-use crate::runtime::{AppState, RuntimeLimits, SharedApp};
+use crate::runtime::{AppRuntime, AppRuntimeHandle, RuntimeLimits};
 use crate::server::{ListenerFd, own_listener_fds, serve_from_fds};
 use crate::tls::build_tls_config;
 
@@ -44,8 +44,41 @@ struct SecondaryLifespanConfig {
     shutdown_timeout: Option<f64>,
 }
 
+/// Exact, immutable Python-to-Rust ownership handoff for an active primary
+/// lifespan runner. The Python wrapper remains usable by generic callbacks;
+/// h2corn consumes this object to call the original app directly and install
+/// the loop-local state dictionary on the main shard.
+#[pyclass(frozen, name = "_LifespanHandoff")]
+pub(crate) struct LifespanHandoff {
+    app: Py<PyAny>,
+    state: Py<PyDict>,
+    config: SecondaryLifespanConfig,
+}
+
+#[pymethods]
+impl LifespanHandoff {
+    #[new]
+    const fn new(
+        app: Py<PyAny>,
+        state: Py<PyDict>,
+        required: bool,
+        startup_timeout: Option<f64>,
+        shutdown_timeout: Option<f64>,
+    ) -> Self {
+        Self {
+            app,
+            state,
+            config: SecondaryLifespanConfig {
+                required,
+                startup_timeout,
+                shutdown_timeout,
+            },
+        }
+    }
+}
+
 struct ServeTask {
-    app: AppState,
+    app: AppRuntimeHandle,
     fds: Box<[ListenerFd]>,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
@@ -188,7 +221,7 @@ impl<'py> PyConfig<'py> {
 
     fn websocket(&self, max_request_body_size: Option<NonZeroU64>) -> PyResult<WebSocketConfig> {
         Ok(WebSocketConfig {
-            message_size_limit: self.websocket_message_size_limit(max_request_body_size)?,
+            max_message_size: self.websocket_message_size_limit(max_request_body_size)?,
             per_message_deflate: self.get("websocket_per_message_deflate")?,
             ping_interval: self.optional_duration("websocket_ping_interval")?,
             ping_timeout: self.optional_duration("websocket_ping_timeout")?,
@@ -444,30 +477,18 @@ const fn effective_loop_count(
     }
 }
 
-fn unwrap_lifespan_app(
+fn extract_lifespan_handoff(
     py: Python<'_>,
     app: Py<PyAny>,
+    handoff: Option<Py<LifespanHandoff>>,
     main_shard: &Shard,
 ) -> PyResult<(Py<PyAny>, Option<SecondaryLifespanConfig>)> {
-    let wrapped = app.bind(py);
-    let Ok(original) = wrapped.getattr("__h2corn_lifespan_app__") else {
+    let Some(handoff) = handoff else {
         return Ok((app, None));
     };
-    let state = wrapped
-        .getattr("__h2corn_lifespan_state__")?
-        .cast_into::<PyDict>()?
-        .unbind();
-    main_shard.install_scope_state(py, state)?;
-    let config = SecondaryLifespanConfig {
-        required: wrapped.getattr("__h2corn_lifespan_required__")?.extract()?,
-        startup_timeout: wrapped
-            .getattr("__h2corn_lifespan_startup_timeout__")?
-            .extract()?,
-        shutdown_timeout: wrapped
-            .getattr("__h2corn_lifespan_shutdown_timeout__")?
-            .extract()?,
-    };
-    Ok((original.unbind(), Some(config)))
+    let handoff = handoff.borrow(py);
+    main_shard.install_scope_state(py, handoff.state.clone_ref(py))?;
+    Ok((handoff.app.clone_ref(py), Some(handoff.config)))
 }
 
 async fn start_secondary_lifespan(
@@ -570,7 +591,7 @@ async fn run_serve_task(task: ServeTask) {
         Err(app) => {
             let owners = Arc::strong_count(&app);
             result = Err(H2CornError::from(PyRuntimeError::new_err(format!(
-                "server teardown retained {owners} SharedApp owners after draining"
+                "server teardown retained {owners} AppRuntime owners after draining"
             ))));
             release_app(Arc::clone(&main_shard), app).await;
             None
@@ -590,6 +611,7 @@ async fn run_serve_task(task: ServeTask) {
 }
 
 #[pyfunction]
+#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None))]
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
@@ -597,6 +619,7 @@ pub(crate) fn serve_fds<'py>(
     config: &Bound<'py, PyAny>,
     shutdown_trigger: Py<PyAny>,
     retire_trigger: Option<Py<PyAny>>,
+    lifespan_handoff: Option<Py<LifespanHandoff>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     // Acquire RAII ownership before any fallible parsing/runtime setup. Every
     // early return and partial listener adoption now closes the remainder.
@@ -606,13 +629,14 @@ pub(crate) fn serve_fds<'py>(
     let config = Arc::new(config);
 
     let (main_shard, loop_factory) = ShardHandle::from_running_loop(py)?;
-    let (app, lifespan_config) = match unwrap_lifespan_app(py, app, &main_shard) {
-        Ok(handoff) => handoff,
-        Err(err) => {
-            main_shard.detach(py);
-            return Err(err);
-        },
-    };
+    let (app, lifespan_config) =
+        match extract_lifespan_handoff(py, app, lifespan_handoff, &main_shard) {
+            Ok(handoff) => handoff,
+            Err(err) => {
+                main_shard.detach(py);
+                return Err(err);
+            },
+        };
     let limits = RuntimeLimits::new(&config, retire_trigger).map(Arc::new);
 
     // Extra loop shards only run on free-threaded builds; on a GIL build the
@@ -652,7 +676,7 @@ pub(crate) fn serve_fds<'py>(
     } else {
         Vec::new()
     };
-    let app: AppState = Arc::new(SharedApp::new(app, shards.into_boxed_slice(), limits));
+    let app: AppRuntimeHandle = Arc::new(AppRuntime::new(app, shards.into_boxed_slice(), limits));
 
     // The Python side awaits this duck future; it resolves when the server
     // future completes (shutdown or fatal error).
@@ -736,6 +760,37 @@ mod tests {
             effective_loop_count(false, 4, SecondaryLoopFactory::Uvloop),
             4
         );
+    }
+
+    #[test]
+    fn typed_lifespan_handoff_installs_exact_app_state_and_config() {
+        Python::initialize();
+        Python::attach(|py| {
+            let wrapper = config_stub(py).unbind();
+            let original = config_stub(py).unbind();
+            let state = PyDict::new(py);
+            state.set_item("ready", true).unwrap();
+            let handoff = Py::new(
+                py,
+                LifespanHandoff::new(
+                    original.clone_ref(py),
+                    state.unbind(),
+                    true,
+                    Some(1.5),
+                    Some(2.5),
+                ),
+            )
+            .unwrap();
+            let shard = ShardHandle::test_stub(py);
+
+            let (app, config) =
+                extract_lifespan_handoff(py, wrapper, Some(handoff), &shard).unwrap();
+            assert!(app.bind(py).is(original.bind(py)));
+            let config = config.expect("typed handoff enables secondary lifespan");
+            assert!(config.required);
+            assert_eq!(config.startup_timeout, Some(1.5));
+            assert_eq!(config.shutdown_timeout, Some(2.5));
+        });
     }
 
     fn set_core_options(config: &Bound<'_, PyAny>) {
@@ -899,10 +954,7 @@ mod tests {
 
     fn assert_websocket_and_proxy_config(extracted: &ServerConfig) {
         assert_eq!(
-            extracted
-                .websocket
-                .message_size_limit
-                .map(NonZeroUsize::get),
+            extracted.websocket.max_message_size.map(NonZeroUsize::get),
             Some(54_321),
         );
         assert!(!extracted.websocket.per_message_deflate);

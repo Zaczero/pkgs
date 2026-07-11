@@ -2,21 +2,21 @@ use std::fmt::{self, Debug, Formatter};
 
 use smallvec::SmallVec;
 
-pub(crate) struct SmallVecDeque<T, const N: usize> {
+pub(crate) struct InlineFifo<T, const N: usize> {
     items: SmallVec<[Option<T>; N]>,
     front: usize,
 }
 
-impl<T: Debug, const N: usize> Debug for SmallVecDeque<T, N> {
+impl<T: Debug, const N: usize> Debug for InlineFifo<T, N> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SmallVecDeque")
+        f.debug_struct("InlineFifo")
             .field("items", &self.items)
             .field("front", &self.front)
             .finish()
     }
 }
 
-impl<T, const N: usize> Default for SmallVecDeque<T, N> {
+impl<T, const N: usize> Default for InlineFifo<T, N> {
     fn default() -> Self {
         Self {
             items: SmallVec::new(),
@@ -25,7 +25,7 @@ impl<T, const N: usize> Default for SmallVecDeque<T, N> {
     }
 }
 
-impl<T, const N: usize> SmallVecDeque<T, N> {
+impl<T, const N: usize> InlineFifo<T, N> {
     pub(crate) fn new() -> Self {
         Self::default()
     }

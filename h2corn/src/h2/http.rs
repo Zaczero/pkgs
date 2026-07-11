@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::num::NonZeroU64;
-use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use bytes::Bytes;
@@ -9,9 +8,9 @@ use tokio::sync::mpsc;
 use super::state::RequestTaskCancellation;
 use super::websocket::handle_request as handle_websocket_request;
 use super::writer::{WriterCommand, WriterCommandBatch};
-use super::{ConnectionHandle, InboundStream, RequestSpawnContext};
+use super::{H2WriterHandle, InboundStream, RequestSpawnContext};
 use crate::access_log::{HttpAccessLogState, ResponseLogState};
-use crate::bridge::PayloadBytes;
+use crate::bridge::{PayloadBytes, RequestBodyCounter};
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::H2CornError;
 use crate::h2_frame::{ErrorCode, StreamId};
@@ -30,14 +29,14 @@ use crate::runtime::{RequestAdmission, RequestContext, StreamInput};
 use crate::websocket::{WebSocketContext, validate_websocket_request};
 
 struct H2HttpTransport<'a> {
-    connection: &'a ConnectionHandle,
+    connection: &'a H2WriterHandle,
     stream_id: StreamId,
     response_log: ResponseLogState,
 }
 
-struct HttpRequestTask {
+struct H2HttpRequestContext {
     ctx: Box<RequestContext>,
-    connection: ConnectionHandle,
+    connection: H2WriterHandle,
     admission: RequestAdmission,
     input: AppRequestInput,
 }
@@ -141,7 +140,7 @@ pub(super) async fn spawn_request_stream(
     stream_id: StreamId,
     request: RequestHead,
     end_stream: bool,
-    connection: &ConnectionHandle,
+    connection: &H2WriterHandle,
     context: RequestSpawnContext<'_>,
 ) -> Result<(), H2CornError> {
     if let Some(RequestRejection { status, headers }) =
@@ -161,7 +160,7 @@ fn prepare_and_spawn_request(
     stream_id: StreamId,
     request: RequestHead,
     end_stream: bool,
-    connection: &ConnectionHandle,
+    connection: &H2WriterHandle,
     mut context: RequestSpawnContext<'_>,
 ) -> Option<RequestRejection> {
     let config = &context.connection.config;
@@ -209,12 +208,17 @@ fn prepare_and_spawn_request(
                     config.http2.initial_stream_window_size.get(),
                 ),
             );
-            spawn_http_request(context.tasks, stream_id, cancellation, HttpRequestTask {
-                ctx: request,
-                connection: connection.clone(),
-                admission,
-                input: app_input,
-            });
+            spawn_http_request(
+                context.tasks,
+                stream_id,
+                cancellation,
+                H2HttpRequestContext {
+                    ctx: request,
+                    connection: connection.clone(),
+                    admission,
+                    input: app_input,
+                },
+            );
         },
         RequestExecution::WebSocket {
             meta,
@@ -258,7 +262,7 @@ fn spawn_http_request(
     tasks: &mut super::state::RequestTasks,
     stream_id: StreamId,
     cancellation: RequestTaskCancellation,
-    task: HttpRequestTask,
+    task: H2HttpRequestContext,
 ) {
     tasks.spawn(stream_id, cancellation, async move {
         let _ = Box::pin(handle_http_request(stream_id, task)).await;
@@ -272,7 +276,7 @@ fn spawn_websocket_request(
     context: WebSocketContext,
     stream_id: StreamId,
     input: mpsc::Receiver<StreamInput>,
-    connection: ConnectionHandle,
+    connection: H2WriterHandle,
 ) {
     // WebSocket sessions are long-lived and their protocol future is much
     // larger than an ordinary HTTP request. One session-scoped box keeps that
@@ -297,7 +301,7 @@ fn register_inbound_stream(
 
 async fn handle_http_request(
     stream_id: StreamId,
-    task: HttpRequestTask,
+    task: H2HttpRequestContext,
 ) -> Result<(), H2CornError> {
     let mut transport = H2HttpTransport {
         connection: &task.connection,
@@ -320,11 +324,7 @@ async fn handle_http_request(
         },
         task.admission,
         &mut transport,
-        move || {
-            body_bytes_read
-                .as_ref()
-                .map_or(0, |body_bytes| body_bytes.load(Ordering::Relaxed))
-        },
+        move || body_bytes_read.as_ref().map_or(0, RequestBodyCounter::load),
     )
     .await
 }
@@ -467,7 +467,7 @@ fn log_response_action(response_log: &mut ResponseLogState, action: &ResponseAct
 }
 
 pub(super) async fn send_final_response(
-    connection: &ConnectionHandle,
+    connection: &H2WriterHandle,
     stream_id: StreamId,
     status: HttpStatusCode,
     headers: ResponseHeaders,

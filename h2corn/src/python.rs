@@ -149,7 +149,6 @@ mod dict_api {
 }
 
 use std::any::Any;
-use std::mem::MaybeUninit;
 
 use pyo3::prelude::*;
 pub(crate) use pyo3::sync::PyOnceLock;
@@ -157,8 +156,7 @@ pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
 use pyo3::{IntoPyObject, IntoPyObjectExt};
 pub(crate) use pyo3::{Py, PyResult};
 
-// Re-export crate-root macros (defined with `#[macro_export]` below) at this module path,
-// so existing `$crate::python::py_dict!(...)` paths inside macro bodies continue to resolve.
+// Re-export crate-root macros at the module path used by their recursive expansions.
 pub(crate) use crate::{
     py_dict, py_dict_slots, py_match_cached_bytes, py_match_cached_string, py_static_key,
 };
@@ -195,19 +193,19 @@ macro_rules! py_dict {
         let mut __scratch = $crate::python::PyDictScratch::<
             { $crate::python::py_dict_slots!($($items)*) }
         >::new($py);
-        $crate::python::py_dict!(@push __scratch, $($items)*);
+        $crate::python::py_dict!(@push __scratch, 0_usize; $($items)*);
         __scratch.finish()?
     }};
-    (@push $scratch:ident,) => {};
-    (@push $scratch:ident, $key:literal => true $(, $($rest:tt)*)?) => {{
-        $scratch.push($crate::python::py_static_key!($key), true)?;
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+    (@push $scratch:ident, $index:expr;) => {};
+    (@push $scratch:ident, $index:expr; $key:literal => true $(, $($rest:tt)*)?) => {{
+        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), true)?;
+        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $key:literal => false $(, $($rest:tt)*)?) => {{
-        $scratch.push($crate::python::py_static_key!($key), false)?;
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+    (@push $scratch:ident, $index:expr; $key:literal => false $(, $($rest:tt)*)?) => {{
+        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), false)?;
+        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
+    (@push $scratch:ident, $index:expr; $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
         static CACHED: $crate::python::PyOnceLock<
             $crate::python::Py<$crate::python::PyAny>,
         > = $crate::python::PyOnceLock::new();
@@ -223,24 +221,24 @@ macro_rules! py_dict {
             )?
             .bind($scratch.py())
             .clone();
-        $scratch.push_bound($crate::python::py_static_key!($key), value);
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+        $scratch.push_bound_at::<{ $index }>($crate::python::py_static_key!($key), value);
+        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
-        $scratch.push($crate::python::py_static_key!($key), $value)?;
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+    (@push $scratch:ident, $index:expr; $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
+        $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), $value)?;
+        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
-    (@push $scratch:ident, if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
+    (@push $scratch:ident, $index:expr; if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
         if let $pattern = $value {
-            $crate::python::py_dict!(@push $scratch, $($body)*);
+            $crate::python::py_dict!(@push $scratch, $index; $($body)*);
         }
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+        $crate::python::py_dict!(@push $scratch, $index + $crate::python::py_dict_slots!($($body)*); $($($rest)*)?);
     }};
-    (@push $scratch:ident, if $condition:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
+    (@push $scratch:ident, $index:expr; if $condition:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
         if $condition {
-            $crate::python::py_dict!(@push $scratch, $($body)*);
+            $crate::python::py_dict!(@push $scratch, $index; $($body)*);
         }
-        $crate::python::py_dict!(@push $scratch, $($($rest)*)?);
+        $crate::python::py_dict!(@push $scratch, $index + $crate::python::py_dict_slots!($($body)*); $($($rest)*)?);
     }};
 }
 
@@ -386,7 +384,7 @@ impl StaticPyKey {
 pub(crate) struct PyDictScratch<'py, const N: usize> {
     py: Python<'py>,
     len: usize,
-    items: [MaybeUninit<PendingDictItem<'py>>; N],
+    items: [Option<PendingDictItem<'py>>; N],
 }
 
 impl<'py, const N: usize> PyDictScratch<'py, N> {
@@ -394,32 +392,29 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
         Self {
             py,
             len: 0,
-            // SAFETY: an uninitialized `[MaybeUninit<_>; N]` is valid because each element is
-            // `MaybeUninit`; initialized entries are tracked by `len`.
-            items: unsafe {
-                MaybeUninit::<[MaybeUninit<PendingDictItem<'py>>; N]>::uninit().assume_init()
-            },
+            items: [const { None }; N],
         }
     }
 
-    pub(crate) fn push<V>(&mut self, key: &'static StaticPyKey, value: V) -> PyResult<()>
+    pub(crate) fn push_at<const I: usize, V>(
+        &mut self,
+        key: &'static StaticPyKey,
+        value: V,
+    ) -> PyResult<()>
     where
         V: IntoPyObject<'py>,
     {
         let value = value.into_bound_py_any(self.py)?;
-        self.push_bound(key, value);
+        self.push_bound_at::<I>(key, value);
         Ok(())
     }
 
-    pub(crate) fn push_bound(&mut self, key: &'static StaticPyKey, value: Bound<'py, PyAny>) {
-        // SAFETY: `py_dict_slots!` sizes the scratch array exactly for all pushes
-        // generated by `py_dict!`, so `self.len` is in bounds for every call
-        // before `finish`.
-        unsafe {
-            self.items
-                .get_unchecked_mut(self.len)
-                .write(PendingDictItem { key, value });
-        }
+    pub(crate) fn push_bound_at<const I: usize>(
+        &mut self,
+        key: &'static StaticPyKey,
+        value: Bound<'py, PyAny>,
+    ) {
+        self.items[I] = Some(PendingDictItem { key, value });
         self.len += 1;
     }
 
@@ -429,9 +424,7 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
 
     pub(crate) fn finish(self) -> PyResult<Bound<'py, PyDict>> {
         let dict = py_new_dict(self.py, self.len)?;
-        for index in 0..self.len {
-            // SAFETY: indices below `self.len` have been initialized by `push_bound`.
-            let item = unsafe { self.items.get_unchecked(index).assume_init_ref() };
+        for item in self.items.iter().flatten() {
             item.key.set_item(self.py, &dict, &item.value)?;
         }
         Ok(dict)
@@ -441,18 +434,6 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
 struct PendingDictItem<'py> {
     key: &'static StaticPyKey,
     value: Bound<'py, PyAny>,
-}
-
-impl<const N: usize> Drop for PyDictScratch<'_, N> {
-    fn drop(&mut self) {
-        for index in 0..self.len {
-            // SAFETY: indices below `self.len` have been initialized by `push_bound` and
-            // are dropped exactly once here if `finish` did not consume `self`.
-            unsafe {
-                self.items.get_unchecked_mut(index).assume_init_drop();
-            }
-        }
-    }
 }
 
 pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
@@ -479,8 +460,8 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     #[cfg(Py_GIL_DISABLED)]
-    use pyo3::types::{PyAnyMethods, PyDict};
-    use pyo3::types::{PyBool, PyBytes, PyBytesMethods, PyDictMethods};
+    use pyo3::types::PyDict;
+    use pyo3::types::{PyAnyMethods, PyBool, PyBytes, PyBytesMethods, PyDictMethods};
     use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
 
     use super::PyString;
@@ -555,6 +536,27 @@ mod tests {
 
             // SAFETY: both pointers are live Python objects bound under the current GIL.
             assert!(unsafe { ffi::Py_Is(value.as_ptr(), expected.as_ptr()) } != 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn py_dict_static_slots_keep_conditional_fields_sparse_and_ordered() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let include = false;
+            let dict = py_dict!(py, {
+                "first" => 1,
+                if include => {
+                    "omitted" => 2,
+                },
+                "last" => 3,
+            });
+            assert_eq!(dict.len(), 2);
+            assert_eq!(dict.get_item("first")?.unwrap().extract::<usize>()?, 1);
+            assert!(dict.get_item("omitted")?.is_none());
+            assert_eq!(dict.get_item("last")?.unwrap().extract::<usize>()?, 3);
             Ok(())
         })
         .unwrap();

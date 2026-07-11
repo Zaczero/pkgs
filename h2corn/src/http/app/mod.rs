@@ -15,7 +15,7 @@ use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
 use crate::app_call::AppCallArgs;
-use crate::bridge::HttpDisconnectSignal;
+use crate::bridge::RequestInputShared;
 use crate::error::H2CornError;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 
@@ -24,7 +24,7 @@ pub(crate) enum HttpRequestBody {
     Single(Bytes),
     Stream {
         rx: mpsc::Receiver<StreamInput>,
-        disconnect: Arc<HttpDisconnectSignal>,
+        disconnect: Arc<RequestInputShared>,
     },
 }
 

@@ -42,13 +42,13 @@ use tokio::sync::oneshot;
 use crate::app_call::AppCallArgs;
 use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
-use crate::runtime::AppState;
+use crate::runtime::AppRuntimeHandle;
 
 /// Maximum events processed per pump invocation before yielding back to the
 /// loop via `call_soon`, so app callbacks and timers interleave fairly.
 const PUMP_BATCH_MAX: usize = 64;
 
-/// The tokio runtime owned by h2corn (replaces pyo3-async-runtimes' global).
+/// The process-global Tokio runtime owned by h2corn.
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 pub(crate) type BuildAwaitable =
@@ -182,7 +182,7 @@ pub(crate) enum PumpEvent {
     /// Start an ASGI app call: build args, vectorcall the app, create an
     /// eager task, deliver the outcome through the slot.
     StartTask {
-        app: AppState,
+        app: AppRuntimeHandle,
         args: Box<AppCallArgs>,
         slot: SlotHandle<Result<(), H2CornError>>,
     },
@@ -206,7 +206,7 @@ pub(crate) enum PumpEvent {
     /// Drop a fallback shared-app owner on the main loop, then acknowledge so
     /// secondary shards can be stopped without cross-loop final destruction.
     ReleaseApp {
-        app: AppState,
+        app: AppRuntimeHandle,
         done: oneshot::Sender<()>,
     },
     /// Cancel an abandoned Python task on the event loop that owns it.
@@ -610,7 +610,7 @@ where
     slot.wait(shard)
 }
 
-pub(crate) async fn release_app(shard: Shard, app: AppState) {
+pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {
     let (done, wait) = oneshot::channel();
     shard.push(PumpEvent::ReleaseApp { app, done });
     let _ = wait.await;

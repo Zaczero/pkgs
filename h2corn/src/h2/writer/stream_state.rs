@@ -10,7 +10,7 @@ use crate::h2::StreamMap;
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::PathStreamer;
 use crate::http::types::ResponseHeaders;
-use crate::smallvec_deque::SmallVecDeque;
+use crate::inline_fifo::InlineFifo;
 
 #[derive(Debug)]
 pub(super) struct PendingChunk {
@@ -25,7 +25,75 @@ enum PendingChunkData {
     Prefixed(Box<PrefixedData>),
 }
 
-pub(super) type PendingChunks = SmallVecDeque<PendingChunk, 2>;
+pub(super) type PendingChunks = InlineFifo<PendingChunk, 2>;
+
+#[derive(Debug)]
+pub(super) struct ReadyStreamQueue {
+    queue: VecDeque<StreamId>,
+}
+
+impl ReadyStreamQueue {
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            queue: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    pub(super) fn schedule(
+        &mut self,
+        stream: &mut StreamWriteState,
+        stream_id: StreamId,
+        front: bool,
+    ) {
+        if stream.scheduled {
+            return;
+        }
+        stream.scheduled = true;
+        if front {
+            self.queue.push_front(stream_id);
+        } else {
+            self.queue.push_back(stream_id);
+        }
+    }
+
+    pub(super) fn pop_scheduled(
+        &mut self,
+        streams: &mut StreamMap<StreamWriteState>,
+    ) -> Option<StreamId> {
+        while let Some(stream_id) = self.queue.pop_front() {
+            let Some(stream) = streams.get_mut(&stream_id) else {
+                continue;
+            };
+            debug_assert!(
+                stream.scheduled,
+                "ready queue contains only scheduled streams"
+            );
+            stream.scheduled = false;
+            return Some(stream_id);
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(super) fn iter(&self) -> impl Iterator<Item = StreamId> + '_ {
+        self.queue.iter().copied()
+    }
+}
 
 #[derive(Debug)]
 pub(super) enum StreamBodyState {
@@ -88,23 +156,6 @@ impl StreamWriteState {
         match &self.response {
             ResponseWriteState::Open { body, .. } => body.has_pending_output(),
             ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => false,
-        }
-    }
-
-    pub(super) fn schedule(
-        &mut self,
-        ready_streams: &mut VecDeque<StreamId>,
-        stream_id: StreamId,
-        front: bool,
-    ) {
-        if self.scheduled {
-            return;
-        }
-        self.scheduled = true;
-        if front {
-            ready_streams.push_front(stream_id);
-        } else {
-            ready_streams.push_back(stream_id);
         }
     }
 
@@ -316,4 +367,46 @@ pub(super) fn writer_stream(
 
 pub(super) fn notify_response_close(response_closes: &mut ResponseCloseBatch, stream_id: StreamId) {
     response_closes.push(stream_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::mem::size_of;
+
+    use super::{ReadyStreamQueue, StreamWriteState};
+    use crate::h2::new_stream_map;
+    use crate::h2_frame::StreamId;
+
+    #[test]
+    fn ready_queue_owns_schedule_membership_transitions() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let mut streams = new_stream_map(1);
+        streams.insert(stream_id, StreamWriteState::new(0xFFFF));
+        let mut ready = ReadyStreamQueue::new();
+
+        ready.schedule(
+            streams.get_mut(&stream_id).expect("stream exists"),
+            stream_id,
+            false,
+        );
+        ready.schedule(
+            streams.get_mut(&stream_id).expect("stream exists"),
+            stream_id,
+            true,
+        );
+        assert_eq!(ready.iter().collect::<Vec<_>>(), [stream_id]);
+
+        assert_eq!(ready.pop_scheduled(&mut streams), Some(stream_id));
+        assert!(!streams.get(&stream_id).expect("stream exists").scheduled);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn ready_queue_wrapper_has_no_layout_cost() {
+        assert_eq!(
+            size_of::<ReadyStreamQueue>(),
+            size_of::<VecDeque<StreamId>>()
+        );
+    }
 }

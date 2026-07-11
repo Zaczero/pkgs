@@ -7,8 +7,7 @@ use crate::{bridge, http};
 #[derive(Debug)]
 enum ResponseState {
     WaitingForStart,
-    UnaryBufferable(StartedResponse),
-    StartedStreaming(StartedResponse),
+    Started(StartedResponse),
     WaitingForTrailers {
         buffered: http::types::ResponseHeaders,
     },
@@ -27,9 +26,14 @@ impl ResponseState {
 #[derive(Debug)]
 struct StartedResponse {
     start: actions::ResponseStart,
-    expects_trailers: bool,
-    saw_body: bool,
-    suppressed_body_len: usize,
+    body: StartedBody,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StartedBody {
+    Unsent { expects_trailers: bool },
+    Streaming { expects_trailers: bool },
+    SuppressingHead { expects_trailers: bool, len: usize },
 }
 
 impl StartedResponse {
@@ -56,6 +60,20 @@ impl StartedResponse {
     const fn pathsend_len_hint(&self) -> Option<usize> {
         self.start.content_length_hint()
     }
+
+    const fn expects_trailers(&self) -> bool {
+        match self.body {
+            StartedBody::Unsent { expects_trailers }
+            | StartedBody::Streaming { expects_trailers }
+            | StartedBody::SuppressingHead {
+                expects_trailers, ..
+            } => expects_trailers,
+        }
+    }
+
+    const fn body_started(&self) -> bool {
+        !matches!(self.body, StartedBody::Unsent { .. })
+    }
 }
 
 pub(crate) struct ResponseController {
@@ -79,9 +97,13 @@ impl ResponseController {
 
     pub(crate) const fn needs_live_stream(&self) -> bool {
         match &self.state {
-            ResponseState::StartedStreaming(_) | ResponseState::WaitingForTrailers { .. } => true,
+            ResponseState::Started(StartedResponse {
+                body: StartedBody::Streaming { .. },
+                ..
+            })
+            | ResponseState::WaitingForTrailers { .. } => true,
             ResponseState::WaitingForStart
-            | ResponseState::UnaryBufferable(_)
+            | ResponseState::Started(_)
             | ResponseState::Complete
             | ResponseState::Aborted => false,
         }
@@ -89,9 +111,7 @@ impl ResponseController {
 
     pub(crate) const fn pathsend_len_hint(&self) -> Option<usize> {
         match &self.state {
-            ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
-                started.pathsend_len_hint()
-            },
+            ResponseState::Started(started) => started.pathsend_len_hint(),
             ResponseState::WaitingForStart
             | ResponseState::WaitingForTrailers { .. }
             | ResponseState::Complete
@@ -111,11 +131,11 @@ impl ResponseController {
         if trailers && !self.supports_response_trailers {
             return error::HttpResponseError::TrailersNotAdvertised.err();
         }
-        self.state = ResponseState::UnaryBufferable(StartedResponse {
+        self.state = ResponseState::Started(StartedResponse {
             start: actions::ResponseStart::new(status, headers),
-            expects_trailers: trailers,
-            saw_body: false,
-            suppressed_body_len: 0,
+            body: StartedBody::Unsent {
+                expects_trailers: trailers,
+            },
         });
         Ok(())
     }
@@ -130,22 +150,34 @@ impl ResponseController {
         let final_chunk = !more_body;
 
         if self.head_only {
-            started.saw_body = true;
-            started.suppressed_body_len += body.len();
+            let (expects_trailers, previous_len) = match started.body {
+                StartedBody::Unsent { expects_trailers } => (expects_trailers, 0),
+                StartedBody::SuppressingHead {
+                    expects_trailers,
+                    len,
+                } => (expects_trailers, len),
+                StartedBody::Streaming { .. } => {
+                    unreachable!("HEAD responses never stream body bytes")
+                },
+            };
+            let len = previous_len.saturating_add(body.len());
             self.state = if final_chunk {
-                let len = started.suppressed_body_len;
                 complete_or_wait_for_trailers(
                     actions,
                     &mut started,
                     actions::FinalResponseBody::Suppressed { len },
                 )
             } else {
-                ResponseState::UnaryBufferable(started)
+                started.body = StartedBody::SuppressingHead {
+                    expects_trailers,
+                    len,
+                };
+                ResponseState::Started(started)
             };
             return Ok(());
         }
 
-        if final_chunk && !started.expects_trailers && !started.saw_body {
+        if final_chunk && !started.expects_trailers() && !started.body_started() {
             let body = if body.is_empty() {
                 actions::FinalResponseBody::Empty
             } else {
@@ -155,23 +187,24 @@ impl ResponseController {
             return Ok(());
         }
 
-        if !started.saw_body {
+        if !started.body_started() {
             actions.push(started.take_start_action());
         }
-        started.saw_body = true;
+        let expects_trailers = started.expects_trailers();
+        started.body = StartedBody::Streaming { expects_trailers };
         if !body.is_empty() {
             actions.push(actions::ResponseAction::Body(body));
         }
 
         self.state = if final_chunk {
-            if started.expects_trailers {
+            if expects_trailers {
                 ResponseState::waiting_for_trailers()
             } else {
                 actions.push(actions::ResponseAction::Finish);
                 ResponseState::Complete
             }
         } else {
-            ResponseState::StartedStreaming(started)
+            ResponseState::Started(started)
         };
         Ok(())
     }
@@ -182,8 +215,8 @@ impl ResponseController {
         status: http::types::HttpStatusCode,
     ) -> Result<(), error::H2CornError> {
         let started = self.take_started(error::HttpResponseError::PathsendBeforeStart)?;
-        if started.saw_body {
-            self.state = ResponseState::StartedStreaming(started);
+        if started.body_started() {
+            self.state = ResponseState::Started(started);
             return error::HttpResponseError::PathsendMixedWithBody.err();
         }
         let start = actions::ResponseStart::new(status, http::types::ResponseHeaders::new());
@@ -202,8 +235,8 @@ impl ResponseController {
         len: usize,
     ) -> Result<(), error::H2CornError> {
         let mut started = self.take_started(error::HttpResponseError::PathsendBeforeStart)?;
-        if started.saw_body {
-            self.state = ResponseState::StartedStreaming(started);
+        if started.body_started() {
+            self.state = ResponseState::Started(started);
             return error::HttpResponseError::PathsendMixedWithBody.err();
         }
 
@@ -220,7 +253,7 @@ impl ResponseController {
             // Preloaded files travel the ordinary body path (vectored
             // chunk emission downstream); the file is already closed.
             http::pathsend::PathSource::Buffered(data) => {
-                if started.expects_trailers {
+                if started.expects_trailers() {
                     actions.push(started.take_start_action());
                     if !data.is_empty() {
                         actions.push(actions::ResponseAction::Body(data.into()));
@@ -236,7 +269,7 @@ impl ResponseController {
                 }
             },
             http::pathsend::PathSource::File(file) => {
-                if started.expects_trailers {
+                if started.expects_trailers() {
                     actions.push(started.take_start_action());
                     actions.push(actions::ResponseAction::File { file, len });
                     self.state = ResponseState::waiting_for_trailers();
@@ -285,31 +318,29 @@ impl ResponseController {
                     Ok(()) => error::HttpResponseError::AppReturnedWithoutStartingResponse.err(),
                 }
             },
-            (ResponseState::UnaryBufferable(started), Ok(()))
-                if !started.expects_trailers
-                    && !started.saw_body
-                    && started.suppressed_body_len == 0 =>
+            (ResponseState::Started(started), Ok(()))
+                if matches!(started.body, StartedBody::Unsent {
+                    expects_trailers: false
+                }) =>
             {
                 actions.push(started.into_final_action(actions::FinalResponseBody::Empty));
                 Ok(())
             },
-            (ResponseState::UnaryBufferable(started), Ok(()))
-                if self.head_only && !started.expects_trailers && started.saw_body =>
+            (ResponseState::Started(started), Ok(()))
+                if matches!(started.body, StartedBody::SuppressingHead {
+                    expects_trailers: false,
+                    ..
+                }) =>
             {
-                let suppressed_body_len = started.suppressed_body_len;
+                let StartedBody::SuppressingHead { len, .. } = started.body else {
+                    unreachable!()
+                };
                 actions.push(
-                    started.into_final_action(actions::FinalResponseBody::Suppressed {
-                        len: suppressed_body_len,
-                    }),
+                    started.into_final_action(actions::FinalResponseBody::Suppressed { len }),
                 );
                 Ok(())
             },
-            (
-                ResponseState::UnaryBufferable(_)
-                | ResponseState::StartedStreaming(_)
-                | ResponseState::WaitingForTrailers { .. },
-                Ok(()),
-            ) => {
+            (ResponseState::Started(_) | ResponseState::WaitingForTrailers { .. }, Ok(())) => {
                 actions.push(actions::ResponseAction::AbortIncomplete);
                 error::HttpResponseError::AppReturnedWithoutCompletingResponse.err()
             },
@@ -327,9 +358,7 @@ impl ResponseController {
         err: error::HttpResponseError,
     ) -> Result<StartedResponse, error::H2CornError> {
         match mem::replace(&mut self.state, ResponseState::Aborted) {
-            ResponseState::UnaryBufferable(started) | ResponseState::StartedStreaming(started) => {
-                Ok(started)
-            },
+            ResponseState::Started(started) => Ok(started),
             state => {
                 self.state = state;
                 err.err()
@@ -360,7 +389,7 @@ fn complete_or_wait_for_trailers(
     started: &mut StartedResponse,
     body: actions::FinalResponseBody,
 ) -> ResponseState {
-    if started.expects_trailers {
+    if started.expects_trailers() {
         wait_for_trailers(actions, started)
     } else {
         complete_response(actions, started, body)

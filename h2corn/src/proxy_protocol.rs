@@ -9,7 +9,7 @@ use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::error::{ConfigError, ErrorExt, H2CornError, ProxyError};
-use crate::h2_frame::{CONNECTION_PREFACE, FrameReader};
+use crate::h2_frame::{BufferedConnectionReader, CONNECTION_PREFACE};
 
 const PROXY_V1_MAX_LEN: usize = 107;
 const HTTP2_PREFACE_LEAD: &[u8] = b"PRI * HTTP/2.0";
@@ -244,7 +244,7 @@ pub(crate) fn trusted_host_matches(trusted: &[TrustedPeer], host: &str, is_unix:
 }
 
 async fn prepare_proxy_read<R>(
-    reader: &mut FrameReader<R>,
+    reader: &mut BufferedConnectionReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
 ) -> Result<(), H2CornError>
@@ -262,7 +262,7 @@ where
 }
 
 pub(crate) async fn read_proxy_v2<R>(
-    reader: &mut FrameReader<R>,
+    reader: &mut BufferedConnectionReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
 ) -> Result<Option<ProxyInfo>, H2CornError>
@@ -291,7 +291,7 @@ where
 }
 
 pub(crate) async fn read_proxy_v1<R>(
-    reader: &mut FrameReader<R>,
+    reader: &mut BufferedConnectionReader<R>,
     actual_peer: &ConnectionPeer,
     trusted: &[TrustedPeer],
 ) -> Result<Option<ProxyInfo>, H2CornError>
@@ -324,7 +324,7 @@ where
 }
 
 pub(crate) async fn read_preamble_protocol<R>(
-    reader: &mut FrameReader<R>,
+    reader: &mut BufferedConnectionReader<R>,
     http1: bool,
 ) -> Result<DetectedProtocol, H2CornError>
 where
@@ -338,7 +338,9 @@ where
     }
 }
 
-pub(crate) async fn read_h2_preface<R>(reader: &mut FrameReader<R>) -> Result<(), H2CornError>
+pub(crate) async fn read_h2_preface<R>(
+    reader: &mut BufferedConnectionReader<R>,
+) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin,
 {
@@ -352,7 +354,9 @@ where
     Ok(())
 }
 
-async fn detect_protocol<R>(reader: &mut FrameReader<R>) -> Result<DetectedProtocol, H2CornError>
+async fn detect_protocol<R>(
+    reader: &mut BufferedConnectionReader<R>,
+) -> Result<DetectedProtocol, H2CornError>
 where
     R: AsyncRead + Unpin,
 {
@@ -568,7 +572,7 @@ mod tests {
 
     use super::*;
     use crate::error::ErrorKind;
-    use crate::h2_frame::FrameReader;
+    use crate::h2_frame::BufferedConnectionReader;
 
     #[test]
     fn trusted_peer_cidr_matches_ipv4_and_ipv6() {
@@ -650,7 +654,7 @@ mod tests {
         server.write_all(&[0x21, 0x11, 0x00]).await.unwrap();
         drop(server);
 
-        let mut reader = FrameReader::new(client);
+        let mut reader = BufferedConnectionReader::new(client);
         let err = read_proxy_v2(
             &mut reader,
             &ConnectionPeer::Tcp("127.0.0.1:8080".parse().unwrap()),

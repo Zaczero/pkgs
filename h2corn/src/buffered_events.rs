@@ -2,11 +2,11 @@ use parking_lot::Mutex;
 pub(crate) use parking_lot::MutexGuard;
 use tokio::sync::Notify;
 
-use crate::smallvec_deque::SmallVecDeque;
+use crate::inline_fifo::InlineFifo;
 
 pub(crate) struct BufferedStateInner<S, T, const N: usize> {
     pub(crate) state: S,
-    pub(crate) queue: SmallVecDeque<T, N>,
+    pub(crate) queue: InlineFifo<T, N>,
 }
 
 pub(crate) struct BufferedState<S, T, const N: usize> {
@@ -19,7 +19,7 @@ impl<S, T, const N: usize> BufferedState<S, T, N> {
         Self {
             inner: Mutex::new(BufferedStateInner {
                 state,
-                queue: SmallVecDeque::new(),
+                queue: InlineFifo::new(),
             }),
             ready: Notify::new(),
         }

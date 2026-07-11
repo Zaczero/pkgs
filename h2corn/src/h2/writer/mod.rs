@@ -8,11 +8,11 @@ use std::fs::File;
 
 use smallvec::SmallVec;
 
-pub(super) use self::driver::{ConnectionHandle, WriterState, init_writer};
+pub(super) use self::driver::{H2WriterHandle, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::h2_frame::{ErrorCode, PeerSettings, StreamId, WindowIncrement};
 use crate::http::types::{HttpStatusCode, ResponseHeaders};
-use crate::smallvec_deque::SmallVecDeque;
+use crate::inline_fifo::InlineFifo;
 
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 const ENCODED_HEADER_BLOCK_CAPACITY: usize = 1024;
@@ -24,7 +24,7 @@ const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 const INLINE_DATA_PREFIX_CAPACITY: usize = 10;
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
 type ResponseDeadlineUpdateBatch = SmallVec<[StreamId; 8]>;
-pub(super) type WriterCommandBatch = SmallVecDeque<WriterCommand, 3>;
+pub(super) type WriterCommandBatch = InlineFifo<WriterCommand, 3>;
 
 #[derive(Debug)]
 pub(super) struct PrefixedData {

@@ -136,7 +136,7 @@ def _worker_entry(
             _send_control(_CONTROL_HEARTBEAT)
             await asyncio.sleep(interval)
 
-    async def _serve_app(app: ASGIApp):
+    async def _serve_app(app: ASGIApp, lifespan_handoff):
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, server.shutdown)
         loop.add_signal_handler(signal.SIGTERM, server.shutdown)
@@ -149,6 +149,7 @@ def _worker_entry(
             (lambda: _send_control(_CONTROL_RETIRE))
             if config.max_requests > 0
             else None,
+            lifespan_handoff,
         )
 
     async def _run_worker():
@@ -174,7 +175,7 @@ def _worker_entry(
         runner.run(_run_worker())
 
 
-def _serve_supervisor(app: ASGIApp | ImportSettings, config: Config):
+def _serve_with_supervisor(app: ASGIApp | ImportSettings, config: Config):
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 

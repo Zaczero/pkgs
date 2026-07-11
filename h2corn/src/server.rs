@@ -31,14 +31,14 @@ use tokio_rustls::server::TlsStream;
 
 use crate::config::{BindTarget, ServerConfig};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error, ProxyError};
-use crate::h2_frame::{self, ErrorCode, FrameReader};
+use crate::h2_frame::{self, BufferedConnectionReader, ErrorCode};
 use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
     ProxyProtocolMode, ServerAddr, TrustedPeer, peer_is_trusted, read_h2_preface,
     read_preamble_protocol, read_proxy_v1, read_proxy_v2,
 };
 use crate::pyloop::{PumpEvent, Shard, TaskSlot};
-use crate::runtime::{AppState, ConnectionContext, ShutdownKind, ShutdownState};
+use crate::runtime::{AppRuntimeHandle, ConnectionContext, ShutdownKind, ShutdownState};
 use crate::sendfile::WriteTarget;
 use crate::{h1, h2, tls};
 
@@ -50,7 +50,7 @@ type TlsReadHalf = ReadHalf<TlsStream<PrefixedIo>>;
 type NegotiatedTlsConnection = (
     Option<ProxyInfo>,
     DetectedProtocol,
-    FrameReader<TlsReadHalf>,
+    BufferedConnectionReader<TlsReadHalf>,
     TlsWriteHalf,
 );
 
@@ -60,7 +60,7 @@ struct PrefixedIo {
 }
 
 struct ConnectionArgs {
-    app: AppState,
+    app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     actual_peer: ConnectionPeer,
     actual_server: Option<ServerAddr>,
@@ -176,7 +176,7 @@ impl ConnectionPreamble {
 
     async fn read_proxy<R>(
         self,
-        reader: &mut FrameReader<R>,
+        reader: &mut BufferedConnectionReader<R>,
         actual_peer: &ConnectionPeer,
         trusted: &[TrustedPeer],
     ) -> Result<Option<ProxyInfo>, H2CornError>
@@ -206,7 +206,7 @@ pub(crate) fn own_listener_fds(fds: Vec<i64>) -> Box<[ListenerFd]> {
 }
 
 pub(crate) async fn serve_from_fds(
-    app: AppState,
+    app: AppRuntimeHandle,
     fds: Box<[ListenerFd]>,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
@@ -241,7 +241,7 @@ fn configure_tcp_stream(stream: &TcpStream) {
 
 fn spawn_connection(
     tasks: &mut JoinSet<()>,
-    app: AppState,
+    app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
@@ -336,7 +336,7 @@ async fn accept_one(
 
 async fn serve_listeners(
     listeners: Box<[ListenerSource]>,
-    app: AppState,
+    app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
 ) -> Result<(), H2CornError> {
@@ -447,7 +447,7 @@ where
         preamble,
         http1,
     } = args;
-    let mut reader = FrameReader::new(reader);
+    let mut reader = BufferedConnectionReader::new(reader);
     let proxy_headers_trusted =
         config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
     let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
@@ -477,8 +477,7 @@ where
     if let Some(proxy) = connection_start.proxy {
         info.apply_proxy_info(proxy);
     }
-    let info = Arc::new(info);
-    let connection_ctx = ConnectionContext::new(app, config, info.clone(), shutdown.clone());
+    let connection_ctx = ConnectionContext::new(app, config, info, shutdown.clone());
 
     serve_detected_connection(
         reader,
@@ -528,8 +527,7 @@ async fn serve_tls_connection(
     if let Some(proxy) = proxy {
         info.apply_proxy_info(proxy);
     }
-    let info = Arc::new(info);
-    let connection_ctx = ConnectionContext::new(app, config, info.clone(), shutdown.clone());
+    let connection_ctx = ConnectionContext::new(app, config, info, shutdown.clone());
 
     serve_detected_connection(reader, writer, protocol, connection_ctx, true, shutdown).await
 }
@@ -545,7 +543,7 @@ async fn negotiate_tls_connection(
     preamble: ConnectionPreamble,
     http1: bool,
 ) -> Result<Option<NegotiatedTlsConnection>, H2CornError> {
-    let mut reader = FrameReader::with_buffer(stream, BytesMut::new());
+    let mut reader = BufferedConnectionReader::with_buffer(stream, BytesMut::new());
     let proxy = preamble
         .read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers)
         .await?;
@@ -559,7 +557,7 @@ async fn negotiate_tls_connection(
         _ => return Ok(None),
     };
     let (reader, writer) = split(tls_stream);
-    let mut reader = FrameReader::new(reader);
+    let mut reader = BufferedConnectionReader::new(reader);
     if protocol == DetectedProtocol::Http2 {
         read_h2_preface(&mut reader).await?;
     }
@@ -567,7 +565,7 @@ async fn negotiate_tls_connection(
 }
 
 async fn serve_detected_connection<R, W>(
-    reader: FrameReader<R>,
+    reader: BufferedConnectionReader<R>,
     writer: W,
     protocol: DetectedProtocol,
     connection_ctx: ConnectionContext,

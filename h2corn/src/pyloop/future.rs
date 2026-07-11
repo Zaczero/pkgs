@@ -58,7 +58,7 @@ impl ResolvePayload {
 
 type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 
-enum FutState {
+enum FutureState {
     Pending {
         callbacks: Callbacks,
         abort: Option<AbortHandle>,
@@ -74,7 +74,7 @@ enum FutState {
 /// app task. Created pending; resolved exclusively by the pump.
 #[pyclass(frozen)]
 pub struct RustFuture {
-    state: Mutex<FutState>,
+    state: Mutex<FutureState>,
     blocking: AtomicBool,
     shard: Shard,
 }
@@ -85,15 +85,15 @@ impl RustFuture {
     pub fn set_abort(&self, handle: AbortHandle) {
         let mut state = self.state.lock();
         match &mut *state {
-            FutState::Pending { abort, .. } => {
+            FutureState::Pending { abort, .. } => {
                 debug_assert!(abort.is_none(), "future waiter is installed once");
                 *abort = Some(handle);
             },
-            FutState::Cancelled { .. } => {
+            FutureState::Cancelled { .. } => {
                 drop(state);
                 handle.abort();
             },
-            FutState::Ready(_) | FutState::Failed(_) => {},
+            FutureState::Ready(_) | FutureState::Failed(_) => {},
         }
     }
 
@@ -108,22 +108,22 @@ impl RustFuture {
                 // the loop thread and `convert` builds plain objects (never
                 // re-entering this future), so no ordering window exists in
                 // which a cancellation could lose the event.
-                FutState::Pending { callbacks, .. } => {
+                FutureState::Pending { callbacks, .. } => {
                     let callbacks = mem::take(callbacks);
                     *state = match payload.convert(py) {
-                        Ok(value) => FutState::Ready(value),
-                        Err(err) => FutState::Failed(err.value(py).clone().unbind().into_any()),
+                        Ok(value) => FutureState::Ready(value),
+                        Err(err) => FutureState::Failed(err.value(py).clone().unbind().into_any()),
                     };
                     callbacks
                 },
                 // Cancelled while the payload was in flight: hand the event
                 // back so the next receive() observes it.
-                FutState::Cancelled { .. } => {
+                FutureState::Cancelled { .. } => {
                     drop(state);
                     payload.requeue();
                     return;
                 },
-                FutState::Ready(_) | FutState::Failed(_) => return,
+                FutureState::Ready(_) | FutureState::Failed(_) => return,
             }
         };
         for (callback, context) in callbacks {
@@ -147,10 +147,10 @@ impl RustFuture {
 
     fn current_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &*self.state.lock() {
-            FutState::Pending { .. } => Err(InvalidStateError::new_err("result is not set")),
-            FutState::Ready(value) => Ok(value.clone_ref(py)),
-            FutState::Failed(exc) => Err(PyErr::from_value(exc.bind(py).clone())),
-            FutState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
+            FutureState::Pending { .. } => Err(InvalidStateError::new_err("result is not set")),
+            FutureState::Ready(value) => Ok(value.clone_ref(py)),
+            FutureState::Failed(exc) => Err(PyErr::from_value(exc.bind(py).clone())),
+            FutureState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
         }
     }
 }
@@ -185,7 +185,7 @@ impl RustFuture {
         };
         {
             let mut state = this.state.lock();
-            if let FutState::Pending { callbacks, .. } = &mut *state {
+            if let FutureState::Pending { callbacks, .. } = &mut *state {
                 callbacks.push((callback, context));
                 return Ok(());
             }
@@ -197,7 +197,7 @@ impl RustFuture {
         let mut error = None;
         let removed = {
             let mut state = self.state.lock();
-            if let FutState::Pending { callbacks, .. } = &mut *state {
+            if let FutureState::Pending { callbacks, .. } = &mut *state {
                 let before = callbacks.len();
                 callbacks.retain(|(existing, _)| match existing.bind(py).eq(callback) {
                     Ok(equal) => !equal,
@@ -221,10 +221,10 @@ impl RustFuture {
         let (callbacks, abort) = {
             let mut state = this.state.lock();
             match &mut *state {
-                FutState::Pending { callbacks, abort } => {
+                FutureState::Pending { callbacks, abort } => {
                     let callbacks = mem::take(callbacks);
                     let abort = abort.take();
-                    *state = FutState::Cancelled { msg };
+                    *state = FutureState::Cancelled { msg };
                     drop(state);
                     (callbacks, abort)
                 },
@@ -249,19 +249,19 @@ impl RustFuture {
     fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let state = self.state.lock();
         match &*state {
-            FutState::Pending { .. } => Err(InvalidStateError::new_err("exception is not set")),
-            FutState::Ready(_) => Ok(None),
-            FutState::Failed(exc) => Ok(Some(exc.clone_ref(py))),
-            FutState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
+            FutureState::Pending { .. } => Err(InvalidStateError::new_err("exception is not set")),
+            FutureState::Ready(_) => Ok(None),
+            FutureState::Failed(exc) => Ok(Some(exc.clone_ref(py))),
+            FutureState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
         }
     }
 
     fn done(&self) -> bool {
-        !matches!(&*self.state.lock(), FutState::Pending { .. })
+        !matches!(&*self.state.lock(), FutureState::Pending { .. })
     }
 
     fn cancelled(&self) -> bool {
-        matches!(&*self.state.lock(), FutState::Cancelled { .. })
+        matches!(&*self.state.lock(), FutureState::Cancelled { .. })
     }
 
     const fn __await__(self_: Py<Self>) -> Py<Self> {
@@ -275,7 +275,7 @@ impl RustFuture {
     fn __next__(self_: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = self_.py();
         let this = self_.get();
-        if matches!(&*this.state.lock(), FutState::Pending { .. }) {
+        if matches!(&*this.state.lock(), FutureState::Pending { .. }) {
             // First poll while pending: yield self with the blocking flag
             // set, so Task.__step registers __wakeup and suspends.
             this.blocking.store(true, Ordering::Relaxed);
@@ -310,10 +310,10 @@ impl RustFuture {
 impl fmt::Debug for RustFuture {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let state = match &*self.state.lock() {
-            FutState::Pending { .. } => "pending",
-            FutState::Ready(_) => "ready",
-            FutState::Failed(_) => "failed",
-            FutState::Cancelled { .. } => "cancelled",
+            FutureState::Pending { .. } => "pending",
+            FutureState::Ready(_) => "ready",
+            FutureState::Failed(_) => "failed",
+            FutureState::Cancelled { .. } => "cancelled",
         };
         f.debug_struct("RustFuture")
             .field("state", &state)
@@ -339,7 +339,7 @@ fn copy_context(py: Python<'_>) -> PyResult<Py<PyAny>> {
 /// Create a pending future plus its resolve handle.
 pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>> {
     Py::new(py, RustFuture {
-        state: Mutex::new(FutState::Pending {
+        state: Mutex::new(FutureState::Pending {
             callbacks: SmallVec::new(),
             abort: None,
         }),

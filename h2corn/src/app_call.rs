@@ -3,9 +3,8 @@
 //! HTTP and WebSocket calls move different Rust resources onto the Python
 //! event-loop thread. The public constructors are the only way to create a
 //! call state, so protocol resources cannot be crossed accidentally. The
-//! enum is boxed once at the queue boundary: the old erased closure allocated
-//! once as well, but also carried a fat pointer and duplicated monomorphized
-//! builder code.
+//! enum is boxed once at the queue boundary, keeping the record pointer-sized
+//! without a fat pointer or duplicated monomorphized builder code.
 
 use std::sync::Arc;
 

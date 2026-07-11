@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{self, Read};
 use std::mem;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use bytes::Bytes;
@@ -23,14 +24,83 @@ pub(crate) const PATHSEND_SENDFILE_MIN: usize = 1 << 20;
 #[derive(Debug)]
 pub(crate) struct PathStreamer {
     read: PathReadState,
-    filled: usize,
-    offset: usize,
-    remaining_len: usize,
-    next_file_offset: u64,
+    cursor: PathCursor,
     pub(crate) end_stream: bool,
     /// Decided once per response from the total length (mode flapping
     /// mid-stream would complicate end-of-stream bookkeeping).
     pub(crate) prefers_sendfile: bool,
+}
+
+#[derive(Debug)]
+struct PathCursor {
+    buffered: Range<usize>,
+    unread_file_len: usize,
+    file_offset: u64,
+}
+
+/// Exclusive sendfile view. The kernel-facing offset is the source of truth:
+/// dropping the cursor accounts every byte advanced, including a partial
+/// write followed by an error.
+pub(crate) struct SendfileCursor<'a> {
+    file: &'a mut File,
+    file_offset: &'a mut u64,
+    unread_file_len: &'a mut usize,
+    initial_offset: u64,
+}
+
+impl SendfileCursor<'_> {
+    pub(crate) const fn remaining(&self) -> usize {
+        *self.unread_file_len
+    }
+
+    pub(crate) const fn parts(&mut self) -> (&mut File, &mut u64) {
+        (self.file, self.file_offset)
+    }
+}
+
+impl Drop for SendfileCursor<'_> {
+    fn drop(&mut self) {
+        let advanced = self.file_offset.saturating_sub(self.initial_offset);
+        let advanced = usize::try_from(advanced).unwrap_or(usize::MAX);
+        debug_assert!(advanced <= *self.unread_file_len);
+        *self.unread_file_len = (*self.unread_file_len).saturating_sub(advanced);
+    }
+}
+
+impl PathCursor {
+    const fn new(len: usize) -> Self {
+        Self {
+            buffered: 0..0,
+            unread_file_len: len,
+            file_offset: 0,
+        }
+    }
+
+    const fn is_drained(&self) -> bool {
+        self.buffered.start == self.buffered.end && self.unread_file_len == 0
+    }
+
+    const fn needs_fill(&self) -> bool {
+        self.buffered.start == self.buffered.end && self.unread_file_len != 0
+    }
+
+    const fn record_read(&mut self, read: usize) {
+        self.buffered = 0..read;
+        self.file_offset += read as u64;
+        if read == 0 {
+            self.unread_file_len = 0;
+        } else {
+            self.unread_file_len = self.unread_file_len.saturating_sub(read);
+        }
+    }
+
+    fn consume_buffered(&mut self, len: usize) {
+        debug_assert!(len <= self.buffered.end - self.buffered.start);
+        self.buffered.start += len;
+        if self.buffered.start == self.buffered.end {
+            self.buffered = 0..0;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -54,17 +124,14 @@ impl PathStreamer {
     pub(crate) const fn new(file: File, len: usize, end_stream: bool) -> Self {
         Self {
             read: PathReadState::Ready { file, buffer: None },
-            filled: 0,
-            offset: 0,
-            remaining_len: len,
-            next_file_offset: 0,
+            cursor: PathCursor::new(len),
             end_stream,
             prefers_sendfile: len >= PATHSEND_SENDFILE_MIN,
         }
     }
 
     pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
-        debug_assert_eq!(self.offset, self.filled);
+        debug_assert!(self.cursor.buffered.is_empty());
         if let PathReadState::Ready { .. } = self.read {
             let PathReadState::Ready { mut file, buffer } =
                 mem::replace(&mut self.read, PathReadState::Failed)
@@ -73,7 +140,7 @@ impl PathStreamer {
             };
             let mut buffer =
                 buffer.unwrap_or_else(|| vec![0; PATHSEND_READ_BUFFER_SIZE].into_boxed_slice());
-            let read_len = buffer.len().min(self.remaining_len);
+            let read_len = buffer.len().min(self.cursor.unread_file_len);
             self.read = PathReadState::Reading(spawn_blocking(move || {
                 let read = file.read(&mut buffer[..read_len]);
                 PathReadResult { file, buffer, read }
@@ -98,56 +165,49 @@ impl PathStreamer {
             buffer: Some(buffer),
         };
         let read = read?;
-        self.offset = 0;
-        self.filled = read;
-        self.next_file_offset += read as u64;
-        if read == 0 {
-            self.remaining_len = 0;
-        } else {
-            self.remaining_len = self.remaining_len.saturating_sub(read);
-        }
+        self.cursor.record_read(read);
         Ok(())
     }
 
     pub(crate) const fn is_drained(&self) -> bool {
-        self.offset == self.filled && self.remaining_len == 0
+        self.cursor.is_drained()
     }
 
     pub(crate) fn remaining(&self) -> &[u8] {
         match &self.read {
             PathReadState::Ready { buffer, .. } => buffer
                 .as_deref()
-                .map_or(&[], |buffer| &buffer[self.offset..self.filled]),
+                .map_or(&[], |buffer| &buffer[self.cursor.buffered.clone()]),
             PathReadState::Reading(_) | PathReadState::Failed => &[],
         }
     }
 
-    pub(crate) const fn consume(&mut self, len: usize) {
-        self.offset += len;
-        if self.offset == self.filled {
-            self.offset = 0;
-            self.filled = 0;
-        }
+    pub(crate) fn consume(&mut self, len: usize) {
+        self.cursor.consume_buffered(len);
     }
 
     pub(crate) const fn needs_fill(&self) -> bool {
-        self.offset == self.filled && self.remaining_len != 0
+        self.cursor.needs_fill()
     }
 
-    pub(crate) const fn sendfile_remaining_len(&self) -> usize {
-        self.remaining_len
+    pub(crate) const fn buffered_is_final(&self) -> bool {
+        self.cursor.unread_file_len == 0
     }
 
-    pub(crate) const fn sendfile_parts(&mut self) -> (&mut File, &mut u64) {
+    pub(crate) const fn sendfile_cursor(&mut self) -> Option<SendfileCursor<'_>> {
+        if !self.prefers_sendfile || !self.cursor.needs_fill() {
+            return None;
+        }
         let PathReadState::Ready { file, .. } = &mut self.read else {
-            panic!("sendfile requires an idle file handle")
+            return None;
         };
-        (file, &mut self.next_file_offset)
-    }
-
-    pub(crate) fn advance_after_sendfile(&mut self, len: usize) {
-        debug_assert!(len <= self.remaining_len);
-        self.remaining_len -= len;
+        let initial_offset = self.cursor.file_offset;
+        Some(SendfileCursor {
+            file,
+            file_offset: &mut self.cursor.file_offset,
+            unread_file_len: &mut self.cursor.unread_file_len,
+            initial_offset,
+        })
     }
 }
 
@@ -201,6 +261,7 @@ mod tests {
     use std::env::temp_dir;
     use std::fs::{File, remove_file, write};
     use std::io::Read;
+    use std::mem::size_of;
     use std::path::PathBuf;
     use std::process::id;
     use std::sync::mpsc;
@@ -208,8 +269,36 @@ mod tests {
 
     use tokio::task::{spawn_blocking, yield_now};
 
-    use super::{PathReadResult, PathReadState, PathStreamer};
+    use super::{PATHSEND_SENDFILE_MIN, PathReadResult, PathReadState, PathStreamer};
     use crate::config::PATHSEND_READ_BUFFER_SIZE;
+
+    #[test]
+    fn accounting_cursor_preserves_streamer_layout_budget() {
+        assert!(size_of::<PathStreamer>() <= 64);
+    }
+
+    #[test]
+    fn sendfile_cursor_accounts_partial_offset_progress_on_drop() {
+        let path = temp_file(b"partial");
+        let file = File::open(&path).expect("temporary pathsend file opens");
+        let mut streamer = PathStreamer::new(file, PATHSEND_SENDFILE_MIN, true);
+
+        {
+            let mut cursor = streamer.sendfile_cursor().expect("sendfile is selected");
+            assert_eq!(cursor.remaining(), PATHSEND_SENDFILE_MIN);
+            let (_, offset) = cursor.parts();
+            *offset += 7;
+        }
+
+        assert_eq!(
+            streamer
+                .sendfile_cursor()
+                .expect("remaining file stays sendfile eligible")
+                .remaining(),
+            PATHSEND_SENDFILE_MIN - 7,
+        );
+        remove_file(path).expect("temporary pathsend file is removed");
+    }
 
     fn temp_file(payload: &[u8]) -> PathBuf {
         let path = temp_dir().join(format!(

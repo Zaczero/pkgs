@@ -20,7 +20,7 @@ use crate::runtime::StreamInput;
 #[derive(Debug)]
 struct HttpReceiveState {
     input: HttpReceiveInput,
-    disconnect: Arc<HttpDisconnectSignal>,
+    disconnect: Arc<RequestInputShared>,
 }
 
 #[derive(Debug)]
@@ -30,14 +30,35 @@ enum HttpReceiveInput {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct HttpDisconnectSignal {
+pub(crate) struct RequestInputShared {
     app_started: OnceLock<()>,
     started: AtomicU64,
     queued: AtomicU64,
+    body_bytes: AtomicU64,
+    count_body_bytes: bool,
     notify: Notify,
 }
 
-impl HttpDisconnectSignal {
+/// Narrow capability for request-body accounting. It shares the streamed
+/// request allocation without exposing disconnect coordination state.
+#[derive(Clone, Debug)]
+pub(crate) struct RequestBodyCounter {
+    shared: Arc<RequestInputShared>,
+}
+
+impl RequestInputShared {
+    pub(crate) fn new(count_body_bytes: bool) -> Self {
+        Self {
+            count_body_bytes,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn body_counter(self: &Arc<Self>) -> Option<RequestBodyCounter> {
+        self.count_body_bytes.then(|| RequestBodyCounter {
+            shared: Arc::clone(self),
+        })
+    }
     pub(crate) fn mark_app_started(&self) {
         let _ = self.app_started.set(());
         self.notify.notify_one();
@@ -70,11 +91,21 @@ impl HttpDisconnectSignal {
     }
 }
 
+impl RequestBodyCounter {
+    pub(crate) fn add(&self, len: u64) {
+        self.shared.body_bytes.fetch_add(len, Ordering::Relaxed);
+    }
+
+    pub(crate) fn load(&self) -> u64 {
+        self.shared.body_bytes.load(Ordering::Relaxed)
+    }
+}
+
 /// Single-owner proof that a receive resolution was pending when input
 /// ownership closed. It cannot be mixed with another request's signal or
 /// reused after cancellation has been ordered.
 pub(crate) struct PendingHttpDisconnect {
-    signal: Arc<HttpDisconnectSignal>,
+    signal: Arc<RequestInputShared>,
     generation: u64,
 }
 
@@ -91,7 +122,7 @@ impl PendingHttpDisconnect {
 }
 
 pub(super) struct HttpReceiveWaitGuard {
-    signal: Arc<HttpDisconnectSignal>,
+    signal: Arc<RequestInputShared>,
     ticket: u64,
 }
 
@@ -165,7 +196,7 @@ impl EventSource for HttpReceiveState {
         self.map_input(input)
     }
 
-    fn wait_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+    fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {
         Some(Arc::clone(&self.disconnect))
     }
 }
@@ -187,7 +218,7 @@ impl PyHttpReceive {
     pub(crate) fn new_stream(
         shard: Shard,
         rx: mpsc::Receiver<StreamInput>,
-        disconnect: Arc<HttpDisconnectSignal>,
+        disconnect: Arc<RequestInputShared>,
     ) -> Self {
         Self {
             shard,
@@ -215,7 +246,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        EventSource, HttpDisconnectSignal, HttpInboundEvent, HttpReceiveInput, HttpReceiveState,
+        EventSource, HttpInboundEvent, HttpReceiveInput, HttpReceiveState, RequestInputShared,
     };
     use crate::h2_frame::ErrorCode;
     use crate::runtime::StreamInput;
@@ -228,7 +259,7 @@ mod tests {
             .unwrap();
         let mut state = HttpReceiveState {
             input: HttpReceiveInput::Open(rx),
-            disconnect: Arc::new(HttpDisconnectSignal::default()),
+            disconnect: Arc::new(RequestInputShared::default()),
         };
 
         assert!(matches!(

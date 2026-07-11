@@ -242,6 +242,7 @@ class Server:
         app: ASGIApp,
         fds: list[int],
         retire_trigger: Callable[[], None] | None = None,
+        lifespan_handoff=None,
     ):
         from ._lib import serve_fds
 
@@ -253,7 +254,14 @@ class Server:
 
         shutdown_task = asyncio.create_task(_await_shutdown())
         try:
-            await serve_fds(app, fds, self.config, shutdown_task, retire_trigger)
+            await serve_fds(
+                app,
+                fds,
+                self.config,
+                shutdown_task,
+                retire_trigger,
+                lifespan_handoff,
+            )
         finally:
             await _cancel_task(shutdown_task)
 
@@ -291,8 +299,12 @@ class Server:
                     replace(self.config, bind=self._addresses, host=None, port=None)
                 )
 
-                async def _serve_app(app: ASGIApp):
-                    await self._serve_fds(app, [sock.detach() for sock in socks])
+                async def _serve_app(app: ASGIApp, lifespan_handoff):
+                    await self._serve_fds(
+                        app,
+                        [sock.detach() for sock in socks],
+                        lifespan_handoff=lifespan_handoff,
+                    )
 
                 try:
                     await _serve_with_lifespan(
@@ -338,24 +350,24 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':
-        from ._supervisor import _serve_supervisor
+        from ._supervisor import _serve_with_supervisor
 
         with _process_umask(config), _pidfile(config):
-            _serve_supervisor(app, config)
+            _serve_with_supervisor(app, config)
         return
 
     with asyncio.Runner(loop_factory=_event_loop_factory(config.loop)) as runner:
         runner.run(Server(app, config).serve())
 
 
-def _serve_cli_target(import_settings: ImportSettings, config: Config) -> None:
+def _serve_import_target(import_settings: ImportSettings, config: Config) -> None:
     if sys.platform != 'win32' and (
         config.user is not None or config.group is not None
     ):
-        from ._supervisor import _serve_supervisor
+        from ._supervisor import _serve_with_supervisor
 
         with _process_umask(config), _pidfile(config):
-            _serve_supervisor(import_settings, config)
+            _serve_with_supervisor(import_settings, config)
         return
 
     serve(_import_target(import_settings), config)
@@ -429,7 +441,7 @@ def _import_target(import_settings: ImportSettings):
 
 
 def main() -> None:
-    run_cli(_serve_cli_target)
+    run_cli(_serve_import_target)
 
 
 if __name__ == '__main__':

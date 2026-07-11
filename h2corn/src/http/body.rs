@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::bridge::RequestBodyCounter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RequestBodyProgress {
@@ -18,7 +17,7 @@ pub(crate) enum RequestBodyFinish {
 pub(crate) struct RequestBodyState {
     expected_length: Option<u64>,
     received_length: u64,
-    access_log_bytes: Option<Arc<AtomicU64>>,
+    access_log_bytes: Option<RequestBodyCounter>,
     max_body_size: Option<u64>,
     deliver_to_app: bool,
 }
@@ -26,7 +25,7 @@ pub(crate) struct RequestBodyState {
 impl RequestBodyState {
     pub(crate) const fn new(
         expected_length: Option<u64>,
-        access_log_bytes: Option<Arc<AtomicU64>>,
+        access_log_bytes: Option<RequestBodyCounter>,
         max_body_size: Option<u64>,
     ) -> Self {
         Self {
@@ -41,7 +40,7 @@ impl RequestBodyState {
     pub(crate) fn record_chunk(&mut self, chunk_len: u64) -> RequestBodyProgress {
         self.received_length = self.received_length.saturating_add(chunk_len);
         if let Some(access_log_bytes) = &self.access_log_bytes {
-            access_log_bytes.fetch_add(chunk_len, Ordering::Relaxed);
+            access_log_bytes.add(chunk_len);
         }
         self.classify_received_length(self.received_length)
     }
@@ -89,13 +88,19 @@ impl RequestBodyState {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
+    use crate::bridge::{RequestBodyCounter, RequestInputShared};
+
+    fn body_counter() -> RequestBodyCounter {
+        Arc::new(RequestInputShared::new(true))
+            .body_counter()
+            .expect("body accounting is enabled")
+    }
 
     #[test]
     fn body_state_tracks_access_log_bytes_and_size_limit() {
-        let access_log_bytes = Arc::new(AtomicU64::new(0));
+        let access_log_bytes = body_counter();
         let mut state = RequestBodyState::new(None, Some(access_log_bytes.clone()), Some(5));
 
         assert_eq!(state.record_chunk(3), RequestBodyProgress::Continue);
@@ -103,7 +108,7 @@ mod tests {
             state.record_chunk(3),
             RequestBodyProgress::SizeLimitExceeded
         );
-        assert_eq!(access_log_bytes.load(Ordering::Relaxed), 6);
+        assert_eq!(access_log_bytes.load(), 6);
         assert_eq!(state.finish(), RequestBodyFinish::Complete);
     }
 
@@ -121,14 +126,14 @@ mod tests {
 
     #[test]
     fn stopping_delivery_does_not_stop_accounting() {
-        let access_log_bytes = Arc::new(AtomicU64::new(0));
+        let access_log_bytes = body_counter();
         let mut state = RequestBodyState::new(Some(4), Some(access_log_bytes.clone()), None);
 
         state.stop_delivering();
         assert!(!state.should_deliver());
         assert_eq!(state.record_chunk(4), RequestBodyProgress::Continue);
         assert_eq!(state.finish(), RequestBodyFinish::Complete);
-        assert_eq!(access_log_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(access_log_bytes.load(), 4);
     }
 
     #[test]

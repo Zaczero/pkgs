@@ -5,7 +5,6 @@ mod websocket;
 use std::future::Future;
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -18,6 +17,7 @@ use self::http::{
     H1HttpTransport, write_empty_response, write_h2c_upgrade_response, write_simple_response,
 };
 use crate::async_util::send_best_effort;
+use crate::bridge::RequestBodyCounter;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
@@ -426,12 +426,8 @@ where
         return Ok(persistence);
     }
 
-    let StreamRequestInput {
-        tx,
-        rx: request_body_rx,
-        body_bytes_read,
-        disconnect,
-    } = StreamRequestInput::new(count_body_bytes);
+    let (tx, request_body_rx, body_bytes_read, disconnect) =
+        StreamRequestInput::new(count_body_bytes).into_parts();
     let access_log_body_bytes = body_bytes_read.clone();
 
     let result = {
@@ -446,7 +442,7 @@ where
             move || {
                 access_log_body_bytes
                     .as_ref()
-                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed))
+                    .map_or(0, RequestBodyCounter::load)
             },
         ));
         // Start request ownership before polling a buffered body parser that

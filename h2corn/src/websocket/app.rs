@@ -22,50 +22,48 @@ use crate::runtime::{RequestAdmission, start_app_call};
 /// completing, and (via [`RunningWebSocketApp::next_handshake_step`])
 /// buffered outbound events always win over task completion, because the
 /// app's sends happen-before its return.
-pub(super) struct AppHandle {
-    state: AppTaskState,
+pub(super) struct WebSocketAppTask {
+    state: WebSocketAppTaskState,
 }
 
 /// Exclusive ownership states for the application's Tokio task.
 ///
-/// A raw handle and a joined outcome can no longer coexist, and a surfaced or
-/// aborted task cannot accidentally be polled again. The old representation
-/// encoded those constraints as a coupled `joined` flag plus an optional
-/// result while retaining the handle in every state.
-enum AppTaskState {
+/// A raw handle and a joined outcome cannot coexist, and a surfaced or
+/// aborted task cannot accidentally be polled again.
+enum WebSocketAppTaskState {
     Running(JoinHandle<Result<(), H2CornError>>),
     Joined(Result<(), H2CornError>),
     Settled,
 }
 
-impl AppHandle {
+impl WebSocketAppTask {
     pub(super) const fn new(task: JoinHandle<Result<(), H2CornError>>) -> Self {
         Self {
-            state: AppTaskState::Running(task),
+            state: WebSocketAppTaskState::Running(task),
         }
     }
 
     /// True once the task's completion has been observed by a join; used as
     /// a `select!` branch guard so the handle is never re-polled.
     pub(super) const fn is_joined(&self) -> bool {
-        !matches!(self.state, AppTaskState::Running(_))
+        !matches!(self.state, WebSocketAppTaskState::Running(_))
     }
 
     /// Wait for the task and store its outcome. Callers surface the result
     /// via [`Self::take_outcome`] or [`Self::settle`] — after draining any
     /// outbound events the app sent before returning.
     pub(super) async fn join_store(&mut self) {
-        let AppTaskState::Running(task) = &mut self.state else {
+        let WebSocketAppTaskState::Running(task) = &mut self.state else {
             debug_assert!(false, "app task joined twice");
             return;
         };
         let result = flatten_app_result((&mut *task).await);
-        self.state = AppTaskState::Joined(result);
+        self.state = WebSocketAppTaskState::Joined(result);
     }
 
     pub(super) fn take_outcome(&mut self) -> Option<Result<(), H2CornError>> {
-        match mem::replace(&mut self.state, AppTaskState::Settled) {
-            AppTaskState::Joined(outcome) => Some(outcome),
+        match mem::replace(&mut self.state, WebSocketAppTaskState::Settled) {
+            WebSocketAppTaskState::Joined(outcome) => Some(outcome),
             state => {
                 self.state = state;
                 None
@@ -76,17 +74,19 @@ impl AppHandle {
     /// Surface the app result: a stored outcome first, otherwise wait up to
     /// `grace` for completion, aborting on timeout.
     pub(super) async fn settle(&mut self, grace: Duration) -> Result<(), H2CornError> {
-        match mem::replace(&mut self.state, AppTaskState::Settled) {
-            AppTaskState::Joined(outcome) => return outcome,
-            AppTaskState::Settled => return Ok(()),
-            AppTaskState::Running(task) => self.state = AppTaskState::Running(task),
+        match mem::replace(&mut self.state, WebSocketAppTaskState::Settled) {
+            WebSocketAppTaskState::Joined(outcome) => return outcome,
+            WebSocketAppTaskState::Settled => return Ok(()),
+            WebSocketAppTaskState::Running(task) => {
+                self.state = WebSocketAppTaskState::Running(task);
+            },
         }
 
-        let AppTaskState::Running(task) = &mut self.state else {
+        let WebSocketAppTaskState::Running(task) = &mut self.state else {
             unreachable!("running state was restored above")
         };
         if let Ok(result) = timeout(grace, &mut *task).await {
-            self.state = AppTaskState::Settled;
+            self.state = WebSocketAppTaskState::Settled;
             flatten_app_result(result)
         } else {
             self.abort().await;
@@ -96,12 +96,12 @@ impl AppHandle {
 
     /// Abort the task and wait for it to settle. Safe in every state.
     pub(super) async fn abort(&mut self) {
-        let AppTaskState::Running(task) = &mut self.state else {
+        let WebSocketAppTaskState::Running(task) = &mut self.state else {
             return;
         };
         task.abort();
         let _ = (&mut *task).await;
-        self.state = AppTaskState::Settled;
+        self.state = WebSocketAppTaskState::Settled;
     }
 }
 
@@ -120,7 +120,7 @@ pub(super) struct RunningWebSocketApp {
     pub(super) send_state: WebSocketSendState,
     pub(super) send_buffer: WebSocketSendBuffer,
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
-    pub(super) app: AppHandle,
+    pub(super) task: WebSocketAppTask,
     pub(super) _admission: RequestAdmission,
 }
 
@@ -136,12 +136,12 @@ impl RunningWebSocketApp {
             if let Some(event) = self.send_buffer.take_ready() {
                 return AppStep::Event(event);
             }
-            if self.app.is_joined() {
-                return AppStep::Done(self.app.take_outcome().unwrap_or(Ok(())));
+            if self.task.is_joined() {
+                return AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())));
             }
             tokio::select! {
                 () = self.send_buffer.wait_ready() => {}
-                () = self.app.join_store() => {}
+                () = self.task.join_store() => {}
             }
         }
     }
@@ -181,7 +181,7 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
         send_state,
         send_buffer,
         send_rx,
-        app: AppHandle::new(app_task),
+        task: WebSocketAppTask::new(app_task),
         _admission: admission,
     }
 }
@@ -193,11 +193,11 @@ mod tests {
 
     use tokio::spawn;
 
-    use super::AppHandle;
+    use super::WebSocketAppTask;
 
     #[tokio::test]
     async fn joined_outcome_is_terminal_and_surfaced_once() {
-        let mut app = AppHandle::new(spawn(async { Ok(()) }));
+        let mut app = WebSocketAppTask::new(spawn(async { Ok(()) }));
         assert!(!app.is_joined());
         app.join_store().await;
         assert!(app.is_joined());
@@ -210,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn abort_transitions_running_task_to_terminal_state() {
-        let mut app = AppHandle::new(spawn(pending()));
+        let mut app = WebSocketAppTask::new(spawn(pending()));
         app.abort().await;
         assert!(app.is_joined());
         assert!(app.take_outcome().is_none());

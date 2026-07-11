@@ -1,5 +1,6 @@
 use std::mem::{swap, take};
 use std::num::{NonZeroU32, NonZeroU64};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -18,7 +19,7 @@ use crate::http::types::RequestHead;
 use crate::proxy_protocol::ConnectionInfo;
 use crate::pyloop::{PumpEvent, Shard, SlotFuture, TaskSlot};
 
-pub(crate) struct SharedApp {
+pub(crate) struct AppRuntime {
     pub app: Py<PyAny>,
     /// Loop shards; exactly one on GIL builds, `loop_threads` on
     /// free-threaded builds. Index 0 is the main (caller's) loop, which
@@ -28,7 +29,7 @@ pub(crate) struct SharedApp {
     pub limits: Option<Arc<RuntimeLimits>>,
 }
 
-impl SharedApp {
+impl AppRuntime {
     pub(crate) fn new(
         app: Py<PyAny>,
         shards: Box<[Shard]>,
@@ -67,7 +68,7 @@ impl SharedApp {
 
 /// Scoped worker state. Clones are confined to connection/request ownership
 /// boundaries and disappear when an embedded `serve()` has fully drained.
-pub(crate) type AppState = Arc<SharedApp>;
+pub(crate) type AppRuntimeHandle = Arc<AppRuntime>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ShutdownKind {
@@ -172,28 +173,34 @@ impl Drop for RequestAdmission {
     }
 }
 
+pub(crate) struct ConnectionShared {
+    pub app: AppRuntimeHandle,
+    pub config: Arc<ServerConfig>,
+    pub info: ConnectionInfo,
+    scope_cache: ConnectionScopeCache,
+}
+
 #[derive(Clone)]
 pub(crate) struct ConnectionContext {
-    pub app: AppState,
-    pub config: Arc<ServerConfig>,
-    pub info: Arc<ConnectionInfo>,
+    shared: Arc<ConnectionShared>,
     pub shutdown: watch::Receiver<ShutdownState>,
-    pub(crate) scope_cache: Arc<ConnectionScopeCache>,
 }
 
 impl ConnectionContext {
     pub(crate) fn new(
-        app: AppState,
+        app: AppRuntimeHandle,
         config: Arc<ServerConfig>,
-        info: Arc<ConnectionInfo>,
+        info: ConnectionInfo,
         shutdown: watch::Receiver<ShutdownState>,
     ) -> Self {
         Self {
-            app,
-            config,
-            info,
+            shared: Arc::new(ConnectionShared {
+                app,
+                config,
+                info,
+                scope_cache: ConnectionScopeCache::default(),
+            }),
             shutdown,
-            scope_cache: Arc::default(),
         }
     }
 
@@ -239,6 +246,14 @@ impl ConnectionContext {
     }
 }
 
+impl Deref for ConnectionContext {
+    type Target = ConnectionShared;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
 pub(crate) struct RequestContext {
     pub connection: ConnectionContext,
     pub request: RequestHead,
@@ -261,40 +276,44 @@ impl RequestContext {
 }
 
 #[derive(Debug)]
-pub(crate) struct H2InputCreditRelease {
+pub(crate) struct ReleasedH2InputCredit {
     pub(crate) stream_id: StreamId,
-    pub(crate) len: NonZeroU32,
+    pub(crate) bytes: NonZeroU32,
 }
 
 /// Cross-thread handoff from ASGI input consumption back to the owning H2
 /// connection. Releases are coalesced behind one notification so the
 /// connection wakes once and touches only streams that made progress.
 #[derive(Debug, Default)]
-pub(crate) struct H2InputFlowControl {
-    released: Mutex<Vec<H2InputCreditRelease>>,
+pub(crate) struct H2InputCreditQueue {
+    released: Mutex<Vec<ReleasedH2InputCredit>>,
     pending: AtomicBool,
     notify: Notify,
 }
 
-impl H2InputFlowControl {
-    pub(crate) fn credit(self: &Arc<Self>, stream_id: StreamId, len: NonZeroU32) -> H2InputCredit {
+impl H2InputCreditQueue {
+    pub(crate) fn credit(
+        self: &Arc<Self>,
+        stream_id: StreamId,
+        bytes: NonZeroU32,
+    ) -> H2InputCredit {
         H2InputCredit {
             flow: Arc::clone(self),
             stream_id,
-            len: Some(len),
+            remaining_bytes: Some(bytes),
         }
     }
 
-    fn release(&self, stream_id: StreamId, len: NonZeroU32) {
+    fn release(&self, stream_id: StreamId, bytes: NonZeroU32) {
         let mut released = self.released.lock();
         if let Some(last) = released.last_mut()
             && last.stream_id == stream_id
-            && let Some(combined) = last.len.get().checked_add(len.get())
+            && let Some(combined) = last.bytes.get().checked_add(bytes.get())
         {
             // Both operands are non-zero, so a non-overflowing sum is too.
-            last.len = NonZeroU32::new(combined).expect("sum of non-zero credits is non-zero");
+            last.bytes = NonZeroU32::new(combined).expect("sum of non-zero credits is non-zero");
         } else {
-            released.push(H2InputCreditRelease { stream_id, len });
+            released.push(ReleasedH2InputCredit { stream_id, bytes });
         }
         // The queue and its wakeup state are one synchronization domain. If
         // the transition happened after unlocking, a drainer could clear
@@ -315,7 +334,7 @@ impl H2InputFlowControl {
         self.notify.notified().await;
     }
 
-    pub(crate) fn drain_into(&self, target: &mut Vec<H2InputCreditRelease>) {
+    pub(crate) fn drain_into(&self, target: &mut Vec<ReleasedH2InputCredit>) {
         self.drain_into_inner(target, || {});
     }
 
@@ -323,7 +342,7 @@ impl H2InputFlowControl {
         clippy::significant_drop_tightening,
         reason = "the queue lock must cover the pending-state transition to prevent lost wakeups"
     )]
-    fn drain_into_inner(&self, target: &mut Vec<H2InputCreditRelease>, drained: impl FnOnce()) {
+    fn drain_into_inner(&self, target: &mut Vec<ReleasedH2InputCredit>, drained: impl FnOnce()) {
         debug_assert!(target.is_empty());
         let mut released = self.released.lock();
         swap(&mut *released, target);
@@ -337,9 +356,9 @@ impl H2InputFlowControl {
 /// successful ASGI materialization or any drop path returns it exactly once.
 #[derive(Debug)]
 pub(crate) struct H2InputCredit {
-    flow: Arc<H2InputFlowControl>,
+    flow: Arc<H2InputCreditQueue>,
     stream_id: StreamId,
-    len: Option<NonZeroU32>,
+    remaining_bytes: Option<NonZeroU32>,
 }
 
 impl H2InputCredit {
@@ -351,13 +370,18 @@ impl H2InputCredit {
             Arc::ptr_eq(&self.flow, &other.flow) && self.stream_id == other.stream_id,
             "HTTP/2 input credit cannot cross a connection or stream"
         );
-        let left = self.len.expect("live credit has a non-zero charge");
-        let right = other.len.take().expect("live credit has a non-zero charge");
+        let left = self
+            .remaining_bytes
+            .expect("live credit has a non-zero charge");
+        let right = other
+            .remaining_bytes
+            .take()
+            .expect("live credit has a non-zero charge");
         let combined = left
             .get()
             .checked_add(right.get())
             .expect("batched credit cannot exceed the receive-window charge");
-        self.len = NonZeroU32::new(combined);
+        self.remaining_bytes = NonZeroU32::new(combined);
     }
 
     pub(crate) fn release(self) {
@@ -367,8 +391,8 @@ impl H2InputCredit {
 
 impl Drop for H2InputCredit {
     fn drop(&mut self) {
-        if let Some(len) = self.len.take() {
-            self.flow.release(self.stream_id, len);
+        if let Some(bytes) = self.remaining_bytes.take() {
+            self.flow.release(self.stream_id, bytes);
         }
     }
 }
@@ -436,7 +460,7 @@ impl StreamInput {
     }
 }
 
-pub(crate) fn try_acquire_request_admission(app: &SharedApp) -> Option<RequestAdmission> {
+pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
             permit: None,
@@ -459,7 +483,7 @@ pub(crate) fn try_acquire_request_admission(app: &SharedApp) -> Option<RequestAd
 /// Python and never fails — startup errors arrive through the returned
 /// future like any other app failure.
 pub(crate) fn start_app_call(
-    app: AppState,
+    app: AppRuntimeHandle,
     args: Box<AppCallArgs>,
 ) -> SlotFuture<Result<(), H2CornError>> {
     let slot = TaskSlot::new();
@@ -482,7 +506,7 @@ pub(crate) mod test_fixtures {
     use pyo3::Python;
     use tokio::sync::watch;
 
-    use super::{ConnectionContext, SharedApp, ShutdownState};
+    use super::{AppRuntime, ConnectionContext, ShutdownState};
     use crate::config::{
         BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
         WebSocketConfig,
@@ -537,19 +561,19 @@ pub(crate) mod test_fixtures {
     }
 
     pub(crate) fn connection_context(py: Python<'_>) -> ConnectionContext {
-        let app: super::AppState = Arc::new(SharedApp::new(
+        let app: super::AppRuntimeHandle = Arc::new(AppRuntime::new(
             py.None(),
             Box::new([ShardHandle::test_stub(py)]),
             None,
         ));
-        let info = Arc::new(ConnectionInfo::from_peer(
+        let info = ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
             Some(ServerAddr {
                 host: "127.0.0.1".into(),
                 port: Some(8000),
             }),
             false,
-        ));
+        );
         let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
         ConnectionContext::new(app, server_config(), info, shutdown_rx)
     }
@@ -565,12 +589,12 @@ mod tests {
 
     use tokio::time::timeout;
 
-    use super::H2InputFlowControl;
+    use super::H2InputCreditQueue;
     use crate::h2_frame::StreamId;
 
     #[test]
     fn explicit_release_enqueues_exactly_once() {
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         flow.credit(StreamId::new(1).unwrap(), NonZeroU32::new(16).unwrap())
             .release();
 
@@ -578,12 +602,12 @@ mod tests {
         flow.drain_into(&mut released);
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].stream_id, StreamId::new(1).unwrap());
-        assert_eq!(released[0].len.get(), 16);
+        assert_eq!(released[0].bytes.get(), 16);
     }
 
     #[test]
     fn merged_credit_releases_the_exact_combined_charge_once() {
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).unwrap();
         let mut credit = flow.credit(stream_id, NonZeroU32::new(7).unwrap());
         credit.merge(flow.credit(stream_id, NonZeroU32::new(11).unwrap()));
@@ -601,12 +625,12 @@ mod tests {
         flow.drain_into(&mut released);
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].stream_id, stream_id);
-        assert_eq!(released[0].len.get(), 18);
+        assert_eq!(released[0].bytes.get(), 18);
     }
 
     #[tokio::test]
     async fn concurrent_release_after_drain_keeps_its_wakeup() {
-        let flow = Arc::new(H2InputFlowControl::default());
+        let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).unwrap();
         flow.credit(stream_id, NonZeroU32::new(7).unwrap())
             .release();
@@ -643,8 +667,8 @@ mod tests {
             .expect("the concurrent release must publish a new wakeup");
         let mut second = Vec::new();
         flow.drain_into(&mut second);
-        assert_eq!(first[0].len.get(), 7);
-        assert_eq!(second[0].len.get(), 11);
+        assert_eq!(first[0].bytes.get(), 7);
+        assert_eq!(second[0].bytes.get(), 11);
     }
 
     #[cfg(Py_GIL_DISABLED)]

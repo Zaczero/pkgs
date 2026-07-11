@@ -25,14 +25,14 @@ async def _cancel_task(task: asyncio.Task[Any] | None):
 
 async def _serve_with_lifespan(
     app: ASGIApp,
-    serve: Callable[[ASGIApp], Awaitable[None]],
+    serve: Callable[[ASGIApp, object | None], Awaitable[None]],
     *,
     mode: LifespanMode = 'auto',
     startup_timeout: float | None = None,
     shutdown_timeout: float | None = None,
 ):
     if mode == 'off':
-        await serve(app)
+        await serve(app, None)
         return
 
     lifespan = _LifespanRunner(app)
@@ -46,15 +46,18 @@ async def _serve_with_lifespan(
         await lifespan._discard_task()
         raise
     try:
-        # Rust recognizes this private handoff and calls the original app
-        # directly, copying loop-local state while it builds each scope. The
-        # wrapper remains the portable fallback for alternative runtimes.
-        lifespan.app.__h2corn_lifespan_app__ = app
-        lifespan.app.__h2corn_lifespan_state__ = lifespan._state
-        lifespan.app.__h2corn_lifespan_required__ = mode == 'on'
-        lifespan.app.__h2corn_lifespan_startup_timeout__ = startup_timeout
-        lifespan.app.__h2corn_lifespan_shutdown_timeout__ = shutdown_timeout
-        await serve(lifespan.app)
+        # Rust consumes the exact typed handoff and calls the original app
+        # directly. The wrapper remains the portable state-copying fallback.
+        from ._lib import _LifespanHandoff
+
+        handoff = _LifespanHandoff(
+            app,
+            lifespan._state,
+            mode == 'on',
+            startup_timeout,
+            shutdown_timeout,
+        )
+        await serve(lifespan.app, handoff)
     finally:
         try:
             await _await_with_timeout(

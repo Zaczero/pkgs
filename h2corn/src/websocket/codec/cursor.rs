@@ -3,11 +3,11 @@ use std::cmp::min;
 use bytes::{Buf, Bytes, BytesMut};
 
 use super::mask::{MaskKey, apply_websocket_mask_phase};
-use crate::smallvec_deque::SmallVecDeque;
+use crate::inline_fifo::InlineFifo;
 
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {
-    segments: SmallVecDeque<Bytes, N>,
+    segments: InlineFifo<Bytes, N>,
     offset: usize,
     len: usize,
 }

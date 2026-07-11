@@ -11,7 +11,7 @@ use pyo3::types::PyDictMethods;
 use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::app_call::AppCallArgs;
 use crate::error::H2CornError;
-use crate::runtime::AppState;
+use crate::runtime::AppRuntimeHandle;
 
 enum DoneSlot {
     App(SlotHandle<Result<(), H2CornError>>),
@@ -115,7 +115,7 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
 fn start_task(
     py: Python<'_>,
     shard: &Shard,
-    app: &AppState,
+    app: &AppRuntimeHandle,
     args: AppCallArgs,
     slot: &SlotHandle<Result<(), H2CornError>>,
 ) -> PyResult<()> {

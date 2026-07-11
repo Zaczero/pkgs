@@ -15,6 +15,7 @@ mod h2;
 mod h2_frame;
 mod hpack;
 mod http;
+mod inline_fifo;
 mod proxy_protocol;
 mod pyapi;
 mod pyloop;
@@ -22,7 +23,6 @@ mod python;
 mod runtime;
 mod sendfile;
 mod server;
-mod smallvec_deque;
 mod tls;
 mod websocket;
 
@@ -33,7 +33,8 @@ use pyo3::prelude::*;
 
 #[pymodule]
 #[pyo3(name = "_lib")]
-fn h2corn_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn init_lib_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<pyapi::LifespanHandoff>()?;
     m.add_function(wrap_pyfunction!(pyapi::emit_banner, m)?)?;
     m.add_function(wrap_pyfunction!(pyapi::validate_config, m)?)?;
     m.add_function(wrap_pyfunction!(pyapi::serve_fds, m)?)?;

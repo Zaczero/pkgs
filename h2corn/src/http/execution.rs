@@ -1,18 +1,16 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use tokio::sync::mpsc;
 
-use crate::bridge::{ASGI_QUEUE_CAPACITY, HttpDisconnectSignal};
+use crate::bridge::{ASGI_QUEUE_CAPACITY, RequestBodyCounter, RequestInputShared};
 use crate::http::planner::{RequestInputPlan, RequestLaunchPlan};
-use crate::runtime::{RequestAdmission, SharedApp, StreamInput, try_acquire_request_admission};
+use crate::runtime::{AppRuntime, RequestAdmission, StreamInput, try_acquire_request_admission};
 
 /// Allocated input channels for a request whose body streams to the app.
 pub(crate) struct StreamRequestInput {
     pub(crate) tx: mpsc::Sender<StreamInput>,
     pub(crate) rx: mpsc::Receiver<StreamInput>,
-    pub(crate) body_bytes_read: Option<Arc<AtomicU64>>,
-    pub(crate) disconnect: Arc<HttpDisconnectSignal>,
+    shared: Arc<RequestInputShared>,
 }
 
 impl StreamRequestInput {
@@ -21,9 +19,20 @@ impl StreamRequestInput {
         Self {
             tx,
             rx,
-            body_bytes_read: count_body_bytes.then(|| Arc::new(AtomicU64::new(0))),
-            disconnect: Arc::default(),
+            shared: Arc::new(RequestInputShared::new(count_body_bytes)),
         }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        mpsc::Sender<StreamInput>,
+        mpsc::Receiver<StreamInput>,
+        Option<RequestBodyCounter>,
+        Arc<RequestInputShared>,
+    ) {
+        let counter = self.shared.body_counter();
+        (self.tx, self.rx, counter, self.shared)
     }
 }
 
@@ -49,16 +58,14 @@ impl PreparedRequestInput {
     pub(crate) fn split(self) -> (Option<mpsc::Sender<StreamInput>>, AppRequestInput) {
         match self {
             Self::None => (None, AppRequestInput::None),
-            Self::Stream(StreamRequestInput {
-                tx,
-                rx,
-                body_bytes_read,
-                disconnect,
-            }) => (Some(tx), AppRequestInput::Stream {
-                rx,
-                body_bytes_read,
-                disconnect,
-            }),
+            Self::Stream(input) => {
+                let (tx, rx, body_bytes_read, disconnect) = input.into_parts();
+                (Some(tx), AppRequestInput::Stream {
+                    rx,
+                    body_bytes_read,
+                    disconnect,
+                })
+            },
         }
     }
 }
@@ -69,15 +76,15 @@ pub(crate) enum AppRequestInput {
     None,
     Stream {
         rx: mpsc::Receiver<StreamInput>,
-        body_bytes_read: Option<Arc<AtomicU64>>,
-        disconnect: Arc<HttpDisconnectSignal>,
+        body_bytes_read: Option<RequestBodyCounter>,
+        disconnect: Arc<RequestInputShared>,
     },
 }
 
 impl AppRequestInput {
     /// The shared body-byte counter the inbound stream increments and the
     /// access log reads (a refcount clone, not a sender).
-    pub(crate) fn body_bytes_read(&self) -> Option<Arc<AtomicU64>> {
+    pub(crate) fn body_bytes_read(&self) -> Option<RequestBodyCounter> {
         match self {
             Self::None => None,
             Self::Stream {
@@ -86,7 +93,7 @@ impl AppRequestInput {
         }
     }
 
-    pub(crate) fn disconnect_signal(&self) -> Option<Arc<HttpDisconnectSignal>> {
+    pub(crate) fn disconnect_signal(&self) -> Option<Arc<RequestInputShared>> {
         match self {
             Self::None => None,
             Self::Stream { disconnect, .. } => Some(Arc::clone(disconnect)),
@@ -109,7 +116,7 @@ pub(crate) enum RequestExecution<WebSocketMeta> {
 }
 
 pub(crate) fn prepare_request_execution<WebSocketMeta>(
-    app: &SharedApp,
+    app: &AppRuntime,
     plan: RequestLaunchPlan<WebSocketMeta>,
 ) -> Option<RequestExecution<WebSocketMeta>> {
     let admission = try_acquire_request_admission(app)?;
@@ -128,6 +135,8 @@ pub(crate) fn prepare_request_execution<WebSocketMeta>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{AppRequestInput, PreparedRequestInput, StreamRequestInput};
     use crate::http::planner::RequestInputPlan;
 
@@ -159,12 +168,20 @@ mod tests {
     #[test]
     fn streaming_http_requests_allocate_channels_and_optional_counter() {
         let input = StreamRequestInput::new(true);
-        assert!(input.body_bytes_read.is_some());
+        let (_, _, counter, disconnect) = input.into_parts();
+        assert!(counter.is_some());
+        assert_eq!(
+            Arc::strong_count(&disconnect),
+            2,
+            "body accounting reuses the streamed-request allocation"
+        );
     }
 
     #[test]
     fn websocket_requests_allocate_channels_without_counter() {
         let input = StreamRequestInput::new(false);
-        assert!(input.body_bytes_read.is_none());
+        let (_, _, counter, disconnect) = input.into_parts();
+        assert!(counter.is_none());
+        assert_eq!(Arc::strong_count(&disconnect), 1);
     }
 }

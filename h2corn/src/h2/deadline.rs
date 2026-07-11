@@ -187,7 +187,7 @@ mod tests {
         assert!(deadlines.storage_len() <= 33);
         assert_eq!(
             deadlines.next(),
-            Some((0x7FFF_FFFD, now + Duration::from_nanos(10_000))),
+            Some((0x7FFF_FFFD, now + Duration::from_micros(10))),
         );
     }
 }

@@ -312,12 +312,12 @@ impl TryFrom<Settings> for PeerSettings {
 }
 
 #[derive(Debug)]
-pub(crate) struct FrameReader<R> {
+pub(crate) struct BufferedConnectionReader<R> {
     reader: R,
     buffer: BytesMut,
 }
 
-impl<R> FrameReader<R>
+impl<R> BufferedConnectionReader<R>
 where
     R: AsyncRead + Unpin,
 {
