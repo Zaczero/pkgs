@@ -440,23 +440,47 @@ Cargo.lock
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,linux,c,cmake,direnv,dotenv,node,python,rust
 
 # Custom rules (everything added below won't be overriden by 'Generate .gitignore File' if you use 'Update' option)
+#
+# Policy: commit sources and generators; do not commit build/docs/license outputs
+# that scripts already produce. Exceptions are intentional published surfaces
+# (e.g. h2corn bench plots for docs, gometry REPORT.md).
 
 !.envrc
 !/Cargo.lock
 
 .codex
 .claude/
+.agents/
 .uv-cache/
 repomix-output.xml
 uv.lock
 vendor/
 
+# Free-threaded / variant venvs (uv creates .venv-t etc.; plain .venv is above)
+.venv*/
+**/.venv*/
+
+# LLVM/coverage profiles (also under target/, but may land elsewhere)
+*.profraw
+*.profdata
+
+# Per-package cargo targets (h2corn target-py314t, gometry target-local, …)
+**/target-*/
+
 githead/tests/git/HEAD
-h2corn/bench/*.bin
-h2corn/bench/results/*_summary.json
 jinja2-htmlmin/tests/templates/.*
 
-# mkdocs build output (any package)
+# h2corn bench: large payloads + machine-run dumps (plots stay tracked for docs)
+h2corn/bench/*.bin
+h2corn/bench/results/*_summary.json
+h2corn/bench/results/compare/
+h2corn/bench/results/matrix/
+
+# gometry: raw release bench dumps
+gometry/benches/results/releases/
+gometry/dev/
+
+# mkdocs / properdocs build output (any package)
 **/site/
 
 # Generated third-party license bundle (any rusty package). Produced from the
