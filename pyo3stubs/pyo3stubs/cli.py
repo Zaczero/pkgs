@@ -7,21 +7,11 @@ A project drives every gate through one entry point::
 ``--config`` points at a Python file that exposes either a ``config()`` callable
 or a ``CONFIG`` attribute returning a :class:`~pyo3stubs.config.StubConfig`.
 
-Commands:
-  gen-docs       inject runtime docstrings into the stub (``--check`` verifies
-                 instead of writing); also runs the doc-contract check
-  validity       mypy type-checks the ``.pyi`` itself (PEP 484 legality —
-                 what every non-pyright checker sees)
-  stubtest       mypy.stubtest compares the stub against the compiled runtime
-                 (members, signatures, defaults, variable types)
-  structural     overload hygiene, @final/runtime finality, signature
-                 coverage, ``__match_args__`` parity
-  surface        cross-surface option-parameter parity
-  leaked-types   no public pyclass leaks past registration/reachability
-  rust-nullability  Option<..> getters/fields are `| None` in the stub
-  doc-contract   public symbols documented (stdlib ast)
-  plugins        project-specific checks from ``StubConfig.plugins``
-  check-all      every check + a gen-docs sync verification
+Commands mirror the gate registry (see :mod:`pyo3stubs.gates`), plus::
+
+  gen-docs       inject runtime docstrings into the stub (``--check`` verifies)
+  check-all      every gate in registry order
+  init           scaffold ``tools/stubconfig.py`` + ``tests/test_stubs.py``
 """
 
 from __future__ import annotations
@@ -30,32 +20,9 @@ import argparse
 import importlib.util
 import sys
 import uuid
-from typing import Callable
 
 from pyo3stubs.config import StubConfig
-from pyo3stubs.doc_contract import collect_doc_contract_errors
-from pyo3stubs.leaked_types import collect_errors as collect_leaked_types_errors
-from pyo3stubs.oracle import collect_stubtest_errors, collect_validity_errors
-from pyo3stubs.plugins import collect_errors as collect_plugin_errors
-from pyo3stubs.rust_nullability import collect_errors as collect_rust_nullability_errors
-from pyo3stubs.structural import collect_errors as collect_structural_errors
-from pyo3stubs.surface import collect_errors as collect_surface_errors
-
-
-#: name -> (collect_errors(cfg) -> list[str], success label)
-_CHECKS: dict[str, tuple[Callable[[StubConfig], list[str]], str]] = {
-    'validity': (collect_validity_errors, 'stub validity OK: mypy-clean'),
-    'stubtest': (collect_stubtest_errors, 'stubtest OK: stub matches the runtime'),
-    'structural': (collect_structural_errors, 'structural checks OK'),
-    'surface': (collect_surface_errors, 'surface parity OK'),
-    'leaked-types': (collect_leaked_types_errors, 'no leaked types'),
-    'rust-nullability': (
-        collect_rust_nullability_errors,
-        'rust nullability OK: every Option surface admits None',
-    ),
-    'doc-contract': (collect_doc_contract_errors, 'doc contract OK'),
-    'plugins': (collect_plugin_errors, 'plugin checks OK'),
-}
+from pyo3stubs.gates import REGISTRY, SUCCESS, run_all
 
 
 def load_config(path: str) -> StubConfig:
@@ -89,7 +56,7 @@ def _report(errors: list[str], success: str) -> int:
 def _gen_docs(cfg: StubConfig, *, check: bool) -> int:
     from pyo3stubs.gen import render_stub_with_docs  # libcst only needed here
 
-    status = _report(collect_doc_contract_errors(cfg), 'doc contract OK')
+    status = _report(REGISTRY['doc-contract'](cfg), SUCCESS['doc-contract'])
     code = render_stub_with_docs(cfg)
     if check:
         if cfg.stub_path.read_text(encoding='utf-8') != code:
@@ -97,7 +64,7 @@ def _gen_docs(cfg: StubConfig, *, check: bool) -> int:
                 f'{cfg.stub_path} is out of sync; run `pyo3stubs gen-docs`\n'
             )
             return 1
-        print('stub docstrings in sync')
+        print(SUCCESS['gen-docs-sync'])
         return status
     cfg.stub_path.write_text(code, encoding='utf-8')
     print(f'wrote {cfg.stub_path}')
@@ -155,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='pyo3stubs', description=__doc__)
     parser.add_argument(
         'command',
-        choices=['gen-docs', 'check-all', 'init', *_CHECKS],
+        choices=['gen-docs', 'check-all', 'init', *REGISTRY],
     )
     parser.add_argument('--config', help='path to the StubConfig shim')
     parser.add_argument(
@@ -177,25 +144,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == 'gen-docs':
         return _gen_docs(cfg, check=args.check)
-    if args.command in _CHECKS:
-        collect, success = _CHECKS[args.command]
-        return _report(collect(cfg), success)
-    # check-all: every check + a gen-docs sync verification (which also runs
-    # doc-contract). `stubtest` last — it is the slowest (it spawns a mypy
-    # build of the whole stub).
+    if args.command in REGISTRY:
+        return _report(REGISTRY[args.command](cfg), SUCCESS[args.command])
     status = 0
-    for name in (
-        'validity',
-        'structural',
-        'surface',
-        'leaked-types',
-        'rust-nullability',
-        'plugins',
-        'stubtest',
-    ):
-        collect, success = _CHECKS[name]
-        status |= _report(collect(cfg), success)
-    status |= _gen_docs(cfg, check=True)
+    for name, errors in run_all(cfg).items():
+        status |= _report(errors, SUCCESS[name])
     return status
 
 

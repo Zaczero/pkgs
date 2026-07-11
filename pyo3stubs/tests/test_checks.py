@@ -128,25 +128,21 @@ def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):
     ) in rendered
 
 
-def test_text_signature_plugin_flags_param_drift(tmp_path, pristine_src):
-    from pyo3stubs.context import CheckContext
-    from pyo3stubs.plugins import RustTextSignatureCheck
+def test_text_signature_flags_param_drift(tmp_path, pristine_src):
+    from pyo3stubs.text_signature import collect_errors
 
     mutated = pristine_src.replace('text_signature = "(a, b=\'x\')"', 'text_signature = "(a, c=\'x\')"')
     assert mutated != pristine_src
-    cfg = make_config(tmp_path, src_text=mutated)
-    errors = RustTextSignatureCheck().collect(cfg, CheckContext(cfg))
+    errors = collect_errors(make_config(tmp_path, src_text=mutated))
     assert any('text_signature params' in e for e in errors)
 
 
-def test_text_signature_plugin_flags_literal_default_drift(tmp_path, pristine_src):
-    from pyo3stubs.context import CheckContext
-    from pyo3stubs.plugins import RustTextSignatureCheck
+def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):
+    from pyo3stubs.text_signature import collect_errors
 
     mutated = pristine_src.replace('b = "x"', 'b = "y"')
     assert mutated != pristine_src
-    cfg = make_config(tmp_path, src_text=mutated)
-    errors = RustTextSignatureCheck().collect(cfg, CheckContext(cfg))
+    errors = collect_errors(make_config(tmp_path, src_text=mutated))
     assert any('default' in e for e in errors)
 
 
@@ -192,19 +188,16 @@ class LeafArray:
 '''
 
 
-def _duality(tmp_path, stub_text, **overrides):
+def _duality(tmp_path, stub_text, **duality_kwargs):
+    from pyo3stubs.config import DualityConfig
+    from pyo3stubs.duality import collect_errors
+
     cfg = make_config(
         tmp_path,
         stub_text=stub_text,
-        duality_pairs=(('Leaf', 'LeafArray'),),
-        **overrides,
+        duality=DualityConfig(pairs=(('Leaf', 'LeafArray'),), **duality_kwargs),
     )
-    from pyo3stubs.context import CheckContext
-    from pyo3stubs.structural import _collect_return_parity
-
-    errors: list[str] = []
-    _collect_return_parity(CheckContext(cfg), errors)
-    return errors
+    return collect_errors(cfg)
 
 
 def test_return_parity_clean(tmp_path):
@@ -237,7 +230,7 @@ def test_return_parity_exempt_silences(tmp_path):
         'def hull(self) -> LeafArray[Wide]:', 'def hull(self) -> Self:'
     )
     errors = _duality(
-        tmp_path, mutated, duality_exempt={'hull': 'fixture: deliberate divergence'}
+        tmp_path, mutated, exempt={'hull': 'fixture: deliberate divergence'}
     )
     assert errors == []
 
@@ -255,11 +248,25 @@ def test_gen_docs_is_idempotent(tmp_path):
 
 def test_testing_gate_test_shape(tmp_path):
     """`pyo3stubs.testing.gate_test` yields one parametrized pytest test."""
-    from pyo3stubs.testing import GATES, gate_test
+    from pyo3stubs.gates import REGISTRY
+    from pyo3stubs.testing import gate_test
 
     cfg = make_config(tmp_path)
     test = gate_test(cfg)
     marks = [m for m in getattr(test, 'pytestmark', [])]
     assert marks and marks[0].name == 'parametrize'
     names = marks[0].args[1]
-    assert set(GATES) <= set(names)
+    assert list(REGISTRY) == list(names)
+
+
+def test_rust_class_map_honors_pyclass_patterns(tmp_path):
+    """Macro-export patterns contribute to rust_class_map (nullability needs this)."""
+    import re
+
+    from pyo3stubs.rust_scan import pyclass_names, rust_class_map
+
+    src = 'geometry_leaf!(PyPoint, "Point", "doc");\n'
+    pattern = re.compile(r'geometry_leaf!\s*\(\s*(\w+)\s*,\s*"([^"]+)"')
+    cfg = make_config(tmp_path, src_text=src, pyclass_patterns=(pattern,))
+    assert rust_class_map(cfg)['PyPoint'] == 'Point'
+    assert pyclass_names(cfg)['Point'].endswith('lib.rs')

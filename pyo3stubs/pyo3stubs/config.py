@@ -1,4 +1,9 @@
-"""Configuration for PyO3 stub/runtime parity gates."""
+"""Configuration for PyO3 stub/runtime parity gates.
+
+Tier A gates need only ``module`` / ``stub_path`` / ``src_root``.
+Tier B gates activate when their optional nested config is set (empty = no-op),
+same pattern as ``surfaces``.
+"""
 
 from __future__ import annotations
 
@@ -8,71 +13,104 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from pyo3stubs.protocols import Check
+
+@dataclass(frozen=True)
+class DualityConfig:
+    """Scalar↔array return duality (config-activated ``duality`` gate).
+
+    Parameters
+    ----------
+    pairs:
+        ``(scalar_class, array_class)`` stub-class pairs whose same-name
+        methods form a scalar↔array duality.
+    exempt:
+        Method names exempt from the duality return rule (reason per name).
+    self_atoms:
+        Scalar return atoms treated as kind-preserving besides ``Self``
+        (e.g. an element TypeVar free functions thread through).
+    """
+
+    pairs: tuple[tuple[str, str], ...]
+    exempt: dict[str, str] = field(default_factory=dict)
+    self_atoms: frozenset[str] = field(default_factory=frozenset)
+
+
+@dataclass(frozen=True)
+class NamespaceConfig:
+    """Namespace facade aliases of ``_lib`` entry points (``namespace-facade`` gate).
+
+    Parameters
+    ----------
+    package_module:
+        Top-level package import path (e.g. ``"gometry"``).
+    modules:
+        Namespace submodule names re-exporting ``_lib`` entry points.
+    prefix_template:
+        Format string mapping a namespace to its ``_lib`` name prefix.
+        Default ``"{namespace}_"`` matches gometry's convention.
+    """
+
+    package_module: str
+    modules: tuple[str, ...]
+    prefix_template: str = '{namespace}_'
+
+
+@dataclass(frozen=True)
+class TokenConfig:
+    """``Literal`` token aliases vs runtime ``token_enum!`` (``token-vocabulary`` gate).
+
+    Parameters
+    ----------
+    types_module:
+        Module carrying ``Literal`` token aliases (e.g. ``"gometry._types"``).
+    vocabulary_export:
+        Callable on the runtime module returning token vocabulary tuples.
+    enum_macro:
+        Rust macro name declaring token enums (default ``"token_enum!"``).
+    """
+
+    types_module: str
+    vocabulary_export: str
+    enum_macro: str = 'token_enum!'
 
 
 @dataclass(frozen=True)
 class StubConfig:
-    """Everything a PyO3 project must supply to run the universal gates.
+    """Everything a PyO3 project must supply to run the gates.
 
     Parameters
     ----------
     module:
-        Import path of the compiled extension (e.g. ``"shaper._lib"``).
+        Import path of the compiled extension (e.g. ``"gometry._lib"``).
     stub_path:
         Path to the hand-authored ``.pyi`` stub.
     src_root:
         Rust ``src/`` directory scanned for ``#[pyclass]`` and macro exports.
     surfaces:
-        Cross-surface parity targets as ``(label, owner)`` pairs where
-        *owner* is the runtime module or class object to inspect.
+        Cross-surface parity targets as ``(label, owner)`` pairs; empty = no-op.
     known_divergences:
         Deliberate cross-surface option-block divergences keyed by op name.
     leak_allowlist:
         Public ``pyclass`` names exempt from registration (reason per name).
     stubtest_allowlist:
-        Optional ``mypy.stubtest`` allowlist file (one error-summary regex per
-        line); entries that stop matching fail the run, so the list cannot rot.
+        Optional ``mypy.stubtest`` allowlist file; unused entries fail the run.
     mypy_config:
-        Optional mypy config file (e.g. the project ``pyproject.toml``) applied
-        to both the validity gate and stubtest, so error-code policy lives in
-        one place.
+        Optional mypy config file applied to validity and stubtest.
     mypy_args:
-        Extra mypy flags for the stub validity gate (e.g. a python-version pin).
+        Extra mypy flags for the stub validity gate.
     uninspectable_allowlist:
-        Public runtime callables where ``inspect.signature`` legitimately fails
-        (reason per qualname); anything else uninspectable is a hard error.
-    plugins:
-        Optional project-specific checks (token vocab, namespace facades, …).
-    package_module:
-        Top-level package import path for namespace-facade checks
-        (e.g. ``"shaper"``).
-    types_module:
-        Module carrying ``Literal`` token aliases (e.g. ``"shaper._types"``).
-    namespace_modules:
-        Namespace submodule names re-exporting ``_lib`` entry points.
-    namespace_prefix_template:
-        Format string mapping a namespace to its ``_lib`` name prefix.
-        Default ``"{namespace}_"`` matches shaper's convention.
-    token_vocabulary_export:
-        Callable on the runtime module returning token vocabulary tuples.
-    token_enum_macro:
-        Rust macro name declaring token enums (default ``"token_enum!"``).
+        Public runtime callables where ``inspect.signature`` legitimately fails.
     ignored_type_names:
         Annotation names skipped by the leaked-types reachability scan.
     pyclass_patterns:
-        Extra ``re.Pattern`` objects scanning ``src_root`` for exported
-        Python class names beyond ``#[pyclass]`` attributes.
-    duality_pairs:
-        ``(scalar_class, array_class)`` stub-class pairs whose same-name
-        methods form a scalar<->array duality: the array method's return must
-        be ``Self`` exactly when the scalar's is kind-preserving
-        (``Self``/element TypeVar), else ``ArrayClass[<scalar return>]``.
-    duality_exempt:
-        Method names exempt from the duality return rule (reason per name).
-    duality_self_atoms:
-        Scalar return atoms treated as kind-preserving besides ``Self``
-        (e.g. the element TypeVar free functions thread through).
+        Extra ``re.Pattern`` objects for macro-exported class names.
+        Group 1 = Python name, or groups 1+2 = ``(rust_ident, py_name)``.
+    duality:
+        Optional scalar↔array duality config (activates the ``duality`` gate).
+    namespace:
+        Optional namespace-facade config (activates ``namespace-facade``).
+    tokens:
+        Optional token-vocabulary config (activates ``token-vocabulary``).
     """
 
     module: str
@@ -85,15 +123,8 @@ class StubConfig:
     mypy_config: Path | None = None
     mypy_args: tuple[str, ...] = ()
     uninspectable_allowlist: dict[str, str] = field(default_factory=dict)
-    plugins: tuple[Check, ...] = ()
-    package_module: str | None = None
-    types_module: str | None = None
-    namespace_modules: tuple[str, ...] = ()
-    namespace_prefix_template: str = '{namespace}_'
-    token_vocabulary_export: str | None = None
-    token_enum_macro: str = 'token_enum!'
     ignored_type_names: frozenset[str] = field(default_factory=frozenset)
     pyclass_patterns: tuple[Any, ...] = ()
-    duality_pairs: tuple[tuple[str, str], ...] = ()
-    duality_exempt: dict[str, str] = field(default_factory=dict)
-    duality_self_atoms: frozenset[str] = field(default_factory=frozenset)
+    duality: DualityConfig | None = None
+    namespace: NamespaceConfig | None = None
+    tokens: TokenConfig | None = None

@@ -15,6 +15,9 @@ Four gates over the stub AST + live runtime:
   skips it silently); require an explicit allowlist entry per blind spot.
 * **``__match_args__`` parity** — the stub's literal tuple must equal the
   runtime value (match statements silently misbind otherwise).
+
+Scalar↔array return duality is the separate ``duality`` gate
+(:mod:`pyo3stubs.duality`), activated by ``StubConfig.duality``.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import ast
 import inspect
 from typing import TYPE_CHECKING
 
+from pyo3stubs.ast_util import function_groups
 from pyo3stubs.context import CheckContext
 
 if TYPE_CHECKING:
@@ -68,16 +72,6 @@ def _parameters(node: ast.FunctionDef) -> list[tuple[str, str, str | None]]:
     if args.kwarg:
         params.append((args.kwarg.arg, 'VAR_KEYWORD', None))
     return params
-
-
-def _function_groups(
-    body: list[ast.stmt],
-) -> dict[str, list[ast.FunctionDef]]:
-    groups: dict[str, list[ast.FunctionDef]] = {}
-    for stmt in body:
-        if isinstance(stmt, ast.FunctionDef):
-            groups.setdefault(stmt.name, []).append(stmt)
-    return groups
 
 
 def _check_overload_group(
@@ -152,11 +146,11 @@ def _check_overload_group(
 
 def _collect_overload_hygiene(ctx: CheckContext, errors: list[str]) -> None:
     path = str(ctx.cfg.stub_path)
-    for name, defs in _function_groups(ctx.stub_ast.body).items():
+    for name, defs in function_groups(ctx.stub_ast.body).items():
         _check_overload_group(name, defs, path, errors)
     for node in ctx.stub_ast.body:
         if isinstance(node, ast.ClassDef):
-            for name, defs in _function_groups(node.body).items():
+            for name, defs in function_groups(node.body).items():
                 _check_overload_group(f'{node.name}.{name}', defs, path, errors)
     _check_duplicate_decorators(ctx, path, errors)
 
@@ -328,122 +322,6 @@ def _collect_match_args(ctx: CheckContext, errors: list[str]) -> None:
             )
 
 
-def _flatten_union(expr: ast.expr) -> list[ast.expr]:
-    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
-        return [*_flatten_union(expr.left), *_flatten_union(expr.right)]
-    return [expr]
-
-
-def _return_atoms(node: ast.FunctionDef) -> frozenset[str] | None:
-    if node.returns is None:
-        return None
-    return frozenset(ast.unparse(atom) for atom in _flatten_union(node.returns))
-
-
-def _class_methods(
-    tree: ast.Module, class_name: str
-) -> dict[str, list[ast.FunctionDef]]:
-    for top in tree.body:
-        if isinstance(top, ast.ClassDef) and top.name == class_name:
-            methods: dict[str, list[ast.FunctionDef]] = {}
-            for node in top.body:
-                if isinstance(node, ast.FunctionDef):
-                    methods.setdefault(node.name, []).append(node)
-            return methods
-    return {}
-
-
-def _unwrap_array(atom: str, array_class: str) -> str | None:
-    """``ArrayClass[X]`` -> ``X`` source; None when not that shape."""
-    prefix = f'{array_class}['
-    if atom.startswith(prefix) and atom.endswith(']'):
-        return atom[len(prefix) : -1]
-    return None
-
-
-def _collect_return_parity(ctx: CheckContext, errors: list[str]) -> None:
-    """Scalar<->array duality: array returns are DERIVED from the scalar contract.
-
-    For each configured ``(scalar_class, array_class)`` pair and every public
-    method both classes define: when every scalar return is kind-preserving
-    (``Self`` or an element TypeVar), the array method must return ``Self``;
-    otherwise it must return ``ArrayClass[<union of scalar leaf returns>]``
-    (a scalar return of ``ArrayClass[X]`` — an expansion op — contributes
-    ``X``). This is the invariant whose silent drift once shipped 32
-    ``-> Self`` lies on kind-changing array methods.
-    """
-    cfg = ctx.cfg
-    if not cfg.duality_pairs:
-        return
-    path = cfg.stub_path
-    for scalar_class, array_class in cfg.duality_pairs:
-        scalar_methods = _class_methods(ctx.stub_ast, scalar_class)
-        array_methods = _class_methods(ctx.stub_ast, array_class)
-        for name, array_defs in sorted(array_methods.items()):
-            if name.startswith('_') or name in cfg.duality_exempt:
-                continue
-            scalar_defs = scalar_methods.get(name)
-            if not scalar_defs:
-                continue
-            # Participation: the array side returns geometry content.
-            array_returns = [
-                (node, atoms)
-                for node in array_defs
-                if (atoms := _return_atoms(node)) is not None
-                and all(
-                    atom == 'Self' or _unwrap_array(atom, array_class) is not None
-                    for atom in atoms
-                )
-            ]
-            if not array_returns:
-                continue
-            scalar_atom_sets = [
-                atoms for node in scalar_defs if (atoms := _return_atoms(node))
-            ]
-            if not scalar_atom_sets:
-                continue
-            scalar_atoms = frozenset().union(*scalar_atom_sets)
-            preserving = all(
-                atom == 'Self' or atom in cfg.duality_self_atoms
-                for atom in scalar_atoms
-            )
-            if preserving:
-                expected_label = 'Self'
-                expected_atoms = frozenset({'Self'})
-            else:
-                elements: set[str] = set()
-                for atom in scalar_atoms:
-                    inner = _unwrap_array(atom, array_class)
-                    elements.update(
-                        e.strip()
-                        for e in (inner or atom).split('|')
-                    )
-                expected_label = f'{array_class}[{" | ".join(sorted(elements))}]'
-                expected_atoms = frozenset(elements)
-            for node, atoms in array_returns:
-                if preserving:
-                    actual_ok = atoms == {'Self'}
-                else:
-                    inners: set[str] = set()
-                    actual_ok = True
-                    for atom in atoms:
-                        inner = _unwrap_array(atom, array_class)
-                        if inner is None:
-                            actual_ok = False
-                            break
-                        inners.update(e.strip() for e in inner.split('|'))
-                    actual_ok = actual_ok and inners == expected_atoms
-                if not actual_ok:
-                    scalar_label = ' | '.join(sorted(scalar_atoms))
-                    errors.append(
-                        f'{path}:{node.lineno}: {array_class}.{name}: return '
-                        f'`{ast.unparse(node.returns)}` breaks scalar<->array '
-                        f'duality — scalar returns `{scalar_label}`, so the '
-                        f'array form must return `{expected_label}` (exempt '
-                        f'via duality_exempt with a reason if deliberate)'
-                    )
-
-
 def collect_errors(cfg: StubConfig) -> list[str]:
     """Run all structural gates; empty when clean."""
     ctx = CheckContext(cfg)
@@ -452,5 +330,4 @@ def collect_errors(cfg: StubConfig) -> list[str]:
     _collect_finality(ctx, errors)
     _collect_signature_coverage(ctx, errors)
     _collect_match_args(ctx, errors)
-    _collect_return_parity(ctx, errors)
     return errors

@@ -24,6 +24,20 @@ DEFAULT_PYCLASS = re.compile(
 PYCLASS_NAME_ARG = re.compile(r'\bname\s*=\s*"([^"]+)"')
 
 
+def _pattern_export(match: re.Match[str]) -> tuple[str, str] | None:
+    """``(rust_ident, py_name)`` from a project ``pyclass_patterns`` match.
+
+    Group 1 alone → both names equal that group (Python name is the key).
+    Groups 1 and 2 → Rust identifier then Python export name.
+    """
+    if not match.lastindex:
+        return None
+    if match.lastindex >= 2:
+        return match.group(1), match.group(2)
+    name = match.group(1)
+    return name, name
+
+
 def pyclass_names(cfg: StubConfig) -> dict[str, str]:
     """Exported Python class name -> defining source path (relative to src)."""
     names: dict[str, str] = {}
@@ -36,7 +50,9 @@ def pyclass_names(cfg: StubConfig) -> dict[str, str]:
             names.setdefault(py_name, rel)
         for pattern in cfg.pyclass_patterns:
             for match in pattern.finditer(text):
-                names.setdefault(match.group(1), rel)
+                export = _pattern_export(match)
+                if export is not None:
+                    names.setdefault(export[1], rel)
     return names
 
 
@@ -44,10 +60,16 @@ def rust_class_map(cfg: StubConfig) -> dict[str, str]:
     """Rust struct/enum identifier -> exported Python class name."""
     mapping: dict[str, str] = {}
     for path in _sources(cfg.src_root):
-        for match in DEFAULT_PYCLASS.finditer(path.read_text()):
+        text = path.read_text()
+        for match in DEFAULT_PYCLASS.finditer(text):
             name_arg = PYCLASS_NAME_ARG.search(match.group('args') or '')
             py_name = name_arg.group(1) if name_arg else match.group('ident')
             mapping.setdefault(match.group('ident'), py_name)
+        for pattern in cfg.pyclass_patterns:
+            for match in pattern.finditer(text):
+                export = _pattern_export(match)
+                if export is not None:
+                    mapping.setdefault(export[0], export[1])
     return mapping
 
 

@@ -1,4 +1,10 @@
-"""Cross-surface option-parameter parity gate (SurfaceTrinity kernel)."""
+"""Cross-surface option-parameter parity gate.
+
+Compares the option block (trailing params after required data inputs) of every
+operation that appears on more than one surface — e.g. class method, array
+method, free function — so a knob added to one spelling cannot silently miss
+the others. Surfaces come from ``StubConfig.surfaces``; empty means no-op.
+"""
 
 from __future__ import annotations
 

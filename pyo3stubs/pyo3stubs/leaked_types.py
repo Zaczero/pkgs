@@ -184,27 +184,23 @@ def _collect_stub_signature_leaks(
 
 def collect_errors(cfg: StubConfig) -> list[str]:
     """Flag registration leaks and stub reachability leaks."""
-    import importlib
+    from pyo3stubs.context import CheckContext
 
-    runtime = importlib.import_module(cfg.module)
+    ctx = CheckContext(cfg)
     pyclass_map = collect_pyclass_names(cfg)
     pyclass_names = set(pyclass_map)
-    registered = _registered_class_names(runtime)
+    registered = _registered_class_names(ctx.runtime_module)
     public_stub_classes = _public_stub_class_names(cfg.stub_path)
     ignored = cfg.ignored_type_names or DEFAULT_IGNORED_TYPE_NAMES
     errors: list[str] = []
 
     for name, rel_path in sorted(pyclass_map.items()):
-        if name.startswith('_'):
-            continue
-        if name in cfg.leak_allowlist:
+        if name.startswith('_') or name in cfg.leak_allowlist:
             continue
         if name in registered:
             continue
-        reason = cfg.leak_allowlist.get(name)
-        detail = f' ({reason})' if reason else ''
         errors.append(
-            f'{rel_path}: pyclass {name!r} is not registered on {cfg.module}{detail}'
+            f'{rel_path}: pyclass {name!r} is not registered on {cfg.module}'
         )
 
     errors.extend(

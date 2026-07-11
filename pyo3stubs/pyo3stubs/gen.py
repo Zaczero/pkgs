@@ -22,23 +22,18 @@ Requires ``libcst``. The runtime module and stub path come from the project's
 from __future__ import annotations
 
 import ast
-import importlib
 from collections import Counter
 from typing import TYPE_CHECKING
 
 import libcst as cst
 
+from pyo3stubs.ast_util import doc_of
+from pyo3stubs.context import CheckContext
+
 if TYPE_CHECKING:
     import types
 
     from pyo3stubs.config import StubConfig
-
-
-def _doc_of(obj: object) -> str | None:
-    doc = getattr(obj, '__doc__', None)
-    if not doc or not doc.strip():
-        return None
-    return doc.strip('\n')
 
 
 def _docstring_statement(doc: str, indent: str) -> cst.BaseStatement:
@@ -137,7 +132,7 @@ class DocInjector(cst.CSTTransformer):
         obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper (protocols)
-        doc = _doc_of(obj)
+        doc = doc_of(obj)
         if doc:
             return _apply(updated, doc, '    ' * (len(self._stack) + 1))
         return updated
@@ -165,7 +160,7 @@ class DocInjector(cst.CSTTransformer):
             return updated  # stub-only typing helper
         if not carrier:
             return _without_docstring(updated)
-        doc = _doc_of(obj)
+        doc = doc_of(obj)
         if doc:
             return _apply(updated, doc, indent)
         return updated
@@ -177,7 +172,7 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
     Docstring-presence violations are the doc-contract check's job
     (:func:`pyo3stubs.doc_contract.collect_errors`) — the CLI runs both.
     """
-    runtime = importlib.import_module(cfg.module)
-    source = cfg.stub_path.read_text(encoding='utf-8')
-    injector = DocInjector(runtime, _def_totals(source))
+    ctx = CheckContext(cfg)
+    source = ctx.stub_text
+    injector = DocInjector(ctx.runtime_module, _def_totals(source))
     return cst.parse_module(source).visit(injector).code
