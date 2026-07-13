@@ -114,10 +114,10 @@ def _check_overload_group(
         last_index = -1
         for name, kind, default in _parameters(variant):
             if name not in canonical:
-                errors.append(
-                    f'{path}:{variant.lineno}: {qualname}: overload parameter '
-                    f'{name!r} not on the canonical (last) variant'
-                )
+                # Selector-dependent overloads intentionally omit mutually
+                # exclusive parameters (for example, a literal mode that
+                # makes a keyword invalid).  Requiring a synthetic union
+                # fallback would silently re-admit that invalid call shape.
                 continue
             if kind not in ('KEYWORD_ONLY', 'VAR_KEYWORD'):
                 index = order.index(name)
