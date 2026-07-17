@@ -485,8 +485,11 @@ gometry/dev/
 # mkdocs / properdocs build output (any package)
 **/site/
 
-# Generated third-party license bundle (any rusty package). Produced from the
-# dependency graph at build time by .github/scripts/gen_third_party_licenses.py
-# and bundled into the wheel/sdist via maturin's default license-files glob —
-# never committed. Regenerate locally with that script if building a release wheel.
+# Generated license files (any released package). Rendered at build time by
+# .github/scripts/gen_licenses.py from each pyproject's SPDX expression (own
+# license) and the Cargo dependency graph (rusty third-party bundle), then
+# bundled into the wheel/sdist via the PEP 639 default license-files glob —
+# never committed. Packages with committed LICEN[CS]E* files (e.g. gometry)
+# skip own-license generation.
+**/LICENSE.md
 **/LICENSE-THIRD-PARTY.md

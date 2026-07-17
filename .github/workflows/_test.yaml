@@ -183,12 +183,11 @@ jobs:
         with:
           tool: cargo-about@0.8.4
 
-      - name: Generate third-party licenses
-        if: needs.resolve.outputs.is-rusty == 'true'
+      - name: Generate license files
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/gen_third_party_licenses.py "$PACKAGE"
+          python3 .github/scripts/gen_licenses.py "$PACKAGE"
 
       - name: Build wheels
         if: needs.resolve.outputs.is-rusty == 'true'
