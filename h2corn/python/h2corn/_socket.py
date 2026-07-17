@@ -7,16 +7,14 @@ import socket
 import stat
 import sys
 from contextlib import contextmanager
-from typing import assert_never
 
 from ._config import (
     Config,
     FdBindSpec,
     TcpBindSpec,
     UnixBindSpec,
-    _format_tcp_bind,
-    _parse_bind_spec,
-    _sync_bind_convenience_fields,
+    format_tcp_bind,
+    parse_bind_spec,
 )
 
 TYPE_CHECKING = False
@@ -28,7 +26,7 @@ if TYPE_CHECKING:
 
 
 @contextmanager
-def _swap_signal_handlers(handlers: Mapping[int, Any]):
+def swap_signal_handlers(handlers: Mapping[int, Any]):
     previous = {sig: signal.signal(sig, handler) for sig, handler in handlers.items()}
     try:
         yield
@@ -37,18 +35,24 @@ def _swap_signal_handlers(handlers: Mapping[int, Any]):
             signal.signal(sig, handler)
 
 
-def _nonblocking_pipe():
+def nonblocking_pipe() -> tuple[int, int]:
     if hasattr(os, 'pipe2'):
-        return os.pipe2(os.O_NONBLOCK)
+        return os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
     read_fd, write_fd = os.pipe()
-    os.set_blocking(read_fd, False)
-    os.set_blocking(write_fd, False)
+    try:
+        for fd in (read_fd, write_fd):
+            os.set_blocking(fd, False)
+            os.set_inheritable(fd, False)
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
     return read_fd, write_fd
 
 
 @contextmanager
-def _signal_wakeup_pipe():
-    read_fd, write_fd = _nonblocking_pipe()
+def signal_wakeup_pipe():
+    read_fd, write_fd = nonblocking_pipe()
     previous = signal.set_wakeup_fd(write_fd, warn_on_full_buffer=False)
     try:
         yield read_fd
@@ -58,7 +62,7 @@ def _signal_wakeup_pipe():
         os.close(write_fd)
 
 
-def _drain_fd(fd: int):
+def drain_fd(fd: int) -> None:
     try:
         while True:
             if not os.read(fd, io.DEFAULT_BUFFER_SIZE):
@@ -187,14 +191,12 @@ def _build_sockets(
     socket_owner: tuple[int | None, int | None] = (None, None),
 ):
     sockets: list[socket.socket] = []
-    resolved_binds: list[str] = []
     owned_socket_paths: list[Path] = []
-    bind_fd_is_unix: list[bool] = []
     shared_tcp_port: int | None = None
     owner_uid, owner_gid = socket_owner
     try:
         for bind in config.bind:
-            spec: TcpBindSpec | UnixBindSpec | FdBindSpec = _parse_bind_spec(bind)
+            spec = parse_bind_spec(bind)
             match spec:
                 case TcpBindSpec(host, port):
                     sock = _build_tcp_socket(host, shared_tcp_port or port, config)
@@ -202,8 +204,6 @@ def _build_sockets(
                     if port == 0 and shared_tcp_port is None:
                         shared_tcp_port = bound_port
                     sockets.append(sock)
-                    resolved_binds.append(_format_tcp_bind(host, bound_port))
-                    bind_fd_is_unix.append(False)
                 case UnixBindSpec(path):
                     sockets.append(
                         _build_unix_socket(
@@ -213,9 +213,7 @@ def _build_sockets(
                             owner_gid=owner_gid,
                         )
                     )
-                    resolved_binds.append(f'unix:{path.as_posix()}')
                     owned_socket_paths.append(path)
-                    bind_fd_is_unix.append(False)
                 case FdBindSpec(fd):
                     sock = _adopt_socket(fd)
                     # AF_UNIX is absent on Windows; an adopted fd there is never
@@ -225,37 +223,30 @@ def _build_sockets(
                         sock.close()
                         raise OSError('TLS is supported only on TCP listeners')
                     sockets.append(sock)
-                    resolved_binds.append(f'fd://{fd}')
-                    bind_fd_is_unix.append(sock.family == af_unix)
-                case bind_spec:
-                    assert_never(bind_spec)
     except Exception:
         _cleanup_bound_resources(sockets, owned_socket_paths)
         raise
-    object.__setattr__(config, 'bind', tuple(resolved_binds))
-    object.__setattr__(config, '_bind_fd_is_unix', tuple(bind_fd_is_unix))
-    _sync_bind_convenience_fields(config)
     return tuple(sockets), tuple(owned_socket_paths)
 
 
-def _bound_addresses(sockets) -> tuple[str, ...]:
+def bound_addresses(sockets: Sequence[socket.socket]) -> tuple[str, ...]:
     """Resolved bind addresses of `sockets`, in `Config.bind` string form.
 
     Unlike the configured bind strings, these carry the port the kernel
     actually assigned — meaningful when binding port 0.
     """
-    addresses = []
+    addresses: list[str] = []
     for sock in sockets:
         name = sock.getsockname()
         if sock.family in {socket.AF_INET, socket.AF_INET6}:
-            addresses.append(_format_tcp_bind(name[0], name[1]))
+            addresses.append(format_tcp_bind(name[0], name[1]))
         else:
             addresses.append(f'unix:{os.fsdecode(name)}')
     return tuple(addresses)
 
 
 @contextmanager
-def _bound_sockets(
+def bound_sockets(
     config: Config,
     *,
     socket_owner: tuple[int | None, int | None] = (None, None),

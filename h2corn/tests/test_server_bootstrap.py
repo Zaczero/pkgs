@@ -1,11 +1,13 @@
+import asyncio
 import io
 import os
 import socket
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from h2corn import Config
@@ -26,17 +28,17 @@ def _ipv6_loopback_is_bindable() -> bool:
 def test_event_loop_factory_selection_is_explicit() -> None:
     import asyncio
 
-    from h2corn._server import _event_loop_factory
+    from h2corn._server import event_loop_factory
 
-    assert _event_loop_factory('asyncio') is asyncio.new_event_loop
-    auto = _event_loop_factory('auto')
+    assert event_loop_factory('asyncio') is asyncio.new_event_loop
+    auto = event_loop_factory('auto')
     try:
         import uvloop
     except ImportError:
         assert auto is asyncio.new_event_loop
     else:
         assert auto is uvloop.new_event_loop
-        assert _event_loop_factory('uvloop') is uvloop.new_event_loop
+        assert event_loop_factory('uvloop') is uvloop.new_event_loop
 
 
 def test_python_m_h2corn_runs_cli_without_target() -> None:
@@ -112,11 +114,16 @@ def test_listener_sets_reuseaddr(bind_listeners) -> None:
     assert sockets[0].getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)
 
 
-def test_build_sockets_records_kernel_allocated_port(bind_listeners) -> None:
+def test_build_sockets_keeps_config_stable_and_reports_allocated_port(
+    bind_listeners,
+) -> None:
+    from h2corn._socket import bound_addresses
+
     config, sockets = bind_listeners(bind=('127.0.0.1:0',))
     bound_port = sockets[0].getsockname()[1]
     assert bound_port > 0
-    assert config.bind == (f'127.0.0.1:{bound_port}',)
+    assert config.bind == ('127.0.0.1:0',)
+    assert bound_addresses(sockets) == (f'127.0.0.1:{bound_port}',)
 
 
 @pytest.mark.skipif(
@@ -221,9 +228,9 @@ def test_resolve_process_identity_uses_user_primary_group(
         ),
     )
 
-    identity = _server._resolve_process_identity(Config(user='www-data'))
+    identity = _server.resolve_process_identity(Config(user='www-data'))
 
-    assert identity == _server._ProcessIdentity(
+    assert identity == _server.ProcessIdentity(
         uid=1000,
         gid=1001,
         username='www-data',
@@ -255,8 +262,8 @@ def test_drop_process_privileges_sets_groups_before_ids(
         lambda *args: calls.append(('setuid', args)),
     )
 
-    _server._drop_process_privileges(
-        _server._ProcessIdentity(uid=1000, gid=1001, username='www-data')
+    _server.drop_process_privileges(
+        _server.ProcessIdentity(uid=1000, gid=1001, username='www-data')
     )
 
     assert calls == [
@@ -276,19 +283,19 @@ def test_serve_import_target_defers_import_when_privilege_drop_is_configured(
     captured = {}
     imported = False
 
-    def _import_target(_import_settings):
+    def fake_import_target(_import_settings):
         nonlocal imported
         imported = True
         return object()
 
     monkeypatch.setattr(_server.sys, 'platform', 'linux')
-    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'import_target', fake_import_target)
 
     from h2corn import _supervisor
 
     monkeypatch.setattr(
         _supervisor,
-        '_serve_with_supervisor',
+        'serve_with_supervisor',
         lambda app, config: captured.setdefault('supervisor', (app, config)),
     )
 
@@ -316,12 +323,12 @@ def test_worker_entry_imports_after_privilege_drop(
 
     monkeypatch.setattr(
         _server,
-        '_drop_process_privileges',
+        'drop_process_privileges',
         lambda _identity: order.append('drop'),
     )
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda _import_settings: order.append('import') or imported_app,
     )
 
@@ -331,7 +338,7 @@ def test_worker_entry_imports_after_privilege_drop(
             self.app = app
             self.config = config
 
-        async def _serve_fds(self, *_args, **_kwargs):
+        async def serve_inherited_fds(self, *_args, **_kwargs):
             return None
 
         def shutdown(self, kind='stop'):
@@ -344,13 +351,244 @@ def test_worker_entry_imports_after_privilege_drop(
         return None
 
     monkeypatch.setattr(_server, 'Server', FakeServer)
-    monkeypatch.setattr(_supervisor, '_serve_with_lifespan', _serve_with_lifespan)
+    monkeypatch.setattr(_supervisor, 'serve_with_lifespan', _serve_with_lifespan)
 
     import_settings = ImportSettings(target='example:app')
-    _supervisor._worker_entry(import_settings, Config(), (), object())
+    closed_fds: list[int] = []
+    real_close = os.close
+
+    def recording_close(fd: int) -> None:
+        closed_fds.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(_supervisor.os, 'close', recording_close)
+    inherited_control_fd, inherited_control_peer = os.pipe()
+    inherited_quiesce_peer, inherited_quiesce_fd = os.pipe()
+    try:
+        _supervisor._worker_entry(
+            import_settings,
+            Config(),
+            (),
+            _server.ProcessIdentity(),
+            os.getppid(),
+            (inherited_control_fd, inherited_quiesce_fd),
+        )
+        assert {inherited_control_fd, inherited_quiesce_fd} <= set(closed_fds)
+    finally:
+        real_close(inherited_control_peer)
+        real_close(inherited_quiesce_peer)
 
     assert order == ['drop', 'import']
     assert captured['app'] is imported_app
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX worker supervisor')
+def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _server, _supervisor
+
+    messages: list[bytes] = []
+    ready_attempts = 0
+
+    async def app(_scope, _receive, _send):
+        return None
+
+    class FakeServer:
+        def __init__(self, app, config):
+            self.app = app
+            self.config = config
+
+        async def serve_inherited_fds(self, *_args, **kwargs):
+            assert _supervisor._CONTROL_READY not in messages
+            assert kwargs['quiesce_fd'] == quiesce_read_fd
+            os.close(quiesce_read_fd)
+            kwargs['ready_trigger']()
+            await asyncio.sleep(0.05)
+
+        def shutdown(self, kind='stop'):
+            return None
+
+        def restart(self):
+            return None
+
+    async def _serve_with_lifespan(active_app, serve, **_kwargs):
+        await serve(active_app, None)
+
+    control_read_fd, control_write_fd = os.pipe()
+    quiesce_read_fd, quiesce_write_fd = os.pipe()
+    config = Config(loop='asyncio', timeout_worker_healthcheck=0.03)
+    monkeypatch.setattr(_server, 'Server', FakeServer)
+    monkeypatch.setattr(_server, 'drop_process_privileges', lambda _identity: None)
+    monkeypatch.setattr(_supervisor, 'serve_with_lifespan', _serve_with_lifespan)
+
+    def _write(_fd: int, message: bytes) -> int:
+        nonlocal ready_attempts
+        if message == _supervisor._CONTROL_READY:
+            ready_attempts += 1
+            if ready_attempts == 1:
+                raise BlockingIOError
+        messages.append(message)
+        return len(message)
+
+    monkeypatch.setattr(_supervisor.os, 'write', _write)
+    try:
+        _supervisor._worker_entry(
+            app,
+            config,
+            (),
+            _server.ProcessIdentity(),
+            os.getppid(),
+            (),
+            control_write_fd,
+            quiesce_read_fd,
+        )
+    finally:
+        os.close(control_read_fd)
+        os.close(quiesce_write_fd)
+
+    assert ready_attempts >= 2
+    assert _supervisor._CONTROL_READY in messages
+
+
+def test_disabled_worker_healthcheck_never_creates_a_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _supervisor
+
+    deadlines: dict[int, float] = {}
+    monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: 10.0)
+
+    _supervisor._renew_worker_healthcheck(deadlines, 7, 0)
+    assert deadlines == {}
+
+    _supervisor._renew_worker_healthcheck(deadlines, 7, 3.5)
+    assert deadlines == {7: 13.5}
+
+
+def test_worker_retirement_deadline_is_fixed_and_consumed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _supervisor
+
+    now = 10.0
+    monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: now)
+    retirements = _supervisor._WorkerRetirements(graceful_timeout=3.0)
+
+    retirements.begin(7)
+    assert retirements.deadlines == {7: 13.0}
+    now = 11.0
+    retirements.begin(7)
+    assert retirements.deadlines == {7: 13.0}
+    assert retirements.next_timeout(now) == 2.0
+    assert retirements.pop_expired(12.99) == ()
+    assert retirements.pop_expired(13.0) == (7,)
+    assert retirements.deadlines == {}
+    assert retirements.next_timeout(13.0) is None
+
+
+def test_worker_retirement_capacity_evicts_the_oldest_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _supervisor
+
+    now = 10.0
+    monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: now)
+    retirements = _supervisor._WorkerRetirements(graceful_timeout=30.0)
+
+    retirements.begin(7)
+    now = 11.0
+    retirements.begin(8)
+
+    assert retirements.pop_oldest() == 7
+    assert retirements.deadlines == {8: 41.0}
+    assert retirements.pop_oldest() == 8
+    assert retirements.pop_oldest() is None
+
+
+@pytest.mark.parametrize(
+    ('restart', 'message'),
+    [(False, b'S'), (True, b'R')],
+)
+def test_worker_quiesce_message_transfers_kind_and_closes_writer(
+    restart: bool,
+    message: bytes,
+) -> None:
+    from h2corn import _supervisor
+
+    read_fd, write_fd = os.pipe()
+    try:
+        assert _supervisor._send_worker_quiesce(write_fd, restart=restart) is None
+        assert os.read(read_fd, 1) == message
+        with pytest.raises(OSError):
+            os.fstat(write_fd)
+    finally:
+        os.close(read_fd)
+
+
+def test_worker_quiesce_write_failure_closes_channel_for_fail_closed_eof() -> None:
+    from h2corn import _supervisor
+
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+
+    assert isinstance(
+        _supervisor._send_worker_quiesce(write_fd, restart=True),
+        BrokenPipeError,
+    )
+    with pytest.raises(OSError):
+        os.fstat(write_fd)
+
+
+def _supervisor_state(config: Config):
+    """A `_Supervisor` whose worker state the test populates by hand."""
+    from h2corn import _server, _supervisor
+    from h2corn._cli import ImportSettings
+
+    return _supervisor._Supervisor(
+        app=ImportSettings(target='example:app'),
+        config=config,
+        fds=(),
+        identity=_server.ProcessIdentity(),
+    )
+
+
+def test_worker_replacement_capacity_allows_one_bounded_retiring_generation() -> None:
+    supervisor = _supervisor_state(Config(workers=4))
+
+    def can_spawn(*, process_count: int, active_workers: int) -> bool:
+        supervisor.workers = cast('Any', dict.fromkeys(range(process_count), object()))
+        supervisor.expected_exits = set(range(process_count - active_workers))
+        return supervisor.can_spawn_worker()
+
+    target = 4
+    assert can_spawn(process_count=target, active_workers=0)
+    assert can_spawn(process_count=target * 2 - 1, active_workers=target - 1)
+    assert not can_spawn(process_count=target * 2, active_workers=0)
+    assert not can_spawn(process_count=target, active_workers=target)
+
+
+def test_scale_down_during_reload_preserves_the_unready_replacement() -> None:
+    # Insertion order mirrors two serving workers followed by their unready
+    # rolling replacement. Reducing the target from two to one must retire the
+    # other old worker, not consume the scale-down by killing the replacement.
+    supervisor = _supervisor_state(Config())
+    supervisor.workers = cast('Any', dict.fromkeys((11, 12, 13), object()))
+    supervisor.reload_cycle.replacement = 13
+
+    assert supervisor.active_worker_capacity() == 2
+    assert supervisor.scale_down_candidate() == 12
+
+
+def test_health_retired_reload_replacement_cannot_retire_healthy_target() -> None:
+    supervisor = _supervisor_state(Config())
+    supervisor.reload_cycle.replacement = 13
+
+    assert supervisor.is_viable_reload_replacement(13)
+    supervisor.expected_exits.add(13)
+    assert not supervisor.is_viable_reload_replacement(13)
+    supervisor.expected_exits.clear()
+    assert not supervisor.is_viable_reload_replacement(12)
 
 
 def test_pidfile_writes_and_cleans_up_regular_file(tmp_path: Path) -> None:
@@ -401,7 +639,7 @@ def test_import_target_requires_module_app_form() -> None:
     from h2corn._cli import ImportSettings
 
     with pytest.raises(ValueError, match='module:app form'):
-        _server._import_target(ImportSettings(target='demoapp'))
+        _server.import_target(ImportSettings(target='demoapp'))
 
 
 def test_import_target_requires_callable_attribute(
@@ -419,7 +657,7 @@ def test_import_target_requires_callable_attribute(
         TypeError,
         match=rf"import target '{module_name}:app' is not callable",
     ):
-        _server._import_target(ImportSettings(target=f'{module_name}:app'))
+        _server.import_target(ImportSettings(target=f'{module_name}:app'))
 
 
 def test_import_target_calls_factory_when_requested(
@@ -440,7 +678,7 @@ def create_app():
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    app = _server._import_target(
+    app = _server.import_target(
         ImportSettings(target=f'{module_name}:create_app', factory=True)
     )
 
@@ -467,7 +705,7 @@ def create_app():
         TypeError,
         match=rf"import target '{module_name}:create_app' factory returned a non-callable",
     ):
-        _server._import_target(
+        _server.import_target(
             ImportSettings(target=f'{module_name}:create_app', factory=True)
         )
 
@@ -489,7 +727,7 @@ async def app(scope, receive, send):
     )
     monkeypatch.chdir(tmp_path)
 
-    app = _server._import_target(
+    app = _server.import_target(
         ImportSettings(target='demoapp_in_app_dir:app', app_dir=app_dir)
     )
 
@@ -526,11 +764,11 @@ app.source = 'shadow'
     monkeypatch.setattr(sys, 'path', [str(shadow_dir), str(app_dir), *sys.path])
     monkeypatch.chdir(tmp_path)
 
-    app = _server._import_target(
+    app = _server.import_target(
         ImportSettings(target='demoapp_precedence:app', app_dir=app_dir)
     )
 
-    assert app.source == 'app-dir'
+    assert vars(app)['source'] == 'app-dir'
 
 
 def test_import_target_loads_env_file_before_import(
@@ -557,7 +795,7 @@ app.loaded = os.environ['DEMO_APP_VALUE']
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv('DEMO_APP_VALUE', raising=False)
 
-    app = _server._import_target(
+    app = _server.import_target(
         ImportSettings(
             target='demoapp_from_env:app',
             app_dir=app_dir,
@@ -565,7 +803,7 @@ app.loaded = os.environ['DEMO_APP_VALUE']
         )
     )
 
-    assert app.loaded == 'loaded'
+    assert vars(app)['loaded'] == 'loaded'
 
 
 def test_import_target_env_file_does_not_override_existing_environment(
@@ -592,7 +830,7 @@ app.loaded = os.environ['DEMO_APP_VALUE']
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('DEMO_APP_VALUE', 'existing')
 
-    app = _server._import_target(
+    app = _server.import_target(
         ImportSettings(
             target='demoapp_existing_env:app',
             app_dir=app_dir,
@@ -600,16 +838,15 @@ app.loaded = os.environ['DEMO_APP_VALUE']
         )
     )
 
-    assert app.loaded == 'existing'
+    assert vars(app)['loaded'] == 'existing'
 
 
 @pytest.mark.parametrize(
-    ('family', 'is_unix'),
+    'family',
     [
-        (socket.AF_INET, False),
+        socket.AF_INET,
         pytest.param(
             getattr(socket, 'AF_UNIX', None),
-            True,
             marks=pytest.mark.skipif(
                 sys.platform == 'win32',
                 reason='unix sockets are not supported on Windows',
@@ -617,10 +854,9 @@ app.loaded = os.environ['DEMO_APP_VALUE']
         ),
     ],
 )
-def test_build_sockets_records_fd_listener_family(
+def test_build_sockets_preserves_fd_listener_family(
     monkeypatch: pytest.MonkeyPatch,
     family: int,
-    is_unix: bool,
 ) -> None:
     from h2corn import _socket
 
@@ -643,7 +879,7 @@ def test_build_sockets_records_fd_listener_family(
 
     assert len(sockets) == 1
     assert config.bind == ('fd://7',)
-    assert config._bind_fd_is_unix == (is_unix,)
+    assert sockets[0].family == family
 
 
 @pytest.mark.skipif(
@@ -655,11 +891,26 @@ def test_signal_wakeup_pipe_yields_nonblocking_fd() -> None:
     # again on exit.
     from h2corn import _socket
 
-    with _socket._signal_wakeup_pipe() as read_fd:
+    with _socket.signal_wakeup_pipe() as read_fd:
         assert read_fd >= 0
         assert os.get_blocking(read_fd) is False
     with pytest.raises(OSError):
         os.fstat(read_fd)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX control pipes')
+def test_nonblocking_pipe_is_close_on_exec() -> None:
+    from h2corn._socket import nonblocking_pipe
+
+    read_fd, write_fd = nonblocking_pipe()
+    try:
+        assert not os.get_blocking(read_fd)
+        assert not os.get_blocking(write_fd)
+        assert not os.get_inheritable(read_fd)
+        assert not os.get_inheritable(write_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def test_cli_trusted_proxy_flags_replace_base_values(
@@ -678,7 +929,7 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
 
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda import_settings: import_settings,
     )
     monkeypatch.setattr(
@@ -719,7 +970,7 @@ def test_cli_repeated_bind_replaces_base_bind_values(
 
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda _import_settings: object(),
     )
     monkeypatch.setattr(
@@ -768,7 +1019,7 @@ access_log = false
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda _import_settings: object(),
     )
     monkeypatch.setattr(
@@ -811,7 +1062,7 @@ def test_cli_legacy_env_port_overrides_toml_listener(
     monkeypatch.setenv('H2CORN_PORT', '9020')
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda _import_settings: object(),
     )
     monkeypatch.setattr(
@@ -840,7 +1091,7 @@ def test_cli_factory_flag_is_forwarded_to_import_target(
 
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda import_settings: captured.setdefault('import', import_settings),
     )
     monkeypatch.setattr(
@@ -873,7 +1124,7 @@ def test_cli_app_dir_is_forwarded_to_import_target(
 
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda import_settings: captured.setdefault('import', import_settings),
     )
     monkeypatch.setattr(
@@ -910,7 +1161,7 @@ def test_cli_env_file_is_forwarded_to_import_target(
 
     monkeypatch.setattr(
         _server,
-        '_import_target',
+        'import_target',
         lambda import_settings: captured.setdefault('import', import_settings),
     )
     monkeypatch.setattr(
@@ -953,7 +1204,7 @@ def test_cli_check_config_exits_before_import_and_serve(
         nonlocal served
         served = True
 
-    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'import_target', _import_target)
     monkeypatch.setattr(_server, 'serve', _serve)
     monkeypatch.setattr(sys, 'argv', ['h2corn', '--check-config', 'example:app'])
 
@@ -980,7 +1231,7 @@ def test_cli_check_config_works_without_target(
         nonlocal served
         served = True
 
-    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'import_target', _import_target)
     monkeypatch.setattr(_server, 'serve', _serve)
     monkeypatch.setattr(sys, 'argv', ['h2corn', '--check-config'])
 
@@ -1008,7 +1259,7 @@ def test_cli_print_config_exits_before_import_and_serve(
         nonlocal served
         served = True
 
-    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'import_target', _import_target)
     monkeypatch.setattr(_server, 'serve', _serve)
     monkeypatch.setattr(sys, 'stdout', stdout)
     monkeypatch.setattr(
@@ -1042,7 +1293,7 @@ def test_cli_print_config_works_without_target(
         nonlocal served
         served = True
 
-    monkeypatch.setattr(_server, '_import_target', _import_target)
+    monkeypatch.setattr(_server, 'import_target', _import_target)
     monkeypatch.setattr(_server, 'serve', _serve)
     monkeypatch.setattr(sys, 'stdout', stdout)
     monkeypatch.setattr(sys, 'argv', ['h2corn', '--print-config'])
@@ -1052,3 +1303,38 @@ def test_cli_print_config_works_without_target(
     assert imported is False
     assert served is False
     assert 'workers = 1' in stdout.getvalue()
+
+
+def test_cli_print_config_round_trips_paths_and_inherited_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from h2corn import _server
+
+    stdout = io.StringIO()
+    pid_path = tmp_path / 'h2corn test.pid'
+
+    monkeypatch.setattr(sys, 'stdout', stdout)
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        [
+            'h2corn',
+            '--print-config',
+            '--pid',
+            os.fspath(pid_path),
+            '--websocket-max-message-size',
+            'inherit',
+        ],
+    )
+
+    _server.main()
+
+    printed = stdout.getvalue()
+    parsed = tomllib.loads(printed)
+    assert parsed['pid'] == os.fspath(pid_path)
+    assert parsed['websocket_max_message_size'] == 'inherit'
+    assert Config.from_mapping(parsed) == Config(
+        pid=pid_path,
+        websocket_max_message_size=None,
+    )

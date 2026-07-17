@@ -1,4 +1,3 @@
-# ruff: noqa: RUF009
 from __future__ import annotations
 
 import importlib.util
@@ -9,7 +8,15 @@ from collections.abc import Callable
 from dataclasses import MISSING, dataclass, field, fields
 from functools import cache
 from pathlib import Path
-from typing import Any, Literal, assert_never, get_args
+from typing import (
+    Any,
+    Literal,
+    TypeVar,
+    cast,
+    dataclass_transform,
+    get_args,
+    overload,
+)
 
 TYPE_CHECKING = False
 
@@ -38,13 +45,16 @@ _H2_MAX_FRAME_SIZE = 16_777_215
 _H2_MIN_WINDOW_SIZE = 65_535
 _H2_MAX_WINDOW_SIZE = 2_147_483_647
 _U32_MAX = (1 << 32) - 1
-_DEFAULT_BIND = ('127.0.0.1:8000',)
-_CONVENIENCE_KEYS = frozenset({'host', 'port'})
+DEFAULT_BIND = ('127.0.0.1:8000',)
+CONVENIENCE_KEYS = frozenset({'host', 'port'})
 _Normalize = Callable[[Any], Any]
 _Parse = Callable[[str], Any]
+_T = TypeVar('_T')
+_InputT = TypeVar('_InputT')
+_ClassT = TypeVar('_ClassT')
 
 
-def _identity(value):
+def _identity(value: Any) -> Any:
     return value
 
 
@@ -102,12 +112,10 @@ def _normalize_str_tuple(value: _StringTupleValue):
         return ()
     if isinstance(value, str):
         return _parse_csv_tuple(value)
-    if isinstance(value, tuple | list | set | frozenset):
-        return tuple(str(item) for item in value)
-    assert_never(value)
+    return tuple(str(item) for item in value)
 
 
-def _normalize_forwarded_allow_ips(value):
+def _normalize_forwarded_allow_ips(value: _StringTupleValue) -> tuple[str, ...]:
     return tuple(
         _validate_forwarded_allow_ip(entry) for entry in _normalize_str_tuple(value)
     )
@@ -116,9 +124,7 @@ def _normalize_forwarded_allow_ips(value):
 def _optional_path(value: _PathValue):
     if value is None or isinstance(value, Path):
         return value
-    if isinstance(value, str | os.PathLike):
-        return Path(value)
-    assert_never(value)
+    return Path(value)
 
 
 def _optional_principal(name: str):
@@ -129,11 +135,9 @@ def _optional_principal(name: str):
             if value < 0:
                 raise ValueError(f'{name} must be non-negative')
             return value
-        if isinstance(value, str):
-            if not value:
-                raise ValueError(f'{name} must not be empty')
-            return int(value) if value.isdecimal() else value
-        assert_never(value)
+        if not value:
+            raise ValueError(f'{name} must not be empty')
+        return int(value) if value.isdecimal() else value
 
     return normalize
 
@@ -157,7 +161,7 @@ class FdBindSpec:
 BindSpec = TcpBindSpec | UnixBindSpec | FdBindSpec
 
 
-def _parse_bind_spec(value: str):
+def parse_bind_spec(value: str) -> BindSpec:
     value = value.strip()
     if not value:
         raise ValueError('bind entries must not be empty')
@@ -185,7 +189,7 @@ def _parse_bind_spec(value: str):
     return TcpBindSpec(host, tcp_port)
 
 
-def _format_tcp_bind(host: str, port: int):
+def format_tcp_bind(host: str, port: int) -> str:
     if ':' in host and not host.startswith('['):
         return f'[{host}]:{port}'
     return f'{host}:{port}'
@@ -193,47 +197,43 @@ def _format_tcp_bind(host: str, port: int):
 
 def _normalize_bind_specs(value: _BindValue):
     if value is None:
-        return _DEFAULT_BIND
+        return DEFAULT_BIND
     if isinstance(value, str):
         items = _parse_bind_env(value)
-    elif isinstance(value, tuple | list | set | frozenset):
-        items = tuple(item for item in (str(item).strip() for item in value) if item)
     else:
-        assert_never(value)
+        items = tuple(item for item in (str(item).strip() for item in value) if item)
     if not items:
         raise ValueError('bind must contain at least one entry')
-    normalized = []
+    normalized: list[str] = []
     tcp_ports: set[int] = set()
     for item in items:
-        spec: BindSpec = _parse_bind_spec(item)
+        spec = parse_bind_spec(item)
         match spec:
             case TcpBindSpec(host, port):
-                normalized.append(_format_tcp_bind(host, port))
+                normalized.append(format_tcp_bind(host, port))
                 tcp_ports.add(port)
             case UnixBindSpec(path):
                 normalized.append(f'unix:{path.as_posix()}')
             case FdBindSpec(fd):
                 normalized.append(f'fd://{fd}')
-            case bind_spec:
-                assert_never(bind_spec)
     if 0 in tcp_ports and len(tcp_ports) > 1:
         raise ValueError('bind cannot mix port 0 with explicit ports')
     return tuple(normalized)
 
 
-def _bind_from_convenience(
+def bind_from_convenience(
     host: str | None,
     port: int | None,
 ):
     if host is None and port is None:
         return None
-    return (_format_tcp_bind(host or '127.0.0.1', 8000 if port is None else port),)
+    return (format_tcp_bind(host or '127.0.0.1', 8000 if port is None else port),)
 
 
-def _sync_bind_convenience_fields(config: Config):
+def sync_bind_convenience_fields(config: Config) -> None:
     host = port = None
     if len(config.bind) == 1 and isinstance(
-        spec := _parse_bind_spec(config.bind[0]),
+        spec := parse_bind_spec(config.bind[0]),
         TcpBindSpec,
     ):
         host, port = spec.host, spec.port
@@ -241,28 +241,28 @@ def _sync_bind_convenience_fields(config: Config):
     object.__setattr__(config, 'port', port)
 
 
-def _normalize_proxy_protocol(value):
+def _normalize_proxy_protocol(value: str) -> ProxyProtocolMode:
     if value not in _PROXY_PROTOCOL_MODES:
         raise ValueError(f'invalid proxy_protocol mode: {value!r}')
-    return value
+    return cast('ProxyProtocolMode', value)
 
 
-def _normalize_lifespan(value):
+def _normalize_lifespan(value: str) -> LifespanMode:
     if value not in _LIFESPAN_MODES:
         raise ValueError(f'invalid lifespan mode: {value!r}')
-    return value
+    return cast('LifespanMode', value)
 
 
-def _normalize_cert_reqs(value):
+def _normalize_cert_reqs(value: str) -> CertReqsMode:
     if value not in _CERT_REQS_MODES:
         raise ValueError(f'invalid cert_reqs mode: {value!r}')
-    return value
+    return cast('CertReqsMode', value)
 
 
-def _normalize_loop(value):
+def _normalize_loop(value: str) -> LoopImpl:
     if value not in _LOOP_IMPLS:
         raise ValueError(f'invalid loop implementation: {value!r}')
-    return value
+    return cast('LoopImpl', value)
 
 
 def _minimum(name: str, minimum: int):
@@ -274,8 +274,17 @@ def _minimum(name: str, minimum: int):
     return normalize
 
 
-def _non_negative(name: str):
-    def normalize(value: int | float):
+def _non_negative_int(name: str) -> Callable[[int], int]:
+    def normalize(value: int) -> int:
+        if value < 0:
+            raise ValueError(f'{name} must be non-negative')
+        return value
+
+    return normalize
+
+
+def _non_negative_float(name: str) -> Callable[[float], float]:
+    def normalize(value: float) -> float:
         if value < 0:
             raise ValueError(f'{name} must be non-negative')
         return value
@@ -317,7 +326,7 @@ def _h2_frame_size(name: str):
 
 
 def _optional_non_negative(name: str):
-    normalize = _non_negative(name)
+    normalize = _non_negative_int(name)
 
     def validate(value: int | None):
         return None if value is None else normalize(value)
@@ -373,25 +382,89 @@ class ConfigOption:
         return f'{self.metadata.doc} [env: {self.env_var}]'
 
 
+@overload
 def _option(
     *,
-    default=MISSING,
-    default_factory=MISSING,
+    default: _T,
     doc: str,
     env_parse: _Parse,
-    normalize: _Normalize = _identity,
+    converter: None = None,
     cli_flags: tuple[str, ...] = (),
     cli_type: _Parse | None = None,
     cli_action: _CliAction | None = None,
     cli_choices: tuple[str, ...] | None = None,
     cli_metavar: str | None = None,
     toml_key: str | None = None,
-):
+) -> _T: ...
+
+
+@overload
+def _option(
+    *,
+    default: _InputT,
+    doc: str,
+    env_parse: _Parse,
+    converter: Callable[[_InputT], _T],
+    cli_flags: tuple[str, ...] = (),
+    cli_type: _Parse | None = None,
+    cli_action: _CliAction | None = None,
+    cli_choices: tuple[str, ...] | None = None,
+    cli_metavar: str | None = None,
+    toml_key: str | None = None,
+) -> _T: ...
+
+
+@overload
+def _option(
+    *,
+    default_factory: Callable[[], _T],
+    doc: str,
+    env_parse: _Parse,
+    converter: None = None,
+    cli_flags: tuple[str, ...] = (),
+    cli_type: _Parse | None = None,
+    cli_action: _CliAction | None = None,
+    cli_choices: tuple[str, ...] | None = None,
+    cli_metavar: str | None = None,
+    toml_key: str | None = None,
+) -> _T: ...
+
+
+@overload
+def _option(
+    *,
+    default_factory: Callable[[], _InputT],
+    doc: str,
+    env_parse: _Parse,
+    converter: Callable[[_InputT], _T],
+    cli_flags: tuple[str, ...] = (),
+    cli_type: _Parse | None = None,
+    cli_action: _CliAction | None = None,
+    cli_choices: tuple[str, ...] | None = None,
+    cli_metavar: str | None = None,
+    toml_key: str | None = None,
+) -> _T: ...
+
+
+def _option(
+    *,
+    default: Any = MISSING,
+    default_factory: Any = MISSING,
+    doc: str,
+    env_parse: _Parse,
+    converter: _Normalize | None = None,
+    cli_flags: tuple[str, ...] = (),
+    cli_type: _Parse | None = None,
+    cli_action: _CliAction | None = None,
+    cli_choices: tuple[str, ...] | None = None,
+    cli_metavar: str | None = None,
+    toml_key: str | None = None,
+) -> Any:
     metadata = {
         _OPTION_METADATA_KEY: OptionMetadata(
             doc=doc,
             env_parse=env_parse,
-            normalize=normalize,
+            normalize=_identity if converter is None else converter,
             cli_flags=cli_flags,
             cli_type=cli_type,
             cli_action=cli_action,
@@ -408,6 +481,15 @@ def _option(
     return field(default=default, metadata=metadata)
 
 
+@dataclass_transform(
+    frozen_default=True,
+    kw_only_default=True,
+    field_specifiers=(field, _option),
+)
+def _config_dataclass(cls: type[_ClassT]) -> type[_ClassT]:
+    return dataclass(frozen=True, slots=True, kw_only=True)(cls)
+
+
 @cache
 def config_options() -> tuple[ConfigOption, ...]:
     options: list[ConfigOption] = []
@@ -418,7 +500,8 @@ def config_options() -> tuple[ConfigOption, ...]:
         if config_field.default is not MISSING:
             default = config_field.default
         else:
-            default = config_field.default_factory()
+            default_factory = cast('Callable[[], Any]', config_field.default_factory)
+            default = default_factory()
         options.append(
             ConfigOption(
                 name=config_field.name,
@@ -537,7 +620,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
 )
 
 
-def _env_values(env: Mapping[str, str] | None = None):
+def env_values(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     if env is None:
         env = os.environ
     values = {
@@ -554,7 +637,7 @@ def _env_values(env: Mapping[str, str] | None = None):
     return values
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@_config_dataclass
 class Config:
     """
     Immutable server configuration.
@@ -588,28 +671,28 @@ class Config:
         default='auto',
         doc='ASGI lifespan handling mode.',
         env_parse=_normalize_lifespan,
-        normalize=_normalize_lifespan,
+        converter=_normalize_lifespan,
         cli_choices=_LIFESPAN_MODES,
     )
     timeout_lifespan_startup: float = _option(
         default=60.0,
         doc='Maximum time to wait for ASGI lifespan startup in seconds. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_lifespan_startup'),
+        converter=_non_negative_float('timeout_lifespan_startup'),
         cli_type=float,
     )
     timeout_lifespan_shutdown: float = _option(
         default=30.0,
         doc='Maximum time to wait for ASGI lifespan shutdown in seconds. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_lifespan_shutdown'),
+        converter=_non_negative_float('timeout_lifespan_shutdown'),
         cli_type=float,
     )
     bind: tuple[str, ...] = _option(
-        default_factory=lambda: _DEFAULT_BIND,
+        default_factory=lambda: DEFAULT_BIND,
         doc='Listener addresses to bind. Repeat the flag to add more listeners. Supports HOST:PORT, [IPv6]:PORT, unix:PATH, and fd://N.',
         env_parse=_parse_bind_env,
-        normalize=_normalize_bind_specs,
+        converter=_normalize_bind_specs,
         cli_flags=('-b', '--bind'),
         cli_action='append',
         cli_type=str,
@@ -619,13 +702,14 @@ class Config:
         default=None,
         doc='Octal mask for Unix Domain Socket permissions.',
         env_parse=_parse_octal,
+        converter=_optional_octal_mask('uds_permissions'),
         cli_type=_parse_octal,
     )
     backlog: int = _option(
         default=1024,
         doc='Maximum number of queued connections on the listening socket.',
         env_parse=int,
-        normalize=_minimum('backlog', 1),
+        converter=_minimum('backlog', 1),
         cli_type=int,
     )
     reuse_port: bool = _option(
@@ -638,42 +722,42 @@ class Config:
         default=None,
         doc='PEM certificate chain file for direct TLS.',
         env_parse=Path,
-        normalize=_optional_path,
+        converter=_optional_path,
         cli_type=Path,
     )
     keyfile: Path | None = _option(
         default=None,
         doc='PEM private key file for direct TLS. Encrypted keys are not supported.',
         env_parse=Path,
-        normalize=_optional_path,
+        converter=_optional_path,
         cli_type=Path,
     )
     ca_certs: Path | None = _option(
         default=None,
         doc='PEM CA bundle used to verify client certificates for direct TLS.',
         env_parse=Path,
-        normalize=_optional_path,
+        converter=_optional_path,
         cli_type=Path,
     )
     cert_reqs: CertReqsMode = _option(
         default='none',
         doc='Client certificate verification mode for direct TLS.',
         env_parse=_normalize_cert_reqs,
-        normalize=_normalize_cert_reqs,
+        converter=_normalize_cert_reqs,
         cli_choices=_CERT_REQS_MODES,
     )
     pid: Path | None = _option(
         default=None,
         doc='Write the server process PID to this file.',
         env_parse=Path,
-        normalize=_optional_path,
+        converter=_optional_path,
         cli_type=Path,
     )
     user: str | int | None = _option(
         default=None,
         doc='User name or numeric UID for worker processes and created Unix sockets.',
         env_parse=str,
-        normalize=_optional_principal('user'),
+        converter=_optional_principal('user'),
         cli_flags=('-u', '--user'),
         cli_type=str,
     )
@@ -681,7 +765,7 @@ class Config:
         default=None,
         doc='Group name or numeric GID for worker processes and created Unix sockets.',
         env_parse=str,
-        normalize=_optional_principal('group'),
+        converter=_optional_principal('group'),
         cli_flags=('-g', '--group'),
         cli_type=str,
     )
@@ -689,7 +773,7 @@ class Config:
         default=None,
         doc='Octal process umask to apply before creating files and sockets. Leave unset to preserve the inherited umask.',
         env_parse=_parse_octal,
-        normalize=_optional_octal_mask('umask'),
+        converter=_optional_octal_mask('umask'),
         cli_flags=('-m', '--umask'),
         cli_type=_parse_octal,
     )
@@ -697,7 +781,7 @@ class Config:
         default=1,
         doc='Number of worker processes to spawn.',
         env_parse=int,
-        normalize=_minimum('workers', 1),
+        converter=_minimum('workers', 1),
         cli_flags=('-w', '--workers'),
         cli_type=int,
     )
@@ -705,42 +789,42 @@ class Config:
         default=2,
         doc='Number of Tokio runtime worker threads per worker process.',
         env_parse=int,
-        normalize=_minimum('runtime_threads', 1),
+        converter=_minimum('runtime_threads', 1),
         cli_type=int,
     )
     loop: LoopImpl = _option(
         default='auto',
         doc="Python event-loop implementation: 'auto' uses uvloop when installed (the 'h2corn[uvloop]' extra), otherwise the stdlib asyncio loop. h2corn runs its I/O in Rust, so this only affects how application callbacks are scheduled.",
         env_parse=_normalize_loop,
-        normalize=_normalize_loop,
+        converter=_normalize_loop,
         cli_choices=_LOOP_IMPLS,
     )
     loop_threads: int = _option(
         default=1,
-        doc='Number of Python event-loop threads per worker, balanced round-robin. Requires a free-threaded (no-GIL) interpreter; ignored on GIL builds. Composes with workers — keep workers x loop_threads at or below the core count.',
+        doc="Number of Python event-loop threads per worker, balanced round-robin. Requires a free-threaded (no-GIL) interpreter; ignored on GIL builds. Secondary loops require the built-in asyncio or uvloop factory (the default 'auto' resolves to one); multiple loop threads are rejected when embedded in a custom loop. Each loop runs its own ASGI lifespan and state. Composes with workers — keep workers x loop_threads at or below the core count.",
         env_parse=int,
-        normalize=_minimum('loop_threads', 1),
+        converter=_minimum('loop_threads', 1),
         cli_type=int,
     )
     max_requests: int = _option(
         default=0,
         doc='Maximum number of requests or WebSocket sessions a worker should complete before retiring. Use 0 to disable.',
         env_parse=int,
-        normalize=_non_negative('max_requests'),
+        converter=_non_negative_int('max_requests'),
         cli_type=int,
     )
     max_requests_jitter: int = _option(
         default=0,
         doc='Maximum jitter added to max_requests to stagger worker retirements. Use 0 to disable.',
         env_parse=int,
-        normalize=_non_negative('max_requests_jitter'),
+        converter=_non_negative_int('max_requests_jitter'),
         cli_type=int,
     )
     timeout_worker_healthcheck: float = _option(
         default=30.0,
         doc='Maximum time between worker healthcheck heartbeats before the supervisor replaces the worker. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_worker_healthcheck'),
+        converter=_non_negative_float('timeout_worker_healthcheck'),
         cli_type=float,
     )
     http1: bool = _option(
@@ -759,140 +843,140 @@ class Config:
         default=256,
         doc='Maximum active HTTP/2 streams per connection.',
         env_parse=int,
-        normalize=_non_negative_u32('max_concurrent_streams'),
+        converter=_non_negative_u32('max_concurrent_streams'),
         cli_type=int,
     )
     limit_request_head_size: int = _option(
         default=1_048_576,
         doc='Maximum total HTTP/1.1 request head size in bytes. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_request_head_size'),
+        converter=_non_negative_int('limit_request_head_size'),
         cli_type=int,
     )
     limit_request_line: int = _option(
         default=16_384,
         doc='Maximum HTTP/1.1 request line size in bytes. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_request_line'),
+        converter=_non_negative_int('limit_request_line'),
         cli_type=int,
     )
     limit_request_fields: int = _option(
         default=100,
         doc='Maximum number of request header fields; HTTP/2 counts every decoded field, including duplicates. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_request_fields'),
+        converter=_non_negative_int('limit_request_fields'),
         cli_type=int,
     )
     limit_request_field_size: int = _option(
         default=32_768,
         doc='Maximum individual HTTP/1.1 header field size in bytes. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_request_field_size'),
+        converter=_non_negative_int('limit_request_field_size'),
         cli_type=int,
     )
     h2_max_header_list_size: int = _option(
         default=1_048_576,
         doc='Maximum decoded HTTP/2 header list size in bytes. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative_u32('h2_max_header_list_size'),
+        converter=_non_negative_u32('h2_max_header_list_size'),
         cli_type=int,
     )
     h2_max_header_block_size: int = _option(
         default=1_048_576,
         doc='Maximum compressed HTTP/2 header block size in bytes while collecting HEADERS and CONTINUATION frames. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('h2_max_header_block_size'),
+        converter=_non_negative_int('h2_max_header_block_size'),
         cli_type=int,
     )
     h2_max_inbound_frame_size: int = _option(
         default=65_536,
         doc='Maximum inbound HTTP/2 frame payload size to accept and advertise via SETTINGS_MAX_FRAME_SIZE.',
         env_parse=int,
-        normalize=_h2_frame_size('h2_max_inbound_frame_size'),
+        converter=_h2_frame_size('h2_max_inbound_frame_size'),
         cli_type=int,
     )
     h2_initial_stream_window_size: int = _option(
         default=1_048_576,
         doc='HTTP/2 per-stream receive flow-control window in bytes (SETTINGS_INITIAL_WINDOW_SIZE). Bounds worst-case buffered upload bytes per stream; raise for high-bandwidth-delay uploads.',
         env_parse=int,
-        normalize=_h2_window_size('h2_initial_stream_window_size'),
+        converter=_h2_window_size('h2_initial_stream_window_size'),
         cli_type=int,
     )
     h2_initial_connection_window_size: int = _option(
         default=2_097_152,
         doc='HTTP/2 connection-wide receive flow-control window in bytes. Bounds total buffered upload bytes per connection.',
         env_parse=int,
-        normalize=_h2_window_size('h2_initial_connection_window_size'),
+        converter=_h2_window_size('h2_initial_connection_window_size'),
         cli_type=int,
     )
     max_request_body_size: int = _option(
         default=1_073_741_824,
         doc='Maximum request body size in bytes. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('max_request_body_size'),
+        converter=_non_negative_int('max_request_body_size'),
         cli_type=int,
     )
     limit_concurrency: int = _option(
         default=0,
         doc='Maximum number of concurrent ASGI request or session tasks per worker. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_concurrency'),
+        converter=_non_negative_int('limit_concurrency'),
         cli_type=int,
     )
     limit_connections: int = _option(
         default=0,
         doc='Maximum number of live client connections per worker. Use 0 for no limit.',
         env_parse=int,
-        normalize=_non_negative('limit_connections'),
+        converter=_non_negative_int('limit_connections'),
         cli_type=int,
     )
     timeout_handshake: float = _option(
         default=5.0,
         doc='Maximum time to establish a connection and TLS handshake, in seconds. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_handshake'),
+        converter=_non_negative_float('timeout_handshake'),
         cli_type=float,
     )
     timeout_graceful_shutdown: float = _option(
         default=30.0,
         doc='Maximum time for workers to finish in-flight requests on shutdown, in seconds.',
         env_parse=float,
-        normalize=_non_negative('timeout_graceful_shutdown'),
+        converter=_non_negative_float('timeout_graceful_shutdown'),
         cli_type=float,
     )
     timeout_keep_alive: float = _option(
         default=120.0,
         doc='Idle keep-alive timeout in seconds. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_keep_alive'),
+        converter=_non_negative_float('timeout_keep_alive'),
         cli_type=float,
     )
     timeout_request_header: float = _option(
         default=10.0,
         doc='Idle timeout in seconds while reading an HTTP request head or an HTTP/2 header block. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_request_header'),
+        converter=_non_negative_float('timeout_request_header'),
         cli_type=float,
     )
     timeout_request_body_idle: float = _option(
         default=60.0,
         doc='Idle timeout in seconds while reading an HTTP request body. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('timeout_request_body_idle'),
+        converter=_non_negative_float('timeout_request_body_idle'),
         cli_type=float,
     )
     h2_timeout_response_stall: float = _option(
         default=60.0,
         doc='Timeout in seconds for HTTP/2 response body bytes pinned behind peer flow control. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('h2_timeout_response_stall'),
+        converter=_non_negative_float('h2_timeout_response_stall'),
         cli_type=float,
     )
     websocket_max_message_size: int | None = _option(
         default=16_777_216,
         doc="Maximum WebSocket message size in bytes. Defaults to 16 MiB. Use 'inherit' to follow `max_request_body_size`, or 0 for no limit.",
         env_parse=_parse_optional_non_negative_int,
-        normalize=_optional_non_negative('websocket_max_message_size'),
+        converter=_optional_non_negative('websocket_max_message_size'),
         cli_type=_parse_optional_non_negative_int,
     )
     websocket_per_message_deflate: bool = _option(
@@ -905,14 +989,14 @@ class Config:
         default=60.0,
         doc='Interval in seconds between server WebSocket ping frames. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('websocket_ping_interval'),
+        converter=_non_negative_float('websocket_ping_interval'),
         cli_type=float,
     )
     websocket_ping_timeout: float = _option(
         default=30.0,
         doc='Time limit in seconds to wait for a pong after a server WebSocket ping. Use 0 to disable.',
         env_parse=float,
-        normalize=_non_negative('websocket_ping_timeout'),
+        converter=_non_negative_float('websocket_ping_timeout'),
         cli_type=float,
     )
     proxy_headers: bool = _option(
@@ -925,14 +1009,14 @@ class Config:
         default_factory=lambda: ('127.0.0.1', '::1', 'unix'),
         doc="Allowed IPs or networks (in CIDR notation) for proxy headers. Use '*' to trust all.",
         env_parse=_parse_csv_tuple,
-        normalize=_normalize_forwarded_allow_ips,
+        converter=_normalize_forwarded_allow_ips,
         cli_type=_parse_csv_tuple,
     )
     proxy_protocol: ProxyProtocolMode = _option(
         default='off',
         doc="Expect HAProxy's PROXY protocol on inbound connections.",
         env_parse=_normalize_proxy_protocol,
-        normalize=_normalize_proxy_protocol,
+        converter=_normalize_proxy_protocol,
         cli_choices=_PROXY_PROTOCOL_MODES,
     )
     server_header: bool = _option(
@@ -951,17 +1035,11 @@ class Config:
         default_factory=tuple,
         doc='Additional default response headers in `name: value` form. Repeat the flag to add more headers.',
         env_parse=_parse_csv_tuple,
-        normalize=_normalize_str_tuple,
+        converter=_normalize_str_tuple,
         cli_flags=('--header',),
         cli_action='append',
         cli_type=str,
         cli_metavar='HEADER',
-    )
-    _control_write_fd: int | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
     )
     host: str | None = field(
         default=None,
@@ -973,23 +1051,17 @@ class Config:
         repr=False,
         compare=False,
     )
-    _bind_fd_is_unix: tuple[bool, ...] = field(
-        default=(),
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for option in config_options():
             normalized = option.metadata.normalize(getattr(self, option.name))
             object.__setattr__(self, option.name, normalized)
-        convenience_bind = _bind_from_convenience(self.host, self.port)
+        convenience_bind = bind_from_convenience(self.host, self.port)
         if convenience_bind is not None:
-            if self.bind != _DEFAULT_BIND:
+            if self.bind != DEFAULT_BIND:
                 raise ValueError('bind cannot be combined with host or port')
             object.__setattr__(self, 'bind', convenience_bind)
-        _sync_bind_convenience_fields(self)
+        sync_bind_convenience_fields(self)
         if self.reuse_port:
             if not hasattr(socket, 'SO_REUSEPORT'):
                 raise ValueError('reuse_port is not supported on this platform')
@@ -1014,9 +1086,11 @@ class Config:
             )
         if tls_enabled:
             for bind in self.bind:
-                match _parse_bind_spec(bind):
+                match parse_bind_spec(bind):
                     case UnixBindSpec():
                         raise ValueError('TLS is supported only on TCP listeners')
+                    case TcpBindSpec() | FdBindSpec():
+                        pass
         if self.websocket_ping_timeout > 0 and self.websocket_ping_interval == 0:
             raise ValueError('websocket_ping_timeout requires websocket_ping_interval')
 
@@ -1033,7 +1107,7 @@ class Config:
         The convenience pair `H2CORN_HOST` / `H2CORN_PORT` is accepted only
         when `H2CORN_BIND` is unset.
         """
-        return cls(**_env_values(env))
+        return cls(**env_values(env))
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> Self:
@@ -1047,7 +1121,7 @@ class Config:
         validated by `__post_init__`.
         """
         option_map = {option.toml_key: option for option in config_options()}
-        if unknown := sorted(data.keys() - option_map.keys() - _CONVENIENCE_KEYS):
+        if unknown := sorted(data.keys() - option_map.keys() - CONVENIENCE_KEYS):
             raise ValueError(f'unknown config keys: {", ".join(unknown)}')
 
         values = {
@@ -1057,7 +1131,7 @@ class Config:
             for key, value in data.items()
             if (option := option_map.get(key)) is not None
         }
-        values |= {key: data[key] for key in _CONVENIENCE_KEYS & data.keys()}
+        values |= {key: data[key] for key in CONVENIENCE_KEYS & data.keys()}
         return cls(**values)
 
     @classmethod

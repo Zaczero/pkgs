@@ -4,14 +4,15 @@ import asyncio
 import os
 import re
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, cast
 
 from ._cli import ImportSettings, run_cli
 from ._config import Config
-from ._lifespan import _cancel_task, _serve_with_lifespan
-from ._socket import _bound_addresses, _bound_sockets
+from ._lifespan import cancel_task, serve_with_lifespan
+from ._socket import bound_addresses, bound_sockets, nonblocking_pipe
 
 TYPE_CHECKING = False
 
@@ -19,13 +20,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from ._types import ASGIApp
+    from ._lib import LifespanHandoff
+    from ._types import Application, ASGIApp
 
 
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 
-def _event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
+def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
     """Return the explicit worker-loop constructor for ``loop``."""
     import importlib.util
 
@@ -42,7 +44,7 @@ def _event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProcessIdentity:
+class ProcessIdentity:
     uid: int | None = None
     gid: int | None = None
     username: str | None = None
@@ -98,10 +100,10 @@ def _process_umask(config: Config):
         os.umask(previous)
 
 
-def _resolve_process_identity(config: Config):
+def resolve_process_identity(config: Config) -> ProcessIdentity:
     if sys.platform == 'win32':
         if config.user is None and config.group is None:
-            return _ProcessIdentity()
+            return ProcessIdentity()
         raise NotImplementedError('user and group are supported only on Unix')
 
     import grp
@@ -146,10 +148,10 @@ def _resolve_process_identity(config: Config):
             'group is required when user does not resolve to a primary group'
         )
 
-    return _ProcessIdentity(uid=uid, gid=gid, username=username)
+    return ProcessIdentity(uid=uid, gid=gid, username=username)
 
 
-def _drop_process_privileges(identity: _ProcessIdentity):
+def drop_process_privileges(identity: ProcessIdentity) -> None:
     if identity.uid is None and identity.gid is None:
         return
 
@@ -193,10 +195,18 @@ class Server:
         asyncio.run(main())
     """
 
-    def __init__(self, app: ASGIApp, config: Config | None = None) -> None:
+    app: Application
+    config: Config
+
+    def __init__(self, app: Application, config: Config | None = None) -> None:
         self.app = app
         self.config = Config() if config is None else config
+        self._state_lock = threading.Lock()
         self._shutdown_future: asyncio.Future[str] | None = None
+        self._quiesce_write_fd: int | None = None
+        self._serve_loop: asyncio.AbstractEventLoop | None = None
+        self._pending_shutdown: Literal['stop', 'restart'] | None = None
+        self._serving = False
         self._addresses: tuple[str, ...] = ()
 
     @property
@@ -214,18 +224,48 @@ class Server:
                 await asyncio.sleep(0)
             host, _, port = server.addresses[0].rpartition(':')
         """
-        return self._addresses
+        with self._state_lock:
+            return self._addresses
 
     def shutdown(self, kind: Literal['stop', 'restart'] = 'stop') -> None:
         """
         Initiate a graceful shutdown of an in-flight `serve()` call.
 
-        Safe to call from any thread or coroutine. The currently in-flight
-        requests are given up to `Config.timeout_graceful_shutdown` seconds
-        to complete before the server returns.
+        Safe to call from any thread or coroutine. Native acceptance stops
+        immediately and cooperative tasks receive up to
+        `Config.timeout_graceful_shutdown` seconds to finish. Arbitrary
+        synchronous Python code cannot be preempted in-process; use supervised
+        workers when a hard kill bound is required.
         """
-        if self._shutdown_future is not None and not self._shutdown_future.done():
-            self._shutdown_future.set_result(kind)
+        with self._state_lock:
+            future = self._shutdown_future
+            loop = self._serve_loop
+            if future is None or loop is None:
+                # Lifespan startup runs before the Rust server creates its
+                # shutdown future. Retain the first request so a caller can
+                # stop a Server as soon as its lifecycle has begun.
+                if self._serving and self._pending_shutdown is None:
+                    self._pending_shutdown = kind
+                return
+
+            quiesce_write_fd = self._quiesce_write_fd
+            self._quiesce_write_fd = None
+            if quiesce_write_fd is not None:
+                try:
+                    os.write(quiesce_write_fd, b'R' if kind == 'restart' else b'S')
+                except OSError:
+                    # Closing the writer becomes a fail-closed native stop.
+                    pass
+                finally:
+                    os.close(quiesce_write_fd)
+
+            def _resolve() -> None:
+                if not future.done():
+                    future.set_result(kind)
+
+            # Keep the lifecycle state locked through publication to prevent
+            # cleanup from closing the loop between the snapshot and enqueue.
+            loop.call_soon_threadsafe(_resolve)
 
     def restart(self) -> None:
         """
@@ -237,33 +277,98 @@ class Server:
         """
         self.shutdown('restart')
 
-    async def _serve_fds(
+    async def serve_inherited_fds(
         self,
-        app: ASGIApp,
+        app: Application,
         fds: list[int],
         retire_trigger: Callable[[], None] | None = None,
-        lifespan_handoff=None,
-    ):
+        lifespan_handoff: LifespanHandoff | None = None,
+        ready_trigger: Callable[[], None] | None = None,
+        quiesce_fd: int | None = None,
+    ) -> None:
+        """Transfer listener ownership into one native serve lifecycle.
+
+        This is the supervisor/worker entry seam: forked workers hand their
+        inherited listener fds (and control triggers) straight to the native
+        server, bypassing the socket binding that [`serve()`]
+        [h2corn.Server.serve] performs. Ownership of `fds` transfers
+        unconditionally. Most embedders want `serve()` instead.
+        """
         from ._lib import serve_fds
 
-        if self._shutdown_future is None:
-            self._shutdown_future = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        shutdown_future = loop.create_future()
+        internal_quiesce_write_fd: int | None = None
+        if quiesce_fd is None and sys.platform != 'win32':
+            quiesce_fd, internal_quiesce_write_fd = nonblocking_pipe()
+        with self._state_lock:
+            if self._shutdown_future is not None:
+                if internal_quiesce_write_fd is not None:
+                    assert quiesce_fd is not None
+                    os.close(quiesce_fd)
+                    os.close(internal_quiesce_write_fd)
+                raise RuntimeError('this Server already has an active serve() call')
+            self._serve_loop = loop
+            self._shutdown_future = shutdown_future
+            self._quiesce_write_fd = internal_quiesce_write_fd
+            pending_shutdown = self._pending_shutdown
+            self._pending_shutdown = None
 
-        async def _await_shutdown():
-            return await self._shutdown_future
+        if pending_shutdown is not None:
+            self.shutdown(pending_shutdown)
+
+        async def _await_shutdown() -> Literal['stop', 'restart']:
+            return await shutdown_future
 
         shutdown_task = asyncio.create_task(_await_shutdown())
+        cancellation: asyncio.CancelledError | None = None
         try:
-            await serve_fds(
-                app,
-                fds,
-                self.config,
-                shutdown_task,
-                retire_trigger,
-                lifespan_handoff,
+            native_serve = asyncio.ensure_future(
+                serve_fds(
+                    app,
+                    fds,
+                    self.config,
+                    shutdown_task,
+                    retire_trigger,
+                    lifespan_handoff,
+                    ready_trigger,
+                    quiesce_fd,
+                )
             )
+            while True:
+                shielded = asyncio.shield(native_serve)
+                try:
+                    # Rust remains the sole owner until its bounded graceful
+                    # drain and loop-thread teardown actually complete.
+                    await shielded
+                    break
+                except asyncio.CancelledError as exc:
+                    if native_serve.cancelled():
+                        # asyncio.shield is cancelled both when its caller is
+                        # cancelled and when the inner future is cancelled.
+                        # Inspect the owned future to distinguish the latter;
+                        # its cancellation is a native failure, not a graceful
+                        # shutdown request to absorb.
+                        await native_serve
+                    if cancellation is None:
+                        cancellation = exc
+                        self.shutdown()
+                    # A second cancel must not expose a half-drained Server.
+                    continue
+            if cancellation is not None:
+                raise cancellation
         finally:
-            await _cancel_task(shutdown_task)
+            try:
+                await cancel_task(shutdown_task)
+            finally:
+                with self._state_lock:
+                    quiesce_write_fd = self._quiesce_write_fd
+                    self._quiesce_write_fd = None
+                    if self._shutdown_future is shutdown_future:
+                        self._shutdown_future = None
+                        self._serve_loop = None
+                if quiesce_write_fd is not None:
+                    os.close(quiesce_write_fd)
 
     async def serve(self) -> None:
         """
@@ -271,6 +376,15 @@ class Server:
 
         Binds the configured listeners, runs ASGI lifespan startup, processes
         requests, then runs lifespan shutdown when the loop exits.
+
+        One lifecycle at a time, reusable afterwards: once a `serve()` call
+        has fully finished, the same `Server` can `serve()` again with fresh
+        shutdown state, while a second concurrent call raises `RuntimeError`.
+        Cancelling the `serve()` task does not abort in-flight work — it
+        triggers the same bounded graceful drain as
+        [`shutdown()`][h2corn.Server.shutdown] and re-raises the cancellation
+        only after the native server has fully drained and released its
+        listeners.
 
         Raises `NotImplementedError` if `Config.workers` is not 1; multi-worker
         deployments must go through [`serve`][h2corn.serve].
@@ -280,45 +394,64 @@ class Server:
                 'Server.serve() is the in-process API and only supports workers=1'
             )
 
-        identity = _resolve_process_identity(self.config)
+        with self._state_lock:
+            if self._serving:
+                raise RuntimeError('this Server already has an active serve() call')
+            self._serving = True
+            self._pending_shutdown = None
+        try:
+            await self._serve_once()
+        finally:
+            with self._state_lock:
+                self._serving = False
+                self._pending_shutdown = None
+
+    async def _serve_once(self) -> None:
+        """Run one reusable server lifecycle after concurrency is guarded."""
+        identity = resolve_process_identity(self.config)
         with (
             _process_umask(self.config),
-            _bound_sockets(
+            bound_sockets(
                 self.config,
                 socket_owner=(identity.uid, identity.gid),
             ) as socks,
         ):
-            self._addresses = _bound_addresses(socks)
-            _drop_process_privileges(identity)
-            with _pidfile(self.config):
-                from ._lib import emit_banner
+            with self._state_lock:
+                self._addresses = bound_addresses(socks)
+            try:
+                drop_process_privileges(identity)
+                with _pidfile(self.config):
+                    from ._lib import emit_banner
 
-                # replace() must clear the synced host/port convenience pair: bind
-                # plus host/port together fail validation.
-                emit_banner(
-                    replace(self.config, bind=self._addresses, host=None, port=None)
-                )
-
-                async def _serve_app(app: ASGIApp, lifespan_handoff):
-                    await self._serve_fds(
-                        app,
-                        [sock.detach() for sock in socks],
-                        lifespan_handoff=lifespan_handoff,
+                    # replace() must clear the synced host/port convenience pair:
+                    # bind plus host/port together fail validation.
+                    emit_banner(
+                        replace(self.config, bind=self.addresses, host=None, port=None)
                     )
 
-                try:
-                    await _serve_with_lifespan(
+                    async def _serve_app(
+                        app: Application,
+                        lifespan_handoff: LifespanHandoff | None,
+                    ) -> None:
+                        await self.serve_inherited_fds(
+                            app,
+                            [sock.detach() for sock in socks],
+                            lifespan_handoff=lifespan_handoff,
+                        )
+
+                    await serve_with_lifespan(
                         self.app,
                         _serve_app,
                         mode=self.config.lifespan,
                         startup_timeout=self.config.timeout_lifespan_startup,
                         shutdown_timeout=self.config.timeout_lifespan_shutdown,
                     )
-                finally:
+            finally:
+                with self._state_lock:
                     self._addresses = ()
 
 
-def serve(app: ASGIApp, config: Config | None = None) -> None:
+def serve(app: Application, config: Config | None = None) -> None:
     """
     Start the server. This is the primary programmatic entrypoint and matches
     the behavior of the `h2corn` CLI.
@@ -350,13 +483,13 @@ def serve(app: ASGIApp, config: Config | None = None) -> None:
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':
-        from ._supervisor import _serve_with_supervisor
+        from ._supervisor import serve_with_supervisor
 
         with _process_umask(config), _pidfile(config):
-            _serve_with_supervisor(app, config)
+            serve_with_supervisor(app, config)
         return
 
-    with asyncio.Runner(loop_factory=_event_loop_factory(config.loop)) as runner:
+    with asyncio.Runner(loop_factory=event_loop_factory(config.loop)) as runner:
         runner.run(Server(app, config).serve())
 
 
@@ -364,13 +497,13 @@ def _serve_import_target(import_settings: ImportSettings, config: Config) -> Non
     if sys.platform != 'win32' and (
         config.user is not None or config.group is not None
     ):
-        from ._supervisor import _serve_with_supervisor
+        from ._supervisor import serve_with_supervisor
 
         with _process_umask(config), _pidfile(config):
-            _serve_with_supervisor(import_settings, config)
+            serve_with_supervisor(import_settings, config)
         return
 
-    serve(_import_target(import_settings), config)
+    serve(import_target(import_settings), config)
 
 
 def _load_env_file(path: Path):
@@ -408,7 +541,7 @@ def _load_env_file(path: Path):
             os.environ.setdefault(key, value)
 
 
-def _import_target(import_settings: ImportSettings):
+def import_target(import_settings: ImportSettings) -> ASGIApp:
     import importlib
 
     target = import_settings.target
@@ -432,12 +565,12 @@ def _import_target(import_settings: ImportSettings):
     if not callable(target_obj):
         raise TypeError(f'import target {target!r} is not callable')
     if not import_settings.factory:
-        return target_obj
+        return cast('ASGIApp', target_obj)
 
     app = target_obj()
     if not callable(app):
         raise TypeError(f'import target {target!r} factory returned a non-callable')
-    return app
+    return cast('ASGIApp', app)
 
 
 def main() -> None:

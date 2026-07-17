@@ -1,11 +1,26 @@
 import argparse
+import dataclasses
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from h2corn import Config
 from h2corn._cli import CliSettings, ImportSettings, build_parser, parse_cli
 from h2corn._config import config_options
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def test_config_fields_are_exactly_the_documented_options() -> None:
+    # Every Config field is either a documented option or the host/port
+    # convenience pair — worker/listener bootstrap metadata (control fds,
+    # inherited-socket flags, ...) must never reappear as dataclass fields.
+    field_names = {config_field.name for config_field in dataclasses.fields(Config)}
+    option_names = {option.name for option in config_options()}
+
+    assert field_names == option_names | {'host', 'port'}
 
 
 @pytest.mark.parametrize(
@@ -18,6 +33,8 @@ from h2corn._config import config_options
         ({'group': ''}, 'group'),
         ({'umask': -1}, 'umask'),
         ({'umask': 0o1000}, 'umask'),
+        ({'uds_permissions': -1}, 'uds_permissions'),
+        ({'uds_permissions': 0o1000}, 'uds_permissions'),
         ({'limit_request_line': -1}, 'limit_request_line'),
         ({'limit_request_head_size': -1}, 'limit_request_head_size'),
         ({'limit_request_fields': -1}, 'limit_request_fields'),
@@ -39,8 +56,11 @@ def test_config_rejects_invalid_numeric_values(
     kwargs: dict[str, int | float],
     match: str,
 ) -> None:
+    # The parametrized table intentionally dispatches runtime-invalid values
+    # across heterogeneous Config fields. Keep that dynamic boundary local.
+    construct_config = cast('Callable[..., Config]', Config)
     with pytest.raises(ValueError, match=match):
-        Config(**kwargs)
+        construct_config(**kwargs)
 
 
 def test_config_from_toml_reads_flat_top_level_keys(tmp_path: Path) -> None:

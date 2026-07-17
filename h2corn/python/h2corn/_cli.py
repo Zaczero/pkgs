@@ -6,28 +6,44 @@ import os
 import sys
 from dataclasses import MISSING, dataclass
 from pathlib import Path
-from typing import assert_never
+from typing import TypeAlias, cast
 
 from ._config import (
-    _CONVENIENCE_KEYS,
-    _DEFAULT_BIND,
     CONFIG_PATH_ENV_VAR,
+    CONVENIENCE_KEYS,
+    DEFAULT_BIND,
     OPTION_GROUPS,
     Config,
-    _bind_from_convenience,
-    _env_values,
+    ConfigOption,
+    bind_from_convenience,
     config_options,
+    env_values,
 )
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from typing import Any
+    from typing import Any, Protocol
+
+    class _ArgumentContainer(Protocol):
+        def add_argument(
+            self,
+            *args: str,
+            **kwargs: Any,
+        ) -> argparse.Action: ...
+
 
 _DEFAULT_RELOAD_INCLUDE_PATTERNS = ('*.py',)
 _DEFAULT_RELOAD_EXCLUDE_PATTERNS = ('.*', '.py[cod]', '.sw.*', '~*')
-_TomlLiteralValue = None | bool | str | int | float | tuple[object, ...] | list[object]
+_TomlLiteralValue: TypeAlias = (
+    bool
+    | str
+    | int
+    | float
+    | tuple['_TomlLiteralValue', ...]
+    | list['_TomlLiteralValue']
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,24 +69,30 @@ class _AppendConfigValue(argparse.Action):
         self,
         parser: argparse.ArgumentParser,
         namespace: argparse.Namespace,
-        values: Any,
+        values: object,
         option_string: str | None = None,
     ):
-        current = getattr(namespace, self.dest, ())
+        current: object = getattr(namespace, self.dest, ())
         items: list[str]
         if self.dest == 'bind' and isinstance(current, tuple):
             items = []
         elif isinstance(current, tuple | list):
-            items = [str(item) for item in current]
+            items = [
+                str(item) for item in cast('tuple[object, ...] | list[object]', current)
+            ]
         else:
             items = []
         if not isinstance(values, str):
-            assert_never(values)
+            raise TypeError(f'{self.dest} requires a string value')
         items.append(values)
         setattr(namespace, self.dest, items)
 
 
-def _add_config_argument(container, option, base: Config):
+def _add_config_argument(
+    container: _ArgumentContainer,
+    option: ConfigOption,
+    base: Config,
+) -> None:
     kwargs: dict[str, Any] = {
         'default': getattr(base, option.name),
         'dest': option.name,
@@ -99,25 +121,32 @@ def _add_config_argument(container, option, base: Config):
                 )
                 if value is not None
             }
-        case cli_action:
-            assert_never(cli_action)
     container.add_argument(*option.cli_flags, **kwargs)
 
 
 def _add_named_config_arguments(
-    container,
+    container: _ArgumentContainer,
     base: Config,
-    option_map: dict[str, Any],
+    option_map: dict[str, ConfigOption],
     names: tuple[str, ...],
 ):
     for name in names:
         _add_config_argument(container, option_map.pop(name), base)
 
 
-def _toml_literal(value: _TomlLiteralValue):
+def _toml_value(value: object) -> _TomlLiteralValue:
+    if isinstance(value, Path):
+        return os.fspath(value)
+    if isinstance(value, bool | str | int | float):
+        return value
+    if isinstance(value, tuple | list):
+        items = cast('tuple[object, ...] | list[object]', value)
+        return tuple(_toml_value(item) for item in items)
+    raise TypeError(f'unsupported configuration value: {value!r}')
+
+
+def _toml_literal(value: _TomlLiteralValue) -> str:
     match value:
-        case None:
-            return 'null'
         case True:
             return 'true'
         case False:
@@ -138,18 +167,19 @@ def _toml_literal(value: _TomlLiteralValue):
             return str(value)
         case tuple() | list():
             return f'[{", ".join(_toml_literal(item) for item in value)}]'
-        case unexpected_value:
-            assert_never(unexpected_value)
 
 
-def _print_config(config: Config):
-    sys.stdout.write(
-        '\n'.join(
-            f'{option.toml_key} = {_toml_literal(getattr(config, option.name))}'
-            for option in config_options()
-        )
-        + '\n'
-    )
+def _print_config(config: Config) -> None:
+    lines: list[str] = []
+    for option in config_options():
+        value: object = getattr(config, option.name)
+        if value is None:
+            if option.name == 'websocket_max_message_size':
+                value = 'inherit'
+            else:
+                continue
+        lines.append(f'{option.toml_key} = {_toml_literal(_toml_value(value))}')
+    sys.stdout.write('\n'.join(lines) + '\n')
 
 
 def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentParser:
@@ -268,22 +298,21 @@ def _apply_tcp_bind_sugar(
     base: Config,
     values: dict[str, Any],
 ):
-    cli_bind = getattr(args, 'bind', None)
-    host = getattr(args, 'host', MISSING)
-    port = getattr(args, 'port', MISSING)
+    cli_bind: object = getattr(args, 'bind', None)
+    host: object = getattr(args, 'host', MISSING)
+    port: object = getattr(args, 'port', MISSING)
     if isinstance(cli_bind, list):
         if host is not MISSING or port is not MISSING:
             parser.error('--bind cannot be combined with --host or --port')
-        values['bind'] = tuple(cli_bind)
+        values['bind'] = tuple(cast('list[str]', cli_bind))
         return
     if host is MISSING and port is MISSING:
         return
     if base.host is None or base.port is None:
         parser.error('--host/--port require a single TCP listener base configuration')
-    bind = _bind_from_convenience(
-        base.host if host is MISSING else host,
-        base.port if port is MISSING else port,
-    )
+    host_value = base.host if host is MISSING else cast('str', host)
+    port_value = base.port if port is MISSING else cast('int', port)
+    bind = bind_from_convenience(host_value, port_value)
     assert bind is not None
     values['bind'] = bind
 
@@ -303,21 +332,23 @@ def parse_cli(
         config_path = Path(raw)
     try:
         base = Config.from_toml(config_path) if config_path is not None else Config()
-        env_values = _env_values(env)
-        if env_values:
+        environment_values = env_values(env)
+        if environment_values:
             values = {
-                option.name: env_values.get(option.name, getattr(base, option.name))
+                option.name: environment_values.get(
+                    option.name, getattr(base, option.name)
+                )
                 for option in config_options()
             }
-            if _CONVENIENCE_KEYS & env_values.keys():
+            if CONVENIENCE_KEYS & environment_values.keys():
                 if base.host is None or base.port is None:
                     raise ValueError(
                         'host/port environment overrides require a single configured TCP listener'
                     )
-                values['bind'] = _DEFAULT_BIND
+                values['bind'] = DEFAULT_BIND
                 values |= {
-                    key: env_values.get(key, getattr(base, key))
-                    for key in _CONVENIENCE_KEYS
+                    key: environment_values.get(key, getattr(base, key))
+                    for key in CONVENIENCE_KEYS
                 }
             base = Config(**values)
     except ValueError as exc:
@@ -378,9 +409,9 @@ def run_cli(
         validate_config(config)
         return
     if cli_settings.reload:
-        from ._reload import _serve_with_reload
+        from ._reload import serve_with_reload
 
-        _serve_with_reload(
+        serve_with_reload(
             import_settings,
             config,
             reload_dirs=cli_settings.reload_dirs,

@@ -13,16 +13,50 @@ import tempfile
 import time
 from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import cast
 
-from ._socket import _drain_fd, _signal_wakeup_pipe, _swap_signal_handlers
+from ._socket import drain_fd, signal_wakeup_pipe, swap_signal_handlers
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
+    from typing import Protocol
 
     from ._cli import ImportSettings
     from ._config import Config
+
+    class _Kqueue(Protocol):
+        def fileno(self) -> int: ...
+        def control(
+            self,
+            changelist: Sequence[object] | None,
+            max_events: int,
+            timeout: float | None,
+        ) -> list[object]: ...
+        def close(self) -> None: ...
+
+    class _KqueueModule(Protocol):
+        KQ_FILTER_VNODE: int
+        KQ_EV_ADD: int
+        KQ_EV_ENABLE: int
+        KQ_EV_CLEAR: int
+        KQ_NOTE_WRITE: int
+        KQ_NOTE_EXTEND: int
+        KQ_NOTE_ATTRIB: int
+        KQ_NOTE_LINK: int
+        KQ_NOTE_RENAME: int
+        KQ_NOTE_DELETE: int
+
+        def kqueue(self) -> _Kqueue: ...
+        def kevent(self, ident: int, **kwargs: int) -> object: ...
+
+    class _Notifier(Protocol):
+        def fileno(self) -> int: ...
+        def consume(self) -> bool: ...
+        def rebuild(self) -> None: ...
+        def close(self) -> None: ...
+
 
 _RELOAD_IGNORE_DIRS = frozenset({
     '__pycache__',
@@ -58,19 +92,29 @@ _INOTIFY_MASK = (
     | 0x0000_0400  # IN_DELETE_SELF
     | 0x0000_0800  # IN_MOVE_SELF
 )
-_inotify_init1 = _inotify_add_watch = _inotify_rm_watch = None
 
-if sys.platform == 'linux':
-    _libc = ctypes.CDLL(None, use_errno=True)
-    _inotify_init1 = _libc.inotify_init1
-    _inotify_init1.argtypes = [ctypes.c_int]
-    _inotify_init1.restype = ctypes.c_int
-    _inotify_add_watch = _libc.inotify_add_watch
-    _inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
-    _inotify_add_watch.restype = ctypes.c_int
-    _inotify_rm_watch = _libc.inotify_rm_watch
-    _inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
-    _inotify_rm_watch.restype = ctypes.c_int
+
+def _inotify_bindings() -> tuple[
+    Callable[[int], int],
+    Callable[[int, bytes, int], int],
+    Callable[[int, int], int],
+]:
+    """Bind ``inotify_init1``/``inotify_add_watch``/``inotify_rm_watch``.
+
+    The one place ctypes meets the type checker: only `_InotifyNotifier` calls
+    this, and `_create_notifier` constructs that class exclusively on Linux.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    init1 = libc.inotify_init1
+    init1.argtypes = [ctypes.c_int]
+    init1.restype = ctypes.c_int
+    add_watch = libc.inotify_add_watch
+    add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+    add_watch.restype = ctypes.c_int
+    rm_watch = libc.inotify_rm_watch
+    rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+    rm_watch.restype = ctypes.c_int
+    return init1, add_watch, rm_watch
 
 
 def _log_line(message: str):
@@ -228,7 +272,10 @@ class _InotifyNotifier:
     def __init__(self, roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
         self._roots = roots
         self._exclude_patterns = exclude_patterns
-        fd = _inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        inotify_init1, self._inotify_add_watch, self._inotify_rm_watch = (
+            _inotify_bindings()
+        )
+        fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if fd < 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
@@ -239,7 +286,11 @@ class _InotifyNotifier:
     def _sync_watches(self):
         active: dict[int, Path] = {}
         for path in _walk_watch_dirs(self._roots, self._exclude_patterns):
-            wd = _inotify_add_watch(self._fd, os.fsencode(path), _INOTIFY_MASK)
+            wd = self._inotify_add_watch(
+                self._fd,
+                os.fsencode(path),
+                _INOTIFY_MASK,
+            )
             if wd < 0:
                 error = ctypes.get_errno()
                 if error in {errno.ENOENT, errno.ENOTDIR}:
@@ -247,7 +298,7 @@ class _InotifyNotifier:
                 raise OSError(error, os.strerror(error), os.fspath(path))
             active[wd] = path
         for stale_wd in self._watches.keys() - active.keys():
-            _inotify_rm_watch(self._fd, stale_wd)
+            self._inotify_rm_watch(self._fd, stale_wd)
         self._watches = active
 
     def fileno(self) -> int:
@@ -293,8 +344,8 @@ class _KqueueNotifier:
         self._roots = roots
         self._include_patterns = include_patterns
         self._exclude_patterns = exclude_patterns
-        self._select = select
-        self._kqueue = select.kqueue()
+        self._select = cast('_KqueueModule', select)
+        self._kqueue: _Kqueue = self._select.kqueue()
         self._fds: list[int] = []
         self._rebuild()
 
@@ -305,7 +356,7 @@ class _KqueueNotifier:
 
     def _rebuild(self):
         self._close_fds()
-        changelist = []
+        changelist: list[object] = []
         for path in _walk_watch_dirs(self._roots, self._exclude_patterns):
             try:
                 fd = os.open(path, os.O_EVTONLY)
@@ -384,7 +435,7 @@ def _create_notifier(
     watch_dirs: tuple[Path, ...],
     include_patterns: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
-):
+) -> _Notifier:
     if sys.platform == 'linux':
         return _InotifyNotifier(watch_dirs, exclude_patterns)
     if sys.platform == 'darwin':
@@ -392,8 +443,8 @@ def _create_notifier(
     raise NotImplementedError('reload is currently supported only on Linux and macOS')
 
 
-def _child_argv(argv: Sequence[str] | None):
-    child_args = []
+def _child_argv(argv: Sequence[str] | None) -> list[str]:
+    child_args: list[str] = []
     args = iter(sys.argv[1:] if argv is None else argv)
     for arg in args:
         if arg == '--reload':
@@ -409,9 +460,9 @@ def _child_argv(argv: Sequence[str] | None):
 
 def _wait_for_reload_quiet_period(
     selector: selectors.BaseSelector,
-    notifier,
+    notifier: _Notifier,
     wakeup_fd: int,
-):
+) -> tuple[bool, bool]:
     needs_rebuild = False
     deadline = time.monotonic() + _RELOAD_COALESCE_DELAY
     while True:
@@ -426,7 +477,7 @@ def _wait_for_reload_quiet_period(
             if not isinstance(fileobj, int):
                 continue
             if fileobj == wakeup_fd:
-                _drain_fd(wakeup_fd)
+                drain_fd(wakeup_fd)
                 return True, needs_rebuild
             needs_rebuild |= notifier.consume()
             deadline = time.monotonic() + _RELOAD_COALESCE_DELAY
@@ -459,7 +510,7 @@ def _stop_reload_child(
         shutil.rmtree(pycache_dir, ignore_errors=True)
 
 
-def _serve_with_reload(
+def serve_with_reload(
     import_settings: ImportSettings,
     config: Config,
     *,
@@ -468,7 +519,7 @@ def _serve_with_reload(
     reload_excludes: tuple[str, ...],
     argv: Sequence[str] | None = None,
     env: Mapping[str, str] | None = None,
-):
+) -> None:
     watch_dirs = _watch_dirs(import_settings, reload_dirs)
     child_args = _child_argv(argv)
     snapshot = _watch_file_snapshot(
@@ -492,8 +543,8 @@ def _serve_with_reload(
     )
     selector = selectors.DefaultSelector()
     with (
-        _signal_wakeup_pipe() as wakeup_fd,
-        _swap_signal_handlers({
+        signal_wakeup_pipe() as wakeup_fd,
+        swap_signal_handlers({
             signal.SIGINT: _handle_stop,
             signal.SIGTERM: _handle_stop,
         }),
@@ -507,7 +558,7 @@ def _serve_with_reload(
                     if not isinstance(fileobj, int):
                         continue
                     if fileobj == wakeup_fd:
-                        _drain_fd(wakeup_fd)
+                        drain_fd(wakeup_fd)
                         continue
                     needs_rebuild = notifier.consume()
                     stop_requested, pending_rebuild = _wait_for_reload_quiet_period(

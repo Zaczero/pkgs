@@ -66,6 +66,7 @@ dev = [
   "mkdocs-minify-plugin>=0.8",
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
+  "pyo3stubs",
   "pymdown-extensions>=10.7",
   "pytest-asyncio>=0.26.0",
   "pytest>=9.0.0",
@@ -75,6 +76,9 @@ dev = [
   "uvicorn>=0.43.0",
   "websockets>=16.0",
 ]
+
+[tool.uv]
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
@@ -86,10 +90,13 @@ module-name = "h2corn._lib"
 python-source = "python"
 
 [tool.pyright]
+extraPaths = ["python"]
 include = ["python/h2corn", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"
 strict = ["python/h2corn"]
+venv = ".venv"
+venvPath = "."
 
 [tool.pytest.ini_options]
 filterwarnings = [
@@ -97,6 +104,9 @@ filterwarnings = [
   # still hits asyncio's deprecated policy API. Production uses an
   # explicit loop factory and never installs a global policy.
   "ignore:'asyncio.(set_event_loop_policy|DefaultEventLoopPolicy)':DeprecationWarning",
+  # uvloop 0.22.1's executor bridge still calls the deprecated helper while
+  # these tests deliberately exercise Server's cross-thread lifecycle API.
+  "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:asyncio.threads",
 ]
 minversion = "9.0"
 pythonpath = ["."]
