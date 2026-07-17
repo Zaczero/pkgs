@@ -9,6 +9,7 @@ use crate::buffered_events::BufferedState;
 enum HttpSendMode {
     Buffering,
     Streaming { tx: mpsc::Sender<HttpOutboundEvent> },
+    Closed,
 }
 
 /// Result of handing an ASGI event to the response driver. The common
@@ -63,24 +64,39 @@ impl HttpSendState {
                 },
                 TryPush::Closed(_) => HttpSendDisposition::Closed,
             },
+            HttpSendMode::Closed => HttpSendDisposition::Closed,
         }
     }
 }
 
 impl HttpSendBuffer {
+    /// Reject new app sends and wake any sender currently waiting on a full
+    /// streaming channel. Events accepted before closure remain available so
+    /// the response driver can report their original ASGI contract error.
+    pub(super) fn close_outbound(&mut self) {
+        let mut inner = self.shared.lock();
+        inner.state = HttpSendMode::Closed;
+        drop(inner);
+        if let Some(rx) = &mut self.stream_rx {
+            rx.close();
+        }
+        self.shared.notify_ready();
+    }
+
     pub(super) fn take_ready(&mut self, streaming: bool) -> Option<HttpOutboundEvent> {
         let mut inner = self.shared.lock();
         if let Some(event) = inner.queue.pop_front() {
             return Some(event);
         }
-        if !streaming {
-            return None;
-        }
 
-        if self.stream_rx.is_none() && matches!(inner.state, HttpSendMode::Buffering) {
-            let (tx, rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
-            self.stream_rx = Some(rx);
-            inner.state = HttpSendMode::Streaming { tx };
+        if self.stream_rx.is_none() {
+            if streaming && matches!(inner.state, HttpSendMode::Buffering) {
+                let (tx, rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
+                self.stream_rx = Some(rx);
+                inner.state = HttpSendMode::Streaming { tx };
+            } else {
+                return None;
+            }
         }
         drop(inner);
         self.stream_rx.as_mut().and_then(|rx| rx.try_recv().ok())
@@ -198,7 +214,9 @@ mod tests {
             let inner = send_state.shared.lock();
             match &inner.state {
                 super::HttpSendMode::Streaming { tx } => tx.strong_count(),
-                super::HttpSendMode::Buffering => panic!("streaming mode was enabled"),
+                super::HttpSendMode::Buffering | super::HttpSendMode::Closed => {
+                    panic!("streaming mode was enabled")
+                },
             }
         };
         assert_eq!(internal_count(), 1);
@@ -218,5 +236,76 @@ mod tests {
         assert_eq!(tx.strong_count(), 2);
         drop(tx);
         assert_eq!(internal_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn closing_streaming_output_wakes_a_blocked_sender_and_retains_accepted_events() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        assert!(send_buffer.take_ready(true).is_none());
+
+        for _ in 0..ASGI_QUEUE_CAPACITY {
+            assert!(matches!(
+                send_state.push_or_forward(body_event(b"accepted")),
+                HttpSendDisposition::Sent
+            ));
+        }
+        let HttpSendDisposition::Backpressured { tx, event } =
+            send_state.push_or_forward(body_event(b"blocked"))
+        else {
+            panic!("the full streaming channel backpressures one sender")
+        };
+        let blocked = tokio::spawn(async move { tx.send(event).await });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished());
+
+        send_buffer.close_outbound();
+        assert!(
+            blocked.await.expect("blocked send task completes").is_err(),
+            "receiver closure wakes the blocked send with SendAfterClose"
+        );
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"late")),
+            HttpSendDisposition::Closed
+        ));
+
+        for _ in 0..ASGI_QUEUE_CAPACITY {
+            assert_body_event(
+                send_buffer
+                    .take_ready(false)
+                    .expect("an event accepted before close remains visible"),
+                b"accepted",
+            );
+        }
+        assert!(send_buffer.take_ready(false).is_none());
+    }
+
+    #[test]
+    fn closing_buffered_output_retains_events_and_rejects_new_sends() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"first")),
+            HttpSendDisposition::Buffered
+        ));
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"second")),
+            HttpSendDisposition::Buffered
+        ));
+
+        send_buffer.close_outbound();
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"late")),
+            HttpSendDisposition::Closed
+        ));
+        assert_body_event(
+            send_buffer.take_ready(false).expect("first retained event"),
+            b"first",
+        );
+        assert_body_event(
+            send_buffer
+                .take_ready(false)
+                .expect("second retained event"),
+            b"second",
+        );
+        assert!(send_buffer.take_ready(false).is_none());
     }
 }

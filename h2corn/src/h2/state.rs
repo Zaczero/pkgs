@@ -2,12 +2,13 @@ use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::mem::{replace, size_of};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 use tokio::time::Instant as TokioInstant;
 
 use super::StreamMap;
@@ -21,18 +22,19 @@ use crate::h2_frame::{self, StreamId, WindowIncrement};
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
 use crate::runtime::{
-    ConnectionContext, H2InputCredit, H2InputCreditQueue, ReleasedH2InputCredit, ShutdownState,
-    StreamInput,
+    ConnectionContext, H2InputCredit, H2InputCreditQueue, ReleasedH2InputCredit, RequestAdmission,
+    RequestSettlementCompletion, ShutdownState, StreamInput,
 };
 
 /// Generous for legitimate cancellation bursts (browser navigations, gRPC
 /// deadline storms); rapid-reset attacks send thousands per second.
 const RESET_RATE_LIMIT: u32 = 200;
 const RESET_RATE_WINDOW: Duration = Duration::from_secs(10);
-/// Bound a batched ASGI body event to 64 KiB even when the configured inbound
-/// frame limit is larger. Batching is restricted to input that is already
-/// backlogged, so this costs neither prompt delivery nor a payload copy.
-const HTTP_BODY_BATCH_MAX_BYTES: usize = 64 * 1024;
+/// Bound one coalesced app-input chunk to 64 KiB even when the configured
+/// inbound frame limit is larger. Tiny fragments copy into these chunks to
+/// bound per-frame ownership metadata; larger fragments batch zero-copy.
+const INPUT_CHUNK_MAX_BYTES: usize = 64 * 1024;
+const INPUT_COPY_MAX_FRAGMENT_BYTES: usize = 128;
 
 #[derive(Debug)]
 pub(super) struct InboundStream {
@@ -91,23 +93,29 @@ impl InputDelivery {
         }
     }
 
-    /// Deliver HTTP body input, pairing adjacent frames only after the bounded
-    /// app channel is already full. The common keeping-up path is identical to
-    /// `push`; a slow app gets fewer Python receive events without waiting for
-    /// another frame or concatenating payload storage.
-    pub(super) fn push_http_body(&mut self, value: StreamInput) {
-        if let Self::Backlogged(queued) = self
-            && let Some(previous) = queued.queue.back_mut()
-        {
-            match previous.try_batch_http(value, HTTP_BODY_BATCH_MAX_BYTES) {
-                Ok(()) => return,
-                Err(value) => {
-                    queued.queue.push_back(value);
-                    return;
-                },
-            }
+    /// Deliver already-classified tiny input, compacting only after the app
+    /// falls behind. Callers keep this branch out of the larger-frame path.
+    fn push_compacting(&mut self, value: StreamInput, max_fragment_bytes: usize) {
+        if let Self::Backlogged(queued) = self {
+            queued.push_compacting(value, max_fragment_bytes);
+        } else {
+            self.push(value);
         }
-        self.push(value);
+    }
+
+    /// Deliver non-tiny body input. Adjacent frames batch without copying so
+    /// one receive consumes up to one bounded chunk of original segments.
+    fn push_batched(
+        &mut self,
+        value: StreamInput,
+        min_fragment_bytes: usize,
+        max_batch_bytes: usize,
+    ) {
+        if let Self::Backlogged(queued) = self {
+            queued.push_batched(value, min_fragment_bytes, max_batch_bytes);
+        } else {
+            self.push(value);
+        }
     }
 
     /// Push as much backlog as the channel accepts; returns to `Open` once
@@ -137,13 +145,19 @@ impl InputDelivery {
         matches!(self, Self::Backlogged(_))
     }
 
-    /// Abandon delivery, returning the sender for a best-effort terminal
-    /// message (reset paths drop any backlog deliberately).
-    pub(super) fn take_sender(&mut self) -> Option<mpsc::Sender<StreamInput>> {
-        match replace(self, Self::Stopped) {
+    /// Abandon delivery and enqueue a terminal event only when it fits
+    /// immediately. A reset must never await a full application channel: the
+    /// app may be suspended away from receive(), and cancellation is what
+    /// releases that state. Dropping the final sender remains the fail-closed
+    /// disconnect signal when queued body input already occupies the channel.
+    pub(super) fn stop_with(&mut self, terminal: StreamInput) {
+        let sender = match replace(self, Self::Stopped) {
             Self::Open(tx) => Some(tx),
             Self::Backlogged(queued) => Some(queued.tx),
             Self::Stopped => None,
+        };
+        if let Some(sender) = sender {
+            let _ = sender.try_send(terminal);
         }
     }
 
@@ -163,6 +177,15 @@ pub(super) enum QueueFlush {
 }
 
 impl QueuedInput {
+    fn push_batched(
+        &mut self,
+        value: StreamInput,
+        min_fragment_bytes: usize,
+        max_batch_bytes: usize,
+    ) {
+        Self::push_batched_queue(&mut self.queue, value, min_fragment_bytes, max_batch_bytes);
+    }
+
     pub(super) fn flush(&mut self) -> QueueFlush {
         while let Some(value) = self.queue.pop_front() {
             match try_push(&self.tx, value) {
@@ -175,6 +198,41 @@ impl QueuedInput {
             }
         }
         QueueFlush::Drained
+    }
+
+    fn push_compacting(&mut self, value: StreamInput, max_fragment_bytes: usize) {
+        Self::push_compacting_queue(&mut self.queue, value, max_fragment_bytes);
+    }
+
+    fn push_compacting_queue(
+        queue: &mut VecDeque<StreamInput>,
+        value: StreamInput,
+        max_fragment_bytes: usize,
+    ) {
+        let Some(previous) = queue.back_mut() else {
+            queue.push_back(value);
+            return;
+        };
+        match previous.try_coalesce_data(value, max_fragment_bytes, INPUT_CHUNK_MAX_BYTES) {
+            Ok(()) => {},
+            Err(value) => queue.push_back(value),
+        }
+    }
+
+    fn push_batched_queue(
+        queue: &mut VecDeque<StreamInput>,
+        value: StreamInput,
+        min_fragment_bytes: usize,
+        max_batch_bytes: usize,
+    ) {
+        let Some(previous) = queue.back_mut() else {
+            queue.push_back(value);
+            return;
+        };
+        match previous.try_batch_data(value, min_fragment_bytes, max_batch_bytes) {
+            Ok(()) => {},
+            Err(value) => queue.push_back(value),
+        }
     }
 }
 
@@ -231,6 +289,13 @@ impl ReceiveState {
     pub(super) fn is_idle(self) -> bool {
         self == Self::Idle
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClosedStreamDisposition {
+    Keep,
+    Retain,
+    Remove,
 }
 
 /// Per-connection `RST_STREAM` rate accounting (CVE-2023-44487 "rapid reset"
@@ -300,19 +365,22 @@ pub(super) struct RequestSpawnContext<'a> {
 /// Tokio tasks are otherwise detached when their `JoinHandle` is dropped.  A
 /// peer that closes the connection while an application is suspended outside
 /// `receive()` would therefore leave the Python task alive indefinitely.  We
-/// retain only the cheap abort handles and receive completion ids through a
-/// bounded channel: completed task allocations are reclaimed by Tokio, while
-/// this map is reaped on every connection turn and aborted as one scope when
-/// the connection state is dropped.
+/// retain their join handles and receive completion ids through a bounded
+/// channel: completed task allocations are reclaimed by Tokio, while this map
+/// is reaped on every connection turn and aborted as one scope when the
+/// connection state is dropped. The task budget is deliberately separate from
+/// RFC stream concurrency: one retained generation may drain request input
+/// while one protocol-active generation continues, but work stays bounded.
 pub(super) struct RequestTasks {
     active: StreamMap<RequestTask>,
+    limit: usize,
     completed_tx: mpsc::Sender<StreamId>,
     completed_rx: mpsc::Receiver<StreamId>,
 }
 
 struct RequestTask {
-    abort: AbortHandle,
-    cancellation: RequestTaskCancellation,
+    task: Option<JoinHandle<()>>,
+    cancellation: Option<RequestTaskCancellation>,
 }
 
 pub(super) enum RequestTaskCancellation {
@@ -321,43 +389,48 @@ pub(super) enum RequestTaskCancellation {
 }
 
 impl RequestTask {
-    async fn cancel(self) {
-        if let RequestTaskCancellation::AfterPendingReceive(disconnect) = self.cancellation
+    async fn cancel(&mut self) {
+        let Some(mut task) = self.task.take() else {
+            return;
+        };
+        if let Some(RequestTaskCancellation::AfterPendingReceive(disconnect)) =
+            self.cancellation.take()
             && let Some(pending) = disconnect.pending_resolution()
         {
             pending.wait().await;
         }
-        self.abort.abort();
-    }
-}
-
-struct RequestTaskCompletion {
-    stream_id: StreamId,
-    completed: mpsc::Sender<StreamId>,
-}
-
-impl Drop for RequestTaskCompletion {
-    fn drop(&mut self) {
-        // The channel covers two generations of the maximum concurrent
-        // request count. Completion is produced once per active task and the
-        // connection drains it before ingesting another peer frame, so Full
-        // is only possible while the connection itself is being dropped.
-        let _ = self.completed.try_send(self.stream_id);
+        task.abort();
+        let _ = (&mut task).await;
     }
 }
 
 impl RequestTasks {
     fn new(max_concurrent_streams: usize) -> Self {
-        // One connection turn reaps before ingesting at most one peer frame.
-        // Two generations therefore cover every live task plus tasks that
-        // completed during the current turn, without an unbounded queue.
-        let completion_capacity = max_concurrent_streams.saturating_mul(2).max(2);
+        let limit = max_concurrent_streams.saturating_mul(2).max(2);
+        // A task owns one reserved slot until its completion id is consumed.
+        // The second generation covers tasks synchronously cancelled and
+        // joined between connection-turn reaps.
+        let completion_capacity = limit.saturating_mul(2);
         let (completed_tx, completed_rx) = mpsc::channel(completion_capacity);
         Self {
-            active: new_stream_map(max_concurrent_streams),
+            active: new_stream_map(limit),
+            limit,
             completed_tx,
             completed_rx,
         }
+    }
+
+    pub(super) fn track_admission(&self, stream_id: StreamId, admission: &mut RequestAdmission) {
+        admission.track_completion(self.reserve_completion(stream_id));
+    }
+
+    fn reserve_completion(&self, stream_id: StreamId) -> RequestSettlementCompletion {
+        let permit = self
+            .completed_tx
+            .clone()
+            .try_reserve_owned()
+            .expect("completion capacity covers every admitted request task");
+        RequestSettlementCompletion::new(stream_id, permit)
     }
 
     pub(super) fn spawn<F>(
@@ -368,31 +441,28 @@ impl RequestTasks {
     ) where
         F: Future<Output = ()> + Send + 'static,
     {
-        let completion = RequestTaskCompletion {
-            stream_id,
-            completed: self.completed_tx.clone(),
-        };
-        let task = tokio::spawn(async move {
-            let _completion = completion;
-            future.await;
-        });
+        debug_assert!(self.active.len() < self.limit);
+        let task = tokio::spawn(future);
         let previous = self.active.insert(stream_id, RequestTask {
-            abort: task.abort_handle(),
-            cancellation,
+            task: Some(task),
+            cancellation: Some(cancellation),
         });
         debug_assert!(previous.is_none(), "HTTP/2 stream ids are never reused");
     }
 
     pub(super) async fn cancel(&mut self, stream_id: StreamId) {
-        if let Some(task) = self.active.remove(&stream_id) {
+        if let Some(task) = self.active.get_mut(&stream_id) {
             task.cancel().await;
         }
+        // Settlement may already have won the race while cancellation was
+        // awaited. Reap only completion ids; never release the budget merely
+        // because the native wrapper was aborted while Python cleanup lives.
+        self.reap_completed();
     }
 
     pub(super) async fn cancel_all(&mut self) {
-        let capacity = self.active.capacity();
-        let active = replace(&mut self.active, new_stream_map(capacity));
-        for (_, task) in active {
+        let active = replace(&mut self.active, new_stream_map(self.limit));
+        for (_, mut task) in active {
             task.cancel().await;
         }
         self.reap_completed();
@@ -404,16 +474,31 @@ impl RequestTasks {
         }
     }
 
-    #[cfg(test)]
+    pub(super) async fn wait_for_completion(&mut self) {
+        let stream_id = self
+            .completed_rx
+            .recv()
+            .await
+            .expect("RequestTasks retains the completion sender");
+        self.active.remove(&stream_id);
+        self.reap_completed();
+    }
+
     pub(super) fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    pub(super) fn is_at_capacity(&self) -> bool {
+        self.active_count() >= self.limit
     }
 }
 
 impl Drop for RequestTasks {
     fn drop(&mut self) {
-        for (_, task) in self.active.drain() {
-            task.abort.abort();
+        for (_, mut task) in self.active.drain() {
+            if let Some(task) = task.task.take() {
+                task.abort();
+            }
         }
     }
 }
@@ -427,6 +512,9 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) shutdown: watch::Receiver<ShutdownState>,
     pub(super) decoder: Decoder,
     pub(super) streams: StreamMap<InboundStream>,
+    /// Protocol-closed streams retained only while their ASGI input backlog
+    /// drains. RFC 9113 excludes these from SETTINGS_MAX_CONCURRENT_STREAMS.
+    retained_closed_streams: usize,
     pub(super) pending_headers: Option<PendingHeaders>,
     pub(super) last_client_stream_id: Option<StreamId>,
     pub(super) connection_window: ReceiveWindowState,
@@ -442,7 +530,7 @@ pub(super) struct H2ConnectionState<R, W> {
 
 pub(super) enum RequestInputClose {
     ContentLengthMismatch,
-    Closed { remove_stream: bool },
+    Closed,
 }
 
 impl ReceiveWindowState {
@@ -491,6 +579,18 @@ impl ReceiveWindowState {
 const _: () = assert!(size_of::<ReceiveWindowState>() == 16);
 
 impl InboundStream {
+    fn closed_disposition(&self, was_closed: bool) -> ClosedStreamDisposition {
+        if self.state != StreamLifecycle::Closed {
+            ClosedStreamDisposition::Keep
+        } else if !self.delivery.has_backlog() {
+            ClosedStreamDisposition::Remove
+        } else if was_closed {
+            ClosedStreamDisposition::Keep
+        } else {
+            ClosedStreamDisposition::Retain
+        }
+    }
+
     pub(super) fn new(
         input: Option<mpsc::Sender<StreamInput>>,
         counts_toward_read_timeout: bool,
@@ -518,9 +618,14 @@ impl InboundStream {
     }
 
     pub(super) fn push_body_data(&mut self, body: Bytes, credit: H2InputCredit) {
+        let body_len = body.len();
         let input = StreamInput::h2_data(body, credit);
-        if self.counts_toward_read_timeout {
-            self.delivery.push_http_body(input);
+        if body_len <= INPUT_COPY_MAX_FRAGMENT_BYTES {
+            self.delivery
+                .push_compacting(input, INPUT_COPY_MAX_FRAGMENT_BYTES);
+        } else if body_len <= INPUT_CHUNK_MAX_BYTES / 2 {
+            self.delivery
+                .push_batched(input, INPUT_COPY_MAX_FRAGMENT_BYTES, INPUT_CHUNK_MAX_BYTES);
         } else {
             self.delivery.push(input);
         }
@@ -549,11 +654,9 @@ impl InboundStream {
             return RequestInputClose::ContentLengthMismatch;
         }
 
-        let fully_closed = self.mark_request_closed();
+        self.mark_request_closed();
         self.delivery.push(StreamInput::EndStream);
-        RequestInputClose::Closed {
-            remove_stream: fully_closed && !self.delivery.has_backlog(),
-        }
+        RequestInputClose::Closed
     }
 }
 
@@ -579,6 +682,7 @@ impl<R, W> H2ConnectionState<R, W> {
             shutdown,
             decoder: Decoder::new(h2_frame::DEFAULT_HEADER_TABLE_SIZE),
             streams: new_stream_map(stream_capacity),
+            retained_closed_streams: 0,
             pending_headers: None,
             last_client_stream_id: None,
             connection_window: ReceiveWindowState::new(initial_connection_window),
@@ -593,8 +697,22 @@ impl<R, W> H2ConnectionState<R, W> {
         }
     }
 
-    pub(super) fn active_stream_count(&self) -> usize {
-        self.streams.len() + usize::from(self.pending_headers.is_some())
+    pub(super) fn protocol_active_stream_count(&self) -> usize {
+        self.streams
+            .len()
+            .checked_sub(self.retained_closed_streams)
+            .expect("retained closed stream accounting cannot exceed the stream map")
+            + usize::from(self.pending_headers.is_some())
+    }
+
+    pub(super) fn wire_is_idle(&self) -> bool {
+        self.protocol_active_stream_count() == 0
+    }
+
+    fn has_outstanding_local_work(&self) -> bool {
+        !self.streams.is_empty()
+            || self.pending_headers.is_some()
+            || self.request_tasks.active_count() != 0
     }
 
     pub(super) fn header_limits(&self) -> HeaderLimits {
@@ -628,7 +746,7 @@ impl<R, W> H2ConnectionState<R, W> {
     }
 
     pub(super) fn refresh_header_deadline(&mut self, stream_id: StreamId) {
-        let key = RequestInputDeadlineKey::Headers(stream_id);
+        let key = RequestInputDeadlineKey::headers(stream_id);
         if let Some(timeout) = self.context.config.timeout_request_header {
             self.request_deadlines
                 .schedule(key, TokioInstant::now() + timeout);
@@ -639,11 +757,11 @@ impl<R, W> H2ConnectionState<R, W> {
 
     pub(super) fn cancel_header_deadline(&mut self, stream_id: StreamId) {
         self.request_deadlines
-            .cancel(RequestInputDeadlineKey::Headers(stream_id));
+            .cancel(RequestInputDeadlineKey::headers(stream_id));
     }
 
     pub(super) fn refresh_body_deadline(&mut self, stream_id: StreamId) {
-        let key = RequestInputDeadlineKey::Body(stream_id);
+        let key = RequestInputDeadlineKey::body(stream_id);
         let should_schedule = self.streams.get(&stream_id).is_some_and(|stream| {
             stream.counts_toward_read_timeout && !stream.state.request_is_closed()
         });
@@ -666,11 +784,16 @@ impl<R, W> H2ConnectionState<R, W> {
     }
 
     pub(super) fn apply_response_close(&mut self, stream_id: StreamId) {
-        if let Entry::Occupied(mut entry) = self.streams.entry(stream_id)
-            && entry.get_mut().mark_response_closed()
-            && !entry.get().delivery.has_backlog()
-        {
-            entry.remove();
+        if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
+            let was_closed = entry.get().state == StreamLifecycle::Closed;
+            entry.get_mut().mark_response_closed();
+            match entry.get().closed_disposition(was_closed) {
+                ClosedStreamDisposition::Keep => {},
+                ClosedStreamDisposition::Retain => self.retained_closed_streams += 1,
+                ClosedStreamDisposition::Remove => {
+                    entry.remove();
+                },
+            }
         }
     }
 
@@ -680,32 +803,42 @@ impl<R, W> H2ConnectionState<R, W> {
     ) -> Option<RequestInputClose> {
         let result = match self.streams.entry(stream_id) {
             Entry::Occupied(mut entry) => {
+                let was_closed = entry.get().state == StreamLifecycle::Closed;
                 let close = entry.get_mut().finish_request_input();
-                if matches!(close, RequestInputClose::Closed {
-                    remove_stream: true,
-                }) {
-                    entry.remove();
+                match entry.get().closed_disposition(was_closed) {
+                    ClosedStreamDisposition::Keep => {},
+                    ClosedStreamDisposition::Retain => self.retained_closed_streams += 1,
+                    ClosedStreamDisposition::Remove => {
+                        entry.remove();
+                    },
                 }
                 Some(close)
             },
             Entry::Vacant(_) => None,
         };
         self.request_deadlines
-            .cancel(RequestInputDeadlineKey::Body(stream_id));
+            .cancel(RequestInputDeadlineKey::body(stream_id));
         result
     }
 
     pub(super) fn remove_stream(&mut self, stream_id: StreamId) -> Option<InboundStream> {
         self.request_deadlines
-            .cancel(RequestInputDeadlineKey::Body(stream_id));
-        self.streams.remove(&stream_id)
+            .cancel(RequestInputDeadlineKey::body(stream_id));
+        let stream = self.streams.remove(&stream_id)?;
+        if stream.state == StreamLifecycle::Closed {
+            self.retained_closed_streams = self
+                .retained_closed_streams
+                .checked_sub(1)
+                .expect("every retained closed stream is counted exactly once");
+        }
+        Some(stream)
     }
 
     pub(super) fn should_stop(&self) -> bool {
         if self.drain_state == ConnectionDrainState::Accepting {
             return false;
         }
-        self.active_stream_count() == 0
+        !self.has_outstanding_local_work()
             || self
                 .drain_state
                 .deadline()
@@ -724,19 +857,38 @@ pub(super) enum RequestInputDeadline {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) enum RequestInputDeadlineKey {
-    Headers(StreamId),
-    Body(StreamId),
-}
+#[repr(transparent)]
+pub(super) struct RequestInputDeadlineKey(NonZeroU32);
 
 impl RequestInputDeadlineKey {
+    const BODY_TAG: u32 = 1 << 31;
+
+    pub(super) const fn headers(stream_id: StreamId) -> Self {
+        Self(NonZeroU32::new(stream_id.get()).expect("a stream identifier is nonzero"))
+    }
+
+    pub(super) const fn body(stream_id: StreamId) -> Self {
+        let raw = Self::BODY_TAG | stream_id.get();
+        Self(NonZeroU32::new(raw).expect("a tagged stream identifier is nonzero"))
+    }
+
     const fn with_instant(self, instant: TokioInstant) -> RequestInputDeadline {
-        match self {
-            Self::Headers(stream_id) => RequestInputDeadline::Headers(stream_id, instant),
-            Self::Body(stream_id) => RequestInputDeadline::Body(stream_id, instant),
+        let raw = self.0.get();
+        let stream_id = StreamId::new(raw & h2_frame::STREAM_ID_MASK)
+            .expect("a deadline key contains a valid stream identifier");
+        if raw & Self::BODY_TAG == 0 {
+            RequestInputDeadline::Headers(stream_id, instant)
+        } else {
+            RequestInputDeadline::Body(stream_id, instant)
         }
     }
 }
+
+// Hash derives through the one wrapped integer, so the identity hasher is
+// collision-free for this packed key just as it is for `StreamId`.
+impl nohash_hasher::IsEnabled for RequestInputDeadlineKey {}
+
+const _: () = assert!(size_of::<RequestInputDeadlineKey>() == size_of::<u32>());
 
 impl RequestInputDeadline {
     pub(super) const fn instant(self) -> TokioInstant {
@@ -768,10 +920,11 @@ mod tests {
     use tokio::sync::{mpsc, oneshot};
 
     use super::{
-        InboundStream, InputDelivery, ReceiveWindowState, RequestInputClose,
-        RequestTaskCancellation, RequestTasks,
+        ClosedStreamDisposition, INPUT_CHUNK_MAX_BYTES, INPUT_COPY_MAX_FRAGMENT_BYTES,
+        InboundStream, InputDelivery, ReceiveWindowState, RequestInputClose, RequestInputDeadline,
+        RequestInputDeadlineKey, RequestTaskCancellation, RequestTasks,
     };
-    use crate::h2_frame::{StreamId, WindowIncrement};
+    use crate::h2_frame::{STREAM_ID_MASK, StreamId, WindowIncrement};
     use crate::runtime::{H2InputCreditQueue, StreamInput};
 
     fn data(byte: &'static [u8]) -> StreamInput {
@@ -785,19 +938,55 @@ mod tests {
         }
     }
 
-    fn assert_batch(input: StreamInput, expected: [&[u8]; 2]) {
+    fn assert_buffered_data(input: StreamInput, expected: &[u8]) {
         match input {
-            StreamInput::HttpDataBatch {
+            StreamInput::BufferedData { body, credit: None } => {
+                assert_eq!(body.as_ref(), expected);
+            },
+            other => panic!("expected buffered data input, got {other:?}"),
+        }
+    }
+
+    fn assert_data_batch(input: StreamInput, expected: &[&[u8]]) {
+        match input {
+            StreamInput::DataBatch {
                 bodies,
+                body_bytes,
                 credit: None,
             } => {
-                assert_eq!(bodies[0].as_ref(), expected[0]);
-                assert_eq!(bodies[1].as_ref(), expected[1]);
+                assert_eq!(bodies.len(), expected.len());
+                assert_eq!(
+                    body_bytes,
+                    expected.iter().map(|body| body.len()).sum::<usize>()
+                );
+                for (body, expected) in bodies.iter().zip(expected) {
+                    assert_eq!(body.as_ref(), *expected);
+                }
             },
             other => panic!("expected HTTP data batch, got {other:?}"),
         }
     }
 
+    #[test]
+    fn packed_request_deadline_key_round_trips_kind_and_stream_id() {
+        let instant = tokio::time::Instant::now();
+        for raw in [1, STREAM_ID_MASK] {
+            let stream_id = StreamId::new(raw).expect("test stream identifier is valid");
+            let headers = RequestInputDeadlineKey::headers(stream_id);
+            let body = RequestInputDeadlineKey::body(stream_id);
+            assert!(headers < body, "the body tag occupies the high bit");
+            assert!(matches!(
+                headers.with_instant(instant),
+                RequestInputDeadline::Headers(actual, at)
+                    if actual == stream_id && at == instant
+            ));
+            assert!(matches!(
+                body.with_instant(instant),
+                RequestInputDeadline::Body(actual, at)
+                    if actual == stream_id && at == instant
+            ));
+        }
+    }
     #[tokio::test]
     async fn request_task_scope_aborts_every_live_task_on_drop() {
         struct DropSignal(Option<oneshot::Sender<()>>);
@@ -828,6 +1017,67 @@ mod tests {
             .expect("request task was aborted and dropped");
     }
 
+    #[tokio::test]
+    async fn request_task_budget_allows_one_bounded_retained_generation() {
+        let first = StreamId::new(1).unwrap();
+        let second = StreamId::new(3).unwrap();
+        let mut tasks = RequestTasks::new(1);
+        let first_settlement = tasks.reserve_completion(first);
+        let _second_settlement = tasks.reserve_completion(second);
+        tasks.spawn(first, RequestTaskCancellation::Immediate, pending());
+        tasks.spawn(second, RequestTaskCancellation::Immediate, pending());
+        assert_eq!(tasks.active_count(), 2);
+        assert!(tasks.is_at_capacity());
+
+        tasks.cancel(first).await;
+        tasks.reap_completed();
+        assert_eq!(
+            tasks.active_count(),
+            2,
+            "native cancellation cannot bypass the Python-settlement budget"
+        );
+
+        drop(first_settlement);
+        tasks.reap_completed();
+        assert_eq!(tasks.active_count(), 1);
+        assert!(!tasks.is_at_capacity());
+    }
+
+    #[test]
+    fn closed_stream_retention_is_identical_for_both_close_orders() {
+        fn backlogged_stream() -> (InboundStream, mpsc::Receiver<StreamInput>) {
+            let (tx, rx) = mpsc::channel(1);
+            let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
+            stream.delivery.push(data(b"a"));
+            stream.delivery.push(data(b"b"));
+            assert!(stream.delivery.has_backlog());
+            (stream, rx)
+        }
+
+        let (mut response_first, _rx) = backlogged_stream();
+        assert!(!response_first.mark_response_closed());
+        let was_closed = response_first.state == super::StreamLifecycle::Closed;
+        response_first.finish_request_input();
+        assert_eq!(
+            response_first.closed_disposition(was_closed),
+            ClosedStreamDisposition::Retain,
+        );
+
+        let (mut request_first, _rx) = backlogged_stream();
+        request_first.finish_request_input();
+        let was_closed = request_first.state == super::StreamLifecycle::Closed;
+        request_first.mark_response_closed();
+        assert_eq!(
+            request_first.closed_disposition(was_closed),
+            ClosedStreamDisposition::Retain,
+        );
+        assert_eq!(
+            request_first.closed_disposition(true),
+            ClosedStreamDisposition::Keep,
+            "an already-retained closed stream is never counted twice",
+        );
+    }
+
     /// Regression: the terminal `EndStream` must queue behind backlogged
     /// `Data` — a side-channel send would truncate a backpressured body yet
     /// present it as complete.
@@ -841,10 +1091,7 @@ mod tests {
         assert!(stream.delivery.has_backlog());
 
         let close = stream.finish_request_input();
-        let RequestInputClose::Closed {
-            remove_stream: false,
-        } = close
-        else {
+        let RequestInputClose::Closed = close else {
             panic!("backlogged finish must queue the terminal input in place");
         };
 
@@ -859,62 +1106,225 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlogged_http_body_pairs_without_delaying_open_delivery() {
+    async fn reset_never_waits_for_a_full_application_channel() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut delivery = InputDelivery::new(Some(tx));
+        delivery.push(data(b"in-channel"));
+        delivery.push(data(b"backlog"));
+        assert!(delivery.has_backlog());
+
+        delivery.stop_with(StreamInput::Reset(crate::h2_frame::ErrorCode::CANCEL));
+        assert!(matches!(delivery, InputDelivery::Stopped));
+        assert_data(
+            rx.recv()
+                .await
+                .expect("already queued body remains ordered"),
+            b"in-channel",
+        );
+        assert!(
+            rx.recv().await.is_none(),
+            "a full channel fails closed by disconnecting instead of blocking reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn backlogged_data_coalesces_without_delaying_open_delivery() {
         let (tx, mut rx) = mpsc::channel(1);
         let mut delivery = InputDelivery::new(Some(tx));
 
-        delivery.push_http_body(data(b"a"));
+        delivery.push_compacting(data(b"a"), INPUT_COPY_MAX_FRAGMENT_BYTES);
         assert!(matches!(delivery, InputDelivery::Open(_)));
-        delivery.push_http_body(data(b"b"));
-        delivery.push_http_body(data(b"c"));
-        delivery.push_http_body(data(b"d"));
-        delivery.push_http_body(data(b"e"));
+        delivery.push_compacting(data(b"b"), INPUT_COPY_MAX_FRAGMENT_BYTES);
+        delivery.push_compacting(data(b"c"), INPUT_COPY_MAX_FRAGMENT_BYTES);
+        delivery.push_compacting(data(b"d"), INPUT_COPY_MAX_FRAGMENT_BYTES);
+        delivery.push_compacting(data(b"e"), INPUT_COPY_MAX_FRAGMENT_BYTES);
 
         let InputDelivery::Backlogged(queued) = &delivery else {
             panic!("full app channel must create a backlog");
         };
-        assert_eq!(queued.queue.len(), 2);
+        assert_eq!(queued.queue.len(), 1);
 
         assert_data(rx.recv().await.expect("open-path body"), b"a");
-        assert!(!delivery.flush());
-        assert_batch(rx.recv().await.expect("first batch"), [b"b", b"c"]);
         assert!(delivery.flush());
-        assert_batch(rx.recv().await.expect("second batch"), [b"d", b"e"]);
+        assert_buffered_data(rx.recv().await.expect("coalesced backlog"), b"bcde");
+    }
+
+    #[tokio::test]
+    async fn backlogged_http_medium_frames_batch_without_copying() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut delivery = InputDelivery::new(Some(tx));
+        let first = Bytes::from(vec![b'a'; 8 * 1024]);
+        let second = Bytes::from(vec![b'b'; 8 * 1024]);
+        let third = Bytes::from(vec![b'c'; 8 * 1024]);
+
+        delivery.push_batched(
+            data(b"open"),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
+        delivery.push_batched(
+            StreamInput::data(first.clone()),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
+        delivery.push_batched(
+            StreamInput::data(second.clone()),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
+        delivery.push_batched(
+            StreamInput::data(third.clone()),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
+
+        let InputDelivery::Backlogged(queued) = &delivery else {
+            panic!("full app channel must create a backlog");
+        };
+        assert_eq!(queued.queue.len(), 1);
+        assert_data(rx.recv().await.expect("open-path body"), b"open");
+        assert!(delivery.flush());
+        assert_data_batch(rx.recv().await.expect("batched backlog"), &[
+            first.as_ref(),
+            second.as_ref(),
+            third.as_ref(),
+        ]);
     }
 
     #[test]
-    fn websocket_delivery_and_large_http_frames_remain_segmented() {
+    fn websocket_backlog_copies_tiny_and_batches_medium_segments() {
         let (_rx_guard, mut delivery) = {
             let (tx, rx) = mpsc::channel(1);
             (rx, InputDelivery::new(Some(tx)))
         };
         delivery.push(data(b"open"));
-        delivery.push(data(b"ws-a"));
-        delivery.push(data(b"ws-b"));
+        delivery.push_compacting(data(b"ws-a"), INPUT_COPY_MAX_FRAGMENT_BYTES);
+        delivery.push_compacting(data(b"ws-b"), INPUT_COPY_MAX_FRAGMENT_BYTES);
         let InputDelivery::Backlogged(queued) = &delivery else {
             panic!("full app channel must create a backlog");
         };
-        assert_eq!(
-            queued.queue.len(),
-            2,
-            "ordinary WebSocket push must not batch"
-        );
+        assert_eq!(queued.queue.len(), 1);
+        assert!(matches!(
+            queued.queue.front(),
+            Some(StreamInput::BufferedData { body, .. }) if body.as_ref() == b"ws-aws-b"
+        ));
 
         let (tx, _rx) = mpsc::channel(1);
         let mut delivery = InputDelivery::new(Some(tx));
-        delivery.push_http_body(data(b"open"));
-        delivery.push_http_body(StreamInput::data(Bytes::from(vec![0; 40 * 1024])));
-        delivery.push_http_body(StreamInput::data(Bytes::from(vec![0; 40 * 1024])));
+        let first = Bytes::from(vec![b'a'; 8 * 1024]);
+        let second = Bytes::from(vec![b'b'; 8 * 1024]);
+        delivery.push(data(b"open"));
+        delivery.push_batched(
+            StreamInput::data(first.clone()),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
+        delivery.push_batched(
+            StreamInput::data(second.clone()),
+            INPUT_COPY_MAX_FRAGMENT_BYTES,
+            INPUT_CHUNK_MAX_BYTES,
+        );
         let InputDelivery::Backlogged(queued) = &delivery else {
             panic!("full app channel must create a backlog");
         };
-        assert_eq!(queued.queue.len(), 2, "batch byte ceiling must be strict");
-        assert!(
-            queued
-                .queue
-                .iter()
-                .all(|input| matches!(input, StreamInput::Data { .. }))
+        assert_eq!(queued.queue.len(), 1);
+        let input = queued.queue.front().expect("batched input");
+        let StreamInput::DataBatch {
+            bodies, body_bytes, ..
+        } = input
+        else {
+            panic!("medium segments must retain zero-copy ownership");
+        };
+        assert_eq!(*body_bytes, first.len() + second.len());
+        assert_eq!(bodies[0].as_ptr(), first.as_ptr());
+        assert_eq!(bodies[1].as_ptr(), second.as_ptr());
+    }
+
+    async fn fragmented_backlog_is_byte_bounded(counts_toward_read_timeout: bool) {
+        const FRAME_COUNT: usize = 2 * 1024 * 1024;
+
+        let flow = Arc::new(H2InputCreditQueue::default());
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut stream = InboundStream::new(
+            Some(tx),
+            counts_toward_read_timeout,
+            false,
+            None,
+            None,
+            None,
+            0x7FFF_FFFF,
         );
+
+        for index in 0..FRAME_COUNT {
+            let body = if index & 1 == 0 {
+                Bytes::from_static(b"a")
+            } else {
+                Bytes::from_static(b"b")
+            };
+            stream.push_body_data(body, flow.credit(stream_id, NonZeroU32::new(1).unwrap()));
+        }
+        assert!(!flow.has_pending(), "queued input must retain every credit");
+
+        let InputDelivery::Backlogged(queued) = &stream.delivery else {
+            panic!("a stalled one-slot app channel must have a backlog");
+        };
+        let expected_nodes = (FRAME_COUNT - 1).div_ceil(super::INPUT_CHUNK_MAX_BYTES);
+        assert_eq!(queued.queue.len(), expected_nodes);
+        assert!(queued.queue.len() <= 32, "two MiB needs at most 32 chunks");
+
+        stream.delivery.push(StreamInput::EndStream);
+        let mut consumed = 0;
+        loop {
+            let input = rx.recv().await.expect("input remains connected");
+            match input {
+                StreamInput::Data { body, credit } => {
+                    for byte in body {
+                        assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
+                        consumed += 1;
+                    }
+                    credit.expect("H2 data retains credit").release();
+                },
+                StreamInput::BufferedData { body, credit } => {
+                    for byte in body {
+                        assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
+                        consumed += 1;
+                    }
+                    credit.expect("H2 data retains merged credit").release();
+                },
+                StreamInput::DataBatch { bodies, credit, .. } => {
+                    for body in bodies {
+                        for byte in body {
+                            assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
+                            consumed += 1;
+                        }
+                    }
+                    credit.expect("H2 data retains merged credit").release();
+                },
+                StreamInput::EndStream => break,
+                StreamInput::Reset(code) => panic!("unexpected reset: {code}"),
+            }
+            stream.delivery.flush();
+        }
+        assert_eq!(consumed, FRAME_COUNT, "coalescing preserves every byte");
+        assert!(!stream.delivery.has_backlog());
+
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1, "same-stream releases coalesce");
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].bytes.get() as usize, FRAME_COUNT);
+        assert!(!flow.has_pending());
+    }
+
+    #[tokio::test]
+    async fn fragmented_http_backlog_has_bounded_nodes_and_exact_credit() {
+        fragmented_backlog_is_byte_bounded(true).await;
+    }
+
+    #[tokio::test]
+    async fn fragmented_websocket_backlog_has_bounded_nodes_and_exact_credit() {
+        fragmented_backlog_is_byte_bounded(false).await;
     }
 
     /// A fully protocol-closed stream remains addressable by released-credit
@@ -929,10 +1339,7 @@ mod tests {
         stream.delivery.push(data(b"b"));
 
         let close = stream.finish_request_input();
-        let RequestInputClose::Closed {
-            remove_stream: false,
-        } = close
-        else {
+        let RequestInputClose::Closed = close else {
             panic!("fully closed stream must stay until its backlog drains");
         };
 
@@ -953,9 +1360,7 @@ mod tests {
         let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
 
         let close = stream.finish_request_input();
-        assert!(matches!(close, RequestInputClose::Closed {
-            remove_stream: false,
-        }));
+        assert!(matches!(close, RequestInputClose::Closed));
         assert!(matches!(stream.delivery, InputDelivery::Open(_)));
         assert!(matches!(rx.recv().await, Some(StreamInput::EndStream)));
     }

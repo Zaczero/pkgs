@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::task::{JoinError, JoinHandle, spawn};
 use tokio::time::timeout;
 
 use super::RequestedSubprotocols;
@@ -13,11 +12,12 @@ use crate::bridge::{
     ASGI_QUEUE_CAPACITY, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendBuffer,
     WebSocketSendState,
 };
-use crate::error::{ErrorExt, H2CornError};
-use crate::runtime::{RequestAdmission, start_app_call};
+use crate::error::H2CornError;
+use crate::pyloop::SlotFuture;
+use crate::runtime::{RequestTaskGuard, start_app_call};
 
 /// The app task, encapsulated so session code can never race or misuse the
-/// raw `JoinHandle`: completion is only observable through methods that
+/// raw future: completion is only observable through methods that
 /// uphold two invariants — the handle is never polled again after
 /// completing, and (via [`RunningWebSocketApp::next_handshake_step`])
 /// buffered outbound events always win over task completion, because the
@@ -26,18 +26,18 @@ pub(super) struct WebSocketAppTask {
     state: WebSocketAppTaskState,
 }
 
-/// Exclusive ownership states for the application's Tokio task.
+/// Exclusive ownership states for the application's Python task.
 ///
 /// A raw handle and a joined outcome cannot coexist, and a surfaced or
 /// aborted task cannot accidentally be polled again.
 enum WebSocketAppTaskState {
-    Running(JoinHandle<Result<(), H2CornError>>),
+    Running(SlotFuture<Result<(), H2CornError>, RequestTaskGuard>),
     Joined(Result<(), H2CornError>),
     Settled,
 }
 
 impl WebSocketAppTask {
-    pub(super) const fn new(task: JoinHandle<Result<(), H2CornError>>) -> Self {
+    pub(super) const fn new(task: SlotFuture<Result<(), H2CornError>, RequestTaskGuard>) -> Self {
         Self {
             state: WebSocketAppTaskState::Running(task),
         }
@@ -46,18 +46,23 @@ impl WebSocketAppTask {
     /// True once the task's completion has been observed by a join; used as
     /// a `select!` branch guard so the handle is never re-polled.
     pub(super) const fn is_joined(&self) -> bool {
-        !matches!(self.state, WebSocketAppTaskState::Running(_))
+        match self.state {
+            WebSocketAppTaskState::Running(_) => false,
+            WebSocketAppTaskState::Joined(_) | WebSocketAppTaskState::Settled => true,
+        }
     }
 
     /// Wait for the task and store its outcome. Callers surface the result
     /// via [`Self::take_outcome`] or [`Self::settle`] — after draining any
     /// outbound events the app sent before returning.
     pub(super) async fn join_store(&mut self) {
-        let WebSocketAppTaskState::Running(task) = &mut self.state else {
-            debug_assert!(false, "app task joined twice");
-            return;
+        let result = match &mut self.state {
+            WebSocketAppTaskState::Running(task) => task.await,
+            WebSocketAppTaskState::Joined(_) | WebSocketAppTaskState::Settled => {
+                debug_assert!(false, "app task joined twice");
+                return;
+            },
         };
-        let result = flatten_app_result((&mut *task).await);
         self.state = WebSocketAppTaskState::Joined(result);
     }
 
@@ -82,25 +87,19 @@ impl WebSocketAppTask {
             },
         }
 
-        let WebSocketAppTaskState::Running(task) = &mut self.state else {
-            unreachable!("running state was restored above")
+        let result = match &mut self.state {
+            WebSocketAppTaskState::Running(task) => timeout(grace, task).await,
+            WebSocketAppTaskState::Joined(_) | WebSocketAppTaskState::Settled => {
+                unreachable!("running state was restored above")
+            },
         };
-        if let Ok(result) = timeout(grace, &mut *task).await {
-            self.state = WebSocketAppTaskState::Settled;
-            flatten_app_result(result)
-        } else {
-            self.abort().await;
-            Ok(())
-        }
+        self.state = WebSocketAppTaskState::Settled;
+        result.unwrap_or(Ok(()))
     }
 
-    /// Abort the task and wait for it to settle. Safe in every state.
-    pub(super) async fn abort(&mut self) {
-        let WebSocketAppTaskState::Running(task) = &mut self.state else {
-            return;
-        };
-        task.abort();
-        let _ = (&mut *task).await;
+    /// Abandon the task. Dropping its slot queues cancellation on the owning
+    /// Python loop; the slot's admission guard lives through the done callback.
+    pub(super) fn abort(&mut self) {
         self.state = WebSocketAppTaskState::Settled;
     }
 }
@@ -121,7 +120,6 @@ pub(super) struct RunningWebSocketApp {
     pub(super) send_buffer: WebSocketSendBuffer,
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
     pub(super) task: WebSocketAppTask,
-    pub(super) _admission: RequestAdmission,
 }
 
 impl RunningWebSocketApp {
@@ -147,15 +145,6 @@ impl RunningWebSocketApp {
     }
 }
 
-pub(super) fn flatten_app_result(
-    result: Result<Result<(), H2CornError>, JoinError>,
-) -> Result<(), H2CornError> {
-    match result {
-        Ok(result) => result,
-        Err(err) => err.err(),
-    }
-}
-
 pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp {
     let WebSocketContext {
         request: ctx,
@@ -170,10 +159,11 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
     let app = Arc::clone(&ctx.connection.app);
     let task_send_state = send_state.clone();
 
-    let app_task = spawn(start_app_call(
+    let app_task = start_app_call(
         app,
         AppCallArgs::websocket(ctx, scope_subprotocols, recv_rx, task_send_state, send_tx),
-    ));
+        admission,
+    );
 
     RunningWebSocketApp {
         recv_tx,
@@ -182,37 +172,83 @@ pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp 
         send_buffer,
         send_rx,
         task: WebSocketAppTask::new(app_task),
-        _admission: admission,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::future::pending;
+    use std::future::poll_fn;
+    use std::sync::Arc;
+    use std::task::Poll;
     use std::time::Duration;
 
-    use tokio::spawn;
+    use pyo3::Python;
 
     use super::WebSocketAppTask;
+    use crate::error::H2CornError;
+    use crate::pyloop::{Shard, SlotFuture, TaskSlot};
+    use crate::runtime::{AppRuntimeHandle, RequestTaskGuard, test_fixtures};
 
-    #[tokio::test]
-    async fn joined_outcome_is_terminal_and_surfaced_once() {
-        let mut app = WebSocketAppTask::new(spawn(async { Ok(()) }));
-        assert!(!app.is_joined());
-        app.join_store().await;
-        assert!(app.is_joined());
-        app.take_outcome()
-            .expect("joined outcome is retained")
-            .unwrap();
-        assert!(app.take_outcome().is_none());
-        app.settle(Duration::ZERO).await.unwrap();
+    fn test_app() -> AppRuntimeHandle {
+        Python::initialize();
+        Python::attach(test_fixtures::app_runtime)
     }
 
-    #[tokio::test]
+    fn completed_app_future(
+        app: &AppRuntimeHandle,
+        shard: &Shard,
+    ) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
+        let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(app));
+        let future = slot.wait(Arc::clone(shard));
+        slot.fill(Ok(()));
+        future
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn joined_outcome_is_terminal_and_surfaced_once() {
+        let app = test_app();
+        let mut task = WebSocketAppTask::new(completed_app_future(&app, &app.main_shard()));
+        assert!(!task.is_joined());
+        task.join_store().await;
+        assert!(task.is_joined());
+        task.take_outcome()
+            .expect("joined outcome is retained")
+            .unwrap();
+        assert!(task.take_outcome().is_none());
+        task.settle(Duration::ZERO).await.unwrap();
+        drop(task);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn abort_transitions_running_task_to_terminal_state() {
-        let mut app = WebSocketAppTask::new(spawn(pending()));
-        app.abort().await;
-        assert!(app.is_joined());
-        assert!(app.take_outcome().is_none());
+        let app = test_app();
+        let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(&app));
+        let mut task = WebSocketAppTask::new(slot.wait(app.main_shard()));
+        task.abort();
+        assert!(task.is_joined());
+        assert!(task.take_outcome().is_none());
+        drop(task);
+        drop(slot);
+        app.wait_for_scoped_owners().await;
+        drop(app);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_running_task_aborts_instead_of_detaching() {
+        let app = test_app();
+        let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(&app));
+        let task = WebSocketAppTask::new(slot.wait(app.main_shard()));
+        drop(task);
+
+        let mut settlement = Box::pin(app.wait_for_scoped_owners());
+        let first_poll = poll_fn(|cx| Poll::Ready(settlement.as_mut().poll(cx))).await;
+        assert!(
+            first_poll.is_pending(),
+            "dropping the owner must abandon the app task, not detach it"
+        );
+
+        drop(slot);
+        settlement.await;
+        drop(app);
     }
 }

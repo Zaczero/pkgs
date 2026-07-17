@@ -92,6 +92,8 @@ macro_rules! known_request_header_names {
     };
 }
 
+const H1_HEADER_INLINE_CAPACITY: usize = 8;
+
 pub(crate) type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
 
 /// An ASGI/HTTP response status: exactly one three-digit non-zero code.
@@ -424,7 +426,7 @@ pub(crate) enum RequestHeaders {
 pub(crate) struct H1RequestHeaders {
     head: Bytes,
     auxiliary: Vec<u8>,
-    fields: SmallVec<[H1RequestHeader; 16]>,
+    fields: SmallVec<[H1RequestHeader; H1_HEADER_INLINE_CAPACITY]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -942,10 +944,12 @@ mod tests {
     use http::Method;
 
     use super::{
-        H1RequestHeaders, HttpStatusCode, HttpVersion, KnownRequestHeaderName, Protocol,
-        RequestAuthority, RequestHead, RequestHeaderNameRef, RequestHeaders, RequestTarget,
-        parse_request_method,
+        H1_HEADER_INLINE_CAPACITY, H1RequestHeaders, HttpStatusCode, HttpVersion,
+        KnownRequestHeaderName, Protocol, RequestAuthority, RequestHead, RequestHeaderNameRef,
+        RequestHeaders, RequestTarget, parse_request_method,
     };
+    use crate::hpack::BytesStr;
+    use crate::http::header_meta::RequestHeaderMeta;
 
     #[test]
     fn request_method_fast_path_matches_standard_method_parsing() {
@@ -993,9 +997,6 @@ mod tests {
             assert_eq!(name.kind(), expected);
         }
     }
-    use crate::hpack::BytesStr;
-    use crate::http::header_meta::RequestHeaderMeta;
-
     #[test]
     fn http_status_code_encodes_the_three_digit_invariant_in_two_bytes() {
         assert_eq!(HttpStatusCode::new(99), None);
@@ -1128,8 +1129,8 @@ mod tests {
     }
 
     #[test]
-    fn h1_arena_keeps_zero_four_and_twelve_fields_inline_and_bounds_thirty_two() {
-        for count in [0, 4, 12, 32] {
+    fn h1_arena_spills_only_above_its_inline_capacity() {
+        for count in [0, 4, 8, 12, 32] {
             let mut raw = Vec::with_capacity(count * 12);
             for index in 0..count {
                 raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
@@ -1144,7 +1145,7 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(headers.fields.len(), count);
-            assert_eq!(headers.fields.spilled(), count > 16);
+            assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);
             assert!(headers.auxiliary.is_empty());
         }
     }

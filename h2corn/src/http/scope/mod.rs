@@ -69,7 +69,7 @@ pub(crate) fn build_http_scope<'py>(
         py,
         ctx,
         http_scope_extensions(py, ctx.request.accepts_trailers())?,
-        None,
+        &[],
     )
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn build_websocket_scope<'py>(
         py,
         ctx,
         websocket_scope_extensions(py)?,
-        (!requested_subprotocols.is_empty()).then_some(requested_subprotocols),
+        requested_subprotocols,
     )
 }
 
@@ -90,7 +90,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     py: Python<'py>,
     ctx: &RequestContext,
     extensions: Bound<'py, PyDict>,
-    websocket_subprotocols: Option<&[BytesStr]>,
+    websocket_subprotocols: &[BytesStr],
 ) -> PyResult<Bound<'py, PyDict>> {
     let request = &ctx.request;
     let view = scope_view_from_parts(
@@ -114,11 +114,9 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     Ok(py_dict!(py, {
         "type" => scope_type_to_python::<IS_HTTP>(py),
         "asgi" => asgi_scope_dict(py)?,
-        if IS_HTTP || request.http_version != HttpVersion::Http1_1 => {
-            "http_version" => match request.http_version {
-                HttpVersion::Http1_1 => intern!(py, "1.1"),
-                HttpVersion::Http2 => intern!(py, "2"),
-            },
+        "http_version" => match request.http_version {
+            HttpVersion::Http1_1 => intern!(py, "1.1"),
+            HttpVersion::Http2 => intern!(py, "2"),
         },
         "scheme" => scheme_to_python(py, resolved_scheme),
         "raw_path" => raw_path_to_python(py, raw_path),
@@ -130,8 +128,11 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         "server" => server_scope_value(py, ctx, view.server)?,
         "headers" => headers_to_python(py, &request.headers)?,
         "extensions" => extensions,
-        if let Some(subprotocols) = websocket_subprotocols => {
-            "subprotocols" => PyList::new(py, subprotocols.iter().map(BytesStr::as_str))?,
+        if !IS_HTTP => {
+            "subprotocols" => PyList::new(
+                py,
+                websocket_subprotocols.iter().map(BytesStr::as_str),
+            )?,
         },
         if IS_HTTP => {
             "method" => method_to_python(py, &request.method),
@@ -347,11 +348,13 @@ mod tests {
     fn http_scope_omits_empty_root_path_and_reuses_default_endpoint_objects() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py);
-            let request_one = RequestContext::new(connection.clone(), test_request());
+            let request_one = RequestContext::new(test_connection(py), test_request());
             assert!(request_one.scope_overrides.is_none());
             let scope_one = build_http_scope(py, &request_one)?;
-            let scope_two = build_http_scope(py, &RequestContext::new(connection, test_request()))?;
+            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let scope_two = build_http_scope(py, &request_two)?;
+            drop(request_one);
+            drop(request_two);
 
             assert_eq!(
                 scope_one
@@ -378,11 +381,12 @@ mod tests {
     fn http_scope_uses_overridden_endpoints_instead_of_cached_defaults() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py);
-            let default_scope =
-                build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
+            let default_request = RequestContext::new(test_connection(py), test_request());
+            let default_scope = build_http_scope(py, &default_request)?;
 
-            let mut overridden = RequestContext::new(connection, test_request());
+            let mut overridden =
+                RequestContext::new(default_request.connection.clone(), test_request());
+            drop(default_request);
             let overrides = overridden.scope_overrides.get_or_insert_with(Box::default);
             overrides.client = Some(ClientAddr {
                 host: "10.0.0.9".into(),
@@ -394,6 +398,7 @@ mod tests {
             });
 
             let overridden_scope = build_http_scope(py, &overridden)?;
+            drop(overridden);
             let default_server = default_scope.get_item("server")?.expect("server exists");
             let default_client = default_scope.get_item("client")?.expect("client exists");
             let overridden_server = overridden_scope.get_item("server")?.expect("server exists");
@@ -418,10 +423,12 @@ mod tests {
     fn http_scope_metadata_dicts_are_isolated_per_request() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py);
-            let scope_one =
-                build_http_scope(py, &RequestContext::new(connection.clone(), test_request()))?;
-            let scope_two = build_http_scope(py, &RequestContext::new(connection, test_request()))?;
+            let request_one = RequestContext::new(test_connection(py), test_request());
+            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let scope_one = build_http_scope(py, &request_one)?;
+            let scope_two = build_http_scope(py, &request_two)?;
+            drop(request_one);
+            drop(request_two);
 
             let asgi_one = scope_one
                 .get_item("asgi")?
@@ -474,14 +481,12 @@ mod tests {
     fn websocket_scope_metadata_dicts_are_isolated_per_request() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let connection = test_connection(py);
-            let scope_one = build_websocket_scope(
-                py,
-                &RequestContext::new(connection.clone(), test_request()),
-                &[],
-            )?;
-            let scope_two =
-                build_websocket_scope(py, &RequestContext::new(connection, test_request()), &[])?;
+            let request_one = RequestContext::new(test_connection(py), test_request());
+            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let scope_one = build_websocket_scope(py, &request_one, &[])?;
+            let scope_two = build_websocket_scope(py, &request_two, &[])?;
+            drop(request_one);
+            drop(request_two);
 
             let extensions_one = scope_one
                 .get_item("extensions")?
@@ -506,6 +511,38 @@ mod tests {
             response_one.set_item("application.private", true)?;
             assert!(extensions_two.get_item("application.private")?.is_none());
             assert!(response_two.get_item("application.private")?.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn websocket_scope_always_exposes_http_version_and_subprotocols() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            for (http_version, expected) in
+                [(HttpVersion::Http1_1, "1.1"), (HttpVersion::Http2, "2")]
+            {
+                let mut request = test_request();
+                request.http_version = http_version;
+                let request = RequestContext::new(test_connection(py), request);
+                let scope = build_websocket_scope(py, &request, &[])?;
+
+                assert_eq!(
+                    scope
+                        .get_item("http_version")?
+                        .expect("http_version exists")
+                        .extract::<&str>()?,
+                    expected,
+                );
+                assert_eq!(
+                    scope
+                        .get_item("subprotocols")?
+                        .expect("subprotocols exists")
+                        .extract::<Vec<String>>()?,
+                    Vec::<String>::new(),
+                );
+            }
             Ok(())
         })
         .unwrap();

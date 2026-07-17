@@ -1,4 +1,6 @@
 import asyncio
+import socket
+import struct
 import zlib
 from typing import NamedTuple
 
@@ -10,6 +12,7 @@ from fastapi import FastAPI, WebSocket
 from h2corn import Config
 
 from tests._support import (
+    h2_request,
     open_h2_connection,
     read_http1_response,
     read_raw_h2_frames,
@@ -155,7 +158,9 @@ async def _http1_h2c_upgrade_request(
     conn = h2.connection.H2Connection(
         config=h2.config.H2Configuration(client_side=True, header_encoding=None)
     )
-    settings = conn.initiate_upgrade_connection().decode()
+    settings_header = conn.initiate_upgrade_connection()
+    assert settings_header is not None
+    settings = settings_header.decode()
     writer.write(
         (
             f'GET {path} HTTP/1.1\r\n'
@@ -422,6 +427,7 @@ async def _h2_open_websocket_stream(
                 )
                 return reader, writer, conn, stream_id, handshake
             elif isinstance(event, h2.events.ConnectionTerminated):
+                assert event.error_code is not None
                 handshake = _H2WsHandshake(
                     'goaway', int(event.error_code), initial_frames, ws_buffer
                 )
@@ -664,6 +670,7 @@ async def _read_ws_server_result(
             elif isinstance(event, h2.events.StreamReset):
                 return 'reset', int(event.error_code), frames
             elif isinstance(event, h2.events.ConnectionTerminated):
+                assert event.error_code is not None
                 return 'goaway', int(event.error_code), frames
 
         pending = conn.data_to_send()
@@ -974,14 +981,16 @@ async def test_websocket_accepts_requested_subprotocol_across_transports(
     assert headers[b'sec-websocket-protocol'] == b'superchat'
 
 
-async def test_http1_websocket_scope_omits_empty_subprotocols() -> None:
+async def test_http1_websocket_scope_exposes_required_empty_subprotocols() -> None:
     subprotocols = object()
+    http_version = None
     extensions = None
     events = []
 
     async def app(scope, receive, send):
-        nonlocal extensions, subprotocols
-        subprotocols = scope.get('subprotocols')
+        nonlocal extensions, http_version, subprotocols
+        http_version = scope['http_version']
+        subprotocols = scope['subprotocols']
         extensions = scope['extensions']
         events.append(await receive())
         await send({'type': 'websocket.close'})
@@ -993,7 +1002,8 @@ async def test_http1_websocket_scope_omits_empty_subprotocols() -> None:
             timeout=5,
         )
 
-    assert subprotocols is None
+    assert http_version == '1.1'
+    assert subprotocols == []
     assert extensions == {'websocket.http.response': {}}
     assert events == [{'type': 'websocket.connect'}]
     assert status == 403
@@ -1479,14 +1489,16 @@ async def test_websocket_unary_denial_response_is_fixed_length_across_transports
         assert b'transfer-encoding' not in headers
 
 
-async def test_websocket_scope_omits_empty_subprotocols() -> None:
+async def test_h2_websocket_scope_exposes_required_empty_subprotocols() -> None:
     subprotocols = object()
+    http_version = None
     extensions = None
     events = []
 
     async def app(scope, receive, send):
-        nonlocal extensions, subprotocols
-        subprotocols = scope.get('subprotocols')
+        nonlocal extensions, http_version, subprotocols
+        http_version = scope['http_version']
+        subprotocols = scope['subprotocols']
         extensions = scope['extensions']
         events.append(await receive())
         await send({'type': 'websocket.close'})
@@ -1498,7 +1510,8 @@ async def test_websocket_scope_omits_empty_subprotocols() -> None:
             timeout=5,
         )
 
-    assert subprotocols is None
+    assert http_version == '2'
+    assert subprotocols == []
     assert extensions == {'websocket.http.response': {}}
     assert events == [{'type': 'websocket.connect'}]
     assert status == 403
@@ -1639,6 +1652,78 @@ async def test_websocket_rejects_extension_negotiation_headers() -> None:
     assert body == b''
 
 
+async def test_failed_handshake_cancels_pending_app_before_releasing_admission() -> (
+    None
+):
+    websocket_started = asyncio.Event()
+    websocket_cancelled = asyncio.Event()
+    http_saw_cancelled: list[bool] = []
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'http':
+            http_saw_cancelled.append(websocket_cancelled.is_set())
+            await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b'after-cancel'})
+            return
+
+        assert (await receive()) == {'type': 'websocket.connect'}
+        websocket_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            websocket_cancelled.set()
+
+    config = Config(
+        port=0,
+        access_log=False,
+        lifespan='off',
+        limit_concurrency=1,
+        timeout_handshake=0.05,
+    )
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        del reader
+        writer.write(
+            b'GET /ws HTTP/1.1\r\n'
+            b'Host: localhost\r\n'
+            b'Connection: Upgrade\r\n'
+            b'Upgrade: websocket\r\n'
+            b'Sec-WebSocket-Version: 13\r\n'
+            b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'
+        )
+        await writer.drain()
+        await asyncio.wait_for(websocket_started.wait(), timeout=2)
+
+        # Force the handshake response write down a real transport-error path.
+        raw_socket = writer.get_extra_info('socket')
+        raw_socket.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_LINGER,
+            struct.pack('ii', 1, 0),
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+        for _ in range(200):
+            status, body = await h2_request(port=server_port(server))
+            if status == 200:
+                break
+            assert status == 503
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError(
+                'request admission was not released after cancellation'
+            )
+
+        assert body == b'after-cancel'
+        await asyncio.wait_for(websocket_cancelled.wait(), timeout=2)
+
+    assert http_saw_cancelled == [True]
+
+
 @pytest.mark.parametrize('transport', ['h2', 'http1'])
 async def test_websocket_client_close_is_acknowledged_and_stream_ends(
     transport: str,
@@ -1683,6 +1768,7 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
 
     config = Config(port=0, timeout_graceful_shutdown=0.2)
     async with running_server(app, config) as server:
+        stream_id = None
         if transport == 'h2':
             (
                 reader,
@@ -1744,6 +1830,9 @@ async def test_websocket_send_after_disconnect_raises_oserror(
 
     config = Config(port=0)
     async with running_server(app, config) as server:
+        conn = None
+        stream_id = None
+        handshake = None
         if transport == 'h2':
             (
                 reader,
@@ -1771,6 +1860,7 @@ async def test_websocket_send_after_disconnect_raises_oserror(
         await writer.drain()
         try:
             if transport == 'h2':
+                assert conn is not None and stream_id is not None
                 await _read_ws_server_result(reader, writer, conn, stream_id, handshake)
             else:
                 await _read_http1_ws_server_result(reader)

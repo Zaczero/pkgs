@@ -249,9 +249,8 @@ where
         }
 
         // Emit as many DATA frames as the windows, fair budget, and frame
-        // size allow in ONE vectored write: with peer-capped frames
-        // (typically 16 KiB) a 128 KiB buffer fill becomes a single writev
-        // instead of 8 flush+write pairs.
+        // size allow in one vectored write instead of flushing each frame's
+        // header and payload separately.
         let (total, ended_stream, connection_blocked) = {
             let remaining = streamer.remaining();
             let may_end = streamer.end_stream && streamer.buffered_is_final();

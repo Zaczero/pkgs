@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
 use pyo3::{PyTypeCheck, PyTypeInfo};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 #[cfg(test)]
 pub(crate) use websocket::WebSocketSendDisposition;
 pub(crate) use websocket::{
@@ -52,12 +52,14 @@ pub(crate) enum HttpInboundEvent {
         credit: Option<H2InputCredit>,
     },
     RequestBatch {
-        bodies: Box<[Bytes; 2]>,
-        more_body: bool,
+        bodies: Vec<Bytes>,
+        body_bytes: usize,
         credit: Option<H2InputCredit>,
     },
     HttpDisconnect,
 }
+
+const _: () = assert!(std::mem::size_of::<HttpInboundEvent>() <= 56);
 
 #[derive(Debug)]
 pub(crate) enum WebSocketInboundEvent {
@@ -294,7 +296,7 @@ impl<'py> AsgiMessage<'py> {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "_ReadyAwaitable")]
 struct ReadyAwaitable {
     result: Option<Py<PyAny>>,
 }
@@ -339,7 +341,7 @@ impl ReadyAwaitable {
 /// it is sound even under repeated or concurrent awaits (including across
 /// free-threaded shard threads): `__next__` just raises `StopIteration(None)`
 /// synchronously, with nothing to corrupt.
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_ReadyNone")]
 pub struct ReadyNone;
 
 #[pymethods]
@@ -431,25 +433,29 @@ impl<S: EventSource> Requeueable<S> {
 /// or give the event back after a cancellation race.
 struct ReceiveResolve<S: EventSource> {
     event: S::Event,
-    state: Arc<Mutex<Requeueable<S>>>,
+    guard: OwnedMutexGuard<Requeueable<S>>,
     build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
 }
 
 impl<S: EventSource> ResolveOp for ReceiveResolve<S> {
     fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        (self.build_event)(py, self.event)
+        let Self {
+            event,
+            guard,
+            build_event,
+        } = *self;
+        let result = build_event(py, event);
+        // Resolution callbacks may immediately call receive() again. Release
+        // exclusive ownership before RustFuture invokes any of them.
+        drop(guard);
+        result
     }
 
     fn requeue(self: Box<Self>) {
-        let Self { event, state, .. } = *self;
-        if let Ok(mut guard) = state.try_lock() {
-            guard.requeue(event);
-        } else {
-            // A new waiter already holds the lock; queue behind it.
-            runtime().spawn(async move {
-                state.lock().await.requeue(event);
-            });
-        }
+        let Self {
+            event, mut guard, ..
+        } = *self;
+        guard.requeue(event);
     }
 }
 
@@ -468,6 +474,10 @@ pub(crate) fn ready_none<'py>(py: Python<'py>, shard: &Shard) -> Bound<'py, PyAn
     shard.ready_none().bind(py).clone().into_any()
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the returned awaitable and pump resolver require independent Py references"
+)]
 pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
     shard: Shard,
@@ -494,19 +504,21 @@ where
     // owns the event between consumption and resolution; cancellation either
     // aborts the waiter before it consumes (mpsc recv is cancel-safe) or the
     // pump requeues the in-flight event.
+    // Two references are intentional: Python owns the returned awaitable
+    // while the pump owns its resolver until completion. Neither can be
+    // dropped after the clone, so Clippy's merge suggestion is invalid here.
     let fut = new_rust_future(py, Arc::clone(&shard))?;
     let waiter_fut = fut.clone_ref(py);
     let waiter_shard = shard;
     let state = Arc::clone(state);
     let join = runtime().spawn(async move {
-        let mut guard = state.lock().await;
+        let mut guard = state.lock_owned().await;
         let wait_guard =
             wait_guard.or_else(|| guard.wait_signal().map(|signal| signal.begin_wait()));
         let event = guard.next().await;
-        drop(guard);
         let payload = ResolvePayload::Op(Box::new(ReceiveResolve {
             event,
-            state,
+            guard,
             build_event,
         }));
         waiter_shard.push(PumpEvent::Resolve {
@@ -545,13 +557,18 @@ pub(crate) fn build_http_inbound_event(
         ),
         HttpInboundEvent::RequestBatch {
             bodies,
-            more_body,
+            body_bytes,
             credit,
         } => {
-            let body_len = bodies.iter().map(Bytes::len).sum();
-            let body = PyBytes::new_with_writer(py, body_len, |writer| {
-                for body in &*bodies {
-                    writer.write_all(body.as_ref())?;
+            debug_assert_eq!(body_bytes, bodies.iter().map(Bytes::len).sum::<usize>());
+            let body = PyBytes::new_with_writer(py, body_bytes, |writer| {
+                if let [first, second] = bodies.as_slice() {
+                    writer.write_all(first.as_ref())?;
+                    writer.write_all(second.as_ref())?;
+                } else {
+                    for body in &*bodies {
+                        writer.write_all(body.as_ref())?;
+                    }
                 }
                 Ok(())
             })?;
@@ -559,9 +576,7 @@ pub(crate) fn build_http_inbound_event(
                 py_dict!(py, {
                     "type" => "http.request",
                     "body" => body,
-                    if more_body => {
-                        "more_body" => true,
-                    },
+                    "more_body" => true,
                 }),
                 credit,
             )
@@ -737,6 +752,10 @@ pub(crate) fn try_send_or_await<'py, T: Send + 'static>(
 /// Install a waiter after a bounded channel has already reported full.
 /// Taking the sender by value makes the refcount transition explicit and
 /// keeps clones out of the uncontended path.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the returned awaitable and pump resolver require independent Py references"
+)]
 pub(crate) fn send_after_full<T: Send + 'static>(
     py: Python<'_>,
     shard: Shard,
@@ -745,6 +764,9 @@ pub(crate) fn send_after_full<T: Send + 'static>(
 ) -> PyResult<Bound<'_, PyAny>> {
     // Cancellation aborts the waiter; an aborted `send` never enqueues, so the
     // message is consistently "not sent".
+    // Two references are intentional: Python owns the returned awaitable
+    // while the pump owns its resolver until completion. Neither can be
+    // dropped after the clone, so Clippy's merge suggestion is invalid here.
     let fut = new_rust_future(py, Arc::clone(&shard))?;
     let waiter_fut = fut.clone_ref(py);
     let waiter_shard = shard;
@@ -846,14 +868,17 @@ mod tests {
     use std::future::pending;
     use std::num::NonZeroU32;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
     use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyTuple};
     use pyo3::{PyResult, Python};
+    use tokio::sync::{Mutex, mpsc, oneshot};
 
     use super::{
-        EventSource, HttpInboundEvent, Requeueable, WebSocketOutboundEvent,
-        build_http_inbound_event, parse_http_outbound_event, parse_websocket_outbound_event,
+        EventSource, HttpInboundEvent, ReceiveResolve, Requeueable, ResolveOp,
+        WebSocketOutboundEvent, build_http_inbound_event, parse_http_outbound_event,
+        parse_websocket_outbound_event,
     };
     use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError};
     use crate::h2_frame::StreamId;
@@ -873,6 +898,28 @@ mod tests {
 
         async fn pull(&mut self) -> Self::Event {
             pending().await
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingEventSource {
+        rx: mpsc::Receiver<HttpInboundEvent>,
+        pulls: Arc<AtomicUsize>,
+    }
+
+    impl EventSource for CountingEventSource {
+        type Event = HttpInboundEvent;
+
+        fn try_pull(&mut self) -> Option<Self::Event> {
+            let event = self.rx.try_recv().ok()?;
+            self.pulls.fetch_add(1, Ordering::Relaxed);
+            Some(event)
+        }
+
+        async fn pull(&mut self) -> Self::Event {
+            let event = self.rx.recv().await.expect("test input remains open");
+            self.pulls.fetch_add(1, Ordering::Relaxed);
+            event
         }
     }
 
@@ -1051,11 +1098,11 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let event = build_http_inbound_event(py, HttpInboundEvent::RequestBatch {
-                bodies: Box::new([
+                bodies: vec![
                     Bytes::from_static(b"segmented-"),
                     Bytes::from_static(b"body"),
-                ]),
-                more_body: true,
+                ],
+                body_bytes: b"segmented-body".len(),
                 credit: None,
             })?
             .bind(py)
@@ -1108,5 +1155,100 @@ mod tests {
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].stream_id, stream_id);
         assert_eq!(released[0].bytes.get(), 4);
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the test deliberately retains the owned receive guard until cancellation resolution"
+    )]
+    async fn cancelled_in_flight_receive_requeues_before_a_concurrent_waiter() {
+        init_python();
+        let flow = Arc::new(H2InputCreditQueue::default());
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+        let pulls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel(2);
+        tx.send(HttpInboundEvent::Request {
+            body: Bytes::from_static(b"first"),
+            more_body: true,
+            credit: Some(flow.credit(stream_id, NonZeroU32::new(5).unwrap())),
+        })
+        .await
+        .expect("first input is queued");
+        tx.send(HttpInboundEvent::Request {
+            body: Bytes::from_static(b"second"),
+            more_body: true,
+            credit: None,
+        })
+        .await
+        .expect("second input is queued");
+
+        let state = Arc::new(Mutex::new(Requeueable::new(CountingEventSource {
+            rx,
+            pulls: Arc::clone(&pulls),
+        })));
+        let mut first_guard = Arc::clone(&state).lock_owned().await;
+        let first = first_guard.next().await;
+        // Model the interval after the Tokio waiter consumed the event but
+        // before the Python-loop pump resolves its RustFuture.
+        let resolution: Box<dyn ResolveOp + Send> = Box::new(ReceiveResolve {
+            event: first,
+            guard: first_guard,
+            build_event: build_http_inbound_event,
+        });
+        assert_eq!(pulls.load(Ordering::Relaxed), 1);
+        assert!(!flow.has_pending(), "consumption alone retains H2 credit");
+
+        let second_state = Arc::clone(&state);
+        let (attempted_tx, attempted_rx) = oneshot::channel();
+        let second = tokio::spawn(async move {
+            let _ = attempted_tx.send(());
+            let mut guard = second_state.lock_owned().await;
+            guard.next().await
+        });
+        attempted_rx
+            .await
+            .expect("the concurrent receive attempted the state lock");
+        tokio::task::yield_now().await;
+        assert!(
+            !second.is_finished(),
+            "one consumed event stays exclusively owned until pump resolution"
+        );
+        assert_eq!(
+            pulls.load(Ordering::Relaxed),
+            1,
+            "the concurrent receive cannot consume the following source event"
+        );
+
+        // Cancellation wins at pump resolution. Requeue is synchronous while
+        // the resolver still owns the mutex, so the next waiter must observe
+        // the exact consumed event before touching the source again.
+        resolution.requeue();
+        let first_again = second.await.expect("concurrent receive completes");
+        assert_eq!(pulls.load(Ordering::Relaxed), 1);
+        let HttpInboundEvent::Request { ref body, .. } = first_again else {
+            panic!("the first request event is preserved")
+        };
+        assert_eq!(body.as_ref(), b"first");
+        assert!(!flow.has_pending(), "requeue still retains H2 credit");
+
+        Python::attach(|py| build_http_inbound_event(py, first_again))
+            .expect("the requeued event converts");
+        assert!(flow.has_pending(), "conversion releases H2 credit once");
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].bytes.get(), 5);
+        assert!(!flow.has_pending());
+
+        let mut guard = state.lock().await;
+        let second_event = guard.next().await;
+        drop(guard);
+        assert_eq!(pulls.load(Ordering::Relaxed), 2);
+        let HttpInboundEvent::Request { body, .. } = second_event else {
+            panic!("the following request event is preserved")
+        };
+        assert_eq!(body.as_ref(), b"second");
     }
 }

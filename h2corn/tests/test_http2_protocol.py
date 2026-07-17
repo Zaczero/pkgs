@@ -109,8 +109,10 @@ async def _h2_expect_error(
                 return 'closed', None
             for event in conn.receive_data(data):
                 if isinstance(event, h2.events.StreamReset):
+                    assert event.error_code is not None
                     return 'reset', int(event.error_code)
                 if isinstance(event, h2.events.ConnectionTerminated):
+                    assert event.error_code is not None
                     return 'goaway', int(event.error_code)
                 if isinstance(event, h2.events.ResponseReceived):
                     return 'response', int(dict(event.headers)[b':status'])
@@ -371,6 +373,61 @@ async def test_content_length_mismatch_is_rejected() -> None:
         assert detail == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
 
 
+async def test_short_content_length_cancels_app_suspended_away_from_receive() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def app(scope, receive, send):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    config = Config(port=0, lifespan='off', access_log=False)
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'POST'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+                (b'content-length', b'2'),
+            ],
+            end_stream=False,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        conn.send_data(stream_id, b'x', end_stream=True)
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        try:
+            reset_code = None
+            while reset_code is None:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    if (
+                        isinstance(event, h2.events.StreamReset)
+                        and event.stream_id == stream_id
+                    ):
+                        reset_code = int(event.error_code)
+                        break
+            assert reset_code == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
 async def test_incomplete_streaming_response_resets_stream() -> None:
     async def app(scope, receive, send):
         await send({
@@ -474,11 +531,8 @@ async def test_generic_connect_is_rejected_with_501() -> None:
     assert frame_type == 0x01
     assert stream_id == 1
     assert flags & 0x01
-    decoded_headers = dict(hpack.Decoder().decode(payload))
-    assert decoded_headers.get(b':status', decoded_headers.get(':status')) in {
-        b'501',
-        '501',
-    }
+    decoded_headers = dict(hpack.Decoder().decode(payload, raw=True))
+    assert decoded_headers[b':status'] == b'501'
 
 
 async def test_extended_connect_websocket_decodes_masked_h2_data_and_echoes() -> None:
@@ -528,11 +582,8 @@ async def test_extended_connect_websocket_decodes_masked_h2_data_and_echoes() ->
         for frame_type, _flags, stream_id, payload in frames
         if frame_type == 0x01 and stream_id == 1
     )
-    decoded_headers = dict(hpack.Decoder().decode(response_headers))
-    assert decoded_headers.get(b':status', decoded_headers.get(':status')) in {
-        b'200',
-        '200',
-    }
+    decoded_headers = dict(hpack.Decoder().decode(response_headers, raw=True))
+    assert decoded_headers[b':status'] == b'200'
     websocket_bytes = b''.join(
         payload
         for frame_type, _flags, stream_id, payload in frames
@@ -592,9 +643,11 @@ async def test_max_concurrent_stream_limit_is_enforced() -> None:
                         isinstance(event, h2.events.StreamReset)
                         and event.stream_id == second
                     ):
+                        assert event.error_code is not None
                         reset_code = int(event.error_code)
                         break
                     if isinstance(event, h2.events.ConnectionTerminated):
+                        assert event.error_code is not None
                         reset_code = int(event.error_code)
                         break
                 pending = conn.data_to_send()
@@ -609,6 +662,206 @@ async def test_max_concurrent_stream_limit_is_enforced() -> None:
         int(h2.errors.ErrorCodes.PROTOCOL_ERROR),
         int(h2.errors.ErrorCodes.REFUSED_STREAM),
     }
+
+
+async def test_closed_stream_backlog_does_not_consume_concurrency_quota() -> None:
+    release_apps = asyncio.Event()
+    app_cancelled = asyncio.Event()
+    second_started = asyncio.Event()
+    third_started = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['path'] == '/first':
+            await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b''})
+            # Keep the request-input receiver alive without draining it so the
+            # protocol-closed stream retains delivery backlog.
+            try:
+                await release_apps.wait()
+            except asyncio.CancelledError:
+                app_cancelled.set()
+                raise
+            return
+        if scope['path'] == '/second':
+            second_started.set()
+        else:
+            third_started.set()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'second'})
+        try:
+            await release_apps.wait()
+        except asyncio.CancelledError:
+            app_cancelled.set()
+            raise
+
+    config = Config(
+        port=0,
+        max_concurrent_streams=1,
+        access_log=False,
+        lifespan='off',
+        timeout_keep_alive=0.05,
+        timeout_graceful_shutdown=5,
+    )
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        first = conn.get_next_available_stream_id()
+        conn.send_headers(
+            first,
+            [
+                (b':method', b'POST'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/first'),
+            ],
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        # Force response-close-first ordering before filling the app's bounded
+        # request-input channel. More than its 32 entries is required to create
+        # the retained backlog this regression is about.
+        first_ended = False
+        while not first_ended:
+            data = await asyncio.wait_for(reader.read(65535), timeout=5)
+            assert data
+            first_ended = any(
+                isinstance(event, h2.events.StreamEnded) and event.stream_id == first
+                for event in conn.receive_data(data)
+            )
+        for index in range(40):
+            conn.send_data(first, b'x', end_stream=index == 39)
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        second = conn.get_next_available_stream_id()
+        conn.send_headers(
+            second,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/second'),
+            ],
+            end_stream=True,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        try:
+            await asyncio.wait_for(second_started.wait(), timeout=5)
+            second_ended = False
+            while not second_ended:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                second_ended = any(
+                    isinstance(event, h2.events.StreamEnded)
+                    and event.stream_id == second
+                    for event in conn.receive_data(data)
+                )
+
+            # One retained generation plus one just-closed pending app is the
+            # explicit work budget at max_concurrent_streams=1. A third stream
+            # is refused even though neither predecessor is protocol-active.
+            third = conn.get_next_available_stream_id()
+            conn.send_headers(
+                third,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', b'/third'),
+                ],
+                end_stream=True,
+            )
+            writer.write(conn.data_to_send())
+            await writer.drain()
+
+            reset_code = None
+            while reset_code is None:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    if (
+                        isinstance(event, h2.events.StreamReset)
+                        and event.stream_id == third
+                    ):
+                        reset_code = event.error_code
+            assert reset_code == int(h2.errors.ErrorCodes.REFUSED_STREAM)
+            assert not third_started.is_set()
+
+            server.shutdown()
+            # Hold the drain open across two 0.05 s keep-alive periods so a
+            # misfiring timer has a real window to cancel the apps, while the
+            # 5 s graceful budget keeps the window far from its deadline.
+            await asyncio.sleep(0.1)
+        finally:
+            release_apps.set()
+            writer.close()
+            await writer.wait_closed()
+
+    # Released before the graceful deadline, both apps must have finished
+    # uncancelled: keep-alive did not preempt server-timed drain work.
+    assert not app_cancelled.is_set()
+
+
+async def test_keep_alive_bounds_post_response_app_with_retained_body_backlog() -> None:
+    app_cancelled = asyncio.Event()
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+        try:
+            await asyncio.Future()
+        finally:
+            app_cancelled.set()
+
+    config = Config(
+        port=0,
+        max_concurrent_streams=1,
+        access_log=False,
+        lifespan='off',
+        timeout_keep_alive=0.1,
+    )
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        stream_id = conn.get_next_available_stream_id()
+        conn.send_headers(
+            stream_id,
+            [
+                (b':method', b'POST'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/'),
+            ],
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        response_ended = False
+        while not response_ended:
+            data = await asyncio.wait_for(reader.read(65535), timeout=2)
+            assert data
+            response_ended = any(
+                isinstance(event, h2.events.StreamEnded)
+                and event.stream_id == stream_id
+                for event in conn.receive_data(data)
+            )
+
+        for index in range(40):
+            conn.send_data(stream_id, b'x', end_stream=index == 39)
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        # The awaited cancellation alone proves keep-alive bounds the retained
+        # app; probing "not yet cancelled" first would race the 0.1 s timer.
+        await asyncio.wait_for(app_cancelled.wait(), timeout=2)
+
+        writer.close()
+        await writer.wait_closed()
 
 
 async def test_client_must_send_settings_as_first_frame() -> None:
@@ -1176,8 +1429,8 @@ async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
                 stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
                 payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
                 if frame_type == 0x01 and stream_id == 3:
-                    headers = dict(decoder.decode(payload))
-                    fast_status = headers.get(b':status', headers.get(':status'))
+                    headers = dict(decoder.decode(payload, raw=True))
+                    fast_status = headers.get(b':status')
                 elif frame_type == 0x00 and stream_id == 3:
                     fast_body.extend(payload)
         finally:
@@ -1409,7 +1662,7 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
             await writer.wait_closed()
 
 
-async def test_h2_backlogged_small_body_frames_are_paired_without_early_credit() -> (
+async def test_h2_backlogged_small_body_frames_are_coalesced_without_early_credit() -> (
     None
 ):
     release = asyncio.Event()
@@ -1464,7 +1717,7 @@ async def test_h2_backlogged_small_body_frames_are_paired_without_early_credit()
 
             release.set()
             await asyncio.wait_for(completed.wait(), timeout=3)
-            assert body_event_sizes == ([1] * 32) + ([2] * 4)
+            assert body_event_sizes == ([1] * 32) + [8]
         finally:
             release.set()
             writer.close()

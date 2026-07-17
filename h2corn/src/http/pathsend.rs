@@ -14,11 +14,9 @@ use tokio::task::{JoinHandle, spawn_blocking};
 use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
 use crate::error::{H2CornError, PathsendError};
 
-/// Below this size the HTTP/2 path serves files from the read buffer with
-/// vectored frame writes (one syscall for many frames) instead of per-frame
-/// sendfile: peers cap DATA frames (typically 16 KiB), so per-frame sendfile
-/// costs ~2 syscalls per frame and never amortizes. Zero-copy still wins on
-/// large files where memory bandwidth dominates.
+/// Below this size the HTTP/2 path serves files from the rolling read buffer,
+/// whose DATA frames can share vectored writes. Larger files retain sendfile
+/// so avoiding the userspace payload copy can amortize its per-frame setup.
 pub(crate) const PATHSEND_SENDFILE_MIN: usize = 1 << 20;
 
 #[derive(Debug)]
@@ -314,7 +312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rolling_reader_uses_one_reusable_64k_buffer() {
+    async fn rolling_reader_reuses_one_configured_buffer() {
         let payload = vec![b'x'; PATHSEND_READ_BUFFER_SIZE * 2 + 17];
         let path = temp_file(&payload);
         let file = File::open(&path).expect("temporary pathsend file opens");

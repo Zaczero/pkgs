@@ -24,7 +24,7 @@ use state::{
     RequestInputClose, RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout, timeout_at};
 use writer::{H2WriterHandle, WindowTarget, WriterState, init_writer};
@@ -173,7 +173,31 @@ where
     /// Send the `GOAWAY`/`RST_STREAM` for a peer protocol failure and propagate
     /// connection-fatal errors.
     async fn peer_failure(&mut self, failure: H2PeerFailure) -> Result<(), H2CornError> {
-        apply_peer_failure(&mut self.writer, self.last_client_stream_id, failure).await
+        match failure {
+            H2PeerFailure::Reset {
+                stream_id,
+                error_code,
+            } => self.reset_request_stream(stream_id, error_code).await,
+            failure @ H2PeerFailure::Goaway { .. } => {
+                apply_peer_failure(&mut self.writer, self.last_client_stream_id, failure).await
+            },
+        }
+    }
+
+    /// Apply the complete local side of a stream error. A wire RST alone is
+    /// not a lifecycle transition: the inbound producer and application task
+    /// must close too, including an app suspended away from receive().
+    async fn reset_request_stream(
+        &mut self,
+        stream_id: StreamId,
+        error_code: ErrorCode,
+    ) -> Result<(), H2CornError> {
+        let result = self.writer.reset_stream(stream_id, error_code).await;
+        if let Some(mut stream) = self.remove_stream(stream_id) {
+            stream.delivery.stop_with(StreamInput::Reset(error_code));
+        }
+        self.request_tasks.cancel(stream_id).await;
+        result
     }
 }
 
@@ -220,8 +244,8 @@ impl<R, W> H2ConnectionState<R, W> {
         };
         if stream.state.request_is_closed() {
             self.request_deadlines
-                .cancel(state::RequestInputDeadlineKey::Body(stream_id));
-            self.streams.remove(&stream_id);
+                .cancel(state::RequestInputDeadlineKey::body(stream_id));
+            self.remove_stream(stream_id);
             self.connection_window.release(flow_control_len);
             return DataIngress::StreamClosed {
                 connection_update: self
@@ -236,7 +260,7 @@ impl<R, W> H2ConnectionState<R, W> {
             && let Some(timeout) = self.context.config.timeout_request_body_idle
         {
             self.request_deadlines.schedule(
-                state::RequestInputDeadlineKey::Body(stream_id),
+                state::RequestInputDeadlineKey::body(stream_id),
                 TokioInstant::now() + timeout,
             );
         }
@@ -253,12 +277,13 @@ impl<R, W> H2ConnectionState<R, W> {
                 | RequestBodyProgress::ContentLengthExceeded => {
                     self.connection_window.release(data_len);
                     stream.receive_window.release(data_len);
-                    let reset_tx = stream.delivery.take_sender();
+                    stream
+                        .delivery
+                        .stop_with(StreamInput::Reset(ErrorCode::PROTOCOL_ERROR));
                     self.request_deadlines
-                        .cancel(state::RequestInputDeadlineKey::Body(stream_id));
-                    self.streams.remove(&stream_id);
+                        .cancel(state::RequestInputDeadlineKey::body(stream_id));
+                    self.remove_stream(stream_id);
                     return DataIngress::BodyLimitExceeded {
-                        reset_tx,
                         connection_update: self
                             .connection_window
                             .take_update(connection_window_threshold),
@@ -274,10 +299,10 @@ impl<R, W> H2ConnectionState<R, W> {
 
         let end = end_stream.then(|| match self.finish_request_input(stream_id) {
             Some(RequestInputClose::ContentLengthMismatch) => {
-                self.streams.remove(&stream_id);
+                self.remove_stream(stream_id);
                 DataEnd::ContentLengthMismatch
             },
-            Some(RequestInputClose::Closed { .. }) | None => DataEnd::Settled,
+            Some(RequestInputClose::Closed) | None => DataEnd::Settled,
         });
 
         let connection_update = self
@@ -315,7 +340,6 @@ enum DataIngress {
     FlowControlViolation,
     /// Request body exceeded its limit: reset stream and app input.
     BodyLimitExceeded {
-        reset_tx: Option<mpsc::Sender<StreamInput>>,
         connection_update: Option<WindowIncrement>,
     },
 }
@@ -392,7 +416,7 @@ where
                 stream.delivery.flush() && stream.state == StreamLifecycle::Closed
             });
             if remove {
-                state.streams.remove(&stream_id);
+                state.remove_stream(stream_id);
             }
         }
 
@@ -683,13 +707,10 @@ where
         Ok(()) => match state.finish_request_input(stream_id) {
             Some(RequestInputClose::ContentLengthMismatch) => {
                 state
-                    .writer
-                    .reset_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
+                    .reset_request_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
                     .await?;
-                state.remove_stream(stream_id);
-                state.request_tasks.cancel(stream_id).await;
             },
-            Some(RequestInputClose::Closed { .. }) | None => {},
+            Some(RequestInputClose::Closed) | None => {},
         },
         Err(RequestHeadError::Connection { error_code, error }) => {
             state
@@ -720,8 +741,7 @@ where
 {
     if !fragment.end_headers || !fragment.end_stream {
         state
-            .writer
-            .reset_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
+            .reset_request_stream(stream_id, ErrorCode::PROTOCOL_ERROR)
             .await?;
         return Ok(());
     }
@@ -885,7 +905,14 @@ where
         },
     }
 
-    if state.active_stream_count() >= state.context.config.http2.max_concurrent_streams as usize {
+    // A task can complete while this connection is asleep waiting for the
+    // next frame. Reap again at the admission boundary before enforcing the
+    // independent server-work budget.
+    state.request_tasks.reap_completed();
+    if state.protocol_active_stream_count()
+        >= state.context.config.http2.max_concurrent_streams as usize
+        || state.request_tasks.is_at_capacity()
+    {
         state.last_client_stream_id = Some(stream_id);
         state
             .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::REFUSED_STREAM))
@@ -1015,23 +1042,16 @@ where
                 ))
                 .await
         },
-        DataIngress::BodyLimitExceeded {
-            reset_tx,
-            connection_update,
-        } => {
+        DataIngress::BodyLimitExceeded { connection_update } => {
             if let Some(increment) = connection_update {
                 state
                     .writer
                     .send_window_update(WindowTarget::Connection, increment)
                     .await?;
             }
-            if let Some(tx) = reset_tx {
-                send_best_effort(&tx, StreamInput::Reset(ErrorCode::PROTOCOL_ERROR)).await;
-            }
             state
                 .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
                 .await?;
-            state.request_tasks.cancel(stream_id).await;
             Ok(())
         },
         DataIngress::Accepted {
@@ -1056,7 +1076,8 @@ where
                 Some(DataEnd::ContentLengthMismatch) => {
                     state
                         .peer_failure(H2PeerFailure::stream(stream_id, ErrorCode::PROTOCOL_ERROR))
-                        .await
+                        .await?;
+                    Ok(())
                 },
             }
         },
@@ -1068,7 +1089,12 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
-    match drive_h2_connection(&mut state).await {
+    let result = drive_h2_connection(&mut state).await;
+    // Every ordinary exit closes application input before cancelling tasks.
+    // `Drop` remains only the panic/abort backstop.
+    state.streams.clear();
+    state.request_tasks.cancel_all().await;
+    match result {
         Ok(()) => {
             let _ = state
                 .writer
@@ -1180,11 +1206,8 @@ where
                         .pop_expired_response_stall_deadline(TokioInstant::now())
                     {
                         state
-                            .writer
-                            .reset_stream(stream_id, ErrorCode::CANCEL)
+                            .reset_request_stream(stream_id, ErrorCode::CANCEL)
                             .await?;
-                        state.remove_stream(stream_id);
-                        state.request_tasks.cancel(stream_id).await;
                     }
                 },
             },
@@ -1243,15 +1266,9 @@ where
             if let Some(stream) = state.streams.get_mut(&stream_id)
                 && !stream.state.request_is_closed()
             {
-                if let Some(tx) = stream.delivery.take_sender() {
-                    send_best_effort(&tx, StreamInput::Reset(ErrorCode::CANCEL)).await;
-                }
                 state
-                    .writer
-                    .reset_stream(stream_id, ErrorCode::CANCEL)
+                    .reset_request_stream(stream_id, ErrorCode::CANCEL)
                     .await?;
-                state.remove_stream(stream_id);
-                state.request_tasks.cancel(stream_id).await;
             }
         },
     }
@@ -1285,7 +1302,11 @@ where
     }
 
     let continue_writing = state.writer.has_ready_streams();
-    let keep_alive_deadline = (state.active_stream_count() == 0)
+    // Once the server has assigned a graceful-drain deadline, that deadline is
+    // the sole bound for retained local request work. Keep-alive still bounds
+    // ordinary idle connections and peer-initiated GOAWAY drains (which have
+    // no server deadline).
+    let keep_alive_deadline = (state.drain_state.deadline().is_none() && state.wire_is_idle())
         .then_some(state.context.config.timeout_keep_alive)
         .flatten()
         .map(|timeout_duration| {
@@ -1312,6 +1333,7 @@ where
     let input_flow = Arc::clone(&state.input_flow);
     let input_notified = input_flow.notified();
     tokio::pin!(input_notified);
+    let has_request_tasks = state.request_tasks.active_count() != 0;
     let connection_timeout = async {
         if let Some(deadline) = next_deadline {
             sleep_until(deadline.instant()).await;
@@ -1326,6 +1348,7 @@ where
             next_deadline.expect("timer is only polled when a deadline is present"),
         )),
         _ = state.shutdown.changed(), if drain_deadline.is_none() => Ok(IngestEvent::ShutdownChanged),
+        () = state.request_tasks.wait_for_completion(), if has_request_tasks => Ok(IngestEvent::Continue),
         () = &mut outbound_notified => Ok(IngestEvent::Continue),
         () = &mut input_notified => Ok(IngestEvent::Continue),
         () = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
@@ -1538,10 +1561,8 @@ where
             ))
             .await;
     }
-    if let Some(mut stream) = state.remove_stream(stream_id)
-        && let Some(tx) = stream.delivery.take_sender()
-    {
-        send_best_effort(&tx, StreamInput::Reset(error_code)).await;
+    if let Some(mut stream) = state.remove_stream(stream_id) {
+        stream.delivery.stop_with(StreamInput::Reset(error_code));
     }
     state.request_tasks.cancel(stream_id).await;
     state.writer.drop_ingress_stream(stream_id).await;

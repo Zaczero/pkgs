@@ -5,9 +5,15 @@ use std::ptr;
 use smallvec::SmallVec;
 
 pub(crate) struct InlineFifo<T, const N: usize> {
-    /// Slots before `front` are uninitialized; `front..items.len()` is one
-    /// contiguous initialized range. `MaybeUninit` prevents SmallVec from
-    /// generating per-slot discriminant and destruction paths.
+    // SAFETY INVARIANT: slots before `front` are uninitialized;
+    // `front..items.len()` is one contiguous initialized range of owned `T`s.
+    // An empty queue is normalized to `front == items.len() == 0`. Slots at or
+    // beyond the SmallVec length never own a value, including stale bytes left
+    // by compaction. Every mutation preserves this partition before it can
+    // panic, and Drop destroys exactly the live range.
+    //
+    // MaybeUninit prevents SmallVec from generating per-slot discriminant and
+    // destruction paths; this type alone owns initialization and destruction.
     items: SmallVec<[MaybeUninit<T>; N]>,
     front: usize,
 }
@@ -44,7 +50,8 @@ impl<T, const N: usize> InlineFifo<T, N> {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.items.len().saturating_sub(self.front)
+        debug_assert!(self.front <= self.items.len());
+        self.items.len() - self.front
     }
 
     pub(crate) fn front(&self) -> Option<&T> {
@@ -73,10 +80,8 @@ impl<T, const N: usize> InlineFifo<T, N> {
     }
 
     pub(crate) fn push_back(&mut self, item: T) {
-        if self.front >= N && self.front * 2 >= self.items.len() {
+        if self.front >= N && self.front >= self.len() {
             self.compact();
-        } else if self.is_empty() {
-            self.clear();
         }
         self.items.push(MaybeUninit::new(item));
     }
@@ -121,7 +126,11 @@ impl<T, const N: usize> InlineFifo<T, N> {
         debug_assert!(!self.is_empty());
         self.front += 1;
         if self.is_empty() {
-            self.clear();
+            // Every slot has either been moved out or was already consumed.
+            // Clearing MaybeUninit resets storage without running T's drop
+            // glue or entering the general live-range destruction path.
+            self.items.clear();
+            self.front = 0;
         }
     }
 
@@ -154,6 +163,8 @@ impl<T, const N: usize> Drop for InlineFifo<T, N> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -200,5 +211,109 @@ mod tests {
         queue.push_back(4);
         *queue.front_mut().unwrap() = 30;
         assert_eq!(queue.iter().copied().collect::<Vec<_>>(), [30, 4]);
+    }
+
+    fn assert_exhaustive_state_model<const N: usize>() {
+        const OPERATIONS: usize = 4;
+        const DEPTH: u32 = 8;
+
+        for mut program in 0..OPERATIONS.pow(DEPTH) {
+            let mut queue = InlineFifo::<u32, N>::new();
+            let mut model = VecDeque::new();
+            let mut next = 0_u32;
+
+            for _ in 0..DEPTH {
+                match program % OPERATIONS {
+                    0 => {
+                        queue.push_back(next);
+                        model.push_back(next);
+                        next += 1;
+                    },
+                    1 => assert_eq!(queue.pop_front(), model.pop_front()),
+                    2 => {
+                        queue.clear();
+                        model.clear();
+                    },
+                    3 => {
+                        if let Some(value) = queue.front_mut() {
+                            *value = value.wrapping_add(17);
+                        }
+                        if let Some(value) = model.front_mut() {
+                            *value = value.wrapping_add(17);
+                        }
+                    },
+                    _ => unreachable!(),
+                }
+                program /= OPERATIONS;
+
+                assert_eq!(queue.len(), model.len());
+                assert_eq!(queue.is_empty(), model.is_empty());
+                assert_eq!(queue.front(), model.front());
+                assert!(queue.iter().copied().eq(model.iter().copied()));
+                if model.is_empty() {
+                    assert_eq!(queue.front, 0);
+                    assert_eq!(queue.items.len(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_small_state_machine_matches_vecdeque_and_normalizes_empty() {
+        assert_exhaustive_state_model::<0>();
+        assert_exhaustive_state_model::<1>();
+        assert_exhaustive_state_model::<2>();
+        assert_exhaustive_state_model::<4>();
+    }
+
+    #[test]
+    fn zero_inline_capacity_zst_and_repeated_clear_reuse_are_supported() {
+        let mut queue = InlineFifo::<(), 0>::new();
+        for _ in 0..4 {
+            queue.push_back(());
+        }
+        assert_eq!(queue.len(), 4);
+        queue.clear();
+        queue.clear();
+        queue.push_back(());
+        assert_eq!(queue.pop_front(), Some(()));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn panicking_destructor_cannot_leave_live_ownership_in_queue() {
+        struct PanicDrop {
+            id: usize,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for PanicDrop {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+                assert!(
+                    self.id != 1 || std::thread::panicking(),
+                    "intentional destructor panic"
+                );
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut queue = InlineFifo::<_, 2>::new();
+        for id in 0..3 {
+            queue.push_back(PanicDrop {
+                id,
+                drops: Arc::clone(&drops),
+            });
+        }
+        assert!(catch_unwind(AssertUnwindSafe(|| queue.clear())).is_err());
+        assert!(queue.is_empty());
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+
+        queue.push_back(PanicDrop {
+            id: 4,
+            drops: Arc::clone(&drops),
+        });
+        drop(queue);
+        assert_eq!(drops.load(Ordering::Relaxed), 4);
     }
 }

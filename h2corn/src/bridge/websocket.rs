@@ -168,7 +168,7 @@ impl EventSource for WebSocketReceiveState {
     }
 }
 
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_WebSocketReceive")]
 pub struct PyWebSocketReceive {
     shard: Shard,
     state: Arc<AsyncMutex<Requeueable<WebSocketReceiveState>>>,
@@ -198,7 +198,7 @@ impl PyWebSocketReceive {
     }
 }
 
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_WebSocketSend")]
 pub struct PyWebSocketSend {
     shard: Shard,
     state: WebSocketSendState,

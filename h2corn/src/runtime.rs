@@ -1,14 +1,14 @@
-use std::mem::{swap, take};
+use std::mem::{size_of, swap, take};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::app_call::AppCallArgs;
 use crate::config::ServerConfig;
@@ -27,6 +27,11 @@ pub(crate) struct AppRuntime {
     pub shards: Box<[Shard]>,
     next_shard: AtomicUsize,
     pub limits: Option<Arc<RuntimeLimits>>,
+    /// Counts every scoped `AppRuntime` owner — connection shares and
+    /// request task guards — from construction to drop. Independently owned
+    /// so each token can settle after releasing the `AppRuntime` owner it
+    /// guards; see [`ConnectionShared`] and [`RequestTaskGuard`].
+    scoped_owners: Arc<ScopedOwnerTracker>,
 }
 
 impl AppRuntime {
@@ -41,6 +46,7 @@ impl AppRuntime {
             shards,
             next_shard: AtomicUsize::new(0),
             limits,
+            scoped_owners: Arc::default(),
         }
     }
 
@@ -63,6 +69,18 @@ impl AppRuntime {
 
     pub(crate) fn into_teardown(self) -> (Py<PyAny>, Option<Arc<RuntimeLimits>>, Box<[Shard]>) {
         (self.app, self.limits, self.shards)
+    }
+
+    /// Wait until every scoped `AppRuntime` owner — connection shares and
+    /// request task guards, wherever they live — has been fully dropped.
+    /// This covers hard-aborted H2 children that die between admission and
+    /// guard construction (they own a `ConnectionShared`) and a guard's
+    /// Python owners (the task done-callback) releasing on their loop
+    /// thread. Every token decrement is ordered after the `AppRuntime`
+    /// release of the struct it guards, so `Arc::try_unwrap` in teardown
+    /// cannot observe a stale owner.
+    pub(crate) async fn wait_for_scoped_owners(&self) {
+        self.scoped_owners.wait().await;
     }
 }
 
@@ -158,22 +176,175 @@ impl RuntimeLimits {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct RequestAdmission {
     // Fields drop in declaration order: return the concurrency permit before
     // completion can request worker retirement.
-    _permit: Option<OwnedSemaphorePermit>,
-    _completion: RequestCompletion,
+    #[expect(dead_code, reason = "RAII: releases the concurrency permit on drop")]
+    permit: Option<OwnedSemaphorePermit>,
+    #[expect(dead_code, reason = "RAII: records worker completion on drop")]
+    completion: RequestCompletion,
+    settlement: RequestSettlement,
+}
+
+struct ScopedOwnerTracker {
+    active: AtomicUsize,
+    settled: Notify,
+}
+
+impl Default for ScopedOwnerTracker {
+    fn default() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            settled: Notify::new(),
+        }
+    }
+}
+
+impl ScopedOwnerTracker {
+    fn activate(&self) {
+        let previous = self.active.fetch_add(1, Ordering::Relaxed);
+        debug_assert_ne!(previous, usize::MAX, "request settlement count overflow");
+    }
+
+    async fn wait(&self) {
+        // Connection shares are constructed only while listeners accept and
+        // request guards only from a live (tracked) connection share, so once
+        // every connection task has joined, `active` cannot reopen from zero.
+        // (It may still tick up while positive — a surviving child
+        // constructing its guard — so the invariant is zero-closure, not
+        // monotonic decrease.)
+        loop {
+            // Register the waiter before observing the count. The unique
+            // guard whose atomic decrement transitions 1 -> 0 uses
+            // `notify_one`, which retains a permit if it wins this race.
+            let settled = self.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            settled.await;
+        }
+    }
+
+    fn settle(&self) {
+        let previous = self.active.fetch_sub(1, Ordering::Release);
+        debug_assert_ne!(previous, 0, "request settlement count underflow");
+        if previous == 1 {
+            self.settled.notify_one();
+        }
+    }
+}
+
+#[derive(Default)]
+struct RequestSettlement {
+    completion: Option<RequestSettlementCompletion>,
+}
+
+pub(crate) struct RequestSettlementCompletion {
+    stream_id: StreamId,
+    permit: Option<mpsc::OwnedPermit<StreamId>>,
+}
+
+impl RequestSettlementCompletion {
+    pub(crate) const fn new(stream_id: StreamId, permit: mpsc::OwnedPermit<StreamId>) -> Self {
+        Self {
+            stream_id,
+            permit: Some(permit),
+        }
+    }
+}
+
+impl Drop for RequestSettlementCompletion {
+    fn drop(&mut self) {
+        // Capacity is reserved before the task starts, so completion cannot
+        // be lost even during cancellation bursts. More importantly, this
+        // owner lives in RequestAdmission: a reset request keeps consuming
+        // the H2 task budget until the Python task's done-callback releases
+        // the slot guard, including async CancelledError cleanup.
+        if let Some(permit) = self.permit.take() {
+            permit.send(self.stream_id);
+        }
+    }
+}
+
+impl RequestAdmission {
+    pub(crate) fn track_completion(&mut self, completion: RequestSettlementCompletion) {
+        debug_assert!(
+            self.settlement.completion.is_none(),
+            "request completion is registered once"
+        );
+        self.settlement.completion = Some(completion);
+    }
+}
+
+/// Slot-owned request state, counted in the settlement tracker from
+/// construction to drop.
+///
+/// Field order is the settlement protocol: `admission` releases capacity,
+/// records worker completion, and publishes the protocol-specific completion;
+/// `app` then releases this guard's `AppRuntime` owner; `settlement` last
+/// decrements the tracker and wakes teardown. Teardown's `Arc::try_unwrap`
+/// therefore never observes a guard-held owner after the tracker drains.
+pub(crate) struct RequestTaskGuard {
+    #[expect(dead_code, reason = "RAII: settles admission state in field order on drop")]
+    admission: RequestAdmission,
+    app: AppRuntimeHandle,
+    #[expect(dead_code, reason = "RAII: wakes teardown last, after the owner above")]
+    settlement: TrackedOwner,
+}
+
+impl RequestTaskGuard {
+    pub(crate) fn new(admission: RequestAdmission, app: AppRuntimeHandle) -> Self {
+        let settlement = TrackedOwner::track(&app.scoped_owners);
+        Self {
+            admission,
+            app,
+            settlement,
+        }
+    }
+
+    pub(crate) const fn app(&self) -> &AppRuntimeHandle {
+        &self.app
+    }
+}
+
+/// One tracked entry in a [`ScopedOwnerTracker`]; decrements on drop.
+///
+/// Declare it as the LAST field of the struct whose `AppRuntime` owner it
+/// guards: field-drop order then releases the owner before this wakes
+/// teardown.
+struct TrackedOwner(Arc<ScopedOwnerTracker>);
+
+impl TrackedOwner {
+    fn track(tracker: &Arc<ScopedOwnerTracker>) -> Self {
+        tracker.activate();
+        Self(Arc::clone(tracker))
+    }
+}
+
+impl Drop for TrackedOwner {
+    fn drop(&mut self) {
+        // All request-visible effects — including the AppRuntime owner
+        // release — happen-before this Release decrement.
+        self.0.settle();
+    }
 }
 
 #[derive(Default)]
 struct RequestCompletion(Option<Arc<RuntimeLimits>>);
 
-impl Drop for RequestCompletion {
-    fn drop(&mut self) {
-        if let Some(limits) = self.0.as_ref() {
+impl RequestCompletion {
+    fn complete(&mut self) {
+        if let Some(limits) = self.0.take() {
             limits.on_task_complete();
         }
+    }
+}
+
+impl Drop for RequestCompletion {
+    fn drop(&mut self) {
+        self.complete();
     }
 }
 
@@ -182,6 +353,11 @@ pub(crate) struct ConnectionShared {
     pub config: Arc<ServerConfig>,
     pub info: ConnectionInfo,
     scope_cache: ConnectionScopeCache,
+    /// Last field: settles the tracker only after `app` above has released,
+    /// covering every context clone — including request children hard-aborted
+    /// before they construct a [`RequestTaskGuard`].
+    #[expect(dead_code, reason = "RAII: wakes teardown last, after the owner above")]
+    owner_token: TrackedOwner,
 }
 
 #[derive(Clone)]
@@ -197,12 +373,14 @@ impl ConnectionContext {
         info: ConnectionInfo,
         shutdown: watch::Receiver<ShutdownState>,
     ) -> Self {
+        let owner_token = TrackedOwner::track(&app.scoped_owners);
         Self {
             shared: Arc::new(ConnectionShared {
                 app,
                 config,
                 info,
                 scope_cache: ConnectionScopeCache::default(),
+                owner_token,
             }),
             shutdown,
         }
@@ -407,16 +585,29 @@ pub(crate) enum StreamInput {
         body: Bytes,
         credit: Option<H2InputCredit>,
     },
-    /// Two already-backlogged HTTP body frames. The boxed handles retain the
-    /// original payloads without copying or growing every channel slot; Python
-    /// materialization writes both directly into one bytes object.
-    HttpDataBatch {
-        bodies: Box<[Bytes; 2]>,
+    /// Adjacent DATA payloads coalesced only after the bounded app-input
+    /// channel fills. Keeping the mutable allocation here lets a slow HTTP or
+    /// WebSocket consumer retain a byte-bounded number of queue nodes instead
+    /// of one node per peer frame.
+    BufferedData {
+        body: BytesMut,
+        credit: Option<H2InputCredit>,
+    },
+    /// Adjacent already-backlogged DATA frames whose handles retain payloads
+    /// without copying or growing every channel slot. HTTP materializes the
+    /// batch once; WebSocket decoding consumes its original segments.
+    DataBatch {
+        bodies: Vec<Bytes>,
+        body_bytes: usize,
         credit: Option<H2InputCredit>,
     },
     EndStream,
     Reset(ErrorCode),
 }
+
+// Bytes, BytesMut, and Vec all keep payload storage out of line;
+// backlog compaction must not make every app-channel slot exceed this bound.
+const _: () = assert!(size_of::<StreamInput>() <= 64);
 
 impl StreamInput {
     pub(crate) const fn data(body: Bytes) -> Self {
@@ -430,45 +621,166 @@ impl StreamInput {
         }
     }
 
-    pub(crate) fn try_batch_http(&mut self, next: Self, max_bytes: usize) -> Result<(), Self> {
-        let Self::Data {
-            body: first_body,
-            credit: first_credit,
-        } = self
-        else {
-            return Err(next);
-        };
+    pub(crate) fn try_coalesce_data(
+        &mut self,
+        next: Self,
+        max_fragment_bytes: usize,
+        max_chunk_bytes: usize,
+    ) -> Result<(), Self> {
         let (second_body, second_credit) = match next {
             Self::Data { body, credit } => (body, credit),
             other => return Err(other),
         };
-        if first_body.len().saturating_add(second_body.len()) > max_bytes {
+
+        let first_len = match self {
+            Self::Data { body, .. } if body.len() <= max_fragment_bytes => body.len(),
+            Self::BufferedData { body, .. } => body.len(),
+            Self::Data { .. } | Self::DataBatch { .. } | Self::EndStream | Self::Reset(_) => {
+                return Err(Self::Data {
+                    body: second_body,
+                    credit: second_credit,
+                });
+            },
+        };
+        let Some(combined_len) = first_len.checked_add(second_body.len()) else {
+            return Err(Self::Data {
+                body: second_body,
+                credit: second_credit,
+            });
+        };
+        if combined_len > max_chunk_bytes {
             return Err(Self::Data {
                 body: second_body,
                 credit: second_credit,
             });
         }
 
-        let mut credit = first_credit.take();
-        match (&mut credit, second_credit) {
-            (Some(first), Some(second)) => first.merge(second),
-            (None, Some(second)) => credit = Some(second),
-            (Some(_) | None, None) => {},
+        match self {
+            Self::Data {
+                body: first_body,
+                credit: first_credit,
+            } => {
+                let first_body = take(first_body);
+                let mut body = first_body.try_into_mut().unwrap_or_else(|first_body| {
+                    let mut body = BytesMut::with_capacity(combined_len);
+                    body.extend_from_slice(&first_body);
+                    body
+                });
+                body.reserve(second_body.len());
+                body.extend_from_slice(&second_body);
+                merge_h2_input_credit(first_credit, second_credit);
+                let credit = first_credit.take();
+                *self = Self::BufferedData { body, credit };
+            },
+            Self::BufferedData { body, credit } => {
+                body.extend_from_slice(&second_body);
+                merge_h2_input_credit(credit, second_credit);
+            },
+            Self::DataBatch { .. } | Self::EndStream | Self::Reset(_) => {
+                unreachable!("data variants checked above")
+            },
         }
-        let first_body = take(first_body);
-        *self = Self::HttpDataBatch {
-            bodies: Box::new([first_body, second_body]),
-            credit,
-        };
         Ok(())
+    }
+
+    pub(crate) fn try_batch_data(
+        &mut self,
+        next: Self,
+        min_fragment_bytes: usize,
+        max_bytes: usize,
+    ) -> Result<(), Self> {
+        let (second_body, second_credit) = match next {
+            Self::Data { body, credit } => (body, credit),
+            other => return Err(other),
+        };
+        if second_body.len() <= min_fragment_bytes {
+            return Err(Self::Data {
+                body: second_body,
+                credit: second_credit,
+            });
+        }
+
+        match self {
+            Self::Data {
+                body: first_body,
+                credit: first_credit,
+            } if first_body.len() > min_fragment_bytes => {
+                let Some(body_bytes) = first_body.len().checked_add(second_body.len()) else {
+                    return Err(Self::Data {
+                        body: second_body,
+                        credit: second_credit,
+                    });
+                };
+                if body_bytes > max_bytes {
+                    return Err(Self::Data {
+                        body: second_body,
+                        credit: second_credit,
+                    });
+                }
+                let mut bodies = if body_bytes == max_bytes {
+                    // A full two-segment batch cannot grow. Avoid Vec's
+                    // four-element minimum allocation for this common pair.
+                    Vec::with_capacity(2)
+                } else {
+                    Vec::new()
+                };
+                bodies.push(take(first_body));
+                bodies.push(second_body);
+                merge_h2_input_credit(first_credit, second_credit);
+                let credit = first_credit.take();
+                *self = Self::DataBatch {
+                    bodies,
+                    body_bytes,
+                    credit,
+                };
+                Ok(())
+            },
+            Self::DataBatch {
+                bodies,
+                body_bytes,
+                credit,
+            } => {
+                let Some(combined_bytes) = body_bytes.checked_add(second_body.len()) else {
+                    return Err(Self::Data {
+                        body: second_body,
+                        credit: second_credit,
+                    });
+                };
+                if combined_bytes > max_bytes {
+                    return Err(Self::Data {
+                        body: second_body,
+                        credit: second_credit,
+                    });
+                }
+                bodies.push(second_body);
+                *body_bytes = combined_bytes;
+                merge_h2_input_credit(credit, second_credit);
+                Ok(())
+            },
+            Self::Data { .. } | Self::BufferedData { .. } | Self::EndStream | Self::Reset(_) => {
+                Err(Self::Data {
+                    body: second_body,
+                    credit: second_credit,
+                })
+            },
+        }
+    }
+}
+
+fn merge_h2_input_credit(current: &mut Option<H2InputCredit>, additional: Option<H2InputCredit>) {
+    match (current, additional) {
+        (Some(current), Some(additional)) => current.merge(additional),
+        (slot @ None, Some(additional)) => *slot = Some(additional),
+        (Some(_) | None, None) => {},
     }
 }
 
 pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestAdmission> {
     let Some(limits) = app.limits.as_ref() else {
         return Some(RequestAdmission {
-            _permit: None,
-            _completion: RequestCompletion(None),
+            permit: None,
+            completion: RequestCompletion(None),
+            settlement: RequestSettlement::default(),
         });
     };
     let permit = if let Some(semaphore) = limits.concurrency.as_ref() {
@@ -477,8 +789,9 @@ pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestA
         None
     };
     Some(RequestAdmission {
-        _permit: permit,
-        _completion: RequestCompletion(limits.max_requests.map(|_| Arc::clone(limits))),
+        permit,
+        completion: RequestCompletion(limits.max_requests.map(|_| Arc::clone(limits))),
+        settlement: RequestSettlement::default(),
     })
 }
 
@@ -489,11 +802,11 @@ pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestA
 pub(crate) fn start_app_call(
     app: AppRuntimeHandle,
     args: Box<AppCallArgs>,
-) -> SlotFuture<Result<(), H2CornError>> {
-    let slot = TaskSlot::new();
+    admission: RequestAdmission,
+) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
     let shard = app.pick_shard();
+    let slot = TaskSlot::with_guard(RequestTaskGuard::new(admission, app));
     shard.push(PumpEvent::StartTask {
-        app,
         args,
         slot: Arc::clone(&slot),
     });
@@ -510,7 +823,10 @@ pub(crate) mod test_fixtures {
     use pyo3::Python;
     use tokio::sync::watch;
 
-    use super::{AppRuntime, ConnectionContext, ShutdownState};
+    use super::{
+        AppRuntime, AppRuntimeHandle, ConnectionContext, RequestTaskGuard, ShutdownState,
+        try_acquire_request_admission,
+    };
     use crate::config::{
         BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
         WebSocketConfig,
@@ -565,11 +881,10 @@ pub(crate) mod test_fixtures {
     }
 
     pub(crate) fn connection_context(py: Python<'_>) -> ConnectionContext {
-        let app: super::AppRuntimeHandle = Arc::new(AppRuntime::new(
-            py.None(),
-            Box::new([ShardHandle::test_stub(py)]),
-            None,
-        ));
+        connection_context_for(app_runtime(py))
+    }
+
+    pub(crate) fn connection_context_for(app: AppRuntimeHandle) -> ConnectionContext {
         let info = ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
             Some(ServerAddr {
@@ -581,22 +896,102 @@ pub(crate) mod test_fixtures {
         let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
         ConnectionContext::new(app, server_config(), info, shutdown_rx)
     }
+
+    pub(crate) fn app_runtime(py: Python<'_>) -> AppRuntimeHandle {
+        Arc::new(AppRuntime::new(
+            py.None(),
+            Box::new([ShardHandle::test_stub(py)]),
+            None,
+        ))
+    }
+
+    pub(crate) fn request_task_guard(app: &AppRuntimeHandle) -> RequestTaskGuard {
+        RequestTaskGuard::new(
+            try_acquire_request_admission(app)
+                .expect("the unlimited test runtime admits every request"),
+            Arc::clone(app),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(Py_GIL_DISABLED)]
+    mod free_threaded {
+        use std::sync::{Arc, Barrier};
 
+        use pyo3::{PyResult, Python};
+
+        use super::super::test_fixtures;
+
+        #[test]
+        fn connection_scope_cache_initializes_concurrently_while_attached() {
+            const THREADS: usize = 8;
+            const ITERATIONS: usize = 1_000;
+
+            Python::initialize();
+            let connection = Arc::new(Python::attach(test_fixtures::connection_context));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let workers = std::array::from_fn::<_, THREADS, _>(|_| {
+                let connection = Arc::clone(&connection);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || -> PyResult<(usize, usize)> {
+                    barrier.wait();
+                    Python::attach(|py| {
+                        let mut pointers = None;
+                        for _ in 0..ITERATIONS {
+                            let server = connection.default_server_scope_value(py);
+                            let client = connection
+                                .default_client_scope_value(py)
+                                .expect("test connection has a client address");
+                            let current = (server.as_ptr() as usize, client.as_ptr() as usize);
+                            assert_eq!(*pointers.get_or_insert(current), current);
+                        }
+                        Ok(pointers.expect("at least one cache lookup runs"))
+                    })
+                })
+            });
+
+            let pointers = workers.map(|worker| {
+                worker
+                    .join()
+                    .expect("scope-cache worker does not panic")
+                    .expect("scope-cache lookup succeeds")
+            });
+            assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
+        }
+    }
+
+    use std::future::Future;
     use std::num::{NonZeroU32, NonZeroU64};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::{Arc, mpsc};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::task::Poll;
     use std::thread;
     use std::time::Duration;
 
     use tokio::sync::Semaphore;
     use tokio::time::timeout;
 
-    use super::{H2InputCreditQueue, RequestAdmission, RequestCompletion, RuntimeLimits};
+    use super::{
+        AppRuntimeHandle, H2InputCreditQueue, RequestAdmission, RequestCompletion,
+        RequestSettlement, ScopedOwnerTracker, RequestTaskGuard, RuntimeLimits,
+    };
     use crate::h2_frame::StreamId;
+    use crate::pyloop::TaskSlot;
+
+    fn active_owners(tracker: &ScopedOwnerTracker) -> usize {
+        tracker.active.load(Ordering::Acquire)
+    }
+
+    fn test_app_runtime() -> AppRuntimeHandle {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(super::test_fixtures::app_runtime)
+    }
+
+    fn request_task_guard(app: &AppRuntimeHandle) -> RequestTaskGuard {
+        super::test_fixtures::request_task_guard(app)
+    }
 
     #[test]
     fn request_admission_releases_permit_and_records_completion_once() {
@@ -610,13 +1005,175 @@ mod tests {
             retire_trigger: None,
         });
         let admission = RequestAdmission {
-            _permit: Some(permit),
-            _completion: RequestCompletion(Some(Arc::clone(&limits))),
+            permit: Some(permit),
+            completion: RequestCompletion(Some(Arc::clone(&limits))),
+            settlement: RequestSettlement::default(),
         };
         assert_eq!(semaphore.available_permits(), 0);
         drop(admission);
         assert_eq!(semaphore.available_permits(), 1);
         assert_eq!(limits.completed_tasks.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_settlement_waits_for_the_done_callback_owner() {
+        let app = test_app_runtime();
+        let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
+        let done_callback_owner = Arc::clone(&slot);
+        let shard = app.main_shard();
+
+        drop(slot.wait(shard));
+        assert_eq!(active_owners(&app.scoped_owners), 1);
+        drop(slot);
+        assert_eq!(
+            active_owners(&app.scoped_owners),
+            1,
+            "native ownership alone cannot acknowledge Python cleanup"
+        );
+        let mut settlement = Box::pin(app.scoped_owners.wait());
+        let first_poll = std::future::poll_fn(|cx| Poll::Ready(settlement.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending());
+
+        drop(done_callback_owner);
+        settlement.await;
+        assert_eq!(active_owners(&app.scoped_owners), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_settlement_keeps_a_last_drop_notification_before_wait() {
+        let tracker = Arc::new(ScopedOwnerTracker::default());
+        tracker.activate();
+
+        // The old waiting-flag protocol could suppress this notification and
+        // then race its Arc count observation with the drop. `notify_one`
+        // retains the final transition until the waiter consumes it.
+        tracker.settle();
+        timeout(Duration::from_secs(1), tracker.wait())
+            .await
+            .expect("a pre-wait final drop cannot be lost");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_settlement_concurrent_final_drops_wake_the_waiter() {
+        for _ in 0..64 {
+            let tracker = Arc::new(ScopedOwnerTracker::default());
+            tracker.activate();
+            tracker.activate();
+            let mut settlement = Box::pin(tracker.wait());
+            let first_poll =
+                std::future::poll_fn(|cx| Poll::Ready(settlement.as_mut().poll(cx))).await;
+            assert!(first_poll.is_pending());
+
+            let barrier = Arc::new(Barrier::new(2));
+            thread::scope(|scope| {
+                let first = Arc::clone(&tracker);
+                let second = Arc::clone(&tracker);
+                let first_barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    first_barrier.wait();
+                    first.settle();
+                });
+                scope.spawn(move || {
+                    barrier.wait();
+                    second.settle();
+                });
+            });
+
+            timeout(Duration::from_secs(1), settlement)
+                .await
+                .expect("the unique 1 -> 0 decrement must wake teardown");
+            assert_eq!(active_owners(&tracker), 0);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_settlement_normal_completion_releases_on_final_owner_drop() {
+        let app = test_app_runtime();
+        let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
+        slot.fill(());
+        let shard = app.main_shard();
+
+        slot.wait(shard).await;
+        assert_eq!(
+            active_owners(&app.scoped_owners),
+            1,
+            "a completed-but-owned request still pins teardown"
+        );
+        drop(slot);
+        assert_eq!(active_owners(&app.scoped_owners), 0);
+        app.scoped_owners.wait().await;
+        drop(app);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the settlement future must borrow `app` across the final assertion"
+    )]
+    async fn settlement_wake_orders_after_the_app_owner_release() {
+        let app = test_app_runtime();
+        let guard = request_task_guard(&app);
+        assert_eq!(active_owners(&app.scoped_owners), 1);
+        assert_eq!(Arc::strong_count(&app), 2);
+
+        let mut settlement = Box::pin(app.scoped_owners.wait());
+        let first_poll = std::future::poll_fn(|cx| Poll::Ready(settlement.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending());
+
+        drop(guard);
+        settlement.await;
+        assert_eq!(
+            Arc::strong_count(&app),
+            1,
+            "the tracker drains only after the guard's AppRuntime owner is gone"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the wait future must borrow `app` across the final assertion"
+    )]
+    async fn connection_share_pins_teardown_until_every_clone_drops() {
+        let app = test_app_runtime();
+        let connection = super::test_fixtures::connection_context_for(Arc::clone(&app));
+        // A hard-aborted H2 request child owns only a context clone — it dies
+        // between admission and guard construction, so no guard exists.
+        let orphaned_child_context = connection.clone();
+        drop(connection);
+        assert_eq!(active_owners(&app.scoped_owners), 1);
+
+        let mut wait = Box::pin(app.scoped_owners.wait());
+        let first_poll = std::future::poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending(), "an owner-holding child pins teardown");
+
+        drop(orphaned_child_context);
+        wait.await;
+        assert_eq!(
+            Arc::strong_count(&app),
+            1,
+            "the tracker drains only after the connection share's owner is gone"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_settlement_tracks_abandonment_after_task_assignment() {
+        let app = test_app_runtime();
+        let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
+        pyo3::Python::attach(|py| {
+            assert!(slot.set_task(py.None()).is_none());
+        });
+        let done_callback_owner = Arc::clone(&slot);
+        let shard = app.main_shard();
+
+        drop(slot.wait(shard));
+        assert_eq!(active_owners(&app.scoped_owners), 1);
+        drop(slot);
+        assert_eq!(active_owners(&app.scoped_owners), 1);
+
+        drop(done_callback_owner);
+        app.scoped_owners.wait().await;
+        assert_eq!(active_owners(&app.scoped_owners), 0);
     }
 
     #[test]
@@ -696,57 +1253,5 @@ mod tests {
         flow.drain_into(&mut second);
         assert_eq!(first[0].bytes.get(), 7);
         assert_eq!(second[0].bytes.get(), 11);
-    }
-
-    #[cfg(Py_GIL_DISABLED)]
-    mod free_threaded {
-
-        use std::sync::{Arc, Barrier};
-
-        use pyo3::{PyResult, Python};
-
-        use super::super::test_fixtures;
-
-        #[test]
-        fn connection_scope_cache_initializes_concurrently_while_attached() {
-            const THREADS: usize = 8;
-            const ITERATIONS: usize = 1_000;
-
-            Python::initialize();
-            let connection = Arc::new(Python::attach(test_fixtures::connection_context));
-            let barrier = Arc::new(Barrier::new(THREADS));
-            let workers = (0..THREADS)
-                .map(|_| {
-                    let connection = Arc::clone(&connection);
-                    let barrier = Arc::clone(&barrier);
-                    std::thread::spawn(move || -> PyResult<(usize, usize)> {
-                        barrier.wait();
-                        Python::attach(|py| {
-                            let mut pointers = None;
-                            for _ in 0..ITERATIONS {
-                                let server = connection.default_server_scope_value(py);
-                                let client = connection
-                                    .default_client_scope_value(py)
-                                    .expect("test connection has a client address");
-                                let current = (server.as_ptr() as usize, client.as_ptr() as usize);
-                                assert_eq!(*pointers.get_or_insert(current), current);
-                            }
-                            Ok(pointers.expect("at least one cache lookup runs"))
-                        })
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            let pointers = workers
-                .into_iter()
-                .map(|worker| {
-                    worker
-                        .join()
-                        .expect("scope-cache worker does not panic")
-                        .expect("scope-cache lookup succeeds")
-                })
-                .collect::<Vec<_>>();
-            assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
-        }
     }
 }

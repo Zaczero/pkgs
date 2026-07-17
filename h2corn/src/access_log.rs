@@ -374,7 +374,7 @@ fn format_listen_target(bind: &BindTarget, tls: bool) -> String {
             HostDisplay(host.as_ref())
         ),
         BindTarget::Unix { path } => format!("unix:{path}"),
-        BindTarget::Fd { fd, .. } => format!("fd://{fd}"),
+        BindTarget::Fd { fd } => format!("fd://{fd}"),
     }
 }
 

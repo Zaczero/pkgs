@@ -189,7 +189,11 @@ fn prepare_and_spawn_request(
     };
     let request = RequestContext::new(context.connection.clone(), request);
     match prepared {
-        RequestExecution::Http { admission, input } => {
+        RequestExecution::Http {
+            mut admission,
+            input,
+        } => {
+            context.tasks.track_admission(stream_id, &mut admission);
             let (input_tx, app_input) = input.split();
             let cancellation = app_input.disconnect_signal().map_or(
                 RequestTaskCancellation::Immediate,
@@ -222,9 +226,10 @@ fn prepare_and_spawn_request(
         },
         RequestExecution::WebSocket {
             meta,
-            admission,
+            mut admission,
             input,
         } => {
+            context.tasks.track_admission(stream_id, &mut admission);
             register_inbound_stream(
                 &mut context,
                 stream_id,
@@ -254,10 +259,10 @@ fn prepare_and_spawn_request(
     None
 }
 
-/// Keep construction of the sizeable HTTP task future out of the H2
-/// connection poll frame. This adds one request-scoped allocation; the exact
-/// no-box A/B is recorded in the performance ledger because LTO otherwise
-/// reconstructs the task future on the connection stack.
+/// Keep construction of the sizeable HTTP task future behind a pointer at the
+/// task-spawn boundary instead of embedding its state in the H2 connection's
+/// poll frame. This deliberately pays one request-scoped allocation to bound
+/// the long-lived connection task's stack footprint.
 fn spawn_http_request(
     tasks: &mut super::state::RequestTasks,
     stream_id: StreamId,
@@ -281,8 +286,7 @@ fn spawn_websocket_request(
     // WebSocket sessions are long-lived and their protocol future is much
     // larger than an ordinary HTTP request. One session-scoped box keeps that
     // rare state out of the H2 connection poll stack; Tokio's task allocation
-    // then contains only the pointer. Ordinary HTTP requests remain on the
-    // existing single-allocation Tokio task path.
+    // then contains only the pointer.
     tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
         let _ = Box::pin(handle_websocket_request(
             context, stream_id, input, connection,

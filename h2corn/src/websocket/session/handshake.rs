@@ -176,19 +176,18 @@ where
 {
     let err = err.into();
     transport.send_internal_error_response().await?;
-    running_app.task.abort().await;
+    running_app.task.abort();
     access_log.emit_http_response(status_code::INTERNAL_SERVER_ERROR, 0);
     Err(err)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::future::pending;
     use std::mem::size_of_val;
 
     use bytes::Bytes;
+    use pyo3::Python;
     use tokio::sync::mpsc;
-    use tokio::task::JoinHandle;
 
     use super::{HandshakeEvent, drive_denial_response, receive_handshake_event};
     use crate::bridge::{
@@ -198,7 +197,8 @@ mod tests {
     use crate::error::{ErrorKind, H2CornError, HttpResponseError};
     use crate::http::response::FinalResponseBody;
     use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
-    use crate::runtime::RequestAdmission;
+    use crate::pyloop::TaskSlot;
+    use crate::runtime::{AppRuntimeHandle, test_fixtures};
     use crate::websocket::RequestedSubprotocols;
     use crate::websocket::app::{RunningWebSocketApp, WebSocketAppTask};
     use crate::websocket::session::WebSocketHandshakeTransport;
@@ -276,9 +276,29 @@ mod tests {
         }
     }
 
+    fn test_app() -> AppRuntimeHandle {
+        Python::initialize();
+        Python::attach(test_fixtures::app_runtime)
+    }
+
+    /// Production app task whose slot resolves immediately with `Ok(())`.
+    fn completed_app_task(app: &AppRuntimeHandle) -> WebSocketAppTask {
+        let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(app));
+        let task = WebSocketAppTask::new(slot.wait(app.main_shard()));
+        slot.fill(Ok(()));
+        task
+    }
+
+    /// Production app task whose slot never resolves; abandonment queues
+    /// `CancelTask` on the test-stub shard harmlessly.
+    fn pending_app_task(app: &AppRuntimeHandle) -> WebSocketAppTask {
+        let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(app));
+        WebSocketAppTask::new(slot.wait(app.main_shard()))
+    }
+
     fn running_app_with_buffered_event(
         event: WebSocketOutboundEvent,
-        app_task: JoinHandle<Result<(), H2CornError>>,
+        task: WebSocketAppTask,
     ) -> RunningWebSocketApp {
         let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
         let (_send_tx, send_rx) = mpsc::channel(1);
@@ -294,22 +314,19 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            task: WebSocketAppTask::new(app_task),
-            _admission: RequestAdmission::default(),
+            task,
         }
     }
 
     #[tokio::test]
     async fn initial_handshake_event_prefers_buffered_messages() {
+        let app = test_app();
         let mut running_app = running_app_with_buffered_event(
             WebSocketOutboundEvent::Close {
                 code: 1000,
                 reason: None,
             },
-            tokio::spawn(async {
-                pending::<()>().await;
-                Ok(())
-            }),
+            pending_app_task(&app),
         );
 
         let event = receive_handshake_event(&mut running_app)
@@ -317,7 +334,7 @@ mod tests {
             .expect("buffered close event is returned");
         assert!(matches!(event, HandshakeEvent::Close));
 
-        running_app.task.abort().await;
+        running_app.task.abort();
         drop(running_app);
     }
 
@@ -340,8 +357,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            task: WebSocketAppTask::new(tokio::spawn(async { Ok(()) })),
-            _admission: RequestAdmission::default(),
+            task: completed_app_task(&test_app()),
         };
         let _keep_sender_alive = send_tx;
 
@@ -372,8 +388,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            task: WebSocketAppTask::new(tokio::spawn(async { Ok(()) })),
-            _admission: RequestAdmission::default(),
+            task: completed_app_task(&test_app()),
         };
         let _keep_sender_alive = send_tx;
 
@@ -411,8 +426,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            task: WebSocketAppTask::new(tokio::spawn(async { Ok(()) })),
-            _admission: RequestAdmission::default(),
+            task: completed_app_task(&test_app()),
         };
         let _keep_sender_alive = send_tx;
 
@@ -458,11 +472,7 @@ mod tests {
             send_state,
             send_buffer,
             send_rx,
-            task: WebSocketAppTask::new(tokio::spawn(async {
-                pending::<()>().await;
-                Ok(())
-            })),
-            _admission: RequestAdmission::default(),
+            task: pending_app_task(&test_app()),
         };
         let _keep_sender_alive = send_tx;
 
@@ -475,7 +485,7 @@ mod tests {
 
         assert!(size_of_val(&future) <= 3344);
         drop(future);
-        running_app.task.abort().await;
+        running_app.task.abort();
         drop(running_app);
     }
 }

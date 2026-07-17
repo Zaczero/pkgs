@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::conversion::FromPyObjectOwned;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
 use smallvec::SmallVec;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
-use tokio::task::spawn_blocking;
+use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
 use crate::access_log::emit_banner as emit_access_banner;
 use crate::config::{
@@ -25,11 +25,12 @@ use crate::http::header::lowercase_header_name_is_valid;
 use crate::http::header_value::header_value_is_valid;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use crate::pyloop::{
-    PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
-    call_awaitable, init_runtime, new_rust_future, release_app, runtime, spawn_shard_thread,
+    AcknowledgedSlotFuture, PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard,
+    ShardHandle, ShardThread, SlotDropWait, call_awaitable, call_cancellable_awaitable,
+    init_runtime, new_rust_future, release_app, runtime, spawn_shard_thread,
 };
 use crate::runtime::{AppRuntime, AppRuntimeHandle, RuntimeLimits};
-use crate::server::{ListenerFd, own_listener_fds, serve_from_fds};
+use crate::server::{ListenerFd, QuiesceFd, own_serve_fds, serve_from_fds};
 use crate::tls::build_tls_config;
 
 const TOKIO_EVENT_INTERVAL: u32 = 31;
@@ -44,11 +45,13 @@ struct SecondaryLifespanConfig {
     shutdown_timeout: Option<f64>,
 }
 
+type SecondaryRunner = (usize, Shard, Py<PyAny>);
+
 /// Exact, immutable Python-to-Rust ownership handoff for an active primary
 /// lifespan runner. The Python wrapper remains usable by generic callbacks;
 /// h2corn consumes this object to call the original app directly and install
 /// the loop-local state dictionary on the main shard.
-#[pyclass(frozen, name = "_LifespanHandoff")]
+#[pyclass(frozen, name = "LifespanHandoff")]
 pub(crate) struct LifespanHandoff {
     app: Py<PyAny>,
     state: Py<PyDict>,
@@ -82,6 +85,8 @@ struct ServeTask {
     fds: Box<[ListenerFd]>,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
+    ready_trigger: Option<Py<PyAny>>,
+    quiesce_fd: Option<QuiesceFd>,
     lifespan_config: Option<SecondaryLifespanConfig>,
     secondary_apps: Vec<Py<PyAny>>,
     shard_threads: Vec<ShardThread>,
@@ -176,17 +181,9 @@ impl<'py> PyConfig<'py> {
 
     fn binds(&self) -> PyResult<Box<[BindTarget]>> {
         let raw_binds = self.get::<Vec<String>>("bind")?;
-        let mut fd_is_unix = self.get::<Vec<bool>>("_bind_fd_is_unix")?;
-        if fd_is_unix.is_empty() {
-            fd_is_unix.resize(raw_binds.len(), false);
-        }
-        if raw_binds.len() != fd_is_unix.len() {
-            return Err(into_pyerr(ConfigError::BindMetadataLengthMismatch));
-        }
         raw_binds
             .iter()
-            .zip(fd_is_unix)
-            .map(|(raw, is_unix)| parse_bind_target(raw, is_unix))
+            .map(|raw| parse_bind_target(raw))
             .collect::<PyResult<Vec<_>>>()
             .map(Vec::into_boxed_slice)
     }
@@ -290,12 +287,10 @@ impl<'py> PyConfig<'py> {
         if cert_reqs != ClientCertMode::None && ca_certs.is_none() {
             return Err(into_pyerr(ConfigError::ClientCertsRequireCaCerts));
         }
-        if binds.iter().any(|bind| {
-            matches!(
-                bind,
-                BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. }
-            )
-        }) {
+        if binds
+            .iter()
+            .any(|bind| matches!(bind, BindTarget::Unix { .. }))
+        {
             return Err(into_pyerr(ConfigError::TlsRequiresTcpListeners));
         }
         build_tls_config(&certfile, &keyfile, ca_certs.as_deref(), cert_reqs, http1)
@@ -349,7 +344,7 @@ fn optional_duration(name: &'static str, seconds: f64) -> PyResult<Option<Durati
     finite_duration(name, seconds).map(Some)
 }
 
-fn parse_bind_target(raw: &str, fd_is_unix: bool) -> PyResult<BindTarget> {
+fn parse_bind_target(raw: &str) -> PyResult<BindTarget> {
     if let Some(path) = raw.strip_prefix("unix:") {
         if path.is_empty() {
             return Err(into_pyerr(ConfigError::invalid_bind_target(
@@ -373,10 +368,7 @@ fn parse_bind_target(raw: &str, fd_is_unix: bool) -> PyResult<BindTarget> {
                 "must be non-negative",
             )));
         }
-        return Ok(BindTarget::Fd {
-            fd,
-            is_unix: fd_is_unix,
-        });
+        return Ok(BindTarget::Fd { fd });
     }
     let (host, port) = if let Some(rest) = raw.strip_prefix('[') {
         let (host, port) = rest.rsplit_once("]:").ok_or_else(|| {
@@ -440,6 +432,7 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
 }
 
 #[pyfunction]
+/// Print the startup banner for a validated server configuration.
 pub(crate) fn emit_banner(config: &Bound<'_, PyAny>) -> PyResult<()> {
     let config = PyConfig(config).server_config()?;
     emit_access_banner(&config);
@@ -447,6 +440,7 @@ pub(crate) fn emit_banner(config: &Bound<'_, PyAny>) -> PyResult<()> {
 }
 
 #[pyfunction]
+/// Validate and normalize a Python `Config`, raising on invalid combinations.
 pub(crate) fn validate_config(config: &Bound<'_, PyAny>) -> PyResult<()> {
     let _ = PyConfig(config).server_config()?;
     Ok(())
@@ -465,16 +459,20 @@ const fn runtime_gil_enabled(_py: Python<'_>) -> bool {
     true
 }
 
-const fn effective_loop_count(
+fn effective_loop_count(
     gil_enabled: bool,
     requested: usize,
     factory: SecondaryLoopFactory,
-) -> usize {
-    if gil_enabled || matches!(factory, SecondaryLoopFactory::Custom) {
-        1
-    } else {
-        requested
+) -> PyResult<usize> {
+    if gil_enabled {
+        return Ok(1);
     }
+    if requested > 1 && matches!(factory, SecondaryLoopFactory::Custom) {
+        return Err(PyValueError::new_err(
+            "loop_threads > 1 requires loop='asyncio' or loop='uvloop'; the running custom event loop cannot be recreated safely on secondary threads",
+        ));
+    }
+    Ok(requested)
 }
 
 fn extract_lifespan_handoff(
@@ -491,26 +489,24 @@ fn extract_lifespan_handoff(
     Ok((handoff.app.clone_ref(py), Some(handoff.config)))
 }
 
-async fn start_secondary_lifespan(
+fn start_secondary_lifespan(
     shard: Shard,
     app: Py<PyAny>,
     config: SecondaryLifespanConfig,
-) -> Result<Py<PyAny>, H2CornError> {
-    call_awaitable(shard, move |py, shard| {
+) -> (AcknowledgedSlotFuture<PyResult<Py<PyAny>>>, SlotDropWait) {
+    call_cancellable_awaitable(shard, move |py, shard| {
         let module = py.import("h2corn._lifespan")?;
-        let runner = module.getattr("_LifespanRunner")?.call1((app,))?;
-        let state = runner.getattr("_state")?.cast_into::<PyDict>()?.unbind();
+        let runner = module.getattr("LifespanRunner")?.call1((app,))?;
+        let state = runner.getattr("state")?.cast_into::<PyDict>()?.unbind();
         shard.install_scope_state(py, state)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("required", config.required)?;
         kwargs.set_item("startup_timeout", config.startup_timeout)?;
         module
-            .getattr("_start_lifespan_runner")?
+            .getattr("start_lifespan_runner")?
             .call((runner,), Some(&kwargs))
             .map(Bound::unbind)
     })
-    .await
-    .map_err(H2CornError::from)
 }
 
 async fn stop_secondary_lifespan(
@@ -523,7 +519,7 @@ async fn stop_secondary_lifespan(
         let kwargs = PyDict::new(py);
         kwargs.set_item("shutdown_timeout", shutdown_timeout)?;
         module
-            .getattr("_stop_lifespan_runner")?
+            .getattr("stop_lifespan_runner")?
             .call((runner,), Some(&kwargs))
             .map(Bound::unbind)
     })
@@ -532,12 +528,139 @@ async fn stop_secondary_lifespan(
     .map_err(H2CornError::from)
 }
 
+/// Map a lifespan `JoinSet` failure back to the secondary loop index recorded
+/// at spawn time.
+fn secondary_loop_index(task_indices: &[(tokio::task::Id, usize)], err: &JoinError) -> usize {
+    let id = err.id();
+    task_indices
+        .iter()
+        .find_map(|&(task_id, index)| (task_id == id).then_some(index))
+        .expect("every joined secondary lifespan has a recorded loop index")
+}
+
+async fn start_secondary_lifespans(
+    shards: &[Shard],
+    apps: Vec<Py<PyAny>>,
+    config: SecondaryLifespanConfig,
+) -> (Vec<SecondaryRunner>, Option<H2CornError>) {
+    let mut starts = JoinSet::new();
+    let mut task_indices = Vec::with_capacity(apps.len());
+    let mut drop_acks = Vec::with_capacity(apps.len());
+    for (index, (shard, app)) in shards.iter().skip(1).cloned().zip(apps).enumerate() {
+        let (start, dropped) = start_secondary_lifespan(Arc::clone(&shard), app, config);
+        drop_acks.push(dropped);
+        let task = starts.spawn(async move {
+            let outcome = start.await.map_err(H2CornError::from);
+            (index, shard, outcome)
+        });
+        task_indices.push((task.id(), index));
+    }
+
+    let mut outcomes = Vec::with_capacity(starts.len());
+    let mut errors = Vec::new();
+    let mut failed = false;
+    while let Some(joined) = starts.join_next_with_id().await {
+        match joined {
+            Ok((_, outcome)) => {
+                failed = outcome.2.is_err();
+                outcomes.push(outcome);
+            },
+            Err(err) => {
+                let index = secondary_loop_index(&task_indices, &err);
+                errors.push((index, err.into()));
+                failed = true;
+            },
+        }
+        if failed {
+            // Fail-fast and a globally deterministic error priority conflict:
+            // waiting to learn whether a lower-index startup will also fail
+            // defeats cancellation. The first observed failure starts abort;
+            // among failures already delivered despite that abort, the
+            // lowest loop index is selected below.
+            starts.abort_all();
+            break;
+        }
+    }
+
+    // Drain aborted Tokio tasks first so every SlotFuture is dropped and its
+    // loop-affine cancellation event is enqueued. Tasks that won the race
+    // against abort still yield runners which must participate in rollback.
+    while let Some(joined) = starts.join_next_with_id().await {
+        match joined {
+            Ok((_, outcome)) => outcomes.push(outcome),
+            Err(err) if err.is_cancelled() => {},
+            Err(err) => {
+                let index = secondary_loop_index(&task_indices, &err);
+                errors.push((index, err.into()));
+            },
+        }
+    }
+
+    if failed {
+        // A dropped SlotFuture is not sufficient: await the slot guards held
+        // by Python done-callbacks, which resolve only after
+        // start_lifespan_runner has handled BaseException and discarded its
+        // inner ASGI lifespan task.
+        for dropped in drop_acks {
+            let _ = dropped.await;
+        }
+    }
+    outcomes.sort_unstable_by_key(|(index, ..)| *index);
+
+    let mut runners = Vec::with_capacity(outcomes.len());
+    for (index, shard, outcome) in outcomes {
+        match outcome {
+            Ok(runner) => runners.push((index, shard, runner)),
+            Err(err) => errors.push((index, err)),
+        }
+    }
+    errors.sort_unstable_by_key(|(index, _)| *index);
+    (runners, errors.into_iter().next().map(|(_, err)| err))
+}
+
+async fn stop_secondary_lifespans(
+    runners: Vec<SecondaryRunner>,
+    shutdown_timeout: Option<f64>,
+) -> Option<H2CornError> {
+    let mut stops = JoinSet::new();
+    let mut task_indices = Vec::with_capacity(runners.len());
+    for (index, shard, runner) in runners {
+        let task = stops.spawn(async move {
+            let outcome = stop_secondary_lifespan(shard, runner, shutdown_timeout).await;
+            (index, outcome)
+        });
+        task_indices.push((task.id(), index));
+    }
+
+    let mut outcomes = Vec::with_capacity(stops.len());
+    let mut errors = Vec::new();
+    while let Some(joined) = stops.join_next_with_id().await {
+        match joined {
+            Ok((_, outcome)) => outcomes.push(outcome),
+            Err(err) => {
+                let index = secondary_loop_index(&task_indices, &err);
+                errors.push((index, err.into()));
+            },
+        }
+    }
+    outcomes.sort_unstable_by_key(|(index, _)| *index);
+    for (index, outcome) in outcomes {
+        if let Err(err) = outcome {
+            errors.push((index, err));
+        }
+    }
+    errors.sort_unstable_by_key(|(index, _)| *index);
+    errors.into_iter().next().map(|(_, err)| err)
+}
+
 async fn run_serve_task(task: ServeTask) {
     let ServeTask {
         app,
         fds,
         config,
         shutdown_trigger,
+        ready_trigger,
+        quiesce_fd,
         lifespan_config,
         secondary_apps,
         shard_threads,
@@ -548,15 +671,11 @@ async fn run_serve_task(task: ServeTask) {
     let mut secondary_runners = Vec::new();
     let mut result = Ok(());
     if let Some(lifespan_config) = lifespan_config {
-        for (shard, secondary_app) in app.shards.iter().skip(1).cloned().zip(secondary_apps) {
-            match start_secondary_lifespan(Arc::clone(&shard), secondary_app, lifespan_config).await
-            {
-                Ok(runner) => secondary_runners.push((shard, runner)),
-                Err(err) => {
-                    result = Err(err);
-                    break;
-                },
-            }
+        let (runners, error) =
+            start_secondary_lifespans(&app.shards, secondary_apps, lifespan_config).await;
+        secondary_runners = runners;
+        if let Some(err) = error {
+            result = Err(err);
         }
     }
     if result.is_ok() {
@@ -566,22 +685,31 @@ async fn run_serve_task(task: ServeTask) {
                 .expect("listener ownership is transferred exactly once"),
             config,
             shutdown_trigger,
+            ready_trigger,
+            quiesce_fd,
         )
         .await;
     }
+    // Connection joins settle native ownership, but a hard-aborted H2 child
+    // can still be mid-destruction, and dropping a request SlotFuture only
+    // queues Task.cancel() on its Python loop. Wait until every scoped
+    // AppRuntime owner is gone before lifespan shutdown or loop teardown;
+    // applications may catch CancelledError and perform async cleanup before
+    // acknowledging completion.
+    app.wait_for_scoped_owners().await;
     if let Some(lifespan_config) = lifespan_config {
-        for (shard, runner) in secondary_runners.into_iter().rev() {
-            if let Err(err) =
-                stop_secondary_lifespan(shard, runner, lifespan_config.shutdown_timeout).await
-                && result.is_ok()
-            {
-                result = Err(err);
-            }
+        let shutdown_error =
+            stop_secondary_lifespans(secondary_runners, lifespan_config.shutdown_timeout).await;
+        if result.is_ok()
+            && let Some(err) = shutdown_error
+        {
+            result = Err(err);
         }
     }
 
-    // Every connection and request has drained. Drop shard Arc copies before
-    // secondary shutdown; retain Python values for main-loop destruction.
+    // Every connection, request, and secondary lifespan has drained. Drop
+    // shard Arc copies before stopping their loop threads; retain Python
+    // values for main-loop destruction.
     let loop_owned = match Arc::try_unwrap(app) {
         Ok(shared) => {
             let (python_app, limits, shards) = shared.into_teardown();
@@ -611,7 +739,8 @@ async fn run_serve_task(task: ServeTask) {
 }
 
 #[pyfunction]
-#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None))]
+#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None))]
+/// Adopt listener file descriptors and run one worker until shutdown.
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
@@ -620,10 +749,12 @@ pub(crate) fn serve_fds<'py>(
     shutdown_trigger: Py<PyAny>,
     retire_trigger: Option<Py<PyAny>>,
     lifespan_handoff: Option<Py<LifespanHandoff>>,
+    ready_trigger: Option<Py<PyAny>>,
+    quiesce_fd: Option<i64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     // Acquire RAII ownership before any fallible parsing/runtime setup. Every
     // early return and partial listener adoption now closes the remainder.
-    let fds = own_listener_fds(fds);
+    let (fds, quiesce_fd) = own_serve_fds(fds, quiesce_fd).map_err(PyValueError::new_err)?;
     let config = PyConfig(config).server_config()?;
     init_tokio_runtime(config.runtime_threads)?;
     let config = Arc::new(config);
@@ -652,7 +783,13 @@ pub(crate) fn serve_fds<'py>(
     };
     #[cfg(not(Py_GIL_DISABLED))]
     let gil_enabled = runtime_gil_enabled(py);
-    let loop_count = effective_loop_count(gil_enabled, config.loop_threads, loop_factory);
+    let loop_count = match effective_loop_count(gil_enabled, config.loop_threads, loop_factory) {
+        Ok(count) => count,
+        Err(err) => {
+            main_shard.detach(py);
+            return Err(err);
+        },
+    };
     let mut shard_threads: Vec<ShardThread> = Vec::new();
     let mut shards = vec![Arc::clone(&main_shard)];
     for index in 1..loop_count {
@@ -694,6 +831,8 @@ pub(crate) fn serve_fds<'py>(
         fds,
         config,
         shutdown_trigger,
+        ready_trigger,
+        quiesce_fd,
         lifespan_config,
         secondary_apps,
         shard_threads,
@@ -747,17 +886,14 @@ mod tests {
     }
 
     #[test]
-    fn custom_and_gil_loop_families_stay_single_loop() {
+    fn unsupported_custom_multiloop_is_rejected_and_gil_builds_stay_single_loop() {
+        effective_loop_count(false, 4, SecondaryLoopFactory::Custom).unwrap_err();
         assert_eq!(
-            effective_loop_count(false, 4, SecondaryLoopFactory::Custom),
+            effective_loop_count(true, 4, SecondaryLoopFactory::Asyncio).unwrap(),
             1
         );
         assert_eq!(
-            effective_loop_count(true, 4, SecondaryLoopFactory::Asyncio),
-            1
-        );
-        assert_eq!(
-            effective_loop_count(false, 4, SecondaryLoopFactory::Uvloop),
+            effective_loop_count(false, 4, SecondaryLoopFactory::Uvloop).unwrap(),
             4
         );
     }
@@ -795,7 +931,6 @@ mod tests {
 
     fn set_core_options(config: &Bound<'_, PyAny>) {
         config.setattr("bind", ("127.0.0.9:48123",)).unwrap();
-        config.setattr("_bind_fd_is_unix", (false,)).unwrap();
         config.setattr("max_requests", 41).unwrap();
         config.setattr("max_requests_jitter", 7).unwrap();
         config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
@@ -1014,9 +1149,9 @@ mod tests {
     fn parse_bind_target_rejects_empty_unix_path_and_negative_fd() {
         Python::initialize();
         Python::attach(|_| {
-            parse_bind_target("unix:", false).unwrap_err();
-            parse_bind_target("fd://-1", false).unwrap_err();
-            parse_bind_target(":8080", false).unwrap_err();
+            parse_bind_target("unix:").unwrap_err();
+            parse_bind_target("fd://-1").unwrap_err();
+            parse_bind_target(":8080").unwrap_err();
         });
     }
 }

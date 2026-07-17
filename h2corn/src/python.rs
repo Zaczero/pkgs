@@ -200,15 +200,21 @@ macro_rules! py_dict {
     }};
     (@push $scratch:ident, $index:expr;) => {};
     (@push $scratch:ident, $index:expr; $key:literal => true $(, $($rest:tt)*)?) => {{
-        // SAFETY: macro expansion assigns each lexical field one static slot
-        // and visits it at most once.
-        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), true)? };
+        $crate::python::py_dict!(
+            @push_value $scratch,
+            $index,
+            $crate::python::py_static_key!($key),
+            true
+        )?;
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => false $(, $($rest:tt)*)?) => {{
-        // SAFETY: macro expansion assigns each lexical field one static slot
-        // and visits it at most once.
-        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), false)? };
+        $crate::python::py_dict!(
+            @push_value $scratch,
+            $index,
+            $crate::python::py_static_key!($key),
+            false
+        )?;
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
@@ -227,15 +233,21 @@ macro_rules! py_dict {
             )?
             .bind($scratch.py())
             .clone();
-        // SAFETY: macro expansion assigns each lexical field one static slot
-        // and visits it at most once.
-        unsafe { $scratch.push_bound_at::<{ $index }>($crate::python::py_static_key!($key), value) };
+        $crate::python::py_dict!(
+            @push_bound $scratch,
+            $index,
+            $crate::python::py_static_key!($key),
+            value
+        );
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
-        // SAFETY: macro expansion assigns each lexical field one static slot
-        // and visits it at most once.
-        unsafe { $scratch.push_at::<{ $index }, _>($crate::python::py_static_key!($key), $value)? };
+        $crate::python::py_dict!(
+            @push_value $scratch,
+            $index,
+            $crate::python::py_static_key!($key),
+            $value
+        )?;
         $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
     }};
     (@push $scratch:ident, $index:expr; if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
@@ -249,6 +261,24 @@ macro_rules! py_dict {
             $crate::python::py_dict!(@push $scratch, $index; $($body)*);
         }
         $crate::python::py_dict!(@push $scratch, $index + $crate::python::py_dict_slots!($($body)*); $($($rest)*)?);
+    }};
+    (@push_value $scratch:ident, $index:expr, $key:expr, $value:expr) => {{
+        const __INDEX: usize = $index;
+        let __scratch = &mut $scratch;
+        let __key = $key;
+        let __value = $value;
+        // SAFETY: `py_dict!` assigns each lexical field one static slot and
+        // visits it at most once in field order.
+        unsafe { __scratch.push_at::<__INDEX, _>(__key, __value) }
+    }};
+    (@push_bound $scratch:ident, $index:expr, $key:expr, $value:expr) => {{
+        const __INDEX: usize = $index;
+        let __scratch = &mut $scratch;
+        let __key = $key;
+        let __value = $value;
+        // SAFETY: `py_dict!` assigns each lexical field one static slot and
+        // visits it at most once in field order.
+        unsafe { __scratch.push_bound_at::<__INDEX>(__key, __value) }
     }};
 }
 
@@ -660,23 +690,21 @@ mod tests {
             })
         });
 
-        let readers = (0..READERS)
-            .map(|_| {
-                let dict = Arc::clone(&dict);
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || -> PyResult<()> {
-                    barrier.wait();
-                    Python::attach(|py| {
-                        for _ in 0..ITERATIONS {
-                            if let Some(value) = VALUE_KEY.get_item(py, dict.bind(py))? {
-                                let _ = value.extract::<usize>()?;
-                            }
+        let readers = std::array::from_fn::<_, READERS, _>(|_| {
+            let dict = Arc::clone(&dict);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || -> PyResult<()> {
+                barrier.wait();
+                Python::attach(|py| {
+                    for _ in 0..ITERATIONS {
+                        if let Some(value) = VALUE_KEY.get_item(py, dict.bind(py))? {
+                            let _ = value.extract::<usize>()?;
                         }
-                        Ok(())
-                    })
+                    }
+                    Ok(())
                 })
             })
-            .collect::<Vec<_>>();
+        });
 
         writer
             .join()

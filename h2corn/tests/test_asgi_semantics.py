@@ -77,6 +77,7 @@ async def test_current_task_identity_and_name_across_suspension() -> None:
 
     async def app(scope, receive, send):
         task_before = asyncio.current_task()
+        assert task_before is not None
         message = await receive()  # suspends: body arrives later
         seen['same'] = asyncio.current_task() is task_before
         seen['name'] = task_before.get_name()
@@ -169,9 +170,11 @@ async def test_anyio_cancellation_scope_and_task_group() -> None:
         with anyio.move_on_after(0.05) as scope_:
             await receive()
         seen['timed_out'] = scope_.cancelled_caught
+        message = None
         async with anyio.create_task_group() as tg:
             tg.start_soon(anyio.sleep, 0.01)
             message = await receive()
+        assert message is not None
         seen['body'] = message.get('body', b'')
         await _respond(send, b'ok')
 

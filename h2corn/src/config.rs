@@ -9,7 +9,7 @@ use crate::http::types::ResponseHeaderKind;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer};
 
 pub(crate) const PATHSEND_PRELOAD_MAX: usize = 128 * 1024;
-pub(crate) const PATHSEND_READ_BUFFER_SIZE: usize = 64 * 1024;
+pub(crate) const PATHSEND_READ_BUFFER_SIZE: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Http1Config {
@@ -81,7 +81,7 @@ pub(crate) struct WebSocketConfig {
 pub(crate) enum BindTarget {
     Tcp { host: Box<str>, port: u16 },
     Unix { path: Box<str> },
-    Fd { fd: i64, is_unix: bool },
+    Fd { fd: i64 },
 }
 
 #[derive(Debug, Default)]

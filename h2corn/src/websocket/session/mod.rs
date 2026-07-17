@@ -334,8 +334,7 @@ where
     T: WebSocketHandshakeTransport + AcceptedWebSocketTransport,
 {
     let request = &context.request;
-    let connection = &request.connection;
-    let config = Arc::clone(&connection.config);
+    let config = Arc::clone(&request.connection.config);
     let access_log = WebSocketAccessLogState::new(request);
     let per_message_deflate =
         config.websocket.per_message_deflate && context.meta.per_message_deflate;
@@ -344,7 +343,7 @@ where
     let timeout_graceful_shutdown = config.timeout_graceful_shutdown;
     let ping_interval = config.websocket.ping_interval;
     let ping_timeout = config.websocket.ping_timeout;
-    let shutdown = connection.shutdown.clone();
+    let shutdown = request.connection.shutdown.clone();
 
     let mut running_app = start_websocket_app(context);
 

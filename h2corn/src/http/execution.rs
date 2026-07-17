@@ -10,6 +10,7 @@ use crate::runtime::{AppRuntime, RequestAdmission, StreamInput, try_acquire_requ
 pub(crate) struct StreamRequestInput {
     pub(crate) tx: mpsc::Sender<StreamInput>,
     pub(crate) rx: mpsc::Receiver<StreamInput>,
+    body_bytes_read: Option<RequestBodyCounter>,
     shared: Arc<RequestInputShared>,
 }
 
@@ -19,7 +20,8 @@ impl StreamRequestInput {
         Self {
             tx,
             rx,
-            shared: Arc::new(RequestInputShared::new(count_body_bytes)),
+            body_bytes_read: count_body_bytes.then(RequestBodyCounter::default),
+            shared: Arc::new(RequestInputShared::default()),
         }
     }
 
@@ -31,8 +33,7 @@ impl StreamRequestInput {
         Option<RequestBodyCounter>,
         Arc<RequestInputShared>,
     ) {
-        let counter = self.shared.body_counter();
-        (self.tx, self.rx, counter, self.shared)
+        (self.tx, self.rx, self.body_bytes_read, self.shared)
     }
 }
 
@@ -172,8 +173,8 @@ mod tests {
         assert!(counter.is_some());
         assert_eq!(
             Arc::strong_count(&disconnect),
-            2,
-            "body accounting reuses the streamed-request allocation"
+            1,
+            "body accounting must not enlarge or retain the disconnect signal"
         );
     }
 

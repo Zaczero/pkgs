@@ -250,7 +250,7 @@ where
                     .queue_close_if_open(code, reason.as_ref().map_or("", AsRef::as_ref))
                 {
                     Ok(()) => Ok(ControlFlow::Break(Ok(()))),
-                    Err(err) => self.fail_session(err).await,
+                    Err(err) => self.fail_session(err),
                 }
             },
         }
@@ -323,7 +323,7 @@ where
             reason: Some("ping timeout".into()),
         })
         .await;
-        self.running_app.task.abort().await;
+        self.running_app.task.abort();
     }
 
     async fn initiate_server_shutdown(&mut self, kind: ShutdownKind) -> Result<(), H2CornError> {
@@ -368,7 +368,7 @@ where
                         state.queue_close_if_open(code, "")
                     })
                     .await?;
-                    self.running_app.task.abort().await;
+                    self.running_app.task.abort();
                     return Ok(ControlFlow::Break(
                         WebSocketError::Protocol(err.error).err(),
                     ));
@@ -463,7 +463,7 @@ where
         }
     }
 
-    async fn fail_session(
+    fn fail_session(
         &mut self,
         err: impl Into<H2CornError>,
     ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
@@ -477,7 +477,7 @@ where
             | FailureDomain::InternalInvariant => close_code::INTERNAL_ERROR,
         };
         self.state.queue_close_if_open(close_code, "")?;
-        self.running_app.task.abort().await;
+        self.running_app.task.abort();
         Ok(ControlFlow::Break(Err(err)))
     }
 }

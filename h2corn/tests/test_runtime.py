@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import gc
 import os
 import re
@@ -6,6 +7,7 @@ import signal
 import socket
 import sys
 import textwrap
+import threading
 import weakref
 from pathlib import Path
 
@@ -13,8 +15,10 @@ import pytest
 from h2corn import Config, Server
 
 from tests._support import (
+    assert_serve_reusable,
     find_free_port,
     h2_request,
+    http1_request,
     running_server,
     wait_for_port,
     wait_for_server,
@@ -63,6 +67,461 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
         assert len(os.listdir('/proc/self/fd')) == fd_baseline
 
 
+async def test_same_server_can_serve_twice_with_fresh_shutdown_state() -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    for _ in range(2):
+        task = asyncio.create_task(server.serve())
+        await wait_for_server(server, task)
+        await asyncio.to_thread(server.shutdown)
+        await asyncio.wait_for(task, timeout=2)
+        assert server.addresses == ()
+
+
+async def test_shutdown_during_lifespan_startup_is_not_lost() -> None:
+    startup_entered = asyncio.Event()
+    finish_startup = asyncio.Event()
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        startup_entered.set()
+        await finish_startup.wait()
+        await send({'type': 'lifespan.startup.complete'})
+        assert (await receive())['type'] == 'lifespan.shutdown'
+        await send({'type': 'lifespan.shutdown.complete'})
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='on'),
+    )
+    task = asyncio.create_task(server.serve())
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    assert server.addresses
+
+    await asyncio.to_thread(server.shutdown)
+    finish_startup.set()
+
+    await asyncio.wait_for(task, timeout=2)
+    assert server.addresses == ()
+
+
+async def test_repeated_cancellation_waits_for_primary_lifespan_before_reuse() -> None:
+    startup_entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    generation = 0
+    active_lifespans = 0
+    max_active_lifespans = 0
+
+    async def app(scope, receive, send):
+        nonlocal active_lifespans, generation, max_active_lifespans
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        generation += 1
+        active_lifespans += 1
+        max_active_lifespans = max(max_active_lifespans, active_lifespans)
+        try:
+            if generation == 1:
+                startup_entered.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    cleanup_started.set()
+                    while not release_cleanup.is_set():
+                        try:
+                            await release_cleanup.wait()
+                        except asyncio.CancelledError:
+                            continue
+                    cleanup_finished.set()
+                    raise
+
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+        finally:
+            active_lifespans -= 1
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='on'),
+    )
+    first = asyncio.create_task(server.serve())
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    first.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not first.done(), 'repeated cancellation must retain lifespan ownership'
+    with pytest.raises(RuntimeError, match='active serve'):
+        await server.serve()
+
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, timeout=2)
+
+    assert cleanup_finished.is_set()
+    assert active_lifespans == 0
+    assert server.addresses == ()
+
+    await assert_serve_reusable(server)
+    assert generation == 2
+    assert max_active_lifespans == 1
+
+
+async def test_cancelling_serve_waits_for_native_graceful_drain_before_reuse() -> None:
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            raise AssertionError('lifespan is disabled')
+        request_started.set()
+        await release_request.wait()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'drained'})
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='off',
+            timeout_graceful_shutdown=1,
+        ),
+    )
+    first = asyncio.create_task(server.serve())
+    await wait_for_server(server, first)
+    port = int(server.addresses[0].rsplit(':', 1)[1])
+    request = asyncio.create_task(
+        http1_request(
+            port=port,
+            request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+        )
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=2)
+
+    first.cancel()
+    await asyncio.sleep(0.05)
+    assert not first.done(), 'native serving ownership must drain before reuse'
+
+    release_request.set()
+    status, _headers, body, _trailers = await asyncio.wait_for(request, timeout=2)
+    assert (status, body) == (200, b'drained')
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, timeout=2)
+    assert server.addresses == ()
+
+    await assert_serve_reusable(server)
+
+
+async def test_shutdown_global_deadline_cancels_never_finishing_http1_app() -> None:
+    request_started = asyncio.Event()
+    request_cancelled = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            raise AssertionError('lifespan is disabled')
+        request_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            request_cancelled.set()
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='off',
+            timeout_graceful_shutdown=0.2,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await wait_for_server(server, serving)
+    port = int(server.addresses[0].rsplit(':', 1)[1])
+    request = asyncio.create_task(
+        http1_request(
+            port=port,
+            request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+        )
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=2)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    server.shutdown()
+    await asyncio.wait_for(serving, timeout=1)
+
+    assert loop.time() - started < 0.8
+    assert request_cancelled.is_set()
+    await asyncio.gather(request, return_exceptions=True)
+    assert server.addresses == ()
+
+    await assert_serve_reusable(server)
+
+
+async def test_shutdown_waits_for_cancelled_request_cleanup_before_reuse() -> None:
+    request_started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_done = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            raise AssertionError('lifespan is disabled')
+        request_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release_cleanup.wait()
+            cleanup_done.set()
+            raise
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='off',
+            timeout_graceful_shutdown=0.05,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await wait_for_server(server, serving)
+    port = int(server.addresses[0].rsplit(':', 1)[1])
+    request = asyncio.create_task(
+        http1_request(
+            port=port,
+            request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+        )
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=2)
+
+    server.shutdown()
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
+    assert not serving.done(), 'serve must retain cancelled Python task ownership'
+    with pytest.raises(RuntimeError, match='already has an active serve'):
+        await server.serve()
+
+    release_cleanup.set()
+    await asyncio.wait_for(serving, timeout=2)
+    assert cleanup_done.is_set()
+    await asyncio.gather(request, return_exceptions=True)
+
+    await assert_serve_reusable(server)
+
+
+async def test_repeated_cancellation_cannot_interrupt_native_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _lib
+
+    native_started = asyncio.Event()
+    shutdown_received = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def fake_serve_fds(
+        _app,
+        fds,
+        _config,
+        shutdown_trigger,
+        *_args,
+    ) -> None:
+        native_started.set()
+        try:
+            assert await shutdown_trigger == 'stop'
+            shutdown_received.set()
+            await release_drain.wait()
+        finally:
+            for fd in fds:
+                os.close(fd)
+
+    monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
+
+    async def app(scope, receive, send):
+        raise AssertionError('the fake native server does not dispatch requests')
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    task = asyncio.create_task(server.serve())
+    await asyncio.wait_for(native_started.wait(), timeout=2)
+
+    task.cancel()
+    await asyncio.wait_for(shutdown_received.wait(), timeout=2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done(), 'repeated cancellation must remain shielded by native drain'
+
+    release_drain.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+    assert server.addresses == ()
+
+
+async def test_native_cancelled_error_propagates_without_shutdown_spin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _lib
+
+    calls = 0
+
+    async def fake_serve_fds(
+        _app,
+        fds,
+        _config,
+        shutdown_trigger,
+        *_args,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        try:
+            if calls == 1:
+                raise asyncio.CancelledError
+            assert await shutdown_trigger == 'stop'
+        finally:
+            for fd in fds:
+                os.close(fd)
+
+    monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
+
+    async def app(scope, receive, send):
+        raise AssertionError('the fake native server does not dispatch requests')
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(server.serve(), timeout=2)
+    assert calls == 1
+    assert server.addresses == ()
+
+    await assert_serve_reusable(server)
+    assert calls == 2
+
+
+async def test_synchronous_native_setup_failure_clears_state_before_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _lib
+
+    calls = 0
+    published_addresses: list[tuple[str, ...]] = []
+
+    def fake_serve_fds(
+        _app,
+        fds,
+        _config,
+        shutdown_trigger,
+        *_args,
+    ):
+        nonlocal calls
+        calls += 1
+        published_addresses.append(server.addresses)
+        if calls == 1:
+            for fd in fds:
+                os.close(fd)
+            raise RuntimeError('synchronous native setup failed')
+
+        async def run() -> None:
+            try:
+                assert await shutdown_trigger == 'stop'
+            finally:
+                for fd in fds:
+                    os.close(fd)
+
+        return run()
+
+    monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
+
+    async def app(scope, receive, send):
+        raise AssertionError('the fake native server does not dispatch requests')
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    with pytest.raises(RuntimeError, match='synchronous native setup failed'):
+        await server.serve()
+    assert published_addresses[0]
+    assert server.addresses == ()
+
+    await assert_serve_reusable(server)
+    assert published_addresses[1]
+    assert server.addresses == ()
+
+
+async def test_concurrent_cross_thread_serve_has_exactly_one_winner() -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    start = threading.Barrier(3)
+    rejected = threading.Event()
+
+    def run() -> str:
+        start.wait()
+        try:
+            asyncio.run(server.serve())
+        except RuntimeError:
+            rejected.set()
+            return 'rejected'
+        return 'served'
+
+    first = asyncio.create_task(asyncio.to_thread(run))
+    second = asyncio.create_task(asyncio.to_thread(run))
+
+    async def collect_outcomes() -> list[str]:
+        return list(await asyncio.gather(first, second))
+
+    outcomes = asyncio.create_task(collect_outcomes())
+    await asyncio.to_thread(start.wait)
+    try:
+        await wait_for_server(server, outcomes, timeout=2)
+        assert await asyncio.to_thread(rejected.wait, 2)
+    finally:
+        await asyncio.to_thread(server.shutdown)
+
+    assert sorted(await asyncio.wait_for(outcomes, 2)) == [
+        'rejected',
+        'served',
+    ]
+
+
+async def test_server_rejects_concurrent_serve_calls() -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    first = asyncio.create_task(server.serve())
+    await wait_for_server(server, first)
+    try:
+        with pytest.raises(RuntimeError, match='active serve'):
+            await server.serve()
+    finally:
+        server.shutdown()
+        await asyncio.wait_for(first, timeout=2)
+
+
 async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
     from h2corn._lib import serve_fds
 
@@ -70,28 +529,76 @@ async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
         raise AssertionError('listener adoption must fail before app dispatch')
 
     async def attempt(raw_fds: list[int]) -> None:
-        shutdown = asyncio.create_task(asyncio.sleep(60))
+        async def wait_for_shutdown() -> str:
+            await asyncio.sleep(60)
+            return 'stop'
+
+        shutdown = asyncio.create_task(wait_for_shutdown())
         config = Config(
             bind=('127.0.0.1:1', '127.0.0.2:1'),
             access_log=False,
             lifespan='off',
         )
+        quiesce_read_fd, quiesce_write_fd = os.pipe()
         try:
             with pytest.raises((OSError, RuntimeError)):
-                await serve_fds(app, raw_fds, config, shutdown, None)
+                await serve_fds(
+                    app,
+                    raw_fds,
+                    config,
+                    shutdown,
+                    None,
+                    None,
+                    None,
+                    quiesce_read_fd,
+                )
         finally:
+            os.close(quiesce_write_fd)
             shutdown.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await shutdown
         for fd in raw_fds:
             with pytest.raises(OSError):
                 os.fstat(fd)
+        with pytest.raises(OSError):
+            os.fstat(quiesce_read_fd)
 
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen()
     listener.setblocking(False)
     await attempt([listener.detach()])
+
+
+@pytest.mark.parametrize(
+    ('listener_fds', 'quiesce_fd'),
+    [([-1], None), ([2**40], None), ([7, 7], None), ([7], 7)],
+)
+async def test_serve_fds_rejects_unsafe_descriptor_ownership(
+    listener_fds: list[int],
+    quiesce_fd: int | None,
+) -> None:
+    from h2corn._lib import serve_fds
+
+    async def app(scope, receive, send):
+        raise AssertionError('descriptor validation precedes app dispatch')
+
+    shutdown = asyncio.get_running_loop().create_future()
+    config = Config(
+        bind=tuple(f'fd://{index}' for index in range(len(listener_fds))),
+        lifespan='off',
+    )
+    with pytest.raises(ValueError):
+        serve_fds(
+            app,
+            listener_fds,
+            config,
+            shutdown,
+            None,
+            None,
+            None,
+            quiesce_fd,
+        )
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
@@ -180,10 +687,11 @@ async def _wait_for_listening_port(
     timeout: float = 5.0,
 ) -> int:
     assert process.stderr is not None
+    stderr = process.stderr
 
     async def _read_port() -> int:
         while True:
-            line = await process.stderr.readline()
+            line = await stderr.readline()
             if not line:
                 raise AssertionError('server exited before printing listening banner')
             match = re.search(rb'Listening on http://127\.0\.0\.1:(\d+)', line)
@@ -247,7 +755,7 @@ async def test_parent_death_signal_allows_pid_one_supervisor(monkeypatch) -> Non
             return 0
 
     monkeypatch.setattr(
-        _supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'),
+        ctypes,
         'CDLL',
         lambda *_args, **_kwargs: FakeLibc(),
     )
@@ -258,18 +766,19 @@ async def test_parent_death_signal_allows_pid_one_supervisor(monkeypatch) -> Non
 
     monkeypatch.setattr(_supervisor.os, '_exit', fail_exit)
 
-    _supervisor._install_parent_death_signal()
+    _supervisor._install_parent_death_signal(1)
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux prctl parent-death signal')
-async def test_parent_death_signal_exits_when_parent_changes(monkeypatch) -> None:
+async def test_parent_death_signal_exits_when_expected_parent_died_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from h2corn import _supervisor
 
     class FakeLibc:
         def prctl(self, *_args):
             return 0
 
-    parents = iter((1234, 1))
     exit_codes: list[int] = []
 
     def fake_exit(code: int):
@@ -277,17 +786,39 @@ async def test_parent_death_signal_exits_when_parent_changes(monkeypatch) -> Non
         raise SystemExit(code)
 
     monkeypatch.setattr(
-        _supervisor.ctypes if hasattr(_supervisor, 'ctypes') else __import__('ctypes'),
+        ctypes,
         'CDLL',
         lambda *_args, **_kwargs: FakeLibc(),
     )
-    monkeypatch.setattr(_supervisor.os, 'getppid', lambda: next(parents))
+    monkeypatch.setattr(_supervisor.os, 'getppid', lambda: 1)
     monkeypatch.setattr(_supervisor.os, '_exit', fake_exit)
 
     with pytest.raises(SystemExit):
-        _supervisor._install_parent_death_signal()
+        _supervisor._install_parent_death_signal(1234)
 
     assert exit_codes == [0]
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux prctl parent-death signal')
+async def test_parent_death_signal_fails_closed_when_prctl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _supervisor
+
+    class FakeLibc:
+        def prctl(self, *_args):
+            return -1
+
+    monkeypatch.setattr(
+        ctypes,
+        'CDLL',
+        lambda *_args, **_kwargs: FakeLibc(),
+    )
+    monkeypatch.setattr(ctypes, 'get_errno', lambda: 1)
+    monkeypatch.setattr(_supervisor.os, 'getppid', lambda: 1234)
+
+    with pytest.raises(OSError, match='failed to install parent-death signal'):
+        _supervisor._install_parent_death_signal(1234)
 
 
 async def _wait_for_pid_change(
@@ -297,7 +828,7 @@ async def _wait_for_pid_change(
     deadline = loop.time() + timeout
     while True:
         try:
-            status, body = await h2_request(port=port)
+            status, body = await asyncio.wait_for(h2_request(port=port), timeout=1)
         except Exception:
             if loop.time() >= deadline:
                 raise
@@ -309,6 +840,31 @@ async def _wait_for_pid_change(
         if loop.time() >= deadline:
             raise AssertionError(f'worker pid did not change from {previous_pid!r}')
         await asyncio.sleep(0.05)
+
+
+async def _wait_for_worker_count(
+    *, supervisor_pid: int, count: int, timeout: float = 5.0
+) -> list[int]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        workers = _worker_pids(supervisor_pid)
+        if len(workers) == count:
+            return workers
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f'timed out waiting for {count} workers; found {workers}'
+            )
+        await asyncio.sleep(0.02)
+
+
+async def _wait_for_path(path: Path, timeout: float = 5.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not path.exists():
+        if loop.time() >= deadline:
+            raise AssertionError(f'timed out waiting for {path}')
+        await asyncio.sleep(0.01)
 
 
 async def test_unix_socket_serving(unix_socket_dir: Path) -> None:
@@ -579,6 +1135,130 @@ async def test_worker_supervisor_signal_controls_keep_serving_requests(
         await _terminate_process(process)
 
 
+async def test_rolling_reload_waits_for_replacement_readiness(tmp_path: Path) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='readiness_gated_reload_app',
+        module_source="""
+        import asyncio
+        import os
+
+        async def app(scope, receive, send):
+            if scope['type'] == 'lifespan':
+                while True:
+                    message = await receive()
+                    if message['type'] == 'lifespan.startup':
+                        await asyncio.sleep(0.8)
+                        await send({'type': 'lifespan.startup.complete'})
+                    elif message['type'] == 'lifespan.shutdown':
+                        await send({'type': 'lifespan.shutdown.complete'})
+                        return
+            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
+            await send({'type': 'http.response.body', 'body': str(os.getpid()).encode()})
+        """,
+        workers=1,
+    )
+
+    try:
+        old_pid = (await _wait_for_h2_body_any(port=port, timeout=5))[1]
+        supervisor_fd_count = (
+            len(os.listdir(f'/proc/{process.pid}/fd'))
+            if sys.platform == 'linux'
+            else None
+        )
+        process.send_signal(signal.SIGHUP)
+
+        # The replacement deliberately remains in lifespan startup. Every
+        # request must continue reaching the old worker throughout that gap.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.6
+        while loop.time() < deadline:
+            status, body = await asyncio.wait_for(h2_request(port=port), timeout=0.3)
+            assert (status, body) == (200, old_pid)
+            await asyncio.sleep(0.03)
+
+        new_pid = await _wait_for_pid_change(
+            port=port,
+            previous_pid=old_pid,
+            timeout=5,
+        )
+        assert new_pid != old_pid
+        if supervisor_fd_count is not None:
+            assert await _wait_for_worker_count(
+                supervisor_pid=process.pid,
+                count=1,
+            ) == [int(new_pid)]
+            assert len(os.listdir(f'/proc/{process.pid}/fd')) == supervisor_fd_count
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='worker count uses /proc')
+async def test_scale_down_during_reload_keeps_unready_replacement(
+    tmp_path: Path,
+) -> None:
+    delay_replacements = tmp_path / 'delay-replacements'
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='scale_down_during_reload_app',
+        module_source=f"""
+        import asyncio
+        import os
+
+        async def app(scope, receive, send):
+            if scope['type'] == 'lifespan':
+                while True:
+                    message = await receive()
+                    if message['type'] == 'lifespan.startup':
+                        if os.path.exists({os.fspath(delay_replacements)!r}):
+                            await asyncio.sleep(1)
+                        await send({{'type': 'lifespan.startup.complete'}})
+                    elif message['type'] == 'lifespan.shutdown':
+                        await send({{'type': 'lifespan.shutdown.complete'}})
+                        return
+            await send({{'type': 'http.response.start', 'status': 200, 'headers': []}})
+            await send({{'type': 'http.response.body', 'body': str(os.getpid()).encode()}})
+        """,
+        workers=2,
+    )
+
+    try:
+        await _wait_for_h2_body_any(port=port, timeout=5)
+        old_workers = set(
+            await _wait_for_worker_count(
+                supervisor_pid=process.pid,
+                count=2,
+            )
+        )
+        delay_replacements.write_text('delay\n')
+        process.send_signal(signal.SIGHUP)
+
+        # The third child is the replacement, held in lifespan startup for one
+        # second. Scale-down must retire another old worker, never this child.
+        await _wait_for_worker_count(supervisor_pid=process.pid, count=3)
+        process.send_signal(signal.SIGTTOU)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.5
+        while loop.time() < deadline:
+            status, body = await asyncio.wait_for(h2_request(port=port), timeout=0.3)
+            assert status == 200
+            assert int(body) in old_workers
+
+        [final_worker] = await _wait_for_worker_count(
+            supervisor_pid=process.pid,
+            count=1,
+            timeout=6,
+        )
+        assert final_worker not in old_workers
+        status, body = await _wait_for_h2_body_any(port=port, timeout=5)
+        assert (status, int(body)) == (200, final_worker)
+        assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
 @pytest.mark.parametrize('workers', [1, 2])
 async def test_worker_supervisor_exits_on_worker_crash_loop(
     tmp_path: Path,
@@ -604,6 +1284,45 @@ async def test_worker_supervisor_exits_on_worker_crash_loop(
         await _terminate_process(process)
 
     assert exit_code != 0
+
+
+async def test_worker_supervisor_exits_on_startup_watchdog_crash_loop(
+    tmp_path: Path,
+) -> None:
+    stderr_lines: list[bytes] = []
+    process, _ = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='watchdog_crashloop_app',
+        module_source="""
+        import time
+
+        async def app(scope, receive, send):
+            if scope['type'] == 'lifespan':
+                time.sleep(60)
+        """,
+        workers=1,
+        extra_args=[
+            '--timeout-worker-healthcheck',
+            '0.15',
+            '--timeout-graceful-shutdown',
+            '0.15',
+            '--timeout-lifespan-startup',
+            '30',
+        ],
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
+
+    try:
+        exit_code = await asyncio.wait_for(process.wait(), timeout=10)
+    finally:
+        await _terminate_process(process)
+        await asyncio.wait_for(stderr_task, timeout=5)
+
+    stderr = b''.join(stderr_lines).decode()
+    assert exit_code != 0
+    assert stderr.count('failed healthcheck and will be replaced') >= 3
+    assert 'worker crash loop detected' in stderr
 
 
 @pytest.mark.parametrize('workers', [1, 2])
@@ -676,49 +1395,83 @@ async def test_worker_supervisor_recycles_workers_after_max_requests(
     assert 'Stopped worker' in stderr
 
 
-async def test_worker_supervisor_replaces_worker_after_healthcheck_timeout(
+async def test_worker_supervisor_replaces_blocked_worker_before_grace_deadline(
     tmp_path: Path,
 ) -> None:
+    blocked_path = tmp_path / 'blocked-worker'
+    stderr_lines: list[bytes] = []
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
-        module_name='watchdog_app',
-        module_source="""
+        module_name='watchdog_overlap_app',
+        module_source=f"""
         import os
+        from pathlib import Path
         import time
 
         async def app(scope, receive, send):
             if scope['type'] != 'http':
                 return
             if scope['path'] == '/block':
-                time.sleep(1.0)
-                await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-                await send({'type': 'http.response.body', 'body': b'blocked'})
+                Path({os.fspath(blocked_path)!r}).write_text(str(os.getpid()))
+                time.sleep(60)
+                await send({{'type': 'http.response.start', 'status': 200, 'headers': []}})
+                await send({{'type': 'http.response.body', 'body': b'blocked'}})
                 return
-            await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
-            await send({'type': 'http.response.body', 'body': str(os.getpid()).encode()})
+            await send({{'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]}})
+            await send({{'type': 'http.response.body', 'body': str(os.getpid()).encode()}})
         """,
         workers=1,
-        extra_args=['--timeout-worker-healthcheck', '0.2'],
+        extra_args=[
+            '--timeout-worker-healthcheck',
+            '3',
+            '--timeout-graceful-shutdown',
+            '8',
+        ],
+        stderr=asyncio.subprocess.PIPE,
     )
+    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
+    blocking: asyncio.Task[tuple[int, bytes]] | None = None
 
     try:
         await wait_for_port(port)
         status, body = await asyncio.wait_for(h2_request(port=port), timeout=5)
         assert status == 200
 
-        blocking = asyncio.create_task(
-            asyncio.wait_for(h2_request(port=port, path='/block'), timeout=0.3)
-        )
-        try:
-            await blocking
-        except Exception:
-            pass
+        blocking = asyncio.create_task(h2_request(port=port, path='/block'))
+        await _wait_for_path(blocked_path)
+        assert blocked_path.read_text() == body.decode()
 
         next_pid = await _wait_for_pid_change(port=port, previous_pid=body, timeout=10)
         assert next_pid != body
+        overlapping_workers = set(_worker_pids(process.pid))
+        assert overlapping_workers == {int(body), int(next_pid)}
+        assert not _all_dead([int(body)]), (
+            'replacement must serve before the blocked worker retirement deadline'
+        )
+        [only_worker] = await _wait_for_worker_count(
+            supervisor_pid=process.pid,
+            count=1,
+            timeout=10,
+        )
+        assert only_worker == int(next_pid)
+        assert _all_dead([int(body)])
+        await asyncio.gather(blocking, return_exceptions=True)
         assert process.returncode is None
     finally:
+        if blocking is not None:
+            if not blocking.done():
+                blocking.cancel()
+            await asyncio.gather(blocking, return_exceptions=True)
         await _terminate_process(process)
+        await asyncio.wait_for(stderr_task, timeout=5)
+
+    stderr = b''.join(stderr_lines).decode()
+    assert (
+        f'Worker [{body.decode()}] exceeded graceful shutdown timeout; killing'
+        in stderr
+    )
+    assert f'Stopped worker [{body.decode()}]' in stderr
+    assert 'exited unexpectedly' not in stderr
 
 
 async def test_worker_supervisor_healthcheck_allows_async_lifespan_startup(

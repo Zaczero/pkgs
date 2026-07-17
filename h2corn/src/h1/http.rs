@@ -248,11 +248,10 @@ where
             let mut file = *file;
             match FileTransferMode::for_target::<W>(len) {
                 FileTransferMode::Buffered => {
-                    // Small files: one buffered read + ordinary writes beat a
-                    // per-response sendfile setup (measured: sendfile's loopback
-                    // skb handling is the hot path at this size). Transports that
-                    // cannot sendfile stay on this 128 KiB rolling path at every
-                    // size instead of falling into Tokio's generic 8 KiB copy.
+                    // Small files use the ordinary buffered-write path.
+                    // Transports that cannot sendfile keep the same bounded
+                    // rolling reader at every size instead of falling back to
+                    // Tokio's generic 8 KiB copy buffer.
                     let mut streamer = PathStreamer::new(file, len, true);
                     while !streamer.is_drained() {
                         streamer.fill().await?;

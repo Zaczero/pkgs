@@ -2,7 +2,8 @@
 #[path = "server_tests.rs"]
 mod tests;
 
-use std::future::{Future, poll_fn};
+use std::collections::HashSet;
+use std::future::{Future, pending, poll_fn};
 use std::io;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 #[cfg(unix)]
@@ -19,10 +20,14 @@ use bytes::{Buf, BytesMut};
 use pyo3::prelude::*;
 #[cfg(target_os = "linux")]
 use rustix::net::sockopt::set_tcp_quickack;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf, split};
+#[cfg(unix)]
+use rustix::net::{AddressFamily, getsockname};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf, split,
+};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::{UnixListener, UnixStream, unix::pipe::Receiver as QuiesceReceiver};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -45,6 +50,12 @@ use crate::{h1, h2, tls};
 pub(crate) type ListenerFd = OwnedFd;
 #[cfg(windows)]
 pub(crate) type ListenerFd = OwnedSocket;
+#[cfg(unix)]
+pub(crate) type QuiesceFd = OwnedFd;
+#[cfg(not(unix))]
+pub(crate) struct QuiesceFd;
+#[cfg(not(unix))]
+type QuiesceReceiver = QuiesceFd;
 type TlsWriteHalf = WriteHalf<TlsStream<PrefixedIo>>;
 type TlsReadHalf = ReadHalf<TlsStream<PrefixedIo>>;
 type NegotiatedTlsConnection = (
@@ -191,18 +202,78 @@ impl ConnectionPreamble {
     }
 }
 
-pub(crate) fn own_listener_fds(fds: Vec<i64>) -> Box<[ListenerFd]> {
-    fds.into_iter()
+#[cfg(unix)]
+pub(crate) fn own_serve_fds(
+    fds: Vec<i64>,
+    quiesce_fd: Option<i64>,
+) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), &'static str> {
+    let mut unique = HashSet::with_capacity(fds.len() + usize::from(quiesce_fd.is_some()));
+    let mut validated = Vec::with_capacity(fds.len());
+    for fd in fds {
+        let fd = i32::try_from(fd).map_err(|_| "file descriptor is outside the i32 range")?;
+        if fd < 0 {
+            return Err("file descriptors must be nonnegative");
+        }
+        if !unique.insert(fd) {
+            return Err("file descriptors must be globally unique");
+        }
+        validated.push(fd);
+    }
+    let quiesce_fd = quiesce_fd
         .map(|fd| {
-            #[cfg(unix)]
-            // SAFETY: Python transfers each socket exactly once with
-            // `socket.detach()` before entering Rust.
-            return unsafe { OwnedFd::from_raw_fd(fd as i32) };
-            #[cfg(windows)]
-            // SAFETY: same transfer invariant as the Unix branch.
-            return unsafe { OwnedSocket::from_raw_socket(fd as usize) };
+            let fd = i32::try_from(fd).map_err(|_| "quiesce FD is outside the i32 range")?;
+            if fd < 0 {
+                return Err("quiesce FD must be nonnegative");
+            }
+            if !unique.insert(fd) {
+                return Err("file descriptors must be globally unique");
+            }
+            Ok(fd)
         })
-        .collect()
+        .transpose()?;
+    let fds = validated
+        .into_iter()
+        .map(|fd| {
+            // SAFETY: Python transfers each socket exactly once with
+            // `socket.detach()` before entering Rust. The complete set was
+            // range- and uniqueness-validated before any ownership began.
+            unsafe { OwnedFd::from_raw_fd(fd) }
+        })
+        .collect();
+    let quiesce_fd = quiesce_fd.map(|fd| {
+        // SAFETY: this descriptor is valid by the same transfer contract and
+        // was validated against every listener before ownership began.
+        unsafe { OwnedFd::from_raw_fd(fd) }
+    });
+    Ok((fds, quiesce_fd))
+}
+
+#[cfg(windows)]
+pub(crate) fn own_serve_fds(
+    fds: Vec<i64>,
+    quiesce_fd: Option<i64>,
+) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), &'static str> {
+    if quiesce_fd.is_some() {
+        return Err("quiesce pipes are only supported on Unix");
+    }
+    let mut unique = HashSet::with_capacity(fds.len());
+    let mut validated = Vec::with_capacity(fds.len());
+    for fd in fds {
+        let fd = usize::try_from(fd).map_err(|_| "socket handle is outside the usize range")?;
+        if !unique.insert(fd) {
+            return Err("socket handles must be globally unique");
+        }
+        validated.push(fd);
+    }
+    let fds = validated
+        .into_iter()
+        .map(|fd| {
+            // SAFETY: Python transfers each socket exactly once with
+            // `socket.detach()` and the complete set is uniqueness-validated.
+            unsafe { OwnedSocket::from_raw_socket(fd) }
+        })
+        .collect();
+    Ok((fds, None))
 }
 
 pub(crate) async fn serve_from_fds(
@@ -210,9 +281,18 @@ pub(crate) async fn serve_from_fds(
     fds: Box<[ListenerFd]>,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
+    ready_trigger: Option<Py<PyAny>>,
+    quiesce_fd: Option<QuiesceFd>,
 ) -> Result<(), H2CornError> {
-    let listeners = adopt_listeners(&config.binds, fds)?;
-    serve_listeners(listeners, app, config, shutdown_trigger).await
+    let listeners = adopt_listeners(&config.binds, fds, config.tls.is_some())?;
+    #[cfg(unix)]
+    let quiesce = quiesce_fd.map(QuiesceReceiver::from_owned_fd).transpose()?;
+    #[cfg(not(unix))]
+    let quiesce = quiesce_fd;
+    if let Some(ready_trigger) = ready_trigger {
+        Python::attach(|py| ready_trigger.call0(py))?;
+    }
+    serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await
 }
 
 #[cfg(unix)]
@@ -339,36 +419,82 @@ async fn serve_listeners(
     app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     shutdown_trigger: Py<PyAny>,
+    quiesce: Option<QuiesceReceiver>,
 ) -> Result<(), H2CornError> {
     let preamble = ConnectionPreamble::from_mode(config.proxy.protocol);
     let http1 = config.http1.enabled;
     let mut accept_start = 0;
     let shutdown = shutdown_future(shutdown_trigger, app.main_shard());
     tokio::pin!(shutdown);
+    let quiesce = quiesce_future(quiesce);
+    tokio::pin!(quiesce);
     let (shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
     let mut tasks = JoinSet::new();
     let mut shutting_down = false;
+    let mut graceful_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
 
     loop {
         if shutting_down {
-            if tasks.join_next().await.is_some() {
-                continue;
+            if tasks.is_empty() {
+                break;
             }
-            break;
+            let deadline = graceful_deadline
+                .as_mut()
+                .expect("shutdown always installs a global grace deadline");
+            tokio::select! {
+                biased;
+                () = deadline.as_mut() => {
+                    // Dropping each connection future queues cancellation of
+                    // its loop-owned Python task. Drain every JoinSet result so
+                    // native connection ownership is settled before teardown.
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    break;
+                }
+                joined = tasks.join_next(), if !tasks.is_empty() => {
+                    let _ = joined;
+                    continue;
+                }
+            }
         }
 
         let (next_accept_start, accepted) = tokio::select! {
-            shutdown_kind = &mut shutdown => {
+            biased;
+            shutdown_kind = &mut quiesce => {
                 shutting_down = true;
+                graceful_deadline = Some(Box::pin(tokio::time::sleep(
+                    config.timeout_graceful_shutdown,
+                )));
                 let _ = shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
-            accepted = accept_one(&listeners, accept_start),
-                if config.limit_connections.is_none_or(|limit| tasks.len() < limit.get()) => accepted?,
+            shutdown_kind = &mut shutdown => {
+                shutting_down = true;
+                graceful_deadline = Some(Box::pin(tokio::time::sleep(
+                    config.timeout_graceful_shutdown,
+                )));
+                let _ = shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
+                continue;
+            }
             joined = tasks.join_next(), if !tasks.is_empty() => {
                 let _ = joined;
                 continue;
             }
+            accepted = accept_one(&listeners, accept_start),
+                if config.limit_connections.is_none_or(|limit| tasks.len() < limit.get()) => {
+                    match accepted {
+                        Ok(accepted) => accepted,
+                        Err(err) => {
+                            // JoinSet::drop requests abort but does not wait for
+                            // each connection future to be destroyed. Drain it
+                            // explicitly so no request admission can enter the
+                            // closed settlement set after teardown starts.
+                            tasks.abort_all();
+                            while tasks.join_next().await.is_some() {}
+                            return Err(err.into());
+                        },
+                    }
+                },
         };
         accept_start = next_accept_start;
 
@@ -386,29 +512,78 @@ async fn serve_listeners(
     Ok(())
 }
 
+#[cfg(unix)]
+async fn quiesce_future(quiesce: Option<QuiesceReceiver>) -> ShutdownKind {
+    let Some(mut quiesce) = quiesce else {
+        return pending().await;
+    };
+    let mut message = [0_u8; 1];
+    match quiesce.read_exact(&mut message).await {
+        Ok(_) if message[0] == b'R' => ShutdownKind::Restart,
+        // EOF, malformed input, and I/O failure all fail closed: stop
+        // accepting and drain with ordinary shutdown semantics.
+        _ => ShutdownKind::Stop,
+    }
+}
+
+#[cfg(not(unix))]
+async fn quiesce_future(_quiesce: Option<QuiesceFd>) -> ShutdownKind {
+    pending().await
+}
+
 fn adopt_listeners(
     binds: &[BindTarget],
     fds: Box<[ListenerFd]>,
+    tls_enabled: bool,
 ) -> io::Result<Box<[ListenerSource]>> {
-    adopt_all(binds, fds, |bind, fd| match bind {
-        BindTarget::Tcp { .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
-        #[cfg(unix)]
-        BindTarget::Unix { path } => Ok(ListenerSource::Unix {
-            listener: adopt_unix_listener(fd)?,
-            path: Some(Arc::from(path.as_ref())),
-        }),
-        #[cfg(unix)]
-        BindTarget::Fd { is_unix: true, .. } => Ok(ListenerSource::Unix {
-            listener: adopt_unix_listener(fd)?,
-            path: None,
-        }),
-        BindTarget::Fd { is_unix: false, .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
-        #[cfg(not(unix))]
-        BindTarget::Unix { .. } | BindTarget::Fd { is_unix: true, .. } => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unix listeners are not supported on this platform",
-        )),
+    adopt_all(binds, fds, |bind, fd| {
+        let is_unix = listener_is_unix(&fd)?;
+        if tls_enabled && is_unix {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS is supported only on TCP listeners",
+            ));
+        }
+        match bind {
+            BindTarget::Tcp { .. } if is_unix => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "configured TCP bind received a Unix listener",
+            )),
+            BindTarget::Tcp { .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
+            #[cfg(unix)]
+            BindTarget::Unix { path } if is_unix => Ok(ListenerSource::Unix {
+                listener: adopt_unix_listener(fd)?,
+                path: Some(Arc::from(path.as_ref())),
+            }),
+            #[cfg(unix)]
+            BindTarget::Fd { .. } if is_unix => Ok(ListenerSource::Unix {
+                listener: adopt_unix_listener(fd)?,
+                path: None,
+            }),
+            BindTarget::Fd { .. } => Ok(ListenerSource::Tcp(adopt_tcp_listener(fd)?)),
+            BindTarget::Unix { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "configured Unix bind received a TCP listener",
+            )),
+        }
     })
+}
+
+#[cfg(unix)]
+fn listener_is_unix(fd: &ListenerFd) -> io::Result<bool> {
+    match getsockname(fd)?.address_family() {
+        AddressFamily::UNIX => Ok(true),
+        AddressFamily::INET | AddressFamily::INET6 => Ok(false),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "listener has an unsupported address family",
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+const fn listener_is_unix(_fd: &ListenerFd) -> io::Result<bool> {
+    Ok(false)
 }
 
 fn adopt_all<T>(

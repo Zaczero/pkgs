@@ -129,8 +129,6 @@ pub(crate) enum ConfigError {
     InvalidProxyProtocolMode { value: Box<str> },
     #[error("invalid cert_reqs mode: {value:?}")]
     InvalidClientCertMode { value: Box<str> },
-    #[error("bind metadata length does not match configured listeners")]
-    BindMetadataLengthMismatch,
     #[error("invalid response header {value:?}: expected 'name: value'")]
     InvalidResponseHeaderFormat { value: Box<str> },
     #[error("invalid response header name: {value:?}")]

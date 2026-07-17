@@ -24,6 +24,11 @@ from tests._support import (
 pytestmark = pytest.mark.asyncio
 
 
+def _gil_is_disabled() -> bool:
+    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
+    return callable(is_gil_enabled) and not is_gil_enabled()
+
+
 async def h2_request_with_headers(
     *,
     host: str = '127.0.0.1',
@@ -261,7 +266,7 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not _gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None:
@@ -308,7 +313,46 @@ async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not _gil_is_disabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_secondary_lifespan_startups_run_concurrently() -> None:
+    main_loop_id = id(asyncio.get_running_loop())
+    lock = threading.Lock()
+    secondary_count = 0
+    secondary_start_barrier = threading.Barrier(3, timeout=1)
+
+    async def app(scope, receive, send):
+        nonlocal secondary_count
+        if scope['type'] == 'lifespan':
+            assert (await receive())['type'] == 'lifespan.startup'
+            if id(asyncio.get_running_loop()) != main_loop_id:
+                with lock:
+                    secondary_count += 1
+                try:
+                    secondary_start_barrier.wait()
+                except threading.BrokenBarrierError as exc:
+                    raise AssertionError(
+                        'secondary lifespan startup was serialized'
+                    ) from exc
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(port=0, loop_threads=4, lifespan='on', access_log=False)
+    async with running_server(app, config) as server:
+        status, _ = await h2_request(port=server_port(server))
+        assert status == 204
+
+    assert secondary_count == 3
+
+
+@pytest.mark.skipif(
+    not _gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
@@ -347,7 +391,88 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not _gil_is_disabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> None:
+    main_loop_id = id(asyncio.get_running_loop())
+    lock = threading.Lock()
+    secondary_start_barrier = threading.Barrier(4, timeout=2)
+    rollback_barrier = threading.Barrier(2, timeout=2)
+    cancelled_cleanup_done = threading.Event()
+    secondary_ordinal = 0
+    secondary_shutdowns: list[int] = []
+
+    async def app(scope, receive, send):
+        nonlocal secondary_ordinal
+        assert scope['type'] == 'lifespan'
+        loop_id = id(asyncio.get_running_loop())
+        assert (await receive())['type'] == 'lifespan.startup'
+
+        if loop_id == main_loop_id:
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+
+        with lock:
+            role = secondary_ordinal
+            secondary_ordinal += 1
+        try:
+            secondary_start_barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            raise AssertionError('secondary startups did not overlap') from exc
+
+        if role == 3:
+            # Let the two successful runners publish completion first so they
+            # deterministically exercise transactional rollback.
+            await asyncio.sleep(0.05)
+            await send({'type': 'lifespan.startup.failed', 'message': 'secondary'})
+            return
+        if role == 2:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                # Cleanup is deliberately asynchronous. Rust must not stop the
+                # loop or begin successful-runner rollback before it finishes.
+                await asyncio.sleep(0.05)
+                cancelled_cleanup_done.set()
+                raise
+
+        await send({'type': 'lifespan.startup.complete'})
+        assert (await receive())['type'] == 'lifespan.shutdown'
+        assert cancelled_cleanup_done.is_set()
+        try:
+            rollback_barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            raise AssertionError('successful rollbacks were serialized') from exc
+        await send({'type': 'lifespan.shutdown.complete'})
+        with lock:
+            secondary_shutdowns.append(loop_id)
+
+    server = Server(
+        app,
+        Config(
+            port=0,
+            loop_threads=5,
+            lifespan='on',
+            timeout_lifespan_startup=10,
+            access_log=False,
+        ),
+    )
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(RuntimeError, match='lifespan startup failed: secondary'):
+        await server.serve()
+
+    assert loop.time() - started < 3
+    assert cancelled_cleanup_done.is_set()
+    assert len(secondary_shutdowns) == 2
+    assert len(set(secondary_shutdowns)) == 2
+
+
+@pytest.mark.skipif(
+    not _gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_uvloop_secondary_factory_mismatch_fails_transactionally(

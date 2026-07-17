@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
+use nohash_hasher::{BuildNoHashHasher, IsEnabled};
 use tokio::time::Instant;
 
 /// A lazily allocated, generation-stamped deadline index.
@@ -11,7 +12,7 @@ use tokio::time::Instant;
 /// occasional rebuild bounds memory under adversarial update/cancel churn.
 pub(super) struct DeadlineQueue<K> {
     heap: BinaryHeap<DeadlineEntry<K>>,
-    current: HashMap<K, CurrentDeadline>,
+    current: HashMap<K, CurrentDeadline, BuildNoHashHasher<K>>,
     next_generation: u64,
 }
 
@@ -56,7 +57,7 @@ impl<K> Default for DeadlineQueue<K> {
     fn default() -> Self {
         Self {
             heap: BinaryHeap::new(),
-            current: HashMap::new(),
+            current: HashMap::with_hasher(BuildNoHashHasher::default()),
             next_generation: 0,
         }
     }
@@ -64,7 +65,7 @@ impl<K> Default for DeadlineQueue<K> {
 
 impl<K> DeadlineQueue<K>
 where
-    K: Copy + Eq + Hash + Ord,
+    K: Copy + Eq + Hash + IsEnabled + Ord,
 {
     pub(super) fn schedule(&mut self, key: K, at: Instant) {
         self.next_generation = self.next_generation.wrapping_add(1);

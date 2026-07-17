@@ -87,15 +87,11 @@ impl RequestBodyState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
-    use crate::bridge::{RequestBodyCounter, RequestInputShared};
+    use crate::bridge::RequestBodyCounter;
 
     fn body_counter() -> RequestBodyCounter {
-        Arc::new(RequestInputShared::new(true))
-            .body_counter()
-            .expect("body accounting is enabled")
+        RequestBodyCounter::default()
     }
 
     #[test]

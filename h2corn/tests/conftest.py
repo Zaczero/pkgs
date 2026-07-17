@@ -52,13 +52,10 @@ def _event_loop_policies():
 
 def pytest_generate_tests(metafunc):
     """Run coroutine tests under each loop without duplicating sync tests."""
-    if (
-        'event_loop_policy' in metafunc.fixturenames
-        and inspect.iscoroutinefunction(metafunc.function)
+    if 'event_loop_policy' in metafunc.fixturenames and inspect.iscoroutinefunction(
+        metafunc.function
     ):
-        metafunc.parametrize(
-            'event_loop_policy', _event_loop_policies(), indirect=True
-        )
+        metafunc.parametrize('event_loop_policy', _event_loop_policies(), indirect=True)
 
 
 @pytest.fixture

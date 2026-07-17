@@ -34,31 +34,17 @@ pub(crate) struct RequestInputShared {
     app_started: OnceLock<()>,
     started: AtomicU64,
     queued: AtomicU64,
-    body_bytes: AtomicU64,
-    count_body_bytes: bool,
     notify: Notify,
 }
 
-/// Narrow capability for request-body accounting. It shares the streamed
-/// request allocation without exposing disconnect coordination state.
-#[derive(Clone, Debug)]
+/// Optional request-body accounting capability. The allocation exists only
+/// when access logging consumes it, keeping the default request signal small.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RequestBodyCounter {
-    shared: Arc<RequestInputShared>,
+    bytes: Arc<AtomicU64>,
 }
 
 impl RequestInputShared {
-    pub(crate) fn new(count_body_bytes: bool) -> Self {
-        Self {
-            count_body_bytes,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn body_counter(self: &Arc<Self>) -> Option<RequestBodyCounter> {
-        self.count_body_bytes.then(|| RequestBodyCounter {
-            shared: Arc::clone(self),
-        })
-    }
     pub(crate) fn mark_app_started(&self) {
         let _ = self.app_started.set(());
         self.notify.notify_one();
@@ -93,11 +79,11 @@ impl RequestInputShared {
 
 impl RequestBodyCounter {
     pub(crate) fn add(&self, len: u64) {
-        self.shared.body_bytes.fetch_add(len, Ordering::Relaxed);
+        self.bytes.fetch_add(len, Ordering::Relaxed);
     }
 
     pub(crate) fn load(&self) -> u64 {
-        self.shared.body_bytes.load(Ordering::Relaxed)
+        self.bytes.load(Ordering::Relaxed)
     }
 }
 
@@ -151,9 +137,18 @@ impl HttpReceiveState {
                 more_body: true,
                 credit,
             },
-            Some(StreamInput::HttpDataBatch { bodies, credit }) => HttpInboundEvent::RequestBatch {
-                bodies,
+            Some(StreamInput::BufferedData { body, credit }) => HttpInboundEvent::Request {
+                body: body.freeze(),
                 more_body: true,
+                credit,
+            },
+            Some(StreamInput::DataBatch {
+                bodies,
+                body_bytes,
+                credit,
+            }) => HttpInboundEvent::RequestBatch {
+                bodies,
+                body_bytes,
                 credit,
             },
             Some(StreamInput::EndStream) => HttpInboundEvent::Request {
@@ -201,7 +196,7 @@ impl EventSource for HttpReceiveState {
     }
 }
 
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_HttpReceive")]
 pub struct PyHttpReceive {
     shard: Shard,
     kind: HttpReceiveKind,
@@ -241,15 +236,92 @@ impl PyHttpReceive {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
     use std::sync::Arc;
 
+    use bytes::{Bytes, BytesMut};
     use tokio::sync::mpsc;
 
     use super::{
         EventSource, HttpInboundEvent, HttpReceiveInput, HttpReceiveState, RequestInputShared,
     };
-    use crate::h2_frame::ErrorCode;
-    use crate::runtime::StreamInput;
+    use crate::h2_frame::{ErrorCode, StreamId};
+    use crate::runtime::{H2InputCreditQueue, StreamInput};
+
+    #[test]
+    fn buffered_h2_input_maps_without_releasing_credit_early() {
+        let flow = Arc::new(H2InputCreditQueue::default());
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+        let (tx, rx) = mpsc::channel(1);
+        tx.try_send(StreamInput::BufferedData {
+            body: BytesMut::from(&b"coalesced-body"[..]),
+            credit: Some(flow.credit(stream_id, NonZeroU32::new(14).unwrap())),
+        })
+        .unwrap();
+        let mut state = HttpReceiveState {
+            input: HttpReceiveInput::Open(rx),
+            disconnect: Arc::new(RequestInputShared::default()),
+        };
+
+        let Some(HttpInboundEvent::Request {
+            body,
+            more_body: true,
+            credit,
+        }) = state.try_pull()
+        else {
+            panic!("buffered data must map to one ordinary request event");
+        };
+        assert_eq!(body.as_ref(), b"coalesced-body");
+        assert!(!flow.has_pending(), "mapping retains the receive credit");
+        drop(credit);
+
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].bytes.get(), 14);
+    }
+
+    #[test]
+    fn batched_h2_input_preserves_body_length_and_credit() {
+        let flow = Arc::new(H2InputCreditQueue::default());
+        let stream_id = StreamId::new(1).expect("non-zero stream id");
+        let (tx, rx) = mpsc::channel(1);
+        tx.try_send(StreamInput::DataBatch {
+            bodies: vec![
+                Bytes::from_static(b"segmented-"),
+                Bytes::from_static(b"body"),
+            ],
+            body_bytes: b"segmented-body".len(),
+            credit: Some(flow.credit(stream_id, NonZeroU32::new(14).unwrap())),
+        })
+        .unwrap();
+        let mut state = HttpReceiveState {
+            input: HttpReceiveInput::Open(rx),
+            disconnect: Arc::new(RequestInputShared::default()),
+        };
+
+        let Some(HttpInboundEvent::RequestBatch {
+            bodies,
+            body_bytes,
+            credit,
+        }) = state.try_pull()
+        else {
+            panic!("batched data must remain one batched request event");
+        };
+        assert_eq!(body_bytes, b"segmented-body".len());
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0].as_ref(), b"segmented-");
+        assert_eq!(bodies[1].as_ref(), b"body");
+        assert!(!flow.has_pending(), "mapping retains the receive credit");
+        drop(credit);
+
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].stream_id, stream_id);
+        assert_eq!(released[0].bytes.get(), 14);
+    }
 
     #[test]
     fn terminal_input_drops_the_receiver_and_queued_owners_immediately() {
@@ -310,7 +382,7 @@ impl PyHttpReceive {
     }
 }
 
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_HttpSend")]
 pub struct PyHttpSend {
     shard: Shard,
     state: HttpSendState,

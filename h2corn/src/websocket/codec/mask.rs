@@ -4,23 +4,23 @@ const WS_MASK_LANES: usize = 32;
 
 #[derive(Clone, Copy)]
 pub(super) struct MaskKey {
-    words: [u32; 4],
+    word: u32,
 }
 
 impl MaskKey {
     pub(super) const fn new(mask: [u8; 4]) -> Self {
         Self {
-            words: [
-                u32::from_ne_bytes([mask[0], mask[1], mask[2], mask[3]]),
-                u32::from_ne_bytes([mask[1], mask[2], mask[3], mask[0]]),
-                u32::from_ne_bytes([mask[2], mask[3], mask[0], mask[1]]),
-                u32::from_ne_bytes([mask[3], mask[0], mask[1], mask[2]]),
-            ],
+            word: u32::from_ne_bytes(mask),
         }
     }
 
     const fn word(self, phase: usize) -> u32 {
-        self.words[phase & 3]
+        let rotation = ((phase & 3) * u8::BITS as usize) as u32;
+        if cfg!(target_endian = "little") {
+            self.word.rotate_right(rotation)
+        } else {
+            self.word.rotate_left(rotation)
+        }
     }
 }
 

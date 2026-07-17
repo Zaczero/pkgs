@@ -133,8 +133,15 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
                 }
                 Ok(TransportRead::Progress)
             },
-            Some(StreamInput::HttpDataBatch { bodies, credit }) => {
-                for body in *bodies {
+            Some(StreamInput::BufferedData { body, credit }) => {
+                codec.push_segment(body.freeze());
+                if let Some(credit) = credit {
+                    credit.release();
+                }
+                Ok(TransportRead::Progress)
+            },
+            Some(StreamInput::DataBatch { bodies, credit, .. }) => {
+                for body in bodies {
                     codec.push_segment(body);
                 }
                 if let Some(credit) = credit {

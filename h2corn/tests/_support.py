@@ -7,7 +7,7 @@ import h2.config
 import h2.connection
 import h2.events
 from h2corn import Config, Server
-from h2corn._config import TcpBindSpec, UnixBindSpec, _parse_bind_spec
+from h2corn._config import TcpBindSpec, UnixBindSpec, parse_bind_spec
 
 
 async def open_h2_connection(
@@ -308,7 +308,7 @@ def server_port(server: Server, index: int = 0) -> int:
     ports = [
         spec.port
         for address in server.addresses
-        if isinstance(spec := _parse_bind_spec(address), TcpBindSpec)
+        if isinstance(spec := parse_bind_spec(address), TcpBindSpec)
     ]
     if index >= len(ports):
         raise AssertionError(f'no TCP listener {index}: {server.addresses!r}')
@@ -341,7 +341,7 @@ async def wait_for_server(
         pending_unix = []
         pending_ports = []
         for bind in server.addresses:
-            spec = _parse_bind_spec(bind)
+            spec = parse_bind_spec(bind)
             if isinstance(spec, TcpBindSpec):
                 pending_ports.append((spec.host, spec.port))
             elif isinstance(spec, UnixBindSpec):
@@ -353,6 +353,14 @@ async def wait_for_server(
         if loop.time() >= deadline:
             raise TimeoutError(f'timed out waiting for listeners {server.addresses}')
         await asyncio.sleep(0.01)
+
+
+async def assert_serve_reusable(server: Server, timeout: float = 2) -> None:
+    """The server accepts a fresh serve() lifecycle after the previous ended."""
+    task = asyncio.create_task(server.serve())
+    await wait_for_server(server, task, timeout=timeout)
+    server.shutdown()
+    await asyncio.wait_for(task, timeout=timeout)
 
 
 def _port_is_open(host: str, port: int) -> bool:

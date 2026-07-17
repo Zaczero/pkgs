@@ -61,6 +61,7 @@ type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 enum FutureState {
     Pending {
         callbacks: Callbacks,
+        callback_removal_revision: u64,
         abort: Option<AbortHandle>,
     },
     Ready(Py<PyAny>),
@@ -72,7 +73,7 @@ enum FutureState {
 
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
 /// app task. Created pending; resolved exclusively by the pump.
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "_RustFuture")]
 pub struct RustFuture {
     state: Mutex<FutureState>,
     blocking: AtomicBool,
@@ -100,9 +101,8 @@ impl RustFuture {
     /// Pump-only: resolve and invoke stored callbacks directly. The caller
     /// must be a plain loop callback (never a running task).
     pub(super) fn resolve(self_: &Py<Self>, py: Python<'_>, payload: ResolvePayload) {
-        let this = self_.get();
         let callbacks = {
-            let mut state = this.state.lock();
+            let mut state = self_.get().state.lock();
             match &mut *state {
                 // Convert under the lock: all state transitions happen on
                 // the loop thread and `convert` builds plain objects (never
@@ -178,50 +178,95 @@ impl RustFuture {
         context: Option<Py<PyAny>>,
     ) -> PyResult<()> {
         let py = self_.py();
-        let this = self_.get();
         let context = match context {
             Some(context) => context,
             None => copy_context(py)?,
         };
         {
-            let mut state = this.state.lock();
+            let mut state = self_.get().state.lock();
             if let FutureState::Pending { callbacks, .. } = &mut *state {
                 callbacks.push((callback, context));
                 return Ok(());
             }
         }
-        schedule_done_callback(&this.shard, py, &callback, self_.as_any(), &context)
+        schedule_done_callback(&self_.get().shard, py, &callback, self_.as_any(), &context)
     }
 
     fn remove_done_callback(&self, py: Python<'_>, callback: &Bound<'_, PyAny>) -> PyResult<usize> {
-        let mut error = None;
-        let removed = {
-            let mut state = self.state.lock();
-            if let FutureState::Pending { callbacks, .. } = &mut *state {
-                let before = callbacks.len();
-                callbacks.retain(|(existing, _)| match existing.bind(py).eq(callback) {
-                    Ok(equal) => !equal,
-                    Err(err) => {
-                        error.get_or_insert(err);
-                        true
-                    },
-                });
-                before - callbacks.len()
-            } else {
-                0
+        loop {
+            // Python equality is arbitrary user code: it can re-enter this
+            // future and, on free-threaded builds, another thread can mutate
+            // the callback list concurrently. Snapshot owned references under
+            // the mutex, but perform every comparison after releasing it.
+            let (revision, snapshot) = {
+                let state = self.state.lock();
+                let FutureState::Pending {
+                    callbacks,
+                    callback_removal_revision,
+                    ..
+                } = &*state
+                else {
+                    return Ok(0);
+                };
+                let revision = *callback_removal_revision;
+                let snapshot = callbacks
+                    .iter()
+                    .map(|(existing, _)| (existing.clone_ref(py), false))
+                    .collect::<SmallVec<[_; 1]>>();
+                drop(state);
+                (revision, snapshot)
+            };
+
+            let mut snapshot = snapshot;
+            for (existing, keep) in &mut snapshot {
+                *keep = !existing.bind(py).eq(callback)?;
             }
-        };
-        error.map_or(Ok(removed), Err)
+
+            let mut state = self.state.lock();
+            let FutureState::Pending {
+                callbacks,
+                callback_removal_revision,
+                ..
+            } = &mut *state
+            else {
+                // Completion won the race and took ownership of the callback
+                // list before this removal could commit.
+                return Ok(0);
+            };
+            if *callback_removal_revision != revision {
+                // Another removal changed the snapshot. Retry so the final
+                // mutation applies to one coherent list. Adds only append and
+                // deliberately survive a removal already in progress.
+                drop(state);
+                continue;
+            }
+
+            debug_assert!(callbacks.len() >= snapshot.len());
+            let before = callbacks.len();
+            let mut index = 0;
+            callbacks.retain(|_| {
+                let retain = index >= snapshot.len() || snapshot[index].1;
+                index += 1;
+                retain
+            });
+            let removed = before - callbacks.len();
+            if removed != 0 {
+                *callback_removal_revision = callback_removal_revision.wrapping_add(1);
+            }
+            drop(state);
+            return Ok(removed);
+        }
     }
 
     #[pyo3(signature = (msg = None))]
     fn cancel(self_: &Bound<'_, Self>, msg: Option<Py<PyAny>>) -> PyResult<bool> {
         let py = self_.py();
-        let this = self_.get();
         let (callbacks, abort) = {
-            let mut state = this.state.lock();
+            let mut state = self_.get().state.lock();
             match &mut *state {
-                FutureState::Pending { callbacks, abort } => {
+                FutureState::Pending {
+                    callbacks, abort, ..
+                } => {
                     let callbacks = mem::take(callbacks);
                     let abort = abort.take();
                     *state = FutureState::Cancelled { msg };
@@ -237,7 +282,7 @@ impl RustFuture {
         // cancel() is typically invoked from inside Task.__step — callbacks
         // MUST be deferred to a plain loop callback (`_enter_task` guard).
         for (callback, context) in callbacks {
-            schedule_done_callback(&this.shard, py, &callback, self_.as_any(), &context)?;
+            schedule_done_callback(&self_.get().shard, py, &callback, self_.as_any(), &context)?;
         }
         Ok(true)
     }
@@ -341,6 +386,7 @@ pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustF
     Py::new(py, RustFuture {
         state: Mutex::new(FutureState::Pending {
             callbacks: SmallVec::new(),
+            callback_removal_revision: 0,
             abort: None,
         }),
         blocking: AtomicBool::new(false),
@@ -365,4 +411,274 @@ fn schedule_done_callback(
         .bind(py)
         .call((callback.bind(py), future), Some(&kwargs))
         .map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::Python;
+    use pyo3::ffi::c_str;
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+
+    use super::{FutureState, new_rust_future};
+    use crate::pyloop::ShardHandle;
+
+    #[test]
+    fn callback_equality_can_reenter_done() {
+        Python::initialize();
+        Python::attach(|py| {
+            let future = new_rust_future(py, ShardHandle::test_stub(py))
+                .expect("test future must be created");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("future", &future)
+                .expect("future must enter test locals");
+            py.run(
+                c_str!(
+                    r#"
+class ReentrantEquality:
+    observed_done = None
+
+    def __call__(self, future):
+        pass
+
+    def __eq__(self, other):
+        self.observed_done = future.done()
+        return True
+
+registered = ReentrantEquality()
+future.add_done_callback(registered)
+assert future.remove_done_callback(object()) == 1
+assert registered.observed_done is False
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("reentrant equality must not deadlock");
+
+            let state = future.get().state.lock();
+            let FutureState::Pending { callbacks, .. } = &*state else {
+                panic!("future must remain pending");
+            };
+            assert!(callbacks.is_empty());
+            drop(state);
+        });
+    }
+
+    #[test]
+    fn concurrent_add_survives_remove_snapshot() {
+        Python::initialize();
+        Python::attach(|py| {
+            let future = new_rust_future(py, ShardHandle::test_stub(py))
+                .expect("test future must be created");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("future", &future)
+                .expect("future must enter test locals");
+            py.run(
+                c_str!(
+                    r#"
+import threading
+
+entered_equality = threading.Event()
+release_equality = threading.Event()
+
+class BlockingEquality:
+    def __call__(self, future):
+        pass
+
+    def __eq__(self, other):
+        entered_equality.set()
+        if not release_equality.wait(5):
+            raise AssertionError("concurrent callback registration did not run")
+        return True
+
+registered = BlockingEquality()
+added_during_comparison = lambda future: None
+future.add_done_callback(registered)
+
+def add_callback():
+    assert entered_equality.wait(5)
+    future.add_done_callback(added_during_comparison)
+    release_equality.set()
+
+thread = threading.Thread(target=add_callback)
+thread.start()
+assert future.remove_done_callback(added_during_comparison) == 1
+thread.join(5)
+assert not thread.is_alive()
+assert future.remove_done_callback(added_during_comparison) == 1
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("concurrent add and removal must preserve the new callback");
+
+            let state = future.get().state.lock();
+            let FutureState::Pending { callbacks, .. } = &*state else {
+                panic!("future must remain pending");
+            };
+            assert!(callbacks.is_empty());
+            drop(state);
+        });
+    }
+
+    #[test]
+    fn concurrent_removals_commit_one_coherent_snapshot() {
+        Python::initialize();
+        Python::attach(|py| {
+            let future = new_rust_future(py, ShardHandle::test_stub(py))
+                .expect("test future must be created");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("future", &future)
+                .expect("future must enter test locals");
+            py.run(
+                c_str!(
+                    r#"
+import threading
+
+both_comparing = threading.Barrier(2)
+
+class SynchronizesEquality:
+    def __call__(self, future):
+        pass
+
+    def __eq__(self, other):
+        both_comparing.wait(5)
+        return True
+
+future.add_done_callback(SynchronizesEquality())
+target = object()
+removed_counts = []
+
+def remove_callback():
+    removed_counts.append(future.remove_done_callback(target))
+
+threads = [threading.Thread(target=remove_callback) for _ in range(2)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join(5)
+assert all(not thread.is_alive() for thread in threads)
+assert sorted(removed_counts) == [0, 1]
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("concurrent removals must not double-remove one registration");
+
+            let state = future.get().state.lock();
+            let FutureState::Pending { callbacks, .. } = &*state else {
+                panic!("future must remain pending");
+            };
+            assert!(callbacks.is_empty());
+            drop(state);
+        });
+    }
+
+    #[test]
+    fn equality_error_does_not_partially_remove_callbacks() {
+        Python::initialize();
+        Python::attach(|py| {
+            let future = new_rust_future(py, ShardHandle::test_stub(py))
+                .expect("test future must be created");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("future", &future)
+                .expect("future must enter test locals");
+            py.run(
+                c_str!(
+                    r#"
+class Matches:
+    def __call__(self, future):
+        pass
+
+    def __eq__(self, other):
+        return True
+
+class Raises:
+    def __call__(self, future):
+        pass
+
+    def __eq__(self, other):
+        raise RuntimeError("comparison failed")
+
+first = Matches()
+second = Raises()
+future.add_done_callback(first)
+future.add_done_callback(second)
+try:
+    future.remove_done_callback(object())
+except RuntimeError as error:
+    assert str(error) == "comparison failed"
+else:
+    raise AssertionError("comparison error was swallowed")
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("comparison error must reach Python");
+
+            let state = future.get().state.lock();
+            let FutureState::Pending { callbacks, .. } = &*state else {
+                panic!("future must remain pending");
+            };
+            assert_eq!(callbacks.len(), 2);
+            drop(state);
+        });
+    }
+
+    #[test]
+    fn reentrant_cancel_wins_callback_removal_race() {
+        Python::initialize();
+        Python::attach(|py| {
+            let event_loop = py
+                .import("asyncio")
+                .and_then(|asyncio| asyncio.call_method0("new_event_loop"))
+                .expect("test event loop must be created");
+            let shard =
+                ShardHandle::from_event_loop(py, &event_loop).expect("test shard must be created");
+            let future = new_rust_future(py, shard).expect("test future must be created");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("future", &future)
+                .expect("future must enter test locals");
+            locals
+                .set_item("event_loop", &event_loop)
+                .expect("loop must enter test locals");
+            py.run(
+                c_str!(
+                    r#"
+import asyncio
+
+callback_calls = 0
+
+class CancelsDuringEquality:
+    def __call__(self, future):
+        global callback_calls
+        callback_calls += 1
+
+    def __eq__(self, other):
+        assert future.cancel()
+        return True
+
+registered = CancelsDuringEquality()
+future.add_done_callback(registered)
+assert future.remove_done_callback(object()) == 0
+assert future.done() and future.cancelled()
+event_loop.run_until_complete(asyncio.sleep(0))
+assert callback_calls == 1
+event_loop.close()
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("completion must take callback ownership exactly once");
+        });
+    }
 }

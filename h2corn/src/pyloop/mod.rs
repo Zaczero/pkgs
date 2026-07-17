@@ -35,14 +35,16 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyDictMethods};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, write};
-pub(crate) use slot::{SlotFuture, TaskSlot};
+pub(crate) use slot::{
+    AcknowledgedSlotFuture, SlotDropAck, SlotDropWait, SlotFuture, TaskSlot,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 
 use crate::app_call::AppCallArgs;
 use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
-use crate::runtime::AppRuntimeHandle;
+use crate::runtime::{AppRuntimeHandle, RequestTaskGuard};
 
 /// Maximum events processed per pump invocation before yielding back to the
 /// loop via `call_soon`, so app callbacks and timers interleave fairly.
@@ -59,7 +61,7 @@ pub(crate) type BuildAwaitable =
 /// a completed embedded `serve()` can release the doorbell and Python caches.
 pub(crate) type Shard = Arc<ShardHandle>;
 
-pub(crate) type SlotHandle<T> = Arc<TaskSlot<T>>;
+pub(crate) type SlotHandle<T, Guard = ()> = Arc<TaskSlot<T, Guard>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SecondaryLoopFactory {
@@ -182,9 +184,8 @@ pub(crate) enum PumpEvent {
     /// Start an ASGI app call: build args, vectorcall the app, create an
     /// eager task, deliver the outcome through the slot.
     StartTask {
-        app: AppRuntimeHandle,
         args: Box<AppCallArgs>,
-        slot: SlotHandle<Result<(), H2CornError>>,
+        slot: SlotHandle<Result<(), H2CornError>, RequestTaskGuard>,
     },
     /// Resolve a pending duck future with a payload produced by Rust I/O.
     Resolve {
@@ -202,6 +203,13 @@ pub(crate) enum PumpEvent {
     CallAwaitable {
         build: BuildAwaitable,
         slot: SlotHandle<PyResult<Py<PyAny>>>,
+    },
+    /// Cancellable form of [`Self::CallAwaitable`]. Its slot guard
+    /// acknowledges only after the Python task's done-callback releases the
+    /// last slot owner, allowing transactional startup to await real cleanup.
+    CallCancellableAwaitable {
+        build: BuildAwaitable,
+        slot: SlotHandle<PyResult<Py<PyAny>>, SlotDropAck>,
     },
     /// Drop a fallback shared-app owner on the main loop, then acknowledge so
     /// secondary shards can be stopped without cross-loop final destruction.
@@ -351,8 +359,10 @@ impl ShardHandle {
     }
 
     /// Construct `asyncio.tasks.Task(coro, loop=..., [eager_start=True,]
-    /// name="h2corn.request")` through PyO3's vectorcall-dict path, with a
-    /// cached immutable kwargs dictionary and no positional tuple allocation.
+    /// name="h2corn.request")` through PyO3's vectorcall-dict path. The Task
+    /// type has no vectorcall slot, so CPython must materialize its positional
+    /// tuple; caching the immutable kwargs dictionary avoids rebuilding that
+    /// second call container for every request.
     /// Pump-only: must run from a plain loop callback.
     pub(super) fn construct_task<'py>(
         &self,
@@ -484,11 +494,13 @@ impl ShardHandle {
             .call_method0(pyo3::intern!(py, "stop"));
     }
 
-    /// Drain up to [`PUMP_BATCH_MAX`] events; report whether more remain.
+    /// Drain up to [`PUMP_BATCH_MAX`] events into a LIFO work buffer in
+    /// reverse order; report whether more remain. Popping the buffer therefore
+    /// preserves the queue's FIFO order without forfeiting its allocation.
     fn drain_batch(&self, batch: &mut Vec<PumpEvent>) -> bool {
         let mut queue = self.queue.lock();
         let take = queue.len().min(PUMP_BATCH_MAX);
-        batch.extend(queue.drain(..take));
+        batch.extend(queue.drain(..take).rev());
         !queue.is_empty()
     }
 }
@@ -610,6 +622,24 @@ where
     slot.wait(shard)
 }
 
+/// Construct a loop-affine awaitable whose abandonment can be acknowledged
+/// after its actual Python done-callback. This remains a distinct cold-path
+/// slot specialization, so request slots gain no notification state or branch.
+pub(crate) fn call_cancellable_awaitable<B>(
+    shard: Shard,
+    build: B,
+) -> (AcknowledgedSlotFuture<PyResult<Py<PyAny>>>, SlotDropWait)
+where
+    B: for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send + 'static,
+{
+    let (slot, dropped) = TaskSlot::with_drop_ack();
+    shard.push(PumpEvent::CallCancellableAwaitable {
+        build: Box::new(build),
+        slot: Arc::clone(&slot),
+    });
+    (slot.wait(shard), dropped)
+}
+
 pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {
     let (done, wait) = oneshot::channel();
     shard.push(PumpEvent::ReleaseApp { app, done });
@@ -642,7 +672,6 @@ mod tests {
             SecondaryLoopFactory::Custom
         );
     }
-
     #[cfg(Py_GIL_DISABLED)]
     #[test]
     fn dropping_shard_thread_stops_loop_and_releases_handle() {
