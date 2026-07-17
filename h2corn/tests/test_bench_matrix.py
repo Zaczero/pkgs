@@ -17,8 +17,6 @@ def test_manifest_boundary_returns_only_validated_typed_data(tmp_path):
     path = tmp_path / 'matrix.toml'
     path.write_text(
         """
-schema_version = 1
-
 [defaults]
 duration = "2s"
 concurrency = 10
@@ -42,7 +40,6 @@ default = true
     manifest, scenarios = matrix.load_manifest(path)
 
     assert manifest == {
-        'schema_version': 1,
         'defaults': {
             'duration': '2s',
             'concurrency': 10,
@@ -81,8 +78,6 @@ def test_manifest_boundary_rejects_coercible_family_types(
     path = tmp_path / 'matrix.toml'
     path.write_text(
         f"""
-schema_version = 1
-
 [defaults]
 duration = "2s"
 concurrency = 10
@@ -109,8 +104,6 @@ def test_manifest_boundary_rejects_unknown_family_keys(tmp_path):
     path = tmp_path / 'matrix.toml'
     path.write_text(
         """
-schema_version = 1
-
 [defaults]
 duration = "2s"
 concurrency = 10
@@ -181,36 +174,6 @@ def test_default_and_glob_selection_are_intentional():
     }
 
 
-def test_matrix_accepts_full_core_noise_as_an_explicit_retained_limit():
-    args = matrix.parse_args([
-        '--control',
-        'old=old-server',
-        '--candidate',
-        'new=new-server',
-        '--server-cpus',
-        '2',
-        '--load-cpus',
-        '4-5',
-        '--management-cpus',
-        '0',
-        '--max-ambient-cpu-utilization',
-        '2',
-        '--max-ambient-single-cpu-utilization',
-        '1',
-    ])
-
-    assert args.max_ambient_cpu_utilization == 2.0
-    assert args.max_ambient_single_cpu_utilization == 1.0
-    assert (
-        compare.host_noise_mode(
-            args.server_cpus,
-            args.max_ambient_cpu_utilization,
-            args.max_ambient_single_cpu_utilization,
-        )
-        == 'diagnostic-pinned-noisy'
-    )
-
-
 def test_compare_argv_carries_topology_affinity_and_protocol(tmp_path):
     scenario = next(item for item in _scenarios() if item.id == 'h2-tcp-unary-w4-l1')
     args = argparse.Namespace(
@@ -224,9 +187,6 @@ def test_compare_argv_carries_topology_affinity_and_protocol(tmp_path):
         management_cpus='0',
         load_warmup_duration='750ms',
         max_load_utilization=0.8,
-        ambient_cpu_probe_seconds=0.75,
-        max_ambient_cpu_utilization=0.09,
-        max_ambient_single_cpu_utilization=0.14,
         manifest=matrix.DEFAULT_MANIFEST,
     )
     argv = matrix.build_compare_argv(
@@ -251,9 +211,6 @@ def test_compare_argv_carries_topology_affinity_and_protocol(tmp_path):
     assert parsed.expected_body_size == len(b'Hello, World!')
     assert parsed.expected_body_sha256 == hashlib.sha256(b'Hello, World!').hexdigest()
     assert parsed.max_load_utilization == 0.8
-    assert parsed.ambient_cpu_probe_seconds == 0.75
-    assert parsed.max_ambient_cpu_utilization == 0.09
-    assert parsed.max_ambient_single_cpu_utilization == 0.14
     assert parsed.control.argv[-6:] == (
         '--bind',
         '127.0.0.1:18081',
@@ -279,9 +236,6 @@ def test_websocket_matrix_uses_http_readiness_url(tmp_path):
         management_cpus=None,
         load_warmup_duration='1s',
         max_load_utilization=0.85,
-        ambient_cpu_probe_seconds=1.0,
-        max_ambient_cpu_utilization=0.1,
-        max_ambient_single_cpu_utilization=0.15,
         manifest=matrix.DEFAULT_MANIFEST,
     )
     argv = matrix.build_compare_argv(
@@ -310,66 +264,22 @@ def test_gil_capability_is_explicit_not_tied_to_harness(monkeypatch):
     assert 'GIL-enabled' in matrix.unsupported_reason(scenario, gil_enabled=True)
 
 
-def test_resume_requires_exact_schema_and_comparison_identity(tmp_path):
+def test_resume_requires_exact_comparison_identity(tmp_path):
     path = tmp_path / 'result.json'
     identity = {
         'variants': {'control': 'old', 'candidate': 'new'},
         'duration': '1s',
-        'host_noise_mode': 'diagnostic-unpinned',
     }
     path.write_text(
         json.dumps({
-            'schema_version': compare.COMPARISON_SCHEMA_VERSION,
             'status': 'complete',
             'comparison_identity': identity,
         })
     )
     assert matrix._is_complete(path, identity) is True
     assert matrix._is_complete(path, {**identity, 'duration': '2s'}) is False
-    assert (
-        matrix._is_complete(path, {**identity, 'host_noise_mode': 'pinned-noise-gated'})
-        is False
-    )
-    path.write_text(
-        json.dumps({
-            'schema_version': 4,
-            'status': 'complete',
-            'comparison_identity': identity,
-        })
-    )
+    path.write_text(json.dumps({'status': 'running', 'comparison_identity': identity}))
     assert matrix._is_complete(path, identity) is False
-
-
-def test_matrix_identity_freezes_cpu_system_state(monkeypatch, tmp_path):
-    args = matrix.parse_args([
-        '--control',
-        'old=old-server',
-        '--candidate',
-        'new=new-server',
-        '--server-cpus',
-        '2-5',
-        '--load-cpus',
-        '8-9,24-25',
-        '--management-cpus',
-        '0',
-        '--output-dir',
-        str(tmp_path),
-    ])
-    state = {'governor': 'performance', 'boost_enabled': True}
-    monkeypatch.setattr(matrix, 'capture_system_state', lambda *_args: state)
-    monkeypatch.setattr(matrix, 'validate_cpu_roles', lambda *_args: None)
-    monkeypatch.setattr(matrix, 'variant_artifacts', lambda command: command.name)
-    monkeypatch.setattr(
-        matrix,
-        'variant_environment_evidence',
-        lambda *_args, **_kwargs: {'mode': 'equivalent', 'differences': []},
-    )
-    monkeypatch.setattr(matrix, 'tool_identity', lambda *_args: {})
-    monkeypatch.setattr(matrix, 'git_metadata', dict)
-
-    identity = matrix._matrix_identity(args, _scenarios()[:1], None)
-
-    assert identity['benchmark_system'] is state
 
 
 def test_tls_identity_is_reused_for_resumable_matrix(tmp_path, monkeypatch):
@@ -395,10 +305,6 @@ def test_dry_run_records_every_selected_scenario(tmp_path, monkeypatch):
         '_issue_tls_certificate',
         lambda directory: (directory / 'cert.pem', directory / 'key.pem'),
     )
-    # The frozen identity hashes the repository state; pin it so concurrent
-    # working-tree edits cannot abort the per-scenario identity re-check.
-    monkeypatch.setattr(matrix, 'git_metadata', dict)
-    monkeypatch.setattr(compare, 'git_metadata', dict)
     output_dir = tmp_path / 'matrix'
 
     assert (
@@ -418,13 +324,6 @@ def test_dry_run_records_every_selected_scenario(tmp_path, monkeypatch):
     )
 
     record = json.loads((output_dir / 'matrix.json').read_text())
-    identity = record['matrix_identity']
     assert record['status'] == 'dry-run'
-    assert identity['settings']['host_noise_mode'] == 'diagnostic-unpinned'
-    assert identity['selection']
-    assert set(identity['selection']) == {scenario.id for scenario in _scenarios()}
-    assert set(record['scenarios']) == set(identity['selection'])
+    assert set(record['scenarios']) == {scenario.id for scenario in _scenarios()}
     assert {entry['status'] for entry in record['scenarios'].values()} == {'planned'}
-    assert {entry['host_noise_mode'] for entry in record['scenarios'].values()} == {
-        'diagnostic-unpinned'
-    }

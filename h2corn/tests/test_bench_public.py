@@ -7,90 +7,38 @@ import pytest
 
 import bench.bench as benchmark
 from bench.bench import (
-    BENCHMARK_PYTHON_MODULES,
-    AmbientCpuError,
     BenchmarkError,
     CommandIdentity,
-    GitIdentity,
     HarnessConfig,
     LoadGeneratorUsage,
     LoadResult,
     Metrics,
-    RunSnapshotGate,
     Scenario,
-    _artifact_identity,
-    _ensure_static_file_response_payload,
-    _equivalence_sign_test_p,
-    _git_identity,
     _measure_load_headroom,
-    _one_sided_sign_test_p,
     _publish_artifacts,
     _receive_at_least,
+    _relative_spread,
     _run_load_command,
     _run_scenario_warmup,
+    _scenario_budget,
     _scenario_load_evidence,
-    _validate_ambient_cpu,
-    _validate_interference_cpu,
+    _scenario_stable,
     _validate_publication_harness,
     _validate_scenario_load,
     aggregate_metrics,
-    artifact_snapshot,
     balanced_orders,
     benchmark_scenarios,
     extract_k6_metrics,
     extract_oha_metrics,
     get_server_command,
     run_benchmarks,
-    verify_artifact_snapshot,
-    verify_run_snapshot,
     wait_for_worker_pids,
 )
 from bench.system import (
-    AmbientCpuProbe,
     BenchmarkSystemState,
-    CpuActivity,
     CpuSetState,
     CpuTopology,
 )
-
-
-def _quiet_probe(**overrides) -> AmbientCpuProbe:
-    probe: AmbientCpuProbe = {
-        'started_at': 'start',
-        'completed_at': 'end',
-        'elapsed_seconds': 1.0,
-        'system_physical_core_utilization': 0.0,
-        'server_physical_core_utilization': 0.0,
-        'server_llc_physical_core_utilization': 0.0,
-        'load_llc_physical_core_utilization': 0.0,
-        'maximum_cpu_utilization': 0.0,
-        'per_cpu': [],
-    }
-    probe.update(overrides)  # type: ignore[typeddict-item]
-    return probe
-
-
-def _quiet_activity(**overrides) -> CpuActivity:
-    activity: CpuActivity = {
-        'started_at': 'start',
-        'completed_at': 'end',
-        'elapsed_seconds': 1.0,
-        'cpus': [9],
-        'physical_core_count': 1,
-        'total_ticks': 100,
-        'active_ticks': 0,
-        'physical_core_utilization': 0.0,
-        'maximum_cpu_utilization': 0.0,
-        'per_cpu': [],
-        'interval_seconds': 1.0,
-        'windows': [],
-        'maximum_raw_window_physical_core_utilization': 0.0,
-        'maximum_raw_window_cpu_utilization': 0.0,
-        'maximum_window_physical_core_utilization': 0.0,
-        'maximum_window_cpu_utilization': 0.0,
-    }
-    activity.update(overrides)  # type: ignore[typeddict-item]
-    return activity
 
 
 class _StubResourceSampler:
@@ -110,25 +58,6 @@ class _StubResourceSampler:
             'sample_count': 1,
             'sampling_interval_seconds': 0.05,
         }
-
-
-class _StubInterferenceMonitor:
-    def start(self):
-        pass
-
-    def stop(self):
-        return _quiet_activity()
-
-
-def _snapshot_gate(harness: HarnessConfig, system: BenchmarkSystemState):
-    """A real gate over an empty artifact set: cell checks are no-ops."""
-    git: GitIdentity = {
-        'git_head': None,
-        'git_diff_sha256': None,
-        'git_status_sha256': None,
-        'git_untracked_sha256': None,
-    }
-    return RunSnapshotGate({}, git, system, harness, {}, set())
 
 
 def _cpu_topology(
@@ -170,11 +99,10 @@ def _cpu_set(cpus: tuple[int, ...], *, llc_id: int) -> CpuSetState:
 
 
 def _publication_system(harness: HarnessConfig) -> BenchmarkSystemState:
-    assert harness.server_cpus is not None
     assert harness.load_cpus is not None
     assert harness.management_cpus is not None
     all_cpus = sorted(
-        set(harness.server_cpus + harness.load_cpus + harness.management_cpus)
+        set((harness.server_cpus or ()) + harness.load_cpus + harness.management_cpus)
     )
     return {
         'summary': 'test system',
@@ -192,19 +120,16 @@ def _publication_system(harness: HarnessConfig) -> BenchmarkSystemState:
         'boost_enabled': True,
         'kernel_command_line': 'test',
         'transparent_hugepages': '[never]',
-        'server': _cpu_set(harness.server_cpus, llc_id=0),
+        'server': None
+        if harness.server_cpus is None
+        else _cpu_set(harness.server_cpus, llc_id=0),
         'load_generator': _cpu_set(harness.load_cpus, llc_id=1),
         'management': _cpu_set(harness.management_cpus, llc_id=0),
     }
 
 
 def _run_stubbed_main_suite(tmp_path, monkeypatch, outcome: str):
-    command: CommandIdentity = {
-        'argv': ['load'],
-        'executable': None,
-        'executable_sha256': None,
-        'environment': {},
-    }
+    command: CommandIdentity = {'argv': ['load'], 'environment': {}}
     usage: LoadGeneratorUsage = {
         'elapsed_seconds': 1.0,
         'cpu_seconds': 0.1,
@@ -219,10 +144,6 @@ def _run_stubbed_main_suite(tmp_path, monkeypatch, outcome: str):
     warmup = LoadResult(raw={'phase': 'warmup'}, command=command, usage=usage)
     measured = LoadResult(raw={'phase': 'measured'}, command=command, usage=usage)
     metrics: Metrics = {'rps': 100.0, 'latency_percentiles': {'p99': 0.001}}
-    ambient = _quiet_probe()
-    observations = []
-    initial_manifests = []
-    balanced_orders_impl = benchmark.balanced_orders
 
     monkeypatch.setattr(benchmark, 'RUNS_DIRECTORY', tmp_path)
     monkeypatch.setattr(benchmark, 'SERVERS', {'h2corn': ['h2corn']})
@@ -230,53 +151,16 @@ def _run_stubbed_main_suite(tmp_path, monkeypatch, outcome: str):
     monkeypatch.setattr(
         benchmark, 'benchmark_scenarios', lambda: [Scenario('cell', 1, 'h1')]
     )
-    # The Bonferroni family follows the stubbed scenario set.
-    monkeypatch.setattr(benchmark, 'HEADROOM_FAMILY_SIZE', 1)
-
-    def observe_initial_manifest(*args, **kwargs):
-        run_directory = next(tmp_path.iterdir())
-        initial_manifests.append(
-            json.loads((run_directory / 'manifest.json').read_text())
-        )
-        return balanced_orders_impl(*args, **kwargs)
-
-    monkeypatch.setattr(benchmark, 'balanced_orders', observe_initial_manifest)
     monkeypatch.setattr(benchmark, '_ensure_static_file_response_payload', lambda: None)
-
-    def recover_before_creating_run() -> None:
-        assert not any(tmp_path.iterdir())
-
-    monkeypatch.setattr(benchmark, '_recover_publication', recover_before_creating_run)
     monkeypatch.setattr(
         benchmark, 'capture_system_state', lambda *_args: {'summary': 'test'}
     )
-    monkeypatch.setattr(benchmark, '_validate_publication_harness', lambda *_args: None)
-    monkeypatch.setattr(benchmark, 'artifact_snapshot', lambda *_args: {})
-    monkeypatch.setattr(
-        benchmark,
-        '_git_identity',
-        lambda: {
-            'git_head': 'test',
-            'git_diff_sha256': None,
-            'git_status_sha256': None,
-            'git_untracked_sha256': None,
-        },
-    )
+    monkeypatch.setattr(benchmark, '_git_head', lambda: 'test')
     monkeypatch.setattr(benchmark, 'get_versions', dict)
-    monkeypatch.setattr(benchmark, 'benchmark_provenance', lambda *_args: {})
-    monkeypatch.setattr(benchmark, 'verify_run_snapshot', lambda *_args: None)
-    monkeypatch.setattr(
-        benchmark,
-        'command_provenance',
-        lambda argv: {**command, 'argv': argv},
-    )
     monkeypatch.setattr(benchmark.time, 'sleep', lambda _seconds: None)
     monkeypatch.setattr(benchmark, 'validate_response_contract', lambda *_args: {})
     monkeypatch.setattr(benchmark, '_run_scenario_warmup', lambda *_args: warmup)
     monkeypatch.setattr(benchmark, '_validate_scenario_load', lambda *_args: metrics)
-    monkeypatch.setattr(benchmark, '_capture_ambient_cpu', lambda *_args: ambient)
-    monkeypatch.setattr(benchmark, '_validate_ambient_cpu', lambda *_args: None)
-    monkeypatch.setattr(benchmark, '_validate_interference_cpu', lambda *_args: None)
     monkeypatch.setattr(
         benchmark, 'wait_for_worker_pids', lambda *_args, **_kwargs: (True, {41})
     )
@@ -292,10 +176,6 @@ def _run_stubbed_main_suite(tmp_path, monkeypatch, outcome: str):
         }
 
     def measured_load(*_args, **_kwargs):
-        run_directory = next(tmp_path.iterdir())
-        manifest = json.loads((run_directory / 'manifest.json').read_text())
-        scenario = json.loads((run_directory / 'raw/benchmark_cell.json').read_text())
-        observations.append((manifest, scenario))
         if outcome == 'interrupt':
             raise KeyboardInterrupt
         if outcome == 'error':
@@ -304,79 +184,58 @@ def _run_stubbed_main_suite(tmp_path, monkeypatch, outcome: str):
 
     monkeypatch.setattr(benchmark, 'running_server', stub_server)
     monkeypatch.setattr(benchmark, 'ProcessGroupResourceSampler', _StubResourceSampler)
-    monkeypatch.setattr(
-        benchmark, '_interference_monitor', lambda *_args: _StubInterferenceMonitor()
-    )
     monkeypatch.setattr(benchmark, '_run_scenario_load', measured_load)
 
-    harness = HarnessConfig(trials=2, settle_seconds=0)
+    harness = HarnessConfig(min_trials=3, max_trials=4, settle_seconds=0)
     if outcome == 'interrupt':
         with pytest.raises(KeyboardInterrupt):
-            run_benchmarks(harness=harness, publish=True)
-        run_directory = next(tmp_path.iterdir())
-    else:
-        run_directory = run_benchmarks(harness=harness)
-    return run_directory, initial_manifests, observations, ambient
+            run_benchmarks(harness=harness)
+        return next(tmp_path.iterdir())
+    return run_benchmarks(harness=harness)
 
 
-def test_main_suite_retains_pending_attempt_when_interrupted(
-    tmp_path, monkeypatch
-) -> None:
-    run_directory, initial_manifests, observations, ambient = _run_stubbed_main_suite(
-        tmp_path, monkeypatch, 'interrupt'
-    )
+def test_interrupted_run_leaves_no_partial_records(tmp_path, monkeypatch) -> None:
+    run_directory = _run_stubbed_main_suite(tmp_path, monkeypatch, 'interrupt')
 
-    assert initial_manifests[0]['status'] == 'running'
-    assert initial_manifests[0]['scenarios'] == {}
-    running_manifest, pending_scenario = observations[0]
-    assert running_manifest['status'] == 'running'
-    assert running_manifest['scenarios'] == {'cell': 'running'}
-    assert pending_scenario['status'] == 'running'
-    assert pending_scenario['runs'] == []
-    pending = pending_scenario['pending_attempt']
-    assert pending['trial'] == 1
-    assert pending['order'] == ['h2corn']
-    assert pending['server'] == 'h2corn'
-    assert pending['ambient_cpu_before'] == ambient
-    assert pending['server_command']['argv'][-2:] == ['-w', '1']
-    assert pending['warmup']['raw'] == {'phase': 'warmup'}
-    assert pending['warmup']['metrics'] == {
-        'rps': 100.0,
-        'latency_percentiles': {'p99': 0.001},
-    }
-
-    failed_manifest = json.loads((run_directory / 'manifest.json').read_text())
-    failed_scenario = json.loads(
-        (run_directory / 'raw/benchmark_cell.json').read_text()
-    )
-    assert failed_manifest['status'] == 'failed'
-    assert failed_manifest['error'] == 'KeyboardInterrupt'
-    assert failed_manifest['scenarios'] == {'cell': 'failed'}
-    assert failed_scenario['status'] == 'failed'
-    assert failed_scenario['error'] == 'KeyboardInterrupt'
-    assert failed_scenario['pending_attempt'] == pending_scenario['pending_attempt']
+    identity = json.loads((run_directory / 'identity.json').read_text())
+    assert identity['servers'] == ['h2corn']
+    assert identity['git_head'] == 'test'
+    assert not (run_directory / 'manifest.json').exists()
+    assert not (run_directory / 'raw/benchmark_cell.json').exists()
 
 
 @pytest.mark.parametrize(
-    ('outcome', 'expected_status', 'expected_runs'),
-    [('success', 'complete', 2), ('error', 'failed', 1)],
+    (
+        'outcome',
+        'expected_status',
+        'expected_runs',
+        'expected_trials',
+        'expected_stopping_reason',
+    ),
+    [
+        ('success', 'complete', 3, 3, 'stable'),
+        ('error', 'failed', 1, 4, 'max-trials'),
+    ],
 )
-def test_main_suite_clears_completed_pending_attempts(
-    tmp_path, monkeypatch, outcome, expected_status, expected_runs
+def test_main_suite_writes_each_record_once_at_completion(
+    tmp_path,
+    monkeypatch,
+    outcome,
+    expected_status,
+    expected_runs,
+    expected_trials,
+    expected_stopping_reason,
 ) -> None:
-    run_directory, _initial_manifests, observations, _ambient = _run_stubbed_main_suite(
-        tmp_path, monkeypatch, outcome
-    )
+    run_directory = _run_stubbed_main_suite(tmp_path, monkeypatch, outcome)
 
-    assert observations[0][0]['status'] == 'running'
-    assert observations[0][1]['pending_attempt']['server'] == 'h2corn'
     manifest = json.loads((run_directory / 'manifest.json').read_text())
     scenario = json.loads((run_directory / 'raw/benchmark_cell.json').read_text())
     assert manifest['status'] == expected_status
     assert manifest['scenarios'] == {'cell': expected_status}
     assert scenario['status'] == expected_status
-    assert scenario['pending_attempt'] is None
     assert len(scenario['runs']) == expected_runs
+    assert scenario['trials_run'] == expected_trials
+    assert scenario['stopping_reason'] == expected_stopping_reason
 
 
 def test_balanced_orders_rotate_every_server_through_every_position() -> None:
@@ -394,11 +253,87 @@ def test_balanced_orders_rotate_every_server_through_every_position() -> None:
     )
 
 
-def test_balanced_orders_reject_inexact_or_odd_trial_counts() -> None:
-    with pytest.raises(ValueError, match='even'):
-        balanced_orders(['a', 'b'], 5)
-    with pytest.raises(ValueError, match='twice'):
-        balanced_orders(['a', 'b', 'c'], 8)
+@pytest.mark.parametrize('trials', [1, 3, 7])
+def test_balanced_orders_accept_any_positive_trial_count(trials: int) -> None:
+    names = ['a', 'b', 'c', 'd']
+    orders = balanced_orders(names, trials, seed=7)
+
+    assert len(orders) == trials
+    assert all(sorted(order) == names for order in orders)
+    if trials >= 3:
+        assert orders[1] == list(reversed(orders[0]))
+        assert orders[2] == orders[0][1:] + orders[0][:1]
+
+
+def test_relative_spread_and_scenario_stability_use_active_rps_samples() -> None:
+    stable: list[Metrics] = [
+        {'rps': 99.0, 'latency_percentiles': {}},
+        {'rps': 100.0, 'latency_percentiles': {}},
+        {'rps': 101.0, 'latency_percentiles': {}},
+    ]
+    unstable: list[Metrics] = [
+        {'rps': 90.0, 'latency_percentiles': {}},
+        {'rps': 100.0, 'latency_percentiles': {}},
+        {'rps': 110.0, 'latency_percentiles': {}},
+    ]
+    harness = HarnessConfig(min_trials=3, stable_relative_spread=0.03)
+
+    assert _relative_spread([99.0, 100.0, 101.0]) == pytest.approx(0.01)
+    assert _relative_spread([0.0, 0.0, 0.0]) == float('inf')
+    assert not _scenario_stable({'a': stable, 'b': unstable}, {}, harness)
+    assert _scenario_stable({'a': stable, 'b': unstable}, {'b': 'failed'}, harness)
+    assert not _scenario_stable({'a': stable[:2]}, {}, harness)
+
+
+@pytest.mark.parametrize(
+    ('deadline', 'remaining_minimums', 'eligible', 'expected_deadline', 'duration'),
+    [
+        # Last scenario: full remaining budget, extension deadline = cap.
+        (1_000.0, [10.5], ['a'], 1_000.0, '10000ms'),
+        # Two equal-cost scenarios split the budget; extensions may run
+        # until only the next scenario's minimum remains reserved.
+        (220.0, [21.0, 21.0], ['a', 'b'], 199.0, '7500ms'),
+        # A squeezed share shrinks to the floor, never below.
+        (118.0, [21.0, 21.0], ['a', 'b'], 97.0, '1000ms'),
+        # Cost-weighted: a four-server scenario earns twice the share of the
+        # remaining two-server one (120 s remaining -> 80 s share).
+        (220.0, [42.0, 21.0], ['a', 'b', 'c', 'd'], 199.0, '4166ms'),
+    ],
+)
+def test_scenario_budget_weights_shares_and_reserves_minimums(
+    monkeypatch,
+    deadline: float,
+    remaining_minimums: list[float],
+    eligible: list[str],
+    expected_deadline: float,
+    duration: str,
+) -> None:
+    monkeypatch.setattr(benchmark.time, 'monotonic', lambda: 100.0)
+
+    assert _scenario_budget(
+        Scenario('cell', 1, 'h1'),
+        HarnessConfig(duration='10s', min_trials=3),
+        eligible,
+        deadline,
+        remaining_minimums,
+    ) == (expected_deadline, duration)
+
+
+def test_scenario_budget_keeps_websocket_cells_above_the_k6_floor(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(benchmark.time, 'monotonic', lambda: 100.0)
+
+    # A share that would shrink an HTTP cell to the 1 s floor keeps a
+    # WebSocket cell at the k6 floor so startup cost cannot dominate.
+    _deadline, duration = _scenario_budget(
+        Scenario('ws cell', 1, 'ws'),
+        HarnessConfig(duration='3s', min_trials=3),
+        ['a', 'b'],
+        118.0,
+        [33.0, 33.0],
+    )
+    assert duration == '3000ms'
 
 
 def test_public_metrics_are_trial_medians_and_retain_samples() -> None:
@@ -467,106 +402,15 @@ def test_worker_readiness_requires_every_distinct_process(monkeypatch) -> None:
     assert seen == {10, 11, 12}
 
 
-def test_artifact_snapshot_detects_executable_replacement(tmp_path) -> None:
-    executable = tmp_path / 'server'
-    executable.write_text('first')
-    executable.chmod(0o755)
-    command = {'server': [str(executable)]}
-    expected = artifact_snapshot(command, set())
-    executable.write_text('second')
-
-    with pytest.raises(BenchmarkError, match='server_executable:server'):
-        verify_artifact_snapshot(expected, command, set())
-
-
-def test_artifact_snapshot_covers_competitor_and_dependency_source_trees() -> None:
-    snapshot = artifact_snapshot({}, set())
-
-    assert {
-        key.removeprefix('python_module:')
-        for key in snapshot
-        if key.startswith('python_module:')
-    } == set(BENCHMARK_PYTHON_MODULES)
-    assert all(
-        snapshot[f'python_module:{module}']['sha256'] is not None
-        for module in BENCHMARK_PYTHON_MODULES
-    )
-
-
-def test_static_payload_is_canonical_and_frozen(tmp_path, monkeypatch) -> None:
-    payload = tmp_path / 'payload.bin'
-    payload.write_bytes(b'wrong but same size')
-    monkeypatch.setattr('bench.bench.STATIC_FILE_RESPONSE_PATH', payload)
-
-    _ensure_static_file_response_payload()
-    expected = artifact_snapshot({}, set())
-    payload.write_bytes(b'x' * payload.stat().st_size)
-
-    with pytest.raises(BenchmarkError, match='static_file_payload'):
-        verify_artifact_snapshot(expected, {}, set())
-
-
-def test_artifact_snapshot_detects_python_module_tree_replacement(
-    tmp_path, monkeypatch
-) -> None:
-    package = tmp_path / 'uvicorn'
-    package.mkdir()
-    source = package / '__init__.py'
-    source.write_text('VERSION = 1\n')
-    monkeypatch.setattr('bench.bench.BENCHMARK_PYTHON_MODULES', ('uvicorn',))
-    monkeypatch.setattr(
-        'bench.bench._module_artifact',
-        lambda module: (
-            _artifact_identity(package)
-            if module == 'uvicorn'
-            else {'path': module, 'sha256': None}
-        ),
-    )
-    expected = artifact_snapshot({}, set())
-
-    source.write_text('VERSION = 2\n')
-    with pytest.raises(BenchmarkError, match='python_module:uvicorn'):
-        verify_artifact_snapshot(expected, {}, set())
-
-
-def test_git_identity_hashes_untracked_contents_but_excludes_results(
-    tmp_path, monkeypatch
-) -> None:
-    subprocess.run(['git', 'init', '--quiet'], cwd=tmp_path, check=True)
-    project = tmp_path / 'h2corn'
-    project.mkdir()
-    monkeypatch.chdir(project)
-
-    initial = _git_identity()
-    result = project / 'bench/results/raw/benchmark.json'
-    result.parent.mkdir(parents=True)
-    result.write_text('transient result\n')
-    assert _git_identity() == initial
-
-    (tmp_path / 'sibling-project.py').write_text('unrelated = True\n')
-    assert _git_identity() == initial
-
-    source = project / 'untracked.py'
-    source.write_text('VALUE = 1\n')
-    first_source = _git_identity()
-    assert first_source['git_status_sha256'] != initial['git_status_sha256']
-    assert first_source['git_untracked_sha256'] != initial['git_untracked_sha256']
-
-    source.write_text('VALUE = 2\n')
-    second_source = _git_identity()
-    assert second_source['git_status_sha256'] == first_source['git_status_sha256']
-    assert second_source['git_untracked_sha256'] != first_source['git_untracked_sha256']
-
-
 def _publication_tree(tmp_path, monkeypatch, *, complete: bool = True):
     results_directory = tmp_path / 'results'
     raw_directory = results_directory / 'raw'
     plot_directory = results_directory / 'plots'
     raw_directory.mkdir(parents=True)
     plot_directory.mkdir()
-    (raw_directory / 'benchmark_cell.json').write_text('{"generation":"old"}\n')
+    (raw_directory / 'benchmark_stale.json').write_text('{"generation":"old"}\n')
     (raw_directory / 'run_manifest.json').write_text('{"generation":"old"}\n')
-    (plot_directory / 'benchmark_cell.svg').write_text('<svg id="old"/>\n')
+    (plot_directory / 'benchmark_stale.svg').write_text('<svg id="old"/>\n')
 
     run_directory = results_directory / 'runs' / 'candidate'
     (run_directory / 'raw').mkdir(parents=True)
@@ -585,167 +429,52 @@ def _publication_tree(tmp_path, monkeypatch, *, complete: bool = True):
     return results_directory, run_directory, raw_directory, plot_directory
 
 
-def _visible_publication_generation(raw_directory, plot_directory) -> str:
-    raw = (raw_directory / 'benchmark_cell.json').read_text()
-    plot = (plot_directory / 'benchmark_cell.svg').read_text()
-    manifest = json.loads((raw_directory / 'run_manifest.json').read_text())
-    if (
-        raw == '{"generation":"old"}\n'
-        and plot == '<svg id="old"/>\n'
-        and manifest == {'generation': 'old'}
-    ):
-        return 'old'
-    if (
-        raw == '{"generation":"new"}\n'
-        and plot == '<svg id="new"/>\n'
-        and manifest == {'status': 'complete'}
-    ):
-        return 'new'
-    raise AssertionError(
-        f'mixed publication generation: raw={raw!r}, plot={plot!r}, '
-        f'manifest={manifest!r}'
-    )
+def _manifest(status):
+    return benchmark._manifest_record({}, {}, [], {}, status=status)
 
 
-def _assert_publication_transaction_clean(results_directory) -> None:
-    control_directory = results_directory.parent
-    assert not list(
-        control_directory.glob(f'{benchmark.PUBLICATION_TRANSACTION_PREFIX}*')
-    )
-
-
-def test_publication_atomically_replaces_the_complete_generation(
-    tmp_path, monkeypatch
-) -> None:
+def test_publication_replaces_the_canonical_artifacts(tmp_path, monkeypatch) -> None:
     results, run, raw, plots = _publication_tree(tmp_path, monkeypatch)
 
-    _publish_artifacts(run, ['cell'], {'status': 'complete'})
+    _publish_artifacts(run, ['cell'], _manifest('complete'))
 
-    assert _visible_publication_generation(raw, plots) == 'new'
-    assert not (raw / 'benchmark_cell.json').is_symlink()
-    assert not (plots / 'benchmark_cell.svg').is_symlink()
+    assert (raw / 'benchmark_cell.json').read_text() == '{"generation":"new"}\n'
+    assert (plots / 'benchmark_cell.svg').read_text() == '<svg id="new"/>\n'
+    assert json.loads((raw / 'run_manifest.json').read_text())['status'] == 'complete'
+    # Stale canonical artifacts from earlier runs are removed; everything
+    # outside the canonical raw/plots directories is untouched.
     assert sorted(path.name for path in raw.iterdir()) == [
-        benchmark.PUBLICATION_GENERATION_NAME,
         'benchmark_cell.json',
         'run_manifest.json',
     ]
     assert sorted(path.name for path in plots.iterdir()) == ['benchmark_cell.svg']
-    # A directory-level generation swap must preserve all noncanonical evidence,
-    # including nested directories named raw/plots inside completed run records.
-    assert (results / 'runs/candidate/raw/benchmark_cell.json').read_text() == (
-        '{"generation":"new"}\n'
-    )
-    assert (results / 'runs/candidate/plots/benchmark_cell.svg').read_text() == (
-        '<svg id="new"/>\n'
-    )
-    assert (results / 'runs/candidate/load/evidence.json').read_text() == '{}\n'
+    assert (results / 'runs/candidate/raw/benchmark_cell.json').exists()
     assert (results / 'compare/keep.json').read_text() == '{}\n'
-    _assert_publication_transaction_clean(results)
-
-
-@pytest.mark.parametrize(
-    ('transition', 'expected_generation', 'raises'),
-    [
-        # Before the exchange, a failure leaves the canonical tree untouched.
-        ('staged', 'old', True),
-        # The exchange is the commit point: later failures still publish.
-        ('exchanged', 'new', False),
-        ('cleaned', 'new', False),
-    ],
-)
-def test_publication_recovers_synchronous_failure_at_every_transition(
-    tmp_path, monkeypatch, transition, expected_generation, raises
-) -> None:
-    results, run, raw, plots = _publication_tree(tmp_path, monkeypatch)
-
-    def fail_at_transition(current: str) -> None:
-        if current == transition:
-            raise OSError(f'injected failure at {transition}')
-
-    monkeypatch.setattr(benchmark, '_publication_checkpoint', fail_at_transition)
-    if raises:
-        with pytest.raises(OSError, match=f'injected failure at {transition}'):
-            _publish_artifacts(run, ['cell'], {'status': 'complete'})
-    else:
-        _publish_artifacts(run, ['cell'], {'status': 'complete'})
-
-    assert _visible_publication_generation(raw, plots) == expected_generation
-    _assert_publication_transaction_clean(results)
-
-
-class _SimulatedPublicationCrash(BaseException):
-    pass
-
-
-@pytest.mark.parametrize(
-    ('transition', 'visible_generation'),
-    [
-        # Crash before the exchange: the canonical generation is untouched.
-        ('staged', 'old'),
-        # Crash after the exchange, before cleanup: the new generation is
-        # fully visible and only an orphaned swapped-out tree remains.
-        ('exchanged', 'new'),
-        ('cleaned', 'new'),
-    ],
-)
-def test_publication_crash_never_exposes_a_mixed_generation_and_recovers(
-    tmp_path,
-    monkeypatch,
-    transition,
-    visible_generation,
-) -> None:
-    results, run, raw, plots = _publication_tree(tmp_path, monkeypatch)
-
-    def crash_at_transition(current: str) -> None:
-        if current == transition:
-            raise _SimulatedPublicationCrash(transition)
-
-    monkeypatch.setattr(benchmark, '_publication_checkpoint', crash_at_transition)
-    with pytest.raises(_SimulatedPublicationCrash, match=transition):
-        _publish_artifacts(run, ['cell'], {'status': 'complete'})
-
-    assert _visible_publication_generation(raw, plots) == visible_generation
-    monkeypatch.setattr(benchmark, '_publication_checkpoint', lambda _current: None)
-    benchmark._recover_publication()
-    assert _visible_publication_generation(raw, plots) == visible_generation
-    _assert_publication_transaction_clean(results)
-
-
-def test_publication_recovery_refuses_a_stale_committed_generation(
-    tmp_path, monkeypatch
-) -> None:
-    _results, run, raw, _plots = _publication_tree(tmp_path, monkeypatch)
-
-    def crash_after_exchange(current: str) -> None:
-        if current == 'exchanged':
-            raise _SimulatedPublicationCrash(current)
-
-    monkeypatch.setattr(benchmark, '_publication_checkpoint', crash_after_exchange)
-    with pytest.raises(_SimulatedPublicationCrash):
-        _publish_artifacts(run, ['cell'], {'status': 'complete'})
-    (raw / 'benchmark_cell.json').write_text('{"generation":"tampered"}\n')
-
-    monkeypatch.setattr(benchmark, '_publication_checkpoint', lambda _current: None)
-    with pytest.raises(BenchmarkError, match='artifact is stale'):
-        benchmark._recover_publication()
 
 
 def test_incomplete_publication_preserves_canonical_artifacts(
     tmp_path, monkeypatch
 ) -> None:
-    results, run, raw, plots = _publication_tree(tmp_path, monkeypatch, complete=False)
+    _results, run, raw, plots = _publication_tree(tmp_path, monkeypatch, complete=False)
 
     with pytest.raises(BenchmarkError, match='artifact is missing'):
-        _publish_artifacts(run, ['cell'], {'status': 'complete'})
+        _publish_artifacts(run, ['cell'], _manifest('complete'))
 
-    assert _visible_publication_generation(raw, plots) == 'old'
-    _assert_publication_transaction_clean(results)
+    assert (raw / 'benchmark_stale.json').read_text() == '{"generation":"old"}\n'
+    assert (plots / 'benchmark_stale.svg').read_text() == '<svg id="old"/>\n'
+
+
+def test_publication_requires_a_complete_run(tmp_path, monkeypatch) -> None:
+    _results, run, _raw, _plots = _publication_tree(tmp_path, monkeypatch)
+
+    with pytest.raises(BenchmarkError, match='complete benchmark run'):
+        _publish_artifacts(run, ['cell'], _manifest('failed'))
 
 
 def test_harness_configuration_is_immutable() -> None:
     harness = HarnessConfig()
     with pytest.raises((AttributeError, TypeError)):
-        harness.trials = 2  # type: ignore[misc]
+        harness.max_trials = 2  # type: ignore[misc]
 
 
 def test_classic_uvicorn_profile_loads_websockets_only_for_websocket_cells() -> None:
@@ -768,15 +497,13 @@ def test_classic_uvicorn_profile_loads_websockets_only_for_websocket_cells() -> 
         ('duration', '11s'),
         ('warmup_duration', '2s'),
         ('concurrency', 101),
-        ('trials', 16),
+        ('min_trials', 4),
+        ('max_trials', 9),
+        ('stable_relative_spread', 0.04),
         ('settle_seconds', 0.5),
         ('order_seed', 1),
         ('rate_limit_qps', 10_000),
-        ('load_worker_threads', 8),
         ('max_load_utilization', 0.99),
-        ('ambient_cpu_probe_seconds', 0.5),
-        ('max_ambient_cpu_utilization', 0.2),
-        ('max_ambient_single_cpu_utilization', 0.2),
         ('max_load_scaling_gain', 0.05),
         ('load_generator_grace_seconds', 30.0),
     ],
@@ -794,47 +521,49 @@ def test_publication_rejects_noncanonical_methodology(field, value) -> None:
         )
 
 
-def test_publication_requires_four_disjoint_server_cpus_and_load_headroom() -> None:
-    canonical = HarnessConfig(
+def test_publication_allows_host_derived_worker_count_and_time_budget() -> None:
+    harness = HarnessConfig(
         server_cpus=(2, 3, 4, 5),
         load_cpus=(0, 1, 6, 7),
         management_cpus=(8,),
+        load_worker_threads=8,
+        time_budget_seconds=60.0,
     )
+
+    _validate_publication_harness(harness, _publication_system(harness))
+
+
+def test_publication_requires_a_pinned_instrument_with_load_headroom() -> None:
+    # Servers stay unpinned by default; only the instrument roles are
+    # required and validated.
+    canonical = HarnessConfig(load_cpus=(0, 1, 6, 7), management_cpus=(8,))
     _validate_publication_harness(canonical, _publication_system(canonical))
 
-    harness = HarnessConfig(
-        server_cpus=(2, 3, 4),
-        load_cpus=(0, 1, 6, 7),
-        management_cpus=(8,),
-    )
-    with pytest.raises(BenchmarkError, match='exactly four server CPUs'):
-        _validate_publication_harness(harness, _publication_system(harness))
-    harness = HarnessConfig(
-        server_cpus=(2, 3, 4, 5),
-        load_cpus=(0, 1, 6),
-        management_cpus=(8,),
-    )
+    harness = HarnessConfig(load_cpus=(0, 1, 6), management_cpus=(8,))
     with pytest.raises(BenchmarkError, match='at least four load-generator CPUs'):
         _validate_publication_harness(harness, _publication_system(harness))
-    harness = HarnessConfig(
-        server_cpus=(2, 3, 4, 5),
-        load_cpus=(0, 1, 2, 6),
-        management_cpus=(8,),
-    )
-    with pytest.raises(BenchmarkError, match='overlap: 2'):
+    harness = HarnessConfig(load_cpus=(0, 1, 6, 8), management_cpus=(8,))
+    with pytest.raises(BenchmarkError, match='overlap: 8'):
         _validate_publication_harness(harness, _publication_system(harness))
+    harness = HarnessConfig(load_cpus=(0, 1, 6, 7), management_cpus=None)
+    with pytest.raises(BenchmarkError, match='explicit load-generator and management'):
+        _validate_publication_harness(
+            harness,
+            _publication_system(
+                HarnessConfig(load_cpus=(0, 1, 6, 7), management_cpus=(8,))
+            ),
+        )
 
 
 def test_publication_rejects_uncontrolled_or_overlapping_cpu_topology() -> None:
     harness = HarnessConfig(
-        server_cpus=(2, 3, 4, 5),
         load_cpus=(0, 1, 6, 7),
         management_cpus=(8,),
     )
 
     offline = _publication_system(harness)
-    assert offline['server'] is not None
-    offline['server']['topology'][0]['online'] = False
+    assert offline['load_generator'] is not None
+    offline['load_generator']['topology'][0]['online'] = False
     with pytest.raises(BenchmarkError, match='online'):
         _validate_publication_harness(harness, offline)
 
@@ -857,123 +586,20 @@ def test_publication_rejects_uncontrolled_or_overlapping_cpu_topology() -> None:
     with pytest.raises(BenchmarkError, match='outside the cgroup CPU allowance'):
         _validate_publication_harness(harness, disallowed)
 
-    policy = _publication_system(harness)
-    assert policy['load_generator'] is not None
-    policy['load_generator']['topology'][0]['frequency']['scaling_governor'] = (
-        'powersave'
-    )
-    with pytest.raises(BenchmarkError, match='performance CPU governor'):
-        _validate_publication_harness(harness, policy)
-
-    same_llc = _publication_system(harness)
-    assert same_llc['load_generator'] is not None
-    for entry in same_llc['load_generator']['topology']:
-        entry['last_level_cache']['cache_id'] = 0
-        entry['last_level_cache']['shared_cpus'] = [2, 3, 4, 5]
-    with pytest.raises(BenchmarkError, match='distinct server/load last-level-cache'):
-        _validate_publication_harness(harness, same_llc)
+    split_llc = _publication_system(harness)
+    assert split_llc['load_generator'] is not None
+    split_llc['load_generator']['topology'][0]['last_level_cache']['cache_id'] = 2
+    with pytest.raises(BenchmarkError, match='one last-level-cache domain'):
+        _validate_publication_harness(harness, split_llc)
 
     physical_overlap = _publication_system(harness)
-    assert physical_overlap['server'] is not None
+    assert physical_overlap['management'] is not None
     assert physical_overlap['load_generator'] is not None
     physical_overlap['load_generator']['topology'][0]['core_id'] = physical_overlap[
-        'server'
+        'management'
     ]['topology'][0]['core_id']
     with pytest.raises(BenchmarkError, match='disjoint physical'):
         _validate_publication_harness(harness, physical_overlap)
-
-
-def test_snapshot_gate_rehashes_only_when_the_fingerprint_changes(
-    tmp_path, monkeypatch
-) -> None:
-    executable = tmp_path / 'server'
-    executable.write_text('first')
-    executable.chmod(0o755)
-    command = {'server': [str(executable)]}
-    git: GitIdentity = {
-        'git_head': None,
-        'git_diff_sha256': None,
-        'git_status_sha256': None,
-        'git_untracked_sha256': None,
-    }
-    system = _publication_system(
-        HarnessConfig(
-            server_cpus=(2, 3, 4, 5), load_cpus=(0, 1, 6, 7), management_cpus=(8,)
-        )
-    )
-    monkeypatch.setattr('bench.bench._git_identity', lambda: git)
-    monkeypatch.setattr('bench.bench.capture_system_state', lambda *_args: system)
-    monkeypatch.setattr(
-        'bench.bench._module_artifact', lambda _module: {'path': '', 'sha256': None}
-    )
-    monkeypatch.setattr('bench.bench.BENCHMARK_PYTHON_MODULES', ())
-
-    artifacts = artifact_snapshot(command, set())
-    gate = RunSnapshotGate(artifacts, git, system, HarnessConfig(), command, set())
-
-    # Untouched artifacts: the cheap fingerprint check is sufficient.
-    gate.verify_cell()
-
-    # A rewrite with identical contents changes the fingerprint but not the
-    # hash: the full verification runs once and the new fingerprint is kept.
-    executable.write_text('first')
-    gate.verify_cell()
-    gate.verify_cell()
-
-    # A real content change fails exactly as the full check would.
-    executable.write_text('second')
-    with pytest.raises(BenchmarkError, match='server_executable:server'):
-        gate.verify_cell()
-
-
-def test_run_snapshot_rejects_system_policy_drift(monkeypatch) -> None:
-    harness = HarnessConfig(
-        server_cpus=(2, 3, 4, 5),
-        load_cpus=(0, 1, 6, 7),
-        management_cpus=(8,),
-    )
-    expected = _publication_system(harness)
-    changed = _publication_system(harness)
-    assert changed['load_generator'] is not None
-    changed['load_generator']['topology'][0]['frequency']['scaling_governor'] = (
-        'powersave'
-    )
-    git: GitIdentity = {
-        'git_head': None,
-        'git_diff_sha256': None,
-        'git_status_sha256': None,
-        'git_untracked_sha256': None,
-    }
-    monkeypatch.setattr('bench.bench.verify_artifact_snapshot', lambda *_args: None)
-    monkeypatch.setattr('bench.bench._git_identity', lambda: git)
-    monkeypatch.setattr('bench.bench.capture_system_state', lambda *_args: changed)
-
-    with pytest.raises(BenchmarkError, match='system state changed'):
-        verify_run_snapshot({}, git, expected, harness, {}, set())
-
-
-def test_run_snapshot_allows_thread_count_churn_with_frozen_affinity(
-    monkeypatch,
-) -> None:
-    harness = HarnessConfig(
-        server_cpus=(2, 3, 4, 5),
-        load_cpus=(0, 1, 6, 7),
-        management_cpus=(8,),
-    )
-    expected = _publication_system(harness)
-    current = _publication_system(harness)
-    current['thread_affinity_masks'][0]['thread_count'] = 32
-    git: GitIdentity = {
-        'git_head': None,
-        'git_diff_sha256': None,
-        'git_status_sha256': None,
-        'git_untracked_sha256': None,
-    }
-    monkeypatch.setattr('bench.bench.verify_artifact_snapshot', lambda *_args: None)
-    monkeypatch.setattr('bench.bench._git_identity', lambda: git)
-    monkeypatch.setattr('bench.bench.capture_system_state', lambda *_args: current)
-
-    verify_run_snapshot({}, git, expected, harness, {}, set())
 
 
 def test_scenario_warmup_is_unmeasured_validated_and_fully_recorded(
@@ -1001,8 +627,6 @@ def test_scenario_warmup_is_unmeasured_validated_and_fully_recorded(
         raw=raw,
         command={
             'argv': ['oha', '-z', '750ms'],
-            'executable': '/usr/bin/oha',
-            'executable_sha256': 'abc',
             'environment': {'TOKIO_WORKER_THREADS': '16'},
         },
         usage=usage,
@@ -1064,50 +688,17 @@ def test_load_generator_cpu_saturation_fails_headroom_gate(
 
     _result, usage = _run_load_command(
         ['load-generator'],
-        HarnessConfig(load_cpus=(4, 5, 6, 7), max_load_utilization=0.85),
+        HarnessConfig(
+            duration='10s',
+            load_cpus=(4, 5, 6, 7),
+            max_load_utilization=0.85,
+        ),
     )
 
     assert usage['logical_cpu_utilization'] == pytest.approx(cpu_seconds / 4)
     assert usage['physical_core_utilization'] == pytest.approx(physical_utilization)
     assert usage['physical_core_headroom'] == pytest.approx(headroom)
     assert usage['sufficient_headroom'] is False
-
-
-def test_publication_ambient_cpu_gate_rejects_background_contention() -> None:
-    probe = _quiet_probe(
-        system_physical_core_utilization=0.08,
-        server_physical_core_utilization=0.12,
-        server_llc_physical_core_utilization=0.07,
-        load_llc_physical_core_utilization=0.04,
-        maximum_cpu_utilization=0.12,
-    )
-
-    with pytest.raises(AmbientCpuError, match=r'server-cores=12\.0%'):
-        _validate_ambient_cpu(probe, HarnessConfig())
-
-    probe['server_physical_core_utilization'] = 0.09
-    _validate_ambient_cpu(probe, HarnessConfig())
-
-
-def test_publication_interference_gate_rejects_short_activity_window() -> None:
-    activity = _quiet_activity(
-        elapsed_seconds=10.0,
-        total_ticks=1_000,
-        active_ticks=50,
-        physical_core_utilization=0.05,
-        maximum_cpu_utilization=0.05,
-        maximum_raw_window_physical_core_utilization=0.20,
-        maximum_raw_window_cpu_utilization=0.20,
-        maximum_window_physical_core_utilization=0.20,
-        maximum_window_cpu_utilization=0.20,
-    )
-
-    with pytest.raises(AmbientCpuError, match=r'worst-window-physical-cores=20\.0%'):
-        _validate_interference_cpu(activity, HarnessConfig())
-
-    activity['maximum_window_physical_core_utilization'] = 0.09
-    activity['maximum_window_cpu_utilization'] = 0.09
-    _validate_interference_cpu(activity, HarnessConfig())
 
 
 def test_load_generator_timeout_is_duration_bounded_and_kills_group(
@@ -1177,8 +768,6 @@ def test_publication_headroom_requires_symmetric_interleaved_scaling_plateau(
             raw={'rps': rps},
             command={
                 'argv': [variant],
-                'executable': variant,
-                'executable_sha256': None,
                 'environment': {
                     'TOKIO_WORKER_THREADS': str(harness.load_worker_threads)
                 },
@@ -1210,114 +799,42 @@ def test_publication_headroom_requires_symmetric_interleaved_scaling_plateau(
     )
     monkeypatch.setattr('bench.bench.time.sleep', lambda _seconds: None)
     monkeypatch.setattr(
-        'bench.bench._capture_ambient_cpu', lambda *_args: _quiet_probe()
-    )
-    monkeypatch.setattr(
-        'bench.bench._interference_monitor',
-        lambda *_args: _StubInterferenceMonitor(),
-    )
-    monkeypatch.setattr(
         'bench.bench.wait_for_worker_pids',
         lambda *_args, **_kwargs: (True, set()),
     )
 
-    system = _publication_system(
-        HarnessConfig(
-            server_cpus=(0, 1, 2, 3),
-            load_cpus=(4, 5, 6, 7),
-            management_cpus=(8,),
-        )
-    )
     harness = HarnessConfig(load_cpus=(4, 5, 6, 7), management_cpus=(8,))
     ladder = _measure_load_headroom(
         Scenario('cell', 1, 'h1'),
         'h2corn',
         harness,
         tmp_path,
-        _snapshot_gate(harness, system),
-        system,
     )
 
     assert ladder['warmup_order'] == ['reduced', 'full']
-    assert ladder['order'] == ['reduced', 'full', 'full', 'reduced'] * 7
+    assert ladder['order'] == ['reduced', 'full', 'full', 'reduced']
     assert ladder['load_cpus'] == [4, 5, 6, 7]
     assert ladder['reduced_worker_threads'] == 12
     assert ladder['full_worker_threads'] == 16
+    assert ladder['maximum_publish_gain'] == 0.05
+    assert ladder['all_runs_have_cpu_headroom'] is True
     assert ladder['plateau_observed'] is expected_plateau
     if full_base_rps > 100.0:
-        assert ladder['paired_gain_lower_quartile'] > 0.15
+        assert ladder['full_vs_reduced_gain'] > 0.15
     elif full_base_rps < 100.0:
-        assert ladder['paired_gain_upper_quartile'] < -0.15
+        assert ladder['full_vs_reduced_gain'] < -0.15
     else:
         assert ladder['full_vs_reduced_gain'] == 0.0
-    assert len(ladder['paired_gain_samples']) == 14
+    assert len(ladder['paired_gain_samples']) == 2
+    assert len(ladder['runs']) == 6
 
 
-def test_headroom_sign_test_rejects_noise_not_just_a_large_median() -> None:
-    wins, comparisons, probability = _one_sided_sign_test_p([
-        0.39,
-        0.10,
-        0.07,
-        0.05,
-        0.04,
-        -0.03,
-        -0.33,
-        -0.42,
-    ])
-
-    assert (wins, comparisons) == (5, 8)
-    assert probability == pytest.approx(0.36328125)
-
-
-def test_headroom_equivalence_rejects_mixed_nonsignificant_scaling() -> None:
-    below_margin, comparisons, probability = _equivalence_sign_test_p(
-        [-0.20] * 6 + [0.50] * 6,
-        0.02,
-    )
-
-    assert (below_margin, comparisons) == (6, 12)
-    assert probability == pytest.approx(0.61279296875)
-    assert probability > 0.05 / 21
-
-
-def test_headroom_persists_failed_ambient_probe(tmp_path, monkeypatch) -> None:
+def test_headroom_propagates_load_failure(tmp_path, monkeypatch) -> None:
     harness = HarnessConfig(
         server_cpus=(0, 1, 2, 3),
         load_cpus=(4, 5, 6, 7),
         management_cpus=(8,),
     )
-    system = _publication_system(harness)
-    probe = _quiet_probe(
-        system_physical_core_utilization=0.2,
-        maximum_cpu_utilization=0.2,
-    )
-    monkeypatch.setattr('bench.bench._capture_ambient_cpu', lambda *_args: probe)
-
-    with pytest.raises(AmbientCpuError):
-        _measure_load_headroom(
-            Scenario('cell', 1, 'h1'),
-            'h2corn',
-            harness,
-            tmp_path,
-            _snapshot_gate(harness, system),
-            system,
-        )
-
-    progress = json.loads(
-        (tmp_path / 'raw/benchmark_cell_headroom_progress.json').read_text()
-    )
-    assert progress['status'] == 'failed'
-    assert progress['ambient_cpu_attempts'] == [probe]
-    assert 'quiet-window gate failed' in progress['error']
-
-
-def test_headroom_persists_nonambient_load_failure(tmp_path, monkeypatch) -> None:
-    harness = HarnessConfig(
-        server_cpus=(0, 1, 2, 3),
-        load_cpus=(4, 5, 6, 7),
-        management_cpus=(8,),
-    )
-    system = _publication_system(harness)
 
     @contextmanager
     def fake_server(*_args, **_kwargs):
@@ -1328,18 +845,12 @@ def test_headroom_persists_nonambient_load_failure(tmp_path, monkeypatch) -> Non
             'process_group_id': 77,
         }
 
-    monkeypatch.setattr(
-        'bench.bench._capture_ambient_cpu', lambda *_args: _quiet_probe()
-    )
     monkeypatch.setattr('bench.bench.running_server', fake_server)
     monkeypatch.setattr(
         'bench.bench.validate_response_contract', lambda *_args: {'status': 200}
     )
     monkeypatch.setattr('bench.bench.time.sleep', lambda _seconds: None)
     monkeypatch.setattr('bench.bench.ProcessGroupResourceSampler', _StubResourceSampler)
-    monkeypatch.setattr(
-        'bench.bench._interference_monitor', lambda *_args: _StubInterferenceMonitor()
-    )
     monkeypatch.setattr(
         'bench.bench._run_scenario_load',
         lambda *_args: (_ for _ in ()).throw(BenchmarkError('load failed')),
@@ -1351,15 +862,7 @@ def test_headroom_persists_nonambient_load_failure(tmp_path, monkeypatch) -> Non
             'h2corn',
             harness,
             tmp_path,
-            _snapshot_gate(harness, system),
-            system,
         )
-
-    progress = json.loads(
-        (tmp_path / 'raw/benchmark_cell_headroom_progress.json').read_text()
-    )
-    assert progress['status'] == 'failed'
-    assert progress['error'] == 'BenchmarkError: load failed'
 
 
 def test_public_suite_keeps_only_single_worker_http2_multiplexing() -> None:

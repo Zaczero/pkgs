@@ -2,7 +2,7 @@
 
 Each block starts both named server variants in a seed-controlled AB/BA order.
 Warmup blocks are retained in the evidence record but excluded from statistics.
-Measured samples are compared within their block so slow ambient drift is less
+Measured samples are compared within their block so slow temporal drift is less
 likely to be mistaken for a code change.
 """
 
@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
@@ -39,124 +40,76 @@ import h2.events
 import h2.exceptions
 
 try:
-    from bench.provenance import (
-        FileIdentity,
-        NamedCommand,
-        VariantArtifacts,
-        VariantEnvironmentMode,
-        command_version,
-        file_identity,
-        file_sha256,
-        git_metadata,
-        path_fingerprint,
-        result_environment,
-        subprocess_environment,
-        tool_identity,
-        variant_artifacts,
-        variant_environment_evidence,
-    )
     from bench.system import (
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
         RESOURCE_SAMPLE_INTERVAL_SECONDS,
-        AmbientCpuProbe,
         BenchmarkError,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
         ProcessGroupResourceSampler,
         ProcessGroupUsage,
-        benchmark_system_state_matches,
-        capture_role_ambient_cpu,
         capture_system_state,
-        durable_json,
         parse_linux_cpu_list,
         physical_core_capacity,
         pin_benchmark_driver,
         terminate_process_group,
-        validate_ambient_cpu,
         validate_cpu_roles,
-        validate_interference_cpu,
         validate_k6_result,
         validate_oha_result,
         wait_for_http_server,
         wait_for_unix_server,
+        write_json,
     )
 except ModuleNotFoundError:  # Direct ``python bench/compare.py`` execution.
-    from provenance import (  # type: ignore[import-not-found, no-redef]
-        FileIdentity,
-        NamedCommand,
-        VariantArtifacts,
-        VariantEnvironmentMode,
-        command_version,
-        file_identity,
-        file_sha256,
-        git_metadata,
-        path_fingerprint,
-        result_environment,
-        subprocess_environment,
-        tool_identity,
-        variant_artifacts,
-        variant_environment_evidence,
-    )
     from system import (  # type: ignore[import-not-found, no-redef]
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
         RESOURCE_SAMPLE_INTERVAL_SECONDS,
-        AmbientCpuProbe,
         BenchmarkError,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
         ProcessGroupResourceSampler,
         ProcessGroupUsage,
-        benchmark_system_state_matches,
-        capture_role_ambient_cpu,
         capture_system_state,
-        durable_json,
         parse_linux_cpu_list,
         physical_core_capacity,
         pin_benchmark_driver,
         terminate_process_group,
-        validate_ambient_cpu,
         validate_cpu_roles,
-        validate_interference_cpu,
         validate_k6_result,
         validate_oha_result,
         wait_for_http_server,
         wait_for_unix_server,
+        write_json,
     )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PYTHON_HASH_SEED = '0'
 DEFAULT_SEED = 20_260_710
 DEFAULT_TRIALS = 10
 DEFAULT_BOOTSTRAP_SAMPLES = 10_000
 DEFAULT_LOAD_WARMUP_DURATION = '1s'
-DEFAULT_AMBIENT_CPU_PROBE_SECONDS = 1.0
-COMPARISON_SCHEMA_VERSION = 9
 MAX_DURATION_SECONDS = 3_600.0
 MAX_LOAD_UTILIZATION = 0.85
 NAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
 DURATION_PATTERN = re.compile(r'^(\d+(?:\.\d+)?)(ms|s|m|h)$')
 SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 HTTPProtocol = Literal['1.0', '1.1', '2', 'unknown']
-HostNoiseMode = Literal[
-    'pinned-noise-gated',
-    'diagnostic-pinned-noisy',
-    'diagnostic-unpinned',
-]
 ComparisonVerdict = Literal[
     'STABLE_ABOVE_IQR',
     'INCONCLUSIVE',
-    'DIAGNOSTIC_PINNED_NOISY',
-    'DIAGNOSTIC_UNPINNED',
-    'DIAGNOSTIC_VARIANT_ENVIRONMENT_DRIFT',
-    'DIAGNOSTIC_PINNED_NOISY_AND_VARIANT_ENVIRONMENT_DRIFT',
-    'DIAGNOSTIC_UNPINNED_AND_VARIANT_ENVIRONMENT_DRIFT',
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class NamedCommand:
+    name: str
+    argv: tuple[str, ...]
+
+
+def subprocess_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment['PYTHONHASHSEED'] = DEFAULT_PYTHON_HASH_SEED
+    environment.pop('NO_COLOR', None)
+    return environment
 
 
 class PairedComparison(TypedDict):
@@ -175,8 +128,6 @@ class PairedComparison(TypedDict):
 
 
 class MetricComparison(PairedComparison):
-    host_noise_mode: HostNoiseMode
-    variant_environment_mode: VariantEnvironmentMode
     verdict: ComparisonVerdict
 
 
@@ -222,13 +173,6 @@ class LoadWarmupEvidence(TypedDict):
     load: LoadExecution
 
 
-class HostCpuNoiseEvidence(TypedDict):
-    mode: HostNoiseMode
-    ambient_cpu_attempts: list[AmbientCpuProbe]
-    ambient_cpu_before: AmbientCpuProbe | None
-    interference_cpu_during: CpuActivity | None
-
-
 class VariantResources(TypedDict):
     server: ProcessGroupUsage
     load_generator: LoadGeneratorResources
@@ -244,14 +188,12 @@ class VariantRun(TypedDict):
     resources: VariantResources
     load_warmup: LoadWarmupEvidence | None
     load: LoadExecution
-    host_cpu: HostCpuNoiseEvidence
 
 
 class VariantRunProgress(TypedDict, total=False):
     variant: str
     server_command: list[str]
     started_at: str
-    host_cpu: HostCpuNoiseEvidence
     elapsed_seconds: float
     metrics: dict[str, float]
     correctness: CorrectnessEvidence
@@ -982,127 +924,6 @@ def _run_load(
     return load, metrics
 
 
-def host_noise_mode(
-    server_cpus: tuple[int, ...] | str | None,
-    maximum_ambient_cpu_utilization: float = MAX_AMBIENT_CPU_UTILIZATION,
-    maximum_ambient_single_cpu_utilization: float = (
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION
-    ),
-) -> HostNoiseMode:
-    """Classify whether role-aware host-noise evidence can be collected."""
-    if server_cpus is None:
-        return 'diagnostic-unpinned'
-    if (
-        maximum_ambient_cpu_utilization > MAX_AMBIENT_CPU_UTILIZATION
-        or maximum_ambient_single_cpu_utilization > MAX_AMBIENT_SINGLE_CPU_UTILIZATION
-    ):
-        return 'diagnostic-pinned-noisy'
-    return 'pinned-noise-gated'
-
-
-def _args_host_noise_mode(args: argparse.Namespace) -> HostNoiseMode:
-    return host_noise_mode(
-        args.server_cpus,
-        args.max_ambient_cpu_utilization,
-        args.max_ambient_single_cpu_utilization,
-    )
-
-
-def _capture_ambient_cpu(
-    args: argparse.Namespace, system: BenchmarkSystemState
-) -> AmbientCpuProbe:
-    return capture_role_ambient_cpu(system, args.ambient_cpu_probe_seconds)
-
-
-def _validate_ambient_cpu(probe: AmbientCpuProbe, args: argparse.Namespace) -> None:
-    validate_ambient_cpu(
-        probe,
-        max_aggregate=args.max_ambient_cpu_utilization,
-        max_single=args.max_ambient_single_cpu_utilization,
-    )
-
-
-def _interference_monitor(
-    args: argparse.Namespace, system: BenchmarkSystemState
-) -> CpuActivityMonitor:
-    if (
-        args.server_cpus is None
-        or args.load_cpus is None
-        or args.management_cpus is None
-    ):
-        raise BenchmarkError('interference monitor requires pinned CPU roles')
-    online = set(system['online_cpus'])
-    interference_cpus = tuple(
-        sorted(
-            online
-            - set(args.server_cpus)
-            - set(args.load_cpus)
-            - set(args.management_cpus)
-        )
-    )
-    if not interference_cpus:
-        raise BenchmarkError(
-            'pinned CPU noise gating requires at least one unused logical CPU'
-        )
-    return CpuActivityMonitor(
-        interference_cpus,
-        physical_core_capacity(interference_cpus),
-    )
-
-
-def _validate_interference_cpu(activity: CpuActivity, args: argparse.Namespace) -> None:
-    validate_interference_cpu(
-        activity,
-        max_aggregate=args.max_ambient_cpu_utilization,
-        max_single=args.max_ambient_single_cpu_utilization,
-    )
-
-
-def _run_noise_gated_load(
-    args: argparse.Namespace,
-    system: BenchmarkSystemState,
-    evidence: HostCpuNoiseEvidence,
-    checkpoint: Callable[[], None] | None = None,
-) -> tuple[LoadExecution, dict[str, float]]:
-    """Run one retained load with role-aware foreign-CPU evidence when pinned."""
-    if evidence['mode'] == 'diagnostic-unpinned':
-        return _run_load(args)
-
-    first_probe = _capture_ambient_cpu(args, system)
-    evidence['ambient_cpu_attempts'].append(first_probe)
-    if checkpoint is not None:
-        checkpoint()
-    _validate_ambient_cpu(first_probe, args)
-
-    # The durable checkpoint above performs filesystem work. Probe again so
-    # measured load starts after, rather than during, that activity.
-    ambient = _capture_ambient_cpu(args, system)
-    evidence['ambient_cpu_attempts'].append(ambient)
-    evidence['ambient_cpu_before'] = ambient
-    _validate_ambient_cpu(ambient, args)
-
-    monitor = _interference_monitor(args, system)
-    monitor.start()
-    load: LoadExecution | None = None
-    metrics: dict[str, float] | None = None
-    load_error: Exception | None = None
-    try:
-        load, metrics = _run_load(args)
-    except Exception as error:
-        load_error = error
-    finally:
-        interference = monitor.stop()
-        evidence['interference_cpu_during'] = interference
-        if checkpoint is not None:
-            checkpoint()
-
-    _validate_interference_cpu(interference, args)
-    if load_error is not None:
-        raise load_error.with_traceback(load_error.__traceback__)
-    assert load is not None and metrics is not None
-    return load, metrics
-
-
 def _warm_fresh_server(
     process: subprocess.Popen[bytes],
     args: argparse.Namespace,
@@ -1159,26 +980,18 @@ def run_variant(
     args: argparse.Namespace,
     *,
     measured: bool,
-    system: BenchmarkSystemState,
     progress: VariantRunProgress | None = None,
     checkpoint: Callable[[], None] | None = None,
 ) -> VariantRun:
     server_command = [*_affinity_prefix(args.server_cpus), *command.argv]
     started_at = datetime.now(UTC).isoformat()
     started = time.monotonic()
-    host_cpu: HostCpuNoiseEvidence = {
-        'mode': _args_host_noise_mode(args),
-        'ambient_cpu_attempts': [],
-        'ambient_cpu_before': None,
-        'interference_cpu_during': None,
-    }
     if progress is None:
         progress = {}
     progress.update({
         'variant': command.name,
         'server_command': server_command,
         'started_at': started_at,
-        'host_cpu': host_cpu,
     })
     if checkpoint is not None:
         checkpoint()
@@ -1212,12 +1025,7 @@ def run_variant(
                     else None
                 )
                 time.sleep(args.settle)
-                load, metrics = _run_noise_gated_load(
-                    args,
-                    system,
-                    host_cpu,
-                    checkpoint,
-                )
+                load, metrics = _run_load(args)
                 if process.poll() is not None:
                     raise BenchmarkError(
                         f'server exited during load with status {process.returncode}'
@@ -1280,65 +1088,6 @@ def _capture_benchmark_system(args: argparse.Namespace) -> BenchmarkSystemState:
     return system
 
 
-def collect_environment(
-    args: argparse.Namespace,
-    frozen_variant_artifacts: dict[str, VariantArtifacts],
-) -> dict[str, Any]:
-    """Collect ambient environment evidence around the frozen identity.
-
-    The expensive variant-artifact probes are reused from the frozen
-    comparison identity instead of being recomputed.
-    """
-    system = _capture_benchmark_system(args)
-    build_environment = {
-        name: os.environ.get(name)
-        for name in (
-            'CARGO_BUILD_RUSTFLAGS',
-            'CARGO_ENCODED_RUSTFLAGS',
-            'CARGO_PROFILE_RELEASE_CODEGEN_UNITS',
-            'CARGO_PROFILE_RELEASE_LTO',
-            'CARGO_TARGET_DIR',
-            'PYO3_CONFIG_FILE',
-            'PYO3_PYTHON',
-            'RUSTC_BOOTSTRAP',
-            'RUSTC_WRAPPER',
-            'RUSTFLAGS',
-            '_PYTHON_HOST_PLATFORM',
-            '_PYTHON_PROJECT_BASE',
-            '_PYTHON_SYSCONFIGDATA_NAME',
-        )
-    }
-    input_hashes = {
-        str(path.relative_to(ROOT.parent)): file_sha256(path)
-        for path in (
-            ROOT / 'Cargo.toml',
-            ROOT / 'pyproject.toml',
-            ROOT / 'build.rs',
-            ROOT.parent / 'Cargo.lock',
-            ROOT.parent / 'Cargo.toml',
-            ROOT.parent / 'rust-toolchain.toml',
-        )
-        if path.is_file()
-    }
-    return {
-        'captured_at': datetime.now(UTC).isoformat(),
-        'benchmark_system': system,
-        'load_average': list(os.getloadavg()) if hasattr(os, 'getloadavg') else None,
-        'oha_version': command_version([args.oha, '--version']),
-        'k6_version': command_version([args.k6, 'version']),
-        'tool_versions': {
-            'cargo': command_version(['cargo', '--version', '--verbose']),
-            'maturin': command_version(['maturin', '--version']),
-            'rustc': command_version(['rustc', '--version', '--verbose']),
-            'uv': command_version(['uv', '--version']),
-        },
-        'variant_artifacts': frozen_variant_artifacts,
-        'build_environment': build_environment,
-        'input_sha256': input_hashes,
-        'git': git_metadata(),
-    }
-
-
 METRICS = {
     'requests_per_second': True,
     'latency_p50_seconds': False,
@@ -1348,182 +1097,63 @@ METRICS = {
 }
 
 
-def _identity_inputs(args: argparse.Namespace) -> dict[str, FileIdentity]:
-    paths = [
-        Path(__file__),
-        ROOT / 'bench/bench_app.py',
-        ROOT / 'bench/_file_response_payload.bin',
-        ROOT / 'pyproject.toml',
-        ROOT / 'uv.lock',
-        *args.identity_input,
-    ]
-    if args.load_driver == 'k6':
-        paths.append(args.k6_script)
-    identities: dict[str, FileIdentity] = {}
-    for path in paths:
-        identity = file_identity(path)
-        identities[identity['path']] = identity
-    return identities
-
-
 def comparison_identity(args: argparse.Namespace) -> dict[str, Any]:
-    """Return the complete semantic identity required to resume a run safely."""
-    control_artifacts = variant_artifacts(args.control)
-    candidate_artifacts = variant_artifacts(args.candidate)
-    variant_environment = variant_environment_evidence(
-        control_artifacts,
-        candidate_artifacts,
-        allow_drift=args.allow_variant_environment_drift,
-    )
+    """Return the measurement settings used for matrix resume matching."""
     return {
-        'seed': args.seed,
-        'warmup_blocks': args.warmups,
-        'measured_blocks': args.trials,
+        'variants': {
+            'control': {'name': args.control.name, 'argv': list(args.control.argv)},
+            'candidate': {
+                'name': args.candidate.name,
+                'argv': list(args.candidate.argv),
+            },
+        },
+        'scenario': {
+            'url': args.url,
+            'ready_url': args.ready_url,
+            'unix_socket': str(args.unix_socket)
+            if args.unix_socket is not None
+            else None,
+            'ready_unix_socket': str(args.ready_unix_socket)
+            if args.ready_unix_socket is not None
+            else None,
+            'load_driver': args.load_driver,
+            'load_executable': args.oha if args.load_driver == 'oha' else args.k6,
+            'k6_script': str(args.k6_script) if args.load_driver == 'k6' else None,
+            'http2': args.http2,
+            'insecure': args.insecure,
+            'disable_keepalive': args.disable_keepalive,
+            'method': args.method,
+            'expected_status': args.expected_status,
+            'expected_body_size': args.expected_body_size,
+            'expected_body_sha256': args.expected_body_sha256,
+            'expected_workers': args.expected_workers,
+            'body': args.body,
+            'headers': list(args.header),
+        },
         'duration': args.duration,
         'concurrency': args.concurrency,
-        'url': args.url,
-        'ready_url': args.ready_url,
-        'unix_socket': str(args.unix_socket) if args.unix_socket is not None else None,
-        'ready_unix_socket': str(args.ready_unix_socket)
-        if args.ready_unix_socket is not None
-        else None,
-        'load_driver': args.load_driver,
-        'http2': args.http2,
-        'insecure': args.insecure,
-        'disable_keepalive': args.disable_keepalive,
-        'method': args.method,
-        'expected_status': args.expected_status,
-        'expected_body_size': args.expected_body_size,
-        'expected_body_sha256': args.expected_body_sha256,
-        'expected_workers': args.expected_workers,
-        'body': args.body,
-        'headers': list(args.header),
-        'server_cpus': list(args.server_cpus) if args.server_cpus else None,
-        'load_cpus': list(args.load_cpus) if args.load_cpus else None,
-        'management_cpus': list(args.management_cpus) if args.management_cpus else None,
+        'trials': args.trials,
+        'warmups': args.warmups,
+        'seed': args.seed,
+        'cpu_roles': {
+            'server': list(args.server_cpus) if args.server_cpus else None,
+            'load': list(args.load_cpus) if args.load_cpus else None,
+            'management': list(args.management_cpus) if args.management_cpus else None,
+        },
         'load_warmup_duration': args.load_warmup_duration,
         'startup_timeout': args.startup_timeout,
         'load_grace': args.load_grace,
         'settle': args.settle,
         'rss_sample_interval': args.rss_sample_interval,
         'maximum_load_utilization': args.max_load_utilization,
-        'ambient_cpu_probe_seconds': args.ambient_cpu_probe_seconds,
-        'maximum_ambient_cpu_utilization': args.max_ambient_cpu_utilization,
-        'maximum_ambient_single_cpu_utilization': (
-            args.max_ambient_single_cpu_utilization
-        ),
-        'host_noise_mode': _args_host_noise_mode(args),
-        'variant_environment': variant_environment,
         'bootstrap_samples': args.bootstrap_samples,
-        'load_tool': tool_identity(
-            args.oha if args.load_driver == 'oha' else args.k6,
-            ('--version',) if args.load_driver == 'oha' else ('version',),
-        ),
-        'input_files': _identity_inputs(args),
-        'runtime_environment': result_environment(),
-        'benchmark_system': _capture_benchmark_system(args),
-        'source': git_metadata(),
-        'variants': {
-            'control': {
-                'name': args.control.name,
-                'argv': list(args.control.argv),
-                'artifacts': control_artifacts,
-            },
-            'candidate': {
-                'name': args.candidate.name,
-                'argv': list(args.candidate.argv),
-                'artifacts': candidate_artifacts,
-            },
-        },
     }
-
-
-def _verify_comparison_identity(
-    args: argparse.Namespace, frozen: dict[str, Any], *, phase: str
-) -> None:
-    current = comparison_identity(args)
-    frozen_system = frozen['benchmark_system']
-    current_system = current['benchmark_system']
-    frozen_without_system = {
-        key: value for key, value in frozen.items() if key != 'benchmark_system'
-    }
-    current_without_system = {
-        key: value for key, value in current.items() if key != 'benchmark_system'
-    }
-    if (
-        frozen_without_system != current_without_system
-        or not benchmark_system_state_matches(frozen_system, current_system)
-    ):
-        raise BenchmarkError(
-            f'frozen benchmark identity changed during {phase}; refusing mixed evidence'
-        )
-
-
-def _identity_file_roots(identity: dict[str, Any]) -> list[Path]:
-    """Every file or tree whose contents the frozen identity hashed."""
-    roots = [Path(path) for path in identity['input_files']]
-    load_tool = identity['load_tool']['executable']
-    if load_tool is not None:
-        roots.append(Path(load_tool))
-    for variant in identity['variants'].values():
-        artifacts = variant['artifacts']
-        roots.extend(
-            Path(artifacts[key])
-            for key in (
-                'executable',
-                'extension',
-                'python_executable',
-                'python_package',
-            )
-            if artifacts[key] is not None
-        )
-        roots.extend(
-            Path(dependency['path'])
-            for dependency in artifacts['dependencies'].values()
-            if dependency['path'] is not None
-        )
-        roots.extend(Path(path) for path in artifacts['command_inputs'])
-    return roots
-
-
-def _identity_fingerprint(identity: dict[str, Any]) -> dict[str, object]:
-    return {
-        str(root): path_fingerprint(root) for root in _identity_file_roots(identity)
-    }
-
-
-class ComparisonIdentityGate:
-    """Cheap per-phase integrity gate over the frozen comparison identity.
-
-    Every hashed identity input is fingerprinted by (path, size, mtime_ns,
-    inode) once at freeze time. Each phase re-checks only the fingerprint;
-    the full identity (hashes, probes, git, system state) is recomputed only
-    when the fingerprint changes — failing exactly as the full check would —
-    and once at suite completion.
-    """
-
-    def __init__(self, args: argparse.Namespace, identity: dict[str, Any]) -> None:
-        self._args = args
-        self._identity = identity
-        self._fingerprint = _identity_fingerprint(identity)
-
-    def verify(self, phase: str) -> None:
-        current = _identity_fingerprint(self._identity)
-        if current == self._fingerprint:
-            return
-        self.verify_full(phase)
-        self._fingerprint = current
-
-    def verify_full(self, phase: str) -> None:
-        _verify_comparison_identity(self._args, self._identity, phase=phase)
 
 
 def summarize_trials(
     trials: Sequence[dict[str, Any]],
     seed: int,
     bootstrap_samples: int,
-    noise_mode: HostNoiseMode,
-    variant_environment_mode: VariantEnvironmentMode = 'equivalent',
 ) -> dict[str, MetricComparison]:
     summary: dict[str, MetricComparison] = {}
     for metric_index, (metric, higher_is_better) in enumerate(METRICS.items()):
@@ -1540,28 +1170,12 @@ def summarize_trials(
             higher_is_better=higher_is_better,
             bootstrap_samples=bootstrap_samples,
         )
-        if variant_environment_mode == 'confounded-opt-out' and noise_mode != (
-            'pinned-noise-gated'
-        ):
-            verdict: ComparisonVerdict = (
-                'DIAGNOSTIC_UNPINNED_AND_VARIANT_ENVIRONMENT_DRIFT'
-                if noise_mode == 'diagnostic-unpinned'
-                else 'DIAGNOSTIC_PINNED_NOISY_AND_VARIANT_ENVIRONMENT_DRIFT'
-            )
-        elif variant_environment_mode == 'confounded-opt-out':
-            verdict = 'DIAGNOSTIC_VARIANT_ENVIRONMENT_DRIFT'
-        elif noise_mode == 'diagnostic-unpinned':
-            verdict = 'DIAGNOSTIC_UNPINNED'
-        elif noise_mode == 'diagnostic-pinned-noisy':
-            verdict = 'DIAGNOSTIC_PINNED_NOISY'
-        elif paired['directionally_stable_above_iqr']:
-            verdict = 'STABLE_ABOVE_IQR'
+        if paired['directionally_stable_above_iqr']:
+            verdict: ComparisonVerdict = 'STABLE_ABOVE_IQR'
         else:
             verdict = 'INCONCLUSIVE'
         comparison: MetricComparison = {
             **paired,
-            'host_noise_mode': noise_mode,
-            'variant_environment_mode': variant_environment_mode,
             'verdict': verdict,
         }
         summary[metric] = comparison
@@ -1647,45 +1261,6 @@ def create_parser() -> argparse.ArgumentParser:
         '--max-load-utilization', default=MAX_LOAD_UTILIZATION, type=float
     )
     parser.add_argument(
-        '--ambient-cpu-probe-seconds',
-        default=DEFAULT_AMBIENT_CPU_PROBE_SECONDS,
-        type=float,
-        help='idle-host CPU probe before each retained paired load',
-    )
-    parser.add_argument(
-        '--max-ambient-cpu-utilization',
-        default=MAX_AMBIENT_CPU_UTILIZATION,
-        type=float,
-        help=(
-            'maximum aggregate foreign CPU use in physical-core equivalents; '
-            'SMT activity can reach 2, which retains rather than rejects it'
-        ),
-    )
-    parser.add_argument(
-        '--max-ambient-single-cpu-utilization',
-        default=MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        type=float,
-        help=(
-            'maximum foreign utilization of one logical CPU; use 1 to retain '
-            'but not reject full-core activity on a known noisy host'
-        ),
-    )
-    parser.add_argument(
-        '--identity-input',
-        action='append',
-        default=[],
-        type=Path,
-        help='additional result-shaping file to hash into the frozen identity',
-    )
-    parser.add_argument(
-        '--allow-variant-environment-drift',
-        action='store_true',
-        help=(
-            'allow differing Python runtimes or shared dependencies, while marking '
-            'the result explicitly confounded and diagnostic'
-        ),
-    )
-    parser.add_argument(
         '--bootstrap-samples', default=DEFAULT_BOOTSTRAP_SAMPLES, type=int
     )
     parser.add_argument('--output', type=Path)
@@ -1746,12 +1321,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--rss-sample-interval must be in [0.005, 1] seconds')
     if not 0.0 < args.max_load_utilization < 1.0:
         parser.error('--max-load-utilization must be in (0, 1)')
-    if args.ambient_cpu_probe_seconds <= 0.0:
-        parser.error('--ambient-cpu-probe-seconds must be positive')
-    if not 0.0 < args.max_ambient_cpu_utilization <= 2.0:
-        parser.error('--max-ambient-cpu-utilization must be in (0, 2]')
-    if not 0.0 < args.max_ambient_single_cpu_utilization <= 1.0:
-        parser.error('--max-ambient-single-cpu-utilization must be in (0, 1]')
     if args.bootstrap_samples < 1_000:
         parser.error('--bootstrap-samples must be at least 1000')
     try:
@@ -1786,9 +1355,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         _headers(args.header)
     except BenchmarkError as error:
         parser.error(str(error))
-    for path in args.identity_input:
-        if not path.is_file():
-            parser.error(f'--identity-input is not a file: {path}')
     args.output = args.output or _default_output(args.control.name, args.candidate.name)
     return args
 
@@ -1801,31 +1367,6 @@ def _print_summary(summary: dict[str, Any]) -> None:
         'latency_p99_9_seconds': 's',
         'server_peak_rss_bytes': 'B',
     }
-    if any(
-        result['host_noise_mode'] == 'diagnostic-unpinned'
-        for result in summary.values()
-    ):
-        print(
-            'host_noise_mode: DIAGNOSTIC_UNPINNED '
-            '(no role-aware ambient/interference gate)'
-        )
-    if any(
-        result['host_noise_mode'] == 'diagnostic-pinned-noisy'
-        for result in summary.values()
-    ):
-        print(
-            'host_noise_mode: DIAGNOSTIC_PINNED_NOISY '
-            '(CPU roles and interference were recorded, but relaxed limits do not '
-            'support publication-grade claims)'
-        )
-    if any(
-        result['variant_environment_mode'] == 'confounded-opt-out'
-        for result in summary.values()
-    ):
-        print(
-            'variant_environment_mode: CONFOUNDED_OPT_OUT '
-            '(Python runtime or shared dependencies differ)'
-        )
     for metric, result in summary.items():
         ci_low, ci_high = result['paired_delta_ci95_percent']
         verdict = result['verdict']
@@ -1858,30 +1399,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     orders = blocked_orders(args.warmups + args.trials, args.seed)
     try:
         identity = comparison_identity(args)
+        system = _capture_benchmark_system(args)
     except BenchmarkError as error:
         raise SystemExit(str(error)) from error
-    benchmark_system: BenchmarkSystemState = identity['benchmark_system']
-    noise_mode = _args_host_noise_mode(args)
-    variant_environment_mode: VariantEnvironmentMode = identity['variant_environment'][
-        'mode'
-    ]
-    identity_gate = ComparisonIdentityGate(args, identity)
     record: dict[str, Any] = {
-        'schema_version': COMPARISON_SCHEMA_VERSION,
         'status': 'running',
         'comparison_identity': identity,
         'lead_orders': [list(order) for order in orders],
-        'environment': collect_environment(
-            args,
-            {
-                role: variant['artifacts']
-                for role, variant in identity['variants'].items()
-            },
-        ),
+        'system': system,
         'warmups': [],
         'trials': [],
     }
-    durable_json(args.output, record)
+    write_json(args.output, record)
     try:
         for block_index, order in enumerate(orders):
             measured = block_index >= args.warmups
@@ -1893,7 +1422,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             destination = record['trials'] if measured else record['warmups']
             destination.append(block)
             for role in order:
-                identity_gate.verify(f'block {block_index} before {role} launch')
                 tag = 'measure' if measured else 'warmup'
                 print(
                     f'[{tag} block={block_index} lead={order[0]}] '
@@ -1901,24 +1429,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 progress: VariantRunProgress = {}
                 block['runs'][role] = progress
-                durable_json(args.output, record)
+                write_json(args.output, record)
                 run_variant(
                     commands[role],
                     args,
                     measured=measured,
-                    system=benchmark_system,
                     progress=progress,
-                    checkpoint=lambda: durable_json(args.output, record),
+                    checkpoint=lambda: write_json(args.output, record),
                 )
-                durable_json(args.output, record)
-            identity_gate.verify(f'block {block_index} completion')
-        identity_gate.verify_full('suite completion')
+                write_json(args.output, record)
         record['summary'] = summarize_trials(
             record['trials'],
             args.seed,
             args.bootstrap_samples,
-            noise_mode,
-            variant_environment_mode,
         )
         record['status'] = 'complete'
         record['completed_at'] = datetime.now(UTC).isoformat()
@@ -1926,7 +1449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         record['status'] = 'interrupted'
         record['error'] = 'KeyboardInterrupt'
         record['completed_at'] = datetime.now(UTC).isoformat()
-        durable_json(args.output, record)
+        write_json(args.output, record)
         print(
             f'benchmark interrupted; partial evidence: {args.output}', file=sys.stderr
         )
@@ -1935,12 +1458,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         record['status'] = 'failed'
         record['error'] = f'{type(error).__name__}: {error}'
         record['completed_at'] = datetime.now(UTC).isoformat()
-        durable_json(args.output, record)
+        write_json(args.output, record)
         print(f'benchmark failed: {error}', file=sys.stderr)
         print(f'partial evidence: {args.output}', file=sys.stderr)
         return 1
 
-    durable_json(args.output, record)
+    write_json(args.output, record)
     _print_summary(record['summary'])
     print(f'raw evidence: {args.output}')
     return 0

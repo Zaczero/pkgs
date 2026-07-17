@@ -3,25 +3,30 @@
 - Public cross-server benchmarks use the classic Uvicorn install, explicitly
   selecting stdlib asyncio and h11. Install `websockets` separately only for the
   WebSocket scenario; do not benchmark `uvicorn[standard]`.
-- Publish plots only from the complete frozen eight-trial suite with scenario
-  warmup, balanced server order, exact pre/post response gates, complete worker
-  readiness, process-group resource evidence, and load-generator headroom.
-  Smoke, partial, resumed-incompatible, and failed runs are diagnostic only.
-- Keep load-generator affinity fixed during headroom A/B tests. Vary explicit
-  oha Tokio workers or k6 `GOMAXPROCS`; changing the cpuset changes runtime
-  topology and can also perturb the server's cache/power domain. On this 5950X,
-  server processes are pinned to CPUs 2-5 on CCD0 and load runs on CCD1 CPUs
-  8-15,24-31.
+- Publish plots only from a complete `bench.py --publish` run: adaptive
+  rotation-balanced trials (3-8 per server, stability-stopped, 15-minute suite
+  budget), scenario warmup, exact pre/post response gates, complete worker
+  readiness, process-group resource evidence, and the fastest-cell headroom
+  check. Smoke, partial, and failed runs are diagnostic only. Keep the tree
+  still while a run measures — the harness no longer polices mid-run edits.
+- Never pin or thread-limit the measured servers — solutions run out of the
+  box with whatever parallelism they ship. Only the instrument is pinned
+  (auto-derived: harness driver on the boot LLC's first core, load generator
+  on every thread of the other LLC). Keep load-generator affinity fixed
+  during headroom A/B tests and vary only oha Tokio workers or k6
+  `GOMAXPROCS`.
 - Normalize load-generator CPU saturation to selected physical cores, not SMT
-  threads. Public runs must freeze and revalidate online/allowed CPUs, SMT and
-  LLC topology, governor/driver/EPP, boost, kernel command line, and THP state.
+  threads.
 - Pin every benchmark-driver thread, including orchestration/resource sampling,
-  to management CPU 0 and retain every thread-affinity mask. Reject a public
-  trial when its post-warmup `/proc/stat` probe exceeds 10% physical-core/LLC
-  utilization or 15% on one logical CPU; apply the same limits to fixed
-  one-second exposure and the full-load aggregate for unused server siblings/LLC
-  CPUs during measured and headroom loads. Retain a subsecond final sample raw,
-  normalize it to one second for gating, and retain running/failed checkpoints.
+  to the management CPU. Do not gate on ambient host activity — this is a
+  shared development box with editors and other agents running; the pinned
+  generator, medians over rotated trials, and retained per-trial ranges carry
+  the noise story.
+- Results are internal-only (gitignored; only plots and doc numbers are
+  published), so keep the harness free of evidence ceremony: no schema
+  versions, no per-trial checkpoint writes, no mid-run identity/system
+  re-verification, no crash-recovery machinery. Records are written once at
+  completion; an interrupted run is simply re-run.
 - Benchmark docs (README, docs/benchmarks.md) are user-facing: lead with the
   plots and concrete headline numbers (RPS, p99) taken from the canonical
   SVG/raw publication, and refresh those figures whenever the plots are

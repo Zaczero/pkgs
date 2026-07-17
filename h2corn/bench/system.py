@@ -1,9 +1,9 @@
 """Typed shared Linux layer for the bench harnesses.
 
-Owns CPU topology and affinity, /proc/stat activity gates, the /proc/<pid>
-process-group observation stack, server-readiness polling, durable JSON
-writes, and oha/k6 load-result validation. bench.py, compare.py, matrix.py,
-and mask_kernel_compare.py import this module instead of carrying copies.
+Owns CPU topology and affinity, the /proc/<pid> process-group observation
+stack, server-readiness polling, durable JSON writes, and oha/k6 load-result
+validation. bench.py, compare.py, matrix.py, and mask_kernel_compare.py
+import this module instead of carrying copies.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import math
 import os
 import platform
 import re
-import secrets
 import signal
 import socket
 import ssl
@@ -22,7 +21,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
 from errno import ESRCH
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
@@ -31,16 +29,10 @@ CPU_SYSFS_ROOT = Path('/sys/devices/system/cpu')
 CPU_LIST_PATTERN = re.compile(r'^[0-9,-]+$')
 PAGE_SIZE = os.sysconf('SC_PAGE_SIZE')
 RESOURCE_SAMPLE_INTERVAL_SECONDS = 0.05
-MAX_AMBIENT_CPU_UTILIZATION = 0.10
-MAX_AMBIENT_SINGLE_CPU_UTILIZATION = 0.15
 
 
 class BenchmarkError(RuntimeError):
     """A benchmark subprocess failed or produced invalid evidence."""
-
-
-class AmbientCpuError(BenchmarkError):
-    """The host was not quiet enough for publication-quality evidence."""
 
 
 class PollableProcess(Protocol):
@@ -100,247 +92,6 @@ class BenchmarkSystemState(TypedDict):
     server: CpuSetState | None
     load_generator: CpuSetState | None
     management: CpuSetState | None
-
-
-class CpuUtilization(TypedDict):
-    cpu: int
-    total_ticks: int
-    active_ticks: int
-    utilization: float
-
-
-class AmbientCpuProbe(TypedDict):
-    started_at: str
-    completed_at: str
-    elapsed_seconds: float
-    system_physical_core_utilization: float
-    server_physical_core_utilization: float
-    server_llc_physical_core_utilization: float
-    load_llc_physical_core_utilization: float
-    maximum_cpu_utilization: float
-    per_cpu: list[CpuUtilization]
-
-
-class CpuActivityWindow(TypedDict):
-    started_at: str
-    completed_at: str
-    elapsed_seconds: float
-    cpus: list[int]
-    physical_core_count: int
-    total_ticks: int
-    active_ticks: int
-    physical_core_utilization: float
-    maximum_cpu_utilization: float
-    per_cpu: list[CpuUtilization]
-
-
-class CpuActivity(CpuActivityWindow):
-    interval_seconds: float
-    windows: list[CpuActivityWindow]
-    maximum_raw_window_physical_core_utilization: float
-    maximum_raw_window_cpu_utilization: float
-    maximum_window_physical_core_utilization: float
-    maximum_window_cpu_utilization: float
-
-
-class CpuTimeSample(TypedDict):
-    total_ticks: int
-    idle_ticks: int
-
-
-def _fixed_interval_window_utilization(
-    window: CpuActivityWindow, interval_seconds: float
-) -> tuple[float, float]:
-    """Normalize a partial tail to the monitor's declared gate interval.
-
-    The raw window remains in the evidence. Scaling its utilization by its
-    observed fraction of the interval converts the work to fixed-window
-    exposure without treating a subsecond denominator as a full interval.
-    """
-    elapsed = window['elapsed_seconds']
-    if elapsed <= 0.0:
-        raise RuntimeError('CPU activity window did not advance wall time')
-    exposure = min(elapsed / interval_seconds, 1.0)
-    return (
-        window['physical_core_utilization'] * exposure,
-        window['maximum_cpu_utilization'] * exposure,
-    )
-
-
-class CpuActivityMonitor:
-    """Measure fixed-interval CPU exposure and retain the raw trailing sample."""
-
-    __slots__ = (
-        '_cpus',
-        '_error',
-        '_initial',
-        '_interval_seconds',
-        '_latest',
-        '_latest_at',
-        '_latest_monotonic',
-        '_physical_core_count',
-        '_started',
-        '_started_at',
-        '_stop_event',
-        '_thread',
-        '_windows',
-    )
-
-    def __init__(
-        self,
-        cpus: tuple[int, ...],
-        physical_core_count: int,
-        *,
-        interval_seconds: float = 1.0,
-    ) -> None:
-        if interval_seconds <= 0.0:
-            raise ValueError('CPU activity interval must be positive')
-        if not cpus or len(set(cpus)) != len(cpus):
-            raise ValueError('CPU activity requires unique CPUs')
-        if not 1 <= physical_core_count <= len(cpus):
-            raise ValueError('invalid physical-core count for CPU activity')
-        self._cpus = cpus
-        self._physical_core_count = physical_core_count
-        self._interval_seconds = interval_seconds
-        self._initial: dict[int, CpuTimeSample] | None = None
-        self._latest: dict[int, CpuTimeSample] | None = None
-        self._started = 0.0
-        self._started_at = ''
-        self._latest_monotonic = 0.0
-        self._latest_at = ''
-        self._windows: list[CpuActivityWindow] = []
-        self._error: BaseException | None = None
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        if self._initial is not None:
-            raise RuntimeError('CPU activity monitor is already running')
-        self._error = None
-        self._windows.clear()
-        self._started = time.monotonic()
-        self._started_at = datetime.now(UTC).isoformat()
-        self._initial = read_cpu_times(self._cpus)
-        self._latest = self._initial
-        self._latest_monotonic = self._started
-        self._latest_at = self._started_at
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._sample_loop,
-            name='h2corn-benchmark-cpu-monitor',
-            daemon=True,
-        )
-        self._thread.start()
-
-    def _sample_loop(self) -> None:
-        try:
-            deadline = self._started + self._interval_seconds
-            while not self._stop_event.wait(max(0.0, deadline - time.monotonic())):
-                self._capture_window()
-                deadline += self._interval_seconds
-                while deadline <= self._latest_monotonic:
-                    deadline += self._interval_seconds
-        except BaseException as error:
-            self._error = error
-            self._stop_event.set()
-
-    def _capture_window(
-        self,
-        after: dict[int, CpuTimeSample] | None = None,
-        *,
-        completed: float | None = None,
-        completed_at: str | None = None,
-    ) -> None:
-        assert self._latest is not None
-        if after is None:
-            after = read_cpu_times(self._cpus)
-        if completed is None:
-            completed = time.monotonic()
-        if completed_at is None:
-            completed_at = datetime.now(UTC).isoformat()
-        self._windows.append(
-            summarize_cpu_activity(
-                self._latest,
-                after,
-                self._cpus,
-                physical_core_count=self._physical_core_count,
-                started_at=self._latest_at,
-                completed_at=completed_at,
-                elapsed_seconds=completed - self._latest_monotonic,
-            )
-        )
-        self._latest = after
-        self._latest_monotonic = completed
-        self._latest_at = completed_at
-
-    def stop(self) -> CpuActivity:
-        if self._initial is None or self._thread is None:
-            raise RuntimeError('CPU activity monitor is not running')
-        self._stop_event.set()
-        self._thread.join()
-        if self._error is not None:
-            error = self._error
-            self._reset()
-            raise error
-        try:
-            after = read_cpu_times(self._cpus)
-            completed = time.monotonic()
-            completed_at = datetime.now(UTC).isoformat()
-            elapsed = completed - self._started
-            latest = self._latest
-            assert latest is not None
-            if any(
-                after[cpu]['total_ticks'] > latest[cpu]['total_ticks']
-                for cpu in self._cpus
-            ):
-                self._capture_window(
-                    after,
-                    completed=completed,
-                    completed_at=completed_at,
-                )
-            aggregate = summarize_cpu_activity(
-                self._initial,
-                after,
-                self._cpus,
-                physical_core_count=self._physical_core_count,
-                started_at=self._started_at,
-                completed_at=completed_at,
-                elapsed_seconds=elapsed,
-            )
-            windows = self._windows.copy()
-            gate_utilizations = [
-                _fixed_interval_window_utilization(window, self._interval_seconds)
-                for window in windows
-            ]
-            return {
-                **aggregate,
-                'interval_seconds': self._interval_seconds,
-                'windows': windows,
-                'maximum_raw_window_physical_core_utilization': max(
-                    (window['physical_core_utilization'] for window in windows),
-                    default=0.0,
-                ),
-                'maximum_raw_window_cpu_utilization': max(
-                    (window['maximum_cpu_utilization'] for window in windows),
-                    default=0.0,
-                ),
-                'maximum_window_physical_core_utilization': max(
-                    (physical for physical, _cpu in gate_utilizations),
-                    default=0.0,
-                ),
-                'maximum_window_cpu_utilization': max(
-                    (cpu for _physical, cpu in gate_utilizations),
-                    default=0.0,
-                ),
-            }
-        finally:
-            self._reset()
-
-    def _reset(self) -> None:
-        self._initial = None
-        self._latest = None
-        self._thread = None
-        self._error = None
 
 
 def _read_text(path: Path) -> str | None:
@@ -598,143 +349,54 @@ def physical_core_capacity(
     return capacity
 
 
-def read_cpu_times(
-    cpus: tuple[int, ...], *, proc_stat: Path = Path('/proc/stat')
-) -> dict[int, CpuTimeSample]:
-    wanted = set(cpus)
-    samples: dict[int, CpuTimeSample] = {}
-    try:
-        lines = proc_stat.read_text(encoding='utf-8').splitlines()
-    except OSError as error:
-        raise RuntimeError(
-            f'failed to read CPU utilization from {proc_stat}'
-        ) from error
-    for line in lines:
-        fields = line.split()
-        label = fields[0] if fields else ''
-        if not label.startswith('cpu') or not label[3:].isdigit():
-            continue
-        cpu = int(label[3:])
-        if cpu not in wanted:
-            continue
-        try:
-            # Linux includes guest and guest_nice in user and nice already.
-            ticks = [int(value) for value in fields[1:9]]
-        except ValueError as error:
-            raise RuntimeError(f'invalid CPU counters for CPU {cpu}') from error
-        if len(ticks) < 5:
-            raise RuntimeError(f'incomplete CPU counters for CPU {cpu}')
-        samples[cpu] = {
-            'total_ticks': sum(ticks),
-            'idle_ticks': ticks[3] + ticks[4],
-        }
-    missing = sorted(wanted - samples.keys())
-    if missing:
-        raise RuntimeError(
-            'missing /proc/stat counters for CPUs ' + ','.join(map(str, missing))
+class CpuRoles(TypedDict):
+    load: tuple[int, ...]
+    management: tuple[int, ...]
+
+
+def derive_cpu_roles(*, sysfs_root: Path = CPU_SYSFS_ROOT) -> CpuRoles:
+    """Derive measurement-instrument CPU roles from the host topology.
+
+    Only the instrument is pinned: management = the boot LLC domain's first
+    physical core (single thread), and the load generator owns every thread
+    of the largest other LLC domain. Servers deliberately stay unpinned —
+    they run out of the box, free to use whatever parallelism they ship
+    with. Raises on hosts without two LLC domains — pass explicit
+    --load-cpus/--management-cpus there.
+    """
+    online = _online_cpus(sysfs_root)
+    entries = [
+        capture_cpu_topology(cpu, sysfs_root=sysfs_root, online_cpus=online)
+        for cpu in online
+    ]
+    domains: dict[tuple[int, int], dict[tuple[int, int, int], list[int]]] = {}
+    for entry in entries:
+        llc = (entry['physical_package_id'], entry['last_level_cache']['cache_id'])
+        core = (
+            entry['physical_package_id'],
+            entry['die_id'],
+            entry['core_id'],
         )
-    return samples
-
-
-def summarize_cpu_activity(
-    before: dict[int, CpuTimeSample],
-    after: dict[int, CpuTimeSample],
-    cpus: tuple[int, ...],
-    *,
-    physical_core_count: int,
-    started_at: str,
-    completed_at: str,
-    elapsed_seconds: float,
-) -> CpuActivityWindow:
-    if not cpus or physical_core_count < 1:
-        raise ValueError('CPU activity requires CPUs and physical cores')
-    per_cpu: list[CpuUtilization] = []
-    total_ticks = 0
-    active_ticks = 0
-    for cpu in cpus:
-        total = after[cpu]['total_ticks'] - before[cpu]['total_ticks']
-        idle = after[cpu]['idle_ticks'] - before[cpu]['idle_ticks']
-        if total < 0 or not 0 <= idle <= total:
-            raise RuntimeError(f'invalid CPU counter delta for CPU {cpu}')
-        active = total - idle
-        total_ticks += total
-        active_ticks += active
-        per_cpu.append({
-            'cpu': cpu,
-            'total_ticks': total,
-            'active_ticks': active,
-            'utilization': 0.0 if total == 0 else active / total,
-        })
-    if total_ticks == 0:
-        raise RuntimeError('CPU counters did not advance during activity window')
-    one_logical_cpu_ticks = total_ticks / len(cpus)
-    physical_capacity_ticks = one_logical_cpu_ticks * physical_core_count
-    return {
-        'started_at': started_at,
-        'completed_at': completed_at,
-        'elapsed_seconds': elapsed_seconds,
-        'cpus': list(cpus),
-        'physical_core_count': physical_core_count,
-        'total_ticks': total_ticks,
-        'active_ticks': active_ticks,
-        'physical_core_utilization': active_ticks / physical_capacity_ticks,
-        'maximum_cpu_utilization': max(entry['utilization'] for entry in per_cpu),
-        'per_cpu': per_cpu,
-    }
-
-
-def capture_ambient_cpu_probe(
-    online_cpus: tuple[int, ...],
-    server_physical_cpus: tuple[int, ...],
-    server_llc_cpus: tuple[int, ...],
-    load_llc_cpus: tuple[int, ...],
-    *,
-    online_physical_core_count: int,
-    server_physical_core_count: int,
-    server_llc_physical_core_count: int,
-    load_llc_physical_core_count: int,
-    duration_seconds: float,
-    proc_stat: Path = Path('/proc/stat'),
-) -> AmbientCpuProbe:
-    """Measure foreign CPU activity while no benchmark load is running."""
-    if duration_seconds <= 0.0:
-        raise ValueError('CPU utilization probe duration must be positive')
-    started_at = datetime.now(UTC).isoformat()
-    before = read_cpu_times(online_cpus, proc_stat=proc_stat)
-    started = time.monotonic()
-    time.sleep(duration_seconds)
-    elapsed = time.monotonic() - started
-    completed_at = datetime.now(UTC).isoformat()
-    after = read_cpu_times(online_cpus, proc_stat=proc_stat)
-
-    def activity(cpus: tuple[int, ...], physical_cores: int) -> CpuActivityWindow:
-        return summarize_cpu_activity(
-            before,
-            after,
-            cpus,
-            physical_core_count=physical_cores,
-            started_at=started_at,
-            completed_at=completed_at,
-            elapsed_seconds=elapsed,
+        domains.setdefault(llc, {}).setdefault(core, []).append(entry['cpu'])
+    if len(domains) < 2:
+        raise RuntimeError(
+            'automatic CPU roles require two last-level-cache domains; '
+            'pass explicit CPU role options on this host'
         )
-
-    system = activity(online_cpus, online_physical_core_count)
-    server_physical = activity(server_physical_cpus, server_physical_core_count)
-    server_llc = activity(server_llc_cpus, server_llc_physical_core_count)
-    load_llc = activity(load_llc_cpus, load_llc_physical_core_count)
-    return {
-        'started_at': started_at,
-        'completed_at': completed_at,
-        'elapsed_seconds': elapsed,
-        'system_physical_core_utilization': system['physical_core_utilization'],
-        'server_physical_core_utilization': server_physical[
-            'physical_core_utilization'
-        ],
-        'server_llc_physical_core_utilization': server_llc['physical_core_utilization'],
-        'load_llc_physical_core_utilization': load_llc['physical_core_utilization'],
-        'maximum_cpu_utilization': system['maximum_cpu_utilization'],
-        'per_cpu': system['per_cpu'],
-    }
+    # Management lives in the domain containing the boot CPU (OS
+    # housekeeping gravitates there anyway); the largest other domain
+    # feeds the load generator.
+    boot_llc = next(
+        llc for llc, cores in domains.items() if any(0 in c for c in cores.values())
+    )
+    management_domain = sorted(domains[boot_llc].items())
+    load_llc = max(
+        (llc for llc in domains if llc != boot_llc),
+        key=lambda llc: len(domains[llc]),
+    )
+    management = (min(management_domain[0][1]),)
+    load = tuple(sorted(cpu for cpus in domains[load_llc].values() for cpu in cpus))
+    return {'load': load, 'management': management}
 
 
 def capture_system_state(
@@ -787,24 +449,6 @@ def capture_system_state(
         if management_cpus is None
         else capture_cpu_set(management_cpus, sysfs_root=sysfs_root),
     }
-
-
-def benchmark_system_state_matches(
-    expected: BenchmarkSystemState, actual: BenchmarkSystemState
-) -> bool:
-    """Compare frozen host state while allowing harmless thread-count churn.
-
-    Native helper threads may finish or start between checkpoints. Their CPU
-    masks are an invariant; their exact count is provenance, not a
-    result-shaping setting.
-    """
-    expected_masks = [mask['cpus'] for mask in expected['thread_affinity_masks']]
-    actual_masks = [mask['cpus'] for mask in actual['thread_affinity_masks']]
-    expected_state = expected.copy()
-    actual_state = actual.copy()
-    expected_state['thread_affinity_masks'] = []
-    actual_state['thread_affinity_masks'] = []
-    return expected_state == actual_state and expected_masks == actual_masks
 
 
 class ProcessResourceSample(TypedDict):
@@ -1024,113 +668,6 @@ def wait_for_unix_server(
     )
 
 
-def cpu_set_physical_cpus(cpu_set: CpuSetState) -> tuple[int, ...]:
-    return tuple(
-        sorted({
-            sibling
-            for entry in cpu_set['topology']
-            for sibling in entry['thread_siblings']
-        })
-    )
-
-
-def cpu_set_llc_cpus(cpu_set: CpuSetState) -> tuple[int, ...]:
-    return tuple(
-        sorted({
-            cpu
-            for entry in cpu_set['topology']
-            for cpu in entry['last_level_cache']['shared_cpus']
-        })
-    )
-
-
-def capture_role_ambient_cpu(
-    system: BenchmarkSystemState, duration_seconds: float
-) -> AmbientCpuProbe:
-    """Probe ambient activity over the host and the server/load role domains.
-
-    Role CPU sets are filtered to online CPUs: offline siblings have no
-    /proc/stat counters and cannot carry foreign activity.
-    """
-    server = system['server']
-    load = system['load_generator']
-    if server is None or load is None:
-        raise AmbientCpuError('ambient CPU gate requires pinned server/load CPUs')
-    online = set(system['online_cpus'])
-    server_physical_cpus = tuple(
-        cpu for cpu in cpu_set_physical_cpus(server) if cpu in online
-    )
-    server_llc_cpus = tuple(cpu for cpu in cpu_set_llc_cpus(server) if cpu in online)
-    load_llc_cpus = tuple(cpu for cpu in cpu_set_llc_cpus(load) if cpu in online)
-    return capture_ambient_cpu_probe(
-        tuple(system['online_cpus']),
-        server_physical_cpus,
-        server_llc_cpus,
-        load_llc_cpus,
-        online_physical_core_count=system['online_physical_core_count'],
-        server_physical_core_count=server['physical_core_count'],
-        server_llc_physical_core_count=physical_core_capacity(server_llc_cpus),
-        load_llc_physical_core_count=physical_core_capacity(load_llc_cpus),
-        duration_seconds=duration_seconds,
-    )
-
-
-def validate_ambient_cpu(
-    probe: AmbientCpuProbe,
-    *,
-    max_aggregate: float,
-    max_single: float,
-) -> None:
-    aggregate_utilizations = (
-        probe['system_physical_core_utilization'],
-        probe['server_physical_core_utilization'],
-        probe['server_llc_physical_core_utilization'],
-        probe['load_llc_physical_core_utilization'],
-    )
-    if (
-        max(aggregate_utilizations) > max_aggregate
-        or probe['maximum_cpu_utilization'] > max_single
-    ):
-        raise AmbientCpuError(
-            'ambient CPU quiet-window gate failed: '
-            f'system={probe["system_physical_core_utilization"]:.1%}, '
-            f'server-cores={probe["server_physical_core_utilization"]:.1%}, '
-            f'server-llc={probe["server_llc_physical_core_utilization"]:.1%}, '
-            f'load-llc={probe["load_llc_physical_core_utilization"]:.1%}, '
-            f'max-cpu={probe["maximum_cpu_utilization"]:.1%}; limits '
-            f'{max_aggregate:.1%} aggregate / {max_single:.1%} per CPU'
-        )
-
-
-def validate_interference_cpu(
-    activity: CpuActivity,
-    *,
-    max_aggregate: float,
-    max_single: float,
-) -> None:
-    maximum_physical = max(
-        activity['physical_core_utilization'],
-        activity['maximum_window_physical_core_utilization'],
-    )
-    maximum_cpu = max(
-        activity['maximum_cpu_utilization'],
-        activity['maximum_window_cpu_utilization'],
-    )
-    if maximum_physical > max_aggregate or maximum_cpu > max_single:
-        raise AmbientCpuError(
-            'CPU interference gate failed during measured load: '
-            f'aggregate-physical-cores={activity["physical_core_utilization"]:.1%}, '
-            'worst-window-physical-cores='
-            f'{activity["maximum_window_physical_core_utilization"]:.1%}, '
-            f'aggregate-max-cpu={activity["maximum_cpu_utilization"]:.1%}, '
-            f'worst-window-max-cpu={activity["maximum_window_cpu_utilization"]:.1%}, '
-            'raw-window-physical-cores='
-            f'{activity["maximum_raw_window_physical_core_utilization"]:.1%}, '
-            f'raw-window-max-cpu={activity["maximum_raw_window_cpu_utilization"]:.1%}'
-            f'; limits {max_aggregate:.1%} aggregate / {max_single:.1%} per CPU'
-        )
-
-
 def physical_core_keys(cpu_set: CpuSetState) -> set[tuple[int, int, int]]:
     return {
         (entry['physical_package_id'], entry['die_id'], entry['core_id'])
@@ -1242,27 +779,9 @@ def pin_benchmark_driver(management_cpus: tuple[int, ...] | None) -> None:
         ) from error
 
 
-def fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def durable_json(path: Path, value: object) -> None:
-    """Atomically replace ``path`` with JSON and make the update durable."""
+def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(8)}.temporary')
-    try:
-        with temporary.open('w', encoding='utf-8') as stream:
-            stream.write(json.dumps(value, indent=2, sort_keys=True) + '\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
 def _finite_positive_rate(value: object) -> bool:
@@ -1284,10 +803,14 @@ def validate_oha_result(
     if success_rate is not None and not _finite_positive_rate(success_rate):
         raise BenchmarkError(f'oha success rate is invalid: {success_rate!r}')
     errors = raw.get('errorDistribution', {})
-    unexpected_errors = set(errors) - {'aborted due to deadline'}
+    # In-flight requests (and multiplexed HTTP/2 streams) are cut when the
+    # duration deadline hits — generator lifecycle, not server errors. Any
+    # other error class is fatal.
+    shutdown_artifacts = {'aborted due to deadline', 'operation was canceled'}
+    unexpected_errors = set(errors) - shutdown_artifacts
     if unexpected_errors:
         raise BenchmarkError(f'oha reported request errors: {errors!r}')
-    deadline_aborts = errors.get('aborted due to deadline', 0)
+    deadline_aborts = sum(errors.get(key, 0) for key in shutdown_artifacts)
     if not isinstance(deadline_aborts, int) or deadline_aborts > max_deadline_aborts:
         raise BenchmarkError(f'oha reported excessive deadline aborts: {errors!r}')
     statuses = raw.get('statusCodeDistribution')

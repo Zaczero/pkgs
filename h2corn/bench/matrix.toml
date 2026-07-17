@@ -1,5 +1,3 @@
-schema_version = 1
-
 [defaults]
 duration = "5s"
 concurrency = 100

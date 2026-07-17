@@ -21,43 +21,17 @@ try:
     # sibling bench.py shadows the package and raises ImportError instead of
     # the ModuleNotFoundError this fallback relies on.
     import bench.compare as compare  # noqa: PLR0402
-    from bench.provenance import (
-        file_identity,
-        git_metadata,
-        result_environment,
-        tool_identity,
-        variant_artifacts,
-        variant_environment_evidence,
-    )
     from bench.system import (
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
         BenchmarkError,
-        benchmark_system_state_matches,
-        capture_system_state,
-        durable_json,
         pin_benchmark_driver,
-        validate_cpu_roles,
+        write_json,
     )
 except ModuleNotFoundError:  # Direct ``python bench/matrix.py`` execution.
     import compare  # type: ignore[import-not-found, no-redef]
-    from provenance import (  # type: ignore[import-not-found, no-redef]
-        file_identity,
-        git_metadata,
-        result_environment,
-        tool_identity,
-        variant_artifacts,
-        variant_environment_evidence,
-    )
     from system import (  # type: ignore[import-not-found, no-redef]
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
         BenchmarkError,
-        benchmark_system_state_matches,
-        capture_system_state,
-        durable_json,
         pin_benchmark_driver,
-        validate_cpu_roles,
+        write_json,
     )
 
 if TYPE_CHECKING:
@@ -65,7 +39,6 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / 'bench/matrix.toml'
-MATRIX_SCHEMA_VERSION = 6
 
 
 class ManifestDefaults(TypedDict):
@@ -93,12 +66,11 @@ class ManifestFamily(TypedDict):
 
 
 class Manifest(TypedDict):
-    schema_version: int
     defaults: ManifestDefaults
     families: list[ManifestFamily]
 
 
-_MANIFEST_KEYS = frozenset({'schema_version', 'defaults', 'families'})
+_MANIFEST_KEYS = frozenset({'defaults', 'families'})
 _DEFAULT_KEYS = frozenset({'duration', 'concurrency', 'workers', 'loop_threads'})
 _FAMILY_REQUIRED_KEYS = frozenset({
     'id',
@@ -257,9 +229,6 @@ def _manifest_family(value: object, index: int) -> ManifestFamily:
 def load_manifest(path: Path) -> tuple[Manifest, tuple[Scenario, ...]]:
     raw = _table(tomllib.loads(path.read_text()), 'matrix manifest')
     _validate_keys(raw, required=_MANIFEST_KEYS, label='matrix manifest')
-    schema_version = _integer(raw, 'schema_version', 'matrix manifest')
-    if schema_version != 1:
-        raise ValueError('matrix manifest schema_version must be 1')
     defaults = _manifest_defaults(raw['defaults'])
     raw_families = raw['families']
     if not isinstance(raw_families, list):
@@ -269,7 +238,6 @@ def load_manifest(path: Path) -> tuple[Manifest, tuple[Scenario, ...]]:
         for index, family in enumerate(raw_families, start=1)
     ]
     manifest: Manifest = {
-        'schema_version': schema_version,
         'defaults': defaults,
         'families': families,
     }
@@ -478,10 +446,6 @@ def build_compare_argv(
         str(scenario.workers),
         '--output',
         str(output),
-        '--identity-input',
-        str(args.manifest),
-        '--identity-input',
-        str(Path(__file__)),
     ]
     if scenario.protocol == 'h2':
         command.append('--http2')
@@ -511,16 +475,6 @@ def build_compare_argv(
         command.extend(['--management-cpus', args.management_cpus])
     command.extend(['--load-warmup-duration', args.load_warmup_duration])
     command.extend(['--max-load-utilization', str(args.max_load_utilization)])
-    command.extend([
-        '--ambient-cpu-probe-seconds',
-        str(args.ambient_cpu_probe_seconds),
-        '--max-ambient-cpu-utilization',
-        str(args.max_ambient_cpu_utilization),
-        '--max-ambient-single-cpu-utilization',
-        str(args.max_ambient_single_cpu_utilization),
-    ])
-    if getattr(args, 'allow_variant_environment_drift', False):
-        command.append('--allow-variant-environment-drift')
     return command
 
 
@@ -528,8 +482,7 @@ def _is_complete(path: Path, expected_identity: dict[str, Any]) -> bool:
     try:
         record = json.loads(path.read_text())
         return (
-            record.get('schema_version') == compare.COMPARISON_SCHEMA_VERSION
-            and record.get('status') == 'complete'
+            record.get('status') == 'complete'
             and record.get('comparison_identity') == expected_identity
         )
     except (OSError, json.JSONDecodeError, AttributeError):
@@ -565,22 +518,6 @@ def create_parser() -> argparse.ArgumentParser:
         type=float,
         default=compare.MAX_LOAD_UTILIZATION,
     )
-    parser.add_argument(
-        '--ambient-cpu-probe-seconds',
-        type=float,
-        default=compare.DEFAULT_AMBIENT_CPU_PROBE_SECONDS,
-    )
-    parser.add_argument(
-        '--max-ambient-cpu-utilization',
-        type=float,
-        default=MAX_AMBIENT_CPU_UTILIZATION,
-    )
-    parser.add_argument(
-        '--max-ambient-single-cpu-utilization',
-        type=float,
-        default=MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-    )
-    parser.add_argument('--allow-variant-environment-drift', action='store_true')
     parser.add_argument('--port-start', type=int, default=18080)
     parser.add_argument(
         '--runtime-gil',
@@ -618,12 +555,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--port-start must be in [1, 65535]')
     if not 0.0 < args.max_load_utilization < 1.0:
         parser.error('--max-load-utilization must be in (0, 1)')
-    if args.ambient_cpu_probe_seconds <= 0.0:
-        parser.error('--ambient-cpu-probe-seconds must be positive')
-    if not 0.0 < args.max_ambient_cpu_utilization <= 2.0:
-        parser.error('--max-ambient-cpu-utilization must be in (0, 2]')
-    if not 0.0 < args.max_ambient_single_cpu_utilization <= 1.0:
-        parser.error('--max-ambient-single-cpu-utilization must be in (0, 1]')
     for value in (args.server_cpus, args.load_cpus, args.management_cpus):
         if value is not None:
             compare.parse_cpu_set(value)
@@ -650,118 +581,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _matrix_identity(
-    args: argparse.Namespace,
-    selected: Sequence[Scenario],
-    tls_paths: tuple[Path, Path] | None,
-) -> dict[str, Any]:
-    control_artifacts = variant_artifacts(args.control)
-    candidate_artifacts = variant_artifacts(args.candidate)
-    variant_environment = variant_environment_evidence(
-        control_artifacts,
-        candidate_artifacts,
-        allow_drift=args.allow_variant_environment_drift,
-    )
-    input_paths = [
-        args.manifest,
-        Path(__file__),
-        Path(compare.__file__),
-        ROOT / 'bench/provenance.py',
-        ROOT / 'bench/system.py',
-        ROOT / 'bench/bench_app.py',
-        ROOT / 'bench/k6/ws.js',
-    ]
-    if tls_paths is not None:
-        input_paths.extend(tls_paths)
-    inputs = {
-        identity['path']: identity
-        for path in input_paths
-        if (identity := file_identity(path))
-    }
-    server_cpus = compare.parse_cpu_set(args.server_cpus) if args.server_cpus else None
-    load_cpus = compare.parse_cpu_set(args.load_cpus) if args.load_cpus else None
-    management_cpus = (
-        compare.parse_cpu_set(args.management_cpus) if args.management_cpus else None
-    )
-    benchmark_system = capture_system_state(server_cpus, load_cpus, management_cpus)
-    validate_cpu_roles(server_cpus, load_cpus, management_cpus, benchmark_system)
-    return {
-        'selection': [scenario.id for scenario in selected],
-        'manifest': str(args.manifest.resolve()),
-        'inputs': inputs,
-        'control': {
-            'name': args.control.name,
-            'argv': list(args.control.argv),
-            'artifacts': control_artifacts,
-        },
-        'candidate': {
-            'name': args.candidate.name,
-            'argv': list(args.candidate.argv),
-            'artifacts': candidate_artifacts,
-        },
-        'variant_environment': variant_environment,
-        'load_tools': {
-            'oha': tool_identity('oha', ('--version',)),
-            'k6': tool_identity('k6', ('version',)),
-        },
-        'settings': {
-            'duration': args.duration,
-            'concurrency': args.concurrency,
-            'trials': args.trials,
-            'warmups': args.warmups,
-            'seed': args.seed,
-            'server_cpus': args.server_cpus,
-            'load_cpus': args.load_cpus,
-            'management_cpus': args.management_cpus,
-            'load_warmup_duration': args.load_warmup_duration,
-            'maximum_load_utilization': args.max_load_utilization,
-            'ambient_cpu_probe_seconds': args.ambient_cpu_probe_seconds,
-            'maximum_ambient_cpu_utilization': args.max_ambient_cpu_utilization,
-            'maximum_ambient_single_cpu_utilization': (
-                args.max_ambient_single_cpu_utilization
-            ),
-            'allow_variant_environment_drift': (args.allow_variant_environment_drift),
-            'host_noise_mode': compare.host_noise_mode(
-                args.server_cpus,
-                args.max_ambient_cpu_utilization,
-                args.max_ambient_single_cpu_utilization,
-            ),
-            'port_start': args.port_start,
-            'runtime_gil': args.runtime_gil,
-        },
-        'runtime_environment': result_environment(),
-        'benchmark_system': benchmark_system,
-        'source': git_metadata(),
-    }
-
-
-def _verify_matrix_identity(
-    args: argparse.Namespace,
-    selected: Sequence[Scenario],
-    tls_paths: tuple[Path, Path] | None,
-    frozen: dict[str, Any],
-) -> None:
-    current = _matrix_identity(args, selected, tls_paths)
-    frozen_system = frozen['benchmark_system']
-    current_system = current['benchmark_system']
-    frozen_without_system = {
-        key: value for key, value in frozen.items() if key != 'benchmark_system'
-    }
-    current_without_system = {
-        key: value for key, value in current.items() if key != 'benchmark_system'
-    }
-    if (
-        frozen_without_system != current_without_system
-        or not benchmark_system_state_matches(frozen_system, current_system)
-    ):
-        raise BenchmarkError(
-            'frozen matrix identity changed during execution; refusing mixed evidence'
-        )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    raw_manifest, all_scenarios = load_manifest(args.manifest)
+    _, all_scenarios = load_manifest(args.manifest)
     try:
         selected = select_scenarios(all_scenarios, args.select, full=args.full)
     except ValueError as error:
@@ -795,47 +617,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         for scenario in selected
     ):
         tls_paths = _tls_certificate(args.output_dir / 'tls')
-    try:
-        matrix_identity = _matrix_identity(args, selected, tls_paths)
-    except BenchmarkError as error:
-        raise SystemExit(str(error)) from error
     matrix_path = args.output_dir / 'matrix.json'
-    noise_mode = compare.host_noise_mode(
-        args.server_cpus,
-        args.max_ambient_cpu_utilization,
-        args.max_ambient_single_cpu_utilization,
-    )
-    variant_environment = matrix_identity['variant_environment']
-    # The frozen matrix_identity is the single stored copy of the selection,
-    # variants, environment evidence, and host-noise settings.
     record: dict[str, Any] = {
-        'schema_version': MATRIX_SCHEMA_VERSION,
         'status': 'dry-run' if args.dry_run else 'running',
         'created_at': datetime.now(UTC).isoformat(),
         'manifest': str(args.manifest),
-        'manifest_sha256': hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
-        'manifest_data': raw_manifest,
-        'matrix_identity': matrix_identity,
         'scenarios': {},
     }
     failed = False
     for index, scenario in enumerate(selected):
-        _verify_matrix_identity(args, selected, tls_paths, matrix_identity)
         output = args.output_dir / f'{scenario.id}.json'
         socket_path = args.output_dir / f'{scenario.id}.sock'
         reason = unsupported_reason(scenario, gil_enabled=gil_enabled)
         if reason is not None:
             record['scenarios'][scenario.id] = {
                 'status': 'skipped',
-                'host_noise_mode': noise_mode,
-                'variant_environment_mode': variant_environment['mode'],
                 'reason': reason,
             }
-            durable_json(matrix_path, record)
+            write_json(matrix_path, record)
             continue
         if scenario.transport == 'tls':
             if tls_paths is None:
-                raise RuntimeError('supported TLS scenario has no frozen certificate')
+                raise RuntimeError('supported TLS scenario has no certificate')
             cert, key = tls_paths
         else:
             cert, key = None, None
@@ -854,8 +657,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_identity = compare.comparison_identity(compare_args)
         entry = {
             'status': 'planned',
-            'host_noise_mode': noise_mode,
-            'variant_environment_mode': variant_environment['mode'],
             'result': str(output),
             'compare_argv': compare_argv,
         }
@@ -864,32 +665,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             entry['status'] = 'resumed-complete'
         elif not args.dry_run:
             entry['status'] = 'running'
-            durable_json(matrix_path, record)
+            write_json(matrix_path, record)
             return_code = compare.main(compare_argv)
             entry['status'] = 'complete' if return_code == 0 else 'failed'
             failed |= return_code != 0
-        durable_json(matrix_path, record)
+        write_json(matrix_path, record)
 
-    _verify_matrix_identity(args, selected, tls_paths, matrix_identity)
     record['status'] = 'failed' if failed else 'dry-run' if args.dry_run else 'complete'
     record['completed_at'] = datetime.now(UTC).isoformat()
-    durable_json(matrix_path, record)
-    if noise_mode == 'diagnostic-unpinned':
-        print(
-            'host_noise_mode: DIAGNOSTIC_UNPINNED '
-            '(no role-aware ambient/interference gate)'
-        )
-    elif noise_mode == 'diagnostic-pinned-noisy':
-        print(
-            'host_noise_mode: DIAGNOSTIC_PINNED_NOISY '
-            '(CPU roles and interference were recorded, but relaxed limits do not '
-            'support publication-grade claims)'
-        )
-    if variant_environment['mode'] == 'confounded-opt-out':
-        print(
-            'variant_environment_mode: CONFOUNDED_OPT_OUT '
-            '(Python runtime or shared dependencies differ)'
-        )
+    write_json(matrix_path, record)
     print(f'matrix evidence: {matrix_path}')
     return int(failed)
 

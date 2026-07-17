@@ -1,53 +1,23 @@
-import json
-import os
-import stat
 from errno import ESRCH
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from bench.system import (
     PAGE_SIZE,
     BenchmarkError,
-    BenchmarkSystemState,
-    CpuActivityMonitor,
     ProcessGroupResourceSampler,
     ProcessResourceSample,
-    benchmark_system_state_matches,
-    capture_ambient_cpu_probe,
     capture_cpu_set,
     capture_thread_affinity_masks,
-    durable_json,
+    derive_cpu_roles,
     parse_linux_cpu_list,
     physical_core_capacity,
     pin_process_threads,
-    read_cpu_times,
     read_process_group_resources,
     validate_k6_result,
     validate_oha_result,
 )
-
-
-def test_system_identity_ignores_thread_count_churn_but_not_affinity_masks() -> None:
-    expected = cast(
-        'BenchmarkSystemState',
-        {
-            'thread_affinity_masks': [{'cpus': [0], 'thread_count': 7}],
-            'kernel': 'test',
-        },
-    )
-    actual = cast(
-        'BenchmarkSystemState',
-        {
-            'thread_affinity_masks': [{'cpus': [0], 'thread_count': 3}],
-            'kernel': 'test',
-        },
-    )
-    assert benchmark_system_state_matches(expected, actual)
-
-    actual['thread_affinity_masks'] = [{'cpus': [0, 1], 'thread_count': 3}]
-    assert not benchmark_system_state_matches(expected, actual)
 
 
 def _write(path: Path, value: str) -> None:
@@ -80,6 +50,34 @@ def _fake_cpu(
     _write(cpu_root / 'cpufreq/scaling_governor', 'performance')
     _write(cpu_root / 'cpufreq/scaling_driver', 'test-driver')
     _write(cpu_root / 'cpufreq/energy_performance_preference', 'performance')
+
+
+def _fake_llc_domain(
+    root: Path,
+    cores: range,
+    *,
+    sibling_offset: int,
+    llc_id: int,
+    llc_cpus: str,
+) -> None:
+    for core in cores:
+        siblings = f'{core},{core + sibling_offset}'
+        _fake_cpu(
+            root,
+            core,
+            core=core,
+            siblings=siblings,
+            llc_id=llc_id,
+            llc_cpus=llc_cpus,
+        )
+        _fake_cpu(
+            root,
+            core + sibling_offset,
+            core=core,
+            siblings=siblings,
+            llc_id=llc_id,
+            llc_cpus=llc_cpus,
+        )
 
 
 def test_linux_cpu_list_parser() -> None:
@@ -164,92 +162,6 @@ def test_thread_affinity_pinning_tolerates_threads_exiting_mid_pass(
     ]
 
 
-def test_cpu_activity_monitor_retains_aggregate_and_worst_window(
-    monkeypatch,
-) -> None:
-    samples = iter([
-        {0: {'total_ticks': 100, 'idle_ticks': 100}},
-        {0: {'total_ticks': 200, 'idle_ticks': 200}},
-        {0: {'total_ticks': 300, 'idle_ticks': 200}},
-    ])
-    monotonic = iter([0.0, 1.0, 2.0])
-    monkeypatch.setattr('bench.system.read_cpu_times', lambda _cpus: next(samples))
-    monkeypatch.setattr('bench.system.time.monotonic', lambda: next(monotonic))
-
-    def capture_once(monitor: CpuActivityMonitor) -> None:
-        monitor._capture_window()
-
-    monkeypatch.setattr(CpuActivityMonitor, '_sample_loop', capture_once)
-    monitor = CpuActivityMonitor((0,), 1)
-    monitor.start()
-    activity = monitor.stop()
-
-    assert activity['physical_core_utilization'] == pytest.approx(0.5)
-    assert [window['physical_core_utilization'] for window in activity['windows']] == [
-        0.0,
-        1.0,
-    ]
-    assert activity['maximum_window_physical_core_utilization'] == 1.0
-    assert activity['maximum_window_cpu_utilization'] == 1.0
-
-
-def test_cpu_activity_monitor_normalizes_short_busy_tail_to_fixed_interval(
-    monkeypatch,
-) -> None:
-    samples = iter([
-        {0: {'total_ticks': 100, 'idle_ticks': 100}},
-        {0: {'total_ticks': 200, 'idle_ticks': 198}},
-        {0: {'total_ticks': 234, 'idle_ticks': 225}},
-    ])
-    monotonic = iter([0.0, 1.0, 1.34])
-    monkeypatch.setattr('bench.system.read_cpu_times', lambda _cpus: next(samples))
-    monkeypatch.setattr('bench.system.time.monotonic', lambda: next(monotonic))
-    monkeypatch.setattr(
-        CpuActivityMonitor,
-        '_sample_loop',
-        lambda monitor: monitor._capture_window(),
-    )
-
-    monitor = CpuActivityMonitor((0,), 1)
-    monitor.start()
-    activity = monitor.stop()
-
-    assert len(activity['windows']) == 2
-    assert activity['windows'][-1]['elapsed_seconds'] == pytest.approx(0.34)
-    assert activity['windows'][-1]['maximum_cpu_utilization'] == pytest.approx(7 / 34)
-    assert activity['physical_core_utilization'] == pytest.approx(9 / 134)
-    assert activity['maximum_raw_window_physical_core_utilization'] == pytest.approx(
-        7 / 34
-    )
-    assert activity['maximum_raw_window_cpu_utilization'] == pytest.approx(7 / 34)
-    assert activity['maximum_window_physical_core_utilization'] == pytest.approx(0.07)
-    assert activity['maximum_window_cpu_utilization'] == pytest.approx(0.07)
-
-
-def test_cpu_activity_monitor_rejects_genuinely_busy_partial_tail(monkeypatch) -> None:
-    samples = iter([
-        {0: {'total_ticks': 100, 'idle_ticks': 100}},
-        {0: {'total_ticks': 200, 'idle_ticks': 200}},
-        {0: {'total_ticks': 220, 'idle_ticks': 200}},
-    ])
-    monotonic = iter([0.0, 1.0, 1.2])
-    monkeypatch.setattr('bench.system.read_cpu_times', lambda _cpus: next(samples))
-    monkeypatch.setattr('bench.system.time.monotonic', lambda: next(monotonic))
-    monkeypatch.setattr(
-        CpuActivityMonitor,
-        '_sample_loop',
-        lambda monitor: monitor._capture_window(),
-    )
-
-    monitor = CpuActivityMonitor((0,), 1)
-    monitor.start()
-    activity = monitor.stop()
-
-    assert activity['windows'][-1]['maximum_cpu_utilization'] == 1.0
-    assert activity['maximum_window_physical_core_utilization'] == pytest.approx(0.2)
-    assert activity['maximum_window_cpu_utilization'] == pytest.approx(0.2)
-
-
 def test_cpu_set_counts_physical_cores_and_discovers_highest_cache(
     tmp_path: Path,
 ) -> None:
@@ -283,50 +195,67 @@ def test_cpu_topology_capture_rejects_missing_required_evidence(
         capture_cpu_set((0,), sysfs_root=tmp_path)
 
 
-def test_ambient_cpu_probe_reports_system_and_role_utilization(
-    tmp_path: Path, monkeypatch
-) -> None:
-    proc_stat = tmp_path / 'stat'
-    proc_stat.write_text('cpu0 0 0 0 100 0 0 0 0 0 0\ncpu1 0 0 0 100 0 0 0 0 0 0\n')
-
-    def advance(_duration: float) -> None:
-        proc_stat.write_text(
-            'cpu0 50 0 0 150 0 0 0 0 0 0\ncpu1 0 0 0 200 0 0 0 0 0 0\n'
-        )
-
-    monkeypatch.setattr('bench.system.time.sleep', advance)
-
-    probe = capture_ambient_cpu_probe(
-        (0, 1),
-        (0,),
-        (0,),
-        (1,),
-        online_physical_core_count=2,
-        server_physical_core_count=1,
-        server_llc_physical_core_count=1,
-        load_llc_physical_core_count=1,
-        duration_seconds=0.5,
-        proc_stat=proc_stat,
+def test_cpu_roles_pin_only_the_instrument(tmp_path: Path) -> None:
+    _write(tmp_path / 'online', '0-19')
+    _fake_llc_domain(
+        tmp_path,
+        range(5),
+        sibling_offset=10,
+        llc_id=0,
+        llc_cpus='0-4,10-14',
+    )
+    _fake_llc_domain(
+        tmp_path,
+        range(5, 10),
+        sibling_offset=10,
+        llc_id=1,
+        llc_cpus='5-9,15-19',
     )
 
-    assert probe['system_physical_core_utilization'] == pytest.approx(0.25)
-    assert probe['server_physical_core_utilization'] == pytest.approx(0.5)
-    assert probe['load_llc_physical_core_utilization'] == 0.0
-    assert probe['maximum_cpu_utilization'] == pytest.approx(0.5)
-    assert probe['per_cpu'][0] == {
-        'cpu': 0,
-        'total_ticks': 100,
-        'active_ticks': 50,
-        'utilization': 0.5,
+    # Servers stay unpinned: only management (boot-LLC first core) and the
+    # load generator (every thread of the other LLC) are derived.
+    assert derive_cpu_roles(sysfs_root=tmp_path) == {
+        'management': (0,),
+        'load': (5, 6, 7, 8, 9, 15, 16, 17, 18, 19),
     }
 
 
-def test_cpu_time_reader_does_not_double_count_guest_ticks(tmp_path: Path) -> None:
-    proc_stat = tmp_path / 'stat'
-    proc_stat.write_text('cpu0 10 2 3 80 1 2 1 1 50 20\n')
+def test_cpu_roles_reject_single_llc_hosts(tmp_path: Path) -> None:
+    _write(tmp_path / 'online', '0-4,10-14')
+    _fake_llc_domain(
+        tmp_path,
+        range(5),
+        sibling_offset=10,
+        llc_id=0,
+        llc_cpus='0-4,10-14',
+    )
 
-    assert read_cpu_times((0,), proc_stat=proc_stat) == {
-        0: {'total_ticks': 100, 'idle_ticks': 81}
+    with pytest.raises(RuntimeError, match='two last-level-cache domains'):
+        derive_cpu_roles(sysfs_root=tmp_path)
+
+
+def test_cpu_roles_accept_small_boot_llc_domains(tmp_path: Path) -> None:
+    _write(tmp_path / 'online', '0-7,10-17')
+    _fake_llc_domain(
+        tmp_path,
+        range(4),
+        sibling_offset=10,
+        llc_id=0,
+        llc_cpus='0-3,10-13',
+    )
+    _fake_llc_domain(
+        tmp_path,
+        range(4, 8),
+        sibling_offset=10,
+        llc_id=1,
+        llc_cpus='4-7,14-17',
+    )
+
+    # No server role means a small boot domain is fine: the instrument
+    # needs one management core plus one load LLC.
+    assert derive_cpu_roles(sysfs_root=tmp_path) == {
+        'management': (0,),
+        'load': (4, 5, 6, 7, 14, 15, 16, 17),
     }
 
 
@@ -394,27 +323,6 @@ def test_process_group_sampler_tracks_exited_and_new_processes(monkeypatch) -> N
         'sample_count': 2,
         'sampling_interval_seconds': 60.0,
     }
-
-
-def test_durable_json_fsyncs_file_and_directory_and_cleans_temp(
-    tmp_path: Path, monkeypatch
-) -> None:
-    sync_kinds = []
-    real_fsync = os.fsync
-
-    def tracked_fsync(file_descriptor):
-        sync_kinds.append(
-            'directory' if stat.S_ISDIR(os.fstat(file_descriptor).st_mode) else 'file'
-        )
-        real_fsync(file_descriptor)
-
-    monkeypatch.setattr('bench.system.os.fsync', tracked_fsync)
-    output = tmp_path / 'nested/evidence.json'
-    durable_json(output, {'status': 'running'})
-
-    assert sync_kinds == ['file', 'directory']
-    assert json.loads(output.read_text()) == {'status': 'running'}
-    assert [path.name for path in output.parent.iterdir()] == ['evidence.json']
 
 
 def test_oha_validation_requires_all_expected_responses() -> None:

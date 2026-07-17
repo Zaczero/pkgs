@@ -1,7 +1,5 @@
 import argparse
 import base64
-import ctypes
-import fcntl
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -21,7 +19,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,82 +34,70 @@ mpl.use('Agg')
 import matplotlib.pyplot as plt
 
 try:
-    from bench.provenance import (
-        file_sha256,
-        path_fingerprint,
-        tree_sha256,
-    )
     from bench.system import (
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        AmbientCpuError,
-        AmbientCpuProbe,
         BenchmarkError,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
         CpuSetState,
         PollableProcess,
         ProcessGroupResourceSampler,
         ProcessGroupUsage,
-        benchmark_system_state_matches,
-        capture_role_ambient_cpu,
         capture_system_state,
-        durable_json,
-        fsync_directory,
+        derive_cpu_roles,
         parse_linux_cpu_list,
         physical_core_capacity,
         pin_benchmark_driver,
         terminate_process_group,
-        validate_ambient_cpu,
-        validate_interference_cpu,
         validate_k6_result,
         validate_oha_result,
         wait_for_http_server,
         wait_for_unix_server,
+        write_json,
     )
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
-    from provenance import (  # type: ignore[import-not-found, no-redef]
-        file_sha256,
-        path_fingerprint,
-        tree_sha256,
-    )
     from system import (  # type: ignore[import-not-found, no-redef]
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        AmbientCpuError,
-        AmbientCpuProbe,
         BenchmarkError,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
         CpuSetState,
         PollableProcess,
         ProcessGroupResourceSampler,
         ProcessGroupUsage,
-        benchmark_system_state_matches,
-        capture_role_ambient_cpu,
         capture_system_state,
-        durable_json,
-        fsync_directory,
+        derive_cpu_roles,
         parse_linux_cpu_list,
         physical_core_capacity,
         pin_benchmark_driver,
         terminate_process_group,
-        validate_ambient_cpu,
-        validate_interference_cpu,
         validate_k6_result,
         validate_oha_result,
         wait_for_http_server,
         wait_for_unix_server,
+        write_json,
     )
 
-DURATION = '10s'
+DURATION = '3s'
 WARMUP_DURATION = '1s'
 CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
-TRIALS = 8
-SETTLE_SECONDS = 1.0
+#: Trials adapt per scenario: at least MIN_TRIALS rotation-balanced rounds,
+#: extended up to MAX_TRIALS only while any server's median is still unstable
+#: (trial-to-trial IQR/median above STABLE_RELATIVE_SPREAD) and the time
+#: budget allows. The spread bar is sized for a live development host —
+#: single-digit jitter is normal; medians plus retained ranges carry it.
+MIN_TRIALS = 3
+MAX_TRIALS = 8
+STABLE_RELATIVE_SPREAD = 0.10
+#: Hard wall-clock cap for the whole suite. The scheduler divides the
+#: remaining budget across remaining scenarios and shrinks per-trial load
+#: duration (never below the floor) so the minimum trials always fit.
+TIME_BUDGET = '15m'
+TIME_BUDGET_SECONDS = 900.0
+MIN_TRIAL_DURATION_SECONDS = 1.0
+#: k6 pays a heavy per-run startup cost; WebSocket cells never shrink below
+#: this so the measured window dominates the evidence.
+K6_MIN_TRIAL_DURATION_SECONDS = 3.0
+#: Estimated per-server-trial fixed cost: start + settle + warmup + teardown.
+PER_CELL_OVERHEAD_SECONDS = 2.5
+SETTLE_SECONDS = 0.25
 ORDER_SEED = 20_260_712
 RATE_LIMIT = None
 SERVER_CPUS = None
@@ -119,9 +105,11 @@ LOAD_CPUS = None
 LOAD_WORKER_THREADS = 16
 MANAGEMENT_CPUS = None
 MAX_LOAD_UTILIZATION = 0.85
-AMBIENT_CPU_PROBE_SECONDS = 1.0
 MAX_LOAD_SCALING_GAIN = 0.02
-HEADROOM_BLOCKS = 7
+HEADROOM_BLOCKS = 1
+#: Quick plateau check margin: the fastest cell must not gain more than this
+#: from extra load-generator workers, or the generator was the bottleneck.
+HEADROOM_PLATEAU_MARGIN = 0.05
 LOAD_GENERATOR_GRACE_SECONDS = 15.0
 SERVER_READY_TIMEOUT_SECONDS = 5.0
 HOST = '127.0.0.1'
@@ -130,9 +118,6 @@ UNIX_SOCKET_PATH = Path('bench/results/benchmark.sock')
 RUNS_DIRECTORY = Path('bench/results/runs')
 CANONICAL_RAW_DIRECTORY = Path('bench/results/raw')
 CANONICAL_PLOT_DIRECTORY = Path('bench/results/plots')
-PUBLICATION_TRANSACTION_PREFIX = '.benchmark-publication-'
-PUBLICATION_GENERATION_NAME = '.benchmark-generation.json'
-PUBLICATION_SCHEMA_VERSION = 1
 STATIC_FILE_RESPONSE_PATH = Path('bench/_file_response_payload.bin')
 STATIC_FILE_RESPONSE_BODY = b'\x00' * (128 * 1024)
 
@@ -261,12 +246,7 @@ BenchmarkType: TypeAlias = Literal[
 ]
 HeadroomPhase: TypeAlias = Literal['warmup', 'measured']
 HeadroomVariant: TypeAlias = Literal['reduced', 'full']
-RunStatus: TypeAlias = Literal['running', 'complete', 'failed']
-
-
-class ArtifactIdentity(TypedDict):
-    path: str
-    sha256: str | None
+RunStatus: TypeAlias = Literal['complete', 'failed']
 
 
 class CommandEnvironment(TypedDict, total=False):
@@ -276,16 +256,7 @@ class CommandEnvironment(TypedDict, total=False):
 
 class CommandIdentity(TypedDict):
     argv: list[str]
-    executable: str | None
-    executable_sha256: str | None
     environment: CommandEnvironment
-
-
-class GitIdentity(TypedDict):
-    git_head: str | None
-    git_diff_sha256: str | None
-    git_status_sha256: str | None
-    git_untracked_sha256: str | None
 
 
 class Metrics(TypedDict):
@@ -319,27 +290,9 @@ class ServerProcessRecord(TypedDict):
     process_group_id: int
 
 
-class LoadCommandContract(TypedDict):
-    driver: Literal['oha', 'k6']
-    url: str
-    protocol: Literal['1.1', '2', 'websocket']
-    method: Literal['GET', 'POST']
-    body_bytes: int
-    content_type: str | None
-    concurrency: int
-    http2_parallelism: int
-    duration: str
-    rate_limit_qps: int | None
-    load_cpus: tuple[int, ...] | None
-    worker_threads: int
-    environment: CommandEnvironment
-
-
 class HeadroomRun(TypedDict):
     phase: HeadroomPhase
     variant: HeadroomVariant
-    ambient_cpu_before: AmbientCpuProbe
-    interference_cpu_during: CpuActivity
     command: CommandIdentity
     load_generator_usage: LoadGeneratorUsage
     server_resource_usage: ProcessGroupUsage
@@ -356,7 +309,6 @@ class ScenarioLoadEvidence(TypedDict):
 
 class HeadroomLadder(TypedDict):
     server: str
-    server_start_ambient_cpu: AmbientCpuProbe
     warmup_order: list[HeadroomVariant]
     order: list[HeadroomVariant]
     load_cpus: list[int]
@@ -366,51 +318,26 @@ class HeadroomLadder(TypedDict):
     full_rps_samples: list[float]
     paired_gain_samples: list[float]
     full_vs_reduced_gain: float
-    paired_gain_iqr: float
-    paired_gain_lower_quartile: float
-    paired_gain_upper_quartile: float
     maximum_publish_gain: float
-    full_win_count: int
-    paired_comparisons: int
-    sign_test_one_sided_p: float
-    equivalence_below_margin_count: int
-    equivalence_comparisons: int
-    equivalence_sign_test_one_sided_p: float
-    sign_test_alpha: float
     all_runs_have_cpu_headroom: bool
     plateau_observed: bool
     runs: list[HeadroomRun]
     correctness: dict[str, Any]
 
 
-class PendingAttempt(TypedDict):
-    """Durable evidence for a measured cell that has started but not finished."""
-
-    recorded_at: str
-    trial: int
-    order: list[str]
-    server: str
-    ambient_cpu_before: AmbientCpuProbe | None
-    server_command: CommandIdentity
-    warmup: ScenarioLoadEvidence
-
-
 class ScenarioRecord(TypedDict):
-    schema_version: int
     status: RunStatus
-    run_identity_sha256: str
     scenario: dict[str, Any]
     excluded_servers: dict[str, str]
-    provenance: dict[str, Any]
     runs: list[dict[str, Any]]
     aggregate: dict[str, AggregateMetrics]
+    trials_run: int
+    stopping_reason: str | None
     load_generator_headroom: HeadroomLadder | dict[str, str] | None
-    pending_attempt: PendingAttempt | None
     error: str | None
 
 
 class ManifestRecord(TypedDict):
-    schema_version: int
     status: RunStatus
     run_identity: dict[str, Any]
     scenarios: dict[str, RunStatus]
@@ -424,7 +351,10 @@ class HarnessConfig:
     duration: str = DURATION
     warmup_duration: str = WARMUP_DURATION
     concurrency: int = CONCURRENCY
-    trials: int = TRIALS
+    min_trials: int = MIN_TRIALS
+    max_trials: int = MAX_TRIALS
+    stable_relative_spread: float = STABLE_RELATIVE_SPREAD
+    time_budget_seconds: float = TIME_BUDGET_SECONDS
     settle_seconds: float = SETTLE_SECONDS
     order_seed: int = ORDER_SEED
     rate_limit_qps: int | None = RATE_LIMIT
@@ -433,9 +363,6 @@ class HarnessConfig:
     management_cpus: tuple[int, ...] | None = MANAGEMENT_CPUS
     load_worker_threads: int = LOAD_WORKER_THREADS
     max_load_utilization: float = MAX_LOAD_UTILIZATION
-    ambient_cpu_probe_seconds: float = AMBIENT_CPU_PROBE_SECONDS
-    max_ambient_cpu_utilization: float = MAX_AMBIENT_CPU_UTILIZATION
-    max_ambient_single_cpu_utilization: float = MAX_AMBIENT_SINGLE_CPU_UTILIZATION
     max_load_scaling_gain: float = MAX_LOAD_SCALING_GAIN
     load_generator_grace_seconds: float = LOAD_GENERATOR_GRACE_SECONDS
 
@@ -445,10 +372,8 @@ class ResponseContract:
     """Single per-benchmark-type descriptor.
 
     Owns the request shape (path/method/body), the load driver, the wire
-    protocol, and the exact expected response. The recorded
-    LoadCommandContract, the oha/k6 invocation, the correctness probe, and
-    server eligibility all derive from this one source, so the published
-    provenance can never de-sync from the executed load command.
+    protocol, and the exact expected response. The oha/k6 invocation, the
+    correctness probe, and server eligibility all derive from this one source.
     """
 
     path: str
@@ -533,21 +458,6 @@ class LoadResult:
     raw: dict[str, Any]
     command: CommandIdentity
     usage: LoadGeneratorUsage
-
-
-class PublicationArtifact(TypedDict):
-    path: str
-    sha256: str
-
-
-class PublicationGeneration(TypedDict):
-    schema_version: int
-    token: str
-    artifacts: list[PublicationArtifact]
-
-
-class PublicationManifest(TypedDict):
-    status: RunStatus
 
 
 def get_bind_args(server_name, socket_path=None):
@@ -957,25 +867,105 @@ def get_versions() -> dict[str, str | None]:
 def balanced_orders(
     names: list[str], trials: int, seed: int = ORDER_SEED
 ) -> list[list[str]]:
-    """Return a seeded Latin rotation with exact lead/position balance.
+    """Return seeded Latin-rotation trial orders, alternating direction.
 
-    An even trial count makes each server run equally often in the forward and
-    reverse direction. Requiring complete rotations prevents a partial suite
-    from giving one server systematically warmer or cooler positions.
+    Consecutive trials interleave forward and reverse rotations so lead and
+    position bias cancels as quickly as the adaptive trial count allows;
+    medians over rotated trials absorb the remainder.
     """
     if not names:
         raise ValueError('at least one benchmark server is required')
-    if trials < 2 or trials % 2:
-        raise ValueError('trials must be a positive even number')
-    cycle_length = 2 * len(names)
-    if trials % cycle_length:
-        raise ValueError('trials must be divisible by twice the eligible server count')
+    if trials < 1:
+        raise ValueError('at least one trial is required')
     base = list(names)
     random.Random(seed).shuffle(base)
     forward = [base[index:] + base[:index] for index in range(len(base))]
     reverse = [list(reversed(order)) for order in forward]
     cycle = [order for pair in zip(forward, reverse, strict=True) for order in pair]
-    return cycle * (trials // cycle_length)
+    repeats = -(-trials // len(cycle))
+    return (cycle * repeats)[:trials]
+
+
+def _relative_spread(values: list[float]) -> float:
+    """Trial-to-trial IQR relative to the median; inf when degenerate."""
+    median = statistics.median(values)
+    if median <= 0.0:
+        return math.inf
+    lower, _, upper = statistics.quantiles(values, n=4, method='inclusive')
+    return (upper - lower) / median
+
+
+def _server_stable(values: list[Metrics], harness: HarnessConfig) -> bool:
+    rps = [metrics['rps'] for metrics in values]
+    return (
+        len(rps) >= harness.min_trials
+        and _relative_spread(rps) <= harness.stable_relative_spread
+    )
+
+
+def _scenario_stable(
+    samples: dict[str, list[Metrics]],
+    excluded_servers: dict[str, str],
+    harness: HarnessConfig,
+) -> bool:
+    """Every active server's throughput median has stabilized."""
+    active = {
+        server: values
+        for server, values in samples.items()
+        if server not in excluded_servers
+    }
+    return bool(active) and all(
+        _server_stable(values, harness) for values in active.values()
+    )
+
+
+def _trial_floor_seconds(scenario: Scenario) -> float:
+    return (
+        K6_MIN_TRIAL_DURATION_SECONDS
+        if scenario.type == 'ws'
+        else MIN_TRIAL_DURATION_SECONDS
+    )
+
+
+def _scenario_minimum_seconds(
+    scenario: Scenario, harness: HarnessConfig, server_count: int
+) -> float:
+    """Cost of this scenario's minimum trials at the duration floor."""
+    return (
+        harness.min_trials
+        * max(1, server_count)
+        * (PER_CELL_OVERHEAD_SECONDS + _trial_floor_seconds(scenario))
+    )
+
+
+def _scenario_budget(
+    scenario: Scenario,
+    harness: HarnessConfig,
+    eligible: list[str],
+    deadline: float,
+    remaining_minimums: list[float],
+) -> tuple[float, str]:
+    """This scenario's extension deadline and per-trial load duration.
+
+    The per-trial duration comes from a cost-weighted share of the remaining
+    budget (a four-server scenario earns a proportionally larger share than a
+    two-server one) and shrinks from the configured base toward the floor.
+    Extension rounds beyond the minimum may borrow any slack the remaining
+    scenarios' minimums do not need — early noisy scenarios converge instead
+    of starving while later stable ones return their budget.
+    """
+    remaining = max(0.0, deadline - time.monotonic())
+    weight = remaining_minimums[0] / max(1e-9, sum(remaining_minimums))
+    share = remaining * weight
+    base = _duration_seconds(harness.duration)
+    floor = _trial_floor_seconds(scenario)
+    per_trial = share / (harness.min_trials * max(1, len(eligible)))
+    duration = min(
+        max(base, floor),
+        max(floor, per_trial - PER_CELL_OVERHEAD_SECONDS),
+    )
+    reserve = sum(remaining_minimums[1:])
+    return deadline - reserve, f'{int(duration * 1000)}ms'
 
 
 def _finite_positive(value, label):
@@ -1026,294 +1016,11 @@ def _ensure_static_file_response_payload() -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _artifact_identity(path: str | Path | None) -> ArtifactIdentity:
-    if path is None:
-        return {'path': '', 'sha256': None}
-    resolved = Path(path).resolve()
-    return {'path': str(resolved), 'sha256': tree_sha256(resolved)}
-
-
-def _resolved_executable(command: list[str]) -> str | None:
-    executable_arg = (
-        command[3] if command[:2] == ['taskset', '--cpu-list'] else command[0]
+def _git_head() -> str | None:
+    result = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=False
     )
-    executable = shutil.which(executable_arg)
-    if executable is None and Path(executable_arg).is_file():
-        executable = str(Path(executable_arg).resolve())
-    return executable
-
-
-def command_provenance(
-    command: list[str],
-    environment: CommandEnvironment | None = None,
-) -> CommandIdentity:
-    executable = _resolved_executable(command)
-    return {
-        'argv': command,
-        'executable': executable,
-        'executable_sha256': file_sha256(Path(executable)) if executable else None,
-        'environment': {} if environment is None else environment.copy(),
-    }
-
-
-def _module_artifact(module_name: str) -> ArtifactIdentity:
-    try:
-        spec = importlib.util.find_spec(module_name)
-    except (ImportError, ValueError):
-        spec = None
-    if spec is None:
-        return _artifact_identity(None)
-    if spec.submodule_search_locations:
-        return _artifact_identity(next(iter(spec.submodule_search_locations), None))
-    return _artifact_identity(spec.origin)
-
-
-def artifact_snapshot(
-    server_commands: dict[str, list[str]], load_tools: set[str]
-) -> dict[str, ArtifactIdentity]:
-    artifacts = {
-        'benchmark_harness': _artifact_identity(Path(__file__)),
-        'benchmark_application': _artifact_identity('bench/bench_app.py'),
-        'static_file_payload': _artifact_identity(STATIC_FILE_RESPONSE_PATH),
-        'h2corn_package': _module_artifact('h2corn'),
-        'h2corn_native_extension': _module_artifact('h2corn._lib'),
-    }
-    artifacts.update({
-        f'python_module:{module}': _module_artifact(module)
-        for module in BENCHMARK_PYTHON_MODULES
-    })
-    if 'k6' in load_tools:
-        artifacts['websocket_load_script'] = _artifact_identity('bench/k6/ws.js')
-    for server, command in server_commands.items():
-        artifacts[f'server_executable:{server}'] = _artifact_identity(
-            _resolved_executable(command)
-        )
-    for tool in sorted(load_tools):
-        artifacts[f'load_generator:{tool}'] = _artifact_identity(shutil.which(tool))
-    return artifacts
-
-
-def _git_identity() -> GitIdentity:
-    root = subprocess.run(
-        ['git', 'rev-parse', '--show-toplevel'],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if root.returncode != 0:
-        return {
-            'git_head': None,
-            'git_diff_sha256': None,
-            'git_status_sha256': None,
-            'git_untracked_sha256': None,
-        }
-    source_root = Path.cwd().resolve()
-    source_pathspec = ['--', '.', ':(exclude)bench/results/**']
-    head = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    diff = subprocess.run(
-        [
-            'git',
-            'diff',
-            '--binary',
-            'HEAD',
-            *source_pathspec,
-        ],
-        capture_output=True,
-        check=False,
-    )
-    status = subprocess.run(
-        [
-            'git',
-            'status',
-            '--porcelain=v1',
-            '-z',
-            '--untracked-files=all',
-            *source_pathspec,
-        ],
-        capture_output=True,
-        check=False,
-    )
-    untracked = subprocess.run(
-        [
-            'git',
-            'ls-files',
-            '--others',
-            '--exclude-standard',
-            '-z',
-            *source_pathspec,
-        ],
-        capture_output=True,
-        check=False,
-    )
-    untracked_sha256 = None
-    if untracked.returncode == 0:
-        digest = hashlib.sha256()
-        for encoded_path in sorted(filter(None, untracked.stdout.split(b'\0'))):
-            path = source_root / os.fsdecode(encoded_path)
-            digest.update(encoded_path)
-            digest.update(b'\0')
-            try:
-                if path.is_symlink():
-                    digest.update(b'symlink\0')
-                    digest.update(os.fsencode(os.readlink(path)))
-                else:
-                    digest.update(b'file\0')
-                    digest.update(path.read_bytes())
-            except OSError as error:
-                # A concurrently removed or unreadable source must still alter
-                # the identity deterministically instead of aborting cleanup.
-                digest.update(b'unreadable\0')
-                digest.update(str(error.errno).encode())
-            digest.update(b'\0')
-        untracked_sha256 = digest.hexdigest()
-    return {
-        'git_head': head.stdout.strip() if head.returncode == 0 else None,
-        'git_diff_sha256': hashlib.sha256(diff.stdout).hexdigest()
-        if diff.returncode == 0
-        else None,
-        'git_status_sha256': hashlib.sha256(status.stdout).hexdigest()
-        if status.returncode == 0
-        else None,
-        'git_untracked_sha256': untracked_sha256,
-    }
-
-
-def benchmark_provenance(
-    harness: HarnessConfig,
-    artifacts: dict[str, ArtifactIdentity],
-    git_identity: GitIdentity,
-    versions: dict[str, str | None],
-    system: BenchmarkSystemState,
-) -> dict[str, Any]:
-    return {
-        'recorded_at': datetime.now(UTC).isoformat(),
-        **git_identity,
-        'versions': versions,
-        'server_profiles': SERVER_PROFILES,
-        'system': system,
-        'runtime_environment': _runtime_environment(),
-        'harness': asdict(harness),
-        'artifacts': artifacts,
-    }
-
-
-def _runtime_environment() -> dict[str, str]:
-    exact = {
-        'ASAN_OPTIONS',
-        'GOMAXPROCS',
-        'K6_NO_USAGE_REPORT',
-        'LD_LIBRARY_PATH',
-        'MALLOC_CONF',
-        'PATH',
-        'PYTHONHASHSEED',
-        'PYTHONPATH',
-        'SSL_CERT_DIR',
-        'SSL_CERT_FILE',
-        'UBSAN_OPTIONS',
-    }
-    prefixes = ('H2CORN_', 'MALLOC_', 'PYTHON', 'RUST_', 'TOKIO_', 'UVLOOP_')
-    return {
-        name: value
-        for name, value in sorted(os.environ.items())
-        if name in exact or name.startswith(prefixes)
-    }
-
-
-def verify_artifact_snapshot(
-    expected: dict[str, ArtifactIdentity],
-    server_commands: dict[str, list[str]],
-    load_tools: set[str],
-) -> None:
-    actual = artifact_snapshot(server_commands, load_tools)
-    if actual != expected:
-        changed = sorted(
-            key for key in expected | actual if expected.get(key) != actual.get(key)
-        )
-        raise BenchmarkError(
-            'benchmark artifacts changed during the run: ' + ', '.join(changed)
-        )
-
-
-def verify_run_snapshot(
-    expected_artifacts: dict[str, ArtifactIdentity],
-    expected_git: GitIdentity,
-    expected_system: BenchmarkSystemState,
-    harness: HarnessConfig,
-    server_commands: dict[str, list[str]],
-    load_tools: set[str],
-) -> None:
-    verify_artifact_snapshot(expected_artifacts, server_commands, load_tools)
-    if _git_identity() != expected_git:
-        raise BenchmarkError('source-tree identity changed during the benchmark run')
-    current_system = capture_system_state(
-        harness.server_cpus, harness.load_cpus, harness.management_cpus
-    )
-    if not benchmark_system_state_matches(expected_system, current_system):
-        raise BenchmarkError(
-            'CPU topology, policy, affinity, or benchmark system state changed '
-            'during the run'
-        )
-
-
-def artifact_fingerprint(
-    artifacts: dict[str, ArtifactIdentity],
-) -> dict[str, object]:
-    """Cheap (path, size, mtime_ns, inode) identity over the hashed file set."""
-    return {
-        key: path_fingerprint(Path(identity['path']))
-        for key, identity in artifacts.items()
-        if identity['path']
-    }
-
-
-class RunSnapshotGate:
-    """Fingerprint-gated integrity check between measured cells.
-
-    The full artifact tree hash, git identity, and system state are frozen
-    once at run start. Each cell re-checks only a stat fingerprint of the
-    same file set; the expensive full verification (re-hash, git subprocesses,
-    sysfs capture) runs only when the fingerprint changes — failing exactly as
-    the full check would — and once at suite completion.
-    """
-
-    def __init__(
-        self,
-        artifacts: dict[str, ArtifactIdentity],
-        git_identity: GitIdentity,
-        system: BenchmarkSystemState,
-        harness: HarnessConfig,
-        server_commands: dict[str, list[str]],
-        load_tools: set[str],
-    ) -> None:
-        self._artifacts = artifacts
-        self._git_identity = git_identity
-        self._system = system
-        self._harness = harness
-        self._server_commands = server_commands
-        self._load_tools = load_tools
-        self._fingerprint = artifact_fingerprint(artifacts)
-
-    def verify_cell(self) -> None:
-        current = artifact_fingerprint(self._artifacts)
-        if current == self._fingerprint:
-            return
-        self.verify_full()
-        self._fingerprint = current
-
-    def verify_full(self) -> None:
-        verify_run_snapshot(
-            self._artifacts,
-            self._git_identity,
-            self._system,
-            self._harness,
-            self._server_commands,
-            self._load_tools,
-        )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def _child_cpu_seconds() -> float:
@@ -1345,50 +1052,6 @@ def _duration_seconds(value: str) -> float:
 def _load_capacity(harness: HarnessConfig) -> tuple[int, int]:
     cpus = harness.load_cpus or tuple(sorted(os.sched_getaffinity(0)))
     return len(cpus), physical_core_capacity(cpus)
-
-
-def _capture_ambient_cpu(
-    harness: HarnessConfig, system: BenchmarkSystemState
-) -> AmbientCpuProbe:
-    return capture_role_ambient_cpu(system, harness.ambient_cpu_probe_seconds)
-
-
-def _validate_ambient_cpu(probe: AmbientCpuProbe, harness: HarnessConfig) -> None:
-    validate_ambient_cpu(
-        probe,
-        max_aggregate=harness.max_ambient_cpu_utilization,
-        max_single=harness.max_ambient_single_cpu_utilization,
-    )
-
-
-def _interference_monitor(
-    harness: HarnessConfig, system: BenchmarkSystemState
-) -> CpuActivityMonitor:
-    server = system['server']
-    if server is None or harness.server_cpus is None or harness.management_cpus is None:
-        raise AmbientCpuError('interference monitor requires pinned CPU roles')
-    server_llc_cpus = {
-        cpu
-        for entry in server['topology']
-        for cpu in entry['last_level_cache']['shared_cpus']
-    }
-    interference_cpus = tuple(
-        sorted(
-            server_llc_cpus - set(harness.server_cpus) - set(harness.management_cpus)
-        )
-    )
-    return CpuActivityMonitor(
-        interference_cpus,
-        physical_core_capacity(interference_cpus),
-    )
-
-
-def _validate_interference_cpu(activity: CpuActivity, harness: HarnessConfig) -> None:
-    validate_interference_cpu(
-        activity,
-        max_aggregate=harness.max_ambient_cpu_utilization,
-        max_single=harness.max_ambient_single_cpu_utilization,
-    )
 
 
 def _run_load_command(
@@ -1542,7 +1205,7 @@ def run_oha(
         raise BenchmarkError('oha returned a non-object JSON result')
     return LoadResult(
         raw=raw,
-        command=command_provenance(cmd, environment),
+        command={'argv': cmd, 'environment': environment},
         usage=usage,
     )
 
@@ -1577,7 +1240,7 @@ def run_k6(
         raise BenchmarkError('k6 returned a non-object JSON result')
     return LoadResult(
         raw=raw,
-        command=command_provenance(cmd, environment),
+        command={'argv': cmd, 'environment': environment},
         usage=usage,
     )
 
@@ -1930,10 +1593,6 @@ def benchmark_scenarios() -> tuple[Scenario, ...]:
 # actual scenario family, so adding or removing a scenario recalibrates the
 # family-wise error rate instead of silently invalidating it. Publication
 # re-asserts this size against the published scenario set.
-HEADROOM_FAMILY_SIZE = len(benchmark_scenarios())
-HEADROOM_SIGN_TEST_ALPHA = 0.05 / HEADROOM_FAMILY_SIZE
-
-
 def _clean_scenario_name(name: str) -> str:
     return (
         name
@@ -1949,29 +1608,6 @@ def _eligible_servers(scenario: Scenario, servers: list[str]) -> list[str]:
     if response_contract(scenario.type).protocol == '2':
         return [server for server in servers if server not in {'uvicorn', 'gunicorn'}]
     return servers.copy()
-
-
-def _load_command_contract(
-    scenario: Scenario, harness: HarnessConfig
-) -> LoadCommandContract:
-    contract = response_contract(scenario.type)
-    return {
-        'driver': contract.driver,
-        'url': contract.load_url(),
-        'protocol': contract.protocol,
-        'method': contract.method,
-        'body_bytes': len(contract.request_body),
-        'content_type': contract.request_content_type,
-        'concurrency': scenario.concurrency or harness.concurrency,
-        'http2_parallelism': scenario.http2_parallelism,
-        'duration': harness.duration,
-        'rate_limit_qps': harness.rate_limit_qps,
-        'load_cpus': harness.load_cpus,
-        'worker_threads': harness.load_worker_threads,
-        'environment': {'GOMAXPROCS': str(harness.load_worker_threads)}
-        if contract.driver == 'k6'
-        else {'TOKIO_WORKER_THREADS': str(harness.load_worker_threads)},
-    }
 
 
 def _run_scenario_load(
@@ -2049,33 +1685,11 @@ def _scenario_load_evidence(
     }
 
 
-def _one_sided_sign_test_p(gains: list[float]) -> tuple[int, int, float]:
-    """Return wins, non-tied comparisons, and P(full is not better)."""
-    non_tied = [gain for gain in gains if gain != 0.0]
-    comparisons = len(non_tied)
-    wins = sum(gain > 0.0 for gain in non_tied)
-    if comparisons == 0:
-        return wins, comparisons, 1.0
-    probability = sum(
-        math.comb(comparisons, count) for count in range(wins, comparisons + 1)
-    ) / (2**comparisons)
-    return wins, comparisons, probability
-
-
-def _equivalence_sign_test_p(
-    gains: list[float], maximum_gain: float
-) -> tuple[int, int, float]:
-    """Test whether the paired median is strictly below a practical margin."""
-    return _one_sided_sign_test_p([maximum_gain - paired_gain for paired_gain in gains])
-
-
 def _measure_load_headroom(
     scenario: Scenario,
     server: str,
     harness: HarnessConfig,
     run_directory: Path,
-    snapshot_gate: RunSnapshotGate,
-    expected_system: BenchmarkSystemState,
 ) -> HeadroomLadder:
     if harness.load_cpus is None:
         raise BenchmarkError('load-generator headroom ladder requires pinned CPUs')
@@ -2107,84 +1721,21 @@ def _measure_load_headroom(
     ] = (('warmup', warmup_order), ('measured', order))
     socket_path = UNIX_SOCKET_PATH if scenario.type == 'h1_uds' else None
     runs: list[HeadroomRun] = []
-    ambient_attempts: list[AmbientCpuProbe] = []
     samples: dict[HeadroomVariant, list[float]] = {'reduced': [], 'full': []}
-    progress_path = (
-        run_directory
-        / 'raw'
-        / f'benchmark_{_clean_scenario_name(scenario.name)}_headroom_progress.json'
-    )
-
-    def checkpoint(
-        status: Literal['running', 'complete', 'failed'],
-        error: str | None = None,
-    ) -> None:
-        durable_json(
-            progress_path,
-            {
-                'schema_version': 4,
-                'status': status,
-                'scenario': asdict(scenario),
-                'server': server,
-                'ambient_cpu_attempts': ambient_attempts,
-                'runs': runs,
-                'error': error,
-            },
-        )
-
-    def validate_ambient(
-        probe: AmbientCpuProbe, *, persist_success: bool = True
-    ) -> None:
-        ambient_attempts.append(probe)
-        if persist_success:
-            checkpoint('running')
-        try:
-            _validate_ambient_cpu(probe, harness)
-        except AmbientCpuError as error:
-            checkpoint('failed', str(error))
-            raise
-
-    @contextmanager
-    def persist_failure() -> Iterator[None]:
-        try:
-            yield
-        except BaseException as error:
-            checkpoint('failed', _exception_summary(error))
-            raise
-
-    try:
-        snapshot_gate.verify_cell()
-    except BaseException as error:
-        checkpoint('failed', _exception_summary(error))
-        raise
-    server_start_ambient = _capture_ambient_cpu(harness, expected_system)
-    validate_ambient(server_start_ambient)
-    with (
-        persist_failure(),
-        running_server(
-            server,
-            scenario.workers,
-            scenario.type,
-            socket_path,
-            server_cpus=harness.server_cpus,
-        ) as server_run,
-    ):
+    with running_server(
+        server,
+        scenario.workers,
+        scenario.type,
+        socket_path,
+        server_cpus=harness.server_cpus,
+    ) as server_run:
         time.sleep(harness.settle_seconds)
         before = validate_response_contract(scenario.type, socket_path)
         for phase, phase_order in phases:
             for index, variant in enumerate(phase_order, start=1):
-                ambient = _capture_ambient_cpu(harness, expected_system)
-                validate_ambient(ambient)
-                # The durable checkpoint above performs real filesystem work.
-                # Gate the host once more after it has reached storage so the
-                # measurement starts after, rather than during, that activity.
-                ambient = _capture_ambient_cpu(harness, expected_system)
-                validate_ambient(ambient, persist_success=False)
-                interference_monitor = _interference_monitor(harness, expected_system)
                 resource_sampler = ProcessGroupResourceSampler(
                     server_run['process_group_id']
                 )
-                interference_monitor.start()
                 resource_sampler.start()
                 try:
                     load = _run_scenario_load(
@@ -2200,15 +1751,12 @@ def _measure_load_headroom(
                     )
                 finally:
                     server_resources = resource_sampler.stop()
-                    interference = interference_monitor.stop()
                 metrics = _validate_scenario_load(scenario, variants[variant], load)
                 if phase == 'measured':
                     samples[variant].append(metrics['rps'])
                 run: HeadroomRun = {
                     'phase': phase,
                     'variant': variant,
-                    'ambient_cpu_before': ambient,
-                    'interference_cpu_during': interference,
                     'command': load.command,
                     'load_generator_usage': load.usage,
                     'server_resource_usage': server_resources,
@@ -2216,12 +1764,6 @@ def _measure_load_headroom(
                     'metrics': metrics,
                 }
                 runs.append(run)
-                checkpoint('running')
-                try:
-                    _validate_interference_cpu(interference, harness)
-                except AmbientCpuError as error:
-                    checkpoint('failed', str(error))
-                    raise
         after = validate_response_contract(scenario.type, socket_path)
         all_workers, observed_worker_pids = wait_for_worker_pids(
             scenario.workers, socket_path
@@ -2240,19 +1782,11 @@ def _measure_load_headroom(
             pair['full']['metrics']['rps'] / pair['reduced']['metrics']['rps'] - 1.0
         )
     gain = statistics.median(paired_gains)
-    lower_quartile, _, upper_quartile = statistics.quantiles(
-        paired_gains, n=4, method='inclusive'
-    )
-    full_wins, paired_comparisons, sign_test_p = _one_sided_sign_test_p(paired_gains)
-    below_margin, equivalence_comparisons, equivalence_p = _equivalence_sign_test_p(
-        paired_gains, harness.max_load_scaling_gain
-    )
     all_runs_have_headroom = all(
         run['load_generator_usage']['sufficient_headroom'] for run in runs
     )
     result: HeadroomLadder = {
         'server': server,
-        'server_start_ambient_cpu': server_start_ambient,
         'warmup_order': warmup_order,
         'order': order,
         'load_cpus': list(harness.load_cpus),
@@ -2262,21 +1796,9 @@ def _measure_load_headroom(
         'full_rps_samples': samples['full'],
         'paired_gain_samples': paired_gains,
         'full_vs_reduced_gain': gain,
-        'paired_gain_iqr': upper_quartile - lower_quartile,
-        'paired_gain_lower_quartile': lower_quartile,
-        'paired_gain_upper_quartile': upper_quartile,
-        'maximum_publish_gain': harness.max_load_scaling_gain,
-        'full_win_count': full_wins,
-        'paired_comparisons': paired_comparisons,
-        'sign_test_one_sided_p': sign_test_p,
-        'equivalence_below_margin_count': below_margin,
-        'equivalence_comparisons': equivalence_comparisons,
-        'equivalence_sign_test_one_sided_p': equivalence_p,
-        'sign_test_alpha': HEADROOM_SIGN_TEST_ALPHA,
+        'maximum_publish_gain': HEADROOM_PLATEAU_MARGIN,
         'all_runs_have_cpu_headroom': all_runs_have_headroom,
-        'plateau_observed': (
-            equivalence_p < HEADROOM_SIGN_TEST_ALPHA and all_runs_have_headroom
-        ),
+        'plateau_observed': (gain < HEADROOM_PLATEAU_MARGIN and all_runs_have_headroom),
         'runs': runs,
         'correctness': {
             'before': before,
@@ -2285,380 +1807,48 @@ def _measure_load_headroom(
             'worker_pids_after': worker_pids_after,
         },
     }
-    checkpoint('complete')
     return result
 
 
-def _durable_copy(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with source.open('rb') as input_file, destination.open('wb') as output_file:
-        shutil.copyfileobj(input_file, output_file)
-        output_file.flush()
-        os.fsync(output_file.fileno())
-
-
-def _durable_write(path: Path, contents: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('wb') as output:
-        output.write(contents)
-        output.flush()
-        os.fsync(output.fileno())
-
-
-def _publication_results_directory() -> Path:
-    if CANONICAL_RAW_DIRECTORY.parent != CANONICAL_PLOT_DIRECTORY.parent:
-        raise BenchmarkError(
-            'canonical raw and plot directories must share one results directory'
-        )
-    return CANONICAL_RAW_DIRECTORY.parent
-
-
-@contextmanager
-def _publication_lock(control_directory: Path) -> Iterator[None]:
-    descriptor = os.open(control_directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
-
-
-def _publication_checkpoint(_transition: str) -> None:
-    """Fault-injection seam for durable publication transition tests."""
-
-
-def _publication_hash(path: Path) -> str:
-    digest = file_sha256(path)
-    if digest is None:
-        raise BenchmarkError(f'publication artifact cannot be read: {path}')
-    return digest
-
-
-def _clone_results_tree(
-    source: Path,
-    destination: Path,
-    *,
-    excluded_names: frozenset[str] = frozenset(),
+def _publish_artifacts(
+    run_directory: Path, scenario_names: list[str], manifest: ManifestRecord
 ) -> None:
-    destination.mkdir(mode=source.stat().st_mode & 0o777)
-    for entry in os.scandir(source):
-        if entry.name in excluded_names:
-            continue
-        source_path = Path(entry.path)
-        destination_path = destination / entry.name
-        if entry.is_symlink():
-            destination_path.symlink_to(os.readlink(source_path))
-        elif entry.is_dir(follow_symlinks=False):
-            _clone_results_tree(source_path, destination_path)
-        elif entry.is_file(follow_symlinks=False):
-            os.link(source_path, destination_path)
-        # Runtime sockets and other special files are intentionally ephemeral.
-
-
-def _fsync_tree(root: Path) -> None:
-    for path in root.rglob('*'):
-        if path.is_file() and not path.is_symlink():
-            with path.open('rb') as artifact:
-                os.fsync(artifact.fileno())
-    for directory, _subdirectories, _files in os.walk(root, topdown=False):
-        fsync_directory(Path(directory))
-
-
-def _exchange_directories(first: Path, second: Path) -> None:
-    if first.stat().st_dev != second.stat().st_dev:
-        raise BenchmarkError('publication generations must share one filesystem')
-    libc = ctypes.CDLL(None, use_errno=True)
-    try:
-        renameat2 = libc.renameat2
-    except AttributeError as error:
-        raise BenchmarkError(
-            'atomic directory exchange requires Linux renameat2'
-        ) from error
-    renameat2.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    renameat2.restype = ctypes.c_int
-    if (
-        renameat2(
-            -100,
-            os.fsencode(first),
-            -100,
-            os.fsencode(second),
-            2,
-        )
-        != 0
-    ):
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number), first, second)
-
-
-def _validated_publication_artifacts(
-    results_directory: Path, value: object
-) -> list[PublicationArtifact]:
-    if not isinstance(value, list) or not value:
-        raise BenchmarkError('publication record contains no artifacts')
-    allowed_directories = {
-        results_directory / CANONICAL_RAW_DIRECTORY.name,
-        results_directory / CANONICAL_PLOT_DIRECTORY.name,
-    }
-    artifacts: list[PublicationArtifact] = []
-    seen: set[Path] = set()
-    for raw_artifact in value:
-        if not isinstance(raw_artifact, dict):
-            raise BenchmarkError('publication record contains an invalid artifact')
-        raw_path = raw_artifact.get('path')
-        digest = raw_artifact.get('sha256')
-        if not isinstance(raw_path, str) or not isinstance(digest, str):
-            raise BenchmarkError('publication artifact identity is incomplete')
-        relative = Path(raw_path)
-        candidate = results_directory / relative
-        if (
-            relative.is_absolute()
-            or '..' in relative.parts
-            or candidate.parent not in allowed_directories
-            or candidate in seen
-        ):
-            raise BenchmarkError('publication artifact path is invalid or duplicated')
-        if re.fullmatch(r'[0-9a-f]{64}', digest) is None:
-            raise BenchmarkError('publication artifact hash is invalid')
-        seen.add(candidate)
-        artifacts.append({'path': raw_path, 'sha256': digest})
-    return artifacts
-
-
-def _load_generation(results_directory: Path) -> PublicationGeneration | None:
-    marker = (
-        results_directory / CANONICAL_RAW_DIRECTORY.name / PUBLICATION_GENERATION_NAME
-    )
-    if not marker.exists():
-        return None
-    if marker.is_symlink() or not marker.is_file():
-        raise BenchmarkError(f'publication generation marker is invalid: {marker}')
-    try:
-        value = json.loads(marker.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise BenchmarkError(
-            f'publication generation marker cannot be read: {marker}'
-        ) from error
-    if (
-        not isinstance(value, dict)
-        or value.get('schema_version') != PUBLICATION_SCHEMA_VERSION
-    ):
-        raise BenchmarkError('publication generation marker has an unsupported schema')
-    token = value.get('token')
-    if not isinstance(token, str) or re.fullmatch(r'[0-9a-f]{16}', token) is None:
-        raise BenchmarkError('publication generation marker has an invalid token')
-    return {
-        'schema_version': PUBLICATION_SCHEMA_VERSION,
-        'token': token,
-        'artifacts': _validated_publication_artifacts(
-            results_directory, value.get('artifacts')
-        ),
-    }
-
-
-def _validate_generation_files(
-    results_directory: Path, artifacts: list[PublicationArtifact]
-) -> None:
-    expected = {results_directory / artifact['path'] for artifact in artifacts}
-    actual = set(
-        (results_directory / CANONICAL_RAW_DIRECTORY.name).glob('benchmark_*.json')
-    )
-    actual.update(
-        (results_directory / CANONICAL_PLOT_DIRECTORY.name).glob('benchmark_*.svg')
-    )
-    actual.add(results_directory / CANONICAL_RAW_DIRECTORY.name / 'run_manifest.json')
-    if actual != expected:
-        raise BenchmarkError('publication generation has stale or missing artifacts')
-    for artifact in artifacts:
-        path = results_directory / artifact['path']
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or file_sha256(path) != artifact['sha256']
-        ):
-            raise BenchmarkError(f'publication generation artifact is stale: {path}')
-
-
-def _generation_token(results_directory: Path) -> str | None:
-    generation = _load_generation(results_directory)
-    return None if generation is None else generation['token']
-
-
-def _cleanup_publication_transaction(
-    control_directory: Path, transaction: Path
-) -> None:
-    if transaction.is_symlink() or (transaction.exists() and not transaction.is_dir()):
-        transaction.unlink(missing_ok=True)
-    elif transaction.exists():
-        shutil.rmtree(transaction)
-    fsync_directory(control_directory)
-
-
-def _cleanup_orphaned_publication_files(control_directory: Path) -> None:
-    changed = False
-    for transaction in control_directory.glob(f'{PUBLICATION_TRANSACTION_PREFIX}*'):
-        if transaction.is_symlink() or not transaction.is_dir():
-            transaction.unlink(missing_ok=True)
-        else:
-            shutil.rmtree(transaction)
-        changed = True
-    if changed:
-        fsync_directory(control_directory)
-
-
-def _recover_publication_locked(results_directory: Path) -> None:
-    """Return the results namespace to a clean single-generation state.
-
-    RENAME_EXCHANGE is the single commit point, so a crash leaves at most an
-    orphaned staging or swapped-out ``.benchmark-publication-*`` tree beside
-    an untouched or fully committed canonical generation. Recovery removes
-    the orphans and validates the canonical generation marker when present.
-    """
-    _cleanup_orphaned_publication_files(results_directory.parent)
-    generation = _load_generation(results_directory)
-    if generation is not None:
-        _validate_generation_files(results_directory, generation['artifacts'])
-
-
-def _recover_publication() -> None:
-    results_directory = _publication_results_directory()
-    control_directory = results_directory.parent
-    control_directory.mkdir(parents=True, exist_ok=True)
-    with _publication_lock(control_directory):
-        _recover_publication_locked(results_directory)
-
-
-def _stage_publication(
-    results_directory: Path,
-    run_directory: Path,
-    scenario_names: list[str],
-    manifest: PublicationManifest,
-    token: str,
-) -> Path:
-    """Build, fsync, and validate the complete staged generation tree."""
-    if manifest.get('status') != 'complete':
+    """Replace the canonical raw and plot artifacts with this run's."""
+    if manifest['status'] != 'complete':
         raise BenchmarkError('only a complete benchmark run can be published')
-    if not scenario_names or len(set(scenario_names)) != len(scenario_names):
-        raise BenchmarkError('publication scenario names must be nonempty and unique')
-    if any(re.fullmatch(r'[a-z0-9_]+', name) is None for name in scenario_names):
-        raise BenchmarkError('publication scenario name is not canonical')
-
-    sources: list[tuple[Path, str, str]] = []
+    sources: list[tuple[Path, Path]] = []
     for clean_name in scenario_names:
-        for kind, suffix, canonical_directory in (
-            ('raw', '.json', CANONICAL_RAW_DIRECTORY.name),
-            ('plots', '.svg', CANONICAL_PLOT_DIRECTORY.name),
+        for kind, suffix, canonical in (
+            ('raw', '.json', CANONICAL_RAW_DIRECTORY),
+            ('plots', '.svg', CANONICAL_PLOT_DIRECTORY),
         ):
             source = run_directory / kind / f'benchmark_{clean_name}{suffix}'
-            if source.is_symlink() or not source.is_file():
+            if not source.is_file():
                 raise BenchmarkError(f'publication artifact is missing: {source}')
-            sources.append((source, canonical_directory, source.name))
-
-    control_directory = results_directory.parent
-    transaction = control_directory / f'{PUBLICATION_TRANSACTION_PREFIX}{token}'
-    _clone_results_tree(
-        results_directory,
-        transaction,
-        excluded_names=frozenset({
-            CANONICAL_RAW_DIRECTORY.name,
-            CANONICAL_PLOT_DIRECTORY.name,
-        }),
+            sources.append((source, canonical / source.name))
+    for directory in (CANONICAL_RAW_DIRECTORY, CANONICAL_PLOT_DIRECTORY):
+        directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.glob('benchmark_*'):
+            stale.unlink()
+    for source, destination in sources:
+        shutil.copy2(source, destination)
+    (CANONICAL_RAW_DIRECTORY / 'run_manifest.json').write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + '\n'
     )
-    staged_raw = transaction / CANONICAL_RAW_DIRECTORY.name
-    staged_plots = transaction / CANONICAL_PLOT_DIRECTORY.name
-    staged_raw.mkdir()
-    staged_plots.mkdir()
-    for source, directory, name in sources:
-        _durable_copy(source, transaction / directory / name)
-    _durable_write(
-        staged_raw / 'run_manifest.json',
-        (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode(),
-    )
-
-    artifacts: list[PublicationArtifact] = []
-    for directory, pattern in (
-        (staged_raw, '*.json'),
-        (staged_plots, '*.svg'),
-    ):
-        artifacts.extend(
-            PublicationArtifact(
-                path=str(artifact.relative_to(transaction)),
-                sha256=_publication_hash(artifact),
-            )
-            for artifact in sorted(directory.glob(pattern))
-        )
-    generation: PublicationGeneration = {
-        'schema_version': PUBLICATION_SCHEMA_VERSION,
-        'token': token,
-        'artifacts': artifacts,
-    }
-    _durable_write(
-        staged_raw / PUBLICATION_GENERATION_NAME,
-        (json.dumps(generation, indent=2, sort_keys=True) + '\n').encode(),
-    )
-    _fsync_tree(transaction)
-    fsync_directory(control_directory)
-    _validate_generation_files(transaction, artifacts)
-    return transaction
-
-
-def _publish_artifacts(
-    run_directory: Path, scenario_names: list[str], manifest: PublicationManifest
-) -> None:
-    """Atomically replace the canonical generation.
-
-    The staged generation is built and fsynced beside the canonical tree,
-    then one RENAME_EXCHANGE is the single commit point. Either the exchange
-    happened (the new generation is fully visible) or it did not (the
-    canonical tree is untouched); the swapped-out tree is deleted afterwards,
-    and a crash leaves only an orphan that recovery removes at next run start.
-    """
-    results_directory = _publication_results_directory()
-    control_directory = results_directory.parent
-    control_directory.mkdir(parents=True, exist_ok=True)
-    with _publication_lock(control_directory):
-        _recover_publication_locked(results_directory)
-        token = secrets.token_hex(8)
-        transaction: Path | None = None
-        try:
-            transaction = _stage_publication(
-                results_directory, run_directory, scenario_names, manifest, token
-            )
-            _publication_checkpoint('staged')
-            _exchange_directories(results_directory, transaction)
-            fsync_directory(control_directory)
-            _publication_checkpoint('exchanged')
-            _cleanup_publication_transaction(control_directory, transaction)
-            _publication_checkpoint('cleaned')
-        except Exception:
-            # The exchange is the commit point: once the new generation is
-            # visible, the publication succeeded and at worst an orphaned
-            # swapped-out tree remains. Clean it up best-effort here; the
-            # next run start removes anything left behind.
-            if _generation_token(results_directory) == token:
-                assert transaction is not None
-                with suppress(Exception):
-                    _cleanup_publication_transaction(control_directory, transaction)
-                return
-            if transaction is not None:
-                _cleanup_publication_transaction(control_directory, transaction)
-            raise
 
 
 def _validate_publication_harness(
     harness: HarnessConfig, system: BenchmarkSystemState
 ) -> None:
     """Require one stable, documented methodology for canonical artifacts."""
+    # CPU roles, worker threads, and the time budget are host-derived or
+    # pacing knobs; everything else is the one documented methodology.
     canonical = HarnessConfig(
         server_cpus=harness.server_cpus,
         load_cpus=harness.load_cpus,
         management_cpus=harness.management_cpus,
+        load_worker_threads=harness.load_worker_threads,
+        time_budget_seconds=harness.time_budget_seconds,
     )
     changed = [
         field.name
@@ -2670,42 +1860,28 @@ def _validate_publication_harness(
             'publication requires the canonical benchmark configuration; '
             'changed fields: ' + ', '.join(changed)
         )
-    if (
-        harness.server_cpus is None
-        or harness.load_cpus is None
-        or harness.management_cpus is None
-    ):
+    if harness.load_cpus is None or harness.management_cpus is None:
         raise BenchmarkError(
-            'publication requires explicit server, load-generator, and management CPUs'
+            'publication requires explicit load-generator and management CPUs'
         )
     if len(harness.management_cpus) != 1:
         raise BenchmarkError('publication requires exactly one management CPU')
-    if len(harness.server_cpus) != 4:
-        raise BenchmarkError(
-            'publication requires exactly four server CPUs for the 1/4-worker suite'
-        )
     if len(harness.load_cpus) < 4:
         raise BenchmarkError(
             'publication requires at least four load-generator CPUs for '
             'a meaningful headroom comparison'
         )
-    server_cpu_set = set(harness.server_cpus)
-    load_cpu_set = set(harness.load_cpus)
-    management_cpu_set = set(harness.management_cpus)
-    overlap = (server_cpu_set & load_cpu_set) | (
-        management_cpu_set & (server_cpu_set | load_cpu_set)
-    )
+    overlap = set(harness.management_cpus) & set(harness.load_cpus)
     if overlap:
         raise BenchmarkError(
-            'publication requires disjoint server/load/management CPU sets; overlap: '
+            'publication requires disjoint load/management CPU sets; overlap: '
             + ','.join(map(str, sorted(overlap)))
         )
-    server = system['server']
     load = system['load_generator']
     management = system['management']
-    if server is None or load is None or management is None:
+    if load is None or management is None:
         raise BenchmarkError('publication requires captured CPU-role topology')
-    selected = [*server['topology'], *load['topology'], *management['topology']]
+    selected = [*load['topology'], *management['topology']]
     offline = [entry['cpu'] for entry in selected if not entry['online']]
     if offline:
         raise BenchmarkError(
@@ -2729,7 +1905,7 @@ def _validate_publication_harness(
     if system['cgroup_allowed_cpus'] is None:
         raise BenchmarkError('publication requires cgroup CPU-availability provenance')
     disallowed = sorted(
-        set(harness.server_cpus + harness.load_cpus + harness.management_cpus)
+        set(harness.load_cpus + harness.management_cpus)
         - set(system['cgroup_allowed_cpus'])
     )
     if disallowed:
@@ -2748,17 +1924,10 @@ def _validate_publication_harness(
             for entry in cpu_set['topology']
         }
 
-    server_cores = physical_keys(server)
-    load_cores = physical_keys(load)
-    management_cores = physical_keys(management)
-    if len(server_cores) != 4:
-        raise BenchmarkError('publication requires four distinct physical server cores')
-    physical_overlap = (server_cores & load_cores) | (
-        management_cores & (server_cores | load_cores)
-    )
+    physical_overlap = physical_keys(management) & physical_keys(load)
     if physical_overlap:
         raise BenchmarkError(
-            'publication requires disjoint physical CPU roles; overlap: '
+            'publication requires disjoint physical load/management cores; overlap: '
             + repr(sorted(physical_overlap))
         )
     selected_load_cpus = set(load['cpus'])
@@ -2771,29 +1940,6 @@ def _validate_publication_harness(
         raise BenchmarkError(
             'publication load CPUs must contain complete SMT sibling sets: '
             + repr(incomplete_siblings)
-        )
-    policies = [entry['frequency'] for entry in selected]
-    governors = {policy['scaling_governor'] for policy in policies}
-    if governors != {'performance'}:
-        raise BenchmarkError(
-            'publication requires the performance CPU governor; found '
-            + repr(sorted(governor for governor in governors if governor is not None))
-        )
-    drivers = {policy['scaling_driver'] for policy in policies}
-    if None in drivers or len(drivers) != 1:
-        raise BenchmarkError(
-            'publication requires one recorded CPU-frequency driver; found '
-            + repr(sorted(driver for driver in drivers if driver is not None))
-        )
-    preferences = {
-        policy['energy_performance_preference']
-        for policy in policies
-        if policy['energy_performance_preference'] is not None
-    }
-    if preferences and preferences != {'performance'}:
-        raise BenchmarkError(
-            'publication requires performance energy preference when available; found '
-            + repr(sorted(preferences))
         )
 
     def llc_domains(
@@ -2808,15 +1954,10 @@ def _validate_publication_harness(
             for entry in cpu_set['topology']
         }
 
-    server_llcs = llc_domains(server)
-    load_llcs = llc_domains(load)
-    if len(server_llcs) != 1 or len(load_llcs) != 1:
+    if len(llc_domains(load)) != 1:
         raise BenchmarkError(
-            'publication requires each CPU role to occupy one last-level-cache domain'
-        )
-    if server_llcs & load_llcs:
-        raise BenchmarkError(
-            'publication requires distinct server/load last-level-cache domains'
+            'publication requires the load generator to occupy one '
+            'last-level-cache domain'
         )
 
 
@@ -2824,26 +1965,23 @@ def _scenario_record(
     scenario: Scenario,
     *,
     status: RunStatus,
-    identity_sha256: str,
     excluded_servers: dict[str, str],
-    provenance: dict[str, Any],
     runs: list[dict[str, Any]],
     aggregate: dict[str, AggregateMetrics],
     headroom: HeadroomLadder | dict[str, str] | None,
-    pending_attempt: PendingAttempt | None = None,
+    trials_run: int = 0,
+    stopping_reason: str | None = None,
     error: str | None = None,
 ) -> ScenarioRecord:
     return {
-        'schema_version': 4,
         'status': status,
-        'run_identity_sha256': identity_sha256,
         'scenario': asdict(scenario),
         'excluded_servers': excluded_servers,
-        'provenance': provenance,
         'runs': runs,
         'aggregate': aggregate,
+        'trials_run': trials_run,
+        'stopping_reason': stopping_reason,
         'load_generator_headroom': headroom,
-        'pending_attempt': pending_attempt,
         'error': error,
     }
 
@@ -2858,7 +1996,6 @@ def _manifest_record(
     error: str | None = None,
 ) -> ManifestRecord:
     return {
-        'schema_version': 4,
         'status': status,
         'run_identity': identity,
         'scenarios': {
@@ -2868,71 +2005,6 @@ def _manifest_record(
         'load_generator_headroom': headroom_ladders,
         'error': error,
     }
-
-
-def _pending_attempt_record(
-    *,
-    trial: int,
-    order: list[str],
-    server: str,
-    ambient_cpu: AmbientCpuProbe | None,
-    server_command: CommandIdentity,
-    warmup_result: LoadResult,
-    warmup_metrics: Metrics,
-) -> PendingAttempt:
-    return {
-        'recorded_at': datetime.now(UTC).isoformat(),
-        'trial': trial,
-        'order': order.copy(),
-        'server': server,
-        'ambient_cpu_before': ambient_cpu,
-        'server_command': server_command,
-        'warmup': {
-            'load_command': warmup_result.command,
-            'load_generator_usage': warmup_result.usage,
-            'raw': warmup_result.raw,
-            'metrics': warmup_metrics,
-        },
-    }
-
-
-def _exception_summary(error: BaseException) -> str:
-    detail = str(error)
-    name = type(error).__name__
-    return f'{name}: {detail}' if detail else name
-
-
-def _finalize_failed_run(
-    run_directory: Path,
-    identity: dict[str, Any],
-    scenario_records: dict[str, ScenarioRecord],
-    publication_failures: list[str],
-    headroom_ladders: dict[str, HeadroomLadder | dict[str, str]],
-    error: BaseException,
-) -> None:
-    """Atomically retain the latest evidence when an in-process run aborts."""
-    summary = _exception_summary(error)
-    for name, record in tuple(scenario_records.items()):
-        if record['status'] != 'running':
-            continue
-        failed_record: ScenarioRecord = {
-            **record,
-            'status': 'failed',
-            'error': summary,
-        }
-        scenario_records[name] = failed_record
-        durable_json(run_directory / 'raw' / f'benchmark_{name}.json', failed_record)
-    durable_json(
-        run_directory / 'manifest.json',
-        _manifest_record(
-            identity,
-            scenario_records,
-            publication_failures,
-            headroom_ladders,
-            status='failed',
-            error=summary,
-        ),
-    )
 
 
 def run_benchmarks(
@@ -2963,10 +2035,10 @@ def run_benchmarks(
         for scenario in benchmark_scenarios()
         if not selected_types or scenario.type in selected_types
     ]
-    if publish and len(scenarios) != HEADROOM_FAMILY_SIZE:
+    if publish and len(scenarios) != len(benchmark_scenarios()):
         raise BenchmarkError(
-            'publication requires the complete Bonferroni scenario family of '
-            f'{HEADROOM_FAMILY_SIZE}; selected {len(scenarios)}'
+            'publication requires the complete scenario matrix of '
+            f'{len(benchmark_scenarios())}; selected {len(scenarios)}'
         )
     servers = [
         server
@@ -2975,12 +2047,6 @@ def run_benchmarks(
     ]
     if not scenarios or not servers:
         raise BenchmarkError('benchmark selection is empty')
-
-    # Stabilize the results namespace before placing a new run inside it.  Delaying
-    # recovery until publication could exchange an interrupted generation after
-    # this run was created, moving the run into the transaction tree that cleanup
-    # removes.
-    _recover_publication()
 
     run_id = (
         datetime.now(UTC).strftime('%Y%m%dT%H%M%S.%fZ') + f'-{secrets.token_hex(4)}'
@@ -3001,452 +2067,343 @@ def run_benchmarks(
         for scenario in scenarios
         for server in _eligible_servers(scenario, servers)
     }
-    load_tools = {response_contract(scenario.type).driver for scenario in scenarios}
-    artifacts = artifact_snapshot(server_commands, load_tools)
-    git_identity = _git_identity()
-    snapshot_gate = RunSnapshotGate(
-        artifacts, git_identity, system_state, harness, server_commands, load_tools
-    )
     versions = get_versions()
-    provenance = benchmark_provenance(
-        harness, artifacts, git_identity, versions, system_state
-    )
     identity = {
-        'schema_version': 4,
         'run_id': run_id,
         'harness': asdict(harness),
         'scenarios': [asdict(scenario) for scenario in scenarios],
         'servers': servers,
         'server_profiles': {server: SERVER_PROFILES[server] for server in servers},
-        'commands': {
-            key: command_provenance(command) for key, command in server_commands.items()
-        },
-        'load_command_contracts': {
-            _clean_scenario_name(scenario.name): _load_command_contract(
-                scenario, harness
-            )
-            for scenario in scenarios
-        },
-        'artifacts': artifacts,
-        'git': git_identity,
+        'commands': server_commands,
+        'git_head': _git_head(),
         'versions': versions,
         'system': system_state,
-        'runtime_environment': _runtime_environment(),
     }
-    identity['sha256'] = hashlib.sha256(
-        json.dumps(identity, sort_keys=True).encode()
-    ).hexdigest()
-    durable_json(run_directory / 'identity.json', identity)
+    write_json(run_directory / 'identity.json', identity)
 
     scenario_records: dict[str, ScenarioRecord] = {}
     headroom_ladders: dict[str, HeadroomLadder | dict[str, str]] = {}
     publication_failures: list[str] = []
-    durable_json(
-        run_directory / 'manifest.json',
-        _manifest_record(
-            identity,
-            scenario_records,
-            publication_failures,
-            headroom_ladders,
-            status='running',
-        ),
-    )
-    try:
-        for scenario in scenarios:
-            print(f'\n=== Benchmarking {scenario.name} ===')
-            eligible = _eligible_servers(scenario, servers)
-            try:
-                orders = balanced_orders(eligible, harness.trials, harness.order_seed)
-            except ValueError as error:
-                raise BenchmarkError(f'{scenario.name}: {error}') from error
-            samples: dict[str, list[Metrics]] = {server: [] for server in eligible}
-            raw_runs: list[dict[str, Any]] = []
-            excluded_servers: dict[str, str] = {}
-            clean_name = _clean_scenario_name(scenario.name)
-            raw_path = run_directory / 'raw' / f'benchmark_{clean_name}.json'
-
-            # The checkpoint closure reads the current iteration's loop
-            # variables directly; it is never called across iterations, so
-            # the late-binding hazard B023 warns about cannot occur.
-            def checkpoint(
-                status: RunStatus,
-                aggregate: dict[str, AggregateMetrics] | None = None,
-                headroom: HeadroomLadder | dict[str, str] | None = None,
-                *,
-                pending_attempt: PendingAttempt | None = None,
-                error: str | None = None,
-                manifest_status: RunStatus = 'running',
-            ) -> ScenarioRecord:
-                record = _scenario_record(
-                    scenario,  # noqa: B023
-                    status=status,
-                    identity_sha256=identity['sha256'],
-                    excluded_servers=excluded_servers.copy(),  # noqa: B023
-                    provenance=provenance,
-                    runs=raw_runs.copy(),  # noqa: B023
-                    aggregate={} if aggregate is None else aggregate,
-                    headroom=headroom,
-                    pending_attempt=pending_attempt,
-                    error=error,
+    deadline = time.monotonic() + harness.time_budget_seconds
+    scenario_minimums = [
+        _scenario_minimum_seconds(
+            entry, harness, len(_eligible_servers(entry, servers))
+        )
+        for entry in scenarios
+    ]
+    fastest_cell: tuple[float, Scenario, str] | None = None
+    for scenario_index, scenario in enumerate(scenarios):
+        print(f'\n=== Benchmarking {scenario.name} ===')
+        eligible = _eligible_servers(scenario, servers)
+        try:
+            orders = balanced_orders(eligible, harness.max_trials, harness.order_seed)
+        except ValueError as error:
+            raise BenchmarkError(f'{scenario.name}: {error}') from error
+        scenario_deadline, cell_duration = _scenario_budget(
+            scenario,
+            harness,
+            eligible,
+            deadline,
+            scenario_minimums[scenario_index:],
+        )
+        cell_harness = replace(harness, duration=cell_duration)
+        samples: dict[str, list[Metrics]] = {server: [] for server in eligible}
+        raw_runs: list[dict[str, Any]] = []
+        excluded_servers: dict[str, str] = {}
+        clean_name = _clean_scenario_name(scenario.name)
+        raw_path = run_directory / 'raw' / f'benchmark_{clean_name}.json'
+        trials_run = 0
+        stopping_reason = 'max-trials'
+        for trial, order in enumerate(orders, start=1):
+            if trial > harness.min_trials:
+                if _scenario_stable(samples, excluded_servers, harness):
+                    stopping_reason = 'stable'
+                    break
+                if time.monotonic() >= scenario_deadline:
+                    stopping_reason = 'time-budget'
+                    break
+            print(
+                f'--- trial {trial}/{harness.max_trials} '
+                f'({cell_duration} load): {" -> ".join(order)} ---'
+            )
+            for server in order:
+                if server in excluded_servers:
+                    continue
+                if trial > harness.min_trials and _server_stable(
+                    samples[server], harness
+                ):
+                    # Converged; extension rounds only revisit the cells
+                    # still above the spread bar.
+                    continue
+                socket_path = UNIX_SOCKET_PATH if scenario.type == 'h1_uds' else None
+                command = get_server_command(
+                    server,
+                    scenario.workers,
+                    scenario.type,
+                    socket_path,
+                    server_cpus=harness.server_cpus,
                 )
-                scenario_records[clean_name] = record  # noqa: B023
-                durable_json(raw_path, record)  # noqa: B023
-                durable_json(
-                    run_directory / 'manifest.json',
-                    _manifest_record(
-                        identity,
-                        scenario_records,
-                        publication_failures,
-                        headroom_ladders,
-                        status=manifest_status,
-                    ),
-                )
-                return record
-
-            checkpoint('running')
-            for trial, order in enumerate(orders, start=1):
-                print(f'--- trial {trial}/{harness.trials}: {" -> ".join(order)} ---')
-                for server in order:
-                    if server in excluded_servers:
-                        continue
-                    socket_path = (
-                        UNIX_SOCKET_PATH if scenario.type == 'h1_uds' else None
-                    )
-                    command = get_server_command(
+                server_run: ServerProcessRecord | None = None
+                server_resources: ProcessGroupUsage | None = None
+                warmup_result: LoadResult | None = None
+                warmup_metrics: Metrics | None = None
+                load_result: LoadResult | None = None
+                preflight: dict[str, Any] | None = None
+                postflight: dict[str, Any] | None = None
+                post_worker_pids: list[int] | None = None
+                try:
+                    with running_server(
                         server,
                         scenario.workers,
                         scenario.type,
                         socket_path,
                         server_cpus=harness.server_cpus,
-                    )
-                    server_run: ServerProcessRecord | None = None
-                    server_resources: ProcessGroupUsage | None = None
-                    warmup_result: LoadResult | None = None
-                    warmup_metrics: Metrics | None = None
-                    load_result: LoadResult | None = None
-                    preflight: dict[str, Any] | None = None
-                    postflight: dict[str, Any] | None = None
-                    ambient_cpu: AmbientCpuProbe | None = None
-                    interference_cpu: CpuActivity | None = None
-                    post_worker_pids: list[int] | None = None
-                    try:
-                        snapshot_gate.verify_cell()
-                        with running_server(
-                            server,
-                            scenario.workers,
-                            scenario.type,
+                    ) as server_run:
+                        time.sleep(harness.settle_seconds)
+                        preflight = validate_response_contract(
+                            scenario.type, socket_path
+                        )
+                        print(f'Warming request path for {server}...')
+                        warmup_result = _run_scenario_warmup(
+                            scenario,
+                            cell_harness,
                             socket_path,
-                            server_cpus=harness.server_cpus,
-                        ) as server_run:
-                            time.sleep(harness.settle_seconds)
-                            preflight = validate_response_contract(
-                                scenario.type, socket_path
-                            )
-                            print(f'Warming request path for {server}...')
-                            warmup_result = _run_scenario_warmup(
+                            run_directory
+                            / 'load'
+                            / (
+                                f'{_clean_scenario_name(scenario.name)}-'
+                                f'{trial}-{server}-warmup.json'
+                            ),
+                        )
+                        warmup_metrics = _validate_scenario_load(
+                            scenario,
+                            replace(harness, duration=harness.warmup_duration),
+                            warmup_result,
+                        )
+                        print(f'Running load generation for {server}...')
+                        resource_sampler = ProcessGroupResourceSampler(
+                            server_run['process_group_id']
+                        )
+                        resource_sampler.start()
+                        try:
+                            load_result = _run_scenario_load(
                                 scenario,
-                                harness,
+                                cell_harness,
                                 socket_path,
                                 run_directory
                                 / 'load'
-                                / (
-                                    f'{_clean_scenario_name(scenario.name)}-'
-                                    f'{trial}-{server}-warmup.json'
-                                ),
+                                / f'{_clean_scenario_name(scenario.name)}-{trial}-{server}.json',
                             )
-                            warmup_metrics = _validate_scenario_load(
-                                scenario,
-                                replace(harness, duration=harness.warmup_duration),
-                                warmup_result,
+                        finally:
+                            server_resources = resource_sampler.stop()
+                        metrics = _validate_scenario_load(
+                            scenario,
+                            cell_harness,
+                            load_result,
+                        )
+                        postflight = validate_response_contract(
+                            scenario.type, socket_path
+                        )
+                        all_workers, observed_worker_pids = wait_for_worker_pids(
+                            scenario.workers, socket_path
+                        )
+                        post_worker_pids = sorted(observed_worker_pids)
+                        if (
+                            not all_workers
+                            or post_worker_pids != server_run['worker_pids']
+                        ):
+                            raise BenchmarkError(
+                                f'{server} worker set changed across load: '
+                                f'before={server_run["worker_pids"]}, '
+                                f'after={post_worker_pids}'
                             )
-                            if publish:
-                                ambient_cpu = _capture_ambient_cpu(
-                                    harness, system_state
-                                )
-                                _validate_ambient_cpu(ambient_cpu, harness)
-                            pending_attempt = _pending_attempt_record(
-                                trial=trial,
-                                order=order,
-                                server=server,
-                                ambient_cpu=ambient_cpu,
-                                server_command=command_provenance(command),
-                                warmup_result=warmup_result,
-                                warmup_metrics=warmup_metrics,
-                            )
-                            checkpoint('running', pending_attempt=pending_attempt)
-                            # Persisting the pending attempt is deliberately
-                            # synchronous. Recheck host quietness afterwards so
-                            # its I/O cannot become unmeasured benchmark noise.
-                            if publish:
-                                ambient_cpu = _capture_ambient_cpu(
-                                    harness, system_state
-                                )
-                                _validate_ambient_cpu(ambient_cpu, harness)
-                            print(f'Running load generation for {server}...')
-                            interference_monitor = (
-                                _interference_monitor(harness, system_state)
-                                if publish
-                                else None
-                            )
-                            resource_sampler = ProcessGroupResourceSampler(
-                                server_run['process_group_id']
-                            )
-                            if interference_monitor is not None:
-                                interference_monitor.start()
-                            resource_sampler.start()
-                            try:
-                                load_result = _run_scenario_load(
-                                    scenario,
-                                    harness,
-                                    socket_path,
-                                    run_directory
-                                    / 'load'
-                                    / f'{_clean_scenario_name(scenario.name)}-{trial}-{server}.json',
-                                )
-                            finally:
-                                server_resources = resource_sampler.stop()
-                                if interference_monitor is not None:
-                                    interference_cpu = interference_monitor.stop()
-                            if publish:
-                                assert interference_cpu is not None
-                                _validate_interference_cpu(interference_cpu, harness)
-                            metrics = _validate_scenario_load(
-                                scenario,
-                                harness,
-                                load_result,
-                            )
-                            postflight = validate_response_contract(
-                                scenario.type, socket_path
-                            )
-                            all_workers, observed_worker_pids = wait_for_worker_pids(
-                                scenario.workers, socket_path
-                            )
-                            post_worker_pids = sorted(observed_worker_pids)
-                            if (
-                                not all_workers
-                                or post_worker_pids != server_run['worker_pids']
-                            ):
-                                raise BenchmarkError(
-                                    f'{server} worker set changed across load: '
-                                    f'before={server_run["worker_pids"]}, '
-                                    f'after={post_worker_pids}'
-                                )
-                        samples[server].append(metrics)
-                        if not load_result.usage['sufficient_headroom']:
-                            publication_failures.append(
-                                f'{scenario.name}/{server}/trial {trial}: load generator '
-                                'used '
-                                f'{load_result.usage["physical_core_utilization"]:.1%} '
-                                'of physical-core CPU capacity'
-                            )
-                        raw_runs.append({
-                            'trial': trial,
-                            'order': order,
-                            'server': server,
-                            'ambient_cpu_before': ambient_cpu,
-                            'interference_cpu_during': interference_cpu,
-                            'server_command': command_provenance(command),
-                            'warmup': _scenario_load_evidence(
-                                warmup_result,
-                                warmup_metrics,
-                            ),
-                            'load_command': load_result.command,
-                            'load_generator_usage': load_result.usage,
-                            'correctness': {
-                                'before': preflight,
-                                'after': postflight,
-                                'worker_pids_before': server_run['worker_pids'],
-                                'worker_pids_after': post_worker_pids,
-                            },
-                            'server_process': server_run,
-                            'server_resource_usage': server_resources,
-                            'raw': load_result.raw,
-                            'metrics': metrics,
-                        })
-                        checkpoint('running')
+                    samples[server].append(metrics)
+                    if not load_result.usage['sufficient_headroom']:
+                        # Recorded evidence, not a publication blocker: the
+                        # fastest-cell plateau check is the hard generator
+                        # gate. A saturated generator can only understate
+                        # the measured server.
                         print(
-                            format_server_summary(
-                                server,
-                                metrics,
-                                unit='sessions/s' if scenario.type == 'ws' else 'RPS',
-                            )
+                            f'warning: {scenario.name}/{server}/trial '
+                            f'{trial}: load generator used '
+                            f'{load_result.usage["physical_core_utilization"]:.1%} '
+                            'of physical-core CPU capacity'
                         )
-                    except BenchmarkError as error:
-                        traceback.print_exception(error)
-                        raw_runs.append({
-                            'trial': trial,
-                            'order': order,
-                            'server': server,
-                            'ambient_cpu_before': ambient_cpu,
-                            'interference_cpu_during': interference_cpu,
-                            'server_command': command_provenance(command),
-                            'warmup': _scenario_load_evidence(
-                                warmup_result,
-                                warmup_metrics,
-                            ),
-                            'load_command': load_result.command
-                            if load_result
-                            else None,
-                            'load_generator_usage': load_result.usage
-                            if load_result
-                            else None,
-                            'correctness': {
-                                'before': preflight,
-                                'after': postflight,
-                                'worker_pids_before': server_run['worker_pids']
-                                if server_run
-                                else None,
-                                'worker_pids_after': post_worker_pids,
-                            },
-                            'server_process': server_run,
-                            'server_resource_usage': server_resources,
-                            'raw': load_result.raw if load_result else None,
-                            'error': str(error),
-                        })
-                        if isinstance(error, AmbientCpuError):
-                            publication_failures.append(
-                                f'{scenario.name}/{server}/trial {trial}: {error}'
-                            )
-                            checkpoint(
-                                'failed', error=str(error), manifest_status='failed'
-                            )
-                            raise
-                        excluded_servers[server] = str(error)
-                        checkpoint('running', error=str(error))
-                        print(f'Excluding {server} from {scenario.name}: {error}')
-
-            results: dict[str, AggregateMetrics] = {
-                server: aggregate_metrics(values)
-                for server, values in samples.items()
-                if server not in excluded_servers and len(values) == harness.trials
-            }
-            status = (
-                'complete'
-                if not excluded_servers and len(results) == len(eligible)
-                else 'failed'
-            )
-            if publish and status == 'complete':
-                fastest_server = max(results, key=lambda server: results[server]['rps'])
-                try:
-                    ladder = _measure_load_headroom(
-                        scenario,
-                        fastest_server,
-                        harness,
-                        run_directory,
-                        snapshot_gate,
-                        system_state,
-                    )
-                    headroom_ladders[clean_name] = ladder
-                    if not ladder['plateau_observed']:
-                        detail = (
-                            f'paired median gain '
-                            f'{ladder["full_vs_reduced_gain"]:.1%}, quartiles '
-                            f'[{ladder["paired_gain_lower_quartile"]:.1%}, '
-                            f'{ladder["paired_gain_upper_quartile"]:.1%}], '
-                            f'full wins {ladder["full_win_count"]}/'
-                            f'{ladder["paired_comparisons"]}, one-sided sign-test '
-                            f'p={ladder["sign_test_one_sided_p"]:.3f}; '
-                            f'equivalence below '
-                            f'{ladder["maximum_publish_gain"]:.1%}: '
-                            f'{ladder["equivalence_below_margin_count"]}/'
-                            f'{ladder["equivalence_comparisons"]}, one-sided '
-                            f'p={ladder["equivalence_sign_test_one_sided_p"]:.4f}'
+                    raw_runs.append({
+                        'trial': trial,
+                        'order': order,
+                        'server': server,
+                        'server_command': command,
+                        'warmup': _scenario_load_evidence(
+                            warmup_result,
+                            warmup_metrics,
+                        ),
+                        'load_command': load_result.command,
+                        'load_generator_usage': load_result.usage,
+                        'correctness': {
+                            'before': preflight,
+                            'after': postflight,
+                            'worker_pids_before': server_run['worker_pids'],
+                            'worker_pids_after': post_worker_pids,
+                        },
+                        'server_process': server_run,
+                        'server_resource_usage': server_resources,
+                        'raw': load_result.raw,
+                        'metrics': metrics,
+                    })
+                    print(
+                        format_server_summary(
+                            server,
+                            metrics,
+                            unit='sessions/s' if scenario.type == 'ws' else 'RPS',
                         )
-                        if not ladder['all_runs_have_cpu_headroom']:
-                            detail += (
-                                ', at least one calibration run exceeded the CPU gate'
-                            )
-                        publication_failures.append(
-                            f'{scenario.name}: load-generator plateau not proven ({detail}) '
-                            f'when increasing load-generator worker threads from '
-                            f'{ladder["reduced_worker_threads"]} to '
-                            f'{ladder["full_worker_threads"]} on the same CPU set'
-                        )
-                except AmbientCpuError as error:
-                    headroom_ladders[clean_name] = {'error': str(error)}
-                    publication_failures.append(
-                        f'{scenario.name}: headroom ladder aborted: {error}'
                     )
-                    checkpoint(
-                        'failed',
-                        results,
-                        headroom_ladders[clean_name],
-                        manifest_status='failed',
-                    )
-                    raise
                 except BenchmarkError as error:
-                    headroom_ladders[clean_name] = {'error': str(error)}
-                    publication_failures.append(
-                        f'{scenario.name}: headroom ladder failed: {error}'
-                    )
-            checkpoint(
-                status,
-                results,
-                headroom_ladders.get(clean_name),
-            )
-            if results:
-                concurrency = scenario.concurrency or harness.concurrency
-                load_shape = f'{concurrency} conn'
-                if scenario.http2_parallelism > 1:
-                    load_shape += f' x {scenario.http2_parallelism} streams'
-                plot_results(
-                    results,
-                    f'Benchmark: {scenario.name} '
-                    f'({harness.duration} sustained, {load_shape})',
-                    run_directory / 'plots' / f'benchmark_{clean_name}.svg',
-                    system_summary=system_state['summary'],
-                    websocket=scenario.type == 'ws',
-                )
+                    traceback.print_exception(error)
+                    raw_runs.append({
+                        'trial': trial,
+                        'order': order,
+                        'server': server,
+                        'server_command': command,
+                        'warmup': _scenario_load_evidence(
+                            warmup_result,
+                            warmup_metrics,
+                        ),
+                        'load_command': load_result.command if load_result else None,
+                        'load_generator_usage': load_result.usage
+                        if load_result
+                        else None,
+                        'correctness': {
+                            'before': preflight,
+                            'after': postflight,
+                            'worker_pids_before': server_run['worker_pids']
+                            if server_run
+                            else None,
+                            'worker_pids_after': post_worker_pids,
+                        },
+                        'server_process': server_run,
+                        'server_resource_usage': server_resources,
+                        'raw': load_result.raw if load_result else None,
+                        'error': str(error),
+                    })
+                    excluded_servers[server] = str(error)
+                    print(f'Excluding {server} from {scenario.name}: {error}')
+            trials_run = trial
 
-        snapshot_gate.verify_full()
-        failed_scenarios = [
-            name
-            for name, record in scenario_records.items()
-            if record['status'] != 'complete'
-        ]
-        manifest_status: RunStatus = (
+        results: dict[str, AggregateMetrics] = {
+            server: aggregate_metrics(values)
+            for server, values in samples.items()
+            if server not in excluded_servers and len(values) >= harness.min_trials
+        }
+        status = (
             'complete'
-            if not failed_scenarios and not publication_failures
+            if not excluded_servers
+            and len(results) == len(eligible)
+            and trials_run >= harness.min_trials
             else 'failed'
         )
-        manifest = _manifest_record(
-            identity,
-            scenario_records,
-            publication_failures,
-            headroom_ladders,
-            status=manifest_status,
+        print(f'{scenario.name}: {trials_run} trials ({stopping_reason})')
+        if results:
+            scenario_fastest = max(results, key=lambda name: results[name]['rps'])
+            fastest_rps = results[scenario_fastest]['rps']
+            if fastest_cell is None or fastest_rps > fastest_cell[0]:
+                fastest_cell = (fastest_rps, scenario, scenario_fastest)
+        scenario_records[clean_name] = _scenario_record(
+            scenario,
+            status=status,
+            excluded_servers=excluded_servers,
+            runs=raw_runs,
+            aggregate=results,
+            headroom=None,
+            trials_run=trials_run,
+            stopping_reason=stopping_reason,
         )
-        durable_json(run_directory / 'manifest.json', manifest)
-        if publish:
-            if failed_scenarios:
-                raise BenchmarkError(
-                    'refusing publication because scenarios failed: '
-                    + ', '.join(failed_scenarios)
-                )
-            if publication_failures:
-                raise BenchmarkError(
-                    'refusing publication because load-generator headroom was insufficient: '
-                    + '; '.join(publication_failures)
-                )
-            _publish_artifacts(run_directory, list(scenario_records), manifest)
-            print(f'Published canonical benchmark artifacts from {run_directory}')
+        write_json(raw_path, scenario_records[clean_name])
+        if results:
+            concurrency = scenario.concurrency or harness.concurrency
+            load_shape = f'{concurrency} conn'
+            if scenario.http2_parallelism > 1:
+                load_shape += f' x {scenario.http2_parallelism} streams'
+            plot_results(
+                results,
+                f'Benchmark: {scenario.name} '
+                f'({cell_duration} sustained x {trials_run} trials, {load_shape})',
+                run_directory / 'plots' / f'benchmark_{clean_name}.svg',
+                system_summary=system_state['summary'],
+                websocket=scenario.type == 'ws',
+            )
+
+    if publish and fastest_cell is not None:
+        _rps, headroom_scenario, headroom_server = fastest_cell
+        headroom_name = _clean_scenario_name(headroom_scenario.name)
+        if time.monotonic() >= deadline:
+            headroom_ladders[headroom_name] = {
+                'skipped': 'time budget exhausted before the headroom check'
+            }
         else:
             print(
-                f'Staged benchmark artifacts in {run_directory}; canonical plots unchanged'
+                f'\n=== Load-generator headroom check: '
+                f'{headroom_scenario.name} / {headroom_server} ==='
             )
-    except BaseException as error:
-        try:
-            _finalize_failed_run(
-                run_directory,
-                identity,
-                scenario_records,
-                publication_failures,
-                headroom_ladders,
-                error,
+            try:
+                ladder = _measure_load_headroom(
+                    headroom_scenario,
+                    headroom_server,
+                    harness,
+                    run_directory,
+                )
+                headroom_ladders[headroom_name] = ladder
+                if not ladder['plateau_observed']:
+                    publication_failures.append(
+                        f'{headroom_scenario.name}: the fastest cell gained '
+                        f'{ladder["full_vs_reduced_gain"]:.1%} from extra '
+                        f'load-generator workers (margin '
+                        f'{ladder["maximum_publish_gain"]:.0%}) — the '
+                        f'generator, not the server, may be the bottleneck'
+                    )
+            except BenchmarkError as error:
+                headroom_ladders[headroom_name] = {'error': str(error)}
+                publication_failures.append(
+                    f'{headroom_scenario.name}: headroom check failed: {error}'
+                )
+        record = dict(scenario_records[headroom_name])
+        record['load_generator_headroom'] = headroom_ladders[headroom_name]
+        scenario_records[headroom_name] = record  # type: ignore[assignment]
+        write_json(run_directory / 'raw' / f'benchmark_{headroom_name}.json', record)
+
+    failed_scenarios = [
+        name
+        for name, record in scenario_records.items()
+        if record['status'] != 'complete'
+    ]
+    manifest_status: RunStatus = (
+        'complete' if not failed_scenarios and not publication_failures else 'failed'
+    )
+    manifest = _manifest_record(
+        identity,
+        scenario_records,
+        publication_failures,
+        headroom_ladders,
+        status=manifest_status,
+    )
+    write_json(run_directory / 'manifest.json', manifest)
+    if publish:
+        if failed_scenarios:
+            raise BenchmarkError(
+                'refusing publication because scenarios failed: '
+                + ', '.join(failed_scenarios)
             )
-        except Exception as persistence_error:
-            traceback.print_exception(persistence_error)
-        raise
+        if publication_failures:
+            raise BenchmarkError(
+                'refusing publication because load-generator headroom was insufficient: '
+                + '; '.join(publication_failures)
+            )
+        _publish_artifacts(run_directory, list(scenario_records), manifest)
+        print(f'Published canonical benchmark artifacts from {run_directory}')
+    else:
+        print(
+            f'Staged benchmark artifacts in {run_directory}; canonical plots unchanged'
+        )
     return run_directory
 
 
@@ -3461,7 +2418,11 @@ def main():
         choices=list(SERVERS.keys()),
         help='List of servers to benchmark',
     )
-    parser.add_argument('--trials', type=int, default=TRIALS)
+    parser.add_argument(
+        '--time-budget',
+        default=TIME_BUDGET,
+        help='hard wall-clock cap for the whole suite (e.g. 15m)',
+    )
     parser.add_argument('--settle-seconds', type=float, default=SETTLE_SECONDS)
     parser.add_argument(
         '--qps',
@@ -3499,8 +2460,7 @@ def main():
     parser.add_argument(
         '--load-worker-threads',
         type=int,
-        default=LOAD_WORKER_THREADS,
-        help='fixed oha Tokio workers / k6 GOMAXPROCS',
+        help='fixed oha Tokio workers / k6 GOMAXPROCS (default: one per load CPU)',
     )
     parser.add_argument(
         '--max-load-utilization',
@@ -3509,45 +2469,28 @@ def main():
         help='maximum aggregate load-generator CPU utilization for publication',
     )
     parser.add_argument(
-        '--ambient-cpu-probe-seconds',
-        type=float,
-        default=AMBIENT_CPU_PROBE_SECONDS,
-        help='idle-host CPU probe before each published load',
-    )
-    parser.add_argument(
-        '--max-ambient-cpu-utilization',
-        type=float,
-        default=MAX_AMBIENT_CPU_UTILIZATION,
-        help='maximum system/server/load CPU use before each published load',
-    )
-    parser.add_argument(
         '--publish',
         action='store_true',
         help='replace canonical raw records and plots after a fully staged clean run',
     )
     args = parser.parse_args()
 
-    if args.trials < 2 or args.trials % 2:
-        parser.error('--trials must be a positive even number')
     if args.settle_seconds < 0:
         parser.error('--settle-seconds cannot be negative')
     if args.qps is not None and args.qps < 1:
         parser.error('--qps must be positive')
     if args.concurrency < 1:
         parser.error('--concurrency must be positive')
-    if args.load_worker_threads < 1:
+    if args.load_worker_threads is not None and args.load_worker_threads < 1:
         parser.error('--load-worker-threads must be positive')
     try:
         _duration_seconds(args.duration)
         _duration_seconds(args.warmup_duration)
+        time_budget_seconds = _duration_seconds(args.time_budget)
     except BenchmarkError as error:
         parser.error(str(error))
     if not 0 < args.max_load_utilization < 1:
         parser.error('--max-load-utilization must be between 0 and 1')
-    if args.ambient_cpu_probe_seconds <= 0:
-        parser.error('--ambient-cpu-probe-seconds must be positive')
-    if not 0 < args.max_ambient_cpu_utilization < 1:
-        parser.error('--max-ambient-cpu-utilization must be between 0 and 1')
     try:
         server_cpus = (
             parse_linux_cpu_list(args.server_cpus) if args.server_cpus else None
@@ -3558,6 +2501,21 @@ def main():
         )
     except ValueError as error:
         parser.error(str(error))
+    if not (load_cpus or management_cpus):
+        try:
+            roles = derive_cpu_roles()
+        except RuntimeError as error:
+            if args.publish:
+                parser.error(str(error))
+            roles = None
+        if roles is not None:
+            load_cpus = roles['load']
+            management_cpus = roles['management']
+            print(
+                'Auto-derived instrument CPU roles (servers stay unpinned): '
+                f'load={",".join(map(str, load_cpus))} '
+                f'management={",".join(map(str, management_cpus))}'
+            )
     if (server_cpus or load_cpus or management_cpus) and not shutil.which('taskset'):
         parser.error('CPU affinity requested, but taskset is not installed')
     try:
@@ -3582,20 +2540,21 @@ def main():
             'required load generators are missing: ' + ', '.join(missing_tools)
         )
 
+    load_worker_threads = args.load_worker_threads or (
+        len(load_cpus) if load_cpus else min(16, os.cpu_count() or 4)
+    )
     harness = HarnessConfig(
         duration=args.duration,
         warmup_duration=args.warmup_duration,
         concurrency=args.concurrency,
-        trials=args.trials,
+        time_budget_seconds=time_budget_seconds,
         settle_seconds=args.settle_seconds,
         rate_limit_qps=args.qps,
         server_cpus=server_cpus,
         load_cpus=load_cpus,
         management_cpus=management_cpus,
-        load_worker_threads=args.load_worker_threads,
+        load_worker_threads=load_worker_threads,
         max_load_utilization=args.max_load_utilization,
-        ambient_cpu_probe_seconds=args.ambient_cpu_probe_seconds,
-        max_ambient_cpu_utilization=args.max_ambient_cpu_utilization,
     )
     run_benchmarks(
         selected_servers,

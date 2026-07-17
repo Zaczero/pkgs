@@ -16,12 +16,10 @@ import json
 import math
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 try:
     from bench.compare import (
@@ -31,20 +29,10 @@ try:
         paired_comparison,
     )
     from bench.system import (
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        AmbientCpuProbe,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
-        benchmark_system_state_matches,
-        capture_ambient_cpu_probe,
         capture_system_state,
-        physical_core_capacity,
         physical_core_keys,
         pin_process_threads,
-        validate_ambient_cpu,
-        validate_interference_cpu,
     )
 except ModuleNotFoundError:  # Direct ``python bench/mask_kernel_compare.py``.
     from compare import (  # type: ignore[import-not-found, no-redef]
@@ -54,20 +42,10 @@ except ModuleNotFoundError:  # Direct ``python bench/mask_kernel_compare.py``.
         paired_comparison,
     )
     from system import (  # type: ignore[import-not-found, no-redef]
-        MAX_AMBIENT_CPU_UTILIZATION,
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        AmbientCpuProbe,
         BenchmarkSystemState,
-        CpuActivity,
-        CpuActivityMonitor,
-        benchmark_system_state_matches,
-        capture_ambient_cpu_probe,
         capture_system_state,
-        physical_core_capacity,
         physical_core_keys,
         pin_process_threads,
-        validate_ambient_cpu,
-        validate_interference_cpu,
     )
 
 if TYPE_CHECKING:
@@ -76,10 +54,8 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'bench' / 'mask_kernel.rs'
 PRODUCTION_SOURCE = ROOT / 'src' / 'websocket' / 'codec' / 'mask.rs'
-SCHEMA_VERSION = 3
 DEFAULT_TRIALS = 16
 DEFAULT_WARMUPS = 2
-DEFAULT_AMBIENT_CPU_PROBE_SECONDS = 1.0
 LENGTH_WEIGHTS = {
     '1': 0.02,
     '2': 0.02,
@@ -95,36 +71,16 @@ LENGTH_WEIGHTS = {
     '16384': 0.09,
 }
 
-EvidenceMode = Literal[
-    'pinned-noise-gated',
-    'diagnostic-pinned-noisy',
-    'diagnostic-unmanaged',
-]
-
-
-class FileIdentity(TypedDict):
-    path: str
-    sha256: str
-    size_bytes: int
-
-
-class ToolIdentity(TypedDict):
-    executable: str
-    executable_sha256: str
-    version: str
-
 
 class MaskRunEvidence(TypedDict):
     kernel: str
     cells: dict[str, float]
-    interference_cpu_during: CpuActivity | None
 
 
 class MaskBlockEvidence(TypedDict):
     block: int
     retained: bool
     lead_order: list[str]
-    ambient_cpu_before: AmbientCpuProbe | None
     runs: dict[str, MaskRunEvidence]
 
 
@@ -140,36 +96,24 @@ class MaskComparison(TypedDict):
 
 
 class MaskHostEvidence(TypedDict):
-    mode: EvidenceMode
     measurement_cpu: int
     management_cpu: int | None
-    interference_cpus: list[int]
-    system_before: BenchmarkSystemState
-    system_after: BenchmarkSystemState
+    system: BenchmarkSystemState
 
 
 class MaskProvenance(TypedDict):
-    captured_at: str
-    compile_command: list[str]
-    rustc: ToolIdentity
-    sources: dict[str, FileIdentity]
-    binary: FileIdentity
+    sources: dict[str, str]
+    binary_path: str
     git_head: str | None
-    git_status_short: list[str] | None
 
 
 class MaskReport(TypedDict):
-    schema_version: int
-    evidence_mode: EvidenceMode
     cpu: int
     management_cpu: int | None
     trials: int
     warmups: int
     seed: int
     weights: dict[str, float]
-    ambient_cpu_probe_seconds: float
-    maximum_ambient_cpu_utilization: float
-    maximum_ambient_single_cpu_utilization: float
     host: MaskHostEvidence
     provenance: MaskProvenance
     comparison: MaskComparison
@@ -177,14 +121,9 @@ class MaskReport(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class MaskBenchmarkHost:
-    mode: EvidenceMode
     measurement_cpu: int
     management_cpu: int | None
     system: BenchmarkSystemState
-    measurement_physical_cpus: tuple[int, ...]
-    measurement_llc_cpus: tuple[int, ...]
-    interference_cpus: tuple[int, ...]
-    interference_physical_core_count: int
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -208,10 +147,8 @@ def _compile_command(output: Path) -> list[str]:
     ]
 
 
-def compile_driver(output: Path) -> list[str]:
-    command = _compile_command(output)
-    run(command)
-    return command
+def compile_driver(output: Path) -> None:
+    run(_compile_command(output))
 
 
 def measure(
@@ -307,166 +244,40 @@ def _validate_pinned_host(
         raise RuntimeError(
             'measurement and management CPUs overlap on one physical core'
         )
-    for entry in measurement['topology']:
-        frequency = entry['frequency']
-        if frequency['scaling_driver'] is None:
-            raise RuntimeError('measurement CPU scaling driver is unavailable')
-        if frequency['scaling_governor'] != 'performance':
-            raise RuntimeError(
-                'measurement CPU must use the performance governor, got '
-                f'{frequency["scaling_governor"]!r}'
-            )
-        preference = frequency['energy_performance_preference']
-        if preference not in {None, 'performance'}:
-            raise RuntimeError(
-                'measurement CPU energy preference must be performance, got '
-                f'{preference!r}'
-            )
-
-
-def evidence_mode(
-    management_cpu: int | None,
-    maximum_ambient_cpu_utilization: float,
-    maximum_ambient_single_cpu_utilization: float,
-) -> EvidenceMode:
-    """Classify the noise-evidence grade of this mask benchmark run.
-
-    Deliberately distinct from compare.host_noise_mode: the measurement CPU
-    is always pinned here, so the missing role is the *management* CPU
-    ('diagnostic-unmanaged'), not the pinning itself ('diagnostic-unpinned').
-    Both classifiers share the limits declared in bench.system.
-    """
-    if management_cpu is None:
-        return 'diagnostic-unmanaged'
-    if (
-        maximum_ambient_cpu_utilization > MAX_AMBIENT_CPU_UTILIZATION
-        or maximum_ambient_single_cpu_utilization > MAX_AMBIENT_SINGLE_CPU_UTILIZATION
-    ):
-        return 'diagnostic-pinned-noisy'
-    return 'pinned-noise-gated'
 
 
 def prepare_host(
     measurement_cpu: int,
     management_cpu: int | None,
-    maximum_ambient_cpu_utilization: float = MAX_AMBIENT_CPU_UTILIZATION,
-    maximum_ambient_single_cpu_utilization: float = (
-        MAX_AMBIENT_SINGLE_CPU_UTILIZATION
-    ),
 ) -> MaskBenchmarkHost:
     if management_cpu is not None:
         pin_process_threads((management_cpu,))
     system = _capture_mask_system(measurement_cpu, management_cpu)
     if management_cpu is not None:
         _validate_pinned_host(system, measurement_cpu, management_cpu)
-    online = set(system['online_cpus'])
-    measurement = system['server']
-    if measurement is None:
-        raise RuntimeError('measurement CPU topology is missing')
-    topology = measurement['topology'][0]
-    physical_cpus = tuple(sorted(online & set(topology['thread_siblings'])))
-    llc_cpus = tuple(sorted(online & set(topology['last_level_cache']['shared_cpus'])))
-    assigned = {measurement_cpu}
-    if management_cpu is not None:
-        assigned.add(management_cpu)
-    interference_cpus = tuple(sorted(online - assigned))
-    if management_cpu is not None and not interference_cpus:
-        raise RuntimeError('noise gating requires at least one unassigned logical CPU')
     return MaskBenchmarkHost(
-        mode=evidence_mode(
-            management_cpu,
-            maximum_ambient_cpu_utilization,
-            maximum_ambient_single_cpu_utilization,
-        ),
         measurement_cpu=measurement_cpu,
         management_cpu=management_cpu,
         system=system,
-        measurement_physical_cpus=physical_cpus,
-        measurement_llc_cpus=llc_cpus,
-        interference_cpus=interference_cpus,
-        interference_physical_core_count=(
-            physical_core_capacity(interference_cpus) if interference_cpus else 0
-        ),
     )
 
 
-def _verify_host_identity(host: MaskBenchmarkHost) -> BenchmarkSystemState:
-    current = _capture_mask_system(host.measurement_cpu, host.management_cpu)
-    if not benchmark_system_state_matches(host.system, current):
-        raise RuntimeError(
-            'frozen mask benchmark host identity changed; refusing mixed evidence'
-        )
-    return current
-
-
-def _capture_ambient_cpu(
-    host: MaskBenchmarkHost, duration_seconds: float
-) -> AmbientCpuProbe:
-    measurement = host.system['server']
-    if measurement is None:
-        raise RuntimeError('measurement CPU topology is missing')
-    online = tuple(host.system['online_cpus'])
-    return capture_ambient_cpu_probe(
-        online,
-        host.measurement_physical_cpus,
-        host.measurement_llc_cpus,
-        host.measurement_llc_cpus,
-        online_physical_core_count=host.system['online_physical_core_count'],
-        server_physical_core_count=physical_core_capacity(
-            host.measurement_physical_cpus
-        ),
-        server_llc_physical_core_count=physical_core_capacity(
-            host.measurement_llc_cpus
-        ),
-        load_llc_physical_core_count=physical_core_capacity(host.measurement_llc_cpus),
-        duration_seconds=duration_seconds,
-    )
-
-
-def _measure_with_host_evidence(
+def _measure_kernel(
     binary: Path,
     kernel: str,
     workload: str,
     chunk_size: int,
     host: MaskBenchmarkHost,
-    *,
-    maximum_aggregate: float,
-    maximum_single_cpu: float,
 ) -> MaskRunEvidence:
-    if host.management_cpu is None:
-        return {
-            'kernel': kernel,
-            'cells': measure(
-                binary,
-                kernel,
-                host.measurement_cpu,
-                workload,
-                chunk_size,
-            ),
-            'interference_cpu_during': None,
-        }
-    monitor = CpuActivityMonitor(
-        host.interference_cpus,
-        host.interference_physical_core_count,
-    )
-    monitor.start()
-    try:
-        cells = measure(
+    return {
+        'kernel': kernel,
+        'cells': measure(
             binary,
             kernel,
             host.measurement_cpu,
             workload,
             chunk_size,
-        )
-    finally:
-        activity = monitor.stop()
-    validate_interference_cpu(
-        activity, max_aggregate=maximum_aggregate, max_single=maximum_single_cpu
-    )
-    return {
-        'kernel': kernel,
-        'cells': cells,
-        'interference_cpu_during': activity,
+        ),
     }
 
 
@@ -481,9 +292,6 @@ def compare_kernels(
     trials: int,
     warmups: int,
     seed: int,
-    ambient_cpu_probe_seconds: float,
-    maximum_ambient_cpu_utilization: float,
-    maximum_ambient_single_cpu_utilization: float,
 ) -> MaskComparison:
     samples = {length: {'control': [], 'candidate': []} for length in LENGTH_WEIGHTS}
     control_weighted: list[float] = []
@@ -493,31 +301,19 @@ def compare_kernels(
     blocks: list[MaskBlockEvidence] = []
 
     for block_index, role_order in enumerate(role_orders):
-        _verify_host_identity(host)
-        ambient: AmbientCpuProbe | None = None
-        if host.management_cpu is not None:
-            ambient = _capture_ambient_cpu(host, ambient_cpu_probe_seconds)
-            validate_ambient_cpu(
-                ambient,
-                max_aggregate=maximum_ambient_cpu_utilization,
-                max_single=maximum_ambient_single_cpu_utilization,
-            )
         block: MaskBlockEvidence = {
             'block': block_index,
             'retained': block_index >= warmups,
             'lead_order': [kernels[role] for role in role_order],
-            'ambient_cpu_before': ambient,
             'runs': {},
         }
         for role in role_order:
-            block['runs'][role] = _measure_with_host_evidence(
+            block['runs'][role] = _measure_kernel(
                 binary,
                 kernels[role],
                 workload,
                 chunk_size,
                 host,
-                maximum_aggregate=maximum_ambient_cpu_utilization,
-                maximum_single_cpu=maximum_ambient_single_cpu_utilization,
             )
         blocks.append(block)
         if not block['retained']:
@@ -563,34 +359,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _file_identity(path: Path) -> FileIdentity:
-    resolved = path.resolve(strict=True)
-    return {
-        'path': str(resolved),
-        'sha256': _sha256(resolved),
-        'size_bytes': resolved.stat().st_size,
-    }
-
-
-def _rustc_identity() -> ToolIdentity:
-    executable = shutil.which('rustc')
-    if executable is None:
-        raise RuntimeError('rustc is unavailable')
-    invoked = Path(executable).absolute()
-    version = run([str(invoked), '--version', '--verbose']).stdout.strip()
-    sysroot = Path(run([str(invoked), '--print', 'sysroot']).stdout.strip())
-    compiler = (sysroot / 'bin' / 'rustc').resolve(strict=True)
-    return {
-        'executable': str(compiler),
-        'executable_sha256': _sha256(compiler),
-        'version': version,
-    }
-
-
-def _git(command: list[str]) -> str | None:
+def _git_head() -> str | None:
     try:
         result = subprocess.run(
-            ['git', *command],
+            ['git', 'rev-parse', 'HEAD'],
             cwd=ROOT,
             check=False,
             text=True,
@@ -599,42 +371,25 @@ def _git(command: list[str]) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.stdout if result.returncode == 0 else None
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
-def capture_provenance(binary: Path, compile_command: list[str]) -> MaskProvenance:
-    head = _git(['rev-parse', 'HEAD'])
-    status = _git([
-        'status',
-        '--short',
-        '--',
-        str(SOURCE.relative_to(ROOT)),
-        str(PRODUCTION_SOURCE.relative_to(ROOT)),
-    ])
+def capture_provenance(binary: Path) -> MaskProvenance:
     return {
-        'captured_at': datetime.now(UTC).isoformat(),
-        'compile_command': compile_command,
-        'rustc': _rustc_identity(),
         'sources': {
-            'driver': _file_identity(SOURCE),
-            'production': _file_identity(PRODUCTION_SOURCE),
+            'driver': _sha256(SOURCE),
+            'production': _sha256(PRODUCTION_SOURCE),
         },
-        'binary': _file_identity(binary),
-        'git_head': head.strip() if head is not None else None,
-        'git_status_short': status.splitlines() if status is not None else None,
+        'binary_path': str(binary.resolve()),
+        'git_head': _git_head(),
     }
 
 
 _SUMMARY_REPORT_KEYS = (
-    'schema_version',
-    'evidence_mode',
     'cpu',
     'management_cpu',
     'trials',
     'warmups',
-    'ambient_cpu_probe_seconds',
-    'maximum_ambient_cpu_utilization',
-    'maximum_ambient_single_cpu_utilization',
 )
 _SUMMARY_COMPARISON_KEYS = ('control', 'candidate', 'workload', 'chunk_size')
 _SUMMARY_WEIGHTED_KEYS = (
@@ -688,7 +443,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--management-cpu',
         type=int,
-        help='pin every harness thread here and enable topology/noise evidence gates',
+        help='pin every harness thread here and validate its topology',
     )
     parser.add_argument('--trials', type=int, default=DEFAULT_TRIALS)
     parser.add_argument('--warmups', type=int, default=DEFAULT_WARMUPS)
@@ -710,29 +465,6 @@ def create_parser() -> argparse.ArgumentParser:
         default=0,
         help='reuse one mask key across chunks of this size; 0 masks each payload whole',
     )
-    parser.add_argument(
-        '--ambient-cpu-probe-seconds',
-        type=float,
-        default=DEFAULT_AMBIENT_CPU_PROBE_SECONDS,
-    )
-    parser.add_argument(
-        '--max-ambient-cpu-utilization',
-        type=float,
-        default=MAX_AMBIENT_CPU_UTILIZATION,
-        help=(
-            'maximum aggregate foreign CPU use in physical-core equivalents; '
-            'SMT activity can reach 2, which retains rather than rejects it'
-        ),
-    )
-    parser.add_argument(
-        '--max-ambient-single-cpu-utilization',
-        type=float,
-        default=MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
-        help=(
-            'maximum foreign utilization of one logical CPU; use 1 to retain '
-            'but not reject full-core activity on a known noisy host'
-        ),
-    )
     parser.add_argument('--summary', action='store_true')
     parser.add_argument('--output', type=Path)
     return parser
@@ -753,12 +485,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--cpu and --management-cpu must differ')
     if args.chunk_size < 0:
         parser.error('--chunk-size must be non-negative')
-    if args.ambient_cpu_probe_seconds <= 0:
-        parser.error('--ambient-cpu-probe-seconds must be positive')
-    if not 0 < args.max_ambient_cpu_utilization <= 2:
-        parser.error('--max-ambient-cpu-utilization must be in (0, 2]')
-    if not 0 < args.max_ambient_single_cpu_utilization <= 1:
-        parser.error('--max-ambient-single-cpu-utilization must be in (0, 1]')
     return args
 
 
@@ -771,14 +497,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix='h2corn-mask-kernel-') as directory:
             binary = Path(directory) / 'mask-kernel'
-            compile_command = compile_driver(binary)
-            host = prepare_host(
-                args.cpu,
-                args.management_cpu,
-                args.max_ambient_cpu_utilization,
-                args.max_ambient_single_cpu_utilization,
-            )
-            provenance = capture_provenance(binary, compile_command)
+            compile_driver(binary)
+            host = prepare_host(args.cpu, args.management_cpu)
+            provenance = capture_provenance(binary)
             comparison = compare_kernels(
                 binary,
                 control=args.control_kernel,
@@ -789,35 +510,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 trials=args.trials,
                 warmups=args.warmups,
                 seed=args.seed,
-                ambient_cpu_probe_seconds=args.ambient_cpu_probe_seconds,
-                maximum_ambient_cpu_utilization=args.max_ambient_cpu_utilization,
-                maximum_ambient_single_cpu_utilization=(
-                    args.max_ambient_single_cpu_utilization
-                ),
             )
-            system_after = _verify_host_identity(host)
             host_evidence: MaskHostEvidence = {
-                'mode': host.mode,
                 'measurement_cpu': host.measurement_cpu,
                 'management_cpu': host.management_cpu,
-                'interference_cpus': list(host.interference_cpus),
-                'system_before': host.system,
-                'system_after': system_after,
+                'system': host.system,
             }
             report: MaskReport = {
-                'schema_version': SCHEMA_VERSION,
-                'evidence_mode': host.mode,
                 'cpu': args.cpu,
                 'management_cpu': args.management_cpu,
                 'trials': args.trials,
                 'warmups': args.warmups,
                 'seed': args.seed,
                 'weights': LENGTH_WEIGHTS,
-                'ambient_cpu_probe_seconds': args.ambient_cpu_probe_seconds,
-                'maximum_ambient_cpu_utilization': args.max_ambient_cpu_utilization,
-                'maximum_ambient_single_cpu_utilization': (
-                    args.max_ambient_single_cpu_utilization
-                ),
                 'host': host_evidence,
                 'provenance': provenance,
                 'comparison': comparison,
@@ -825,18 +530,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'mask benchmark failed: {error}') from error
 
-    if host.mode == 'diagnostic-unmanaged':
-        print(
-            'mask benchmark is DIAGNOSTIC_UNMANAGED; pass --management-cpu for '
-            'topology, policy, ambient, and during-run CPU gates',
-            file=sys.stderr,
-        )
-    elif host.mode == 'diagnostic-pinned-noisy':
-        print(
-            'mask benchmark is DIAGNOSTIC_PINNED_NOISY; CPU roles and probes are '
-            'retained, but relaxed interference thresholds are not evidence-grade',
-            file=sys.stderr,
-        )
     serialized = json.dumps(_summary(report) if args.summary else report, indent=2)
     if args.output is None:
         print(serialized)

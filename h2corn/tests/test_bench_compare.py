@@ -4,12 +4,10 @@ import importlib
 import subprocess
 import sys
 from itertools import pairwise
-from pathlib import Path
-from typing import Any
 
 import pytest
 
-from bench import provenance, system
+from bench import system
 
 compare = importlib.import_module('bench.compare')
 mask_compare = importlib.import_module('bench.mask_kernel_compare')
@@ -106,48 +104,8 @@ def test_cli_parsing_applies_reproducible_defaults(tmp_path):
     assert args.load_cpus == (4, 5)
     assert args.management_cpus == (0,)
     assert args.load_warmup_duration == '1s'
-    assert args.ambient_cpu_probe_seconds == 1.0
-    assert args.max_ambient_cpu_utilization == 0.1
-    assert args.max_ambient_single_cpu_utilization == 0.15
-    assert args.allow_variant_environment_drift is False
     assert args.ready_url == args.url
     assert args.output == output
-
-
-def test_relaxed_noisy_host_limits_are_explicitly_diagnostic():
-    compare_args = parse_args([
-        '--control',
-        'old=old-server',
-        '--candidate',
-        'new=new-server',
-        '--expected-body',
-        'ok',
-        '--max-ambient-cpu-utilization',
-        '2',
-        '--max-ambient-single-cpu-utilization',
-        '1',
-    ])
-    mask_args = mask_compare.parse_args([
-        '--cpu',
-        '2',
-        '--max-ambient-cpu-utilization',
-        '2',
-        '--max-ambient-single-cpu-utilization',
-        '1',
-    ])
-
-    assert compare_args.max_ambient_cpu_utilization == 2.0
-    assert compare_args.max_ambient_single_cpu_utilization == 1.0
-    assert (
-        compare.host_noise_mode(
-            (2,),
-            compare_args.max_ambient_cpu_utilization,
-            compare_args.max_ambient_single_cpu_utilization,
-        )
-        == 'diagnostic-pinned-noisy'
-    )
-    assert mask_args.max_ambient_cpu_utilization == 2.0
-    assert mask_args.max_ambient_single_cpu_utilization == 1.0
 
 
 def test_cli_rejects_too_few_trials():
@@ -447,281 +405,7 @@ def test_load_generator_resources_gate_aggregate_cpu_headroom(monkeypatch):
     assert resources['sufficient_headroom'] is False
 
 
-def _ambient_cpu_probe(maximum_cpu_utilization=0.01):
-    return {
-        'started_at': 'start',
-        'completed_at': 'end',
-        'elapsed_seconds': 1.0,
-        'system_physical_core_utilization': 0.01,
-        'server_physical_core_utilization': 0.01,
-        'server_llc_physical_core_utilization': 0.01,
-        'load_llc_physical_core_utilization': 0.01,
-        'maximum_cpu_utilization': maximum_cpu_utilization,
-        'per_cpu': [],
-    }
-
-
-def _cpu_activity(maximum_window_cpu_utilization=0.01):
-    return {
-        'started_at': 'start',
-        'completed_at': 'end',
-        'elapsed_seconds': 1.0,
-        'cpus': [1],
-        'physical_core_count': 1,
-        'total_ticks': 100,
-        'active_ticks': 1,
-        'physical_core_utilization': 0.01,
-        'maximum_cpu_utilization': 0.01,
-        'per_cpu': [],
-        'interval_seconds': 1.0,
-        'windows': [],
-        'maximum_raw_window_physical_core_utilization': 0.01,
-        'maximum_raw_window_cpu_utilization': maximum_window_cpu_utilization,
-        'maximum_window_physical_core_utilization': 0.01,
-        'maximum_window_cpu_utilization': maximum_window_cpu_utilization,
-    }
-
-
-def _noise_gate_args():
-    return argparse.Namespace(
-        server_cpus=(2,),
-        load_cpus=(8, 24),
-        management_cpus=(0,),
-        ambient_cpu_probe_seconds=1.0,
-        max_ambient_cpu_utilization=0.1,
-        max_ambient_single_cpu_utilization=0.15,
-    )
-
-
-def test_pinned_load_retains_preload_and_during_load_cpu_evidence(monkeypatch):
-    probes = iter([_ambient_cpu_probe(), _ambient_cpu_probe()])
-    activity = _cpu_activity()
-    events = []
-
-    class Monitor:
-        def start(self):
-            events.append('monitor-start')
-
-        def stop(self):
-            events.append('monitor-stop')
-            return activity
-
-    load = {'raw': {}, 'resources': {'sufficient_headroom': True}}
-    monkeypatch.setattr(
-        compare,
-        '_capture_ambient_cpu',
-        lambda *_args: events.append('probe') or next(probes),
-    )
-    monkeypatch.setattr(
-        compare,
-        '_interference_monitor',
-        lambda *_args: events.append('monitor-create') or Monitor(),
-    )
-    monkeypatch.setattr(
-        compare,
-        '_run_load',
-        lambda _args: events.append('load') or (load, {'requests_per_second': 1.0}),
-    )
-    evidence = {
-        'mode': 'pinned-noise-gated',
-        'ambient_cpu_attempts': [],
-        'ambient_cpu_before': None,
-        'interference_cpu_during': None,
-    }
-
-    result = compare._run_noise_gated_load(
-        _noise_gate_args(),
-        {},
-        evidence,
-        lambda: events.append('checkpoint'),
-    )
-
-    assert result == (load, {'requests_per_second': 1.0})
-    assert evidence['ambient_cpu_attempts'] == [
-        _ambient_cpu_probe(),
-        _ambient_cpu_probe(),
-    ]
-    assert evidence['ambient_cpu_before'] == _ambient_cpu_probe()
-    assert evidence['interference_cpu_during'] == activity
-    assert events == [
-        'probe',
-        'checkpoint',
-        'probe',
-        'monitor-create',
-        'monitor-start',
-        'load',
-        'monitor-stop',
-        'checkpoint',
-    ]
-
-
-def test_pinned_load_persists_busy_preload_probe_before_rejecting(monkeypatch):
-    busy = _ambient_cpu_probe(maximum_cpu_utilization=0.2)
-    monkeypatch.setattr(compare, '_capture_ambient_cpu', lambda *_args: busy)
-    evidence = {
-        'mode': 'pinned-noise-gated',
-        'ambient_cpu_attempts': [],
-        'ambient_cpu_before': None,
-        'interference_cpu_during': None,
-    }
-    checkpoints = []
-
-    with pytest.raises(compare.BenchmarkError, match='quiet-window gate failed'):
-        compare._run_noise_gated_load(
-            _noise_gate_args(), {}, evidence, lambda: checkpoints.append(True)
-        )
-
-    assert evidence['ambient_cpu_attempts'] == [busy]
-    assert checkpoints == [True]
-
-
-def test_interference_gate_rejects_fixed_window_cpu_spike():
-    with pytest.raises(compare.BenchmarkError, match='interference gate failed'):
-        compare._validate_interference_cpu(_cpu_activity(0.2), _noise_gate_args())
-
-
-def test_ambient_probe_covers_online_host_and_role_cache_domains(monkeypatch):
-    calls = []
-    server = {
-        'physical_core_count': 1,
-        'topology': [
-            {
-                'thread_siblings': [2, 18],
-                'last_level_cache': {'shared_cpus': [0, 1, 2, 16, 17, 18]},
-            }
-        ],
-    }
-    load = {
-        'physical_core_count': 1,
-        'topology': [
-            {
-                'thread_siblings': [8, 24],
-                'last_level_cache': {'shared_cpus': [8, 9, 24, 25]},
-            }
-        ],
-    }
-    host_state: Any = {
-        'online_cpus': [0, 1, 2, 8, 16, 17, 18, 24],
-        'online_physical_core_count': 4,
-        'server': server,
-        'load_generator': load,
-    }
-    monkeypatch.setattr(
-        system,
-        'physical_core_capacity',
-        lambda cpus: calls.append(('capacity', cpus)) or 2,
-    )
-    expected = _ambient_cpu_probe()
-    monkeypatch.setattr(
-        system,
-        'capture_ambient_cpu_probe',
-        lambda *positional, **keyword: (
-            calls.append(('probe', positional, keyword)) or expected
-        ),
-    )
-
-    assert system.capture_role_ambient_cpu(host_state, 1.0) is expected
-    assert calls == [
-        ('capacity', (0, 1, 2, 16, 17, 18)),
-        ('capacity', (8, 24)),
-        (
-            'probe',
-            (
-                (0, 1, 2, 8, 16, 17, 18, 24),
-                (2, 18),
-                (0, 1, 2, 16, 17, 18),
-                (8, 24),
-            ),
-            {
-                'online_physical_core_count': 4,
-                'server_physical_core_count': 1,
-                'server_llc_physical_core_count': 2,
-                'load_llc_physical_core_count': 2,
-                'duration_seconds': 1.0,
-            },
-        ),
-    ]
-
-
-def test_interference_monitor_covers_every_unassigned_online_cpu(monkeypatch):
-    captured = []
-    monkeypatch.setattr(
-        compare,
-        'physical_core_capacity',
-        lambda cpus: captured.append(('capacity', cpus)) or 2,
-    )
-    monkeypatch.setattr(
-        compare,
-        'CpuActivityMonitor',
-        lambda cpus, cores: captured.append(('monitor', cpus, cores)) or object(),
-    )
-    system = {
-        'online_cpus': [0, 1, 2, 8, 16, 18, 24, 31],
-        'cgroup_allowed_cpus': [0, 1, 2, 8, 16, 18, 24],
-    }
-
-    monitor = compare._interference_monitor(_noise_gate_args(), system)
-
-    assert monitor is not None
-    assert captured == [
-        ('capacity', (1, 16, 18, 31)),
-        ('monitor', (1, 16, 18, 31), 2),
-    ]
-
-
-def test_unpinned_summary_is_explicitly_diagnostic(monkeypatch):
-    monkeypatch.setattr(
-        compare,
-        '_run_load',
-        lambda _args: ({'raw': {}}, {'requests_per_second': 1.0}),
-    )
-    evidence = {
-        'mode': 'diagnostic-unpinned',
-        'ambient_cpu_attempts': [],
-        'ambient_cpu_before': None,
-        'interference_cpu_during': None,
-    }
-    assert compare._run_noise_gated_load(object(), {}, evidence) == (
-        {'raw': {}},
-        {'requests_per_second': 1.0},
-    )
-    trials = [
-        {
-            'runs': {
-                'control': {'metrics': {'requests_per_second': 100.0}},
-                'candidate': {'metrics': {'requests_per_second': 110.0}},
-            }
-        }
-        for _ in range(6)
-    ]
-    summary = compare.summarize_trials(trials, 7, 1_000, 'diagnostic-unpinned')
-
-    assert summary['requests_per_second']['verdict'] == 'DIAGNOSTIC_UNPINNED'
-    assert summary['requests_per_second']['directionally_stable_above_iqr'] is True
-
-    confounded = compare.summarize_trials(
-        trials,
-        7,
-        1_000,
-        'pinned-noise-gated',
-        'confounded-opt-out',
-    )
-    assert confounded['requests_per_second']['verdict'] == (
-        'DIAGNOSTIC_VARIANT_ENVIRONMENT_DRIFT'
-    )
-
-    noisy = compare.summarize_trials(
-        trials,
-        7,
-        1_000,
-        'diagnostic-pinned-noisy',
-    )
-    assert noisy['requests_per_second']['verdict'] == 'DIAGNOSTIC_PINNED_NOISY'
-
-
-def test_comparison_identity_freezes_additional_inputs(tmp_path):
-    identity_input = tmp_path / 'scenario.toml'
-    identity_input.write_text('value = 1\n')
+def test_comparison_identity_contains_only_measurement_settings():
     args = parse_args([
         '--control',
         'old=true',
@@ -731,24 +415,40 @@ def test_comparison_identity_freezes_additional_inputs(tmp_path):
         'Hello, World!',
         '--trials',
         '6',
-        '--identity-input',
-        str(identity_input),
+        '--server-cpus',
+        '2',
+        '--load-cpus',
+        '4-5',
+        '--management-cpus',
+        '0',
     ])
-    frozen = compare.comparison_identity(args)
-    gate = compare.ComparisonIdentityGate(args, frozen)
+    identity = compare.comparison_identity(args)
 
-    # Untouched inputs pass on the cheap fingerprint alone.
-    gate.verify('test')
-
-    identity_input.write_text('value = 2\n')
-    with pytest.raises(
-        compare.BenchmarkError, match='frozen benchmark identity changed'
-    ):
-        gate.verify('test')
-    with pytest.raises(
-        compare.BenchmarkError, match='frozen benchmark identity changed'
-    ):
-        compare._verify_comparison_identity(args, frozen, phase='test')
+    assert identity['variants']['control'] == {'name': 'old', 'argv': ['true']}
+    assert identity['scenario']['load_driver'] == 'oha'
+    assert identity['trials'] == 6
+    assert identity['cpu_roles'] == {
+        'server': [2],
+        'load': [4, 5],
+        'management': [0],
+    }
+    assert set(identity) == {
+        'variants',
+        'scenario',
+        'duration',
+        'concurrency',
+        'trials',
+        'warmups',
+        'seed',
+        'cpu_roles',
+        'load_warmup_duration',
+        'startup_timeout',
+        'load_grace',
+        'settle',
+        'rss_sample_interval',
+        'maximum_load_utilization',
+        'bootstrap_samples',
+    }
 
 
 def _cpu_topology(cpu, core, siblings, *, online=True):
@@ -816,15 +516,6 @@ def test_cpu_role_validation_rejects_physical_overlap_and_incomplete_load_smt():
     state['load_generator'] = _cpu_set([8], [_cpu_topology(8, 8, [8, 24])])
     with pytest.raises(compare.BenchmarkError, match='every usable SMT sibling'):
         compare._validate_benchmark_system(args, state)
-
-
-def test_mask_host_validation_requires_performance_policy():
-    state = _pinned_system_state()
-    mask_compare._validate_pinned_host(state, 2, 0)
-
-    state['server']['topology'][0]['frequency']['scaling_governor'] = 'powersave'
-    with pytest.raises(RuntimeError, match='performance governor'):
-        mask_compare._validate_pinned_host(state, 2, 0)
 
 
 def test_fresh_measured_server_warmup_uses_exact_load_path(monkeypatch):
@@ -904,81 +595,11 @@ def test_k6_derives_http_readiness_from_standalone_websocket_url():
     assert args.ready_url == 'https://benchmark.test:8443/'
 
 
-def test_variant_provenance_hashes_resolved_executable():
-    command = provenance.NamedCommand('true', ('true',))
-    artifacts = provenance.variant_artifacts(command)
-
-    assert artifacts['executable'] is not None
-    assert Path(artifacts['executable']).is_file()
-    assert artifacts['executable_sha256'] is not None
-    assert len(artifacts['executable_sha256']) == 64
-    assert artifacts['extension'] is None
-
-
-def _python_variant_artifacts(
-    *, dependency_version='1.0', dependency_sha='a' * 64, package='control'
-) -> provenance.VariantArtifacts:
-    return {
-        'executable': f'/benchmark/{package}/bin/h2corn',
-        'executable_sha256': package * 8,
-        'extension': f'/benchmark/{package}/h2corn/_lib.so',
-        'extension_sha256': package * 8,
-        'python_executable': f'/benchmark/{package}/bin/python',
-        'python_executable_sha256': 'b' * 64,
-        'python_version': '3.13.5 (main, Jul 1 2026) [GCC 15.1.0]',
-        'python_implementation': 'cpython',
-        'python_cache_tag': 'cpython-313',
-        'python_abi_flags': '',
-        'python_gil_enabled': True,
-        'python_package': f'/benchmark/{package}/h2corn',
-        'python_package_sha256': package * 8,
-        'dependencies': {
-            'h11': {
-                'distribution': 'h11',
-                'version': dependency_version,
-                'path': f'/benchmark/{package}/h11',
-                'sha256': dependency_sha,
-            }
-        },
-        'command_inputs': {},
-    }
-
-
-def test_variant_environment_ignores_expected_paths_and_h2corn_artifacts():
-    control = _python_variant_artifacts(package='control')
-    candidate = _python_variant_artifacts(package='candidate')
-
-    evidence = provenance.variant_environment_evidence(
-        control, candidate, allow_drift=False
-    )
-
-    assert evidence == {'mode': 'equivalent', 'differences': []}
-
-
-def test_variant_environment_drift_requires_explicit_diagnostic_opt_out():
-    control = _python_variant_artifacts()
-    candidate = _python_variant_artifacts(
-        dependency_version='2.0', dependency_sha='c' * 64, package='candidate'
-    )
-
-    with pytest.raises(compare.BenchmarkError, match='equivalent Python runtime'):
-        provenance.variant_environment_evidence(control, candidate, allow_drift=False)
-
-    evidence = provenance.variant_environment_evidence(
-        control, candidate, allow_drift=True
-    )
-    assert evidence['mode'] == 'confounded-opt-out'
-    assert {difference['field'] for difference in evidence['differences']} == {
-        'dependencies.h11.version',
-        'dependencies.h11.sha256',
-    }
-
-
 def test_subprocess_environment_fixes_python_hash_seed(monkeypatch):
     monkeypatch.setenv('PYTHONHASHSEED', 'random')
     monkeypatch.setenv('NO_COLOR', '1')
 
-    environment = provenance.subprocess_environment()
+    environment = compare.subprocess_environment()
 
     assert environment['PYTHONHASHSEED'] == '0'
     assert 'NO_COLOR' not in environment
@@ -988,16 +609,10 @@ def test_mask_comparison_discards_warmups_and_balances_retained_leads(
     monkeypatch, tmp_path
 ):
     host = mask_compare.MaskBenchmarkHost(
-        mode='diagnostic-unmanaged',
         measurement_cpu=2,
         management_cpu=None,
         system={},
-        measurement_physical_cpus=(2, 18),
-        measurement_llc_cpus=(0, 1, 2, 16, 17, 18),
-        interference_cpus=(),
-        interference_physical_core_count=0,
     )
-    monkeypatch.setattr(mask_compare, '_verify_host_identity', lambda _host: {})
 
     def fake_measure(_binary, kernel, _cpu, _workload, _chunk_size):
         value = 10.0 if kernel == 'legacy' else 9.0
@@ -1014,9 +629,6 @@ def test_mask_comparison_discards_warmups_and_balances_retained_leads(
         trials=6,
         warmups=2,
         seed=17,
-        ambient_cpu_probe_seconds=1.0,
-        maximum_ambient_cpu_utilization=0.1,
-        maximum_ambient_single_cpu_utilization=0.15,
     )
 
     assert [block['retained'] for block in result['blocks']] == [
@@ -1046,7 +658,7 @@ def test_mask_measurement_cpu_is_required():
         mask_compare.parse_args([])
 
 
-def test_mask_summary_retains_the_exact_noise_gate_configuration():
+def test_mask_summary_keeps_report_metadata_and_drops_raw_blocks():
     paired = paired_comparison(
         [10.0, 10.0],
         [9.0, 9.0],
@@ -1055,17 +667,12 @@ def test_mask_summary_retains_the_exact_noise_gate_configuration():
         bootstrap_samples=100,
     )
     report = {
-        'schema_version': mask_compare.SCHEMA_VERSION,
-        'evidence_mode': 'pinned-noise-gated',
         'cpu': 2,
         'management_cpu': 0,
         'trials': 6,
         'warmups': 2,
         'seed': 17,
         'weights': {'1': 1.0},
-        'ambient_cpu_probe_seconds': 1.25,
-        'maximum_ambient_cpu_utilization': 0.08,
-        'maximum_ambient_single_cpu_utilization': 0.12,
         'host': {},
         'provenance': {},
         'comparison': {
@@ -1082,87 +689,4 @@ def test_mask_summary_retains_the_exact_noise_gate_configuration():
 
     summary = mask_compare._summary(report)
 
-    assert mask_compare.SCHEMA_VERSION == 3
-    assert summary['ambient_cpu_probe_seconds'] == 1.25
-    assert summary['maximum_ambient_cpu_utilization'] == 0.08
-    assert summary['maximum_ambient_single_cpu_utilization'] == 0.12
     assert summary['comparison']['control'] == 'eager-key'
-
-
-def test_relaxed_mask_noise_limits_are_diagnostic_but_still_collect_probes(
-    monkeypatch, tmp_path
-):
-    assert mask_compare.evidence_mode(0, 0.1, 0.15) == 'pinned-noise-gated'
-    assert mask_compare.evidence_mode(0, 0.11, 0.15) == 'diagnostic-pinned-noisy'
-    assert mask_compare.evidence_mode(0, 0.1, 0.16) == 'diagnostic-pinned-noisy'
-    assert mask_compare.evidence_mode(None, 0.1, 0.15) == 'diagnostic-unmanaged'
-
-    host = mask_compare.MaskBenchmarkHost(
-        mode='diagnostic-pinned-noisy',
-        measurement_cpu=2,
-        management_cpu=0,
-        system={},
-        measurement_physical_cpus=(2, 18),
-        measurement_llc_cpus=(0, 1, 2, 16, 17, 18),
-        interference_cpus=(1, 16, 17, 18),
-        interference_physical_core_count=2,
-    )
-    probe = {'retained': True}
-    validated = []
-    measured = []
-    monkeypatch.setattr(mask_compare, '_verify_host_identity', lambda _host: {})
-    monkeypatch.setattr(
-        mask_compare,
-        '_capture_ambient_cpu',
-        lambda _host, _seconds: probe,
-    )
-    monkeypatch.setattr(
-        mask_compare,
-        'validate_ambient_cpu',
-        lambda value, *, max_aggregate, max_single: validated.append((
-            value,
-            max_aggregate,
-            max_single,
-        )),
-    )
-
-    def fake_measure(_binary, kernel, *_args, **_kwargs):
-        measured.append(kernel)
-        return {
-            'kernel': kernel,
-            'cells': dict.fromkeys(mask_compare.LENGTH_WEIGHTS, 10.0),
-            'interference_cpu_during': {'retained': True},
-        }
-
-    monkeypatch.setattr(mask_compare, '_measure_with_host_evidence', fake_measure)
-    result = mask_compare.compare_kernels(
-        tmp_path / 'unused',
-        control='eager-key',
-        candidate='production',
-        workload='cartesian',
-        chunk_size=0,
-        host=host,
-        trials=6,
-        warmups=1,
-        seed=17,
-        ambient_cpu_probe_seconds=1.0,
-        maximum_ambient_cpu_utilization=2.0,
-        maximum_ambient_single_cpu_utilization=1.0,
-    )
-
-    assert all(block['ambient_cpu_before'] is probe for block in result['blocks'])
-    assert validated == [(probe, 2.0, 1.0)] * 7
-    assert len(measured) == 14
-
-
-def test_shebang_probe_preserves_virtual_environment_python_symlink(tmp_path):
-    interpreter = tmp_path / 'python3'
-    interpreter.symlink_to(sys.executable)
-    command_path = tmp_path / 'server'
-    command_path.write_text(f'#!{interpreter}\n')
-    command_path.chmod(0o755)
-    command = provenance.NamedCommand('server', (str(command_path),))
-
-    executable = provenance.resolved_executable(command)
-    assert executable is not None
-    assert provenance.command_python(command, executable) == interpreter

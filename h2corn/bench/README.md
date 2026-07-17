@@ -18,67 +18,59 @@ checked in; `bench.py` replaces them only with an explicit successful
 
 ## Cross-server publication (`bench.py`)
 
-The default command stages every raw record and SVG under a unique run
-directory, so smoke tests and filtered runs cannot overwrite the canonical
-plots. Publication requires the complete scenario/server matrix and the exact
-canonical configuration: eight trials containing complete forward/reverse
-Latin rotations, one-second request-path warmup, ten-second measurement, and
-disjoint server/load CPU sets:
+One command, no flags to remember:
 
 ```bash
-uv run python bench/bench.py \
-  --server-cpus 2-5 --load-cpus 8-15,24-31 \
-  --management-cpus 0 \
-  --load-worker-threads 16 --trials 8 --publish
+uv run python bench/bench.py --publish
 ```
 
-The harness snapshots the actual server and load-generator executables,
-imported h2corn package/native extension, benchmark application, k6 script,
-commands, source identity, selected-CPU topology and LLC domains, online/process
-affinity, governor/driver/EPP, boost, kernel command line, and transparent
-huge-page state. Every benchmark-driver thread is pinned to the separate
-management CPU 0; this includes orchestration, 20 Hz resource sampling, and the
-CPU interference monitor. The harness records all thread-affinity masks and
-freezes the full snapshot once at run start. Before every server launch it
-re-checks a cheap stat fingerprint (path, size, mtime, inode) of the same
-hashed file set, re-runs the full hash/git/system verification whenever that
-fingerprint changes, and always re-verifies fully after the suite. These are
-pinned CPU roles on a noisy host, not kernel-isolated CPUs. The ordinary
-one-second request-path warmup is not quiet-gated. Immediately afterward, before
-each measured trial, and before every headroom generator run (including its two
-warmups), a one-second `/proc/stat` probe covers physical cores, SMT siblings,
-and complete LLC domains. Aggregate utilization must remain at or below 10% and
-every logical CPU at or below 15%. During each measured trial and headroom run,
-unused server siblings/LLC CPUs are checked over fixed one-second exposure and
-the complete-load aggregate with the same limits. A subsecond final sample is
-retained raw and normalized to one second for the gate; a newly busy host aborts
-rather than producing a silently degraded publication. Every measured run
+Servers run out of the box, unpinned — the harness never limits how much
+parallelism a solution uses internally. Only the measurement instrument is
+pinned, with roles auto-derived from the host topology: the harness driver
+takes the boot domain's first core and the load generator owns every thread
+of the largest other last-level-cache domain; oha/k6 worker counts follow the
+load CPU count. Explicit `--load-cpus/--management-cpus` (and `--server-cpus`
+for deliberately confined experiments) remain as overrides. Without `--publish`, everything stages under a
+unique run directory, so smoke tests and filtered runs cannot overwrite the
+canonical plots.
+
+Trial counts adapt instead of being fixed: each scenario runs at least three
+rotation-balanced cold-start trials per server and keeps going (up to eight)
+only while any server's trial-to-trial spread (IQR/median) is still above 10%.
+The whole suite is capped by `--time-budget` (default 15 minutes): the
+scheduler splits the remaining budget across remaining scenarios and shrinks
+the per-trial load duration (3 s base, 1 s floor) to fit. Minimum trials are
+never skipped — on a budget too small for the fixed per-trial cost the suite
+runs slightly long rather than publishing thin evidence. Each raw record notes its trial count and why the scenario stopped
+(`stable`, `max-trials`, or `time-budget`).
+
+The run's `identity.json` records the harness settings, scenario matrix,
+server commands and profiles, package versions, git head, and the captured
+instrument CPU topology. Every benchmark-driver thread is pinned to the
+separate management CPU, including orchestration and 20 Hz resource sampling.
+These are pinned instrument roles on a shared development host — the harness
+does not gate on ambient host activity; the pinned generator, medians over
+rotated trials, and retained per-trial ranges carry the noise story instead.
+Keep the tree still while a run measures. Every measured run
 requires all configured workers to answer, runs one second of unmeasured
 request-path load on the same server process before measurement, and verifies
 the exact HTTP body or WebSocket echo before warmup and after measurement.
 Warmup commands, raw output, and resource usage are retained alongside all
-throughput/latency samples through p99.9 and their ranges. Before publication,
-every scenario's fastest server also gets two complete load-generator warmups
-and seven measured R/F/F/R blocks: twenty-eight measured runs and fourteen
-adjacent paired gains comparing twelve versus sixteen generator workers on the
-identical CPU set. oha receives `TOKIO_WORKER_THREADS`; k6 receives
-`GOMAXPROCS`. A load-side bottleneck is ruled out only when an exact one-sided
-sign test proves the paired median gain is strictly below 2%. Its threshold is
-Bonferroni-corrected across the 21-scenario family (`p < 0.05 / 21`), which
-requires at least thirteen of fourteen paired gains below the margin.
-Publication also requires every measured and headroom generator run below the
-85% physical-core CPU-capacity ceiling;
-logical-thread utilization is retained separately and SMT never inflates the
-denominator.
-Quartiles, individual gains, CPU usage, and exact environments remain in the
-raw record; a noisy median alone is not mistaken for a scaling signal. Each
-unique run writes a durable `running` manifest before execution and atomically
-checkpoints scenario evidence. Handled contract failures transition it to
-`failed`; sudden process termination can leave the truthful `running` status.
-Both states and all completed evidence remain under
-`bench/results/runs/<run-id>/raw/`. A failed contract, changed artifact,
-incomplete scenario, missing headroom plateau, or CPU-headroom failure preserves
-the canonical `bench/results/raw/` records and SVGs unchanged.
+throughput/latency samples through p99.9 and their ranges. After the scenario
+sweep, the single fastest cell gets a quick load-generator headroom check —
+one warmup pair plus one reduced/full/full/reduced block comparing 75% versus
+100% generator workers on the identical CPU set (oha via
+`TOKIO_WORKER_THREADS`, k6 via `GOMAXPROCS`). Publication flags the run when
+the median paired gain reaches 5% (the generator, not the server, may be the
+bottleneck) or when any measured or headroom generator run exceeds the 85%
+physical-core CPU-capacity ceiling; logical-thread utilization is retained
+separately and SMT never inflates the denominator. Paired gains, CPU usage,
+and exact environments remain in the raw record. Each scenario record is
+written once at scenario completion under
+`bench/results/runs/<run-id>/raw/`; an interrupted run just gets re-run. A
+failed contract, incomplete scenario, missing headroom plateau, or
+CPU-headroom failure preserves the canonical `bench/results/raw/` records and
+SVGs unchanged.
 
 The public comparison deliberately uses the classic Uvicorn install and pins it
 to stdlib asyncio plus h11. Non-WebSocket cells explicitly use `--ws none`;
@@ -108,26 +100,17 @@ derived from its requested duration. On Linux, the runner samples cumulative
 CPU and aggregate resident memory for both complete server and load-generator
 process groups. The default gate rejects a run when the generator averages
 more than 85% of its pinned physical-core capacity or process accounting is
-unavailable. Logical-CPU utilization is retained separately, and selected CPU
-topology/policy state is part of the frozen comparison identity. Every current
-benchmark-driver thread is pinned to the management CPU before that identity is
-captured; later monitor threads inherit the same Linux affinity.
+unavailable. Logical-CPU utilization is retained separately. Every current
+benchmark-driver thread is pinned to the management CPU before measurement;
+later monitor threads inherit the same Linux affinity.
 Server, load-generator, and management CPUs must be supplied together and be
 disjoint at both the logical-thread and physical-core levels. The load set must
 contain every online, allowed SMT sibling of each selected physical core.
-Pinned comparisons apply the publication harness's role-aware host-noise gates
-to every retained run: two one-second quiet probes immediately before load,
-then fixed one-second and whole-load activity checks across CPUs not assigned to
-server, load, or management roles. The raw run retains every quiet probe and
-the complete during-load activity record; crossing the 10% aggregate or 15%
-single-logical-CPU limit aborts the comparison. Runs without explicit CPU roles
-remain useful for development, but their summaries are marked
-`DIAGNOSTIC_UNPINNED` and are never labelled evidence-grade.
+Runs without explicit CPU roles remain useful for development.
 
-The evidence JSON retains the unmodified oha output, commands, lead
-orders, warmups, measured samples, environment and source-tree
-fingerprint, process resource samples, throughput, and p50/p99/p99.9
-latency. The summary reports the median paired percentage delta and a
+The result JSON retains the unmodified oha output, commands, lead
+orders, warmups, measured samples, process resource samples, throughput,
+and p50/p99/p99.9 latency. The summary reports the median paired percentage delta and a
 seeded paired-bootstrap 95% confidence interval. Its empirical noise
 spread is the interquartile range of the paired percentage deltas. The
 runner labels a result `STABLE_ABOVE_IQR` only when the bootstrap interval
@@ -169,22 +152,16 @@ or `wss://` load, readiness defaults to HTTP or HTTPS on the same origin;
 `--ready-url` accepts only an explicit HTTP(S) endpoint. `--disable-keepalive`
 isolates new-connection HTTP/1
 costs such as TLS handshakes; it is intentionally incompatible with
-HTTP/2. Each run writes an incrementally durable raw record under
-`bench/results/compare/`.
+HTTP/2. Each run writes its raw record under `bench/results/compare/`.
 
 The runner pins the HTTP protocol explicitly (`1.1` unless `--http2` is
 selected), including under TLS where ALPN otherwise makes an omitted
-version ambiguous. Frozen identity covers the harness, app and load scripts,
-load-tool executables, request and measurement settings, runtime environment,
-source state, TLS inputs, and each variant's executable, imported package,
-native extension, and protocol/runtime dependency trees. Before each server
-launch and after each paired block, a cheap stat fingerprint of every hashed
-identity input is re-checked; the full identity (hashes, dependency probes,
-git, system state) is recomputed whenever that fingerprint changes and always
-at suite completion.
+version ambiguous. The stored comparison identity is the measurement
+settings themselves: variant names and commands, request shape, duration,
+concurrency, trials, warmups, seed, and CPU roles. Keep the two variant
+builds still while a comparison runs.
 
-Do not treat the single observed public plots as paired code-change evidence. Record
-CPU topology, affinity, and governor setup alongside any published conclusion.
+Do not treat the single observed public plots as paired code-change evidence.
 
 ## End-to-end candidate matrix (`matrix.py`)
 
@@ -199,13 +176,9 @@ release evidence.
 Pass base server commands without bind, worker, loop-thread, or TLS
 arguments; the matrix supplies those per scenario. Reuse an
 `--output-dir` to resume an interrupted matrix. A result is skipped only
-when its schema and complete comparison identity match exactly, so
+when its complete comparison identity matches exactly, so
 changing a command, workload, topology, affinity, duration, or seed
 automatically reruns it.
-The matrix record and each scenario entry propagate the comparison's host-noise
-mode. Strict pinned limits produce `pinned-noise-gated`; relaxed pinned limits
-are explicitly `diagnostic-pinned-noisy`; missing CPU roles are
-`diagnostic-unpinned`.
 
 ```bash
 # Inspect capability skips and the expanded scenario IDs.
@@ -247,7 +220,7 @@ their reason instead of being silently omitted. HTTP loads require oha,
 WebSocket loads require k6, and TLS certificate generation uses the
 development dependency `trustme`.
 TLS material is retained in the output directory and reused on resume; changing
-it invalidates the frozen comparison identity instead of silently mixing runs.
+it invalidates the stored comparison identity instead of silently mixing runs.
 
 ## Component comparisons
 
@@ -269,9 +242,9 @@ paired end-to-end cell.
 
 The masking runner discards complete warmup blocks, then uses an even number of
 strict alternating AB/BA pairs and paired-bootstrap intervals. With
-`--management-cpu`, it pins the harness away from the measurement CPU, freezes
-topology and CPU policy, and rejects ambient or during-run CPU interference.
-Without that role, output is explicitly diagnostic.
+`--management-cpu`, it pins the harness away from the measurement CPU and
+freezes topology and CPU policy. Without that role, output is explicitly
+diagnostic.
 
 The weighted headline is a declared workload model, not a production
 trace. Always retain the per-length cells, and replace the checked-in
