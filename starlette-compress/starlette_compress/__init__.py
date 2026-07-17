@@ -90,10 +90,19 @@ class CompressMiddleware:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
 
-        headers = MutableHeaders(scope=scope)
-        accept_encoding = headers.getlist('Accept-Encoding')
+        raw_headers = scope['headers']
+        if not isinstance(raw_headers, list):
+            raw_headers = scope['headers'] = list(raw_headers)
+
+        accept_encoding = [
+            value.decode('latin-1')
+            for name, value in raw_headers
+            if name == b'accept-encoding'
+        ]
+
         if accept_encoding:
             if self._remove_accept_encoding:
+                headers = MutableHeaders(scope=scope)
                 del headers['Accept-Encoding']
 
             accept_encodings = parse_accept_encoding(
@@ -101,11 +110,11 @@ class CompressMiddleware:
                 if len(accept_encoding) > 1
                 else accept_encoding[0]
             )
-            if (self._zstd is not None) and 'zstd' in accept_encodings:
+            if self._zstd is not None and 'zstd' in accept_encodings:
                 return await self._zstd(scope, receive, send)
-            if (self._brotli is not None) and 'br' in accept_encodings:
+            if self._brotli is not None and 'br' in accept_encodings:
                 return await self._brotli(scope, receive, send)
-            if (self._gzip is not None) and 'gzip' in accept_encodings:
+            if self._gzip is not None and 'gzip' in accept_encodings:
                 return await self._gzip(scope, receive, send)
 
         return await self._identity(scope, receive, send)

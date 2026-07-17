@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from platform import python_implementation
+import sys
 
 from starlette_compress._responder import CompressionResponder
 
 TYPE_CHECKING = False
 
-if python_implementation() == 'CPython' and not TYPE_CHECKING:
+if sys.implementation.name == 'cpython' and not TYPE_CHECKING:
     try:
         import brotli
     except ModuleNotFoundError:
@@ -20,7 +20,7 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import ASGIApp
 
 
 class _BrotliStreamEncoder:
@@ -33,17 +33,15 @@ class _BrotliStreamEncoder:
         out = self._compressor.process(data)
         if flush:
             out += self._compressor.flush()
-        if out:
-            yield out
+        return (out,) if out else ()
 
     def finish(self) -> Iterable[bytes]:
         out = self._compressor.finish()
-        if out:
-            yield out
+        return (out,) if out else ()
 
 
-class BrotliResponder:
-    __slots__ = ('_responder',)
+class BrotliResponder(CompressionResponder):
+    __slots__ = ()
 
     def __init__(self, app: ASGIApp, minimum_size: int, quality: int) -> None:
         def oneshot(body: bytes) -> bytes:
@@ -52,9 +50,4 @@ class BrotliResponder:
         def create_encoder(content_length: int) -> _BrotliStreamEncoder:
             return _BrotliStreamEncoder(quality)
 
-        self._responder = CompressionResponder(
-            app, minimum_size, 'br', oneshot, create_encoder
-        )
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._responder(scope, receive, send)
+        super().__init__(app, minimum_size, 'br', oneshot, create_encoder)

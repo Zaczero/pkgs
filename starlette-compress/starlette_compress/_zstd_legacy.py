@@ -8,7 +8,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import ASGIApp
     from zstandard import ZstdCompressionChunker  # type: ignore
 
 
@@ -34,11 +34,11 @@ class _ZstdLegacyStreamEncoder:
             yield from self._chunker.flush()
 
     def finish(self) -> Iterable[bytes]:
-        yield from self._chunker.finish()
+        return self._chunker.finish()
 
 
-class ZstdResponder:
-    __slots__ = ('_responder',)
+class ZstdResponder(CompressionResponder):
+    __slots__ = ()
 
     def __init__(self, app: ASGIApp, minimum_size: int, level: int) -> None:
         compressor = ZstdCompressor(level=level)
@@ -50,9 +50,4 @@ class ZstdResponder:
             chunker = ZstdCompressor(level=level).chunker(content_length)
             return _ZstdLegacyStreamEncoder(chunker)
 
-        self._responder = CompressionResponder(
-            app, minimum_size, 'zstd', oneshot, create_encoder
-        )
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._responder(scope, receive, send)
+        super().__init__(app, minimum_size, 'zstd', oneshot, create_encoder)

@@ -1598,6 +1598,468 @@ def test_sse_testclient_roundtrip(test_client_factory: TestClientFactory, encodi
             assert zstd.decompress(response.content) == b'data: one\n\ndata: two\n\n'
 
 
+def test_mixed_case_managed_headers_oneshot():
+    """Mixed-case CL/CE/Vary must normalize so mutations hit; no stale duplicates."""
+    body = b'x' * 1000
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'Content-Type', b'text/plain'),
+                (b'X-MiXeD', b'keep-me'),
+                (b'Content-Length', str(len(body)).encode()),
+                (b'Content-Encoding', b'identity'),
+                (b'Vary', b'Origin'),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    sent = asyncio.run(
+        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    raw = start['headers']
+    # Exactly one of each managed name (case-insensitive), all lowercase wire names.
+    names_lower = [n.lower() for n, _ in raw]
+    assert names_lower.count(b'content-length') == 1
+    assert names_lower.count(b'content-encoding') == 1
+    assert names_lower.count(b'vary') == 1
+    headers = {n.lower(): v for n, v in raw}
+    assert headers[b'content-encoding'] == b'gzip'
+    assert headers[b'content-length'] != str(len(body)).encode()
+    assert int(headers[b'content-length']) < len(body)
+    # Exact wire-order Vary (kills value-reversal mutant).
+    assert headers[b'vary'] == b'Origin, Accept-Encoding'
+    # Unmanaged mixed-case names keep exact spelling (kills lowercase-everything).
+    assert (b'Content-Type', b'text/plain') in raw
+    assert (b'X-MiXeD', b'keep-me') in raw
+    # No mixed-case remnants for managed headers
+    for name, _ in raw:
+        if name.lower() in (b'content-length', b'content-encoding', b'vary'):
+            assert name == name.lower()
+
+
+def test_mixed_case_streaming_content_length_removal():
+    """Streaming commit must delete mixed-case Content-Length (not leave a stale field)."""
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'Content-Type', b'text/event-stream'),
+                (b'X-MiXeD', b'keep-me'),
+                (b'Content-Length', b'9999'),
+            ],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': b'data: one\n\n',
+            'more_body': True,
+        })
+        await send({'type': 'http.response.body', 'body': b''})
+
+    sent = asyncio.run(
+        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    names_lower = [n.lower() for n, _ in start['headers']]
+    assert b'content-length' not in names_lower
+    headers = {n.lower(): v for n, v in start['headers']}
+    assert headers[b'content-encoding'] == b'gzip'
+    assert (b'Content-Type', b'text/event-stream') in start['headers']
+    assert (b'X-MiXeD', b'keep-me') in start['headers']
+
+
+def test_mixed_case_repeated_vary_coalesced():
+    """Repeated differently-cased Vary fields coalesce in wire order with Accept-Encoding."""
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'text/plain'),
+                (b'Vary', b'Origin'),
+                (b'vArY', b'Cookie'),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': b'x' * 1000})
+
+    sent = asyncio.run(
+        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    vary_fields = [v for n, v in start['headers'] if n.lower() == b'vary']
+    assert len(vary_fields) == 1
+    # Exact wire order: Origin, Cookie, Accept-Encoding (kills value-reversal).
+    assert vary_fields[0] == b'Origin, Cookie, Accept-Encoding'
+    # Single field only — no leftover mixed-case duplicates
+    assert sum(1 for n, _ in start['headers'] if n.lower() == b'vary') == 1
+
+
+def test_mixed_case_skip_small_pathsend_byte_identical():
+    """Skip / small / pathsend-first with mixed-case managed headers forward byte-for-byte."""
+    mixed = [
+        (b'Content-Type', b'text/plain'),
+        (b'Content-Length', b'2'),
+        (b'X-MiXeD', b'keep'),
+        (b'Vary', b'Origin'),
+    ]
+
+    async def small_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': list(mixed),
+        })
+        await send({'type': 'http.response.body', 'body': b'OK'})
+
+    sent = asyncio.run(
+        run_asgi(CompressMiddleware(small_app), accept_encoding='gzip')
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert start['headers'] == mixed
+
+    skip_headers = [
+        (b'Content-Type', b'image/png'),
+        (b'Content-Length', b'4'),
+        (b'X-MiXeD', b'keep'),
+        (b'Vary', b'Origin'),
+    ]
+
+    async def skip_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': list(skip_headers),
+        })
+        await send({'type': 'http.response.body', 'body': b'data'})
+
+    sent = asyncio.run(
+        run_asgi(CompressMiddleware(skip_app), accept_encoding='gzip')
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert start['headers'] == skip_headers
+
+    pathsend_headers = [
+        (b'Content-Type', b'text/plain'),
+        (b'Content-Length', b'9999'),
+        (b'X-MiXeD', b'keep'),
+        (b'Vary', b'Origin'),
+    ]
+
+    async def pathsend_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': list(pathsend_headers),
+        })
+        await send({'type': 'http.response.pathsend', 'path': '/nonexistent'})
+
+    sent = asyncio.run(
+        run_asgi(
+            CompressMiddleware(pathsend_app),
+            accept_encoding='gzip',
+            pathsend=True,
+        )
+    )
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert start['headers'] == pathsend_headers
+
+
+def test_failing_oneshot_pathsend_fallback_preserves_start():
+    """Raising oneshot must not mutate start; app can fall back to pathsend cleanly."""
+    body = b'x' * 1000
+    start_headers = [
+        (b'content-type', b'text/plain'),
+        (b'content-length', str(len(body)).encode()),
+        (b'x-app', b'v1'),
+    ]
+    start_message: Message = {
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': list(start_headers),
+    }
+    start_snapshot = copy.deepcopy(start_message)
+    forwarded: list[Message] = []
+
+    def oneshot(data: bytes) -> bytes:
+        raise RuntimeError('oneshot boom')
+
+    def create_encoder(content_length: int):
+        raise AssertionError('create_encoder must not be called on terminal body')
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send(start_message)
+        try:
+            await send({'type': 'http.response.body', 'body': body})
+        except RuntimeError:
+            # Fall back to pathsend with the same start dict the app already sent.
+            await send({'type': 'http.response.pathsend', 'path': '/fallback'})
+
+    responder = CompressionResponder(app, 500, 'fake', oneshot, create_encoder)
+
+    async def fake_send(message: Message) -> None:
+        forwarded.append(message)
+
+    async def fake_receive() -> Message:
+        return {'type': 'http.disconnect'}
+
+    scope: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [],
+        'extensions': {'http.response.pathsend': {}},
+    }
+    asyncio.run(responder(scope, fake_receive, fake_send))
+
+    assert [m['type'] for m in forwarded] == [
+        'http.response.start',
+        'http.response.pathsend',
+    ]
+    start = forwarded[0]
+    names = {n.lower() for n, _ in start['headers']}
+    assert b'content-encoding' not in names
+    # No Accept-Encoding Vary injection from a failed commit.
+    vary_vals = [v for n, v in start['headers'] if n.lower() == b'vary']
+    assert not any(b'Accept-Encoding' in v for v in vary_vals)
+    assert start['headers'] == start_headers
+    assert start_message == start_snapshot
+    assert start_message['headers'] == start_headers
+
+
+def test_failing_encoder_factory_pathsend_fallback_preserves_start():
+    """Raising create_encoder must not mutate start; pathsend fallback stays raw."""
+    chunk = b'x' * 1000
+    start_headers = [
+        (b'content-type', b'text/plain'),
+        (b'content-length', b'999999'),
+        (b'Vary', b'Origin'),
+        (b'X-MiXeD', b'keep'),
+    ]
+    start_message: Message = {
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': list(start_headers),
+    }
+    start_snapshot = copy.deepcopy(start_message)
+    forwarded: list[Message] = []
+
+    def oneshot(data: bytes) -> bytes:
+        raise AssertionError('oneshot must not be called on more_body stream-begin')
+
+    def create_encoder(content_length: int):
+        raise RuntimeError(f'factory boom cl={content_length}')
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send(start_message)
+        try:
+            await send({
+                'type': 'http.response.body',
+                'body': chunk,
+                'more_body': True,
+            })
+        except RuntimeError:
+            await send({'type': 'http.response.pathsend', 'path': '/fallback'})
+
+    responder = CompressionResponder(app, 500, 'fake', oneshot, create_encoder)
+
+    async def fake_send(message: Message) -> None:
+        forwarded.append(message)
+
+    async def fake_receive() -> Message:
+        return {'type': 'http.disconnect'}
+
+    scope: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [],
+        'extensions': {'http.response.pathsend': {}},
+    }
+    asyncio.run(responder(scope, fake_receive, fake_send))
+
+    assert [m['type'] for m in forwarded] == [
+        'http.response.start',
+        'http.response.pathsend',
+    ]
+    start = forwarded[0]
+    names = {n.lower() for n, _ in start['headers']}
+    assert b'content-encoding' not in names
+    # Original mixed-case Vary left alone; no Accept-Encoding injection.
+    assert start['headers'] == start_headers
+    assert start_message == start_snapshot
+
+
+@pytest.mark.parametrize('headers_shape', ['generator', 'tuple'])
+def test_scope_headers_materialized_to_list(headers_shape: str):
+    """Raw ASGI: generator/tuple scope headers become a list with every original field."""
+    original = [
+        (b'host', b'example.com'),
+        (b'accept-encoding', b'gzip'),
+        (b'x-custom', b'value'),
+        (b'cookie', b'a=1'),
+    ]
+    seen_inside: dict[str, Any] = {}
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        headers = scope['headers']
+        seen_inside['type'] = type(headers)
+        seen_inside['headers'] = list(headers)
+        body = b'x' * 1000
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'text/plain'),
+                (b'content-length', str(len(body)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    if headers_shape == 'generator':
+        request_headers: Any = (pair for pair in original)
+    else:
+        request_headers = tuple(original)
+
+    sent: list[Message] = []
+
+    async def fake_send(message: Message) -> None:
+        sent.append(message)
+
+    async def fake_receive() -> Message:
+        return {'type': 'http.disconnect'}
+
+    scope: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': request_headers,
+        'extensions': {},
+    }
+    asyncio.run(CompressMiddleware(app)(scope, fake_receive, fake_send))
+
+    assert seen_inside['type'] is list
+    assert seen_inside['headers'] == original
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    headers = {n.lower(): v for n, v in start['headers']}
+    assert headers[b'content-encoding'] == b'gzip'
+
+
+def test_dispatch_multi_ae_second_field_and_latin1_and_remove_all():
+    """Compact AE dispatch matrix: multi-field, latin-1 non-UTF8, remove-all."""
+    # (a) Multiple Accept-Encoding fields; only the SECOND contains a supported coding.
+    seen_ae_a: list[bytes] = []
+
+    async def app_a(scope: Scope, receive: Receive, send: Send) -> None:
+        for name, value in scope['headers']:
+            if name == b'accept-encoding':
+                seen_ae_a.append(value)
+        body = b'x' * 1000
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'text/plain'),
+                (b'content-length', str(len(body)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    sent: list[Message] = []
+
+    async def fake_send(message: Message) -> None:
+        sent.append(message)
+
+    async def fake_receive() -> Message:
+        return {'type': 'http.disconnect'}
+
+    scope_a: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [
+            (b'accept-encoding', b'deflate, identity'),
+            (b'accept-encoding', b'gzip'),
+            (b'host', b'example.com'),
+        ],
+        'extensions': {},
+    }
+    asyncio.run(CompressMiddleware(app_a)(scope_a, fake_receive, fake_send))
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert {n.lower(): v for n, v in start['headers']}[b'content-encoding'] == b'gzip'
+
+    # (b) AE value with a latin-1 non-UTF8 byte alongside 'gzip' still negotiates.
+    sent.clear()
+    latin1_ae = b'gzip, x-\xff-token'
+
+    async def app_b(scope: Scope, receive: Receive, send: Send) -> None:
+        body = b'x' * 1000
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'text/plain'),
+                (b'content-length', str(len(body)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    scope_b: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [(b'accept-encoding', latin1_ae)],
+        'extensions': {},
+    }
+    asyncio.run(CompressMiddleware(app_b)(scope_b, fake_receive, fake_send))
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert {n.lower(): v for n, v in start['headers']}[b'content-encoding'] == b'gzip'
+
+    # (c) remove_accept_encoding=True with multiple AE fields → app sees ZERO.
+    sent.clear()
+    seen_ae_c: list[bytes] = []
+
+    async def app_c(scope: Scope, receive: Receive, send: Send) -> None:
+        for name, value in scope['headers']:
+            if name == b'accept-encoding':
+                seen_ae_c.append(value)
+        body = b'x' * 1000
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'text/plain'),
+                (b'content-length', str(len(body)).encode()),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    scope_c: Scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': '/',
+        'headers': [
+            (b'accept-encoding', b'identity'),
+            (b'accept-encoding', b'gzip'),
+            (b'host', b'example.com'),
+        ],
+        'extensions': {},
+    }
+    asyncio.run(
+        CompressMiddleware(app_c, remove_accept_encoding=True)(
+            scope_c, fake_receive, fake_send
+        )
+    )
+    assert seen_ae_c == []
+    start = next(m for m in sent if m['type'] == 'http.response.start')
+    assert {n.lower(): v for n, v in start['headers']}[b'content-encoding'] == b'gzip'
+
+
 def test_version_is_1_8_0():
     from starlette_compress import __version__
 

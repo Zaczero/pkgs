@@ -9,7 +9,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import ASGIApp
 
 
 class _GzipStreamEncoder:
@@ -22,17 +22,15 @@ class _GzipStreamEncoder:
         out = self._obj.compress(data)
         if flush:
             out += self._obj.flush(zlib.Z_SYNC_FLUSH)
-        if out:
-            yield out
+        return (out,) if out else ()
 
     def finish(self) -> Iterable[bytes]:
         out = self._obj.flush(zlib.Z_FINISH)
-        if out:
-            yield out
+        return (out,) if out else ()
 
 
-class GZipResponder:
-    __slots__ = ('_responder',)
+class GZipResponder(CompressionResponder):
+    __slots__ = ()
 
     def __init__(self, app: ASGIApp, minimum_size: int, level: int) -> None:
         def oneshot(body: bytes) -> bytes:
@@ -41,9 +39,4 @@ class GZipResponder:
         def create_encoder(content_length: int) -> _GzipStreamEncoder:
             return _GzipStreamEncoder(level)
 
-        self._responder = CompressionResponder(
-            app, minimum_size, 'gzip', oneshot, create_encoder
-        )
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._responder(scope, receive, send)
+        super().__init__(app, minimum_size, 'gzip', oneshot, create_encoder)

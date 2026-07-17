@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from starlette.datastructures import MutableHeaders
+
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from typing import Literal
@@ -9,6 +11,30 @@ if TYPE_CHECKING:
     from starlette.types import Message
 
 _SUPPORTED_ENCODINGS = frozenset({'br', 'gzip', 'zstd'})
+_MUTABLE_RESPONSE_HEADERS = frozenset({
+    b'content-encoding',
+    b'content-length',
+    b'vary',
+})
+
+
+def mutable_response_headers(message: Message) -> MutableHeaders:
+    """Return a case-insensitive view, coalescing repeated Vary fields."""
+    raw_headers = message['headers']
+    vary_values: list[bytes] | None = None
+    for index, (name, value) in enumerate(raw_headers):
+        lower_name = name if name.islower() else name.lower()
+        if name != lower_name and lower_name in _MUTABLE_RESPONSE_HEADERS:
+            raw_headers[index] = (lower_name, value)
+        if lower_name == b'vary':
+            if vary_values is None:
+                vary_values = []
+            vary_values.append(value)
+
+    headers = MutableHeaders(raw=raw_headers)
+    if vary_values is not None and len(vary_values) > 1:
+        headers['Vary'] = b', '.join(vary_values).decode('latin-1')
+    return headers
 
 
 def _accepts_encoding_quality(params: list[str]) -> bool:
@@ -35,12 +61,12 @@ def parse_accept_encoding(accept_encoding: str) -> frozenset[str]:
     wildcard = False
 
     for item in accept_encoding.split(','):
-        coding, *params = item.split(';')
+        coding, separator, params = item.partition(';')
         coding = coding.strip().lower()
         if not coding:
             continue
 
-        if _accepts_encoding_quality(params):
+        if not separator or _accepts_encoding_quality(params.split(';')):
             if coding == '*':
                 wildcard = True
             elif coding in _SUPPORTED_ENCODINGS:
@@ -172,8 +198,6 @@ def classify_start_message(
         return 'skip'
 
     content_type: bytes | None = None
-    has_content_range = False
-
     for name, value in message['headers']:
         name = name.lower()
         if name == b'content-encoding':
@@ -184,10 +208,7 @@ def classify_start_message(
         elif name == b'content-type':
             content_type = value
         elif name == b'content-range':
-            has_content_range = True
-
-    if has_content_range:
-        return 'skip'
+            return 'skip'
 
     if content_type is None:
         return 'skip'

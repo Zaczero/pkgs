@@ -8,7 +8,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import ASGIApp
 
 
 class _ZstdStreamEncoder:
@@ -18,21 +18,17 @@ class _ZstdStreamEncoder:
         self._compressor = ZstdCompressor(level)
 
     def feed(self, data: bytes, flush: bool) -> Iterable[bytes]:
-        mode = (
-            ZstdCompressor.FLUSH_BLOCK if flush else ZstdCompressor.CONTINUE
-        )
+        mode = ZstdCompressor.FLUSH_BLOCK if flush else ZstdCompressor.CONTINUE
         out = self._compressor.compress(data, mode)
-        if out:
-            yield out
+        return (out,) if out else ()
 
     def finish(self) -> Iterable[bytes]:
         out = self._compressor.flush(ZstdCompressor.FLUSH_FRAME)
-        if out:
-            yield out
+        return (out,) if out else ()
 
 
-class ZstdResponder:
-    __slots__ = ('_responder',)
+class ZstdResponder(CompressionResponder):
+    __slots__ = ()
 
     def __init__(self, app: ASGIApp, minimum_size: int, level: int) -> None:
         compressor = ZstdCompressor(level)
@@ -43,9 +39,4 @@ class ZstdResponder:
         def create_encoder(content_length: int) -> _ZstdStreamEncoder:
             return _ZstdStreamEncoder(level)
 
-        self._responder = CompressionResponder(
-            app, minimum_size, 'zstd', oneshot, create_encoder
-        )
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._responder(scope, receive, send)
+        super().__init__(app, minimum_size, 'zstd', oneshot, create_encoder)
