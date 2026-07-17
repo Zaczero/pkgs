@@ -42,6 +42,24 @@ async def main():
 asyncio.run(main())
 ```
 
+## Lifecycle
+
+A `Server` owns one serve lifecycle at a time, and is reusable between
+lifecycles:
+
+- **Sequential reuse is supported.** Once a `serve()` call has fully
+  finished — after `shutdown()`, cancellation, or a startup failure — the
+  same `Server` instance can `serve()` again with fresh shutdown state.
+- **Concurrent calls are rejected.** A second `serve()` while one is
+  already running (from any thread or event loop) raises
+  `RuntimeError: this Server already has an active serve() call`.
+- **Cancellation drains gracefully.** Cancelling the task running
+  `serve()` does not abort in-flight work: it triggers the same bounded
+  graceful drain as `shutdown()` (native acceptance stops, cooperative
+  tasks get up to `Config.timeout_graceful_shutdown` seconds), and the
+  `CancelledError` is re-raised only after the drain completes and the
+  listeners are released.
+
 ## Binding to any free port
 
 Bind port `0` and read the kernel-assigned address back from

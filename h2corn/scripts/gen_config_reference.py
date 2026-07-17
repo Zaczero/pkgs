@@ -1,9 +1,15 @@
 """
-Render `docs/configuration.md` directly from the `Config` dataclass metadata.
+Generate the docs-build artifacts that derive from sources outside docs/:
 
-This is the single source of truth: the same `OptionMetadata.doc` strings
-drive the CLI `--help` output, the `H2CORN_*` environment variable list,
-and this docs page. No manual sync required.
+- `configuration.md`, rendered directly from the `Config` dataclass metadata.
+  This is the single source of truth: the same `OptionMetadata.doc` strings
+  drive the CLI `--help` output, the `H2CORN_*` environment variable list,
+  and this docs page. No manual sync required.
+- `assets/benchmarks/*.svg`, mirrored from the canonical benchmark plots in
+  `bench/results/plots/` so `docs/benchmarks.md` can reference them without
+  duplicating them in source control.
+
+Wired as the single mkdocs `gen-files` script in `properdocs.yml`.
 """
 
 from __future__ import annotations
@@ -143,10 +149,12 @@ with mkdocs_gen_files.open('configuration.md', 'w') as fh:
     fh.write(render())
 
 
-# Mirror benchmark plots into the build so docs/benchmarks.md can reference
-# them as if they lived next to the page. The actual files stay in
-# bench/results/plots/ — we never duplicate them in source control.
-_BENCH_PLOTS = Path(__file__).resolve().parents[1] / 'bench' / 'results' / 'plots'
-for svg in sorted(_BENCH_PLOTS.glob('*.svg')):
-    with mkdocs_gen_files.open(f'assets/benchmarks/{svg.name}', 'wb') as fh:
-        fh.write(svg.read_bytes())
+def mirror_benchmark_plots() -> None:
+    """Mirror bench/results/plots/*.svg into the build for docs/benchmarks.md."""
+    plots = Path(__file__).resolve().parents[1] / 'bench' / 'results' / 'plots'
+    for svg in sorted(plots.glob('*.svg')):
+        with mkdocs_gen_files.open(f'assets/benchmarks/{svg.name}', 'wb') as fh:
+            fh.write(svg.read_bytes())
+
+
+mirror_benchmark_plots()

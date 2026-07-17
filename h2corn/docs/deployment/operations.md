@@ -32,9 +32,8 @@ h2corn hello:app --reuse-port
 process can bind the same port: start a new generation during a
 zero-downtime deploy and stop the old one, or run several independently
 managed processes behind one port. Workers of a single server always share
-its listener — the kernel's shared accept queue lets any idle worker pick
-up a connection, which measures faster than per-worker `SO_REUSEPORT`
-hashing. TCP listeners only.
+its listener, so the kernel's shared accept queue lets any idle worker pick
+up a connection. TCP listeners only.
 
 ## Event loop
 
@@ -57,8 +56,8 @@ pip install h2corn[uvloop]
 ```
 
 Unlike a pure-Python server, h2corn runs its accept loop, framing, and
-socket I/O in Rust; the Python loop only schedules your application's
-callbacks. So the loop choice has little effect on throughput.
+socket I/O in Rust; the Python loop schedules the application's callbacks.
+Choose between asyncio and uvloop from measurements of the real application.
 
 ## Free-threaded Python
 
@@ -73,21 +72,26 @@ PyPI publishes distinct `cp3XXt` wheels for supported free-threaded CPython
 releases. Importing h2corn does not silently re-enable the GIL.
 
 Requests are balanced across the loops round-robin, and each request
-runs entirely on one loop. A single process scales across cores with
-shared memory — on a CPU-bound JSON endpoint, four loop threads deliver
-roughly the throughput of three forked workers. On a regular (GIL)
+runs entirely on one loop. Each loop runs a separate ASGI lifespan cycle
+and receives its own lifespan state dictionary. Applications using loop-bound
+resources should create them during lifespan startup; startup and shutdown
+side effects therefore run once per loop and must be safe to repeat.
+
+On a regular (GIL)
 build `loop_threads` above 1 is a no-op — the GIL would serialize the
 loops anyway, so a single loop is used. Combine with `--runtime-threads`
-to scale the I/O side accordingly.
+to scale the I/O side accordingly. Secondary loops require the built-in
+`asyncio` or `uvloop` factory; h2corn rejects multiple loop threads when
+embedded in an unknown custom loop rather than silently changing topology.
 
 `--loop-threads` composes with `--workers`: each forked worker runs its
 own set of loop threads, so `-w 4 --loop-threads 4` is 16 event loops.
-Prefer scaling `loop_threads` first on free-threaded builds (shared
-memory, no per-process duplication of the application), and add workers
-when you want process-level isolation, rolling restarts mid-deploy, or
-`max_requests` recycling. Keep `workers × loop_threads` at or below the
-machine's core count — beyond it the threads contend instead of
-scaling.
+Loop threads share the process heap but require the application and its
+dependencies to support concurrent execution on free-threaded Python. Workers
+provide stronger isolation and independent application state. Choose the mix
+from application behavior and measured throughput, latency, and memory; keep
+`workers × loop_threads` at or below the machine's core count unless a
+workload-specific measurement supports oversubscription.
 
 ## Signals
 

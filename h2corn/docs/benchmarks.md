@@ -1,7 +1,7 @@
 # Benchmarks
 
 Synthetic benchmarks comparing `h2corn` against the common Python ASGI
-servers across the workloads that matter: small JSON GETs, file
+servers across the workloads that matter: small plaintext GETs, file
 serving, streaming, and WebSockets.
 
 The harness lives in [`bench/`](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench)
@@ -10,7 +10,7 @@ and drives the same Starlette application served by each of `h2corn`,
 (HTTP cells) and [k6](https://k6.io/) (WebSocket cells).
 
 !!! note "Local results"
-    The numbers below are from a single development machine —
+    The plots below are from a single development machine —
     representative of relative ordering on a quiet Linux host, not a
     promise about your hardware. Re-run `python bench/bench.py` to
     measure your own environment.
@@ -19,36 +19,35 @@ and drives the same Starlette application served by each of `h2corn`,
 
 Each scenario runs the **same Starlette application** behind every
 server, so any difference in throughput or latency comes from the
-server itself — accept loop, framing, routing, framework overhead —
-not from the application code.
+server stack itself — accept loop, framing, routing, event loop —
+not from the application code. Access logging is enabled on every
+server: that's the deployment shape people actually run.
 
 | Knob                     | Value                                                          |
 | ------------------------ | -------------------------------------------------------------- |
 | Load generator           | [oha](https://github.com/hatoo/oha) (HTTP), [k6](https://k6.io/) (WebSocket) — separate process from the server |
-| Duration per scenario    | 10 s of sustained load                                         |
+| Trials                   | 8 cold starts per server; bar = median, whisker = observed range |
+| Duration per trial       | 1 s warmup, then 10 s of sustained load                        |
 | Concurrent VUs           | 100 (1 000 for streaming POST)                                 |
 | Workers                  | 1 and 4, side-by-side per scenario                             |
 | Transports               | HTTP/1.1 over TCP, HTTP/1.1 over UDS, HTTP/2, WebSocket        |
-| Server side              | `h2corn`, `uvicorn`, `hypercorn`, `gunicorn` (uvicorn workers) |
+| Server side              | `h2corn`, `uvicorn`, `hypercorn`, `gunicorn` (uvicorn workers); access logging on |
 | Reverse proxy            | None — the load generator talks directly to each server        |
 | Servers compared on HTTP/2 | `h2corn` and `hypercorn` only (the other two don't speak HTTP/2) |
 
-Each server starts cold per scenario and is given a moment to settle
-before the load generator begins; both processes run on the same host
-with no CPU pinning or governor tuning. The plots show a single
-observed run — intended to surface relative ordering at a glance, not
-to publish production capacity guidance or validate a performance
-change. Hardware and kernel for the displayed run are recorded as a
-header on each plot.
-
-Hardware and kernel for the displayed run are recorded as a header on
-each plot. To reproduce on your own box, see
-[Reproducing](#reproducing).
+Server and load-generator processes are pinned to separate CPU/cache
+domains on a quiet host, trial order is rotated so host drift can't
+favor one server, and every trial verifies exact responses and worker
+liveness before it counts. Hardware and kernel for the displayed run
+are recorded as a header on each plot; the full evidence contract
+(quiet-CPU gating, generator headroom proof, raw per-trial records) is
+documented in
+[`bench/README.md`](https://github.com/Zaczero/pkgs/blob/main/h2corn/bench/README.md).
 
 ## Headline result
 
-The most representative workload — a small JSON GET endpoint served by
-four workers — looks like this:
+The most representative workload — a small plaintext GET endpoint served
+by four workers — looks like this:
 
 ![HTTP/1 GET, 4 workers](assets/benchmarks/benchmark_http_1_get_4_workers.svg)
 
@@ -89,6 +88,9 @@ Only `h2corn` and `hypercorn` accept HTTP/2 directly.
     ![HTTP/2 GET, 4 workers](assets/benchmarks/benchmark_http_2_get_4_workers.svg)
 
 ## Static file
+
+A 128 KiB Starlette `FileResponse`, using the ASGI
+`http.response.pathsend` extension where the server supports it.
 
 === "HTTP/1, 1 worker"
 
@@ -144,4 +146,6 @@ uv run python bench/bench.py
 ```
 
 The plotting harness drives oha and k6 against each server and renders the
-SVGs above. Generated output lands in `bench/results/`.
+SVGs above. Generated output lands in `bench/results/`; publishing canonical
+results additionally uses the pinned-CPU configuration described in
+[`bench/README.md`](https://github.com/Zaczero/pkgs/blob/main/h2corn/bench/README.md).
