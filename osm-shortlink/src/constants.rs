@@ -1,5 +1,6 @@
 // 64 chars to encode 6 bits.
-pub(crate) const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
+pub(crate) const CHARSET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
 
 pub(crate) const X_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 360.0;
 pub(crate) const Y_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 180.0;
