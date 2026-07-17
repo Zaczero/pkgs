@@ -11,6 +11,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from pyo3stubs.config import StubConfig
@@ -22,6 +23,13 @@ DEFAULT_PYCLASS = re.compile(
     r'\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+(?P<ident>\w+)',
 )
 PYCLASS_NAME_ARG = re.compile(r'\bname\s*=\s*"([^"]+)"')
+
+#: ``#[cfg(test)]`` (other attributes tolerated) followed by an inline module.
+_CFG_TEST_MOD = re.compile(
+    r'#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]'
+    r'(?:\s*#\s*\[[^\]]*\])*'
+    r'\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{',
+)
 
 
 def _pattern_export(match: re.Match[str]) -> tuple[str, str] | None:
@@ -38,21 +46,54 @@ def _pattern_export(match: re.Match[str]) -> tuple[str, str] | None:
     return name, name
 
 
+def _test_module_spans(sanitized: str) -> list[tuple[int, int]]:
+    """Half-open offset spans of ``#[cfg(test)]``-gated inline modules."""
+    spans: list[tuple[int, int]] = []
+    for match in _CFG_TEST_MOD.finditer(sanitized):
+        depth = 1
+        index = match.end()
+        while index < len(sanitized) and depth:
+            if sanitized[index] == '{':
+                depth += 1
+            elif sanitized[index] == '}':
+                depth -= 1
+            index += 1
+        spans.append((match.start(), index))
+    return spans
+
+
+def _file_exports(cfg: StubConfig, text: str) -> Iterator[tuple[str, str]]:
+    """``(rust_ident, py_name)`` pairs from one source file.
+
+    Matches inside ``#[cfg(test)]`` modules are skipped: those types never
+    compile into the shipped extension, so they are not part of the surface.
+    """
+    spans = _test_module_spans(sanitize(text))
+
+    def gated(offset: int) -> bool:
+        return any(start <= offset < end for start, end in spans)
+
+    for match in DEFAULT_PYCLASS.finditer(text):
+        if gated(match.start()):
+            continue
+        name_arg = PYCLASS_NAME_ARG.search(match.group('args') or '')
+        yield match.group('ident'), name_arg.group(1) if name_arg else match.group('ident')
+    for pattern in cfg.pyclass_patterns:
+        for match in pattern.finditer(text):
+            if gated(match.start()):
+                continue
+            export = _pattern_export(match)
+            if export is not None:
+                yield export
+
+
 def pyclass_names(cfg: StubConfig) -> dict[str, str]:
     """Exported Python class name -> defining source path (relative to src)."""
     names: dict[str, str] = {}
     for path in _sources(cfg.src_root):
         rel = path.relative_to(cfg.src_root).as_posix()
-        text = path.read_text()
-        for match in DEFAULT_PYCLASS.finditer(text):
-            name_arg = PYCLASS_NAME_ARG.search(match.group('args') or '')
-            py_name = name_arg.group(1) if name_arg else match.group('ident')
+        for _rust_ident, py_name in _file_exports(cfg, path.read_text()):
             names.setdefault(py_name, rel)
-        for pattern in cfg.pyclass_patterns:
-            for match in pattern.finditer(text):
-                export = _pattern_export(match)
-                if export is not None:
-                    names.setdefault(export[1], rel)
     return names
 
 
@@ -60,16 +101,8 @@ def rust_class_map(cfg: StubConfig) -> dict[str, str]:
     """Rust struct/enum identifier -> exported Python class name."""
     mapping: dict[str, str] = {}
     for path in _sources(cfg.src_root):
-        text = path.read_text()
-        for match in DEFAULT_PYCLASS.finditer(text):
-            name_arg = PYCLASS_NAME_ARG.search(match.group('args') or '')
-            py_name = name_arg.group(1) if name_arg else match.group('ident')
-            mapping.setdefault(match.group('ident'), py_name)
-        for pattern in cfg.pyclass_patterns:
-            for match in pattern.finditer(text):
-                export = _pattern_export(match)
-                if export is not None:
-                    mapping.setdefault(export[0], export[1])
+        for rust_ident, py_name in _file_exports(cfg, path.read_text()):
+            mapping.setdefault(rust_ident, py_name)
     return mapping
 
 

@@ -270,3 +270,26 @@ def test_rust_class_map_honors_pyclass_patterns(tmp_path):
     cfg = make_config(tmp_path, src_text=src, pyclass_patterns=(pattern,))
     assert rust_class_map(cfg)['PyPoint'] == 'Point'
     assert pyclass_names(cfg)['Point'].endswith('lib.rs')
+
+
+def test_rust_scan_skips_cfg_test_modules(tmp_path):
+    """A pyclass inside a ``#[cfg(test)]`` module never ships; the scan skips it."""
+    from pyo3stubs.rust_scan import pyclass_names, rust_class_map
+
+    src = (
+        '#[pyclass]\n'
+        'struct Shipped;\n'
+        '\n'
+        '#[cfg(test)]\n'
+        'mod tests {\n'
+        '    // a "{" inside comments or strings must not break brace matching\n'
+        '    const BRACE: &str = "{";\n'
+        '\n'
+        '    #[pyclass(frozen)]\n'
+        '    struct TestOnlyBenchmark;\n'
+        '}\n'
+    )
+    cfg = make_config(tmp_path, src_text=src)
+    assert set(rust_class_map(cfg)) == {'Shipped'}
+    assert 'TestOnlyBenchmark' not in pyclass_names(cfg)
+    assert pyclass_names(cfg)['Shipped'].endswith('lib.rs')
