@@ -6,6 +6,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import shlex
 import shutil
 import socket
 import sys
@@ -13,29 +14,121 @@ import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, TypeVar, cast
 
-if __package__:
-    from . import compare
-else:
-    import compare
+try:
+    # Not ``from bench import compare``: under direct-script execution the
+    # sibling bench.py shadows the package and raises ImportError instead of
+    # the ModuleNotFoundError this fallback relies on.
+    import bench.compare as compare  # noqa: PLR0402
+    from bench.provenance import (
+        file_identity,
+        git_metadata,
+        result_environment,
+        tool_identity,
+        variant_artifacts,
+        variant_environment_evidence,
+    )
+    from bench.system import (
+        MAX_AMBIENT_CPU_UTILIZATION,
+        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
+        BenchmarkError,
+        benchmark_system_state_matches,
+        capture_system_state,
+        durable_json,
+        pin_benchmark_driver,
+        validate_cpu_roles,
+    )
+except ModuleNotFoundError:  # Direct ``python bench/matrix.py`` execution.
+    import compare  # type: ignore[import-not-found, no-redef]
+    from provenance import (  # type: ignore[import-not-found, no-redef]
+        file_identity,
+        git_metadata,
+        result_environment,
+        tool_identity,
+        variant_artifacts,
+        variant_environment_evidence,
+    )
+    from system import (  # type: ignore[import-not-found, no-redef]
+        MAX_AMBIENT_CPU_UTILIZATION,
+        MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
+        BenchmarkError,
+        benchmark_system_state_matches,
+        capture_system_state,
+        durable_json,
+        pin_benchmark_driver,
+        validate_cpu_roles,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / 'bench/matrix.toml'
+MATRIX_SCHEMA_VERSION = 6
+
+
+class ManifestDefaults(TypedDict):
+    duration: str
+    concurrency: int
+    workers: list[int]
+    loop_threads: list[int]
+
+
+class ManifestFamily(TypedDict):
+    id: str
+    description: str
+    transport: Literal['tcp', 'tls', 'uds']
+    protocol: Literal['h1', 'h2']
+    workload: str
+    path: str
+    load_driver: Literal['oha', 'k6']
+    workers: NotRequired[list[int]]
+    loop_threads: NotRequired[list[int]]
+    duration: NotRequired[str]
+    concurrency: NotRequired[int]
+    method: NotRequired[str]
+    body_size: NotRequired[int]
+    default: NotRequired[bool]
+
+
+class Manifest(TypedDict):
+    schema_version: int
+    defaults: ManifestDefaults
+    families: list[ManifestFamily]
+
+
+_MANIFEST_KEYS = frozenset({'schema_version', 'defaults', 'families'})
+_DEFAULT_KEYS = frozenset({'duration', 'concurrency', 'workers', 'loop_threads'})
+_FAMILY_REQUIRED_KEYS = frozenset({
+    'id',
+    'description',
+    'transport',
+    'protocol',
+    'workload',
+    'path',
+    'load_driver',
+})
+_FAMILY_OPTIONAL_KEYS = frozenset({
+    'workers',
+    'loop_threads',
+    'duration',
+    'concurrency',
+    'method',
+    'body_size',
+    'default',
+})
 
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
     family: str
     description: str
-    transport: str
-    protocol: str
+    transport: Literal['tcp', 'tls', 'uds']
+    protocol: Literal['h1', 'h2']
     workload: str
     path: str
-    load_driver: str
+    load_driver: Literal['oha', 'k6']
     workers: int
     loop_threads: int
     duration: str
@@ -49,64 +142,177 @@ class Scenario:
         return f'{self.family}-w{self.workers}-l{self.loop_threads}'
 
 
-def load_manifest(path: Path) -> tuple[dict[str, Any], tuple[Scenario, ...]]:
-    raw = tomllib.loads(path.read_text())
-    if raw.get('schema_version') != 1:
+def _table(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise TypeError(f'{label} must be a table with string keys')
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _validate_keys(
+    table: dict[str, object],
+    *,
+    required: frozenset[str],
+    optional: frozenset[str] = frozenset(),
+    label: str,
+) -> None:
+    missing = sorted(required - table.keys())
+    if missing:
+        raise ValueError(f'{label} is missing required keys: {missing!r}')
+    unexpected = sorted(table.keys() - required - optional)
+    if unexpected:
+        raise ValueError(f'{label} has unsupported keys: {unexpected!r}')
+
+
+def _string(table: dict[str, object], key: str, label: str) -> str:
+    value = table[key]
+    if not isinstance(value, str):
+        raise TypeError(f'{label}.{key} must be a string')
+    return value
+
+
+def _integer(table: dict[str, object], key: str, label: str) -> int:
+    value = table[key]
+    if type(value) is not int:
+        raise TypeError(f'{label}.{key} must be an integer')
+    return value
+
+
+def _boolean(table: dict[str, object], key: str, label: str) -> bool:
+    value = table[key]
+    if type(value) is not bool:
+        raise TypeError(f'{label}.{key} must be a boolean')
+    return value
+
+
+def _integer_list(table: dict[str, object], key: str, label: str) -> list[int]:
+    value = table[key]
+    if not isinstance(value, list) or any(type(item) is not int for item in value):
+        raise TypeError(f'{label}.{key} must be a list of integers')
+    return value.copy()
+
+
+_ChoiceT = TypeVar('_ChoiceT', bound=str)
+_TRANSPORTS: tuple[Literal['tcp', 'tls', 'uds'], ...] = ('tcp', 'tls', 'uds')
+_PROTOCOLS: tuple[Literal['h1', 'h2'], ...] = ('h1', 'h2')
+_LOAD_DRIVERS: tuple[Literal['oha', 'k6'], ...] = ('oha', 'k6')
+
+
+def _choice(
+    table: dict[str, object],
+    key: str,
+    options: tuple[_ChoiceT, ...],
+    label: str,
+) -> _ChoiceT:
+    value = _string(table, key, label)
+    for option in options:
+        if value == option:
+            return option
+    raise ValueError(f'{label}.{key} is invalid: {value!r}')
+
+
+def _manifest_defaults(value: object) -> ManifestDefaults:
+    label = 'matrix defaults'
+    table = _table(value, label)
+    _validate_keys(table, required=_DEFAULT_KEYS, label=label)
+    return {
+        'duration': _string(table, 'duration', label),
+        'concurrency': _integer(table, 'concurrency', label),
+        'workers': _integer_list(table, 'workers', label),
+        'loop_threads': _integer_list(table, 'loop_threads', label),
+    }
+
+
+def _manifest_family(value: object, index: int) -> ManifestFamily:
+    label = f'matrix family {index}'
+    table = _table(value, label)
+    _validate_keys(
+        table,
+        required=_FAMILY_REQUIRED_KEYS,
+        optional=_FAMILY_OPTIONAL_KEYS,
+        label=label,
+    )
+    family: ManifestFamily = {
+        'id': _string(table, 'id', label),
+        'description': _string(table, 'description', label),
+        'transport': _choice(table, 'transport', _TRANSPORTS, label),
+        'protocol': _choice(table, 'protocol', _PROTOCOLS, label),
+        'workload': _string(table, 'workload', label),
+        'path': _string(table, 'path', label),
+        'load_driver': _choice(table, 'load_driver', _LOAD_DRIVERS, label),
+    }
+    for key in ('workers', 'loop_threads'):
+        if key in table:
+            family[key] = _integer_list(table, key, label)
+    for key in ('duration', 'method'):
+        if key in table:
+            family[key] = _string(table, key, label)
+    for key in ('concurrency', 'body_size'):
+        if key in table:
+            family[key] = _integer(table, key, label)
+    if 'default' in table:
+        family['default'] = _boolean(table, 'default', label)
+    return family
+
+
+def load_manifest(path: Path) -> tuple[Manifest, tuple[Scenario, ...]]:
+    raw = _table(tomllib.loads(path.read_text()), 'matrix manifest')
+    _validate_keys(raw, required=_MANIFEST_KEYS, label='matrix manifest')
+    schema_version = _integer(raw, 'schema_version', 'matrix manifest')
+    if schema_version != 1:
         raise ValueError('matrix manifest schema_version must be 1')
-    defaults = raw.get('defaults')
-    families = raw.get('families')
-    if not isinstance(defaults, dict) or not isinstance(families, list):
-        raise TypeError('matrix manifest requires [defaults] and [[families]]')
+    defaults = _manifest_defaults(raw['defaults'])
+    raw_families = raw['families']
+    if not isinstance(raw_families, list):
+        raise TypeError('matrix manifest.families must be a list of tables')
+    families = [
+        _manifest_family(family, index)
+        for index, family in enumerate(raw_families, start=1)
+    ]
+    manifest: Manifest = {
+        'schema_version': schema_version,
+        'defaults': defaults,
+        'families': families,
+    }
 
     scenarios: list[Scenario] = []
     seen: set[str] = set()
     for family in families:
-        if not isinstance(family, dict):
-            raise TypeError('every matrix family must be a table')
-        family_id = family.get('id')
-        if not isinstance(family_id, str) or not compare.NAME_PATTERN.fullmatch(
-            family_id
-        ):
+        family_id = family['id']
+        if not compare.NAME_PATTERN.fullmatch(family_id):
             raise ValueError(f'invalid matrix family id: {family_id!r}')
-        for workers in family.get('workers', defaults.get('workers', [])):
-            for loop_threads in family.get(
-                'loop_threads', defaults.get('loop_threads', [])
-            ):
+        for workers in family.get('workers', defaults['workers']):
+            for loop_threads in family.get('loop_threads', defaults['loop_threads']):
                 scenario = Scenario(
                     family=family_id,
-                    description=str(family['description']),
-                    transport=str(family['transport']),
-                    protocol=str(family['protocol']),
-                    workload=str(family['workload']),
-                    path=str(family['path']),
-                    load_driver=str(family['load_driver']),
-                    workers=int(workers),
-                    loop_threads=int(loop_threads),
-                    duration=str(family.get('duration', defaults['duration'])),
-                    concurrency=int(family.get('concurrency', defaults['concurrency'])),
-                    method=str(family.get('method', 'GET')),
-                    body_size=int(family.get('body_size', 0)),
-                    default=bool(family.get('default', False))
+                    description=family['description'],
+                    transport=family['transport'],
+                    protocol=family['protocol'],
+                    workload=family['workload'],
+                    path=family['path'],
+                    load_driver=family['load_driver'],
+                    workers=workers,
+                    loop_threads=loop_threads,
+                    duration=family.get('duration', defaults['duration']),
+                    concurrency=family.get('concurrency', defaults['concurrency']),
+                    method=family.get('method', 'GET'),
+                    body_size=family.get('body_size', 0),
+                    default=family.get('default', False)
                     and workers == 1
                     and loop_threads == 1,
                 )
                 if scenario.id in seen:
                     raise ValueError(f'duplicate matrix scenario: {scenario.id}')
-                if scenario.transport not in {'tcp', 'tls', 'uds'}:
-                    raise ValueError(f'{scenario.id}: invalid transport')
-                if scenario.protocol not in {'h1', 'h2'}:
-                    raise ValueError(f'{scenario.id}: invalid protocol')
-                if scenario.load_driver not in {'oha', 'k6'}:
-                    raise ValueError(f'{scenario.id}: invalid load_driver')
                 if (
                     min(scenario.workers, scenario.loop_threads, scenario.concurrency)
                     < 1
                 ):
                     raise ValueError(f'{scenario.id}: topology values must be positive')
+                if scenario.body_size < 0:
+                    raise ValueError(f'{scenario.id}: body_size must not be negative')
                 compare.parse_duration_seconds(scenario.duration)
                 seen.add(scenario.id)
                 scenarios.append(scenario)
-    return raw, tuple(scenarios)
+    return manifest, tuple(scenarios)
 
 
 def _gil_enabled() -> bool:
@@ -162,6 +368,32 @@ def _issue_tls_certificate(directory: Path) -> tuple[Path, Path]:
     certificate.cert_chain_pems[0].write_to_path(cert_path)
     certificate.private_key_pem.write_to_path(key_path)
     return cert_path, key_path
+
+
+def _tls_certificate(directory: Path) -> tuple[Path, Path]:
+    cert_path = directory / 'server.pem'
+    key_path = directory / 'server.key'
+    if cert_path.is_file() and key_path.is_file():
+        return cert_path, key_path
+    if cert_path.exists() or key_path.exists():
+        raise ValueError(
+            f'incomplete reusable TLS identity under {directory}; remove both files'
+        )
+    return _issue_tls_certificate(directory)
+
+
+def _expected_response_body(scenario: Scenario) -> bytes | None:
+    if scenario.load_driver == 'k6':
+        return None
+    if scenario.workload == 'unary':
+        return b'Hello, World!'
+    if scenario.workload == 'stream-upload':
+        return str(scenario.body_size).encode()
+    if scenario.workload == 'stream-download':
+        return b'x' * (128 * 1024)
+    if scenario.workload == 'pathsend':
+        return b'\0' * (128 * 1024)
+    raise ValueError(f'{scenario.id}: no exact response contract for its workload')
 
 
 def _scenario_commands(
@@ -221,9 +453,9 @@ def build_compare_argv(
     ready_scheme = 'https' if secure else 'http'
     command = [
         '--control',
-        f'{control_command.name}={compare.shlex.join(control_command.argv)}',
+        f'{control_command.name}={shlex.join(control_command.argv)}',
         '--candidate',
-        f'{candidate_command.name}={compare.shlex.join(candidate_command.argv)}',
+        f'{candidate_command.name}={shlex.join(candidate_command.argv)}',
         '--url',
         url,
         '--ready-url',
@@ -242,8 +474,14 @@ def build_compare_argv(
         scenario.load_driver,
         '--method',
         scenario.method,
+        '--expected-workers',
+        str(scenario.workers),
         '--output',
         str(output),
+        '--identity-input',
+        str(args.manifest),
+        '--identity-input',
+        str(Path(__file__)),
     ]
     if scenario.protocol == 'h2':
         command.append('--http2')
@@ -258,25 +496,39 @@ def build_compare_argv(
         ])
     if scenario.body_size:
         command.extend(['--body', 'x' * scenario.body_size])
+    if (expected_body := _expected_response_body(scenario)) is not None:
+        command.extend([
+            '--expected-body-sha256',
+            hashlib.sha256(expected_body).hexdigest(),
+            '--expected-body-size',
+            str(len(expected_body)),
+        ])
     if args.server_cpus:
         command.extend(['--server-cpus', args.server_cpus])
     if args.load_cpus:
         command.extend(['--load-cpus', args.load_cpus])
+    if args.management_cpus:
+        command.extend(['--management-cpus', args.management_cpus])
+    command.extend(['--load-warmup-duration', args.load_warmup_duration])
+    command.extend(['--max-load-utilization', str(args.max_load_utilization)])
+    command.extend([
+        '--ambient-cpu-probe-seconds',
+        str(args.ambient_cpu_probe_seconds),
+        '--max-ambient-cpu-utilization',
+        str(args.max_ambient_cpu_utilization),
+        '--max-ambient-single-cpu-utilization',
+        str(args.max_ambient_single_cpu_utilization),
+    ])
+    if getattr(args, 'allow_variant_environment_drift', False):
+        command.append('--allow-variant-environment-drift')
     return command
-
-
-def _atomic_write(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
-    temporary.replace(path)
 
 
 def _is_complete(path: Path, expected_identity: dict[str, Any]) -> bool:
     try:
         record = json.loads(path.read_text())
         return (
-            record.get('schema_version') == 2
+            record.get('schema_version') == compare.COMPARISON_SCHEMA_VERSION
             and record.get('status') == 'complete'
             and record.get('comparison_identity') == expected_identity
         )
@@ -304,6 +556,31 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument('--seed', type=int, default=compare.DEFAULT_SEED)
     parser.add_argument('--server-cpus')
     parser.add_argument('--load-cpus')
+    parser.add_argument('--management-cpus')
+    parser.add_argument(
+        '--load-warmup-duration', default=compare.DEFAULT_LOAD_WARMUP_DURATION
+    )
+    parser.add_argument(
+        '--max-load-utilization',
+        type=float,
+        default=compare.MAX_LOAD_UTILIZATION,
+    )
+    parser.add_argument(
+        '--ambient-cpu-probe-seconds',
+        type=float,
+        default=compare.DEFAULT_AMBIENT_CPU_PROBE_SECONDS,
+    )
+    parser.add_argument(
+        '--max-ambient-cpu-utilization',
+        type=float,
+        default=MAX_AMBIENT_CPU_UTILIZATION,
+    )
+    parser.add_argument(
+        '--max-ambient-single-cpu-utilization',
+        type=float,
+        default=MAX_AMBIENT_SINGLE_CPU_UTILIZATION,
+    )
+    parser.add_argument('--allow-variant-environment-drift', action='store_true')
     parser.add_argument('--port-start', type=int, default=18080)
     parser.add_argument(
         '--runtime-gil',
@@ -329,18 +606,157 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             compare.parse_duration_seconds(args.duration)
         except argparse.ArgumentTypeError as error:
             parser.error(str(error))
+    try:
+        compare.parse_duration_seconds(args.load_warmup_duration)
+    except argparse.ArgumentTypeError as error:
+        parser.error(str(error))
     if args.concurrency is not None and args.concurrency < 1:
         parser.error('--concurrency must be positive')
-    if args.trials < 5 or args.warmups < 1:
-        parser.error('use at least five trials and one warmup')
+    if args.trials < 6 or args.trials % 2 or args.warmups < 1:
+        parser.error('use an even number of at least six trials and one warmup')
     if not 1 <= args.port_start <= 65_535:
         parser.error('--port-start must be in [1, 65535]')
-    for value in (args.server_cpus, args.load_cpus):
+    if not 0.0 < args.max_load_utilization < 1.0:
+        parser.error('--max-load-utilization must be in (0, 1)')
+    if args.ambient_cpu_probe_seconds <= 0.0:
+        parser.error('--ambient-cpu-probe-seconds must be positive')
+    if not 0.0 < args.max_ambient_cpu_utilization <= 2.0:
+        parser.error('--max-ambient-cpu-utilization must be in (0, 2]')
+    if not 0.0 < args.max_ambient_single_cpu_utilization <= 1.0:
+        parser.error('--max-ambient-single-cpu-utilization must be in (0, 1]')
+    for value in (args.server_cpus, args.load_cpus, args.management_cpus):
         if value is not None:
             compare.parse_cpu_set(value)
+    roles = (args.server_cpus, args.load_cpus, args.management_cpus)
+    if any(role is not None for role in roles) and any(role is None for role in roles):
+        parser.error(
+            'CPU affinity requires --server-cpus, --load-cpus, and --management-cpus'
+        )
+    if args.management_cpus is not None:
+        management_cpus = compare.parse_cpu_set(args.management_cpus)
+        if len(management_cpus) != 1:
+            parser.error('--management-cpus requires exactly one CPU')
+    if all(role is not None for role in roles):
+        server_cpus = set(compare.parse_cpu_set(cast('str', args.server_cpus)))
+        load_cpus = set(compare.parse_cpu_set(cast('str', args.load_cpus)))
+        management_cpus = set(compare.parse_cpu_set(cast('str', args.management_cpus)))
+        overlap = (server_cpus & load_cpus) | (
+            management_cpus & (server_cpus | load_cpus)
+        )
+        if overlap:
+            parser.error('server/load/management CPU sets must be disjoint')
     timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%S.%fZ')
     args.output_dir = args.output_dir or ROOT / 'bench/results/matrix' / timestamp
     return args
+
+
+def _matrix_identity(
+    args: argparse.Namespace,
+    selected: Sequence[Scenario],
+    tls_paths: tuple[Path, Path] | None,
+) -> dict[str, Any]:
+    control_artifacts = variant_artifacts(args.control)
+    candidate_artifacts = variant_artifacts(args.candidate)
+    variant_environment = variant_environment_evidence(
+        control_artifacts,
+        candidate_artifacts,
+        allow_drift=args.allow_variant_environment_drift,
+    )
+    input_paths = [
+        args.manifest,
+        Path(__file__),
+        Path(compare.__file__),
+        ROOT / 'bench/provenance.py',
+        ROOT / 'bench/system.py',
+        ROOT / 'bench/bench_app.py',
+        ROOT / 'bench/k6/ws.js',
+    ]
+    if tls_paths is not None:
+        input_paths.extend(tls_paths)
+    inputs = {
+        identity['path']: identity
+        for path in input_paths
+        if (identity := file_identity(path))
+    }
+    server_cpus = compare.parse_cpu_set(args.server_cpus) if args.server_cpus else None
+    load_cpus = compare.parse_cpu_set(args.load_cpus) if args.load_cpus else None
+    management_cpus = (
+        compare.parse_cpu_set(args.management_cpus) if args.management_cpus else None
+    )
+    benchmark_system = capture_system_state(server_cpus, load_cpus, management_cpus)
+    validate_cpu_roles(server_cpus, load_cpus, management_cpus, benchmark_system)
+    return {
+        'selection': [scenario.id for scenario in selected],
+        'manifest': str(args.manifest.resolve()),
+        'inputs': inputs,
+        'control': {
+            'name': args.control.name,
+            'argv': list(args.control.argv),
+            'artifacts': control_artifacts,
+        },
+        'candidate': {
+            'name': args.candidate.name,
+            'argv': list(args.candidate.argv),
+            'artifacts': candidate_artifacts,
+        },
+        'variant_environment': variant_environment,
+        'load_tools': {
+            'oha': tool_identity('oha', ('--version',)),
+            'k6': tool_identity('k6', ('version',)),
+        },
+        'settings': {
+            'duration': args.duration,
+            'concurrency': args.concurrency,
+            'trials': args.trials,
+            'warmups': args.warmups,
+            'seed': args.seed,
+            'server_cpus': args.server_cpus,
+            'load_cpus': args.load_cpus,
+            'management_cpus': args.management_cpus,
+            'load_warmup_duration': args.load_warmup_duration,
+            'maximum_load_utilization': args.max_load_utilization,
+            'ambient_cpu_probe_seconds': args.ambient_cpu_probe_seconds,
+            'maximum_ambient_cpu_utilization': args.max_ambient_cpu_utilization,
+            'maximum_ambient_single_cpu_utilization': (
+                args.max_ambient_single_cpu_utilization
+            ),
+            'allow_variant_environment_drift': (args.allow_variant_environment_drift),
+            'host_noise_mode': compare.host_noise_mode(
+                args.server_cpus,
+                args.max_ambient_cpu_utilization,
+                args.max_ambient_single_cpu_utilization,
+            ),
+            'port_start': args.port_start,
+            'runtime_gil': args.runtime_gil,
+        },
+        'runtime_environment': result_environment(),
+        'benchmark_system': benchmark_system,
+        'source': git_metadata(),
+    }
+
+
+def _verify_matrix_identity(
+    args: argparse.Namespace,
+    selected: Sequence[Scenario],
+    tls_paths: tuple[Path, Path] | None,
+    frozen: dict[str, Any],
+) -> None:
+    current = _matrix_identity(args, selected, tls_paths)
+    frozen_system = frozen['benchmark_system']
+    current_system = current['benchmark_system']
+    frozen_without_system = {
+        key: value for key, value in frozen.items() if key != 'benchmark_system'
+    }
+    current_without_system = {
+        key: value for key, value in current.items() if key != 'benchmark_system'
+    }
+    if (
+        frozen_without_system != current_without_system
+        or not benchmark_system_state_matches(frozen_system, current_system)
+    ):
+        raise BenchmarkError(
+            'frozen matrix identity changed during execution; refusing mixed evidence'
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -363,38 +779,66 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f'{marker} {scenario.id}: {scenario.description}{suffix}')
         return 0
 
+    management_cpus = (
+        compare.parse_cpu_set(args.management_cpus) if args.management_cpus else None
+    )
+    try:
+        pin_benchmark_driver(management_cpus)
+    except BenchmarkError as error:
+        raise SystemExit(str(error)) from error
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    tls_paths: tuple[Path, Path] | None = None
+    if any(
+        scenario.transport == 'tls'
+        and unsupported_reason(scenario, gil_enabled=gil_enabled) is None
+        for scenario in selected
+    ):
+        tls_paths = _tls_certificate(args.output_dir / 'tls')
+    try:
+        matrix_identity = _matrix_identity(args, selected, tls_paths)
+    except BenchmarkError as error:
+        raise SystemExit(str(error)) from error
     matrix_path = args.output_dir / 'matrix.json'
+    noise_mode = compare.host_noise_mode(
+        args.server_cpus,
+        args.max_ambient_cpu_utilization,
+        args.max_ambient_single_cpu_utilization,
+    )
+    variant_environment = matrix_identity['variant_environment']
+    # The frozen matrix_identity is the single stored copy of the selection,
+    # variants, environment evidence, and host-noise settings.
     record: dict[str, Any] = {
-        'schema_version': 1,
+        'schema_version': MATRIX_SCHEMA_VERSION,
         'status': 'dry-run' if args.dry_run else 'running',
         'created_at': datetime.now(UTC).isoformat(),
         'manifest': str(args.manifest),
         'manifest_sha256': hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         'manifest_data': raw_manifest,
-        'variants': {
-            'control': {'name': args.control.name, 'argv': list(args.control.argv)},
-            'candidate': {
-                'name': args.candidate.name,
-                'argv': list(args.candidate.argv),
-            },
-        },
-        'selection': [scenario.id for scenario in selected],
+        'matrix_identity': matrix_identity,
         'scenarios': {},
     }
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    tls_paths: tuple[Path, Path] | None = None
     failed = False
     for index, scenario in enumerate(selected):
+        _verify_matrix_identity(args, selected, tls_paths, matrix_identity)
         output = args.output_dir / f'{scenario.id}.json'
         socket_path = args.output_dir / f'{scenario.id}.sock'
         reason = unsupported_reason(scenario, gil_enabled=gil_enabled)
         if reason is not None:
-            record['scenarios'][scenario.id] = {'status': 'skipped', 'reason': reason}
-            _atomic_write(matrix_path, record)
+            record['scenarios'][scenario.id] = {
+                'status': 'skipped',
+                'host_noise_mode': noise_mode,
+                'variant_environment_mode': variant_environment['mode'],
+                'reason': reason,
+            }
+            durable_json(matrix_path, record)
             continue
-        if scenario.transport == 'tls' and tls_paths is None:
-            tls_paths = _issue_tls_certificate(args.output_dir / 'tls')
-        cert, key = tls_paths if scenario.transport == 'tls' else (None, None)
+        if scenario.transport == 'tls':
+            if tls_paths is None:
+                raise RuntimeError('supported TLS scenario has no frozen certificate')
+            cert, key = tls_paths
+        else:
+            cert, key = None, None
         compare_argv = build_compare_argv(
             scenario,
             args.control,
@@ -410,6 +854,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_identity = compare.comparison_identity(compare_args)
         entry = {
             'status': 'planned',
+            'host_noise_mode': noise_mode,
+            'variant_environment_mode': variant_environment['mode'],
             'result': str(output),
             'compare_argv': compare_argv,
         }
@@ -418,15 +864,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             entry['status'] = 'resumed-complete'
         elif not args.dry_run:
             entry['status'] = 'running'
-            _atomic_write(matrix_path, record)
+            durable_json(matrix_path, record)
             return_code = compare.main(compare_argv)
             entry['status'] = 'complete' if return_code == 0 else 'failed'
             failed |= return_code != 0
-        _atomic_write(matrix_path, record)
+        durable_json(matrix_path, record)
 
+    _verify_matrix_identity(args, selected, tls_paths, matrix_identity)
     record['status'] = 'failed' if failed else 'dry-run' if args.dry_run else 'complete'
     record['completed_at'] = datetime.now(UTC).isoformat()
-    _atomic_write(matrix_path, record)
+    durable_json(matrix_path, record)
+    if noise_mode == 'diagnostic-unpinned':
+        print(
+            'host_noise_mode: DIAGNOSTIC_UNPINNED '
+            '(no role-aware ambient/interference gate)'
+        )
+    elif noise_mode == 'diagnostic-pinned-noisy':
+        print(
+            'host_noise_mode: DIAGNOSTIC_PINNED_NOISY '
+            '(CPU roles and interference were recorded, but relaxed limits do not '
+            'support publication-grade claims)'
+        )
+    if variant_environment['mode'] == 'confounded-opt-out':
+        print(
+            'variant_environment_mode: CONFOUNDED_OPT_OUT '
+            '(Python runtime or shared dependencies differ)'
+        )
     print(f'matrix evidence: {matrix_path}')
     return int(failed)
 

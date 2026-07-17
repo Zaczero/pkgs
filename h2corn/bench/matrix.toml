@@ -4,6 +4,8 @@ schema_version = 1
 duration = "5s"
 concurrency = 100
 workers = [1, 4]
+# These dimensions expand as a Cartesian product. The w4-l4 cells therefore
+# need 16 server execution lanes for a non-oversubscribed topology.
 loop_threads = [1, 4]
 
 [[families]]
@@ -54,25 +56,25 @@ load_driver = "oha"
 
 [[families]]
 id = "h1-tcp-stream-upload"
-description = "HTTP/1.1 streaming request consumption"
+description = "HTTP/1.1 64 KiB streaming request consumption"
 transport = "tcp"
 protocol = "h1"
 workload = "stream-upload"
-path = "/streaming-post"
+path = "/streaming-post-fast"
 load_driver = "oha"
 method = "POST"
-body_size = 16384
+body_size = 65536
 
 [[families]]
 id = "h2-tcp-stream-upload"
-description = "HTTP/2 streaming request consumption"
+description = "HTTP/2 64 KiB streaming request consumption"
 transport = "tcp"
 protocol = "h2"
 workload = "stream-upload"
-path = "/streaming-post"
+path = "/streaming-post-fast"
 load_driver = "oha"
 method = "POST"
-body_size = 16384
+body_size = 65536
 
 [[families]]
 id = "h1-tcp-stream-download"

@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -24,6 +25,11 @@ ensure_file_response_payload()
 
 async def homepage(request):
     return Response(b'Hello, World!', media_type='text/plain')
+
+
+async def worker_pid(request):
+    """Expose process identity so the harness can prove every worker is serving."""
+    return Response(str(os.getpid()).encode(), media_type='text/plain')
 
 
 async def static_file(request):
@@ -75,6 +81,7 @@ async def websocket_endpoint(websocket):
 app = Starlette(
     routes=[
         Route('/', homepage),
+        Route('/__bench/worker-pid', worker_pid),
         Route('/static-file', static_file),
         Route('/streaming-post', streaming_post, methods=['POST']),
         Route('/streaming-post-fast', streaming_post_fast, methods=['POST']),
