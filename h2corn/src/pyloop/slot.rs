@@ -277,10 +277,7 @@ mod tests {
             });
 
             assert!(
-                matches!(
-                    &*slot.state.lock(),
-                    SlotState::Taken | SlotState::Abandoned
-                ),
+                matches!(&*slot.state.lock(), SlotState::Taken | SlotState::Abandoned),
                 "both racing transitions completed"
             );
         }

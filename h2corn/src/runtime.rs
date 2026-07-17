@@ -287,7 +287,10 @@ impl RequestAdmission {
 /// decrements the tracker and wakes teardown. Teardown's `Arc::try_unwrap`
 /// therefore never observes a guard-held owner after the tracker drains.
 pub(crate) struct RequestTaskGuard {
-    #[expect(dead_code, reason = "RAII: settles admission state in field order on drop")]
+    #[expect(
+        dead_code,
+        reason = "RAII: settles admission state in field order on drop"
+    )]
     admission: RequestAdmission,
     app: AppRuntimeHandle,
     #[expect(dead_code, reason = "RAII: wakes teardown last, after the owner above")]
@@ -975,7 +978,7 @@ mod tests {
 
     use super::{
         AppRuntimeHandle, H2InputCreditQueue, RequestAdmission, RequestCompletion,
-        RequestSettlement, ScopedOwnerTracker, RequestTaskGuard, RuntimeLimits,
+        RequestSettlement, RequestTaskGuard, RuntimeLimits, ScopedOwnerTracker,
     };
     use crate::h2_frame::StreamId;
     use crate::pyloop::TaskSlot;
@@ -1145,7 +1148,10 @@ mod tests {
 
         let mut wait = Box::pin(app.scoped_owners.wait());
         let first_poll = std::future::poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx))).await;
-        assert!(first_poll.is_pending(), "an owner-holding child pins teardown");
+        assert!(
+            first_poll.is_pending(),
+            "an owner-holding child pins teardown"
+        );
 
         drop(orphaned_child_context);
         wait.await;

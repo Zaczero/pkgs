@@ -35,9 +35,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyDictMethods};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, write};
-pub(crate) use slot::{
-    AcknowledgedSlotFuture, SlotDropAck, SlotDropWait, SlotFuture, TaskSlot,
-};
+pub(crate) use slot::{AcknowledgedSlotFuture, SlotDropAck, SlotDropWait, SlotFuture, TaskSlot};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 

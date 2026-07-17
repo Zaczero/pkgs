@@ -39,9 +39,8 @@ Server and load-generator processes are pinned to separate CPU/cache
 domains on a quiet host, trial order is rotated so host drift can't
 favor one server, and every trial verifies exact responses and worker
 liveness before it counts. Hardware and kernel for the displayed run
-are recorded as a header on each plot; the full evidence contract
-(quiet-CPU gating, generator headroom proof, raw per-trial records) is
-documented in
+are recorded as a header on each plot; the full methodology
+(generator headroom proof, raw per-trial records) is documented in
 [`bench/README.md`](https://github.com/Zaczero/pkgs/blob/main/h2corn/bench/README.md).
 
 ## Headline result
@@ -146,6 +145,6 @@ uv run python bench/bench.py
 ```
 
 The plotting harness drives oha and k6 against each server and renders the
-SVGs above. Generated output lands in `bench/results/`; publishing canonical
-results additionally uses the pinned-CPU configuration described in
-[`bench/README.md`](https://github.com/Zaczero/pkgs/blob/main/h2corn/bench/README.md).
+SVGs above. Generated output lands in `bench/results/`; canonical plots are
+replaced only by a full `--publish` run
+([`bench/README.md`](https://github.com/Zaczero/pkgs/blob/main/h2corn/bench/README.md)).
