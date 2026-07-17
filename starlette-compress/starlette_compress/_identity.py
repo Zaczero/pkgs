@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from starlette.datastructures import MutableHeaders
 
-from starlette_compress._utils import is_start_message_satisfied
+from starlette_compress._utils import classify_start_message
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+_INIT = 0
+_PENDING = 1
+_COMMITTED = 2
+_PASSTHROUGH = 3
 
 
 class IdentityResponder:
@@ -20,51 +25,79 @@ class IdentityResponder:
         self.minimum_size = minimum_size
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        state = _INIT
         start_message: Message | None = None
-        headers_set: bool = False
+        streaming = False
+        pathsend_capable = 'http.response.pathsend' in scope.get('extensions', {})
 
         async def wrapper(message: Message) -> None:
-            nonlocal start_message, headers_set
+            nonlocal state, start_message, streaming
 
             message_type: str = message['type']
 
-            # handle start message
             if message_type == 'http.response.start':
-                if start_message is not None:
+                if state != _INIT:
                     raise AssertionError(
                         'Unexpected repeated http.response.start message'
                     )
 
-                if is_start_message_satisfied(message):
-                    # capture start message and wait for response body
-                    start_message = message
-                    return
-                else:
+                verdict = classify_start_message(message)
+                if verdict == 'skip':
+                    state = _PASSTHROUGH
                     await send(message)
                     return
 
-            # skip if start message is not satisfied or unknown message type
-            if start_message is None or message_type != 'http.response.body':
-                if start_message is not None:
-                    await send(start_message)
-                    start_message = None
+                streaming = verdict == 'streaming'
+
+                # Streaming types without pathsend: send start immediately so
+                # clients see headers before the first body; pass messages through.
+                if streaming and not pathsend_capable:
+                    headers = MutableHeaders(raw=message['headers'])
+                    headers.add_vary_header('Accept-Encoding')
+                    # Content-Length is preserved for identity
+                    state = _COMMITTED
+                    await send(message)
+                    return
+
+                start_message = message
+                state = _PENDING
+                return
+
+            if state in (_PASSTHROUGH, _COMMITTED):
+                # Committed identity: pure passthrough, including empty bodies
                 await send(message)
                 return
 
-            if not headers_set:
+            if state == _PENDING:
+                assert start_message is not None
+
+                if message_type != 'http.response.body':
+                    pending = start_message
+                    start_message = None
+                    state = _PASSTHROUGH
+                    await send(pending)
+                    await send(message)
+                    return
+
                 body: bytes = message.get('body', b'')
                 more_body: bool = message.get('more_body', False)
 
-                # skip compression for small responses
-                if not more_body and len(body) < self.minimum_size:
-                    await send(start_message)
+                if not streaming and not more_body and len(body) < self.minimum_size:
+                    pending = start_message
+                    start_message = None
+                    state = _PASSTHROUGH
+                    await send(pending)
                     await send(message)
                     return
 
                 headers = MutableHeaders(raw=start_message['headers'])
                 headers.add_vary_header('Accept-Encoding')
-                await send(start_message)
-                headers_set = True
+                pending = start_message
+                start_message = None
+                state = _COMMITTED
+                await send(pending)
+                await send(message)
+                return
 
             await send(message)
 

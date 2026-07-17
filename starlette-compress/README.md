@@ -50,7 +50,7 @@ app.add_middleware(CompressMiddleware)
 
 ### Changing Minimum Response Size
 
-Control the minimum size of the response to compress. By default, responses must be at least 500 bytes to be compressed.
+Control the minimum size of the response to compress. By default, responses must be at least 500 bytes to be compressed. Streaming-registered types (e.g. `text/event-stream`) bypass this threshold and are always compressed when accepted.
 
 ```py
 # Starlette
@@ -86,6 +86,29 @@ from starlette_compress import add_compress_type, remove_compress_type
 add_compress_type("application/my-custom-type")
 remove_compress_type("application/json")
 ```
+
+### Server-Sent Events (SSE)
+
+`text/event-stream` responses are compressed by default. The middleware flushes the compressor after each non-empty ASGI body message (it does not parse SSE frames — two events in one message share one flush; empty continuation messages are skipped). Streaming types bypass `minimum_size`. The middleware forwards `http.response.start` immediately so clients such as `EventSource` can open before the first event — though ASGI servers may still buffer that start until the first body. On pathsend-capable scopes, start is deferred to the first content message (body or pathsend) so a file send is never advertised as compressed.
+
+To opt out:
+
+```py
+from starlette_compress import remove_compress_type
+
+remove_compress_type("text/event-stream")
+```
+
+NDJSON / JSONL are **not registered by default** (they are neither compressed nor treated as streaming until added). Opt in when you need compression and/or low-latency line delivery:
+
+```py
+from starlette_compress import add_compress_type
+
+add_compress_type("application/x-ndjson", streaming=True)
+add_compress_type("application/jsonl", streaming=True)
+```
+
+Flush guarantees that compressed bytes are available from the codec after each non-empty message; it does not control proxy or CDN buffering (this package does not set `X-Accel-Buffering` or similar).
 
 ### Dropping Accept-Encoding Header
 

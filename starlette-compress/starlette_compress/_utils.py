@@ -4,6 +4,8 @@ from functools import lru_cache
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
+    from typing import Literal
+
     from starlette.types import Message
 
 _SUPPORTED_ENCODINGS = frozenset({'br', 'gzip', 'zstd'})
@@ -109,6 +111,7 @@ _compress_content_types: set[str] = {
     'text/cache-manifest',
     'text/calendar',
     'text/css',
+    'text/event-stream',
     'text/html',
     'text/javascript',
     'text/js',
@@ -126,20 +129,50 @@ _compress_content_types: set[str] = {
     'text/xml',
 }
 
+# Content types that commit early, bypass minimum_size, and flush per ASGI body message.
+_streaming_content_types: set[str] = {
+    'text/event-stream',
+}
 
-def add_compress_type(content_type: str) -> None:
-    """Add a new content-type to be compressed."""
+
+def add_compress_type(content_type: str, *, streaming: bool = False) -> None:
+    """Add a new content-type to be compressed.
+
+    When ``streaming=True``, also register the type for early commit, minimum_size
+    bypass, and per-message compressor flush. A plain re-add does not demote an
+    existing streaming membership.
+    """
+    content_type = content_type.lower()
     _compress_content_types.add(content_type)
+    if streaming:
+        _streaming_content_types.add(content_type)
 
 
 def remove_compress_type(content_type: str) -> None:
-    """Remove a content-type from being compressed."""
+    """Remove a content-type from being compressed (and from streaming types)."""
+    content_type = content_type.lower()
     _compress_content_types.discard(content_type)
+    _streaming_content_types.discard(content_type)
 
 
-def is_start_message_satisfied(message: Message) -> bool:
-    """Check if response should be compressed based on the start message."""
+def classify_start_message(
+    message: Message,
+) -> Literal['skip', 'buffered', 'streaming']:
+    """Classify whether a response start should be compressed.
+
+    Returns:
+        ``skip`` — leave the response untouched (wrong status, range, precompressed,
+        or non-compressible content type).
+        ``buffered`` — compress with deferred start (ordinary types).
+        ``streaming`` — compress with early-commit / per-message flush policy.
+    """
+    status: int = message.get('status', 200)
+    # 1xx informational, 204 No Content, 205 Reset Content, 304 Not Modified
+    if status < 200 or status in (204, 205, 304):
+        return 'skip'
+
     content_type: bytes | None = None
+    has_content_range = False
 
     for name, value in message['headers']:
         name = name.lower()
@@ -147,15 +180,26 @@ def is_start_message_satisfied(message: Message) -> bool:
             for encoding in value.split(b','):
                 encoding = encoding.strip()
                 if encoding and encoding.lower() != b'identity':
-                    return False
+                    return 'skip'
         elif name == b'content-type':
             content_type = value
+        elif name == b'content-range':
+            has_content_range = True
+
+    if has_content_range:
+        return 'skip'
 
     if content_type is None:
-        return False
+        return 'skip'
 
     basic_content_type = content_type.split(b';', maxsplit=1)[0].strip()
     try:
-        return basic_content_type.decode('ascii') in _compress_content_types
+        media_type = basic_content_type.decode('ascii').lower()
     except UnicodeDecodeError:
-        return False
+        return 'skip'
+
+    if media_type not in _compress_content_types:
+        return 'skip'
+    if media_type in _streaming_content_types:
+        return 'streaming'
+    return 'buffered'

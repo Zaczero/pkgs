@@ -15,7 +15,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-__version__ = '1.7.1'
+__version__ = '1.8.0'
 
 
 class CompressMiddleware:
@@ -49,6 +49,7 @@ class CompressMiddleware:
 
         :param app: ASGI application to wrap.
         :param minimum_size: Minimum response size in bytes to apply compression.
+            Streaming content types (e.g. ``text/event-stream``) bypass this threshold.
         :param zstd: Enable Zstandard compression.
         :param zstd_level: Zstandard compression level. Valid values are all negative integers (faster) to 22 (best).
         :param brotli: Enable Brotli compression.
