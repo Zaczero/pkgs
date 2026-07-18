@@ -487,9 +487,8 @@ gometry/dev/
 
 # Generated license files (any released package). Rendered at build time by
 # .github/scripts/gen_licenses.py from each pyproject's SPDX expression (own
-# license) and the Cargo dependency graph (rusty third-party bundle), then
-# bundled into the wheel/sdist via the PEP 639 default license-files glob —
-# never committed. Packages with committed LICEN[CS]E* files (e.g. gometry)
-# skip own-license generation.
-**/LICENSE.md
-**/LICENSE-THIRD-PARTY.md
+# license, one file per OR choice) and the Cargo dependency graph (rusty
+# third-party bundle), then bundled into the wheel/sdist via the PEP 639
+# default license-files glob. Every generated license file is LICENSE*.md;
+# no license text is ever committed.
+**/LICENSE*.md
