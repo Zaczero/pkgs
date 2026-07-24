@@ -10,6 +10,7 @@ on:
         options:
           - blurhash-rs
           - githead
+          - gometry
           - h2corn
           - httpx-secure
           - jinja2-htmlmin

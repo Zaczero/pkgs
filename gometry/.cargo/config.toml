@@ -1,0 +1,23 @@
+[patch.crates-io]
+geographiclib-rs = { path = "vendor/geographiclib-rs" }
+h3o = { path = "vendor/h3o" }
+proj-sys = { path = "vendor/proj-sys" }
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = "-C target-cpu=x86-64-v2"
+
+[target.x86_64-unknown-linux-musl]
+rustflags = "-C target-cpu=x86-64-v2"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = "-C target-cpu=x86-64-v2"
+
+[target.x86_64-apple-darwin]
+rustflags = "-C target-cpu=x86-64-v2"
+
+[profile.release]
+trim-paths = "all"
+strip = "symbols"
+
+[unstable]
+trim-paths = true

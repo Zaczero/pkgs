@@ -1,0 +1,76 @@
+[package]
+name = "gometry"
+version = "1.0.0"
+edition = "2024"
+description = "Rust-first geometry, CRS, geodesy, discrete grids, and spatial indexing for Python"
+readme = "README.md"
+repository = "https://github.com/Zaczero/pkgs/tree/main/gometry"
+license = "Apache-2.0 OR MIT"
+publish = false
+autobenches = false
+include = [
+  "/src/**",
+  "/vendor/geographiclib-rs/**",
+  "/vendor/h3o/**",
+  "/vendor/proj-sys/**",
+  "/.cargo/config.toml",
+  "/Cargo.toml",
+  "/README.md",
+  "/LICENSE-*",
+  "/rust-toolchain.toml"
+]
+
+[lib]
+crate-type = ["cdylib"]
+name = "gometry"
+
+
+
+[dependencies]
+ahash = { version = "0.8.12", default-features = false, features = [
+  "runtime-rng",
+  "std"
+] }
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
+delaunator = { version = "1.1.0", default-features = false, features = [
+  "std"
+] }
+fast_hilbert = { version = "2.1.0", default-features = false }
+geographiclib-rs = { version = "0.2.7", default-features = false, features = [
+  "accurate"
+] }
+h3o = { version = "0.10.0", default-features = false, features = ["std"] }
+lexical-core = { version = "1.0.6", default-features = false, features = [
+  "parse-floats"
+] }
+# Keep bundled SQLite linked into bundled PROJ; this direct dependency is the
+# feature-unification lever used by proj-sys.
+libsqlite3-sys = { version = "0.35.0", default-features = false, features = [
+  "bundled"
+] }
+numpy = { version = "0.29.0", default-features = false }
+proj-sys = { version = "0.27.0", default-features = false, features = [
+  "bundled_proj"
+] }
+pyo3 = { version = "0.29.0", default-features = false, features = [
+  "macros",
+  "multiple-pymethods"
+] }
+robust = { version = "1.2.0", default-features = false }
+rstar = { version = "0.13.0", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["std"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+smol_str = { version = "0.3.6", default-features = false, features = ["std"] }
+spade = { version = "2.15", default-features = false, features = ["std"] }
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+zmij = { version = "1.0.21", default-features = false }
+
+[dev-dependencies]
+# Differential oracle for gometry's own S2 core (src/grid/s2) — test-only. Upstream still
+# pulls unmaintained/unsound cgmath (RUSTSEC-2026-0196/0197); it is excluded
+# from production artifacts, and the exercised S2 source never calls the
+# affected swap_columns API. AGENTS.md records the release-audit decision.
+s2 = { version = "0.1.0", default-features = false }
+
+[lints]
+workspace = true

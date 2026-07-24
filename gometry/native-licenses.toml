@@ -1,0 +1,20 @@
+# Native components statically linked into this package's compiled extension.
+#
+# `cargo-about` covers the Cargo dependency graph. Native sources vendored inside
+# `-sys` crates are outside that graph, so they are declared here. A `-sys` crate's
+# own license is a separate obligation from the library it bundles.
+
+[[component]]
+name     = "PROJ"
+version  = "9.8.1"
+license  = "MIT"
+homepage = "https://proj.org"
+archive  = "vendor/proj-sys/PROJSRC/proj-9.8.1.tar.gz"
+notice   = "proj-9.8.1/COPYING"
+
+[[component]]
+name      = "nlohmann/json"
+version   = "3.9.1"
+license   = "MIT"
+homepage  = "https://github.com/nlohmann/json"
+copyright = "Copyright (c) 2013-2019 Niels Lohmann"

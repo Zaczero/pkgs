@@ -1,0 +1,23 @@
+# mypy.stubtest allowlist (regexes, one per line). Entries that stop matching
+# fail the run — keep this list at zero unless a PyO3 runtime artifact forces one.
+# dict.get-shaped dispatch: the runtime sentinel default (None) cannot type
+# against the typeshed-mirroring `default: Geometry | _DefaultT` overload —
+# the same limitation typeshed itself carries for builtins.dict.get.
+gometry._lib.SpatialIndex.get
+# Dependent overloads deliberately exclude selector/value combinations that the
+# runtime accepts only to reject. Their exact valid union cannot express the
+# runtime's ``None`` sentinels without re-admitting those calls.
+# Return-only native classes must still reject no-argument construction at
+# runtime. The stub's required ``Never`` sentinel exposes that impossibility
+# statically, a fact CPython's zero-argument constructor signature cannot say.
+gometry._lib.Geometry.__new__
+gometry._lib.Groups.__new__
+# These four constructors are dependent overloads: the native parser needs
+# None sentinels for the alternate id, Point, and coordinate forms, while the
+# public overloads must keep their positive parameters required. A single
+# implementation signature cannot state that dependency without admitting
+# invalid calls such as H3Cell() or H3Cell(point) without resolution=.
+gometry._lib.H3Cell.__new__
+gometry._lib.S2Cell.__new__
+gometry._lib.GeohashCell.__new__
+gometry._lib.Tile.__new__

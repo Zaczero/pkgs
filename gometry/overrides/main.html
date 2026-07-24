@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {%- set page_title = page.title if page and page.title else config.site_name -%}
+  {%- set page_url = page.canonical_url if page and page.canonical_url else config.site_url -%}
+  {%- set page_desc = page.meta.description if page and page.meta and page.meta.description else config.site_description -%}
+
+  <meta property="og:title" content="{{ page_title }}">
+  <meta property="og:description" content="{{ page_desc }}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ page_url }}">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ page_title }}">
+  <meta name="twitter:description" content="{{ page_desc }}">
+
+  <meta name="theme-color" content="#0d9488">
+  <meta name="keywords" content="geospatial, gis, geometry, shapely alternative, pyproj alternative, h3, s2, crs, geodesic, spatial index, rust, python, wkb, geoarrow">
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script>
+    /* Material defaults the header logo alt to "logo"; name the project. */
+    document.querySelectorAll(".md-header__button.md-logo img, .md-logo img")
+      .forEach(function (img) { img.alt = "gometry"; });
+  </script>
+{% endblock %}

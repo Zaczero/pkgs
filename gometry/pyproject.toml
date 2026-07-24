@@ -1,0 +1,221 @@
+[project]
+name = "gometry"
+description = "Rust-first geometry, CRS, geodesy, discrete grids, and spatial indexing for Python"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0 OR MIT"
+authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
+keywords = [
+  "arrow",
+  "crs",
+  "geoarrow",
+  "geohash",
+  "geojson",
+  "geoparquet",
+  "geometry",
+  "geospatial",
+  "gis",
+  "h3",
+  "proj",
+  "rust",
+  "s2",
+  "spatial-index",
+  "wkb",
+  "wkt",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = ["numpy>=1.26", "typing-extensions>=4.15; python_version < '3.15'"]
+dynamic = ["version"]
+
+[project.urls]
+Documentation = "https://gometry.monicz.dev"
+Issues = "https://github.com/Zaczero/pkgs/issues"
+Repository = "https://github.com/Zaczero/pkgs/tree/main/gometry"
+
+[project.optional-dependencies]
+arrow = ["pyarrow>=24.0.0"]
+pandas = ["pandas>=3.0.3"]
+polars = ["polars>=1.42.0"]
+geopandas = ["geopandas>=1.1.4"]
+viz = ["lonboard>=0.16.0"]
+
+[dependency-groups]
+dev = [
+  "geopandas",
+  "h3",
+  "libcst",
+  "lonboard",
+  "pandas",
+  "polars",
+  "pyarrow",
+  "pyo3stubs",
+  "pyperf",
+  "pyproj",
+  "pytest",
+  "pytest-cov",
+  "pytest-xdist",
+  "rtree",
+  "s2sphere",
+  "scikit-learn",
+  "shapely",
+  "markdown-exec>=1.9",
+  "maturin==1.14.1",
+  "mkdocs-gen-files>=0.5",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.27",
+  "properdocs>=1.6",
+  "pymdown-extensions>=10.7",
+  "ruff>=0.9",
+]
+
+[build-system]
+requires = ["maturin==1.14.1"]
+build-backend = "maturin"
+
+[tool.coverage.run]
+source = ["python/gometry"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if _?TYPE_CHECKING:", "@overload"]
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "gometry._lib"
+python-source = "python"
+config = [
+  'patch.crates-io.geographiclib-rs.path="vendor/geographiclib-rs"',
+  'patch.crates-io.h3o.path="vendor/h3o"',
+  'patch.crates-io.proj-sys.path="vendor/proj-sys"',
+  'target.x86_64-unknown-linux-gnu.rustflags="-C target-cpu=x86-64-v2"',
+  'target.x86_64-unknown-linux-musl.rustflags="-C target-cpu=x86-64-v2"',
+  'target.x86_64-pc-windows-msvc.rustflags="-C target-cpu=x86-64-v2"',
+  'target.x86_64-apple-darwin.rustflags="-C target-cpu=x86-64-v2"',
+  'profile.release.trim-paths="all"',
+  'profile.release.strip="symbols"',
+  'unstable.trim-paths=true',
+]
+include = [
+  { path = "LICENSE-APACHE.md", format = "sdist" },
+  { path = "LICENSE-MIT.md", format = "sdist" },
+  { path = "LICENSE-THIRD-PARTY.md", format = "sdist" },
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = "vendor/**/*", format = "sdist" },
+]
+exclude = [
+  { path = ".pytest_cache/**", format = "sdist" },
+  { path = ".ruff_cache/**", format = "sdist" },
+  { path = ".venv/**", format = "sdist" },
+  { path = "benches/results/**", format = "sdist" },
+  { path = "dist/**", format = "sdist" },
+  { path = "fixtures/**", format = "sdist" },
+  { path = "vendor/h3o/dataset/**", format = "sdist" },
+  { path = "htmlcov/**", format = "sdist" },
+  { path = "site/**", format = "sdist" },
+  { path = "target*/**", format = "sdist" },
+  { path = "vendor/**/target/**", format = "sdist" },
+  { path = "**/__pycache__/**", format = "sdist" },
+  { path = "**/__pycache__/**", format = "wheel" },
+  { path = "**/*.pyc", format = "sdist" },
+  { path = "**/*.pyc", format = "wheel" },
+  { path = "**/*.pyo", format = "sdist" },
+  { path = "**/*.pyo", format = "wheel" },
+]
+
+[tool.maturin.sbom]
+# cargo-cyclonedx currently serializes absolute workspace-member paths for the
+# root crate. Do not leak build-host paths in public artifacts.
+rust = false
+
+[tool.mypy]
+# overload-overlap flags gometry's core scalar/array idiom (a scalar variant
+# ordered before a broader batch variant, e.g. `float` before `_FloatInput`,
+# `str` before `Iterable[str]`); overload ORDER is the deliberate
+# disambiguator, and the batch variant must keep accepting scalars for mixed
+# broadcasting (`factors(0.5, lat_column)`). Same practice as numpy/typeshed.
+disable_error_code = ["overload-overlap"]
+
+[tool.pyright]
+# Scope the curated rules to the shipped library; tests/tools/benches are out of
+# scope (their casts are intentional). venvPath/venv let a bare `pyright` resolve
+# numpy/pyarrow without --pythonpath (replaces the deleted test_pyright.py gate).
+include = ["python/gometry"]
+venvPath = "."
+venv = ".venv"
+pythonPlatform = "All"
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportUnnecessaryCast = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+testpaths = ["tests"]
+# Default lane: the full deterministic suite, parallelized across cores via
+  # pytest-xdist (`-n auto`) — local and CI both scale to the machine with no
+  # flag to remember. Force serial with `-n0` (single-test debugging). The
+  # catalog-wide exhaustive EPSG observer is opt-in (`pytest -m exhaustive`).
+  # Release-artifact validation runs in CI's build job via `tools/wheel_smoke.py`
+  # on the real wheels/sdist — run it locally the same way, not through pytest.
+  # Skip the heavy static-analysis gates for a fast behavioral loop with
+  # `pytest --ignore=tests/gates`.
+  addopts = "--strict-markers -n auto -m 'not exhaustive'"
+  markers = [
+    "exhaustive: catalog-wide / combinatorial sweeps (e.g. the full EPSG parity observer); opt-in",
+  ]
+# Warnings are defects: any warning raised by the suite fails it.
+filterwarnings = [
+  "error",
+  # pyproj oracle tests: PROJ notes an undownloaded datum grid on this machine
+  # and degrades to the next-best transformation — environment, not a defect.
+  "ignore:Best transformation is not available:UserWarning",
+]
+
+[tool.ruff]
+extend = "../ruff.toml"
+exclude = [".venv", ".ruff_cache", "site", "target*"]
+
+[tool.ruff.lint.per-file-ignores]
+# The docstring lives on the final (canonical) @overload variant by design —
+# stubs cannot carry a bare implementation def (PEP 484), and one copy per
+# symbol beats duplicating prose across variants (gen-docs enforces placement).
+"python/gometry/_lib.pyi" = ["D418"]
+# Standalone gate scripts import tools/ siblings via a sys.path shim that must
+# precede the import (the _check_bench_regression.py / _gatelib.py pattern).
+"tools/**/*.py" = ["E402"]
+# Bench drivers/support scripts use the same late-import sys.path shim pattern.
+"benches/**/*.py" = ["E402", "I001"]
+# Pickle round-trips of gometry's own objects are the feature under test; the
+# "untrusted data" caveat S301 guards does not apply to self-produced bytes.
+"tests/*.py" = ["S301"]
+# Deliberate import ordering: native exports precede the lazy optional facade,
+# and optional-dependency typing blocks follow their guards.
+"python/gometry/__init__.py" = ["E402"]
+"python/gometry/_types.py" = ["E402"]
+
+[tool.uv]
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
+# Build inputs only: test changes must not invalidate the built wheel.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "src/**/*.rs" },
+  { file = "python/gometry/**" },
+]

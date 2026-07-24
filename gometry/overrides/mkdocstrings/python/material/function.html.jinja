@@ -1,0 +1,26 @@
+{% extends "_base/function.html.jinja" %}
+
+{# Keep the practical canonical call visible. Precise typing variants remain
+   available without turning every API entry into a wall of signatures. Native
+   <details> preserves keyboard access, deep-link anchors, and no-JS content. #}
+{% block signature scoped %}
+  {% if config.separate_signature %}
+    <div class="doc-canonical-signature">
+      {% filter format_signature(function, config.line_length, crossrefs=config.signature_crossrefs) %}
+        {{ function.name }}
+      {% endfilter %}
+    </div>
+  {% endif %}
+  {% if function.overloads and function.overloads|length > 1 and config.show_overloads %}
+    <details class="doc-overloads-details">
+      <summary>Overloads</summary>
+      <div class="doc-overloads" aria-label="Overload signatures">
+        {% for overload in function.overloads[:-1] %}
+          {% filter format_signature(overload, config.line_length, annotations=True, crossrefs=config.signature_crossrefs) %}
+            {{ overload.name }}
+          {% endfilter %}
+        {% endfor %}
+      </div>
+    </details>
+  {% endif %}
+{% endblock signature %}

@@ -1,0 +1,21 @@
+dist/
+.agents/
+.codex/
+LICENSE-THIRD-PARTY.md
+site/
+coverage-python/
+# The monorepo's generic JavaScript `coverage` ignore otherwise hides this
+# first-class Rust module from source control.
+!src/geometry/coverage/
+!src/geometry/coverage/**
+# These patched crates are release-source inputs, not disposable vendoring
+# output. The monorepo's broad `vendor/` rule must not hide them.
+!vendor/
+!vendor/**
+# The monorepo ignores generic lockfiles; this is gometry's reproducible Python
+# environment and must be tracked with the package.
+!uv.lock
+target*/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

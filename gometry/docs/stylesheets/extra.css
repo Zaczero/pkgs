@@ -1,0 +1,240 @@
+/* Brand palette. gometry leans on a geospatial teal→amber gradient; the valid/
+   invalid geometry greens/reds echo the SVG repr so figures and prose agree. */
+:root {
+  --gometry-teal: #0f766e;
+  --gometry-teal-light: #2dd4bf;
+  --gometry-amber: #f59e0b;
+  --gometry-amber-dark: #92400e;
+  --gometry-valid: #22c55e;
+  --gometry-invalid: #ef4444;
+  --md-text-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  text-wrap: balance;
+}
+
+.md-typeset p,
+.md-typeset li {
+  text-wrap: pretty;
+}
+
+[data-md-color-primary="teal"] {
+  --md-primary-fg-color: var(--gometry-teal);
+  --md-primary-fg-color--light: #0d9488;
+  --md-primary-fg-color--dark: #115e59;
+  --md-typeset-a-color: var(--gometry-teal);
+  --md-accent-fg-color: var(--gometry-amber-dark);
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="teal"] {
+  --md-typeset-a-color: var(--gometry-teal-light);
+  --md-accent-fg-color: var(--gometry-amber);
+}
+
+/* Outline buttons: tie hover to the link color so both schemes stay on-brand. */
+[data-md-color-primary="teal"] .md-button:not(.md-button--primary) {
+  color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+}
+[data-md-color-primary="teal"] .md-button:not(.md-button--primary):hover,
+[data-md-color-primary="teal"] .md-button:not(.md-button--primary):focus {
+  background-color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+  color: var(--md-default-bg-color);
+}
+
+.md-header__button.md-logo img {
+  height: 1.8rem;
+  width: auto;
+}
+
+.md-header {
+  box-shadow: 0 1px 0 rgba(245, 158, 11, 0.25);
+}
+
+.md-header,
+.md-tabs {
+  background-color: var(--gometry-teal);
+}
+
+.md-header,
+.md-header a,
+.md-header .md-ellipsis,
+.md-header .md-source__repository,
+.md-header .md-source__facts,
+.md-header .md-source__fact,
+.md-tabs__link {
+  color: #ffffff;
+  opacity: 1;
+}
+
+/* Landing-page hero. */
+.hero {
+  position: relative;
+  text-align: center;
+  padding: 3rem 1rem 2.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.hero-logo {
+  display: block;
+  width: 160px;
+  height: auto;
+  margin: 0 auto 1.5rem;
+}
+
+.md-typeset .hero h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.1;
+  margin-bottom: 0.75rem;
+  color: #111827;
+}
+
+.md-typeset .hero h1 .headerlink {
+  color: #111827;
+  opacity: 0;
+}
+
+.md-typeset .hero h1:hover .headerlink,
+.md-typeset .hero h1 .headerlink:focus-visible {
+  opacity: 1;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .hero h1,
+[data-md-color-scheme="slate"] .md-typeset .hero h1 .headerlink {
+  color: #f8fafc;
+}
+
+@media screen and (max-width: 44.984375em) {
+  .hero {
+    padding: 1.25rem 0.5rem 1rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .hero-logo {
+    width: 96px;
+    margin-bottom: 0.75rem;
+  }
+
+  .md-typeset .hero h1 {
+    font-size: 2rem;
+  }
+
+  .hero p {
+    font-size: 0.95rem;
+    margin: 0.5rem auto 0.75rem;
+  }
+}
+
+.hero p {
+  font-size: 1.05rem;
+  max-width: 640px;
+  margin: 0.75rem auto 1.5rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.hero .md-button {
+  margin: 0.25rem;
+}
+
+/* Inline geometry SVG figures emitted by the _repr_svg_ examples. Keep them
+   readable on both schemes: a light card so the green/red strokes never sit on
+   a clashing background, and a sane max size in the content column. */
+.md-typeset .gometry-figure svg,
+.md-typeset svg.gometry-geom {
+  display: block;
+  margin: 0.6rem auto;
+  max-width: 320px;
+  height: auto;
+  background: #ffffff;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 6px;
+  padding: 0.4rem;
+}
+
+/* Pygments paints bare numbers (addresses, EPSG codes) as error-red in shell/
+   text blocks; render them as plain code text. */
+:is(.language-bash, .language-text) :is(.m, .mb, .mf, .mh, .mi, .mo) {
+  color: inherit;
+}
+
+/* Captioned geometry panels (the shared _figures helper). One consistent layout
+   for every figure across the guide pages. */
+.md-typeset .gometry-figure {
+  margin: 0.8rem 0;
+}
+.md-typeset .gometry-figure figcaption {
+  font-size: 0.72rem;
+  text-align: center;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.2rem;
+}
+.md-typeset .gometry-panels {
+  margin: 0.8rem 0;
+}
+
+/* A visible keyboard-focus ring everywhere interactive (WCAG 2.2 AA). */
+.md-typeset a:focus-visible,
+.md-button:focus-visible,
+.doc-overloads-details > summary:focus-visible,
+.md-nav__link:focus-visible,
+.md-tabs__link:focus-visible,
+.md-clipboard:focus-visible,
+.md-search__input:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* API signatures: show the practical call immediately and keep static-typing
+   variants one native, accessible disclosure away. No JavaScript is required,
+   so printing, indexing, keyboard navigation, and reduced-motion browsing all
+   retain the complete content. */
+.doc-canonical-signature {
+  margin: 0.45rem 0 0.35rem;
+}
+
+.doc-overloads-details {
+  margin: 0.15rem 0 0.7rem;
+}
+
+.doc-overloads-details > summary {
+  cursor: pointer;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.75rem;
+}
+
+.doc-overloads-details .doc-overloads {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.2rem 0.35rem;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--md-default-fg-color--lightest);
+  overflow-x: auto;
+}
+
+.doc-overloads-details .doc-signature {
+  margin: 0;
+  min-width: max-content;
+}
+
+@media screen and (max-width: 44.984375em) {
+  .doc-canonical-signature,
+  .doc-overloads-details {
+    margin-inline: -0.2rem;
+  }
+
+}
+
+@media print {
+  .doc-overloads-details:not([open]) > .doc-overloads {
+    display: grid;
+  }
+}

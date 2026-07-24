@@ -1,0 +1,210 @@
+site_name: gometry
+site_description: A high-performance Rust geospatial engine with a Pythonic API — geometry, geodesy, CRS, H3/S2 grids, and spatial indexing in one coherent package.
+site_url: https://gometry.monicz.dev/
+repo_url: https://github.com/Zaczero/pkgs/tree/main/gometry
+repo_name: Zaczero/pkgs
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  font: false
+  icon:
+    repo: fontawesome/brands/github
+  logo: assets/logo-light.svg
+  favicon: assets/logo.svg
+  palette:
+    - media: '(prefers-color-scheme)'
+      scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/accessibility.js
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Zaczero/pkgs/tree/main/gometry
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/gometry/
+  generator: false
+
+plugins:
+  - search
+  - autorefs
+  - markdown-exec
+  - gen-files:
+      scripts:
+        - tools/docs/gen_api_pages.py
+  - mkdocstrings:
+      custom_templates: overrides/mkdocstrings
+      default_handler: python
+      handlers:
+        python:
+          paths: [python]
+          options:
+            extensions:
+              - tools/docs/griffe_expand_aliases.py
+            docstring_style: numpy
+            docstring_options:
+              warn_unknown_params: false
+            allow_inspection: false
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_bases: false
+            show_signature_annotations: true
+            separate_signature: true
+            overloads_only: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            inherited_members: true
+            members_order: alphabetical
+            heading_level: 2
+            filters:
+              - '!^_'
+              - '^__(len|getitem|iter|reversed|contains|bool)__$'
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: false
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      base_path:
+        - .
+        - examples
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Get started:
+    - Installation: get-started/installation.md
+    - Quickstart: get-started/quickstart.md
+    - The mental model: get-started/mental-model.md
+  - Guide:
+    - Geometry & dimensions: guide/geometry.md
+    - Spatial predicates: guide/predicates.md
+    - Constructive operations: guide/constructive.md
+    - CRS, units & measurement: guide/crs.md
+    - Grids & geocodes: guide/grids.md
+    - Spatial indexing & joins: guide/indexing.md
+    - Arrays & performance: guide/arrays.md
+    - Validation & repair: guide/validation.md
+    - Errors & exceptions: guide/errors.md
+    - Choosing the right tool: guide/choosing.md
+  - Ecosystem:
+    - ecosystem/index.md
+    - NumPy arrays & coordinates: ecosystem/numpy.md
+    - Arrow & storage: ecosystem/arrow.md
+    - DataFrames: ecosystem/dataframes.md
+    - Text & binary formats: ecosystem/text-formats.md
+  - API reference:
+    - api/index.md
+    - Functions:
+      - Constructors & bulk factories: api/toplevel/constructors-bulk-factories.md
+      - Predicates: api/toplevel/predicates.md
+      - Measurement: api/toplevel/measurement.md
+      - Overlay & dissolve: api/toplevel/overlay-dissolve.md
+      - Constructive, parts & validation: api/toplevel/constructive-parts-validation.md
+      - Coverage (polygonal): api/toplevel/coverage-polygonal.md
+      - Geodesy & navigation: api/toplevel/geodesy-navigation.md
+      - Index & join: api/toplevel/index-join.md
+      - IO & interop: api/toplevel/io-interop.md
+    - Geometry:
+      - Geometry: api/geometry/geometry.md
+      - Geometry types: api/geometry/geometry-types.md
+      - GeometryArray: api/geometry/geometryarray.md
+      - Coordinates, parts & groups: api/geometry/coordinates.md
+    - CRS: api/crs.md
+    - Grids & geocodes:
+      - Cells & coverages: api/grids.md
+      - h3: api/h3.md
+      - s2: api/s2.md
+      - geohash: api/geohash.md
+      - tiles: api/tiles.md
+      - geocode: api/geocode.md
+    - Spatial index: api/spatial-index.md
+    - Results: api/results.md
+    - Errors: api/errors.md
+    - Optional interop: api/interop.md
+  - Migrating:
+    - migrating/index.md
+    - Migration cheatsheet: migrating/cheatsheet.md
+  - About:
+    - Benchmarks: about/benchmarks.md
+    - Design principles: about/design.md
+    - Internals: about/internals.md
+    - Security & untrusted input: about/security.md
+    - Compatibility & deprecation policy: about/compatibility.md
+    - Changelog: about/changelog.md
+    - License & notices: about/license.md
+
+watch:
+  - python/gometry
+  - examples
