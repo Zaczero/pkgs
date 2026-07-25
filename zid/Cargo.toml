@@ -2,6 +2,7 @@
 name = "zid"
 version = "1.5.0"
 edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]

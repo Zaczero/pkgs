@@ -2,13 +2,14 @@
 name = "lrucache_rs"
 version = "1.6.0"
 edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
 name = "lrucache_rs"
 
 [dependencies]
-hashbrown = { version = "0.15", default-features = false, features = [
+hashbrown = { version = "0.16.1", default-features = false, features = [
   "inline-more"
 ] }
 parking_lot = "0.12.5"

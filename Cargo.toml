@@ -24,6 +24,10 @@ cast_sign_loss = "allow"
 # doc_markdown wants every kwarg/type backticked and `clippy --fix` would break
 # the docs. properdocs --strict is the real doc gate, so this lint is off here.
 doc_markdown = "allow"
+# Numpydoc Examples show doctest expected values like `['POINT (0 0)']` and
+# `'EPSG'`; rustdoc's quote-link heuristic misfires on those. properdocs is the
+# real doc gate.
+doc_link_with_quotes = "allow"
 # Same reason: the `///` first paragraph IS the numpydoc summary, whose length is
 # governed by the docs site, not rustdoc's paragraph heuristic.
 too_long_first_doc_paragraph = "allow"

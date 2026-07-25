@@ -2,6 +2,7 @@
 name = "h2corn"
 version = "1.6.0"
 edition = "2024"
+publish = false
 readme = "README.md"
 license = "MIT"
 
