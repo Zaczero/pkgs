@@ -1,258 +1,156 @@
 # Bench harness
 
 Contributor notes for measuring h2corn. The public
-[Benchmarks](../docs/benchmarks.md) page shows cross-server plots from a
-single observed run; use the tools here when deciding whether a *code
-change* improves performance.
+[Benchmarks](../docs/benchmarks.md) page shows cross-server plots; the tools
+here are what you use when deciding whether a *code change* helped.
 
 | Tool | Purpose |
 | ---- | ------- |
-| `bench.py` | Repeated cross-server scenarios → raw JSON and SVGs |
-| `compare.py` | Paired control vs candidate on one URL/workload |
-| `matrix.py` | Expands `compare.py` across `matrix.toml` scenarios |
-| `mask_kernel_compare.py` | WebSocket mask kernel microcomparison |
+| `bench.py` | Cross-server scenarios → raw JSON and the published SVGs |
+| `compare.py` | Paired A/B of two h2corn builds or configurations |
+| `_core.py` | Shared scenarios, server lifetime, load drivers, statistics |
 
-Unique raw runs under `results/runs/` are gitignored. Canonical SVGs are
-checked in; `bench.py` replaces them only with an explicit successful
-`--publish` run.
+Raw runs land under `results/runs/` and are gitignored. Canonical SVGs are
+checked in; `bench.py` replaces them only with an explicit `--publish` run.
 
-## Cross-server publication (`bench.py`)
+## Methodology
 
-One command, no flags to remember:
+**Nothing is pinned.** Servers and load generators run the way a deployment
+runs them, on the whole machine, with whatever parallelism they ship. Do not
+add CPU affinity here: pinning the harness pins its children too — that is
+exactly how a past revision came to benchmark every server on a single core —
+and confining a server to a fraction of the box measures the confinement, not
+the server.
+
+**Noise is handled in the statistics, not by demanding a quiet host.** Trials
+are rotation-balanced cold starts; the reported value is a median with the
+observed range as its whisker; A/B comparisons are *paired* per round with
+alternating order, so slow host drift cancels instead of registering as a code
+change.
+
+**Sampling is time-dynamic.** Every scenario keeps running trials until the
+claim it publishes is resolved, then stops. For a paired A/B that is the
+delta's confidence interval (1 % half-width). For a cross-server plot it is
+what the chart is read for: the **leader is ahead of the runner-up**, and the
+leader's own interval is tight (3 %).
+
+Two things are deliberately not required, because neither is reachable and
+neither is the claim. *Every server reaching the same precision*: the slowest
+is the noisiest in relative terms, so a scenario burns its whole budget without
+the published claim improving — one run measured hypercorn at ±20 % after nine
+trials while h2corn's number had been settled since the third. *Every adjacent
+pair separating*: two rivals can be genuinely tied, and then no amount of
+sampling separates them. In the published run gunicorn and uvicorn tie for
+second in one cell, uvicorn and hypercorn tie for third in another, and h2corn
+clears the field in both.
+
+Trial duration is never shortened to fit a budget. Publication is refused
+outright if any cell's **winner** is not established — that would make the
+chart wrong, not merely imprecise. A cell whose leader interval is wider than
+the 3 % target still publishes, with the shortfall printed and written onto the
+plot next to the whiskers that show it, because an approximate bar height is
+honest as long as it says so. In the 21-scenario run behind the current plots,
+the winner is established everywhere and 13 cells carry that note.
+
+**Every measured cell proves itself.** Before warmup and again after
+measurement, the exact status, content type and response body are verified over
+the real protocol (HTTP/1, HTTP/2, or a WebSocket echo), and every configured
+worker must answer before a trial counts. A cell that cannot prove itself
+raises instead of reporting.
+
+If a *competitor* cannot serve a workload — connection errors under HTTP/2
+multiplexing, say — it is excluded from that scenario with the reason printed
+and recorded, and the rest of the comparison still publishes. If **h2corn**
+fails a cell the whole run stops: that is our bug, not a fact about someone
+else's server.
+
+**Access logging is on for every server.** That is how these servers are
+deployed, and log construction is part of the work they do. Server output goes
+to `/dev/null`, so no server pays for a log sink the others avoid — never point
+several workers at one shared regular file, which serializes all of them on one
+open file description.
+
+## Cross-server publication
 
 ```bash
-uv run python bench/bench.py --publish
+uv run python bench/bench.py            # stage under results/runs/
+uv run python bench/bench.py --publish  # also replace the canonical plots
 ```
 
-Servers run out of the box, unpinned — the harness never limits how much
-parallelism a solution uses internally. Only the measurement instrument is
-pinned, with roles auto-derived from the host topology: the harness driver
-takes the boot domain's first core and the load generator owns every thread
-of the largest other last-level-cache domain; oha/k6 worker counts follow the
-load CPU count. Explicit `--load-cpus/--management-cpus` (and `--server-cpus`
-for deliberately confined experiments) remain as overrides. Without `--publish`, everything stages under a
-unique run directory, so smoke tests and filtered runs cannot overwrite the
-canonical plots.
+`--publish` requires the complete server and scenario suite. The docs site
+picks the plots up from `results/plots/` at build time.
 
-Trial counts adapt instead of being fixed: each scenario runs at least three
-rotation-balanced cold-start trials per server and keeps going (up to eight)
-only while any server's trial-to-trial spread (IQR/median) is still above 10%.
-The whole suite is capped by `--time-budget` (default 15 minutes): the
-scheduler splits the remaining budget across remaining scenarios and shrinks
-the per-trial load duration (3 s base, 1 s floor) to fit. Minimum trials are
-never skipped — on a budget too small for the fixed per-trial cost the suite
-runs slightly long rather than publishing thin evidence. Each raw record notes its trial count and why the scenario stopped
-(`stable`, `max-trials`, or `time-budget`).
+Useful flags: `--types h1 h2` to narrow a run, `--servers h2corn` for a quick
+smoke, `--duration` / `--warmup-duration`, `--max-trials`, and the
+`--scenario-budget` / `--suite-budget` ceilings.
 
-The run's `identity.json` records the harness settings, scenario matrix,
-server commands and profiles, package versions, git head, and the captured
-instrument CPU topology. Every benchmark-driver thread is pinned to the
-separate management CPU, including orchestration and 20 Hz resource sampling.
-These are pinned instrument roles on a shared development host — the harness
-does not gate on ambient host activity; the pinned generator, medians over
-rotated trials, and retained per-trial ranges carry the noise story instead.
-Keep the tree still while a run measures. Every measured run
-requires all configured workers to answer, runs one second of unmeasured
-request-path load on the same server process before measurement, and verifies
-the exact HTTP body or WebSocket echo before warmup and after measurement.
-Warmup commands, raw output, and resource usage are retained alongside all
-throughput/latency samples through p99.9 and their ranges. After the scenario
-sweep, the single fastest cell gets a quick load-generator headroom check —
-one warmup pair plus one reduced/full/full/reduced block comparing 75% versus
-100% generator workers on the identical CPU set (oha via
-`TOKIO_WORKER_THREADS`, k6 via `GOMAXPROCS`). Publication flags the run when
-the median paired gain reaches 5% (the generator, not the server, may be the
-bottleneck) or when any measured or headroom generator run exceeds the 85%
-physical-core CPU-capacity ceiling; logical-thread utilization is retained
-separately and SMT never inflates the denominator. Paired gains, CPU usage,
-and exact environments remain in the raw record. Each scenario record is
-written once at scenario completion under
-`bench/results/runs/<run-id>/raw/`; an interrupted run just gets re-run. A
-failed contract, incomplete scenario, missing headroom plateau, or
-CPU-headroom failure preserves the canonical `bench/results/raw/` records and
-SVGs unchanged.
-
-The public comparison deliberately uses the classic Uvicorn install and pins it
-to stdlib asyncio plus h11. Non-WebSocket cells explicitly use `--ws none`;
-`websockets` is installed separately and selected only for the WebSocket cell,
-not through `uvicorn[standard]`. h2corn explicitly uses uvloop,
-two Tokio runtime threads, and one Python loop thread. Hypercorn uses uvloop,
-while Gunicorn uses its first-party ASGI worker with uvloop and the Python HTTP
-parser. The raw identity labels these profiles and records installed
-protocol/event-loop package versions, including missing optional packages.
-
-## Candidate versus control (`compare.py`)
-
-Use `compare.py`, rather than the plotting command, to decide whether a
-code change improves performance. It accepts separately named control and
-candidate server commands. A fixed seed chooses the first lead order,
-after which blocks alternate AB/BA. Every block therefore runs both
-variants close together while balancing which one runs first; this helps
-cancel thermal, frequency, and background drift.
-
-The runner performs complete warmup blocks before recording an even number of
-measured pairs (ten by default), so control and candidate lead exactly the same
-number of retained blocks. Each freshly started process in a measured pair
-first receives one second of unmeasured traffic over the exact load path;
-the response and worker-PID set are revalidated before measurement. Every oha
-invocation has a wall timeout
-derived from its requested duration. On Linux, the runner samples cumulative
-CPU and aggregate resident memory for both complete server and load-generator
-process groups. The default gate rejects a run when the generator averages
-more than 85% of its pinned physical-core capacity or process accounting is
-unavailable. Logical-CPU utilization is retained separately. Every current
-benchmark-driver thread is pinned to the management CPU before measurement;
-later monitor threads inherit the same Linux affinity.
-Server, load-generator, and management CPUs must be supplied together and be
-disjoint at both the logical-thread and physical-core levels. The load set must
-contain every online, allowed SMT sibling of each selected physical core.
-Runs without explicit CPU roles remain useful for development.
-
-The result JSON retains the unmodified oha output, commands, lead
-orders, warmups, measured samples, process resource samples, throughput,
-and p50/p99/p99.9 latency. The summary reports the median paired percentage delta and a
-seeded paired-bootstrap 95% confidence interval. Its empirical noise
-spread is the interquartile range of the paired percentage deltas. The
-runner labels a result `STABLE_ABOVE_IQR` only when the bootstrap interval
-excludes zero and the median effect is larger than that observed spread.
-This is a descriptive practical-effect gate, not a calibrated hypothesis
-test or proof that an effect generalizes beyond the recorded workload and
-machine.
-
-Build or install the two source trees into separate environments, bind both
-commands to the same address, and give server, load-generator, and management
-roles separate physical cores when the machine allows it:
+## Paired A/B
 
 ```bash
+# two builds
 uv run python bench/compare.py \
-  --control 'baseline=/tmp/h2corn-control/bin/h2corn bench.bench_app:app --loop asyncio -b 127.0.0.1:8000' \
-  --candidate 'candidate=/tmp/h2corn-candidate/bin/h2corn bench.bench_app:app --loop asyncio -b 127.0.0.1:8000' \
-  --url http://127.0.0.1:8000/ \
-  --duration 10s \
-  --warmups 2 \
-  --trials 10 \
-  --server-cpus 2 \
-  --load-cpus 8-15,24-31 \
-  --management-cpus 0 \
-  --expected-workers 1 \
-  --expected-body 'Hello, World!'
+  --control 'main=/path/to/main/.venv/bin/h2corn' \
+  --candidate 'head=.venv/bin/h2corn' \
+  --scenario h1 --workers 4
+
+# one build, two configurations
+uv run python bench/compare.py \
+  --control 'log=' --candidate 'nolog=--no-access-log' --scenario h1
 ```
 
-Arguments after each `NAME=` value are parsed with shell-style quoting,
-but no shell is invoked. Add `--http2` for direct HTTP/2 and use
-`--method`, `--body`, and repeatable `--header` arguments reproduce a
-specific request. HTTP loads require either an exact UTF-8 `--expected-body`
-or an exact `--expected-body-sha256` plus `--expected-body-size`; the harness
-checks it before and after load over the measured protocol. Direct HTTP/2 uses
-prior knowledge for cleartext and requires ALPN `h2` for TLS; falling back to
-HTTP/1.1 fails the contract. `--expected-workers` likewise requires the
-same complete set of distinct worker PIDs before and after load. WebSocket
-loads require every session to echo its exact nonce. For a standalone `ws://`
-or `wss://` load, readiness defaults to HTTP or HTTPS on the same origin;
-`--ready-url` accepts only an explicit HTTP(S) endpoint. `--disable-keepalive`
-isolates new-connection HTTP/1
-costs such as TLS handshakes; it is intentionally incompatible with
-HTTP/2. Each run writes its raw record under `bench/results/compare/`.
+The result reports the paired delta, its 95 % confidence interval, whether that
+interval excludes zero, and the memory both sides cost. An interval that still
+spans zero when the budget runs out is reported as inconclusive — that is an
+answer, not a failure.
 
-The runner pins the HTTP protocol explicitly (`1.1` unless `--http2` is
-selected), including under TLS where ALPN otherwise makes an omitted
-version ambiguous. The stored comparison identity is the measurement
-settings themselves: variant names and commands, request shape, duration,
-concurrency, trials, warmups, seed, and CPU roles. Keep the two variant
-builds still while a comparison runs.
+Memory is **PSS**, not summed peak RSS. Peak RSS counts every shared
+file-backed page in full in each process that maps it, so four workers sharing
+one extension module report it four times, and two builds whose code merely
+pages in differently look megabytes apart while costing the same memory.
 
-Do not treat the single observed public plots as paired code-change evidence.
+### Isolating the server from the framework
 
-## End-to-end candidate matrix (`matrix.py`)
-
-`matrix.py` expands the paired runner across the declarative scenarios in
-`matrix.toml`: HTTP/1 TCP and Unix sockets, direct HTTP/2, TLS with both
-ALPN protocols, unary and streaming bodies, pathsend files, WebSockets,
-and the 1/4-worker by 1/4-loop topology. The default command
-intentionally runs only a short HTTP/1 unary case; use selection globs
-during development and reserve the complete 52-scenario matrix for
-release evidence.
-
-Pass base server commands without bind, worker, loop-thread, or TLS
-arguments; the matrix supplies those per scenario. Reuse an
-`--output-dir` to resume an interrupted matrix. A result is skipped only
-when its complete comparison identity matches exactly, so
-changing a command, workload, topology, affinity, duration, or seed
-automatically reruns it.
+The published plots run Starlette, because that is what people deploy and it is
+identical for every server. But it dominates the measurement: on this host a
+plaintext GET costs **~111k instructions through Starlette and ~34k through
+`bench/raw_app.py`**, so about two thirds of the published number is framework.
+When measuring a change to the server itself, run against the raw app —
+otherwise a 1 % server win shows up as 0.3 % and can vanish into the noise:
 
 ```bash
-# Inspect capability skips and the expanded scenario IDs.
-uv run python bench/matrix.py \
-  --control 'baseline=/tmp/control/bin/python -m h2corn bench.bench_app:app' \
-  --candidate 'candidate=/tmp/candidate/bin/python -m h2corn bench.bench_app:app' \
-  --list
-
-# Fast default and a focused HTTP/2 dry run.
-uv run python bench/matrix.py \
-  --control 'baseline=/tmp/control/bin/python -m h2corn bench.bench_app:app' \
-  --candidate 'candidate=/tmp/candidate/bin/python -m h2corn bench.bench_app:app'
-uv run python bench/matrix.py \
-  --control 'baseline=/tmp/control/bin/python -m h2corn bench.bench_app:app' \
-  --candidate 'candidate=/tmp/candidate/bin/python -m h2corn bench.bench_app:app' \
-  --select 'h2-tcp-*-w1-l1' --dry-run
-
-# Full release matrix on a 32-thread Ryzen 9 5950X. Server and load roles own
-# complete, physically disjoint SMT cores; CPU 0 is reserved for management.
-uv run python bench/matrix.py \
-  --control 'baseline=/tmp/control/bin/python -m h2corn bench.bench_app:app' \
-  --candidate 'candidate=/tmp/candidate/bin/python -m h2corn bench.bench_app:app' \
-  --full --runtime-gil disabled \
-  --server-cpus 2-9,18-25 \
-  --load-cpus 1,10-15,17,26-31 --management-cpus 0 \
-  --output-dir bench/results/matrix/release-candidate
+uv run python bench/compare.py --control 'a=…' --candidate 'b=…' \
+  --app bench.raw_app:app --scenario h1
 ```
 
-Adapt those CPU IDs from `lscpu -e=CPU,CORE` on other hosts; disjoint logical
-IDs alone do not prove physical-core isolation. The largest matrix topology is
-four workers times four loop threads, so its server set needs 16 execution
-lanes if that cell is intended to run without CPU oversubscription.
+`bench/ws_echo_app.py` plays the same role for WebSockets: a bare echo, so a
+measurement sees the frame path rather than a framework's message handling.
 
-`--runtime-gil auto` follows the interpreter running the harness. When
-the control and candidate commands use other interpreters, select
-`enabled` or `disabled` explicitly so four-loop capability is not
-inferred from the wrong runtime. Unsupported scenarios are recorded with
-their reason instead of being silently omitted. HTTP loads require oha,
-WebSocket loads require k6, and TLS certificate generation uses the
-development dependency `trustme`.
-TLS material is retained in the output directory and reused on resume; changing
-it invalidates the stored comparison identity instead of silently mixing runs.
-
-## Component comparisons
-
-Choose the narrowest harness that still includes the production
-mechanism:
-
-| Surface | Evidence |
-| ------- | -------- |
-| WebSocket masking | `mask_kernel_compare.py`; imports the production body and checks declared workload lengths, phases, and alignment |
-| HPACK | Header-heavy HTTP/2 matrix cells; report table storage and allocation evidence beside timing |
-| Python calls | Unary/streaming matrix cells plus interpreter bytecode/C-API inspection; add a microprobe only when it calls the production boundary directly |
-| Parser, frame writer, bridge | Focused `matrix.py` cells plus allocation, syscall, layout, future-size, and stack evidence |
-| Lifecycle | Repeated startup, cancellation, failure, and shutdown integration tests with FD, reference, task, and RSS evidence |
-
-Do not benchmark copied parser or in-memory writer helpers: they erase
-buffer ownership, syscalls, partial writes, TLS framing, flow control,
-and scheduling. Likewise, a scalar-kernel win must be reconciled with a
-paired end-to-end cell.
-
-The masking runner discards complete warmup blocks, then uses an even number of
-strict alternating AB/BA pairs and paired-bootstrap intervals. With
-`--management-cpu`, it pins the harness away from the measurement CPU and
-freezes topology and CPU policy. Without that role, output is explicitly
-diagnostic.
-
-The weighted headline is a declared workload model, not a production
-trace. Always retain the per-length cells, and replace the checked-in
-weights with an observed deployment distribution before using that
-aggregate as a capacity claim.
+RPS variance on a shared host cannot resolve sub-percent changes. For those,
+measure the mechanism directly:
 
 ```bash
-uv run python bench/mask_kernel_compare.py \
-  --control-kernel eager-key \
-  --cpu 2 --management-cpu 0 --warmups 2 --trials 16
+perf stat -p "$(pgrep -f 'h2corn bench.bench_app' | head -1)" -e instructions,cycles
+strace -c -f -p <worker-pid>          # syscalls per request
+cargo rustc --release --lib -- -Zprint-type-sizes
+cargo asm --lib <path::to::function>  # confirm what the compiler emitted
 ```
+
+## Kernel microbenchmarks
+
+A single hot kernel is measured in place, as an `#[ignore]`d test next to the
+code it measures — it gets full access to crate internals, needs no build
+machinery, and never ships (it lives behind `#[cfg(test)]`):
+
+```rust
+#[test]
+#[ignore = "microbenchmark, run explicitly"]
+fn bench_encode_field_bytes() { /* Instant + black_box over a fixed workload */ }
+```
+
+```bash
+cargo test -p h2corn --release --lib bench_encode_field_bytes -- --ignored --nocapture
+```
+
+Add one when you are about to change a kernel, keeping the old implementation
+beside the new one for the duration so the run reports both. Delete it again
+once the change has landed and the mechanism is recorded.
