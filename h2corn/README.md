@@ -21,7 +21,7 @@ behind a trusted reverse proxy, with optional direct TLS for TCP listeners.
 - **Better security** for the proxy → application connection (no HTTP/1.1 downgrade)
 - **Higher throughput** and lower latency from a Rust engine on Tokio
 - **Compatible** with any ASGI 3 application — FastAPI, Starlette, Django, Litestar
-- **Direct TLS** with Rustls and modern defaults
+- **Direct TLS** with Rustls and modern defaults, including mutual TLS with the client identity exposed to the application
 - **RFC 8441 WebSockets** over HTTP/2
 - **Operator-friendly**: multi-worker supervisor with graceful shutdown, rolling reload, live scaling, worker recycling, and health checks
 
@@ -50,8 +50,10 @@ h2corn hello:app
 ```
 
 For production, put `h2corn` behind a reverse proxy that speaks `h2c`
-upstream (Caddy or HAProxy), then disable HTTP/1.1 with `--no-http1`.
-The full deployment recipes live in
+upstream, and add `--no-http1` to drop the HTTP/1.1 surface entirely.
+HAProxy does that end to end, WebSockets included; Caddy needs upgrades
+routed over HTTP/1.1 because it cannot translate them for an HTTP/2
+upstream. The full deployment recipes live in
 [the docs](https://h2corn.monicz.dev/deployment/proxy/).
 
 ## Benchmarks

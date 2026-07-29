@@ -186,6 +186,13 @@ The supervisor binds the listeners as root, then resolves
 ASGI app is imported. Unix sockets created by the supervisor inherit
 the same ownership, with permissions controlled by `--uds-permissions`.
 
+Everything that needs root is acquired before that switch, so the
+private key may stay `root:root` mode `0600` — the supervisor reads it
+once at startup and every worker inherits the material rather than
+reopening a file it can no longer read. A key the starting user cannot
+read fails startup immediately, naming the setting and the path,
+instead of surfacing later as a failed handshake.
+
 ## Observability
 
 `h2corn` does not bundle a metrics endpoint, structured-log emitter,

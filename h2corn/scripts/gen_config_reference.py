@@ -67,13 +67,15 @@ def _option_section(option: ConfigOption) -> str:
         f'| **Default** | {_format_default(option.default)} |',
         f'| **CLI** | {_format_cli(option)} |',
         f'| **Env** | `{option.env_var}` |',
-        f'| **TOML key** | `{option.toml_key}` |',
+        f'| **TOML key** | `{option.name}` |',
     ]
     choices = _format_choices(meta)
     if choices is not None:
         rows.append(f'| **Choices** | {choices} |')
     rows.append('')
-    return '\n'.join(rows)
+    # Trailing blank line so the next option heading is not absorbed into
+    # this table (Markdown tables continue until a blank line).
+    return '\n'.join(rows) + '\n'
 
 
 def _intro_section() -> str:

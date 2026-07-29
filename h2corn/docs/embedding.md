@@ -17,11 +17,30 @@ until the server is asked to shut down. It is single-worker by design;
 when you need multiple workers, fall back to [`serve()`][h2corn.serve],
 which goes through the same multi-process supervisor as the CLI.
 
+`Server.serve()` owns an in-process lifecycle, so it rejects a configuration
+that combines `pid` with `user` or `group`: the pidfile and privilege change
+need one supervisor to own their ordering. On Unix, use
+[`h2corn.serve()`][h2corn.serve] or the CLI for that topology; their
+supervisor owns the pidfile and manages worker privilege changes.
+
 ## Programmatic shutdown
 
 Call [`shutdown()`][h2corn.Server.shutdown] from any thread or
 coroutine to begin a graceful stop. In-flight requests get up to
-`Config.timeout_graceful_shutdown` seconds to complete.
+`Config.timeout_graceful_shutdown` seconds to complete, and their
+cleanup gets the same budget again once they are cancelled.
+
+`serve()` stops waiting when that budget is spent, whatever the
+application does — one that catches `CancelledError` and never finishes
+cannot hold it open. An **explicit** `shutdown()` that hits the deadline
+raises `RuntimeError` naming what is still running rather than returning
+as if the stop had succeeded. An over-budget drain does **not** skip
+lifespan shutdown: that phase is deferred until the straggling requests
+finally release. Until then
+[`releasing`][h2corn.Server.releasing] is true and the same `Server`
+cannot `serve()` again. A call made in that window raises
+`RuntimeError: this Server is still releasing a previous serve() call`.
+Fix the application if you see the deadline error.
 
 ```python
 import asyncio
@@ -44,21 +63,55 @@ asyncio.run(main())
 
 ## Lifecycle
 
-A `Server` owns one serve lifecycle at a time, and is reusable between
-lifecycles:
+A `Server` owns one serve generation at a time. That generation remains
+the sole owner of listeners, native drain, primary lifespan, secondary
+lifespans and the reuse guard until every one has actually released. A
+public return or timeout is not ownership release.
 
-- **Sequential reuse is supported.** Once a `serve()` call has fully
-  finished — after `shutdown()`, cancellation, or a startup failure — the
-  same `Server` instance can `serve()` again with fresh shutdown state.
-- **Concurrent calls are rejected.** A second `serve()` while one is
-  already running (from any thread or event loop) raises
-  `RuntimeError: this Server already has an active serve() call`.
+- **Sequential reuse is supported.** Once a generation has fully
+  released — after `shutdown()`, cancellation, or a startup failure, and
+  after any late request cleanup and lifespan shutdown — the same
+  `Server` instance can `serve()` again with fresh shutdown state.
+- **Concurrent calls are rejected.** A second `serve()` while a
+  generation is active (including while [`releasing`][h2corn.Server.releasing]
+  is true after the public caller returned) raises
+  `RuntimeError: this Server already has an active serve() call` or
+  `RuntimeError: this Server is still releasing a previous serve() call`.
 - **Cancellation drains gracefully.** Cancelling the task running
   `serve()` does not abort in-flight work: it triggers the same bounded
   graceful drain as `shutdown()` (native acceptance stops, cooperative
-  tasks get up to `Config.timeout_graceful_shutdown` seconds), and the
-  `CancelledError` is re-raised only after the drain completes and the
-  listeners are released.
+  tasks get up to `Config.timeout_graceful_shutdown` seconds). Unlike
+  explicit shutdown, cancellation always re-raises `CancelledError`
+  after the drain completes or its budget runs out — it does not surface
+  the unreleased-drain `RuntimeError`. Lifespan shutdown still follows
+  the native drain (deferred until requests release if the budget ran
+  out first).
+- **Public surface.** Embedders use `serve`, `shutdown`, `wait_started`,
+  `addresses`, and `releasing` — nothing else.
+
+## Knowing when the server is up
+
+`serve()` runs until the server stops, so it is normally a task — and
+whoever started it usually needs to know the port is open before doing
+anything else. [`Server.wait_started()`][h2corn.Server.wait_started]
+answers exactly that:
+
+```python
+serving = asyncio.create_task(server.serve())
+await server.wait_started()
+# Requests sent from here are accepted.
+```
+
+It resolves only after lifespan startup and native acceptance — listeners
+may already be bound while startup is still running, and
+`wait_started()` stays pending until the server is actually serving.
+A failure (failed bind, failed lifespan startup, shutdown before ready)
+is delivered to every waiter registered for **that** lifecycle; only a
+successful start is remembered for later callers. Someone who begins
+waiting after a failed generation is asking about the next one, not
+inheriting the previous answer. Readiness is a fact about the process,
+not about one event loop: a `Server` driven from another thread's loop
+can still be awaited from yours.
 
 ## Binding to any free port
 
@@ -68,9 +121,10 @@ and service discovery:
 
 ```python
 server = Server(app, Config(bind=('127.0.0.1:0',)))
-task = asyncio.create_task(server.serve())
-while not server.addresses:
-    await asyncio.sleep(0)
+serving = asyncio.create_task(server.serve())
+# Resolves when the listeners are live, and raises whatever stopped the
+# server if it never gets that far.
+await server.wait_started()
 print(server.addresses)  # ('127.0.0.1:54123',)
 ```
 

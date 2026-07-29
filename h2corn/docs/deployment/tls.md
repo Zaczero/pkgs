@@ -45,6 +45,49 @@ When `--cert-reqs` is anything other than `none`, `--ca-certs` is
 required, and the listener must already have a server certificate and
 key configured.
 
+## Reading the connection from an application
+
+Verification decides whether a client gets in. To decide what it may
+*do*, the application needs to know who it is — so h2corn implements the
+[ASGI TLS extension](https://asgi.readthedocs.io/en/latest/specs/tls.html),
+which puts the negotiated parameters under `scope["extensions"]["tls"]`:
+
+```python
+async def app(scope, receive, send):
+    tls = scope['extensions'].get('tls')
+    if tls is None:
+        ...  # not a TLS connection h2corn terminated
+    chain = tls['client_cert_chain']       # PEM strings, leaf first
+    name = tls['client_cert_name']         # RFC 4514 leaf DN, or None
+    version = tls['tls_version']           # 0x0304 for TLS 1.3
+    suite = tls['cipher_suite']            # e.g. 0x1302
+```
+
+The key is present only on connections h2corn terminated itself. Behind
+a TLS-terminating proxy there is no `tls` key at all, which is what the
+extension requires — the proxy holds that information, and forwards
+what it chooses to as headers.
+
+`client_cert_chain` is empty unless `--cert-reqs` asked for a
+certificate. When it is not empty, every certificate in it was verified
+against `--ca-certs` during the handshake, so an application may trust
+the identity without re-checking it, and `client_cert_name` is the leaf
+subject rendered once as an RFC 4514 string (including §2.4 `#`+hex
+encoding for dotted-decimal AttributeTypes). An empty optional-auth
+chain leaves both the tuple empty and the name `None`.
+`client_cert_error` is always `None`: a certificate that fails
+verification fails the handshake and never reaches an application.
+
+The parameters are read from the handshake once and the dictionary is
+built once, so every request on a keep-alive or multiplexed HTTP/2
+connection is handed the same object however many it carries. A
+plaintext listener never builds one.
+
+Certificate and key files are read while the process is still privileged,
+converted into an immutable native acceptor (`prepare_tls`), and then
+reused by every worker — workers do not reopen PEM paths after privilege
+drop or on replacement.
+
 ## Restrictions
 
 - Direct TLS is only supported on TCP listeners. A configuration that

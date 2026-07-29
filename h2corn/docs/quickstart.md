@@ -37,7 +37,7 @@ h2corn hello:app
 You'll see something like this in your terminal:
 
 ```text
-h2corn v1.4.0 • HTTP/2 ASGI
+h2corn v1.6.0 • HTTP/2 ASGI
 Listening on http://127.0.0.1:8000
 HTTP/1 compatibility is enabled; disable with --no-http1
 

@@ -23,9 +23,11 @@ than a hijacked socket. Two practical consequences:
 - The proxy → app hop stays on HTTP/2 the whole time — no
   `Upgrade`/`Connection: keep-alive` interaction with HTTP/1.1.
 
-When your reverse proxy speaks HTTP/2 to `h2corn` (Caddy and HAProxy
-both do — see [Behind a proxy](deployment/proxy.md)), WebSocket traffic
-rides the same `h2c` connection as the rest of the application.
+When your reverse proxy speaks HTTP/2 to `h2corn` *and* translates
+browser `Upgrade` into RFC 8441 extended `CONNECT` (HAProxy does;
+generic Caddy h2c proxying does not — see
+[Behind a proxy](deployment/proxy.md)), WebSocket traffic rides the same
+`h2c` connection as the rest of the application.
 
 ## Limits and keep-alives
 
@@ -33,15 +35,19 @@ The relevant configuration knobs share a `websocket_*` prefix; full
 descriptions, defaults, and CLI flags live in the
 [Configuration reference](configuration.md):
 
-- `websocket_max_message_size` caps individual frames. The default is
-  16 MiB; set it to the literal string `inherit` to follow
-  `max_request_body_size`, or `0` to remove the cap entirely.
+- `websocket_max_message_size` caps a reassembled message, not one
+  frame: fragments are accounted as they arrive, and a compressed
+  message is measured after decompression. The default is 16 MiB; set it
+  to the literal string `inherit` to follow `max_request_body_size`, or
+  `0` to remove the cap entirely.
 - `websocket_per_message_deflate` controls whether the server accepts
   the [permessage-deflate](https://datatracker.ietf.org/doc/html/rfc7692)
   compression extension when a client offers it.
 - `websocket_ping_interval` and `websocket_ping_timeout` keep idle
-  connections alive and detect dead peers. Set `ping_interval` to `0`
-  to disable both.
+  connections alive and detect dead peers. Set `websocket_ping_interval`
+  to `0` to turn keep-alive off entirely — that is the single off switch;
+  no pings are sent, and the timeout is irrelevant while keep-alive is
+  unset.
 
 ## Example
 
@@ -67,5 +73,10 @@ h2corn ws:app --no-http1
 ```
 
 With `--no-http1`, the server only accepts the HTTP/2 WebSocket
-bootstrap. Most browser-side WebSocket clients fall back to either
-transport transparently, as long as the proxy advertises HTTP/2.
+bootstrap — the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)
+extended `CONNECT`. Browsers negotiate that transparently when they reach
+`h2corn` over HTTP/2, but a reverse proxy in between has to translate the
+upgrade rather than forward it. HAProxy does. Caddy's shipped configuration
+instead routes WebSocket upgrades over HTTP/1.1 and ordinary requests over
+`h2c`, so keep HTTP/1 enabled there. See [Behind a reverse
+proxy](deployment/proxy.md) before dropping HTTP/1.
