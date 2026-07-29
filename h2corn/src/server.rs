@@ -30,22 +30,25 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::{UnixListener, UnixStream, unix::pipe::Receiver as QuiesceReceiver};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
+use crate::async_util::with_optional_timeout;
 use crate::config::{BindTarget, ServerConfig};
-use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error, ProxyError};
+use crate::error::{ErrorExt, ErrorKind, FailureDomain, H2CornError, H2Error, ProxyError};
 use crate::h2_frame::{self, BufferedConnectionReader, ErrorCode};
 use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
-    ProxyProtocolMode, ServerAddr, TrustedPeer, peer_is_trusted, read_h2_preface,
-    read_preamble_protocol, read_proxy_v1, read_proxy_v2,
+    ProxyProtocolMode, ServerAddr, TrustedPeer, read_h2_preface, read_preamble_protocol,
+    read_proxy_v1, read_proxy_v2,
 };
 use crate::pyloop::{PumpEvent, Shard, TaskSlot};
-use crate::runtime::{AppRuntimeHandle, ConnectionContext, ShutdownKind, ShutdownState};
+use crate::runtime::{
+    AppRuntimeHandle, ConnectionContext, ConnectionShared, ShutdownKind, ShutdownState,
+};
 use crate::sendfile::WriteTarget;
-use crate::{h1, h2, tls};
+use crate::tls::{ConnectionSecurity, TlsSessionInfo};
+use crate::{access_log, h1, h2, tls};
 
 pub(crate) type ListenerFd = OwnedFd;
 #[cfg(windows)]
@@ -63,6 +66,7 @@ type NegotiatedTlsConnection = (
     DetectedProtocol,
     BufferedConnectionReader<TlsReadHalf>,
     TlsWriteHalf,
+    TlsSessionInfo,
 );
 
 struct PrefixedIo {
@@ -76,8 +80,6 @@ struct ConnectionArgs {
     actual_peer: ConnectionPeer,
     actual_server: Option<ServerAddr>,
     shutdown: watch::Receiver<ShutdownState>,
-    preamble: ConnectionPreamble,
-    http1: bool,
 }
 
 impl PrefixedIo {
@@ -169,36 +171,20 @@ impl ListenerSource {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ConnectionPreamble {
-    Off,
-    V1,
-    V2,
-}
-
-impl ConnectionPreamble {
-    const fn from_mode(mode: ProxyProtocolMode) -> Self {
-        match mode {
-            ProxyProtocolMode::Off => Self::Off,
-            ProxyProtocolMode::V1 => Self::V1,
-            ProxyProtocolMode::V2 => Self::V2,
-        }
-    }
-
-    async fn read_proxy<R>(
-        self,
-        reader: &mut BufferedConnectionReader<R>,
-        actual_peer: &ConnectionPeer,
-        trusted: &[TrustedPeer],
-    ) -> Result<Option<ProxyInfo>, H2CornError>
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        match self {
-            Self::Off => Ok(None),
-            Self::V1 => read_proxy_v1(reader, actual_peer, trusted).await,
-            Self::V2 => read_proxy_v2(reader, actual_peer, trusted).await,
-        }
+/// Consume whatever PROXY-protocol preamble `mode` promises is there.
+async fn read_proxy_preamble<R>(
+    mode: ProxyProtocolMode,
+    reader: &mut BufferedConnectionReader<R>,
+    actual_peer: &ConnectionPeer,
+    trusted: &[TrustedPeer],
+) -> Result<Option<ProxyInfo>, H2CornError>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    match mode {
+        ProxyProtocolMode::Off => Ok(None),
+        ProxyProtocolMode::V1 => read_proxy_v1(reader, actual_peer, trusted).await,
+        ProxyProtocolMode::V2 => read_proxy_v2(reader, actual_peer, trusted).await,
     }
 }
 
@@ -289,10 +275,21 @@ pub(crate) async fn serve_from_fds(
     let quiesce = quiesce_fd.map(QuiesceReceiver::from_owned_fd).transpose()?;
     #[cfg(not(unix))]
     let quiesce = quiesce_fd;
-    if let Some(ready_trigger) = ready_trigger {
-        Python::attach(|py| ready_trigger.call0(py))?;
+    if config.access_log {
+        // Started here, not lazily on the first request: this runs in the
+        // worker process, after any supervisor fork, so the buffer and the
+        // thread that drains it always belong to the same process.
+        access_log::start_log_sink();
     }
-    serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await
+    if let Some(trigger) = ready_trigger {
+        // Through the pump, not `Python::attach`: this runs on a tokio thread,
+        // and attaching there creates and tears down a thread state (costly on
+        // free-threaded builds, and the one rule the pump exists to keep).
+        app.main_shard().push(PumpEvent::CallTrigger { trigger });
+    }
+    let served = serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await;
+    access_log::flush_log_sink();
+    served
 }
 
 #[cfg(unix)]
@@ -319,14 +316,44 @@ fn configure_tcp_stream(stream: &TcpStream) {
     let _ = set_tcp_quickack(stream, true);
 }
 
+/// Report a connection failure an operator can act on, and stay quiet about
+/// the rest.
+///
+/// A public listener sees malformed requests and half-closed sockets all day;
+/// logging those would bury the ones that matter. An application contract
+/// breach, a broken internal invariant or a configuration fault is somebody's
+/// bug, and used to vanish entirely.
+fn report_failure(subject: &str, result: Result<(), H2CornError>) {
+    let Err(error) = result else {
+        return;
+    };
+    match error.failure_domain() {
+        FailureDomain::PeerProtocol | FailureDomain::TransportIo => {},
+        FailureDomain::AppContract
+        | FailureDomain::InternalInvariant
+        | FailureDomain::Configuration => {
+            eprintln!("{subject} failed: {error}");
+        },
+    }
+}
+
+fn report_connection_failure(result: Result<(), H2CornError>) {
+    report_failure("connection", result);
+}
+
+/// An H2 request keeps the connection alive after a stream-local failure, so
+/// its task cannot return the error to the connection owner. Apply the same
+/// operator-facing failure policy at that task boundary instead.
+pub(crate) fn report_request_failure(result: Result<(), H2CornError>) {
+    report_failure("request", result);
+}
+
 fn spawn_connection(
     tasks: &mut JoinSet<()>,
     app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
-    preamble: ConnectionPreamble,
-    http1: bool,
 ) {
     match accepted {
         AcceptedConnection::Tcp(stream, peer) => {
@@ -335,60 +362,57 @@ fn spawn_connection(
                 host: addr.ip().to_string().into(),
                 port: Some(addr.port()),
             });
-            if let Some(acceptor) = config.tls.as_ref().map(|tls| tls.acceptor.clone()) {
+            if let Some(tls) = config
+                .tls
+                .as_ref()
+                .map(|tls| (tls.acceptor.clone(), Arc::clone(&tls.server_certificate)))
+            {
                 tasks.spawn(async move {
-                    let _ = serve_tls_connection(stream, acceptor, ConnectionArgs {
-                        app,
-                        config,
-                        actual_peer: ConnectionPeer::Tcp(peer),
-                        actual_server,
-                        shutdown,
-                        preamble,
-                        http1,
-                    })
-                    .await;
+                    report_connection_failure(
+                        serve_tls_connection(stream, tls, ConnectionArgs {
+                            app,
+                            config,
+                            actual_peer: ConnectionPeer::Tcp(peer),
+                            actual_server,
+                            shutdown,
+                        })
+                        .await,
+                    );
                 });
             } else {
                 let (reader, writer) = stream.into_split();
                 tasks.spawn(async move {
-                    let _ = serve_connection(reader, writer, ConnectionArgs {
-                        app,
-                        config,
-                        actual_peer: ConnectionPeer::Tcp(peer),
-                        actual_server,
-                        shutdown,
-                        preamble,
-                        http1,
-                    })
-                    .await;
+                    report_connection_failure(
+                        serve_connection(reader, writer, ConnectionArgs {
+                            app,
+                            config,
+                            actual_peer: ConnectionPeer::Tcp(peer),
+                            actual_server,
+                            shutdown,
+                        })
+                        .await,
+                    );
                 });
             }
         },
         #[cfg(unix)]
         AcceptedConnection::Unix { stream, path } => {
-            debug_assert!(
-                config.tls.is_none(),
-                "TLS listener mode only supports TCP listeners"
-            );
-            if config.tls.is_some() {
-                return;
-            }
             let actual_server = path.map(|path| ServerAddr {
                 host: Box::from(path.as_ref()),
                 port: None,
             });
             let (reader, writer) = stream.into_split();
             tasks.spawn(async move {
-                let _ = serve_connection(reader, writer, ConnectionArgs {
-                    app,
-                    config,
-                    actual_peer: ConnectionPeer::Unix,
-                    actual_server,
-                    shutdown,
-                    preamble,
-                    http1,
-                })
-                .await;
+                report_connection_failure(
+                    serve_connection(reader, writer, ConnectionArgs {
+                        app,
+                        config,
+                        actual_peer: ConnectionPeer::Unix,
+                        actual_server,
+                        shutdown,
+                    })
+                    .await,
+                );
             });
         },
     }
@@ -421,8 +445,6 @@ async fn serve_listeners(
     shutdown_trigger: Py<PyAny>,
     quiesce: Option<QuiesceReceiver>,
 ) -> Result<(), H2CornError> {
-    let preamble = ConnectionPreamble::from_mode(config.proxy.protocol);
-    let http1 = config.http1.enabled;
     let mut accept_start = 0;
     let shutdown = shutdown_future(shutdown_trigger, app.main_shard());
     tokio::pin!(shutdown);
@@ -430,17 +452,13 @@ async fn serve_listeners(
     tokio::pin!(quiesce);
     let (shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
     let mut tasks = JoinSet::new();
-    let mut shutting_down = false;
     let mut graceful_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
 
     loop {
-        if shutting_down {
+        if let Some(deadline) = graceful_deadline.as_mut() {
             if tasks.is_empty() {
                 break;
             }
-            let deadline = graceful_deadline
-                .as_mut()
-                .expect("shutdown always installs a global grace deadline");
             tokio::select! {
                 biased;
                 () = deadline.as_mut() => {
@@ -452,7 +470,11 @@ async fn serve_listeners(
                     break;
                 }
                 joined = tasks.join_next(), if !tasks.is_empty() => {
-                    let _ = joined;
+                    if let Some(Err(join_error)) = joined
+                        && !join_error.is_cancelled()
+                    {
+                        eprintln!("connection task failed: {join_error}");
+                    }
                     continue;
                 }
             }
@@ -461,7 +483,6 @@ async fn serve_listeners(
         let (next_accept_start, accepted) = tokio::select! {
             biased;
             shutdown_kind = &mut quiesce => {
-                shutting_down = true;
                 graceful_deadline = Some(Box::pin(tokio::time::sleep(
                     config.timeout_graceful_shutdown,
                 )));
@@ -469,7 +490,6 @@ async fn serve_listeners(
                 continue;
             }
             shutdown_kind = &mut shutdown => {
-                shutting_down = true;
                 graceful_deadline = Some(Box::pin(tokio::time::sleep(
                     config.timeout_graceful_shutdown,
                 )));
@@ -504,8 +524,6 @@ async fn serve_listeners(
             Arc::clone(&config),
             accepted,
             shutdown_rx.clone(),
-            preamble,
-            http1,
         );
     }
 
@@ -619,18 +637,20 @@ where
         actual_peer,
         actual_server,
         shutdown,
-        preamble,
-        http1,
     } = args;
     let mut reader = BufferedConnectionReader::new(reader);
-    let proxy_headers_trusted =
-        config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
-    let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
+    let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, &config.proxy);
+    let preamble = config.proxy.protocol;
+    let http1 = config.http1.enabled;
 
-    let connection_start = timeout(config.timeout_handshake, async {
-        let proxy = preamble
-            .read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers)
-            .await?;
+    let connection_start = with_optional_timeout(config.timeout_handshake, async {
+        let proxy = read_proxy_preamble(
+            preamble,
+            &mut reader,
+            &actual_peer,
+            &config.proxy.trusted_peers,
+        )
+        .await?;
         let protocol = read_preamble_protocol(&mut reader, http1).await?;
         Ok::<_, H2CornError>(ConnectionStart { proxy, protocol })
     })
@@ -652,14 +672,14 @@ where
     if let Some(proxy) = connection_start.proxy {
         info.apply_proxy_info(proxy);
     }
-    let connection_ctx = ConnectionContext::new(app, config, info, shutdown.clone());
+    // Plaintext: the ASGI TLS extension must be absent, not empty.
+    let connection_ctx = ConnectionShared::new(app, config, info, ConnectionSecurity::Plaintext);
 
     serve_detected_connection(
         reader,
         writer,
         connection_start.protocol,
         connection_ctx,
-        false,
         shutdown,
     )
     .await
@@ -667,7 +687,7 @@ where
 
 async fn serve_tls_connection(
     stream: TcpStream,
-    acceptor: TlsAcceptor,
+    (acceptor, server_certificate): (TlsAcceptor, Arc<str>),
     args: ConnectionArgs,
 ) -> Result<(), H2CornError> {
     let ConnectionArgs {
@@ -676,35 +696,30 @@ async fn serve_tls_connection(
         actual_peer,
         actual_server,
         shutdown,
-        preamble,
-        http1,
     } = args;
-    let proxy_headers_trusted =
-        config.proxy.trust_headers && peer_is_trusted(&config.proxy.trusted_peers, &actual_peer);
-    let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, proxy_headers_trusted);
+    let mut info = ConnectionInfo::from_peer(actual_peer, actual_server, &config.proxy);
 
     let negotiation: Pin<
         Box<dyn Future<Output = Result<Option<NegotiatedTlsConnection>, H2CornError>> + Send + '_>,
     > = Box::pin(negotiate_tls_connection(
         stream,
         acceptor,
+        server_certificate,
         &config,
         actual_peer,
-        preamble,
-        http1,
     ));
-    let connection_start = timeout(config.timeout_handshake, negotiation)
+    let connection_start = with_optional_timeout(config.timeout_handshake, negotiation)
         .await
         .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
-    let Some((proxy, protocol, reader, writer)) = connection_start? else {
+    let Some((proxy, protocol, reader, writer, session)) = connection_start? else {
         return Ok(());
     };
     if let Some(proxy) = proxy {
         info.apply_proxy_info(proxy);
     }
-    let connection_ctx = ConnectionContext::new(app, config, info, shutdown.clone());
+    let connection_ctx = ConnectionShared::new(app, config, info, ConnectionSecurity::Tls(session));
 
-    serve_detected_connection(reader, writer, protocol, connection_ctx, true, shutdown).await
+    serve_detected_connection(reader, writer, protocol, connection_ctx, shutdown).await
 }
 
 /// TLS negotiation is a cold, once-per-connection phase with a large rustls
@@ -713,18 +728,26 @@ async fn serve_tls_connection(
 async fn negotiate_tls_connection(
     stream: TcpStream,
     acceptor: TlsAcceptor,
+    server_certificate: Arc<str>,
     config: &ServerConfig,
     actual_peer: ConnectionPeer,
-    preamble: ConnectionPreamble,
-    http1: bool,
 ) -> Result<Option<NegotiatedTlsConnection>, H2CornError> {
+    let preamble = config.proxy.protocol;
+    let http1 = config.http1.enabled;
     let mut reader = BufferedConnectionReader::with_buffer(stream, BytesMut::new());
-    let proxy = preamble
-        .read_proxy(&mut reader, &actual_peer, &config.proxy.trusted_peers)
-        .await?;
+    let proxy = read_proxy_preamble(
+        preamble,
+        &mut reader,
+        &actual_peer,
+        &config.proxy.trusted_peers,
+    )
+    .await?;
     let (stream, buffer) = reader.into_parts();
     let stream = PrefixedIo::new(stream, buffer);
     let tls_stream = acceptor.accept(stream).await?;
+    // Read everything the session has to say before splitting the stream:
+    // the halves keep the cipher state, not the handshake outcome.
+    let session = TlsSessionInfo::from_session(tls_stream.get_ref().1, server_certificate)?;
     let protocol = match tls_stream.get_ref().1.alpn_protocol() {
         Some(protocol) if protocol == tls::ALPN_H2 => DetectedProtocol::Http2,
         Some(protocol) if protocol == tls::ALPN_HTTP1 && http1 => DetectedProtocol::Http1,
@@ -736,7 +759,7 @@ async fn negotiate_tls_connection(
     if protocol == DetectedProtocol::Http2 {
         read_h2_preface(&mut reader).await?;
     }
-    Ok(Some((proxy, protocol, reader, writer)))
+    Ok(Some((proxy, protocol, reader, writer, session)))
 }
 
 async fn serve_detected_connection<R, W>(
@@ -744,7 +767,6 @@ async fn serve_detected_connection<R, W>(
     writer: W,
     protocol: DetectedProtocol,
     connection_ctx: ConnectionContext,
-    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
@@ -753,11 +775,11 @@ where
 {
     match protocol {
         DetectedProtocol::Http2 => {
-            h2::serve_connection(reader, writer, connection_ctx, secure, shutdown).await
+            h2::serve_connection(reader, writer, connection_ctx, shutdown).await
         },
         DetectedProtocol::Http1 => {
             let (reader, buffer) = reader.into_parts();
-            h1::serve_connection(reader, buffer, writer, connection_ctx, secure, shutdown).await
+            h1::serve_connection(reader, buffer, writer, connection_ctx, shutdown).await
         },
     }
 }
@@ -780,6 +802,9 @@ async fn shutdown_future(trigger: Py<PyAny>, shard: Shard) -> ShutdownKind {
         slot: Arc::clone(&slot),
     });
     if let Ok(value) = slot.wait(shard).await {
+        // Once per server shutdown, so the thread-state cost the pump exists
+        // to avoid does not apply; the alternative is a bespoke pump event
+        // for a single string conversion.
         return Python::attach(|py| {
             value
                 .bind(py)

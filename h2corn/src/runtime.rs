@@ -1,14 +1,14 @@
 use std::mem::{size_of, swap, take};
 use std::num::{NonZeroU32, NonZeroU64};
-use std::ops::Deref;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 
 use bytes::{Bytes, BytesMut};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use pyo3::types::{PyDict, PyTuple};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::app_call::AppCallArgs;
 use crate::config::ServerConfig;
@@ -17,7 +17,8 @@ use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
 use crate::http::types::RequestHead;
 use crate::proxy_protocol::ConnectionInfo;
-use crate::pyloop::{PumpEvent, Shard, SlotFuture, TaskSlot};
+use crate::pyloop::{PumpEvent, Shard, ShardHandle, SlotFuture, TaskSlot};
+use crate::tls::ConnectionSecurity;
 
 pub(crate) struct AppRuntime {
     pub app: Py<PyAny>,
@@ -124,6 +125,10 @@ impl ShutdownKind {
 pub(crate) struct ConnectionScopeCache {
     default_server: PyOnceLock<Py<PyAny>>,
     default_client: PyOnceLock<Option<Py<PyAny>>>,
+    /// The TLS extension dictionary. Every request on a connection reports the
+    /// same handshake, so it is built once and shared — unlike the enclosing
+    /// `extensions`, which stays per-request because applications write there.
+    tls_extension: PyOnceLock<Py<PyDict>>,
 }
 
 impl Default for ConnectionScopeCache {
@@ -131,6 +136,7 @@ impl Default for ConnectionScopeCache {
         Self {
             default_server: PyOnceLock::new(),
             default_client: PyOnceLock::new(),
+            tls_extension: PyOnceLock::new(),
         }
     }
 }
@@ -139,12 +145,26 @@ pub(crate) struct RuntimeLimits {
     concurrency: Option<Arc<Semaphore>>,
     max_requests: Option<NonZeroU64>,
     completed_tasks: AtomicU64,
-    retire_requested: AtomicBool,
-    retire_trigger: Option<Py<PyAny>>,
+    /// Taken exactly once, by whichever request completion crosses
+    /// `max_requests`. `None` afterwards, which is also the "already retired"
+    /// flag — one state instead of a counter plus a separate bool.
+    retirement: Mutex<Option<WorkerRetirement>>,
+}
+
+/// Everything needed to ask the supervisor to retire this worker.
+struct WorkerRetirement {
+    /// Weak so a retained retirement cannot keep the loop shard alive past an
+    /// embedded `serve()`.
+    shard: Weak<ShardHandle>,
+    trigger: Py<PyAny>,
 }
 
 impl RuntimeLimits {
-    pub(crate) fn new(config: &ServerConfig, retire_trigger: Option<Py<PyAny>>) -> Option<Self> {
+    pub(crate) fn new(
+        config: &ServerConfig,
+        shard: &Shard,
+        retire_trigger: Option<Py<PyAny>>,
+    ) -> Option<Self> {
         if config.limit_concurrency.is_none() && config.max_requests.is_none() {
             return None;
         }
@@ -154,24 +174,31 @@ impl RuntimeLimits {
                 .map(|limit| Arc::new(Semaphore::new(limit.get()))),
             max_requests: config.max_requests,
             completed_tasks: AtomicU64::new(0),
-            retire_requested: AtomicBool::new(false),
-            retire_trigger,
+            retirement: Mutex::new(retire_trigger.map(|trigger| WorkerRetirement {
+                shard: Arc::downgrade(shard),
+                trigger,
+            })),
         })
     }
 
     fn on_task_complete(&self) {
-        if let Some(limit) = self.max_requests {
-            if self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1 < limit.get() {
-                return;
-            }
-            if self.retire_requested.swap(true, Ordering::Relaxed) {
-                return;
-            }
-            if let Some(trigger) = self.retire_trigger.as_ref() {
-                Python::attach(|py| {
-                    let _ = trigger.call0(py);
-                });
-            }
+        let Some(limit) = self.max_requests else {
+            return;
+        };
+        if self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1 < limit.get() {
+            return;
+        }
+        // Past the threshold every completion takes this lock once and finds
+        // it empty; the retiring completion is the only one that does work.
+        let Some(retirement) = self.retirement.lock().take() else {
+            return;
+        };
+        // This drop can land on any tokio thread, so the Python call goes
+        // through the pump rather than attaching here.
+        if let Some(shard) = retirement.shard.upgrade() {
+            shard.push(PumpEvent::CallTrigger {
+                trigger: retirement.trigger,
+            });
         }
     }
 }
@@ -278,37 +305,40 @@ impl RequestAdmission {
     }
 }
 
-/// Slot-owned request state, counted in the settlement tracker from
-/// construction to drop.
+/// Slot-owned request state, alive from launch until the Python task's
+/// done-callback releases the slot.
+///
+/// A request keeps its **connection** alive rather than taking owners of its
+/// own: the connection already holds the `AppRuntime` handle and the one
+/// tracker token that teardown waits on, so a request costs a single
+/// connection-local refcount instead of two global ones plus two counter
+/// updates.
 ///
 /// Field order is the settlement protocol: `admission` releases capacity,
 /// records worker completion, and publishes the protocol-specific completion;
-/// `app` then releases this guard's `AppRuntime` owner; `settlement` last
-/// decrements the tracker and wakes teardown. Teardown's `Arc::try_unwrap`
-/// therefore never observes a guard-held owner after the tracker drains.
+/// `connection` drops last, and its own field order then releases the
+/// `AppRuntime` owner before the tracker token wakes teardown. Teardown's
+/// `Arc::try_unwrap` therefore never observes a guard-held owner after the
+/// tracker drains.
 pub(crate) struct RequestTaskGuard {
     #[expect(
         dead_code,
         reason = "RAII: settles admission state in field order on drop"
     )]
     admission: RequestAdmission,
-    app: AppRuntimeHandle,
-    #[expect(dead_code, reason = "RAII: wakes teardown last, after the owner above")]
-    settlement: TrackedOwner,
+    connection: ConnectionContext,
 }
 
 impl RequestTaskGuard {
-    pub(crate) fn new(admission: RequestAdmission, app: AppRuntimeHandle) -> Self {
-        let settlement = TrackedOwner::track(&app.scoped_owners);
+    pub(crate) const fn new(admission: RequestAdmission, connection: ConnectionContext) -> Self {
         Self {
             admission,
-            app,
-            settlement,
+            connection,
         }
     }
 
-    pub(crate) const fn app(&self) -> &AppRuntimeHandle {
-        &self.app
+    pub(crate) fn app(&self) -> &AppRuntimeHandle {
+        &self.connection.app
     }
 }
 
@@ -355,6 +385,9 @@ pub(crate) struct ConnectionShared {
     pub app: AppRuntimeHandle,
     pub config: Arc<ServerConfig>,
     pub info: ConnectionInfo,
+    /// One security plane for the connection. Plaintext omits the ASGI TLS
+    /// extension; TLS carries the session identity used for scheme and scope.
+    pub security: ConnectionSecurity,
     scope_cache: ConnectionScopeCache,
     /// Last field: settles the tracker only after `app` above has released,
     /// covering every context clone — including request children hard-aborted
@@ -363,30 +396,63 @@ pub(crate) struct ConnectionShared {
     owner_token: TrackedOwner,
 }
 
-#[derive(Clone)]
-pub(crate) struct ConnectionContext {
-    shared: Arc<ConnectionShared>,
-    pub shutdown: watch::Receiver<ShutdownState>,
-}
+/// A connection's shared state, held by the connection task and by every
+/// request it launches. Keeping the connection alive keeps its `AppRuntime`
+/// owner and tracker token alive, so a request needs no owner of its own.
+pub(crate) type ConnectionContext = Arc<ConnectionShared>;
 
-impl ConnectionContext {
+impl ConnectionShared {
     pub(crate) fn new(
         app: AppRuntimeHandle,
         config: Arc<ServerConfig>,
         info: ConnectionInfo,
-        shutdown: watch::Receiver<ShutdownState>,
-    ) -> Self {
+        security: ConnectionSecurity,
+    ) -> ConnectionContext {
         let owner_token = TrackedOwner::track(&app.scoped_owners);
-        Self {
-            shared: Arc::new(ConnectionShared {
-                app,
-                config,
-                info,
-                scope_cache: ConnectionScopeCache::default(),
-                owner_token,
-            }),
-            shutdown,
-        }
+        Arc::new(Self {
+            app,
+            config,
+            info,
+            security,
+            scope_cache: ConnectionScopeCache::default(),
+            owner_token,
+        })
+    }
+
+    /// The ASGI TLS extension for this connection, or `None` on plaintext.
+    ///
+    /// `client_cert_name` is the leaf subject (RFC 4514) when the peer presented
+    /// a verified chain, and `None` when optional auth left the chain empty.
+    /// `client_cert_error` stays `None`: rustls ends failed authentication
+    /// before a request scope is built.
+    pub(crate) fn tls_scope_extension<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let ConnectionSecurity::Tls(tls) = &self.security else {
+            return Ok(None);
+        };
+        let extension = self.scope_cache.tls_extension.get_or_try_init(py, || {
+            let (chain, name) = match tls.client.as_ref() {
+                Some(client) => (
+                    PyTuple::new(py, client.certificate_chain.iter().map(Box::as_ref))?,
+                    Some(client.subject.as_ref()),
+                ),
+                None => (PyTuple::empty(py), None),
+            };
+            Ok::<_, PyErr>(
+                crate::py_dict!(py, {
+                    "server_cert" => tls.server_certificate.as_ref(),
+                    "client_cert_chain" => chain,
+                    "client_cert_name" => name,
+                    "client_cert_error" => py.None(),
+                    "tls_version" => tls.version,
+                    "cipher_suite" => tls.cipher_suite,
+                })
+                .unbind(),
+            )
+        })?;
+        Ok(Some(extension.bind(py).clone()))
     }
 
     pub(crate) fn default_server_scope_value<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
@@ -428,14 +494,6 @@ impl ConnectionContext {
     ) -> T {
         let view = scope_view_from_parts("", &self.config, &self.info, None);
         f(view.client, view.server)
-    }
-}
-
-impl Deref for ConnectionContext {
-    type Target = ConnectionShared;
-
-    fn deref(&self) -> &Self::Target {
-        &self.shared
     }
 }
 
@@ -803,12 +861,12 @@ pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestA
 /// Python and never fails — startup errors arrive through the returned
 /// future like any other app failure.
 pub(crate) fn start_app_call(
-    app: AppRuntimeHandle,
+    connection: ConnectionContext,
     args: Box<AppCallArgs>,
     admission: RequestAdmission,
 ) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
-    let shard = app.pick_shard();
-    let slot = TaskSlot::with_guard(RequestTaskGuard::new(admission, app));
+    let shard = connection.app.pick_shard();
+    let slot = TaskSlot::with_guard(RequestTaskGuard::new(admission, connection));
     shard.push(PumpEvent::StartTask {
         args,
         slot: Arc::clone(&slot),
@@ -824,10 +882,9 @@ pub(crate) mod test_fixtures {
     use std::time::Duration;
 
     use pyo3::Python;
-    use tokio::sync::watch;
 
     use super::{
-        AppRuntime, AppRuntimeHandle, ConnectionContext, RequestTaskGuard, ShutdownState,
+        AppRuntime, AppRuntimeHandle, ConnectionContext, ConnectionShared, RequestTaskGuard,
         try_acquire_request_admission,
     };
     use crate::config::{
@@ -839,20 +896,26 @@ pub(crate) mod test_fixtures {
     use crate::pyloop::ShardHandle;
 
     pub(crate) fn server_config() -> Arc<ServerConfig> {
-        Arc::new(ServerConfig {
+        Arc::new(server_config_parts())
+    }
+
+    /// The same configuration, unwrapped so a test can adjust one field.
+    pub(crate) fn server_config_parts() -> ServerConfig {
+        ServerConfig {
             binds: Box::new([BindTarget::Tcp {
                 host: Box::from("127.0.0.1"),
                 port: 8000,
             }]),
             access_log: false,
             root_path: Box::from(""),
+            root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: None,
             http1: Http1Config {
                 enabled: true,
                 ..Default::default()
             },
             http2: Http2Config {
-                max_concurrent_streams: 8,
+                max_concurrent_streams: NonZeroU32::new(8).expect("non-zero"),
                 max_header_list_size: None,
                 max_header_block_size: None,
                 max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
@@ -878,26 +941,47 @@ pub(crate) mod test_fixtures {
                 protocol: ProxyProtocolMode::Off,
             },
             tls: None,
-            timeout_handshake: Duration::from_secs(5),
+            timeout_handshake: Some(Duration::from_secs(5)),
             response_headers: ResponseHeaderConfig::default(),
-        })
+        }
     }
 
     pub(crate) fn connection_context(py: Python<'_>) -> ConnectionContext {
         connection_context_for(app_runtime(py))
     }
 
+    /// A connection whose configuration the caller has adjusted.
+    pub(crate) fn connection_context_with(
+        py: Python<'_>,
+        config: Arc<ServerConfig>,
+    ) -> ConnectionContext {
+        ConnectionShared::new(
+            app_runtime(py),
+            config,
+            connection_info(),
+            crate::tls::ConnectionSecurity::Plaintext,
+        )
+    }
+
     pub(crate) fn connection_context_for(app: AppRuntimeHandle) -> ConnectionContext {
-        let info = ConnectionInfo::from_peer(
+        ConnectionShared::new(
+            app,
+            server_config(),
+            connection_info(),
+            crate::tls::ConnectionSecurity::Plaintext,
+        )
+    }
+
+    fn connection_info() -> ConnectionInfo {
+        let config = server_config();
+        ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
             Some(ServerAddr {
                 host: "127.0.0.1".into(),
                 port: Some(8000),
             }),
-            false,
-        );
-        let (_shutdown_tx, shutdown_rx) = watch::channel(ShutdownState::Running);
-        ConnectionContext::new(app, server_config(), info, shutdown_rx)
+            &config.proxy,
+        )
     }
 
     pub(crate) fn app_runtime(py: Python<'_>) -> AppRuntimeHandle {
@@ -912,7 +996,7 @@ pub(crate) mod test_fixtures {
         RequestTaskGuard::new(
             try_acquire_request_admission(app)
                 .expect("the unlimited test runtime admits every request"),
-            Arc::clone(app),
+            connection_context_for(Arc::clone(app)),
         )
     }
 }
@@ -967,7 +1051,7 @@ mod tests {
 
     use std::future::Future;
     use std::num::{NonZeroU32, NonZeroU64};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::task::Poll;
     use std::thread;
@@ -1004,8 +1088,7 @@ mod tests {
             concurrency: Some(Arc::clone(&semaphore)),
             max_requests: NonZeroU64::new(2),
             completed_tasks: AtomicU64::new(0),
-            retire_requested: AtomicBool::new(false),
-            retire_trigger: None,
+            retirement: parking_lot::Mutex::new(None),
         });
         let admission = RequestAdmission {
             permit: Some(permit),

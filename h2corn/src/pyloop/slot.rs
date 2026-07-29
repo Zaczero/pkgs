@@ -10,7 +10,6 @@ use std::task::{Context, Poll, Waker};
 
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use tokio::sync::oneshot;
 
 use super::Shard;
 
@@ -40,24 +39,6 @@ pub(crate) struct TaskSlot<T, Guard = ()> {
     state: Mutex<SlotState<T>>,
     guard: Guard,
 }
-
-/// Cold-path acknowledgment sent when every owner of a slot has gone away.
-///
-/// For an abandoned Python task, the pump's done-callback holds the final
-/// slot reference. The receiver therefore resolves only after cancellation
-/// has propagated through the awaitable and its done-callback has run.
-pub(crate) struct SlotDropAck(Option<oneshot::Sender<()>>);
-
-impl Drop for SlotDropAck {
-    fn drop(&mut self) {
-        if let Some(done) = self.0.take() {
-            let _ = done.send(());
-        }
-    }
-}
-
-pub(crate) type AcknowledgedSlotFuture<T> = SlotFuture<T, SlotDropAck>;
-pub(crate) type SlotDropWait = oneshot::Receiver<()>;
 
 impl<T> TaskSlot<T> {
     pub(crate) fn new() -> Arc<Self> {
@@ -149,13 +130,6 @@ impl<T, Guard> TaskSlot<T, Guard> {
             shard,
             completed: false,
         }
-    }
-}
-
-impl<T> TaskSlot<T, SlotDropAck> {
-    pub(crate) fn with_drop_ack() -> (Arc<Self>, SlotDropWait) {
-        let (done, wait) = oneshot::channel();
-        (Self::with_guard(SlotDropAck(Some(done))), wait)
     }
 }
 
@@ -281,19 +255,5 @@ mod tests {
                 "both racing transitions completed"
             );
         }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn drop_ack_waits_for_the_last_slot_owner() {
-        let (slot, dropped) = TaskSlot::<(), super::SlotDropAck>::with_drop_ack();
-        let callback_owner = slot.clone();
-
-        drop(slot);
-        assert!(dropped.is_empty());
-
-        drop(callback_owner);
-        dropped
-            .await
-            .expect("last slot owner acknowledges its drop");
     }
 }

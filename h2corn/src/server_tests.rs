@@ -1,31 +1,42 @@
 use std::io;
 use std::iter::repeat_with;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixListener;
 
-use rustix::io::{Errno, fcntl_getfd};
+use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::pipe::pipe;
 
-use super::{ListenerFd, adopt_all};
+use super::{ListenerFd, adopt_all, adopt_listeners};
 use crate::config::BindTarget;
 
-fn owned_pipe_writes(count: usize) -> (Box<[ListenerFd]>, Vec<i32>) {
-    let mut owned = Vec::with_capacity(count);
-    let mut raw = Vec::with_capacity(count);
+/// Pipe write ends to hand to the code under test, paired with their read ends.
+///
+/// Closure is observed on the *read* end (a pipe reports EOF once its last
+/// writer is gone), not by probing the raw descriptor number: numbers are
+/// recycled process-wide, so a sibling test thread opening a file between the
+/// close and the check would make a descriptor-number oracle report failure.
+fn owned_pipe_writes(count: usize) -> (Box<[ListenerFd]>, Vec<OwnedFd>) {
+    let mut writes = Vec::with_capacity(count);
+    let mut reads = Vec::with_capacity(count);
     for _ in 0..count {
         let (read, write) = pipe().expect("pipe creation succeeds");
-        drop(read);
-        raw.push(write.as_raw_fd());
-        owned.push(write);
+        // Non-blocking, so a leaked writer fails the assertion instead of
+        // hanging the suite.
+        fcntl_setfl(&read, OFlags::NONBLOCK).expect("read end accepts O_NONBLOCK");
+        reads.push(read);
+        writes.push(write);
     }
-    (owned.into_boxed_slice(), raw)
+    (writes.into_boxed_slice(), reads)
 }
 
-fn assert_closed(raw: &[i32]) {
-    for &fd in raw {
-        // SAFETY: the borrowed descriptor is used only to verify that its
-        // RAII owner has closed it; fcntl returns EBADF without dereference.
-        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-        assert_eq!(fcntl_getfd(fd).unwrap_err(), Errno::BADF);
+fn assert_closed(reads: &[OwnedFd]) {
+    for read in reads {
+        let mut buffer = [0_u8; 1];
+        assert_eq!(
+            rustix::io::read(read, &mut buffer),
+            Ok(0),
+            "the write end is still open, so the handle was not released"
+        );
     }
 }
 
@@ -60,4 +71,23 @@ fn mid_adoption_failure_closes_prior_current_and_remaining_handles() {
     });
     let _ = result.unwrap_err();
     assert_closed(&raw);
+}
+
+#[test]
+fn tls_adoption_rejects_unix_listeners_at_the_ownership_boundary() {
+    let path = std::env::temp_dir().join(format!("h2corn-adopt-tls-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).expect("temporary Unix listener binds");
+    let fd: OwnedFd = listener.into();
+    let binds = [BindTarget::Fd { fd: 0 }];
+
+    let Err(error) = adopt_listeners(&binds, vec![fd].into_boxed_slice(), true) else {
+        panic!("TLS must not adopt a Unix listener");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("TLS is supported only on TCP listeners")
+    );
+    std::fs::remove_file(path).expect("temporary Unix listener path is removable");
 }

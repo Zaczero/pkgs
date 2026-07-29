@@ -2,7 +2,6 @@
 
 use std::iter::repeat_with;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -13,28 +12,38 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
 use smallvec::SmallVec;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
 use crate::access_log::emit_banner as emit_access_banner;
+use crate::config;
 use crate::config::{
     BindTarget, ClientCertMode, ConfiguredResponseHeader, Http1Config, Http2Config, ProxyConfig,
     ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
 };
 use crate::error::{ConfigError, H2CornError, IntoPyResult, into_pyerr};
-use crate::http::header::lowercase_header_name_is_valid;
+use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use crate::pyloop::{
-    AcknowledgedSlotFuture, PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard,
-    ShardHandle, ShardThread, SlotDropWait, call_awaitable, call_cancellable_awaitable,
-    init_runtime, new_rust_future, release_app, runtime, spawn_shard_thread,
+    PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
+    SlotFuture, call_awaitable, init_runtime, new_rust_future, release_app, runtime,
+    spawn_shard_thread,
 };
 use crate::runtime::{AppRuntime, AppRuntimeHandle, RuntimeLimits};
 use crate::server::{ListenerFd, QuiesceFd, own_serve_fds, serve_from_fds};
-use crate::tls::build_tls_config;
+use crate::tls::{TlsMaterial, build_tls_config};
 
 const TOKIO_EVENT_INTERVAL: u32 = 31;
 const TOKIO_GLOBAL_QUEUE_INTERVAL: u32 = 31;
+
+/// Validated, immutable TLS acceptor state prepared once from PEM bytes.
+///
+/// Built while the process can still read the key files; workers reuse the
+/// same value after privilege drop and never reopen the paths.
+#[pyclass(frozen, name = "_PreparedTls", skip_from_py_object)]
+#[derive(Clone)]
+pub(crate) struct PreparedTls(Option<TlsConfig>);
 
 struct PyConfig<'py>(&'py Bound<'py, PyAny>);
 
@@ -45,13 +54,22 @@ struct SecondaryLifespanConfig {
     shutdown_timeout: Option<f64>,
 }
 
-type SecondaryRunner = (usize, Shard, Py<PyAny>);
+/// The runner handed into Rust ownership, and the startup it is waiting on.
+type SecondaryLifespanStart = (
+    oneshot::Receiver<PyResult<Py<PyAny>>>,
+    SlotFuture<PyResult<Py<PyAny>>>,
+);
+
+struct SecondaryRunner {
+    index: usize,
+    shard: Shard,
+    runner: Py<PyAny>,
+}
 
 /// Exact, immutable Python-to-Rust ownership handoff for an active primary
-/// lifespan runner. The Python wrapper remains usable by generic callbacks;
-/// h2corn consumes this object to call the original app directly and install
-/// the loop-local state dictionary on the main shard.
-#[pyclass(frozen, name = "LifespanHandoff")]
+/// lifespan runner. Implementation object for secondary-loop state — not public
+/// API; the Python name is private.
+#[pyclass(frozen, name = "_LifespanHandoff")]
 pub(crate) struct LifespanHandoff {
     app: Py<PyAny>,
     state: Py<PyDict>,
@@ -119,11 +137,24 @@ impl<'py> PyConfig<'py> {
     }
 
     fn duration(&self, name: &'static str) -> PyResult<Duration> {
-        finite_duration(name, self.get::<f64>(name)?)
+        duration_from_seconds(name, self.get::<f64>(name)?)
     }
 
     fn optional_duration(&self, name: &'static str) -> PyResult<Option<Duration>> {
         optional_duration(name, self.get::<f64>(name)?)
+    }
+
+    /// The `Server` value this configuration sends, resolved once here so the
+    /// response path only has a value to push or not.
+    fn server_header(&self) -> PyResult<Option<Bytes>> {
+        match self.attr("server_header")?.extract::<&str>()? {
+            "off" => Ok(None),
+            "on" => Ok(Some(Bytes::from_static(config::SERVER_NAME.as_bytes()))),
+            "full" => Ok(Some(Bytes::from_static(
+                config::SERVER_NAME_AND_VERSION.as_bytes(),
+            ))),
+            value => Err(into_pyerr(ConfigError::invalid_server_header_mode(value))),
+        }
     }
 
     fn proxy_protocol(&self) -> PyResult<ProxyProtocolMode> {
@@ -142,16 +173,6 @@ impl<'py> PyConfig<'py> {
             "required" => Ok(ClientCertMode::Required),
             value => Err(into_pyerr(ConfigError::invalid_client_cert_mode(value))),
         }
-    }
-
-    fn optional_path(&self, name: &str) -> PyResult<Option<PathBuf>> {
-        let value = self.attr(name)?;
-        if value.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(PathBuf::from(
-            value.call_method0("__fspath__")?.extract::<String>()?,
-        )))
     }
 
     fn trusted_peers(&self) -> PyResult<Box<[TrustedPeer]>> {
@@ -217,11 +238,17 @@ impl<'py> PyConfig<'py> {
     }
 
     fn websocket(&self, max_request_body_size: Option<NonZeroU64>) -> PyResult<WebSocketConfig> {
+        let keep_alive = match self.optional_duration("websocket_ping_interval")? {
+            None => None,
+            Some(interval) => Some(crate::config::WebSocketKeepAlive {
+                interval,
+                timeout: self.optional_duration("websocket_ping_timeout")?,
+            }),
+        };
         Ok(WebSocketConfig {
             max_message_size: self.websocket_message_size_limit(max_request_body_size)?,
             per_message_deflate: self.get("websocket_per_message_deflate")?,
-            ping_interval: self.optional_duration("websocket_ping_interval")?,
-            ping_timeout: self.optional_duration("websocket_ping_timeout")?,
+            keep_alive,
         })
     }
 
@@ -247,6 +274,9 @@ impl<'py> PyConfig<'py> {
             if !lowercase_header_name_is_valid(name.as_bytes()) {
                 return Err(into_pyerr(ConfigError::invalid_response_header_name(name)));
             }
+            if configured_response_field_is_forbidden(name.as_bytes()) {
+                return Err(into_pyerr(ConfigError::invalid_response_header_name(name)));
+            }
             if !header_value_is_valid(value.as_bytes()) {
                 return Err(into_pyerr(ConfigError::invalid_response_header_value(name)));
             }
@@ -256,58 +286,30 @@ impl<'py> PyConfig<'py> {
             ));
         }
         Ok(ResponseHeaderConfig {
-            server_header: self.get("server_header")?,
+            server_header: self.server_header()?,
             date_header: self.get("date_header")?,
             extra_headers: headers.into_boxed_slice(),
         })
     }
 
-    fn tls(&self, http1: bool, binds: &[BindTarget]) -> PyResult<Option<TlsConfig>> {
-        let certfile = self.optional_path("certfile")?;
-        let keyfile = self.optional_path("keyfile")?;
-        let ca_certs = self.optional_path("ca_certs")?;
-        let cert_reqs = self.cert_reqs()?;
-        let (certfile, keyfile) = match (certfile, keyfile) {
-            (None, None) => {
-                if ca_certs.is_some() || cert_reqs != ClientCertMode::None {
-                    return Err(into_pyerr(
-                        ConfigError::ClientCertVerificationRequiresCertAndKey,
-                    ));
-                }
-                return Ok(None);
-            },
-            (Some(certfile), Some(keyfile)) => (certfile, keyfile),
-            _ => {
-                return Err(into_pyerr(ConfigError::CertAndKeyMustBeConfiguredTogether));
-            },
-        };
-        if ca_certs.is_some() && cert_reqs == ClientCertMode::None {
-            return Err(into_pyerr(ConfigError::CaCertsRequiresClientCerts));
-        }
-        if cert_reqs != ClientCertMode::None && ca_certs.is_none() {
-            return Err(into_pyerr(ConfigError::ClientCertsRequireCaCerts));
-        }
-        if binds
-            .iter()
-            .any(|bind| matches!(bind, BindTarget::Unix { .. }))
-        {
-            return Err(into_pyerr(ConfigError::TlsRequiresTcpListeners));
-        }
-        build_tls_config(&certfile, &keyfile, ca_certs.as_deref(), cert_reqs, http1)
-            .map(Some)
-            .map_err(Into::into)
+    /// Build the acceptor from already-read material.
+    ///
+    /// `Config.__post_init__` owns every "these settings go together" rule,
+    /// so nothing is re-checked here: this turns bytes into an acceptor.
+    fn tls(&self, material: &TlsMaterial, http1: bool) -> PyResult<TlsConfig> {
+        build_tls_config(material, self.cert_reqs()?, http1).map_err(Into::into)
     }
 
-    fn server_config(&self) -> PyResult<ServerConfig> {
+    fn server_config(&self, tls: Option<TlsConfig>) -> PyResult<ServerConfig> {
         let max_request_body_size = self.nonzero_u64("max_request_body_size")?;
         let binds = self.binds()?;
         let http1 = self.http1()?;
-        let tls = self.tls(http1.enabled, &binds)?;
 
         Ok(ServerConfig {
             binds,
             access_log: self.get("access_log")?,
             root_path: self.boxed_str("root_path")?,
+            root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             http1,
             http2: self.http2()?,
@@ -324,24 +326,27 @@ impl<'py> PyConfig<'py> {
             websocket: self.websocket(max_request_body_size)?,
             proxy: self.proxy()?,
             tls,
-            timeout_handshake: self.duration("timeout_handshake")?,
+            timeout_handshake: self.optional_duration("timeout_handshake")?,
             response_headers: self.response_headers()?,
         })
     }
 }
 
-fn finite_duration(name: &'static str, seconds: f64) -> PyResult<Duration> {
-    if !seconds.is_finite() || seconds < 0.0 {
-        return Err(into_pyerr(ConfigError::invalid_finite_duration(name)));
-    }
-    Ok(Duration::from_secs_f64(seconds))
+/// Convert a configured number of seconds into a `Duration`.
+///
+/// `Duration::from_secs_f64` panics on NaN, on a negative value, and on any
+/// finite value too large to represent — all three of which a configuration
+/// file can contain — so the fallible conversion is the one to use.
+fn duration_from_seconds(name: &'static str, seconds: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| into_pyerr(ConfigError::invalid_duration(name)))
 }
 
 fn optional_duration(name: &'static str, seconds: f64) -> PyResult<Option<Duration>> {
     if seconds == 0.0 {
         return Ok(None);
     }
-    finite_duration(name, seconds).map(Some)
+    duration_from_seconds(name, seconds).map(Some)
 }
 
 fn parse_bind_target(raw: &str) -> PyResult<BindTarget> {
@@ -432,17 +437,31 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
 }
 
 #[pyfunction]
-/// Print the startup banner for a validated server configuration.
-pub(crate) fn emit_banner(config: &Bound<'_, PyAny>) -> PyResult<()> {
-    let config = PyConfig(config).server_config()?;
-    emit_access_banner(&config);
-    Ok(())
+#[pyo3(signature = (config, tls_material=None))]
+/// Convert PEM material into an immutable native TLS acceptor, or plaintext.
+///
+/// Runs the same `server_config` extraction serving uses so `--check-config`
+/// rejects bad cert/key/CA bytes before any worker starts.
+pub(crate) fn prepare_tls(
+    config: &Bound<'_, PyAny>,
+    tls_material: Option<TlsMaterial>,
+) -> PyResult<PreparedTls> {
+    let py_config = PyConfig(config);
+    let tls = match tls_material {
+        Some(material) => Some(py_config.tls(&material, py_config.get("http1")?)?),
+        None => None,
+    };
+    // Discard the full config: the goal is to exercise extraction. The
+    // prepared acceptor is what survives into workers.
+    let _ = py_config.server_config(tls.clone())?;
+    Ok(PreparedTls(tls))
 }
 
 #[pyfunction]
-/// Validate and normalize a Python `Config`, raising on invalid combinations.
-pub(crate) fn validate_config(config: &Bound<'_, PyAny>) -> PyResult<()> {
-    let _ = PyConfig(config).server_config()?;
+/// Print the startup banner for a validated server configuration.
+pub(crate) fn emit_banner(config: &Bound<'_, PyAny>, tls: &PreparedTls) -> PyResult<()> {
+    let config = PyConfig(config).server_config(None)?;
+    emit_access_banner(&config, tls.0.is_some());
     Ok(())
 }
 
@@ -490,15 +509,26 @@ fn extract_lifespan_handoff(
 }
 
 fn start_secondary_lifespan(
+    index: usize,
     shard: Shard,
     app: Py<PyAny>,
     config: SecondaryLifespanConfig,
-) -> (AcknowledgedSlotFuture<PyResult<Py<PyAny>>>, SlotDropWait) {
-    call_cancellable_awaitable(shard, move |py, shard| {
+) -> SecondaryLifespanStart {
+    let (owner_tx, owner_rx) = oneshot::channel();
+    let start = call_awaitable(shard, move |py, shard| {
         let module = py.import("h2corn._lifespan")?;
         let runner = module.getattr("LifespanRunner")?.call1((app,))?;
         let state = runner.getattr("state")?.cast_into::<PyDict>()?.unbind();
         shard.install_scope_state(py, state)?;
+        // Cross the runner into Rust ownership before its startup awaitable
+        // begins, so rollback can stop/discard it even when startup fails or
+        // outlives a peer failure.
+        let owned = runner.clone().unbind();
+        if owner_tx.send(Ok(owned)).is_err() {
+            return Err(PyRuntimeError::new_err(
+                "secondary lifespan owner channel closed before delivery",
+            ));
+        }
         let kwargs = PyDict::new(py);
         kwargs.set_item("required", config.required)?;
         kwargs.set_item("startup_timeout", config.startup_timeout)?;
@@ -506,7 +536,9 @@ fn start_secondary_lifespan(
             .getattr("start_lifespan_runner")?
             .call((runner,), Some(&kwargs))
             .map(Bound::unbind)
-    })
+    });
+    let _ = index;
+    (owner_rx, start)
 }
 
 async fn stop_secondary_lifespan(
@@ -545,77 +577,102 @@ async fn start_secondary_lifespans(
 ) -> (Vec<SecondaryRunner>, Option<H2CornError>) {
     let mut starts = JoinSet::new();
     let mut task_indices = Vec::with_capacity(apps.len());
-    let mut drop_acks = Vec::with_capacity(apps.len());
     for (index, (shard, app)) in shards.iter().skip(1).cloned().zip(apps).enumerate() {
-        let (start, dropped) = start_secondary_lifespan(Arc::clone(&shard), app, config);
-        drop_acks.push(dropped);
+        let (owner_rx, start) = start_secondary_lifespan(index, Arc::clone(&shard), app, config);
         let task = starts.spawn(async move {
-            let outcome = start.await.map_err(H2CornError::from);
-            (index, shard, outcome)
+            // Retain every delivered owner before awaiting startup so a peer
+            // failure can still roll this runner back.
+            let owner = match owner_rx.await {
+                Ok(Ok(runner)) => Some(runner),
+                Ok(Err(err)) => return (index, shard, None, Err(H2CornError::from(err))),
+                Err(_) => {
+                    return (
+                        index,
+                        shard,
+                        None,
+                        Err(H2CornError::from(PyRuntimeError::new_err(
+                            "secondary lifespan owner was not delivered",
+                        ))),
+                    );
+                },
+            };
+            match start.await {
+                Ok(_runner) => (index, shard, owner, Ok(())),
+                Err(err) => (index, shard, owner, Err(H2CornError::from(err))),
+            }
         });
         task_indices.push((task.id(), index));
     }
 
+    // Await every bounded startup outcome. Never abort_all: a higher-index
+    // runner that already crossed construction must still receive shutdown.
     let mut outcomes = Vec::with_capacity(starts.len());
-    let mut errors = Vec::new();
-    let mut failed = false;
-    while let Some(joined) = starts.join_next_with_id().await {
-        match joined {
-            Ok((_, outcome)) => {
-                failed = outcome.2.is_err();
-                outcomes.push(outcome);
-            },
-            Err(err) => {
-                let index = secondary_loop_index(&task_indices, &err);
-                errors.push((index, err.into()));
-                failed = true;
-            },
-        }
-        if failed {
-            // Fail-fast and a globally deterministic error priority conflict:
-            // waiting to learn whether a lower-index startup will also fail
-            // defeats cancellation. The first observed failure starts abort;
-            // among failures already delivered despite that abort, the
-            // lowest loop index is selected below.
-            starts.abort_all();
-            break;
-        }
-    }
-
-    // Drain aborted Tokio tasks first so every SlotFuture is dropped and its
-    // loop-affine cancellation event is enqueued. Tasks that won the race
-    // against abort still yield runners which must participate in rollback.
     while let Some(joined) = starts.join_next_with_id().await {
         match joined {
             Ok((_, outcome)) => outcomes.push(outcome),
-            Err(err) if err.is_cancelled() => {},
             Err(err) => {
                 let index = secondary_loop_index(&task_indices, &err);
-                errors.push((index, err.into()));
+                outcomes.push((index, shards[index + 1].clone(), None, Err(err.into())));
             },
-        }
-    }
-
-    if failed {
-        // A dropped SlotFuture is not sufficient: await the slot guards held
-        // by Python done-callbacks, which resolve only after
-        // start_lifespan_runner has handled BaseException and discarded its
-        // inner ASGI lifespan task.
-        for dropped in drop_acks {
-            let _ = dropped.await;
         }
     }
     outcomes.sort_unstable_by_key(|(index, ..)| *index);
 
-    let mut runners = Vec::with_capacity(outcomes.len());
-    for (index, shard, outcome) in outcomes {
-        match outcome {
-            Ok(runner) => runners.push((index, shard, runner)),
-            Err(err) => errors.push((index, err)),
-        }
+    // Classify each outcome into an optional retained owner and an optional
+    // error in one pass. Collect runners only on the path that needs them so
+    // Py owners are not held past the all-success return.
+    let (runner_slots, error_slots): (Vec<_>, Vec<_>) = outcomes
+        .into_iter()
+        .map(|(index, shard, owner, outcome)| match (owner, outcome) {
+            (Some(runner), Ok(())) => (
+                Some(SecondaryRunner {
+                    index,
+                    shard,
+                    runner,
+                }),
+                None,
+            ),
+            (Some(runner), Err(err)) => (
+                // Startup failed after the owner crossed into Rust: keep it
+                // for rollback so discard/shutdown still run on its loop.
+                Some(SecondaryRunner {
+                    index,
+                    shard,
+                    runner,
+                }),
+                Some((index, err)),
+            ),
+            (None, Err(err)) => (None, Some((index, err))),
+            (None, Ok(())) => (
+                None,
+                Some((
+                    index,
+                    H2CornError::from(PyRuntimeError::new_err(
+                        "secondary lifespan completed startup without an owner",
+                    )),
+                )),
+            ),
+        })
+        .unzip();
+
+    if error_slots.iter().all(Option::is_none) {
+        return (runner_slots.into_iter().flatten().collect(), None);
     }
-    errors.sort_unstable_by_key(|(index, _)| *index);
-    (runners, errors.into_iter().next().map(|(_, err)| err))
+
+    // Prefer the lowest-index startup error, then any rollback failure.
+    let first_startup_error = {
+        let mut errors: Vec<(usize, H2CornError)> = error_slots.into_iter().flatten().collect();
+        errors.sort_unstable_by_key(|(index, _)| *index);
+        errors.into_iter().next().map(|(_, err)| err)
+    };
+    // Roll back every retained runner, including successful higher-index ones.
+    // Collect into the call so Py owners are not bound past the await.
+    let shutdown_error = stop_secondary_lifespans(
+        runner_slots.into_iter().flatten().collect(),
+        config.shutdown_timeout,
+    )
+    .await;
+    (Vec::new(), first_startup_error.or(shutdown_error))
 }
 
 async fn stop_secondary_lifespans(
@@ -624,7 +681,12 @@ async fn stop_secondary_lifespans(
 ) -> Option<H2CornError> {
     let mut stops = JoinSet::new();
     let mut task_indices = Vec::with_capacity(runners.len());
-    for (index, shard, runner) in runners {
+    for SecondaryRunner {
+        index,
+        shard,
+        runner,
+    } in runners
+    {
         let task = stops.spawn(async move {
             let outcome = stop_secondary_lifespan(shard, runner, shutdown_timeout).await;
             (index, outcome)
@@ -668,16 +730,15 @@ async fn run_serve_task(task: ServeTask) {
         resolve_fut,
     } = task;
     let mut fds = Some(fds);
-    let mut secondary_runners = Vec::new();
-    let mut result = Ok(());
-    if let Some(lifespan_config) = lifespan_config {
-        let (runners, error) =
-            start_secondary_lifespans(&app.shards, secondary_apps, lifespan_config).await;
-        secondary_runners = runners;
-        if let Some(err) = error {
-            result = Err(err);
-        }
-    }
+    // Bind secondary owners where startup runs, not via declare-then-reassign.
+    let (secondary_runners, mut result) = match lifespan_config {
+        Some(cfg) => {
+            let (runners, error) =
+                start_secondary_lifespans(&app.shards, secondary_apps, cfg).await;
+            (runners, error.map_or(Ok(()), Err))
+        },
+        None => (Vec::new(), Ok(())),
+    };
     if result.is_ok() {
         result = serve_from_fds(
             Arc::clone(&app),
@@ -697,9 +758,9 @@ async fn run_serve_task(task: ServeTask) {
     // applications may catch CancelledError and perform async cleanup before
     // acknowledging completion.
     app.wait_for_scoped_owners().await;
-    if let Some(lifespan_config) = lifespan_config {
+    if let Some(cfg) = lifespan_config {
         let shutdown_error =
-            stop_secondary_lifespans(secondary_runners, lifespan_config.shutdown_timeout).await;
+            stop_secondary_lifespans(secondary_runners, cfg.shutdown_timeout).await;
         if result.is_ok()
             && let Some(err) = shutdown_error
         {
@@ -739,8 +800,15 @@ async fn run_serve_task(task: ServeTask) {
 }
 
 #[pyfunction]
-#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None))]
+#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None, *, prepared_tls))]
 /// Adopt listener file descriptors and run one worker until shutdown.
+///
+/// `prepared_tls` is required: PEM is converted once in `prepare_tls` and
+/// reused here. There is no path that reopens certificate files in a worker.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 requires PyRef by value for class arguments"
+)]
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
@@ -751,11 +819,13 @@ pub(crate) fn serve_fds<'py>(
     lifespan_handoff: Option<Py<LifespanHandoff>>,
     ready_trigger: Option<Py<PyAny>>,
     quiesce_fd: Option<i64>,
+    prepared_tls: PyRef<'_, PreparedTls>,
 ) -> PyResult<Bound<'py, PyAny>> {
     // Acquire RAII ownership before any fallible parsing/runtime setup. Every
     // early return and partial listener adoption now closes the remainder.
     let (fds, quiesce_fd) = own_serve_fds(fds, quiesce_fd).map_err(PyValueError::new_err)?;
-    let config = PyConfig(config).server_config()?;
+    let py_config = PyConfig(config);
+    let config = py_config.server_config(prepared_tls.0.clone())?;
     init_tokio_runtime(config.runtime_threads)?;
     let config = Arc::new(config);
 
@@ -768,7 +838,7 @@ pub(crate) fn serve_fds<'py>(
                 return Err(err);
             },
         };
-    let limits = RuntimeLimits::new(&config, retire_trigger).map(Arc::new);
+    let limits = RuntimeLimits::new(&config, &main_shard, retire_trigger).map(Arc::new);
 
     // Extra loop shards only run on free-threaded builds; on a GIL build the
     // loop_threads setting is a no-op (the GIL would serialize the loops
@@ -992,7 +1062,7 @@ mod tests {
         config.setattr("keyfile", py.None()).unwrap();
         config.setattr("ca_certs", py.None()).unwrap();
         config.setattr("cert_reqs", "none").unwrap();
-        config.setattr("server_header", true).unwrap();
+        config.setattr("server_header", "on").unwrap();
         config.setattr("date_header", false).unwrap();
         config
             .setattr("response_headers", ("x-demo: 1", "x-extra: 2"))
@@ -1041,7 +1111,7 @@ mod tests {
                 .map(NonZeroUsize::get),
             Some(211),
         );
-        assert_eq!(extracted.http2.max_concurrent_streams, 321);
+        assert_eq!(extracted.http2.max_concurrent_streams.get(), 321);
         assert_eq!(
             extracted.http2.max_header_list_size.map(NonZeroUsize::get),
             Some(65_432),
@@ -1062,7 +1132,10 @@ mod tests {
     }
 
     fn assert_timeout_and_limit_config(extracted: &ServerConfig) {
-        assert_eq!(extracted.timeout_handshake, Duration::from_secs_f64(1.25));
+        assert_eq!(
+            extracted.timeout_handshake,
+            Some(Duration::from_secs_f64(1.25))
+        );
         assert_eq!(
             extracted.timeout_graceful_shutdown,
             Duration::from_secs_f64(12.5),
@@ -1093,18 +1166,20 @@ mod tests {
             Some(54_321),
         );
         assert!(!extracted.websocket.per_message_deflate);
-        assert_eq!(
-            extracted.websocket.ping_interval,
-            Some(Duration::from_secs_f64(9.5)),
-        );
-        assert_eq!(
-            extracted.websocket.ping_timeout,
-            Some(Duration::from_secs_f64(11.5)),
-        );
+        let keep_alive = extracted
+            .websocket
+            .keep_alive
+            .as_ref()
+            .expect("ping interval 9.5 enables keepalive");
+        assert_eq!(keep_alive.interval, Duration::from_secs_f64(9.5));
+        assert_eq!(keep_alive.timeout, Some(Duration::from_secs_f64(11.5)));
         assert!(extracted.proxy.trust_headers);
         assert_eq!(extracted.proxy.protocol, ProxyProtocolMode::V2);
         assert_eq!(extracted.proxy.trusted_peers.len(), 3);
-        assert!(extracted.response_headers.server_header);
+        assert_eq!(
+            extracted.response_headers.server_header.as_deref(),
+            Some(config::SERVER_NAME.as_bytes())
+        );
         assert!(!extracted.response_headers.date_header);
         assert_eq!(extracted.response_headers.extra_headers.len(), 2);
         assert!(matches!(
@@ -1135,7 +1210,7 @@ mod tests {
             set_websocket_and_proxy_options(&config, py);
 
             let extracted = PyConfig(&config)
-                .server_config()
+                .server_config(None)
                 .expect("config extraction succeeds");
 
             assert_core_config(&extracted);

@@ -6,6 +6,7 @@ mod access_log;
 mod app_call;
 mod ascii;
 mod async_util;
+mod base64;
 mod bridge;
 mod buffered_events;
 mod config;
@@ -35,8 +36,9 @@ use pyo3::prelude::*;
 #[pyo3(name = "_lib")]
 fn init_lib_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pyapi::LifespanHandoff>()?;
+    m.add_class::<pyapi::PreparedTls>()?;
+    m.add_function(wrap_pyfunction!(pyapi::prepare_tls, m)?)?;
     m.add_function(wrap_pyfunction!(pyapi::emit_banner, m)?)?;
-    m.add_function(wrap_pyfunction!(pyapi::validate_config, m)?)?;
     m.add_function(wrap_pyfunction!(pyapi::serve_fds, m)?)?;
     Ok(())
 }

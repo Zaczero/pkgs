@@ -34,8 +34,8 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyDictMethods};
 #[cfg(unix)]
-use rustix::io::{Result as RustixResult, read, write};
-pub(crate) use slot::{AcknowledgedSlotFuture, SlotDropAck, SlotDropWait, SlotFuture, TaskSlot};
+use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
+pub(crate) use slot::{SlotFuture, TaskSlot};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 
@@ -154,11 +154,15 @@ impl Doorbell {
     /// Ring from any thread with a plain `write(2)`. A full counter/pipe
     /// (`EAGAIN`) still leaves the fd readable, and a closing loop stops
     /// reading: both are safe to ignore.
+    ///
+    /// `EINTR` is not: the caller has already set `armed`, so later producers
+    /// will not ring again, and an interrupted write that never delivered its
+    /// byte would leave the queue with nothing to wake the pump.
     fn ring(&self) {
         #[cfg(target_os = "linux")]
-        let _ = write(&self.fd, &1_u64.to_ne_bytes());
+        let _ = retry_on_intr(|| write(&self.fd, &1_u64.to_ne_bytes()));
         #[cfg(not(target_os = "linux"))]
-        let _ = write(&self.write, &[1_u8]);
+        let _ = retry_on_intr(|| write(&self.write, &[1_u8]));
     }
 
     /// Drain pending wakeups; called by the pump before processing. The
@@ -202,13 +206,6 @@ pub(crate) enum PumpEvent {
         build: BuildAwaitable,
         slot: SlotHandle<PyResult<Py<PyAny>>>,
     },
-    /// Cancellable form of [`Self::CallAwaitable`]. Its slot guard
-    /// acknowledges only after the Python task's done-callback releases the
-    /// last slot owner, allowing transactional startup to await real cleanup.
-    CallCancellableAwaitable {
-        build: BuildAwaitable,
-        slot: SlotHandle<PyResult<Py<PyAny>>, SlotDropAck>,
-    },
     /// Drop a fallback shared-app owner on the main loop, then acknowledge so
     /// secondary shards can be stopped without cross-loop final destruction.
     ReleaseApp {
@@ -217,6 +214,10 @@ pub(crate) enum PumpEvent {
     },
     /// Cancel an abandoned Python task on the event loop that owns it.
     CancelTask { task: Py<PyAny> },
+    /// Call a zero-argument Python callable on the loop thread — the
+    /// supervisor notifications (ready, retire) whose Rust-side trigger can
+    /// fire from any tokio thread, which must never attach to Python.
+    CallTrigger { trigger: Py<PyAny> },
     /// Unregister this shard's doorbell from its owning loop. Used by the
     /// caller-owned main loop when an embedded serve completes.
     Detach,
@@ -463,11 +464,14 @@ impl ShardHandle {
         let Some(state) = self.scope_state.get(py) else {
             return Ok(None);
         };
-        let state = state.bind(py);
-        if state.is_empty() {
-            return Ok(None);
-        }
-        state.copy().map(Some)
+        // Copied even when empty. The lifespan spec says the namespace is
+        // shallow-copied into every connection scope, and an application that
+        // reads `scope["state"]` directly — rather than through Starlette,
+        // which does `scope.setdefault("state", {})` first — would otherwise
+        // get a `KeyError` purely because startup happened to store nothing.
+        // Costs a measured ~430 instructions per request; a compatibility
+        // break is not worth that.
+        state.bind(py).copy().map(Some)
     }
 
     /// Unregister the POSIX doorbell. Pump-only: event-loop reader ownership
@@ -618,24 +622,6 @@ where
         slot: Arc::clone(&slot),
     });
     slot.wait(shard)
-}
-
-/// Construct a loop-affine awaitable whose abandonment can be acknowledged
-/// after its actual Python done-callback. This remains a distinct cold-path
-/// slot specialization, so request slots gain no notification state or branch.
-pub(crate) fn call_cancellable_awaitable<B>(
-    shard: Shard,
-    build: B,
-) -> (AcknowledgedSlotFuture<PyResult<Py<PyAny>>>, SlotDropWait)
-where
-    B: for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send + 'static,
-{
-    let (slot, dropped) = TaskSlot::with_drop_ack();
-    shard.push(PumpEvent::CallCancellableAwaitable {
-        build: Box::new(build),
-        slot: Arc::clone(&slot),
-    });
-    (slot.wait(shard), dropped)
 }
 
 pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {

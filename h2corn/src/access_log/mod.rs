@@ -1,3 +1,5 @@
+mod sink;
+
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
 use std::str;
@@ -7,13 +9,13 @@ use std::time::{Duration, Instant};
 use anstream::{AutoStream, ColorChoice};
 use http::Method;
 use itoa::{Buffer as ItoaBuffer, Integer};
-use owo_colors::{OwoColorize, Stream, Style};
+use owo_colors::{OwoColorize, Style};
 use smallvec::SmallVec;
 
 use crate::config::{BindTarget, ServerConfig};
-use crate::hpack::BytesStr;
+use crate::http::response::{FinalResponseBody, ResponseAction};
 use crate::http::scope::scope_view_from_parts;
-use crate::http::types::{HttpStatusCode, HttpVersion, RequestHead, status_code};
+use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
 use crate::proxy_protocol::{ConnectionInfo, ConnectionPeer};
 use crate::runtime::RequestContext;
 use crate::websocket::{WebSocketCloseCode, close_code};
@@ -25,18 +27,20 @@ const DECIMAL_FACTORS: [u128; 3] = power_table(10);
 const BYTE_SCALES: [u128; 5] = power_table(1024);
 const BYTE_UNITS: [&str; 5] = ["b", "kib", "mib", "gib", "tib"];
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
-    let choice = AutoStream::choice(&io::stderr());
-    if choice == ColorChoice::Never {
+    if AutoStream::choice(&io::stderr()) == ColorChoice::Never {
         AccessLogMode::Plain
     } else {
-        AccessLogMode::Styled(choice)
+        AccessLogMode::Styled
     }
 });
+
+/// How long graceful shutdown waits for queued access-log lines to be written.
+const LOG_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AccessLogMode {
     Plain,
-    Styled(ColorChoice),
+    Styled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +121,38 @@ impl<const N: usize> fmt::Write for BytesWriter<'_, N> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         self.0.extend_from_slice(value.as_bytes());
         Ok(())
+    }
+}
+
+/// Client-controlled text, rendered so no byte of it can act on whoever reads
+/// the log.
+///
+/// The HTTP/1 request-target grammar excludes space, CR and LF — so a client
+/// cannot forge a second log entry — but not the other control bytes, so `ESC`
+/// reaches this far and would otherwise drive an operator's terminal. Escaping
+/// it here, rather than scrubbing at the write end, keeps the entry faithful:
+/// `/\x1b[31m` is what was requested, where stripping it left `/` and said
+/// nothing about the difference.
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rest = self.0;
+        while let Some(offset) = rest.find(char::is_control) {
+            let (printable, tail) = rest.split_at(offset);
+            f.write_str(printable)?;
+            let mut chars = tail.chars();
+            let control = chars.next().ok_or(fmt::Error)?;
+            // `\xNN` names one byte, so it may only stand for a character that
+            // *is* one byte; C1 controls are two and get their code point.
+            if control.is_ascii() {
+                write!(f, "\\x{:02x}", u32::from(control))?;
+            } else {
+                write!(f, "\\u{{{:02x}}}", u32::from(control))?;
+            }
+            rest = chars.as_str();
+        }
+        f.write_str(rest)
     }
 }
 
@@ -262,9 +298,127 @@ impl ResponseLogState {
     pub(crate) const fn internal_error(&mut self) {
         self.started(status_code::INTERNAL_SERVER_ERROR);
     }
+
+    /// Record the logical response this action represents before the transport
+    /// lowers it. Counts accepted response bytes, not kernel write completion.
+    pub(crate) fn observe(&mut self, action: &ResponseAction) {
+        match action {
+            ResponseAction::Final { start, body } => {
+                self.started(start.status());
+                if !matches!(
+                    body,
+                    FinalResponseBody::Empty | FinalResponseBody::Suppressed { .. }
+                ) {
+                    self.sent_body(body.len());
+                }
+            },
+            ResponseAction::Start { start } => self.started(start.status()),
+            ResponseAction::Body(body) => self.sent_body(body.len()),
+            ResponseAction::File { len, .. } => self.sent_body(*len),
+            ResponseAction::InternalError => self.internal_error(),
+            ResponseAction::Finish
+            | ResponseAction::FinishWithTrailers(_)
+            | ResponseAction::AbortIncomplete => {},
+        }
+    }
 }
 
-pub(crate) fn emit_banner(config: &ServerConfig) {
+#[cfg(test)]
+mod observe_tests {
+    use bytes::Bytes;
+
+    use super::ResponseLogState;
+    use crate::bridge::PayloadBytes;
+    use crate::http::response::{FinalResponseBody, ResponseAction, ResponseStart};
+    use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers, status_code};
+
+    fn start(status: HttpStatusCode) -> ResponseStart {
+        ResponseStart::new(status, ResponseHeaders::new())
+    }
+
+    #[test]
+    fn observe_maps_every_action_shape() {
+        let mut log = ResponseLogState::default();
+
+        log.observe(&ResponseAction::Start {
+            start: start(status_code::OK),
+        });
+        assert_eq!(log.status, Some(status_code::OK));
+        assert_eq!(log.response_body_bytes, 0);
+
+        log.observe(&ResponseAction::Body(PayloadBytes::from(
+            Bytes::from_static(b"hi"),
+        )));
+        assert_eq!(log.response_body_bytes, 2);
+
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::Final {
+            start: start(status_code::NO_CONTENT),
+            body: FinalResponseBody::Bytes(PayloadBytes::from(Bytes::from_static(b"abc"))),
+        });
+        assert_eq!(log.status, Some(status_code::NO_CONTENT));
+        assert_eq!(log.response_body_bytes, 3);
+
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::Final {
+            start: start(status_code::OK),
+            body: FinalResponseBody::Empty,
+        });
+        assert_eq!(log.status, Some(status_code::OK));
+        assert_eq!(log.response_body_bytes, 0);
+
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::Final {
+            start: start(status_code::OK),
+            body: FinalResponseBody::Suppressed { len: 99 },
+        });
+        assert_eq!(log.status, Some(status_code::OK));
+        assert_eq!(log.response_body_bytes, 0);
+
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::File {
+            file: Box::new(
+                // Any open handle is enough: observe only reads `len`.
+                std::fs::File::open("/dev/null").expect("/dev/null opens"),
+            ),
+            len: 7,
+        });
+        assert_eq!(log.response_body_bytes, 7);
+
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::InternalError);
+        assert_eq!(log.status, Some(status_code::INTERNAL_SERVER_ERROR));
+
+        let mut log = ResponseLogState {
+            status: Some(status_code::OK),
+            response_body_bytes: 4,
+        };
+        log.observe(&ResponseAction::Finish);
+        log.observe(&ResponseAction::FinishWithTrailers(ResponseTrailers::new()));
+        log.observe(&ResponseAction::AbortIncomplete);
+        assert_eq!(log.status, Some(status_code::OK));
+        assert_eq!(log.response_body_bytes, 4);
+    }
+
+    #[test]
+    fn observe_does_not_double_record_status_on_internal_error_after_start() {
+        // Body-limit / finalize paths may still emit InternalError after a
+        // response has already started; observe overwrites status but must not
+        // invent body bytes.
+        let mut log = ResponseLogState::default();
+        log.observe(&ResponseAction::Start {
+            start: start(status_code::OK),
+        });
+        log.observe(&ResponseAction::Body(PayloadBytes::from(
+            Bytes::from_static(b"partial"),
+        )));
+        log.observe(&ResponseAction::InternalError);
+        assert_eq!(log.status, Some(status_code::INTERNAL_SERVER_ERROR));
+        assert_eq!(log.response_body_bytes, 7);
+    }
+}
+
+pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     const LISTENING_PREFIX: &str = "Listening on ";
     const LISTENING_INDENT: &str = "             ";
 
@@ -272,16 +426,14 @@ pub(crate) fn emit_banner(config: &ServerConfig) {
     let _ = writeln!(
         stderr,
         "{} v{} • HTTP/2 ASGI",
-        "h2corn".if_supports_color(Stream::Stderr, |text| {
-            text.style(Style::new().bold().cyan())
-        }),
+        "h2corn".style(Style::new().bold().cyan()),
         env!("CARGO_PKG_VERSION"),
     );
 
     let mut binds = config
         .binds
         .iter()
-        .map(|bind| format_listen_target(bind, config.tls.is_some()));
+        .map(|bind| format_listen_target(bind, tls));
     if let Some(first) = binds.next() {
         write_listen_target_line(&mut stderr, LISTENING_PREFIX, &first);
         for bind in binds {
@@ -300,11 +452,7 @@ pub(crate) fn emit_banner(config: &ServerConfig) {
 }
 
 fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
-    let _ = writeln!(
-        stderr,
-        "{prefix}{}",
-        bind.if_supports_color(Stream::Stderr, |text| text.bold()),
-    );
+    let _ = writeln!(stderr, "{prefix}{}", bind.bold());
 }
 
 pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
@@ -347,23 +495,27 @@ fn emit_access_log<T>(
 ) where
     T: fmt::Display + Copy,
 {
+    let mut line = AccessLogBuf::new();
+    let summary = RequestSummaryDisplay {
+        request,
+        summary_kind,
+    };
+    let io_summary = IoSummaryDisplay(io_summary);
     match *ACCESS_LOG_MODE {
         AccessLogMode::Plain => {
-            emit_plain_access_log(client_label, request, summary_kind, code, io_summary);
+            write_access_log_line(&mut line, client_label, &summary, &code, &io_summary);
         },
-        AccessLogMode::Styled(choice) => {
-            let mut stderr = AutoStream::new(io::stderr(), choice).lock();
-            emit_styled_access_log(
-                &mut stderr,
+        AccessLogMode::Styled => {
+            write_access_log_line(
+                &mut line,
                 client_label,
-                request,
-                summary_kind,
-                code,
-                code_style,
-                io_summary,
+                &summary,
+                &code.style(code_style),
+                &io_summary.style(Style::new().dimmed()),
             );
         },
     }
+    sink::write_line(&line);
 }
 
 fn format_listen_target(bind: &BindTarget, tls: bool) -> String {
@@ -378,55 +530,32 @@ fn format_listen_target(bind: &BindTarget, tls: bool) -> String {
     }
 }
 
-fn emit_plain_access_log<T>(
-    client_label: &str,
-    request: &AccessLogRequest,
-    summary_kind: RequestSummaryKind,
-    code: T,
-    io_summary: AccessLogIoSummary,
-) where
-    T: fmt::Display,
-{
-    let mut line = AccessLogBuf::new();
-    let _ = writeln!(
-        BytesWriter(&mut line),
-        "{} {} {} {}",
-        client_label,
-        RequestSummaryDisplay {
-            request,
-            summary_kind,
-        },
-        code,
-        IoSummaryDisplay(io_summary),
-    );
-    let mut stderr = io::stderr().lock();
-    let _ = stderr.write_all(&line);
+/// Start this worker's batched access-log writer.
+///
+/// Called from the serve path so the writer thread is created in the process
+/// that will use it — never in a supervisor that later forks.
+pub(crate) fn start_log_sink() {
+    sink::start();
 }
 
-fn emit_styled_access_log<T>(
-    stderr: &mut impl Write,
+/// Give queued access-log lines a bounded chance to reach stderr.
+pub(crate) fn flush_log_sink() {
+    sink::flush(LOG_FLUSH_TIMEOUT);
+}
+
+/// Render one access-log line. Styling is applied by the caller, so both the
+/// plain and the coloured form share this one layout.
+fn write_access_log_line(
+    line: &mut AccessLogBuf,
     client_label: &str,
-    request: &AccessLogRequest,
-    summary_kind: RequestSummaryKind,
-    code: T,
-    code_style: Style,
-    io_summary: AccessLogIoSummary,
-) where
-    T: fmt::Display + Copy,
-{
-    let mut line = AccessLogBuf::new();
+    summary: &dyn fmt::Display,
+    code: &dyn fmt::Display,
+    io_summary: &dyn fmt::Display,
+) {
     let _ = writeln!(
-        BytesWriter(&mut line),
-        "{} {} {} {}",
-        client_label,
-        RequestSummaryDisplay {
-            request,
-            summary_kind,
-        },
-        code.style(code_style),
-        IoSummaryDisplay(io_summary).style(Style::new().dimmed()),
+        BytesWriter(line),
+        "{client_label} {summary} {code} {io_summary}"
     );
-    let _ = stderr.write_all(&line);
 }
 
 fn append_client(out: &mut impl fmt::Write, info: &ConnectionInfo) -> fmt::Result {
@@ -474,7 +603,7 @@ fn write_request_summary_to(
             out.write_str("WEBSOCKET ")?;
         },
     }
-    out.write_str(request.path_and_query.as_str())?;
+    write!(out, "{}", Escaped(request.path_and_query.as_str()))?;
     out.write_char(' ')?;
     out.write_str(request.http_version.log_label())?;
     out.write_char('"')
@@ -637,11 +766,10 @@ mod tests {
     use http::Method;
 
     use super::{
-        AccessLogRequest, RequestSummaryDisplay, RequestSummaryKind, append_client, write_bytes_to,
-        write_duration_to, write_io_summary_to,
+        AccessLogRequest, Escaped, RequestSummaryDisplay, RequestSummaryKind, append_client,
+        write_bytes_to, write_duration_to, write_io_summary_to,
     };
-    use crate::hpack::BytesStr;
-    use crate::http::types::HttpVersion;
+    use crate::http::types::{BytesStr, HttpVersion};
     use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
 
     fn render(f: impl FnOnce(&mut String)) -> String {
@@ -769,6 +897,31 @@ mod tests {
         assert!(summary.ends_with('"'));
         assert!(summary.contains("HTTP/2"));
         assert!(summary.contains("/this/path/keeps/going/and/going/and/going/and/going"));
+    }
+
+    #[test]
+    fn request_summary_escapes_control_bytes_a_client_can_send() {
+        // The HTTP/1 target grammar excludes SP/CR/LF but not ESC or DEL, so
+        // these reach the log and must not act on the terminal reading it.
+        let request = AccessLogRequest {
+            method: Method::GET,
+            path_and_query: BytesStr::from("/\u{1b}[31mred\u{7f}\u{9}\u{85}"),
+            http_version: HttpVersion::Http1_1,
+        };
+
+        let summary = format_request_summary(&request, RequestSummaryKind::Http);
+
+        assert_eq!(summary, "\"GET /\\x1b[31mred\\x7f\\x09\\u{85} HTTP/1.1\"");
+        assert!(!summary.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn escaping_leaves_ordinary_targets_untouched() {
+        assert_eq!(
+            Escaped("/a/b?c=d&e=%20f+g#h").to_string(),
+            "/a/b?c=d&e=%20f+g#h"
+        );
+        assert_eq!(Escaped("/π/漢").to_string(), "/π/漢");
     }
 
     #[test]

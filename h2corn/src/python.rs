@@ -541,7 +541,9 @@ mod tests {
     use pyo3::types::{PyAnyMethods, PyBool, PyBytes, PyBytesMethods, PyDictMethods};
     use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
 
-    use super::{PyDictScratch, PyString, StaticPyKey};
+    #[cfg(not(Py_GIL_DISABLED))]
+    use super::PyDictScratch;
+    use super::{PyString, StaticPyKey};
 
     fn init_python() {
         Python::initialize();

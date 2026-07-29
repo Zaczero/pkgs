@@ -1,4 +1,5 @@
 import asyncio
+import socket
 
 import pytest
 from h2corn import Config
@@ -8,11 +9,73 @@ from tests._support import (
     h2_request,
     proxy_v1_prefix,
     proxy_v2_prefix,
+    read_http1_response,
     running_server,
     server_port,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+_PROXY_V2_SIGNATURE = b'\r\n\r\n\x00\r\nQUIT\n'
+
+
+def _proxy_v2_prefix(
+    version_command: int,
+    family_transport: int,
+    payload: bytes = b'',
+) -> bytes:
+    return (
+        _PROXY_V2_SIGNATURE
+        + bytes((version_command, family_transport))
+        + len(payload).to_bytes(2, 'big')
+        + payload
+    )
+
+
+def _proxy_v2_ipv4_payload(
+    client_host: str = '203.0.113.10',
+    server_host: str = '198.51.100.20',
+    client_port: int = 41234,
+    server_port: int = 8080,
+) -> bytes:
+    return (
+        socket.inet_aton(client_host)
+        + socket.inet_aton(server_host)
+        + client_port.to_bytes(2, 'big')
+        + server_port.to_bytes(2, 'big')
+    )
+
+
+def _ipv6_loopback_is_bindable() -> bool:
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(('::1', 0))
+    except OSError:
+        return False
+    return True
+
+
+async def _http1_after_split_proxy_prefix(
+    port: int,
+    prefix: bytes,
+    split_at: int,
+) -> tuple[int, dict[bytes, bytes], bytes, list[tuple[bytes, bytes]]]:
+    reader, writer = await asyncio.open_connection('127.0.0.1', port)
+    try:
+        writer.write(prefix[:split_at])
+        await writer.drain()
+        writer.write(
+            prefix[split_at:]
+            + b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+        )
+        await writer.drain()
+        return await read_http1_response(reader)
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def test_proxy_headers_rewrite_scope_from_trusted_peer() -> None:
@@ -743,3 +806,225 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
                 ),
                 timeout=5,
             )
+
+
+async def test_proxy_v2_maximum_payload_followed_by_http() -> None:
+    """A maximum-length PROXY prelude consumes every TLV byte before HTTP."""
+    payload = _proxy_v2_ipv4_payload() + (b'x' * 65_523)
+    assert len(payload) == 2**16 - 1
+    prefix = _proxy_v2_prefix(0x21, 0x11, payload)
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({
+            'type': 'http.response.body',
+            'body': f'{scope["client"][0]}|{scope["client"][1]}'.encode(),
+        })
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(port=server_port(server), prefix=prefix), timeout=10
+        )
+
+    assert (status, body) == (200, b'203.0.113.10|41234')
+
+
+async def test_proxy_v2_maximum_payload_truncated() -> None:
+    """EOF one byte before the declared prelude is never dispatched as HTTP."""
+    calls = 0
+    payload = _proxy_v2_ipv4_payload() + (b'x' * 65_523)
+    prefix = _proxy_v2_prefix(0x21, 0x11, payload)
+
+    async def app(scope, receive, send):
+        nonlocal calls
+        if scope['type'] != 'http':
+            return
+        calls += 1
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        _reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        writer.write(prefix[:-1])
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+        # A valid later connection is the completion barrier for the EOF path:
+        # if the truncated prelude had reached the application, `calls` is 2.
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=server_port(server),
+                prefix=_proxy_v2_prefix(0x21, 0x11, _proxy_v2_ipv4_payload()),
+            ),
+            timeout=5,
+        )
+
+    assert (status, body, calls) == (204, b'', 1)
+
+
+async def test_proxy_v2_local_and_proxy_minimums() -> None:
+    """LOCAL preserves the peer tuple; both concrete minimum tuples map exactly."""
+    observed: list[tuple[object, object]] = []
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        observed.append((scope['client'], scope['server']))
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('127.0.0.1', '::1'),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        local_status, _ = await h2_request(
+            port=port,
+            prefix=_proxy_v2_prefix(0x20, 0x00),
+        )
+        ipv4_status, _ = await h2_request(
+            port=port,
+            prefix=_proxy_v2_prefix(0x21, 0x11, _proxy_v2_ipv4_payload()),
+        )
+
+    assert (local_status, ipv4_status) == (204, 204)
+    local_client, local_server = observed[0]
+    assert isinstance(local_client, tuple) and local_client[0] == '127.0.0.1'
+    assert isinstance(local_server, tuple) and local_server[1] == port
+    assert observed[1] == (('203.0.113.10', 41234), ('198.51.100.20', 8080))
+
+
+@pytest.mark.skipif(
+    not _ipv6_loopback_is_bindable(),
+    reason='IPv6 loopback is disabled in this kernel namespace',
+)
+async def test_proxy_v2_ipv6_proxy_minimum_maps_exactly() -> None:
+    observed: list[tuple[object, object]] = []
+    payload = (
+        socket.inet_pton(socket.AF_INET6, '2001:db8::10')
+        + socket.inet_pton(socket.AF_INET6, '2001:db8::20')
+        + (41234).to_bytes(2, 'big')
+        + (8080).to_bytes(2, 'big')
+    )
+    assert len(payload) == 36
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        observed.append((scope['client'], scope['server']))
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        bind=('[::1]:0',),
+        forwarded_allow_ips=('::1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        status, body = await h2_request(
+            host='::1',
+            port=server_port(server),
+            prefix=_proxy_v2_prefix(0x21, 0x21, payload),
+        )
+
+    assert (status, body) == (204, b'')
+    assert observed == [(('2001:db8::10', 41234), ('2001:db8::20', 8080))]
+
+
+@pytest.mark.parametrize(
+    ('version_command', 'family_transport'),
+    [
+        (0x11, 0x11),  # unsupported version
+        (0x22, 0x11),  # invalid command nibble
+        (0x21, 0x31),  # unsupported address family
+        (0x21, 0x12),  # unsupported transport
+    ],
+)
+async def test_proxy_v2_invalid_version_family_transport(
+    version_command: int,
+    family_transport: int,
+) -> None:
+    """Every rejected v2 nibble combination closes before application dispatch."""
+    calls = 0
+
+    async def app(scope, receive, send):
+        nonlocal calls
+        if scope['type'] != 'http':
+            return
+        calls += 1
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        with pytest.raises((
+            ConnectionResetError,
+            BrokenPipeError,
+            RuntimeError,
+            OSError,
+        )):
+            await asyncio.wait_for(
+                h2_request(
+                    port=server_port(server),
+                    prefix=_proxy_v2_prefix(
+                        version_command,
+                        family_transport,
+                        _proxy_v2_ipv4_payload(),
+                    ),
+                ),
+                timeout=5,
+            )
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=server_port(server),
+                prefix=_proxy_v2_prefix(0x21, 0x11, _proxy_v2_ipv4_payload()),
+            ),
+            timeout=5,
+        )
+
+    assert (status, body, calls) == (204, b'', 1)
+
+
+@pytest.mark.parametrize('split_at', range(1, 29))
+async def test_proxy_v2_prefix_split_at_every_boundary(split_at: int) -> None:
+    """Exact-read accumulation is independent of every prelude segmentation."""
+    prefix = _proxy_v2_prefix(0x21, 0x11, _proxy_v2_ipv4_payload())
+    assert len(prefix) == 28
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('127.0.0.1',),
+        proxy_protocol='v2',
+    )
+    async with running_server(app, config) as server:
+        status, _headers, body, trailers = await asyncio.wait_for(
+            _http1_after_split_proxy_prefix(server_port(server), prefix, split_at),
+            timeout=5,
+        )
+
+    assert (status, body, trailers) == (204, b'', [])

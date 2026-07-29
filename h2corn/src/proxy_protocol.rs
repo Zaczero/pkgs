@@ -8,6 +8,7 @@ use tokio::io::AsyncRead;
 use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
+use crate::config::ProxyConfig;
 use crate::error::{ConfigError, ErrorExt, H2CornError, ProxyError};
 use crate::h2_frame::{BufferedConnectionReader, CONNECTION_PREFACE};
 
@@ -141,19 +142,22 @@ impl ConnectionInfo {
     pub(crate) fn from_peer(
         actual_peer: ConnectionPeer,
         actual_server: Option<ServerAddr>,
-        proxy_headers_trusted: bool,
+        proxy: &ProxyConfig,
     ) -> Self {
+        let proxy_headers_trusted =
+            proxy.trust_headers && peer_is_trusted(&proxy.trusted_peers, &actual_peer);
+        let client = match &actual_peer {
+            ConnectionPeer::Tcp(peer) => Some(ClientAddr {
+                host: peer.ip().to_string().into(),
+                port: peer.port(),
+            }),
+            ConnectionPeer::Unix => None,
+        };
         Self {
             actual_peer,
             actual_server,
             proxy_headers_trusted,
-            client: match &actual_peer {
-                ConnectionPeer::Tcp(peer) => Some(ClientAddr {
-                    host: peer.ip().to_string().into(),
-                    port: peer.port(),
-                }),
-                ConnectionPeer::Unix => None,
-            },
+            client,
             server: None,
         }
     }
@@ -233,10 +237,7 @@ pub(crate) fn peer_is_trusted(trusted: &[TrustedPeer], actual_peer: &ConnectionP
     }
 }
 
-pub(crate) fn trusted_host_matches(trusted: &[TrustedPeer], host: &str, is_unix: bool) -> bool {
-    if is_unix {
-        return trusted.iter().any(TrustedPeer::matches_unix);
-    }
+pub(crate) fn trusted_host_matches(trusted: &[TrustedPeer], host: &str) -> bool {
     let Ok(ip) = host.parse::<IpAddr>() else {
         return false;
     };
@@ -571,6 +572,7 @@ mod tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
     use super::*;
+    use crate::config::ProxyConfig;
     use crate::error::ErrorKind;
     use crate::h2_frame::BufferedConnectionReader;
 
@@ -594,6 +596,39 @@ mod tests {
             },
             _ => panic!("expected IPv6 CIDR"),
         }
+    }
+
+    #[test]
+    fn textual_forwarding_hops_never_match_a_unix_trust_entry() {
+        let trusted = [TrustedPeer::Unix];
+
+        assert!(!trusted_host_matches(&trusted, "198.51.100.7"));
+        assert!(!trusted_host_matches(&trusted, "203.0.113.10"));
+    }
+
+    #[test]
+    fn connection_info_owns_both_proxy_header_trust_conditions() {
+        let peer = ConnectionPeer::Tcp("192.0.2.10:443".parse().unwrap());
+        let trusted = ProxyConfig {
+            trust_headers: true,
+            trusted_peers: Box::new([parse_trusted_peer("192.0.2.10").unwrap()]),
+            protocol: ProxyProtocolMode::Off,
+        };
+        assert!(ConnectionInfo::from_peer(peer, None, &trusted).proxy_headers_trusted);
+
+        let opt_out = ProxyConfig {
+            trust_headers: false,
+            trusted_peers: Box::new([parse_trusted_peer("192.0.2.10").unwrap()]),
+            protocol: ProxyProtocolMode::Off,
+        };
+        assert!(!ConnectionInfo::from_peer(peer, None, &opt_out).proxy_headers_trusted);
+
+        let untrusted = ProxyConfig {
+            trust_headers: true,
+            trusted_peers: Box::new([parse_trusted_peer("192.0.2.11").unwrap()]),
+            protocol: ProxyProtocolMode::Off,
+        };
+        assert!(!ConnectionInfo::from_peer(peer, None, &untrusted).proxy_headers_trusted);
     }
 
     #[test]

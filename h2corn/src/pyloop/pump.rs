@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::PyDictMethods;
 
-use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotDropAck, SlotHandle};
+use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::app_call::AppCallArgs;
 use crate::error::H2CornError;
 use crate::runtime::RequestTaskGuard;
@@ -17,7 +17,6 @@ use crate::runtime::RequestTaskGuard;
 enum DoneSlot {
     App(SlotHandle<Result<(), H2CornError>, RequestTaskGuard>),
     Value(SlotHandle<PyResult<Py<PyAny>>>),
-    AcknowledgedValue(SlotHandle<PyResult<Py<PyAny>>, SlotDropAck>),
 }
 
 #[pyclass(frozen, name = "_Pump")]
@@ -58,12 +57,6 @@ impl TaskDone {
         match slot {
             DoneSlot::App(slot) => slot.fill(task_outcome(py, task)),
             DoneSlot::Value(slot) => {
-                slot.fill(
-                    task.call_method0(pyo3::intern!(py, "result"))
-                        .map(Bound::unbind),
-                );
-            },
-            DoneSlot::AcknowledgedValue(slot) => {
                 slot.fill(
                     task.call_method0(pyo3::intern!(py, "result"))
                         .map(Bound::unbind),
@@ -120,20 +113,23 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
             },
             Err(err) => slot.fill(Err(err)),
         },
-        PumpEvent::CallCancellableAwaitable { build, slot } => match build(py, Arc::clone(shard)) {
-            Ok(awaitable) => {
-                if let Err(err) = spawn_cancellable_awaitable(py, shard, awaitable, &slot) {
-                    slot.fill(Err(err));
-                }
-            },
-            Err(err) => slot.fill(Err(err)),
-        },
         PumpEvent::ReleaseApp { app, done } => {
             drop(app);
             let _ = done.send(());
         },
         PumpEvent::CancelTask { task } => {
-            let _ = task.call_method0(py, pyo3::intern!(py, "cancel"));
+            if let Err(err) = task.call_method0(py, pyo3::intern!(py, "cancel")) {
+                err.write_unraisable(py, Some(task.bind(py)));
+            }
+        },
+        PumpEvent::CallTrigger { trigger } => {
+            // Nothing is waiting on an embedder's readiness or retirement
+            // callback, so a failure has nowhere to propagate — which is what
+            // `sys.unraisablehook` exists for. Dropping it left a server
+            // accepting traffic while its readiness publication had failed.
+            if let Err(err) = trigger.call0(py) {
+                err.write_unraisable(py, Some(trigger.bind(py)));
+            }
         },
         PumpEvent::Detach => shard.detach(py),
         PumpEvent::StopLoop => shard.stop_loop(py),
@@ -199,23 +195,6 @@ fn spawn_awaitable(
     })?;
     task.call_method1(pyo3::intern!(py, "add_done_callback"), (done,))?;
     if let Some(task) = slot.set_task(task.unbind()) {
-        let _ = task.call_method0(py, pyo3::intern!(py, "cancel"));
-    }
-    Ok(())
-}
-
-fn spawn_cancellable_awaitable(
-    py: Python<'_>,
-    shard: &Shard,
-    awaitable: Py<PyAny>,
-    slot: &SlotHandle<PyResult<Py<PyAny>>, SlotDropAck>,
-) -> PyResult<()> {
-    let task = shard.ensure_future(py, awaitable)?;
-    let done = Py::new(py, TaskDone {
-        slot: Mutex::new(Some(DoneSlot::AcknowledgedValue(Arc::clone(slot)))),
-    })?;
-    task.call_method1(pyo3::intern!(py, "add_done_callback"), (done,))?;
-    if let Some(task) = slot.set_task(task.clone().unbind()) {
         let _ = task.call_method0(py, pyo3::intern!(py, "cancel"));
     }
     Ok(())

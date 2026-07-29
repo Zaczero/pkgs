@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fmt, io};
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
@@ -123,10 +123,12 @@ pub(crate) enum ConfigError {
     InvalidTrustedProxyEntry { value: Box<str> },
     #[error("invalid trusted proxy CIDR prefix: {value}")]
     InvalidTrustedProxyCidrPrefix { value: Box<str> },
-    #[error("{name} must be a finite non-negative number")]
-    InvalidFiniteDuration { name: &'static str },
+    #[error("{name} must be a non-negative number of seconds that fits a duration")]
+    InvalidDuration { name: &'static str },
     #[error("invalid proxy_protocol mode: {value:?}")]
     InvalidProxyProtocolMode { value: Box<str> },
+    #[error("invalid server_header mode: {value:?}")]
+    InvalidServerHeaderMode { value: Box<str> },
     #[error("invalid cert_reqs mode: {value:?}")]
     InvalidClientCertMode { value: Box<str> },
     #[error("invalid response header {value:?}: expected 'name: value'")]
@@ -141,16 +143,6 @@ pub(crate) enum ConfigError {
         value: Box<str>,
         detail: &'static str,
     },
-    #[error("client certificate verification requires certfile and keyfile")]
-    ClientCertVerificationRequiresCertAndKey,
-    #[error("certfile and keyfile must be configured together")]
-    CertAndKeyMustBeConfiguredTogether,
-    #[error("ca_certs requires cert_reqs to be optional or required")]
-    CaCertsRequiresClientCerts,
-    #[error("cert_reqs optional/required requires ca_certs")]
-    ClientCertsRequireCaCerts,
-    #[error("TLS is supported only on TCP listeners")]
-    TlsRequiresTcpListeners,
     #[error(
         "runtime_threads is process-global and was already initialized with {initialized_threads}; cannot change it to {worker_threads}"
     )]
@@ -173,12 +165,18 @@ impl ConfigError {
         }
     }
 
-    pub(crate) const fn invalid_finite_duration(name: &'static str) -> Self {
-        Self::InvalidFiniteDuration { name }
+    pub(crate) const fn invalid_duration(name: &'static str) -> Self {
+        Self::InvalidDuration { name }
     }
 
     pub(crate) fn invalid_proxy_protocol_mode(value: &str) -> Self {
         Self::InvalidProxyProtocolMode {
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn invalid_server_header_mode(value: &str) -> Self {
+        Self::InvalidServerHeaderMode {
             value: value.into(),
         }
     }
@@ -261,8 +259,6 @@ impl AsgiError {
 
 #[derive(Clone, Copy, Debug, Error)]
 pub(crate) enum Http1Error {
-    #[error("h2c upgrade with a request body is unsupported")]
-    H2cUpgradeWithRequestBody,
     #[error("HTTP/1.1 request head timed out")]
     RequestHeadTimedOut,
     #[error("HTTP/1.1 request body timed out")]
@@ -295,6 +291,10 @@ pub(crate) enum Http1Error {
     ChunkClosed,
     #[error("chunked request chunk was missing CRLF")]
     ChunkMissingCrlf,
+    #[error("trailer field exceeds the configured maximum size")]
+    TrailerFieldTooLarge,
+    #[error("more trailer fields than the configured maximum")]
+    TooManyTrailerFields,
     #[error("invalid HTTP/1.1 request line")]
     InvalidRequestLine,
     #[error("invalid HTTP/1.1 request method")]
@@ -303,6 +303,8 @@ pub(crate) enum Http1Error {
     RequestTargetNotUtf8,
     #[error("invalid absolute-form HTTP/1.1 request target")]
     InvalidAbsoluteFormTarget,
+    #[error("HTTP/1.1 request target form is not allowed for this method")]
+    InvalidRequestTargetForm,
     #[error("invalid absolute-form authority")]
     InvalidAbsoluteFormAuthority,
     #[error("invalid chunked request chunk size")]
@@ -339,6 +341,8 @@ pub(crate) enum HttpResponseError {
     InvalidResponseHeaderName,
     #[error("response header values contain invalid bytes")]
     InvalidResponseHeaderValue,
+    #[error("response trailers contain a field that is forbidden after the body")]
+    InvalidResponseTrailerField,
     #[error("response status must be a three-digit code")]
     StatusMustBeThreeDigitCode,
 }
@@ -355,6 +359,8 @@ pub(crate) enum H2Error {
     SettingsEnableConnectProtocolInvalid,
     #[error("SETTINGS_INITIAL_WINDOW_SIZE exceeds the protocol limit")]
     SettingsInitialWindowSizeExceededLimit,
+    #[error("SETTINGS_INITIAL_WINDOW_SIZE would overflow an active stream send window")]
+    SettingsInitialWindowAdjustmentOverflow,
     #[error("SETTINGS_MAX_FRAME_SIZE is outside the valid range")]
     SettingsMaxFrameSizeOutOfRange,
     #[error("connection closed while reading an HTTP/2 frame header")]
@@ -394,10 +400,14 @@ pub(crate) enum H2Error {
     DataOnIdleStream,
     #[error("receive flow-control window underflow")]
     ReceiveFlowControlWindowUnderflow,
+    #[error("send flow-control window overflow")]
+    SendFlowControlWindowOverflow,
     #[error("received a frame larger than the advertised max frame size")]
     FrameExceedsAdvertisedMaxSize,
     #[error("received a non-CONTINUATION frame while a header block was open")]
     HeaderBlockInterrupted,
+    #[error("field block exceeds the configured maximum size")]
+    HeaderBlockTooLarge,
     #[error("first client frame after the preface must be SETTINGS")]
     FirstClientFrameMustBeSettings,
     #[error("first client SETTINGS frame must not be an ACK")]
@@ -456,6 +466,8 @@ pub(crate) enum H2Error {
     IncompleteHpackHeaderBlock,
     #[error("HPACK decode error: {detail}")]
     HpackDecode { detail: Box<str> },
+    #[error("invalid HTTP/2 request field")]
+    InvalidRequestField,
 }
 
 impl H2Error {
@@ -484,6 +496,8 @@ pub(crate) enum PathsendError {
         #[source]
         source: io::Error,
     },
+    #[error("http.response.pathsend rejected non-regular file {path}")]
+    NotRegularFile { path: PathBuf },
 }
 
 impl PathsendError {
@@ -491,12 +505,6 @@ impl PathsendError {
         Self::OpenFailed {
             path: path.display().to_string().into_boxed_str(),
             source,
-        }
-    }
-
-    pub(crate) fn io_error_kind(&self) -> io::ErrorKind {
-        match self {
-            Self::OpenFailed { source, .. } => source.kind(),
         }
     }
 
