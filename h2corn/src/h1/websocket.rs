@@ -34,11 +34,6 @@ mod accept {
     };
 }
 
-mod b64 {
-    pub(super) const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-}
-
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{io, mem};
@@ -47,15 +42,12 @@ use bytes::BytesMut;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
-use super::http::{
-    BodyFraming, append_header_lines, finish_chunked_response, write_chunk, write_empty_response,
-    write_final_response, write_response_head,
-};
-use crate::bridge::PayloadBytes;
+use super::http::{H1ResponseState, append_header_lines, write_empty_response};
+use crate::base64;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::header::apply_default_response_headers;
-use crate::http::response::FinalResponseBody;
+use crate::http::response::{HttpResponseTransport, ResponseAction};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::sendfile::WriteTarget;
 use crate::websocket::session::{
@@ -77,6 +69,7 @@ struct H1WebSocketTransport<R, W> {
     buffer: BytesMut,
     frame_buf: BytesMut,
     pending_frames: SmallVec<[EncodedWebSocketFrame; 4]>,
+    response: H1ResponseState,
     writer: BufWriter<W>,
 }
 
@@ -109,41 +102,21 @@ where
         )
         .await
     }
+}
 
-    async fn send_final_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        headers: ResponseHeaders,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError> {
-        write_final_response(&mut self.writer, status, headers, body, true).await
+impl<R, W> HttpResponseTransport for H1WebSocketTransport<R, W>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: WriteTarget,
+{
+    async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
+        self.response
+            .apply_response_action(&mut self.writer, &self.config, action)
+            .await
     }
 
-    async fn start_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        mut headers: ResponseHeaders,
-    ) -> Result<(), H2CornError> {
-        apply_default_response_headers(&mut headers, &self.config);
-        write_response_head(
-            &mut self.writer,
-            status,
-            &headers,
-            true,
-            BodyFraming::Chunked,
-        )
-        .await
-    }
-
-    async fn send_denial_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-        if !body.is_empty() {
-            write_chunk(&mut self.writer, body.as_ref()).await?;
-        }
-        Ok(())
-    }
-
-    async fn finish_denial_response(&mut self) -> Result<(), H2CornError> {
-        finish_chunked_response(&mut self.writer).await
+    async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+        self.response.flush_buffered(&mut self.writer).await
     }
 }
 
@@ -153,7 +126,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     fn websocket_codec(&mut self, max_message_size: Option<NonZeroUsize>) -> WebSocketCodec {
-        let mut codec = WebSocketCodec::segmented(max_message_size);
+        let mut codec = WebSocketCodec::with_options(max_message_size);
         codec.push_segment(mem::take(&mut self.buffer).freeze());
         codec
     }
@@ -230,6 +203,7 @@ where
         buffer,
         frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
         pending_frames: SmallVec::new(),
+        response: H1ResponseState::new(true),
         writer,
     };
     run_websocket(&mut transport, context).await
@@ -251,17 +225,7 @@ where
             slices.push(io::IoSlice::new(payload));
         }
     }
-
-    let mut remaining = slices.iter().map(|slice| slice.len()).sum::<usize>();
-    let mut slices = slices.as_mut_slice();
-    while remaining != 0 {
-        let written = writer.get_mut().write_vectored(slices).await?;
-        if written == 0 {
-            return Err(io::Error::from(io::ErrorKind::WriteZero).into());
-        }
-        remaining -= written;
-        io::IoSlice::advance_slices(&mut slices, written);
-    }
+    crate::async_util::write_all_vectored(writer.get_mut(), slices.as_mut_slice()).await?;
     writer.get_mut().flush().await?;
     Ok(())
 }
@@ -363,18 +327,18 @@ fn compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
 
 const fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     [
-        b64::TABLE[(b0 >> 2) as usize],
-        b64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        b64::TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
-        b64::TABLE[(b2 & 0x3F) as usize],
+        base64::TABLE[(b0 >> 2) as usize],
+        base64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
+        base64::TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
+        base64::TABLE[(b2 & 0x3F) as usize],
     ]
 }
 
 const fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
     [
-        b64::TABLE[(b0 >> 2) as usize],
-        b64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        b64::TABLE[((b1 & 0x0F) << 2) as usize],
+        base64::TABLE[(b0 >> 2) as usize],
+        base64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
+        base64::TABLE[((b1 & 0x0F) << 2) as usize],
         b'=',
     ]
 }

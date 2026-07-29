@@ -10,22 +10,26 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 use super::http::write_empty_response;
-use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, UpgradeRequest};
+use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute, UpgradeRequest};
 use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
-use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
+use crate::error::{ErrorExt, H2CornError, Http1Error};
 use crate::h2_frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
-use crate::hpack::BytesStr;
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 use crate::http::header::{
-    header_contains_token, header_is_single_token, parse_connection_header_tokens,
-    parse_content_length_header, request_header_name_needs_lowercase,
+    ConnectionHeaderTokens, header_contains_token, header_is_single_token,
+    parse_connection_header_tokens, parse_content_length_header, request_authority_is_valid,
+    request_header_name_needs_lowercase, request_path_is_valid, request_scheme_is_valid,
+    trailer_field_name_is_forbidden,
 };
-use crate::http::header_meta::RequestHeaderMeta;
+use crate::http::header_meta::{ParsedWebSocketKey, ParsedWebSocketVersion, RequestHeaderMeta};
+use crate::http::header_value::header_value_is_valid;
+use crate::http::planner::reject_before_launch;
 use crate::http::types::{
-    H1RequestHeaders, HttpStatusCode, HttpVersion, KnownRequestHeaderName, RequestHead,
-    RequestHeaders, RequestTarget as DomainRequestTarget, parse_request_method, status_code,
+    BytesStr, ConnectAuthority, H1RequestHeaders, HttpStatusCode, HttpVersion,
+    KnownRequestHeaderName, RequestHead, RequestHeaders, RequestTarget as DomainRequestTarget,
+    parse_request_method, status_code,
 };
 use crate::runtime::StreamInput;
 
@@ -33,6 +37,8 @@ const HEADER_TERMINATOR: &[u8; 4] = b"\r\n\r\n";
 const LINE_TERMINATOR: &[u8; 2] = b"\r\n";
 const CHUNK_BUFFER_SIZE: usize = 8192;
 const MAX_CHUNK_SIZE_LINE_BYTES: usize = 16 * 1024;
+const MAX_CHUNK_SIZE_LINE_WIRE_BYTES: usize = MAX_CHUNK_SIZE_LINE_BYTES + LINE_TERMINATOR.len();
+const CHUNK_DELIVERY_BATCH_BYTES: usize = 64 * 1024;
 const MAX_TRAILER_SECTION_BYTES: usize = 64 * 1024;
 static HEADER_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
     LazyLock::new(|| memmem::Finder::new(HEADER_TERMINATOR));
@@ -69,13 +75,6 @@ impl<'a> BufferedTerminatorFinder<'a> {
 }
 
 #[derive(Default)]
-struct ConnectionHeaderFlags {
-    close: bool,
-    upgrade: bool,
-    http2_settings: bool,
-}
-
-#[derive(Default)]
 struct UpgradeHeaderFlags {
     websocket: bool,
     h2c: bool,
@@ -84,7 +83,7 @@ struct UpgradeHeaderFlags {
 struct HeaderParseState {
     headers: H1RequestHeaders,
     host_header_index: Option<usize>,
-    connection: ConnectionHeaderFlags,
+    connection: ConnectionHeaderTokens,
     upgrade: UpgradeHeaderFlags,
     body_kind: RequestBodyKind,
     expect_continue: bool,
@@ -93,16 +92,104 @@ struct HeaderParseState {
     header_meta: RequestHeaderMeta,
 }
 
+/// The configured field policy, applied to trailers as well as headers.
+///
+/// Trailer values are discarded — ASGI does not expose request trailers — but
+/// the grammar and the operator's limits still apply. Draining them as bare
+/// CRLF-terminated lines admitted arbitrary text and any number of fields
+/// through a second parser that knew nothing about `limit_request_fields`.
+#[derive(Clone, Copy)]
+pub(super) struct FieldLimits {
+    pub(super) max_fields: Option<usize>,
+    pub(super) max_field_size: Option<usize>,
+}
+
+/// Coalesce decoded chunked-body bytes before handing them to Python.
+///
+/// Chunk framing is a transport detail: exposing every legal one-byte chunk
+/// turns a small request into an unbounded stream of Python calls. Fixed-size
+/// bodies keep their existing direct path because they already arrive as a
+/// single framing unit.
+struct ChunkDeliveryBatch {
+    pending: BytesMut,
+}
+
+impl ChunkDeliveryBatch {
+    fn new() -> Self {
+        Self {
+            pending: BytesMut::with_capacity(CHUNK_DELIVERY_BATCH_BYTES),
+        }
+    }
+
+    async fn flush(&mut self, tx: &mpsc::Sender<StreamInput>, body: &mut RequestBodyState) {
+        if self.pending.is_empty() || !body.should_deliver() {
+            self.pending.clear();
+            return;
+        }
+
+        let chunk = self.pending.split().freeze();
+        if !send_if_open(tx, StreamInput::data(chunk)).await {
+            body.stop_delivering();
+        }
+    }
+
+    async fn push(
+        &mut self,
+        buffer: &mut BytesMut,
+        chunk_len: usize,
+        tx: &mpsc::Sender<StreamInput>,
+        body: &mut RequestBodyState,
+    ) -> Result<(), H2CornError> {
+        match body.record_chunk(chunk_len as u64) {
+            RequestBodyProgress::Continue => {},
+            RequestBodyProgress::SizeLimitExceeded => {
+                self.flush(tx, body).await;
+                return Http1Error::RequestBodyLimitExceeded.err();
+            },
+            RequestBodyProgress::ContentLengthExceeded => {
+                self.flush(tx, body).await;
+                return Http1Error::RequestBodyTooLarge.err();
+            },
+        }
+
+        if !body.should_deliver() {
+            buffer.advance(chunk_len);
+            return Ok(());
+        }
+
+        // A large contiguous region is already a good application payload;
+        // preserve it without an intermediate copy when there is no partial
+        // batch to join first.
+        if self.pending.is_empty() && chunk_len >= CHUNK_DELIVERY_BATCH_BYTES {
+            let chunk = buffer.split_to(chunk_len).freeze();
+            if !send_if_open(tx, StreamInput::data(chunk)).await {
+                body.stop_delivering();
+            }
+            return Ok(());
+        }
+
+        self.pending.extend_from_slice(&buffer.split_to(chunk_len));
+        if self.pending.len() >= CHUNK_DELIVERY_BATCH_BYTES {
+            self.flush(tx, body).await;
+        }
+        Ok(())
+    }
+}
+
+/// A request target in one of the four forms of RFC 9112 §3.2, already checked
+/// against the method that may use it: authority-form only for `CONNECT`,
+/// asterisk-form only for `OPTIONS`, and neither of the other two for
+/// `CONNECT`. Constructing one is the only way past that check.
 enum ParsedRequestTarget<'a> {
     Origin(&'a [u8]),
     Absolute(Uri),
     Asterisk,
+    Authority(&'a [u8]),
 }
 
 struct RequestLineParts<'a> {
     method: Method,
     target: &'a [u8],
-    websocket_method_supported: bool,
 }
 
 impl HeaderParseState {
@@ -110,7 +197,7 @@ impl HeaderParseState {
         Self {
             headers: H1RequestHeaders::new(head),
             host_header_index: None,
-            connection: ConnectionHeaderFlags::default(),
+            connection: ConnectionHeaderTokens::default(),
             upgrade: UpgradeHeaderFlags::default(),
             body_kind: RequestBodyKind::None,
             expect_continue: false,
@@ -140,7 +227,8 @@ impl HeaderParseState {
             return Http1Error::MalformedHeaderLine.err();
         };
         let name = &line[..colon];
-        let value = line[colon + 1..].trim_ascii();
+        let raw_value = &line[colon + 1..];
+        let value = trim_ows(raw_value);
         let known_name = self.headers.push(name, value).map_err(|()| {
             if request_header_name_needs_lowercase(name).is_none() {
                 Http1Error::InvalidHeaderName
@@ -156,20 +244,23 @@ impl HeaderParseState {
             .observe_known_header_slice(known_name, value, self.headers.len() - 1);
         match known_name {
             KnownRequestHeaderName::Host => {
+                if !request_authority_is_valid(value) {
+                    return Http1Error::InvalidRequestTargetForm.err();
+                }
                 if self.host_header_index.is_some() {
                     return Http1Error::ConflictingAbsoluteFormAuthority.err();
                 }
                 self.host_header_index = Some(self.headers.len() - 1);
             },
             KnownRequestHeaderName::Connection => {
-                let tokens = parse_connection_header_tokens(value);
-                self.connection.close |= tokens.close;
-                self.connection.upgrade |= tokens.upgrade;
-                self.connection.http2_settings |= tokens.http2_settings;
+                self.connection |= parse_connection_header_tokens(value);
             },
             KnownRequestHeaderName::Upgrade => {
-                self.upgrade.websocket |= value.eq_ignore_ascii_case(b"websocket");
-                self.upgrade.h2c |= value.eq_ignore_ascii_case(b"h2c");
+                // RFC 9110 §7.8: Upgrade is a list of protocols in order of
+                // preference, so a client that also offers something we do
+                // not speak still asked for the one we do.
+                self.upgrade.websocket |= header_contains_token(value, b"websocket");
+                self.upgrade.h2c |= header_contains_token(value, b"h2c");
             },
             KnownRequestHeaderName::Te => {
                 if header_contains_token(value, b"trailers") {
@@ -206,8 +297,11 @@ impl HeaderParseState {
             KnownRequestHeaderName::Expect => {
                 self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
             },
-            KnownRequestHeaderName::Http2Settings if self.http2_settings.is_none() => {
-                self.http2_settings = Some(parse_http2_settings(value)?);
+            KnownRequestHeaderName::Http2Settings => {
+                let settings = parse_http2_settings(value)?;
+                if self.http2_settings.replace(settings).is_some() {
+                    return Http1Error::MalformedHeaderLine.err();
+                }
             },
             _ => {},
         }
@@ -323,11 +417,9 @@ fn parse_request_line_or_reject(
             return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
         },
     }
-    let websocket_method_supported = method == Method::GET;
     Ok(HeadParseOutcome::Parsed(RequestLineParts {
         method,
         target,
-        websocket_method_supported,
     }))
 }
 
@@ -337,6 +429,16 @@ fn parse_headers_or_reject<'a>(
     limit_request_fields: Option<usize>,
     limit_request_field_size: Option<usize>,
 ) -> HeadParseOutcome<HeaderParseState> {
+    // `head_lines` removes the CR from each legal CRLF delimiter. Validate it
+    // first, while a second CR in `value\r\r\n` is still observable rather
+    // than mistaken for that delimiter and sanitised away.
+    if head
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| *byte == b'\r' && head.get(index + 1) != Some(&b'\n'))
+    {
+        return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
+    }
     let mut header_state = HeaderParseState::new(head.clone());
     for line in lines {
         if line.is_empty() {
@@ -356,39 +458,53 @@ fn parsed_request_from_head(
     head: &Bytes,
     line: RequestLineParts<'_>,
     mut header_state: HeaderParseState,
-    secure: bool,
+    scheme: &'static str,
 ) -> Result<HeadParseOutcome<ParsedHead>, H2CornError> {
-    let scheme = BytesStr::from_static(if secure { "https" } else { "http" });
-    let request_target = match parse_request_target(
+    let scheme = BytesStr::from_static(scheme);
+    // Every way a target can fail to parse is the client's, and the framing is
+    // intact by the time we get here, so each one is answerable with a status
+    // rather than a dropped connection.
+    let Ok(request_target) = parse_request_target(
+        &line.method,
         line.target,
         &mut header_state.headers,
         header_state.host_header_index,
-    ) {
-        Ok(request_target) => request_target,
-        Err(err)
-            if matches!(
-                err.kind(),
-                ErrorKind::Http1(Http1Error::ConflictingAbsoluteFormAuthority)
-            ) =>
-        {
-            return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
-        },
-        Err(err) => return Err(err),
+    ) else {
+        return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
     };
-    if !matches!(request_target, ParsedRequestTarget::Absolute(_))
-        && header_state.host_header_index.is_none()
+    if !matches!(
+        request_target,
+        ParsedRequestTarget::Absolute(_) | ParsedRequestTarget::Authority(_)
+    ) && header_state.host_header_index.is_none()
     {
         return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
     }
-    let path_and_query = match request_target {
-        ParsedRequestTarget::Origin(path) => BytesStr::try_from(head.slice_ref(path))
-            .map_err(|_| Http1Error::RequestTargetNotUtf8.into_error())?,
-        ParsedRequestTarget::Absolute(uri) => uri
-            .path_and_query()
-            .map_or(BytesStr::from_static("/"), |path_and_query| {
-                BytesStr::from(path_and_query.as_str())
-            }),
-        ParsedRequestTarget::Asterisk => BytesStr::from_static("*"),
+    let target = match request_target {
+        // The authority is the whole target: `CONNECT` asks for a tunnel to it,
+        // which the shared planner answers with 501 for both protocols.
+        ParsedRequestTarget::Authority(authority) => {
+            let authority = BytesStr::try_from(head.slice_ref(authority))
+                .map_err(|_| Http1Error::RequestTargetNotUtf8.into_error())?;
+            let Ok(authority) = ConnectAuthority::try_from(authority) else {
+                return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
+            };
+            DomainRequestTarget::connect(authority)
+        },
+        ParsedRequestTarget::Origin(path) => DomainRequestTarget::normal(
+            scheme,
+            BytesStr::try_from(head.slice_ref(path))
+                .map_err(|_| Http1Error::RequestTargetNotUtf8.into_error())?,
+        ),
+        ParsedRequestTarget::Absolute(uri) => DomainRequestTarget::normal(
+            scheme,
+            uri.path_and_query()
+                .map_or(BytesStr::from_static("/"), |path_and_query| {
+                    BytesStr::from(path_and_query.as_str())
+                }),
+        ),
+        ParsedRequestTarget::Asterisk => {
+            DomainRequestTarget::normal(scheme, BytesStr::from_static("*"))
+        },
     };
     let HeaderParseState {
         headers,
@@ -403,43 +519,45 @@ fn parsed_request_from_head(
     let request = RequestHead {
         http_version: HttpVersion::Http1_1,
         method: line.method,
-        target: DomainRequestTarget::normal(scheme, path_and_query),
+        target,
         headers: RequestHeaders::from_h1(headers),
         header_meta,
     };
-
-    let websocket_requested = upgrade.websocket && connection.upgrade;
-    let upgrade = if websocket_requested {
-        let websocket = request.header_meta.websocket();
-        if !websocket.is_some_and(|websocket| websocket.version_supported) {
-            Some(UpgradeRequest::WebSocketUnsupportedVersion)
-        } else if let Some(websocket) = websocket
-            && line.websocket_method_supported
-            && !websocket.key_duplicate
-            && let Some(key) = websocket.key
-        {
-            Some(UpgradeRequest::WebSocket {
-                key,
-                meta: websocket.request.clone(),
-            })
-        } else {
-            Some(UpgradeRequest::WebSocketBadRequest)
+    let route = if upgrade.websocket && connection.upgrade {
+        if body_kind != RequestBodyKind::None {
+            return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
+        }
+        let bad_request = RequestRoute::Upgrade(UpgradeRequest::WebSocketBadRequest);
+        match request.header_meta.websocket() {
+            Some(websocket)
+                if websocket.version == ParsedWebSocketVersion::Supported
+                    && request.method == Method::GET
+                    && let ParsedWebSocketKey::Valid(key) = websocket.key
+                    && let Some(meta) = websocket.request.clone().into_valid() =>
+            {
+                RequestRoute::Upgrade(UpgradeRequest::WebSocket { key, meta })
+            },
+            Some(websocket) if !websocket.version.is_unsupported() => bad_request,
+            _ => RequestRoute::Upgrade(UpgradeRequest::WebSocketUnsupportedVersion),
         }
     } else if let Some(settings) = http2_settings
         && upgrade.h2c
         && connection.upgrade
         && connection.http2_settings
     {
-        Some(UpgradeRequest::H2c { settings })
+        if body_kind == RequestBodyKind::None {
+            RequestRoute::Upgrade(UpgradeRequest::H2c { settings })
+        } else {
+            RequestRoute::Http(body_kind)
+        }
     } else {
-        None
+        RequestRoute::Http(body_kind)
     };
 
     Ok(HeadParseOutcome::Parsed(ParsedHead {
         request: ParsedRequest {
             request,
-            upgrade,
-            body_kind,
+            route,
             persistence: if connection.close {
                 ConnectionPersistence::Close
             } else {
@@ -455,7 +573,7 @@ pub(super) async fn read_request<R, W>(
     buffer: &mut BytesMut,
     writer: &mut BufWriter<W>,
     config: &ServerConfig,
-    secure: bool,
+    scheme: &'static str,
     timeout_duration: Option<Duration>,
 ) -> Result<Option<ParsedRequest>, H2CornError>
 where
@@ -501,14 +619,24 @@ where
             },
         };
 
-    let parsed = match parsed_request_from_head(&head, line, header_state, secure)? {
+    let parsed = match parsed_request_from_head(&head, line, header_state, scheme)? {
         HeadParseOutcome::Parsed(parsed) => parsed,
         HeadParseOutcome::Reject(status) => {
             write_empty_response(writer, config, status, true).await?;
             return Ok(None);
         },
     };
-    if parsed.expect_continue && parsed.request.body_kind != RequestBodyKind::None {
+    // Only invite a body the server is actually willing to read. A request
+    // already destined for 413 or 501 used to be told "100 Continue" first,
+    // so the client uploaded a body purely to have it refused.
+    if parsed.expect_continue
+        && parsed
+            .request
+            .route
+            .body_kind()
+            .is_some_and(|body| body != RequestBodyKind::None)
+        && reject_before_launch(&parsed.request.request, config.max_request_body_size).is_ok()
+    {
         writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
         writer.flush().await?;
     }
@@ -556,14 +684,28 @@ pub(super) async fn read_chunked_body<R>(
     tx: &mpsc::Sender<StreamInput>,
     body: &mut RequestBodyState,
     timeout_duration: Option<Duration>,
+    limits: FieldLimits,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin,
 {
+    let mut batch = ChunkDeliveryBatch::new();
     loop {
-        let size = read_chunk_size_line(reader, buffer, timeout_duration).await?;
+        let size = match read_chunk_size_line(reader, buffer, timeout_duration).await {
+            Ok(size) => size,
+            Err(error) => {
+                batch.flush(tx, body).await;
+                return Err(error);
+            },
+        };
         if size == 0 {
-            drain_chunked_trailers(reader, buffer, timeout_duration).await?;
+            if let Err(error) =
+                drain_chunked_trailers(reader, buffer, timeout_duration, limits).await
+            {
+                batch.flush(tx, body).await;
+                return Err(error);
+            }
+            batch.flush(tx, body).await;
             return match body.finish() {
                 RequestBodyFinish::Complete => Ok(()),
                 RequestBodyFinish::ContentLengthMismatch => Http1Error::RequestBodyClosed.err(),
@@ -572,9 +714,11 @@ where
         match body.preview_chunk(size as u64) {
             RequestBodyProgress::Continue => {},
             RequestBodyProgress::SizeLimitExceeded => {
+                batch.flush(tx, body).await;
                 return Http1Error::RequestBodyLimitExceeded.err();
             },
             RequestBodyProgress::ContentLengthExceeded => {
+                batch.flush(tx, body).await;
                 return Http1Error::RequestBodyTooLarge.err();
             },
         }
@@ -591,14 +735,18 @@ where
                 )
                 .await?
             {
+                batch.flush(tx, body).await;
                 return Http1Error::ChunkClosed.err();
             }
-            let chunk_len = usize::min(buffer.len(), remaining);
-            consume_body_bytes(buffer, chunk_len, tx, body).await?;
+            let chunk_len = buffer.len().min(remaining);
+            batch.push(buffer, chunk_len, tx, body).await?;
             remaining -= chunk_len;
         }
 
-        consume_chunk_crlf(reader, buffer, timeout_duration).await?;
+        if let Err(error) = consume_chunk_crlf(reader, buffer, timeout_duration).await {
+            batch.flush(tx, body).await;
+            return Err(error);
+        }
     }
 }
 
@@ -641,7 +789,7 @@ where
             }
             break end;
         }
-        let read_cap = MAX_CHUNK_SIZE_LINE_BYTES.saturating_sub(buffer.len());
+        let read_cap = MAX_CHUNK_SIZE_LINE_WIRE_BYTES.saturating_sub(buffer.len());
         if read_cap == 0 {
             return Http1Error::InvalidChunkSize.err();
         }
@@ -690,14 +838,53 @@ where
     Ok(())
 }
 
+fn validate_trailer_line(line: &[u8], limits: FieldLimits) -> Result<(), H2CornError> {
+    if limits
+        .max_field_size
+        .is_some_and(|limit| line.len() > limit)
+    {
+        return Http1Error::TrailerFieldTooLarge.err();
+    }
+    let Some(colon) = memchr(b':', line) else {
+        return Http1Error::MalformedHeaderLine.err();
+    };
+    let name = &line[..colon];
+    if request_header_name_needs_lowercase(name).is_none() {
+        return Http1Error::InvalidHeaderName.err();
+    }
+    if trailer_field_name_is_forbidden(name) {
+        return Http1Error::MalformedHeaderLine.err();
+    }
+    if !header_value_is_valid(&line[colon + 1..]) {
+        return Http1Error::InvalidHeaderValue.err();
+    }
+    Ok(())
+}
+
+/// RFC 9112 OWS is exactly SP / HTAB. `trim_ascii` also removes illegal
+/// controls, which would turn malformed wire bytes into valid field values.
+fn trim_ows(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(start, |index| index + 1);
+    &value[start..end]
+}
+
 async fn drain_chunked_trailers<R>(
     reader: &mut R,
     buffer: &mut BytesMut,
     timeout_duration: Option<Duration>,
+    limits: FieldLimits,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin,
 {
+    let mut fields = 0_usize;
     let mut line_search =
         BufferedTerminatorFinder::new(&LINE_TERMINATOR_FINDER, LINE_TERMINATOR.len());
     let mut section_bytes = 0;
@@ -725,11 +912,17 @@ where
         if section_bytes > MAX_TRAILER_SECTION_BYTES {
             return Http1Error::MalformedHeaderLine.err();
         }
-        buffer.advance(line_len);
-        line_search.reset();
         if end == 0 {
+            buffer.advance(line_len);
             return Ok(());
         }
+        fields += 1;
+        if limits.max_fields.is_some_and(|limit| fields > limit) {
+            return Http1Error::TooManyTrailerFields.err();
+        }
+        validate_trailer_line(&buffer[..end], limits)?;
+        buffer.advance(line_len);
+        line_search.reset();
     }
 }
 
@@ -752,19 +945,58 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
 }
 
 fn parse_request_target<'a>(
+    method: &Method,
     target: &'a [u8],
     headers: &mut H1RequestHeaders,
     host_header_index: Option<usize>,
 ) -> Result<ParsedRequestTarget<'a>, H2CornError> {
+    // `CONNECT` names a tunnel endpoint, never a resource: the other three
+    // forms carry no authority to tunnel to, and admitting one would hand the
+    // application an ordinary request for `/` instead (RFC 9112 §3.4).
+    if method == Method::CONNECT {
+        // Authority-form is the host and port of the tunnel destination and
+        // nothing else (RFC 9112 §3.2.3), which also makes the authority the
+        // whole target — so it borrows the head rather than being rebuilt.
+        if !request_authority_is_valid(target) {
+            return Http1Error::InvalidRequestTargetForm.err();
+        }
+        return Ok(ParsedRequestTarget::Authority(target));
+    }
     match target {
-        b"*" => return Ok(ParsedRequestTarget::Asterisk),
-        [b'/', ..] => return Ok(ParsedRequestTarget::Origin(target)),
+        // Asterisk-form addresses the server itself, which only `OPTIONS` may
+        // ask about (RFC 9112 §3.2.4).
+        b"*" if method == Method::OPTIONS => return Ok(ParsedRequestTarget::Asterisk),
+        b"*" => return Http1Error::InvalidRequestTargetForm.err(),
+        [b'/', ..] if request_path_is_valid(method, target) => {
+            return Ok(ParsedRequestTarget::Origin(target));
+        },
+        [b'/', ..] => return Http1Error::InvalidRequestTargetForm.err(),
         _ => {},
+    }
+    if !raw_absolute_form_target_is_valid(method, target) {
+        return Http1Error::InvalidAbsoluteFormTarget.err();
     }
     let uri = str::from_utf8(target)
         .map_err(|_| Http1Error::RequestTargetNotUtf8)?
         .parse::<Uri>()
         .map_err(|_| Http1Error::InvalidAbsoluteFormTarget)?;
+    // Absolute-form is the only remaining legal form, and it is absolute only
+    // with a scheme; a bare `host:port` is authority-form, which no method but
+    // `CONNECT` may send.
+    let Some(scheme) = uri.scheme() else {
+        return Http1Error::InvalidRequestTargetForm.err();
+    };
+    let Some(authority) = uri.authority() else {
+        return Http1Error::InvalidAbsoluteFormTarget.err();
+    };
+    if !request_scheme_is_valid(scheme.as_str().as_bytes())
+        || !request_authority_is_valid(authority.as_str().as_bytes())
+        || uri
+            .path_and_query()
+            .is_some_and(|path| !request_path_is_valid(method, path.as_str().as_bytes()))
+    {
+        return Http1Error::InvalidAbsoluteFormTarget.err();
+    }
     if let Some(host_header_index) = host_header_index
         && let Some(authority) = uri.authority()
         && !headers
@@ -784,29 +1016,160 @@ fn parse_request_target<'a>(
     Ok(ParsedRequestTarget::Absolute(uri))
 }
 
+/// Validate the absolute-form grammar directly on the request-target bytes.
+///
+/// This intentionally precedes `Uri` parsing: `Uri` has no fragment field and
+/// therefore cannot report a `#fragment` that appeared on the wire.
+fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
+    let Some(scheme_end) = memchr(b':', target) else {
+        return false;
+    };
+    let Some(after_authority) = target[scheme_end + 1..].strip_prefix(b"//") else {
+        return false;
+    };
+    let authority_end = after_authority
+        .iter()
+        .position(|byte| matches!(*byte, b'/' | b'?' | b'#'))
+        .unwrap_or(after_authority.len());
+    let (authority, path_and_query) = after_authority.split_at(authority_end);
+
+    !target.contains(&b'#')
+        && request_scheme_is_valid(&target[..scheme_end])
+        && request_authority_is_valid(authority)
+        && (path_and_query.is_empty() || request_path_is_valid(method, path_and_query))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the grammar stays auditable when token, quoted-string, and BWS states share one cursor"
+)]
 fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
     let mut value = 0_usize;
-    let mut saw_digit = false;
-
-    for &byte in line.trim_ascii() {
-        if byte == b';' {
-            break;
-        }
+    let mut index = 0;
+    while let Some(&byte) = line.get(index) {
         let digit = ascii::HEX_VALUE[usize::from(byte)];
         if digit == ascii::INVALID_VALUE {
-            return Http1Error::InvalidChunkSize.err();
+            break;
         }
         value = value
             .checked_shl(4)
             .and_then(|value| value.checked_add(usize::from(digit)))
             .ok_or(Http1Error::InvalidChunkSize)?;
-        saw_digit = true;
+        index += 1;
     }
-
-    if !saw_digit {
+    if index == 0 {
         return Http1Error::InvalidChunkSize.err();
     }
-    Ok(value)
+    let mut trailing_whitespace = false;
+    while line
+        .get(index)
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        trailing_whitespace = true;
+        index += 1;
+    }
+    if index == line.len() {
+        return if trailing_whitespace {
+            Http1Error::InvalidChunkSize.err()
+        } else {
+            Ok(value)
+        };
+    }
+
+    loop {
+        if line.get(index) != Some(&b';') {
+            return Http1Error::InvalidChunkSize.err();
+        }
+        index += 1;
+        while line
+            .get(index)
+            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+        {
+            index += 1;
+        }
+        let token_start = index;
+        while line
+            .get(index)
+            .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
+        {
+            index += 1;
+        }
+        if index == token_start {
+            return Http1Error::InvalidChunkSize.err();
+        }
+        trailing_whitespace = false;
+        while line
+            .get(index)
+            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+        {
+            trailing_whitespace = true;
+            index += 1;
+        }
+        if line.get(index) == Some(&b'=') {
+            index += 1;
+            while line
+                .get(index)
+                .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+            {
+                index += 1;
+            }
+            if line.get(index) == Some(&b'\"') {
+                index += 1;
+                let mut closed = false;
+                while let Some(&byte) = line.get(index) {
+                    index += 1;
+                    match byte {
+                        b'\"' => {
+                            closed = true;
+                            break;
+                        },
+                        b'\\' => {
+                            let Some(&escaped) = line.get(index) else {
+                                return Http1Error::InvalidChunkSize.err();
+                            };
+                            if escaped.is_ascii_control() || escaped == 0x7F {
+                                return Http1Error::InvalidChunkSize.err();
+                            }
+                            index += 1;
+                        },
+                        byte if byte.is_ascii_control() || byte == 0x7F => {
+                            return Http1Error::InvalidChunkSize.err();
+                        },
+                        _ => {},
+                    }
+                }
+                if !closed {
+                    return Http1Error::InvalidChunkSize.err();
+                }
+            } else {
+                let value_start = index;
+                while line
+                    .get(index)
+                    .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
+                {
+                    index += 1;
+                }
+                if index == value_start {
+                    return Http1Error::InvalidChunkSize.err();
+                }
+            }
+            trailing_whitespace = false;
+            while line
+                .get(index)
+                .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+            {
+                trailing_whitespace = true;
+                index += 1;
+            }
+        }
+        if index == line.len() {
+            return if trailing_whitespace {
+                Http1Error::InvalidChunkSize.err()
+            } else {
+                Ok(value)
+            };
+        }
+    }
 }
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {
@@ -903,9 +1266,10 @@ mod tests {
         WebSocketConfig,
     };
     use crate::error::{ErrorKind, H2CornError, Http1Error};
-    use crate::h1::{ConnectionPersistence, RequestBodyKind, UpgradeRequest};
+    use crate::h1::{ConnectionPersistence, RequestBodyKind, RequestRoute, UpgradeRequest};
     use crate::h2_frame;
     use crate::http::body::RequestBodyState;
+    use crate::http::types::RequestAuthority;
     use crate::proxy_protocol::ProxyProtocolMode;
     use crate::runtime::StreamInput;
 
@@ -917,13 +1281,14 @@ mod tests {
             }]),
             access_log: false,
             root_path: Box::from(""),
+            root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: None,
             http1: Http1Config {
                 enabled: true,
                 ..Default::default()
             },
             http2: Http2Config {
-                max_concurrent_streams: 8,
+                max_concurrent_streams: NonZeroU32::new(8).expect("non-zero"),
                 max_header_list_size: None,
                 max_header_block_size: None,
                 max_inbound_frame_size: NonZeroU32::new(h2_frame::DEFAULT_MAX_FRAME_SIZE as u32)
@@ -949,7 +1314,7 @@ mod tests {
                 protocol: ProxyProtocolMode::Off,
             },
             tls: None,
-            timeout_handshake: Duration::from_secs(5),
+            timeout_handshake: Some(Duration::from_secs(5)),
             response_headers: ResponseHeaderConfig::default(),
         }))
     }
@@ -973,7 +1338,7 @@ mod tests {
             &mut BytesMut::new(),
             &mut writer,
             test_server_config(),
-            false,
+            "http",
             None,
         )
         .await;
@@ -986,6 +1351,13 @@ mod tests {
             .await
             .expect("request parse succeeds")
             .expect("request is present")
+    }
+
+    const fn unlimited_fields() -> super::FieldLimits {
+        super::FieldLimits {
+            max_fields: None,
+            max_field_size: None,
+        }
     }
 
     fn base64url_encode(src: &[u8]) -> Vec<u8> {
@@ -1037,18 +1409,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_request_admits_each_target_form_only_for_its_methods() {
+        // RFC 9112 §3.2: authority-form belongs to CONNECT, asterisk-form to
+        // OPTIONS, and the other two to neither.
+        for request in [
+            b"CONNECT /tunnel HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice(),
+            b"CONNECT * HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            b"CONNECT http://example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            b"GET * HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            b"GET example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            b"GET p/q HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        ] {
+            assert!(
+                read_test_request(request)
+                    .await
+                    .expect("a malformed target is answered, not fatal")
+                    .is_none(),
+                "expected rejection of {:?}",
+                str::from_utf8(request).expect("test input is UTF-8")
+            );
+        }
+
+        assert!(
+            parse_test_request(b"OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                .await
+                .request
+                .target
+                .path_and_query()
+                .is_some_and(|target| target.as_str() == "*")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_request_parses_connect_as_a_tunnel_to_its_authority() {
+        // Without an authority form the target parsed as an ordinary `/`, and
+        // the tunnel request reached the application instead of a 501.
+        let parsed = parse_test_request(
+            b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+        )
+        .await;
+
+        assert_eq!(parsed.request.method, Method::CONNECT);
+        assert!(parsed.request.is_connect());
+        assert_eq!(
+            parsed
+                .request
+                .target
+                .authority()
+                .map(RequestAuthority::as_str),
+            Some("example.com:443")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_request_maps_portless_connect_to_a_bad_request_response() {
+        let parsed =
+            read_test_request(b"CONNECT example.com HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                .await
+                .expect("an invalid tunnel authority receives a response");
+
+        assert!(parsed.is_none());
+    }
+
+    #[tokio::test]
     async fn read_request_keeps_content_length_body_shape() {
         let parsed = parse_test_request(
             b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 7\r\n\r\npayload",
         )
         .await;
 
-        assert_eq!(
-            parsed.body_kind,
-            RequestBodyKind::ContentLength(7.try_into().unwrap())
-        );
+        assert!(matches!(
+            parsed.route,
+            RequestRoute::Http(RequestBodyKind::ContentLength(value)) if value.get() == 7
+        ));
         assert_eq!(parsed.persistence, ConnectionPersistence::KeepAlive);
-        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1058,9 +1492,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(parsed.body_kind, RequestBodyKind::Chunked);
+        assert!(matches!(
+            parsed.route,
+            RequestRoute::Http(RequestBodyKind::Chunked)
+        ));
         assert_eq!(parsed.persistence, ConnectionPersistence::KeepAlive);
-        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1069,9 +1505,11 @@ mod tests {
             parse_test_request(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
                 .await;
 
-        assert_eq!(parsed.body_kind, RequestBodyKind::None);
+        assert!(matches!(
+            parsed.route,
+            RequestRoute::Http(RequestBodyKind::None)
+        ));
         assert_eq!(parsed.persistence, ConnectionPersistence::Close);
-        assert!(parsed.upgrade.is_none());
     }
 
     #[tokio::test]
@@ -1091,8 +1529,8 @@ mod tests {
         .await;
 
         assert!(matches!(
-            parsed.upgrade,
-            Some(UpgradeRequest::WebSocket { .. })
+            parsed.route,
+            RequestRoute::Upgrade(UpgradeRequest::WebSocket { .. })
         ));
     }
 
@@ -1113,8 +1551,8 @@ mod tests {
         .await;
 
         assert!(matches!(
-            parsed.upgrade,
-            Some(UpgradeRequest::WebSocketUnsupportedVersion)
+            parsed.route,
+            RequestRoute::Upgrade(UpgradeRequest::WebSocketUnsupportedVersion)
         ));
     }
 
@@ -1134,8 +1572,8 @@ mod tests {
         .await;
 
         assert!(matches!(
-            parsed.upgrade,
-            Some(UpgradeRequest::WebSocketBadRequest)
+            parsed.route,
+            RequestRoute::Upgrade(UpgradeRequest::WebSocketBadRequest)
         ));
     }
 
@@ -1144,6 +1582,16 @@ mod tests {
         let parsed = read_test_request(b"GET / HTTP/1.1\r\nHost : example.com\r\n\r\n")
             .await
             .expect("request parse succeeds");
+
+        assert!(parsed.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_raw_header_value_controls_after_ows_trimming() {
+        let parsed =
+            read_test_request(b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Demo: \x0cvalue\r\n\r\n")
+                .await
+                .expect("malformed request receives a response");
 
         assert!(parsed.is_none());
     }
@@ -1183,8 +1631,8 @@ mod tests {
         .await;
 
         assert!(matches!(
-            parsed.upgrade,
-            Some(UpgradeRequest::WebSocketBadRequest)
+            parsed.route,
+            RequestRoute::Upgrade(UpgradeRequest::WebSocketBadRequest)
         ));
     }
 
@@ -1203,7 +1651,90 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(parsed.upgrade, Some(UpgradeRequest::H2c { .. })));
+        assert!(matches!(
+            parsed.route,
+            RequestRoute::Upgrade(UpgradeRequest::H2c { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_request_classifies_h2c_bodies_and_rejects_duplicate_settings() {
+        let content_length = parse_test_request(
+            concat!(
+                "POST / HTTP/1.1\r\n",
+                "Host: example.com\r\n",
+                "Connection: Upgrade, HTTP2-Settings\r\n",
+                "Upgrade: h2c\r\n",
+                "HTTP2-Settings:\r\n",
+                "Content-Length: 1\r\n",
+                "\r\n",
+                "x",
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(matches!(
+            content_length.route,
+            RequestRoute::Http(RequestBodyKind::ContentLength(_))
+        ));
+
+        let chunked = parse_test_request(
+            concat!(
+                "POST / HTTP/1.1\r\n",
+                "Host: example.com\r\n",
+                "Connection: Upgrade, HTTP2-Settings\r\n",
+                "Upgrade: h2c\r\n",
+                "HTTP2-Settings:\r\n",
+                "Transfer-Encoding: chunked\r\n",
+                "\r\n",
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(matches!(
+            chunked.route,
+            RequestRoute::Http(RequestBodyKind::Chunked)
+        ));
+
+        let no_body = parse_test_request(
+            concat!(
+                "GET / HTTP/1.1\r\n",
+                "Host: example.com\r\n",
+                "Connection: Upgrade, HTTP2-Settings\r\n",
+                "Upgrade: h2c\r\n",
+                "HTTP2-Settings:\r\n",
+                "Content-Length: 0\r\n",
+                "\r\n",
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(matches!(
+            no_body.route,
+            RequestRoute::Upgrade(UpgradeRequest::H2c { .. })
+        ));
+
+        for settings in ["", "AAEAAAAB"] {
+            let request = format!(
+                concat!(
+                    "GET / HTTP/1.1\r\n",
+                    "Host: example.com\r\n",
+                    "Connection: Upgrade, HTTP2-Settings\r\n",
+                    "Upgrade: h2c\r\n",
+                    "HTTP2-Settings:\r\n",
+                    "HTTP2-Settings: {settings}\r\n",
+                    "\r\n",
+                ),
+                settings = settings,
+            );
+            assert!(
+                read_test_request(request.as_bytes())
+                    .await
+                    .expect("malformed upgrade is a client error")
+                    .is_none(),
+                "a duplicate HTTP2-Settings header must be rejected: {settings:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1219,9 +1750,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
 
         let mut body = RequestBodyState::new(None, None, None);
-        read_chunked_body(&mut server, &mut buffer, &tx, &mut body, None)
-            .await
-            .expect("empty trailer block is accepted");
+        read_chunked_body(
+            &mut server,
+            &mut buffer,
+            &tx,
+            &mut body,
+            None,
+            unlimited_fields(),
+        )
+        .await
+        .expect("empty trailer block is accepted");
         writer.await.expect("writer task finishes");
 
         match rx.try_recv().expect("body chunk is forwarded") {
@@ -1244,27 +1782,70 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         let mut body = RequestBodyState::new(None, None, None);
-        read_chunked_body(&mut server, &mut buffer, &tx, &mut body, None)
-            .await
-            .expect("chunk extensions and trailers are accepted");
+        read_chunked_body(
+            &mut server,
+            &mut buffer,
+            &tx,
+            &mut body,
+            None,
+            unlimited_fields(),
+        )
+        .await
+        .expect("chunk extensions and trailers are accepted");
         writer.await.expect("writer task finishes");
 
         let StreamInput::Data {
-            body: first,
+            body: chunk,
             credit: None,
-        } = rx.try_recv().expect("first body chunk exists")
+        } = rx.try_recv().expect("coalesced body chunk exists")
         else {
-            panic!("expected first body chunk");
+            panic!("expected coalesced body chunk");
         };
+        assert_eq!(chunk.as_ref(), b"abcdefg");
+        rx.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn read_chunked_body_batches_tiny_wire_chunks_by_decoded_size() {
+        const CHUNKS: usize = 30_000;
+
+        let mut request = Vec::with_capacity(CHUNKS * 6 + 5);
+        for _ in 0..CHUNKS {
+            request.extend_from_slice(b"1\r\na\r\n");
+        }
+        request.extend_from_slice(b"0\r\n\r\n");
+
+        let (mut client, mut server) = duplex(1024);
+        let writer = spawn(async move {
+            client
+                .write_all(&request)
+                .await
+                .expect("duplex write succeeds");
+        });
+        let mut buffer = BytesMut::new();
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut body = RequestBodyState::new(None, None, None);
+
+        read_chunked_body(
+            &mut server,
+            &mut buffer,
+            &tx,
+            &mut body,
+            None,
+            unlimited_fields(),
+        )
+        .await
+        .expect("tiny chunks are accepted");
+        writer.await.expect("writer task finishes");
+
         let StreamInput::Data {
-            body: second,
+            body: chunk,
             credit: None,
-        } = rx.try_recv().expect("second body chunk exists")
+        } = rx.try_recv().expect("one batched body event exists")
         else {
-            panic!("expected second body chunk");
+            panic!("expected body data event");
         };
-        assert_eq!(first.as_ref(), b"abc");
-        assert_eq!(second.as_ref(), b"defg");
+        assert_eq!(chunk.as_ref(), vec![b'a'; CHUNKS]);
         rx.try_recv().unwrap_err();
     }
 
@@ -1285,6 +1866,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_chunk_size_line_accepts_the_exact_wire_boundary() {
+        let line = format!("1;{}\r\n", "a".repeat(MAX_CHUNK_SIZE_LINE_BYTES - 2));
+        assert_eq!(line.len(), MAX_CHUNK_SIZE_LINE_BYTES + 2);
+
+        let (_client, mut server) = duplex(1);
+        let mut buffered = BytesMut::from(line.as_bytes());
+        assert_eq!(
+            read_chunk_size_line(&mut server, &mut buffered, None)
+                .await
+                .expect("the exact limit is accepted"),
+            1
+        );
+
+        let (mut client, mut server) = duplex(1);
+        let writer = spawn(async move {
+            for byte in line.bytes() {
+                client
+                    .write_all(&[byte])
+                    .await
+                    .expect("byte-split line writes");
+            }
+        });
+        let mut split = BytesMut::new();
+        assert_eq!(
+            read_chunk_size_line(&mut server, &mut split, None)
+                .await
+                .expect("the byte-split exact limit is accepted"),
+            1
+        );
+        writer.await.expect("writer task completes");
+    }
+
+    #[tokio::test]
     async fn drain_chunked_trailers_rejects_oversized_total_section() {
         let (_client, mut server) = duplex(1);
         let mut payload = Vec::new();
@@ -1294,7 +1908,7 @@ mod tests {
         payload.extend_from_slice(b"\r\n");
         let mut buffer = BytesMut::from(payload.as_slice());
 
-        let err = drain_chunked_trailers(&mut server, &mut buffer, None)
+        let err = drain_chunked_trailers(&mut server, &mut buffer, None, unlimited_fields())
             .await
             .expect_err("oversized trailer section is rejected");
 
@@ -1317,9 +1931,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
 
         let mut body = RequestBodyState::new(None, None, Some(4));
-        let err = read_chunked_body(&mut server, &mut buffer, &tx, &mut body, None)
-            .await
-            .expect_err("announced chunk beyond configured limit is rejected");
+        let err = read_chunked_body(
+            &mut server,
+            &mut buffer,
+            &tx,
+            &mut body,
+            None,
+            unlimited_fields(),
+        )
+        .await
+        .expect_err("announced chunk beyond configured limit is rejected");
         writer.await.expect("writer task finishes");
 
         assert!(matches!(
@@ -1331,10 +1952,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_chunk_size_accepts_hex_extensions_and_whitespace() {
+    fn parse_chunk_size_accepts_hex_extensions_and_rejects_whitespace() {
         assert_eq!(parse_chunk_size(b"1a").unwrap(), 0x1A);
         assert_eq!(parse_chunk_size(b"1A;foo=bar").unwrap(), 0x1A);
-        assert_eq!(parse_chunk_size(b" \t1A\r").unwrap(), 0x1A);
+        parse_chunk_size(b" \t1A").unwrap_err();
+    }
+
+    #[test]
+    fn parse_chunk_size_enforces_extension_grammar() {
+        for line in [
+            b"1;foo; bar = token;baz=\"quoted \\\"value\\\"\"".as_slice(),
+            b"F \t; X\t=\t\"quoted\"",
+        ] {
+            assert!(parse_chunk_size(line).is_ok(), "{line:?} is legal");
+        }
+        for line in [
+            b" 1".as_slice(),
+            b"0x1",
+            b"1;",
+            b"1;=value",
+            b"1;\0",
+            b"1;foo=\"unterminated",
+            b"1;foo ",
+            b"1;foo=bar ",
+        ] {
+            assert!(parse_chunk_size(line).is_err(), "{line:?} is illegal");
+        }
     }
 
     #[test]

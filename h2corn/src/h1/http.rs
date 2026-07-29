@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io;
 use std::sync::Arc;
 
@@ -7,15 +6,20 @@ use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
-use crate::access_log::ResponseLogState;
-use crate::bridge::PayloadBytes;
+use super::ConnectionPersistence;
+use crate::async_util::write_all_vectored;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::digits;
-use crate::http::header::apply_default_response_headers;
+use crate::http::header::{
+    ResponseConnectionDirective, apply_default_response_headers, observe_response_header_strips,
+};
 use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
-use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseStart};
-use crate::http::types::{HttpStatusCode, ResponseHeaderKind, ResponseHeaders, status_code};
+use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
+use crate::http::types::{
+    HttpStatusCode, ResponseField, ResponseHeaderKind, ResponseHeaders, ResponseTrailers,
+    status_code,
+};
 use crate::sendfile::WriteTarget;
 
 const RESPONSE_BUF_CAPACITY: usize = 512;
@@ -42,20 +46,77 @@ impl FileTransferMode {
 pub(super) enum BodyFraming {
     KnownLength(usize),
     Chunked,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamingBodyFraming {
+    Idle,
+    Chunked,
+    KnownLength,
+}
+
+pub(super) struct H1ResponseState {
+    close_after: bool,
+    streaming_framing: StreamingBodyFraming,
+    /// Whether any status-bearing response action has been lowered. The
+    /// connection loop needs this after a concurrent body-limit failure so
+    /// it does not emit a second status line; request logging lives elsewhere.
+    response_started: bool,
+}
+
+impl H1ResponseState {
+    pub(super) const fn new(close_after: bool) -> Self {
+        Self {
+            close_after,
+            streaming_framing: StreamingBodyFraming::Idle,
+            response_started: false,
+        }
+    }
+
+    pub(super) const fn response_started(&self) -> bool {
+        self.response_started
+    }
+
+    /// Fold the app's response-level connection request into the request's
+    /// persistence decision at the boundary that controls the next parse.
+    pub(super) const fn persistence(
+        &self,
+        request_persistence: ConnectionPersistence,
+    ) -> ConnectionPersistence {
+        if self.close_after {
+            ConnectionPersistence::Close
+        } else {
+            request_persistence
+        }
+    }
+
+    pub(super) async fn write_empty_response<W>(
+        &mut self,
+        writer: &mut BufWriter<W>,
+        config: &ServerConfig,
+        status: HttpStatusCode,
+        close_after: bool,
+    ) -> Result<(), H2CornError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.response_started = true;
+        write_empty_response(writer, config, status, close_after).await
+    }
 }
 
 pub(super) struct H1HttpTransport<'a, W> {
     writer: &'a mut BufWriter<W>,
     config: Arc<ServerConfig>,
-    close_after: bool,
-    response_log: ResponseLogState,
+    state: H1ResponseState,
 }
 
 impl<'a, W> H1HttpTransport<'a, W>
 where
     W: AsyncWrite + Unpin,
 {
-    pub(super) fn new(
+    pub(super) const fn new(
         writer: &'a mut BufWriter<W>,
         config: Arc<ServerConfig>,
         close_after: bool,
@@ -63,9 +124,21 @@ where
         Self {
             writer,
             config,
-            close_after,
-            response_log: ResponseLogState::default(),
+            state: H1ResponseState::new(close_after),
         }
+    }
+
+    pub(super) const fn response_started(&self) -> bool {
+        self.state.response_started()
+    }
+
+    /// Fold the app's response-level connection request into the request's
+    /// persistence decision at the boundary that controls the next parse.
+    pub(super) const fn persistence(
+        &self,
+        request_persistence: ConnectionPersistence,
+    ) -> ConnectionPersistence {
+        self.state.persistence(request_persistence)
     }
 
     pub(super) async fn write_empty_response(
@@ -73,7 +146,157 @@ where
         status: HttpStatusCode,
         close_after: bool,
     ) -> Result<(), H2CornError> {
-        write_empty_response(self.writer, &self.config, status, close_after).await
+        self.state
+            .write_empty_response(self.writer, &self.config, status, close_after)
+            .await
+    }
+}
+
+impl H1ResponseState {
+    async fn write_streaming_body<W>(
+        &mut self,
+        writer: &mut BufWriter<W>,
+        body: &[u8],
+    ) -> Result<(), H2CornError>
+    where
+        W: WriteTarget,
+    {
+        if body.is_empty() {
+            return Ok(());
+        }
+        match &mut self.streaming_framing {
+            StreamingBodyFraming::Chunked => write_chunk(writer, body).await,
+            // The shared response controller has already checked the declared
+            // length before this transport receives the action.
+            StreamingBodyFraming::KnownLength => {
+                writer.write_all(body).await?;
+                Ok(())
+            },
+            StreamingBodyFraming::Idle => unreachable!("body follows response start"),
+        }
+    }
+
+    async fn write_streaming_file<W>(
+        &mut self,
+        writer: &mut BufWriter<W>,
+        file: Box<std::fs::File>,
+        len: usize,
+    ) -> Result<(), H2CornError>
+    where
+        W: WriteTarget,
+    {
+        let mut streamer = PathStreamer::new(*file, len, false);
+        while !streamer.is_drained() {
+            if streamer.needs_fill() {
+                streamer.fill().await?;
+            }
+            let chunk = streamer.remaining();
+            if !chunk.is_empty() {
+                match &mut self.streaming_framing {
+                    StreamingBodyFraming::Chunked => write_chunk(writer, chunk).await?,
+                    StreamingBodyFraming::KnownLength => writer.write_all(chunk).await?,
+                    StreamingBodyFraming::Idle => unreachable!("path follows response start"),
+                }
+                streamer.consume(chunk.len());
+            }
+        }
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn finish_streaming<W>(&self, writer: &mut BufWriter<W>) -> Result<(), H2CornError>
+    where
+        W: WriteTarget,
+    {
+        match self.streaming_framing {
+            StreamingBodyFraming::Chunked => finish_chunked_response(writer).await?,
+            // The controller emits Finish only after it has checked the final
+            // byte count, so known-length framing has no local terminal work.
+            StreamingBodyFraming::KnownLength => writer.flush().await?,
+            StreamingBodyFraming::Idle => unreachable!("finish follows response start"),
+        }
+        if self.close_after {
+            writer.get_mut().shutdown().await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn apply_response_action<W>(
+        &mut self,
+        writer: &mut BufWriter<W>,
+        config: &ServerConfig,
+        action: ResponseAction,
+    ) -> Result<(), H2CornError>
+    where
+        W: WriteTarget,
+    {
+        match action {
+            ResponseAction::Final { mut start, body } => {
+                self.response_started = true;
+                let control = start.control();
+                observe_response_header_strips(false, control.strips);
+                self.close_after |= control.directive == ResponseConnectionDirective::Close;
+                start.apply_default_headers(config);
+                let (status, headers) = start.into_status_headers();
+                write_final_response(writer, status, headers, body, self.close_after).await?;
+                if self.close_after {
+                    writer.get_mut().shutdown().await?;
+                }
+                Ok(())
+            },
+            ResponseAction::Start { mut start } => {
+                self.response_started = true;
+                let control = start.control();
+                observe_response_header_strips(false, control.strips);
+                self.close_after |= control.directive == ResponseConnectionDirective::Close;
+                let length = start.prepare_streaming(&config.response_headers);
+                let (status, headers) = start.into_status_headers();
+                self.streaming_framing = if length.is_some() {
+                    StreamingBodyFraming::KnownLength
+                } else {
+                    StreamingBodyFraming::Chunked
+                };
+                write_response_head(
+                    writer,
+                    status,
+                    &headers,
+                    self.close_after,
+                    length.map_or(BodyFraming::Chunked, BodyFraming::KnownLength),
+                )
+                .await
+            },
+            ResponseAction::Body(body) => self.write_streaming_body(writer, body.as_ref()).await,
+            ResponseAction::File { file, len } => {
+                self.write_streaming_file(writer, file, len).await
+            },
+            ResponseAction::Finish => self.finish_streaming(writer).await,
+            ResponseAction::FinishWithTrailers(trailers) => {
+                finish_chunked_with_trailers(writer, &trailers).await
+            },
+            ResponseAction::InternalError => {
+                self.response_started = true;
+                write_empty_response(writer, config, status_code::INTERNAL_SERVER_ERROR, true).await
+            },
+            // Nothing to write: an HTTP/1 response the application abandoned
+            // mid-body is truncated by closing the connection, which the
+            // caller does.
+            ResponseAction::AbortIncomplete => {
+                writer.flush().await?;
+                writer.get_mut().shutdown().await?;
+                Ok(())
+            },
+        }
+    }
+
+    pub(super) async fn flush_buffered<W>(
+        &self,
+        writer: &mut BufWriter<W>,
+    ) -> Result<(), H2CornError>
+    where
+        W: WriteTarget,
+    {
+        writer.flush().await?;
+        Ok(())
     }
 }
 
@@ -81,93 +304,17 @@ impl<W> HttpResponseTransport for H1HttpTransport<'_, W>
 where
     W: WriteTarget,
 {
-    async fn send_final_response(
-        &mut self,
-        mut start: ResponseStart,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError> {
-        self.response_log.started(start.status());
-        if !matches!(
-            body,
-            FinalResponseBody::Empty | FinalResponseBody::Suppressed { .. }
-        ) {
-            self.response_log.sent_body(body.len());
-        }
-        start.apply_default_headers(&self.config);
-        let (status, headers) = start.into_status_headers();
-        write_final_response(self.writer, status, headers, body, self.close_after).await
+    async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
+        self.state
+            .apply_response_action(self.writer, &self.config, action)
+            .await
     }
 
-    async fn start_streaming_response(
-        &mut self,
-        mut start: ResponseStart,
-    ) -> Result<(), H2CornError> {
-        self.response_log.started(start.status());
-        start.apply_default_headers(&self.config);
-        let (status, headers) = start.into_status_headers();
-        write_response_head(
-            self.writer,
-            status,
-            &headers,
-            self.close_after,
-            BodyFraming::Chunked,
-        )
-        .await
-    }
-
-    async fn send_streaming_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-        if body.is_empty() {
-            return Ok(());
-        }
-        self.response_log.sent_body(body.len());
-        write_chunk(self.writer, body.as_ref()).await
-    }
-
-    async fn send_streaming_file(&mut self, file: File, len: usize) -> Result<(), H2CornError> {
-        self.response_log.sent_body(len);
-        let mut streamer = PathStreamer::new(file, len, false);
-        while !streamer.is_drained() {
-            if streamer.needs_fill() {
-                streamer.fill().await?;
-            }
-            let chunk = streamer.remaining();
-            if !chunk.is_empty() {
-                write_chunk(self.writer, chunk).await?;
-                streamer.consume(chunk.len());
-            }
-        }
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    async fn finish_streaming_response(&mut self) -> Result<(), H2CornError> {
-        finish_chunked_response(self.writer).await
-    }
-
-    async fn finish_streaming_with_trailers(
-        &mut self,
-        trailers: ResponseHeaders,
-    ) -> Result<(), H2CornError> {
-        finish_chunked_with_trailers(self.writer, &trailers).await
-    }
-
-    async fn send_internal_error_response(&mut self) -> Result<(), H2CornError> {
-        self.response_log.internal_error();
-        write_empty_response(
-            self.writer,
-            &self.config,
-            status_code::INTERNAL_SERVER_ERROR,
-            true,
-        )
-        .await
-    }
-
-    async fn abort_incomplete_response(&mut self) -> Result<(), H2CornError> {
-        Ok(())
-    }
-
-    fn response_log_state(&self) -> ResponseLogState {
-        self.response_log
+    async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+        // A no-op when the batch already flushed (final responses, large
+        // vectored chunks); otherwise this is what makes a small streamed
+        // chunk visible to the client before the app awaits again.
+        self.state.flush_buffered(self.writer).await
     }
 }
 
@@ -311,6 +458,11 @@ pub(super) async fn write_response_head<W>(
 where
     W: AsyncWrite + Unpin,
 {
+    let framing = if status.forbids_content_length() {
+        BodyFraming::None
+    } else {
+        framing
+    };
     let mut out = ResponseBuf::new();
     append_status_line(&mut out, status);
     append_response_headers(&mut out, headers, close_after, framing);
@@ -344,32 +496,8 @@ where
         io::IoSlice::new(chunk),
         io::IoSlice::new(b"\r\n"),
     ];
-    write_all_vectored(writer.get_mut(), &mut slices).await
-}
-
-/// Drive `write_vectored` to completion over `slices`, advancing past partial
-/// writes. The caller must have flushed any buffered writer first so output
-/// order is preserved.
-async fn write_all_vectored<W>(
-    writer: &mut W,
-    slices: &mut [io::IoSlice<'_>],
-) -> Result<(), H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
-    let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
-    let mut bufs = slices;
-    while remaining > 0 {
-        let written = writer.write_vectored(bufs).await?;
-        if written == 0 {
-            return Err(H2CornError::from(io::Error::from(io::ErrorKind::WriteZero)));
-        }
-        remaining -= written;
-        if remaining == 0 {
-            break;
-        }
-        io::IoSlice::advance_slices(&mut bufs, written);
-    }
+    // Caller already flushed the BufWriter so write order is preserved.
+    write_all_vectored(writer.get_mut(), &mut slices).await?;
     Ok(())
 }
 
@@ -384,14 +512,14 @@ where
 
 pub(super) async fn finish_chunked_with_trailers<W>(
     writer: &mut BufWriter<W>,
-    trailers: &ResponseHeaders,
+    trailers: &ResponseTrailers,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {
     writer.write_all(b"0\r\n").await?;
     let mut out = ResponseBuf::new();
-    append_header_lines(&mut out, trailers);
+    append_response_fields(&mut out, trailers.as_fields());
     out.extend_from_slice(b"\r\n");
     writer.write_all(out.as_slice()).await?;
     writer.flush().await?;
@@ -419,6 +547,10 @@ where
 }
 
 pub(super) fn append_header_lines(dst: &mut ResponseBuf, headers: &ResponseHeaders) {
+    append_response_fields(dst, headers);
+}
+
+fn append_response_fields(dst: &mut ResponseBuf, headers: &[ResponseField]) {
     for (name, value) in headers {
         if matches!(
             name.kind(),
@@ -483,6 +615,16 @@ fn append_response_headers(
     framing: BodyFraming,
 ) {
     append_header_lines(dst, headers);
+    if headers
+        .iter()
+        .any(|(name, _)| name.as_bytes() == b"upgrade")
+    {
+        // Application `Upgrade` advertisements were admitted only after a
+        // paired `Connection: upgrade` directive was validated at ingress.
+        // The directive itself is transport-owned and was removed there, so
+        // regenerate the fixed HTTP/1 syntax here.
+        dst.extend_from_slice(b"Connection: Upgrade\r\n");
+    }
     match framing {
         BodyFraming::KnownLength(len) => {
             append_header_line_with_decimal(dst, b"Content-Length", len);
@@ -490,6 +632,7 @@ fn append_response_headers(
         BodyFraming::Chunked => {
             dst.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
         },
+        BodyFraming::None => {},
     }
     if close_after {
         dst.extend_from_slice(b"Connection: close\r\n");

@@ -3,7 +3,7 @@ mod parse;
 mod websocket;
 
 use std::future::Future;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -19,14 +19,13 @@ use self::http::{
 use crate::async_util::send_best_effort;
 use crate::bridge::RequestBodyCounter;
 use crate::config::ServerConfig;
-use crate::error::{ErrorExt, ErrorKind, H2CornError, Http1Error};
+use crate::error::{ErrorKind, H2CornError, Http1Error};
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::h2_frame::PeerSettings;
 use crate::http::app::{HttpRequestBody, poll_app_task_once};
 use crate::http::body::RequestBodyState;
 use crate::http::execution::StreamRequestInput;
-use crate::http::planner::reject_oversized_request;
-use crate::http::response::HttpResponseTransport;
+use crate::http::planner::reject_before_launch;
 use crate::http::run_request::run_http_request;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::runtime::{
@@ -40,9 +39,25 @@ const H1_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 
 struct ParsedRequest {
     request: RequestHead,
-    upgrade: Option<UpgradeRequest>,
-    body_kind: RequestBodyKind,
+    route: RequestRoute,
     persistence: ConnectionPersistence,
+}
+
+/// A parsed HTTP/1 request has one transport route. Keeping upgrades out of
+/// the ordinary-body variant prevents a successful 101 from coexisting with
+/// bytes the HTTP parser still owes to the application.
+enum RequestRoute {
+    Http(RequestBodyKind),
+    Upgrade(UpgradeRequest),
+}
+
+impl RequestRoute {
+    const fn body_kind(&self) -> Option<RequestBodyKind> {
+        match self {
+            Self::Http(body_kind) => Some(*body_kind),
+            Self::Upgrade(_) => None,
+        }
+    }
 }
 
 enum UpgradeRequest {
@@ -80,7 +95,6 @@ enum ConnectionPersistence {
 
 struct H1UpgradeContext {
     connection: ConnectionContext,
-    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
 }
 
@@ -100,7 +114,6 @@ pub(crate) fn serve_connection<R, W>(
     buffer: BytesMut,
     writer: W,
     connection: ConnectionContext,
-    secure: bool,
     shutdown: watch::Receiver<ShutdownState>,
 ) -> impl Future<Output = Result<(), H2CornError>>
 where
@@ -114,7 +127,7 @@ where
     // remains statically dispatched; this is one allocation per connection,
     // never per request or per poll.
     Box::pin(drive_connection(
-        reader, buffer, writer, connection, secure, shutdown,
+        reader, buffer, writer, connection, shutdown,
     ))
 }
 
@@ -123,7 +136,6 @@ async fn drive_connection<R, W>(
     mut buffer: BytesMut,
     writer: W,
     connection: ConnectionContext,
-    secure: bool,
     mut shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
@@ -150,7 +162,7 @@ where
                 &mut buffer,
                 &mut writer,
                 &connection.config,
-                secure,
+                connection.security.h1_scheme(),
                 request_head_timeout(&connection.config, first_request),
             ) => parsed,
         }?;
@@ -159,12 +171,11 @@ where
         first_request = false;
         let ParsedRequest {
             request,
-            upgrade,
-            body_kind,
+            route,
             persistence,
         } = parsed;
-        match upgrade {
-            None => {
+        match route {
+            RequestRoute::Http(body_kind) => {
                 if handle_http_request(
                     RequestContext::new(connection.clone(), request),
                     body_kind,
@@ -181,17 +192,15 @@ where
                     break;
                 }
             },
-            Some(upgrade) => {
+            RequestRoute::Upgrade(upgrade) => {
                 return handle_upgrade_request(
                     request,
-                    body_kind,
                     upgrade,
                     reader,
                     buffer,
                     writer,
                     H1UpgradeContext {
                         connection,
-                        secure,
                         shutdown,
                     },
                 )
@@ -219,7 +228,6 @@ fn request_head_timeout(config: &ServerConfig, first_request: bool) -> Option<Du
 
 async fn handle_upgrade_request<R, W>(
     request: RequestHead,
-    body_kind: RequestBodyKind,
     upgrade: UpgradeRequest,
     reader: R,
     buffer: BytesMut,
@@ -247,6 +255,7 @@ where
                     request: RequestContext::new(context.connection, request),
                     admission,
                     meta,
+                    shutdown: context.shutdown,
                 },
                 key,
                 reader,
@@ -280,7 +289,7 @@ where
         },
         UpgradeRequest::H2c { settings } => {
             Box::pin(serve_h2c_upgrade_request(
-                request, body_kind, settings, reader, buffer, writer, context,
+                request, settings, reader, buffer, writer, context,
             ))
             .await
         },
@@ -289,7 +298,6 @@ where
 
 async fn serve_h2c_upgrade_request<R, W>(
     mut request: RequestHead,
-    body_kind: RequestBodyKind,
     settings: PeerSettings,
     reader: R,
     buffer: BytesMut,
@@ -301,20 +309,15 @@ where
     W: WriteTarget,
 {
     request.http_version = HttpVersion::Http2;
-    if body_kind != RequestBodyKind::None {
-        return Http1Error::H2cUpgradeWithRequestBody.err();
-    }
     write_h2c_upgrade_response(&mut writer, &context.connection.config).await?;
     let H1UpgradeContext {
         connection,
-        secure,
         shutdown,
     } = context;
     serve_h2_upgraded_connection(
         reader,
         writer.into_inner(),
         connection,
-        secure,
         shutdown,
         UpgradedH2Request {
             buffer,
@@ -342,7 +345,7 @@ where
         writer,
     } = io;
     let config = Arc::clone(&ctx.connection.config);
-    if let Err(rejection) = reject_oversized_request(&ctx.request, config.max_request_body_size) {
+    if let Err(rejection) = reject_before_launch(&ctx.request, config.max_request_body_size) {
         write_simple_response(
             writer,
             &config,
@@ -381,7 +384,7 @@ where
                 || 0,
             )
             .await?;
-            return Ok(persistence);
+            return Ok(transport.persistence(persistence));
         },
         RequestBodyKind::ContentLength(len) => StreamedBodyKind::ContentLength(len),
         RequestBodyKind::Chunked => StreamedBodyKind::Chunked,
@@ -423,7 +426,7 @@ where
             move || read_body_bytes,
         )
         .await?;
-        return Ok(persistence);
+        return Ok(transport.persistence(persistence));
     }
 
     let (tx, request_body_rx, body_bytes_read, disconnect) =
@@ -464,6 +467,10 @@ where
                 config.max_request_body_size.map(NonZeroU64::get),
             ),
             config.timeout_request_body_idle,
+            parse::FieldLimits {
+                max_fields: config.limit_request_fields.map(NonZeroUsize::get),
+                max_field_size: config.http1.limit_request_field_size.map(NonZeroUsize::get),
+            },
         ));
 
         match app_ready {
@@ -507,12 +514,12 @@ where
         }
     };
     match result {
-        Ok(((), ())) => Ok(persistence),
+        Ok(((), ())) => Ok(transport.persistence(persistence)),
         Err(err)
             if matches!(
                 err.kind(),
                 ErrorKind::Http1(Http1Error::RequestBodyLimitExceeded)
-            ) && transport.response_log_state().status.is_none() =>
+            ) && !transport.response_started() =>
         {
             transport
                 .write_empty_response(status_code::PAYLOAD_TOO_LARGE, true)
@@ -544,6 +551,7 @@ async fn read_request_body<R>(
     tx: &mpsc::Sender<StreamInput>,
     mut body: RequestBodyState,
     timeout_request_body_idle: Option<Duration>,
+    field_limits: parse::FieldLimits,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -561,8 +569,15 @@ where
             .await?;
         },
         StreamedBodyKind::Chunked => {
-            parse::read_chunked_body(reader, buffer, tx, &mut body, timeout_request_body_idle)
-                .await?;
+            parse::read_chunked_body(
+                reader,
+                buffer,
+                tx,
+                &mut body,
+                timeout_request_body_idle,
+                field_limits,
+            )
+            .await?;
         },
     }
     send_best_effort(tx, StreamInput::EndStream).await;
