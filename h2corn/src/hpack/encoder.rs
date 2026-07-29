@@ -1,22 +1,16 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 
 use super::dynamic_table::DynamicBuffer;
-use super::huffman;
 use super::static_table::{self, StaticFieldEntry};
+use super::{HpackField, huffman};
 use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
 
 #[derive(Debug)]
 pub(crate) struct Encoder {
-    table: DynamicBuffer<DynamicEntry>,
+    table: DynamicBuffer<HpackField>,
     committed_max_size: usize,
     current_max_size: usize,
     pending_floor: Option<usize>,
-}
-
-#[derive(Debug)]
-struct DynamicEntry {
-    name: Bytes,
-    value: Bytes,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +54,21 @@ impl Encoder {
         }
 
         self.pending_floor = Some(self.pending_floor.unwrap_or(size).min(size));
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn max_size(&self) -> usize {
+        self.current_max_size
+    }
+
+    #[cfg(test)]
+    pub(crate) fn table_size(&self) -> usize {
+        self.table.live().iter().map(|(_, size)| *size).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn table_len(&self) -> usize {
+        self.table.live().len()
     }
 
     pub(crate) fn begin_block(&mut self, dst: &mut BytesMut) {
@@ -124,13 +133,9 @@ impl Encoder {
 
         if should_index_header(static_name, name.len(), value.len(), self.current_max_size) {
             encode_literal(literal_name, value, LiteralMode::IncrementalIndexing, dst);
-            self.table.insert(
-                DynamicEntry {
-                    name: Bytes::copy_from_slice(name),
-                    value: Bytes::copy_from_slice(value),
-                },
-                dynamic_entry_size(name.len(), value.len()),
-            );
+            let field = HpackField::copy_from_slices(name, value);
+            let size = field.table_size();
+            self.table.insert(field, size);
             return;
         }
 
@@ -150,17 +155,17 @@ impl Default for Encoder {
 }
 
 fn find_dynamic(
-    table: &DynamicBuffer<DynamicEntry>,
+    table: &DynamicBuffer<HpackField>,
     name: &[u8],
     value: &[u8],
 ) -> (Option<usize>, Option<usize>) {
     let mut name_index = None;
     for (offset, (entry, _)) in table.live().iter().rev().enumerate() {
-        if entry.name.as_ref() != name {
+        if entry.name() != name {
             continue;
         }
         let index = static_table::DYNAMIC_INDEX_OFFSET + offset;
-        if entry.value.as_ref() == value {
+        if entry.value() == value {
             return (Some(index), Some(index));
         }
         if name_index.is_none() {
@@ -181,12 +186,8 @@ fn should_index_header(
         return false;
     }
 
-    let size = dynamic_entry_size(name_len, value_len);
+    let size = 32 + name_len + value_len;
     size <= max_size && size.saturating_mul(4) <= max_size.saturating_mul(3)
-}
-
-const fn dynamic_entry_size(name_len: usize, value_len: usize) -> usize {
-    32 + name_len + value_len
 }
 
 fn encode_literal(name: LiteralName<'_>, value: &[u8], mode: LiteralMode, dst: &mut BytesMut) {
@@ -302,5 +303,24 @@ mod tests {
         encoder.begin_block(&mut dst);
 
         assert!(dst.is_empty());
+    }
+
+    /// Never-indexed static fields must stay never-indexed on the wire.
+    #[test]
+    fn never_indexed_authorization_is_not_dynamic_indexed() {
+        let mut encoder = Encoder::new();
+        let mut dst = BytesMut::new();
+
+        encoder.begin_block(&mut dst);
+        encoder.encode_field_bytes(b"authorization", b"Bearer x", &mut dst);
+        let first = dst.clone();
+        assert!(!first.is_empty());
+        // NeverIndexed prefix for static index 23: 0x10 | name encoding
+        assert_eq!(first[0] & 0xF0, 0x10);
+
+        dst.clear();
+        encoder.begin_block(&mut dst);
+        encoder.encode_field_bytes(b"authorization", b"Bearer x", &mut dst);
+        assert_eq!(dst, first);
     }
 }

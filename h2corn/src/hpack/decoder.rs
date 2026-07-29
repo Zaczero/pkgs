@@ -1,20 +1,16 @@
-use std::str::Utf8Error;
-
 use bytes::{Buf, Bytes, BytesMut};
-use http::{header, method, status};
 
 use super::dynamic_table::DynamicBuffer;
-use super::header::OwnedName;
-use super::{Header, huffman, static_table};
+use super::field::{DecodeBlockError, HpackField};
+use super::{huffman, static_table};
 use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
 
 const HUFFMAN_ARENA_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
 pub(crate) struct Decoder {
-    max_size_update: Option<usize>,
-    last_max_update: usize,
-    table: DynamicBuffer<DynamicEntry>,
+    max_dynamic_size: usize,
+    table: DynamicBuffer<HpackField>,
     buffer: BytesMut,
 }
 
@@ -22,9 +18,6 @@ pub(crate) struct Decoder {
 pub(crate) enum DecoderError {
     InvalidTableIndex,
     InvalidHuffmanCode,
-    InvalidUtf8,
-    InvalidStatusCode,
-    InvalidPseudoheader,
     InvalidMaxDynamicSize,
     IntegerOverflow,
     NeedMore(NeedMore),
@@ -46,13 +39,10 @@ enum Representation {
     SizeUpdate,
 }
 
-type DynamicEntry = Header;
-
 impl Decoder {
     pub(crate) fn new(size: usize) -> Self {
         Self {
-            max_size_update: None,
-            last_max_update: size,
+            max_dynamic_size: size,
             table: DynamicBuffer::new(size),
             buffer: BytesMut::new(),
         }
@@ -61,84 +51,103 @@ impl Decoder {
     #[cfg(test)]
     pub(crate) fn decode_bytes<F>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), DecoderError>
     where
-        F: FnMut(Header),
+        F: FnMut(HpackField),
     {
-        self.decode_block(src, |header| {
-            f(header);
-            Ok(())
-        })
-    }
-
-    const fn begin_block(&mut self) {
-        if let Some(size) = self.max_size_update.take() {
-            self.last_max_update = size;
+        match self.decode_block(src, |field| {
+            f(field);
+            Ok::<(), ()>(())
+        }) {
+            Ok(()) | Err(DecodeBlockError::Rejected(())) => Ok(()),
+            Err(DecodeBlockError::Compression(err)) => Err(err),
         }
     }
 
-    pub(crate) fn decode_block<F, E>(&mut self, src: &mut Bytes, mut f: F) -> Result<(), E>
-    where
-        F: FnMut(Header) -> Result<(), E>,
-        E: From<DecoderError>,
-    {
-        self.begin_block();
+    /// Decode a whole header block, calling `accept` for each field.
+    ///
+    /// A rejection from `accept` does not stop the decode. The dynamic table is
+    /// shared by every stream on the connection, so abandoning a block
+    /// half-read leaves this decoder disagreeing with the peer's encoder for
+    /// the life of the connection: one stream answered 431 used to make the
+    /// *next*, perfectly valid, stream fail with `COMPRESSION_ERROR`. The
+    /// block is consumed in full; after the first rejection further semantic
+    /// callbacks are skipped while table mutations continue. A later HPACK
+    /// failure returns `Compression`, overriding any recorded rejection.
+    pub(crate) fn decode_block<E>(
+        &mut self,
+        src: &mut Bytes,
+        mut accept: impl FnMut(HpackField) -> Result<(), E>,
+    ) -> Result<(), DecodeBlockError<E>> {
         let mut can_resize = true;
+        let mut rejected: Option<E> = None;
 
-        while self.decode_next(src, &mut can_resize, &mut f)? {}
+        while Self::has_more(src) {
+            let field = match self.decode_next(src, &mut can_resize) {
+                Ok(Some(field)) => field,
+                Ok(None) => continue,
+                Err(err) => return Err(DecodeBlockError::Compression(err)),
+            };
 
-        Ok(())
+            if rejected.is_none()
+                && let Err(err) = accept(field)
+            {
+                rejected = Some(err);
+            }
+        }
+
+        rejected.map_or(Ok(()), |err| Err(DecodeBlockError::Rejected(err)))
     }
 
-    fn decode_next<F, E>(
+    fn has_more(src: &Bytes) -> bool {
+        src.has_remaining()
+    }
+
+    /// Decode one representation. Returns `None` for size updates (no field).
+    fn decode_next(
         &mut self,
         src: &mut Bytes,
         can_resize: &mut bool,
-        f: &mut F,
-    ) -> Result<bool, E>
-    where
-        F: FnMut(Header) -> Result<(), E>,
-        E: From<DecoderError>,
-    {
+    ) -> Result<Option<HpackField>, DecoderError> {
         let Some(&byte) = src.chunk().first() else {
-            return Ok(false);
+            return Ok(None);
         };
 
         match Representation::load(byte) {
             Representation::Indexed => {
                 *can_resize = false;
-                f(self.decode_indexed(src).map_err(E::from)?)?;
+                Ok(Some(self.decode_indexed(src)?))
             },
             Representation::LiteralWithIndexing => {
                 *can_resize = false;
-                let entry = self.decode_literal::<6>(src).map_err(E::from)?;
-                let size = entry.len();
-                self.table.insert(entry.clone(), size);
-                f(entry)?;
+                let entry = self.decode_literal::<6>(src)?;
+                // Insert before any semantic callback so table state tracks
+                // successfully decoded bytes regardless of message validity.
+                self.table.insert(entry.clone(), entry.table_size());
+                Ok(Some(entry))
             },
             Representation::LiteralWithoutIndexing | Representation::LiteralNeverIndexed => {
                 *can_resize = false;
-                f(self.decode_literal::<4>(src).map_err(E::from)?)?;
+                Ok(Some(self.decode_literal::<4>(src)?))
             },
             Representation::SizeUpdate => {
                 if !*can_resize {
-                    return Err(E::from(DecoderError::InvalidMaxDynamicSize));
+                    return Err(DecoderError::InvalidMaxDynamicSize);
                 }
-                self.process_size_update(src).map_err(E::from)?;
+                self.process_size_update(src)?;
+                Ok(None)
             },
         }
-
-        Ok(true)
     }
 
     fn process_size_update(&mut self, buf: &mut Bytes) -> Result<(), DecoderError> {
         let new_size = decode_int::<5, _>(buf)?;
-        if new_size > self.last_max_update {
+        if new_size > self.max_dynamic_size {
             return Err(DecoderError::InvalidMaxDynamicSize);
         }
         self.table.set_max_size(new_size);
         Ok(())
     }
 
-    fn decode_indexed(&self, buf: &mut Bytes) -> Result<Header, DecoderError> {
+    fn decode_indexed(&self, buf: &mut Bytes) -> Result<HpackField, DecoderError> {
         let index = decode_int::<7, _>(buf)?;
         get_indexed_entry(&self.table, index)
     }
@@ -146,7 +155,7 @@ impl Decoder {
     fn decode_literal<const PREFIX_SIZE: u8>(
         &mut self,
         buf: &mut Bytes,
-    ) -> Result<Header, DecoderError> {
+    ) -> Result<HpackField, DecoderError> {
         let table_idx = decode_int::<PREFIX_SIZE, _>(buf)?;
 
         if table_idx == 0 {
@@ -186,19 +195,19 @@ impl Decoder {
         Ok(decoded.freeze())
     }
 
-    fn decode_new_name_literal(&mut self, buf: &mut Bytes) -> Result<Header, DecoderError> {
+    fn decode_new_name_literal(&mut self, buf: &mut Bytes) -> Result<HpackField, DecoderError> {
         let name = Self::decode_string_into(&mut self.buffer, buf)?;
         let value = Self::decode_string_into(&mut self.buffer, buf)?;
-        Header::new(name, value)
+        Ok(HpackField::from_parts(name, value))
     }
 
     fn decode_indexed_name_literal(
         &mut self,
         buf: &mut Bytes,
-        name: OwnedName,
-    ) -> Result<Header, DecoderError> {
+        name: Bytes,
+    ) -> Result<HpackField, DecoderError> {
         let value = Self::decode_string_into(&mut self.buffer, buf)?;
-        name.into_entry(value)
+        Ok(HpackField::from_parts(name, value))
     }
 }
 
@@ -220,40 +229,10 @@ impl Representation {
     }
 }
 
-impl From<Utf8Error> for DecoderError {
-    fn from(_: Utf8Error) -> Self {
-        Self::InvalidUtf8
-    }
-}
-
-impl From<header::InvalidHeaderValue> for DecoderError {
-    fn from(_: header::InvalidHeaderValue) -> Self {
-        Self::InvalidUtf8
-    }
-}
-
-impl From<header::InvalidHeaderName> for DecoderError {
-    fn from(_: header::InvalidHeaderName) -> Self {
-        Self::InvalidUtf8
-    }
-}
-
-impl From<method::InvalidMethod> for DecoderError {
-    fn from(_: method::InvalidMethod) -> Self {
-        Self::InvalidUtf8
-    }
-}
-
-impl From<status::InvalidStatusCode> for DecoderError {
-    fn from(_: status::InvalidStatusCode) -> Self {
-        Self::InvalidUtf8
-    }
-}
-
 fn dynamic_entry(
-    table: &DynamicBuffer<DynamicEntry>,
+    table: &DynamicBuffer<HpackField>,
     index: usize,
-) -> Result<&DynamicEntry, DecoderError> {
+) -> Result<&HpackField, DecoderError> {
     let offset = index - static_table::DYNAMIC_INDEX_OFFSET;
     table
         .entry_from_end(offset)
@@ -261,9 +240,9 @@ fn dynamic_entry(
 }
 
 fn get_indexed_entry(
-    table: &DynamicBuffer<DynamicEntry>,
+    table: &DynamicBuffer<HpackField>,
     index: usize,
-) -> Result<Header, DecoderError> {
+) -> Result<HpackField, DecoderError> {
     match index {
         0 => Err(DecoderError::InvalidTableIndex),
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::get(index)),
@@ -272,13 +251,16 @@ fn get_indexed_entry(
 }
 
 fn get_indexed_name(
-    table: &DynamicBuffer<DynamicEntry>,
+    table: &DynamicBuffer<HpackField>,
     index: usize,
-) -> Result<OwnedName, DecoderError> {
+) -> Result<Bytes, DecoderError> {
     match index {
         0 => Err(DecoderError::InvalidTableIndex),
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
-        _ => Ok(dynamic_entry(table, index)?.owned_name()),
+        _ => {
+            let field = dynamic_entry(table, index)?;
+            Ok(field.clone().into_parts().0)
+        },
     }
 }
 
@@ -304,7 +286,12 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
     while buf.has_remaining() {
         let byte = buf.get_u8();
         bytes += 1;
-        value += usize::from(byte & VARINT_MASK) << shift;
+        let addition = usize::from(byte & VARINT_MASK)
+            .checked_shl(shift)
+            .ok_or(DecoderError::IntegerOverflow)?;
+        value = value
+            .checked_add(addition)
+            .ok_or(DecoderError::IntegerOverflow)?;
         if byte & VARINT_FLAG == 0 {
             return Ok(value);
         }
@@ -322,7 +309,7 @@ mod tests {
     use super::*;
     use crate::hpack::Encoder;
 
-    fn decode_all(src: &[u8], table_size: usize) -> Vec<Header> {
+    fn decode_all(src: &[u8], table_size: usize) -> Vec<HpackField> {
         let mut decoder = Decoder::new(table_size);
         let mut bytes = Bytes::copy_from_slice(src);
         let mut headers = Vec::new();
@@ -380,13 +367,8 @@ mod tests {
 
         let headers = decode_all(&block, 256);
         assert_eq!(headers.len(), 1);
-        match &headers[0] {
-            Header::Field { name, value } => {
-                assert_eq!(name.as_str(), "x-h2corn");
-                assert_eq!(value.as_ref(), b"value");
-            },
-            _ => panic!("unexpected header kind"),
-        }
+        assert_eq!(headers[0].name(), b"x-h2corn");
+        assert_eq!(headers[0].value(), b"value");
     }
 
     #[test]
@@ -399,13 +381,8 @@ mod tests {
         let headers = decode_all(&block, 256);
 
         assert_eq!(headers.len(), 1);
-        match &headers[0] {
-            Header::Field { name, value } => {
-                assert_eq!(name.as_str(), "host");
-                assert_eq!(value.as_ref(), b"example.com");
-            },
-            _ => panic!("unexpected header kind"),
-        }
+        assert_eq!(headers[0].name(), b"host");
+        assert_eq!(headers[0].value(), b"example.com");
     }
 
     #[test]
@@ -456,5 +433,134 @@ mod tests {
         let mut decoder = Decoder::new(4096);
         let err = decoder.decode_bytes(&mut bytes, |_| {}).unwrap_err();
         assert_eq!(err, DecoderError::InvalidMaxDynamicSize);
+    }
+
+    #[test]
+    fn decode_integer_boundaries_are_checked() {
+        let mut exact = Bytes::from_static(&[0x1F, 0xFF, 0xFF, 0xFF, 0x07]);
+        decode_int::<5, _>(&mut exact).unwrap();
+
+        let mut truncated = Bytes::from_static(&[0x1F, 0x80]);
+        assert_eq!(
+            decode_int::<5, _>(&mut truncated),
+            Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow))
+        );
+
+        let mut overflow = Bytes::from_static(&[0x1F, 0x80, 0x80, 0x80, 0x80]);
+        assert_eq!(
+            decode_int::<5, _>(&mut overflow),
+            Err(DecoderError::IntegerOverflow)
+        );
+    }
+
+    #[test]
+    fn dynamic_table_resize_rules_hold_at_the_exact_limit() {
+        let mut decoder = Decoder::new(4096);
+        // Dynamic-table update with the five-bit HPACK prefix: 4096 and one
+        // over, encoded without relying on the encoder under test.
+        let mut exact = Bytes::from_static(&[0x3F, 0xE1, 0x1F]);
+        decoder
+            .decode_bytes(&mut exact, |_| {})
+            .expect("the configured maximum is legal at block start");
+
+        let mut over = Bytes::from_static(&[0x3F, 0xE2, 0x1F]);
+        assert_eq!(
+            decoder.decode_bytes(&mut over, |_| {}).unwrap_err(),
+            DecoderError::InvalidMaxDynamicSize
+        );
+    }
+
+    /// Uppercase names are HTTP-invalid but still HPACK-valid. Insertion must
+    /// happen before the reject callback so a later indexed reference works.
+    #[test]
+    fn rejected_literal_with_indexing_is_still_inserted() {
+        // LiteralWithIndexing, new name "X-Bad", value "1"
+        // 0x40 = LiteralWithIndexing, name index 0
+        let mut block = BytesMut::new();
+        block.extend_from_slice(&[0x40]);
+        // name length 5, "X-Bad"
+        block.extend_from_slice(&[5]);
+        block.extend_from_slice(b"X-Bad");
+        // value length 1, "1"
+        block.extend_from_slice(&[1]);
+        block.extend_from_slice(b"1");
+
+        let mut decoder = Decoder::new(4096);
+        let mut first = block.freeze();
+        let err = decoder
+            .decode_block(&mut first, |_field| Err("reject"))
+            .unwrap_err();
+        assert!(matches!(err, DecodeBlockError::Rejected("reject")));
+
+        // Indexed dynamic entry 62 (first dynamic slot)
+        let mut second = Bytes::from_static(&[0xBE]);
+        let mut got = None;
+        decoder
+            .decode_block(&mut second, |field| {
+                got = Some(field);
+                Ok::<(), &str>(())
+            })
+            .unwrap();
+        let field = got.expect("indexed dynamic entry must decode");
+        assert_eq!(field.name(), b"X-Bad");
+        assert_eq!(field.value(), b"1");
+    }
+
+    /// A message rejection mid-block must not suppress a later compression
+    /// error: HPACK failures outrank recorded stream/budget rejections.
+    #[test]
+    fn compression_error_overrides_prior_rejection() {
+        let mut decoder = Decoder::new(4096);
+        // LiteralWithIndexing "x-ok"/"1", then invalid table index 0 (0x80).
+        let mut block = BytesMut::new();
+        block.extend_from_slice(&[0x40, 4]);
+        block.extend_from_slice(b"x-ok");
+        block.extend_from_slice(&[1]);
+        block.extend_from_slice(b"1");
+        block.extend_from_slice(&[0x80]); // Indexed, index 0 → InvalidTableIndex
+
+        let mut bytes = block.freeze();
+        let err = decoder
+            .decode_block(&mut bytes, |_| Err("budget"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DecodeBlockError::Compression(DecoderError::InvalidTableIndex)
+        ));
+    }
+
+    /// Wire bytes from Python `hpack.Encoder` (huffman=False) must decode
+    /// identically for static-indexed, never-indexed, and dynamic reuse.
+    #[test]
+    fn python_hpack_reference_static_never_and_dynamic() {
+        // hpack.Encoder().encode([(b':method', b'GET')], huffman=False) → 0x82
+        let headers = decode_all(&[0x82], 4096);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name(), b":method");
+        assert_eq!(headers[0].value(), b"GET");
+
+        // authorization is never-indexed: 0x57 0x08 "Bearer x"
+        let auth = decode_all(
+            &[0x57, 0x08, b'B', b'e', b'a', b'r', b'e', b'r', b' ', b'x'],
+            4096,
+        );
+        assert_eq!(auth[0].name(), b"authorization");
+        assert_eq!(auth[0].value(), b"Bearer x");
+
+        // Dynamic insert then reuse: first 0x40 0x06 "x-demo" 0x03 "val", second 0xBE
+        let mut decoder = Decoder::new(4096);
+        let mut first = Bytes::from_static(b"\x40\x06x-demo\x03val");
+        let mut second = Bytes::from_static(&[0xBE]);
+        let mut got = Vec::new();
+        decoder
+            .decode_bytes(&mut first, |field| got.push(field))
+            .unwrap();
+        decoder
+            .decode_bytes(&mut second, |field| got.push(field))
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name(), b"x-demo");
+        assert_eq!(got[0].value(), b"val");
+        assert_eq!(got[1], got[0]);
     }
 }

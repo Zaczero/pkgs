@@ -1,8 +1,6 @@
 use bytes::Bytes;
-use http::{Method, StatusCode};
 
-use super::Header;
-use super::header::{BytesStr, OwnedName};
+use super::HpackField;
 
 macro_rules! static_field_data {
     ($($first:literal => { $(($index:literal, $name:literal, $value:literal $(, $flag:ident)*),)+ }),+ $(,)?) => {
@@ -13,13 +11,10 @@ macro_rules! static_field_data {
             )+)+
         };
 
-        fn get_field(index: usize) -> Header {
+        fn get_field(index: usize) -> HpackField {
             match index {
                 $($(
-                    $index => Header::Field {
-                        name: BytesStr::from_static_bytes($name),
-                        value: Bytes::from_static($value),
-                    },
+                    $index => HpackField::from_static($name, $value),
                 )+)+
                 _ => unreachable!(),
             }
@@ -37,9 +32,9 @@ macro_rules! static_field_data {
             }
         }
 
-        fn field_name(index: usize) -> OwnedName {
+        fn field_name(index: usize) -> Bytes {
             match index {
-                $($($index => OwnedName::Field(BytesStr::from_static_bytes($name)),)+)+
+                $($($index => Bytes::from_static($name),)+)+
                 _ => unreachable!(),
             }
         }
@@ -167,74 +162,36 @@ static_field_data! {
     },
 }
 
-pub(super) fn get(index: usize) -> Header {
+pub(super) fn get(index: usize) -> HpackField {
     match index {
-        1 => Header::Authority(BytesStr::from_static_bytes(b"")),
-        2 => Header::Method(Method::GET),
-        3 => Header::Method(Method::POST),
-        4 => Header::Path(BytesStr::from_static_bytes(b"/")),
-        5 => Header::Path(BytesStr::from_static_bytes(b"/index.html")),
-        6 => Header::Scheme(BytesStr::from_static_bytes(b"http")),
-        7 => Header::Scheme(BytesStr::from_static_bytes(b"https")),
-        8 => Header::Status(StatusCode::OK),
-        9 => Header::Status(StatusCode::NO_CONTENT),
-        10 => Header::Status(StatusCode::PARTIAL_CONTENT),
-        11 => Header::Status(StatusCode::NOT_MODIFIED),
-        12 => Header::Status(StatusCode::BAD_REQUEST),
-        13 => Header::Status(StatusCode::NOT_FOUND),
-        14 => Header::Status(StatusCode::INTERNAL_SERVER_ERROR),
+        1 => HpackField::from_static(b":authority", b""),
+        2 => HpackField::from_static(b":method", b"GET"),
+        3 => HpackField::from_static(b":method", b"POST"),
+        4 => HpackField::from_static(b":path", b"/"),
+        5 => HpackField::from_static(b":path", b"/index.html"),
+        6 => HpackField::from_static(b":scheme", b"http"),
+        7 => HpackField::from_static(b":scheme", b"https"),
+        8 => HpackField::from_static(b":status", b"200"),
+        9 => HpackField::from_static(b":status", b"204"),
+        10 => HpackField::from_static(b":status", b"206"),
+        11 => HpackField::from_static(b":status", b"304"),
+        12 => HpackField::from_static(b":status", b"400"),
+        13 => HpackField::from_static(b":status", b"404"),
+        14 => HpackField::from_static(b":status", b"500"),
         15..=STATIC_TABLE_LEN => get_field(index),
         _ => unreachable!(),
     }
 }
 
-pub(super) fn name(index: usize) -> OwnedName {
+pub(super) fn name(index: usize) -> Bytes {
     match index {
-        1 => OwnedName::Authority,
-        2 | 3 => OwnedName::Method,
-        4 | 5 => OwnedName::Path,
-        6 | 7 => OwnedName::Scheme,
-        8..=14 => OwnedName::Status,
+        1 => Bytes::from_static(b":authority"),
+        2 | 3 => Bytes::from_static(b":method"),
+        4 | 5 => Bytes::from_static(b":path"),
+        6 | 7 => Bytes::from_static(b":scheme"),
+        8..=14 => Bytes::from_static(b":status"),
         15..=STATIC_TABLE_LEN => field_name(index),
         _ => unreachable!(),
-    }
-}
-
-#[cfg(test)]
-pub(super) const fn status_index(status: u16) -> Option<usize> {
-    match status {
-        200 => Some(8),
-        204 => Some(9),
-        206 => Some(10),
-        304 => Some(11),
-        400 => Some(12),
-        404 => Some(13),
-        500 => Some(14),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-pub(super) fn exact_index(header: &Header) -> Option<usize> {
-    match header {
-        Header::Field { name, value } => {
-            field_exact_index_bytes(name.as_str().as_bytes(), value.as_ref())
-        },
-        Header::Authority(value) if value.as_str().is_empty() => Some(1),
-        Header::Method(Method::GET) => Some(2),
-        Header::Method(Method::POST) => Some(3),
-        Header::Scheme(value) => match value.as_str() {
-            "http" => Some(6),
-            "https" => Some(7),
-            _ => None,
-        },
-        Header::Path(value) => match value.as_str() {
-            "/" => Some(4),
-            "/index.html" => Some(5),
-            _ => None,
-        },
-        Header::Status(status) => status_index(status.as_u16()),
-        Header::Protocol(_) | Header::Authority(_) | Header::Method(_) => None,
     }
 }
 
@@ -246,8 +203,6 @@ pub(super) fn field_exact_index_bytes(name: &[u8], value: &[u8]) -> Option<usize
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-
     use super::*;
 
     #[test]
@@ -263,17 +218,12 @@ mod tests {
     }
 
     #[test]
-    fn generic_exact_lookup_matches_pseudo_headers() {
-        assert_eq!(exact_index(&Header::Method(Method::GET)), Some(2));
-        assert_eq!(
-            exact_index(&Header::Status(StatusCode::NOT_FOUND)),
-            Some(13)
-        );
-        assert_eq!(
-            exact_index(&Header::Path(
-                BytesStr::try_from(Bytes::from_static(b"/")).unwrap()
-            )),
-            Some(4)
-        );
+    fn static_pseudo_headers_are_raw_fields() {
+        assert_eq!(get(2).name(), b":method");
+        assert_eq!(get(2).value(), b"GET");
+        assert_eq!(get(13).name(), b":status");
+        assert_eq!(get(13).value(), b"404");
+        assert_eq!(get(4).name(), b":path");
+        assert_eq!(get(4).value(), b"/");
     }
 }
