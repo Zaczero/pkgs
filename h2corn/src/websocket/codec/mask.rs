@@ -2,7 +2,7 @@ use std::simd::{Simd, ToBytes};
 
 const WS_MASK_LANES: usize = 32;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct MaskKey {
     word: u32,
 }

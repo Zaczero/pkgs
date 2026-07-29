@@ -3,10 +3,11 @@ use bytes::{Bytes, BytesMut};
 use super::super::deflate::PerMessageDeflateMode;
 use super::wire::opcode;
 use super::{
-    DecodedFrame, MAX_CLOSE_REASON_LEN, WebSocketCloseCode, WebSocketDecodeError, close_code, wire,
+    DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode,
+    WebSocketDecodeError, close_code, wire,
 };
 use crate::error::{ErrorExt, H2CornError, WebSocketError, WebSocketProtocolError};
-use crate::hpack::BytesStr;
+use crate::http::types::BytesStr;
 
 pub(super) struct ParsedFrameHeader {
     pub(super) fin: bool,
@@ -59,10 +60,22 @@ pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
         return Ok(None);
     };
 
+    let opcode = first & wire::OPCODE_MASK;
+    // RFC 6455 section 5.5: a control frame carries at most 125 bytes and is
+    // never fragmented. Enforced here, on the header alone, because the
+    // decoder buffers `payload_len` bytes before it looks at a frame again —
+    // a peer declaring a 64 MiB PING would otherwise be handed that much
+    // memory before the frame was ever ruled out.
+    if opcode >= opcode::CLOSE && (!fin || payload_len > wire::CONTROL_FRAME_PAYLOAD_MAX_LEN) {
+        return Err(WebSocketDecodeError::protocol(
+            WebSocketProtocolError::InvalidControlFrame,
+        ));
+    }
+
     Ok(Some(ParsedFrameHeader {
         fin,
         compressed,
-        opcode: first & wire::OPCODE_MASK,
+        opcode,
         header_len,
         payload_len,
     }))
@@ -119,16 +132,16 @@ fn parse_frame_len(
     }
 }
 
+/// Decode a control frame whose header already proved it well-formed.
+///
+/// `parse_frame_header` rejects a fragmented or oversized control frame
+/// before its payload is buffered, so only the per-opcode payload rules are
+/// left to check here.
 pub(super) fn decode_control_frame(
     opcode: u8,
-    fin: bool,
     payload: Bytes,
 ) -> Result<DecodedFrame, WebSocketDecodeError> {
-    if !fin || payload.len() > wire::CONTROL_FRAME_PAYLOAD_MAX_LEN {
-        return Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::InvalidControlFrame,
-        ));
-    }
+    debug_assert!(payload.len() <= wire::CONTROL_FRAME_PAYLOAD_MAX_LEN);
     match opcode {
         opcode::CLOSE => {
             if payload.len() == 1 {
@@ -136,24 +149,24 @@ pub(super) fn decode_control_frame(
                     WebSocketProtocolError::CloseFramePayloadTruncated,
                 ));
             }
-            let (code, reason) = if payload.len() >= 2 {
+            let close = if payload.len() >= 2 {
                 let code = u16::from_be_bytes(
                     *payload
                         .first_chunk::<2>()
                         .expect("close frame code is buffered"),
                 );
-                validate_close_code(code).map_err(|_| {
+                let code = ValidCloseCode::try_from(code).map_err(|_| {
                     WebSocketDecodeError::protocol(WebSocketProtocolError::CloseFrameInvalidCode)
                 })?;
                 let reason = (payload.len() > 2)
                     .then(|| BytesStr::try_from(payload.slice(2..)))
                     .transpose()
                     .map_err(|err| WebSocketDecodeError::invalid_utf8(err.to_string()))?;
-                (code, reason)
+                DecodedPeerClose::Coded { code, reason }
             } else {
-                (close_code::NO_STATUS_RECEIVED, None)
+                DecodedPeerClose::Empty
             };
-            Ok(DecodedFrame::Close { code, reason })
+            Ok(DecodedFrame::Close(close))
         },
         opcode::PING => Ok(DecodedFrame::Ping(payload)),
         opcode::PONG => Ok(DecodedFrame::Pong),
@@ -242,11 +255,11 @@ pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2Corn
 mod tests {
     use std::mem::size_of;
 
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
 
     use super::{
-        MAX_CLOSE_REASON_LEN, close_code, encode_close_frame_into, encode_frame_header, opcode,
-        wire,
+        DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, close_code, decode_control_frame,
+        encode_close_frame_into, encode_frame_header, opcode, wire,
     };
 
     #[test]
@@ -278,5 +291,15 @@ mod tests {
         assert_eq!(frame[1], (2 + MAX_CLOSE_REASON_LEN) as u8);
         assert_eq!(&frame[2..4], &close_code::NORMAL.to_be_bytes());
         assert_eq!(&frame[4..], reason.as_bytes());
+    }
+
+    #[test]
+    fn empty_peer_close_does_not_manufacture_a_wire_code() {
+        let close =
+            decode_control_frame(opcode::CLOSE, Bytes::new()).expect("empty close is valid");
+        assert!(matches!(
+            close,
+            DecodedFrame::Close(DecodedPeerClose::Empty)
+        ));
     }
 }

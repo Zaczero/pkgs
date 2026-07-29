@@ -4,11 +4,10 @@ mod handshake;
 use std::mem;
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use tokio::sync::watch;
-use tokio::time::timeout;
 
 use self::accepted::run_accepted_session;
 use self::handshake::{
@@ -16,17 +15,18 @@ use self::handshake::{
 };
 use super::app::start_websocket_app;
 use super::codec::{
-    EncodedFrameHeader, MAX_CLOSE_REASON_LEN, WebSocketCodec, encode_close_frame_into,
-    encode_frame_header, validate_close_code,
+    EncodedFrameHeader, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCodec,
+    encode_close_frame_into, encode_frame_header,
 };
-use super::request::{validate_accept_headers, validate_accepted_subprotocol};
+use super::request::validate_accepted_subprotocol;
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
 use crate::access_log::WebSocketAccessLogState;
-use crate::bridge::PayloadBytes;
+use crate::async_util::with_optional_timeout;
+use crate::bridge::{PayloadBytes, WEBSOCKET_INBOUND_BYTE_CAPACITY};
+use crate::config::WebSocketKeepAlive;
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
-use crate::hpack::BytesStr;
-use crate::http::response::FinalResponseBody;
-use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+use crate::http::response::HttpResponseTransport;
+use crate::http::types::{BytesStr, HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
 
 #[derive(Debug, Default)]
@@ -48,29 +48,23 @@ enum CloseLifecycle {
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingClose {
-    code: WebSocketCloseCode,
-    reason: Box<str>,
+pub(crate) enum PendingClose {
+    Empty,
+    Coded {
+        code: ValidCloseCode,
+        reason: Box<str>,
+    },
 }
 
 impl PendingClose {
     fn new(code: WebSocketCloseCode, reason: &str) -> Result<Self, H2CornError> {
-        validate_close_code(code)?;
         if reason.len() > MAX_CLOSE_REASON_LEN {
             return WebSocketError::CloseReasonTooLong.err();
         }
-        Ok(Self {
-            code,
+        Ok(Self::Coded {
+            code: code.try_into()?,
             reason: reason.into(),
         })
-    }
-
-    pub(crate) const fn code(&self) -> WebSocketCloseCode {
-        self.code
-    }
-
-    pub(crate) fn reason(&self) -> &str {
-        &self.reason
     }
 }
 
@@ -94,7 +88,7 @@ impl AcceptedWebSocketState {
             self.close,
             CloseLifecycle::Queued { .. } | CloseLifecycle::Sent(_)
         ) {
-            validate_close_code(code)?;
+            let _: ValidCloseCode = code.try_into()?;
             let reported_code = NonZeroU16::new(code).expect("validated close codes are non-zero");
             match &mut self.close {
                 CloseLifecycle::Queued {
@@ -130,6 +124,16 @@ impl AcceptedWebSocketState {
                 self.close = lifecycle;
                 None
             },
+        }
+    }
+
+    pub(super) fn queue_empty_close_if_open(&mut self) {
+        if matches!(self.close, CloseLifecycle::Open) {
+            self.close = CloseLifecycle::Queued {
+                frame: PendingClose::Empty,
+                reported_code: NonZeroU16::new(close_code::NO_STATUS_RECEIVED)
+                    .expect("the synthetic no-status code is non-zero"),
+            };
         }
     }
 
@@ -205,7 +209,7 @@ impl EncodedWebSocketFrame {
     }
 }
 
-pub(crate) trait WebSocketHandshakeTransport {
+pub(crate) trait WebSocketHandshakeTransport: HttpResponseTransport {
     fn accept_status(&self) -> HttpStatusCode;
 
     async fn send_empty_response(&mut self, status: HttpStatusCode) -> Result<(), H2CornError>;
@@ -224,27 +228,6 @@ pub(crate) trait WebSocketHandshakeTransport {
 
     async fn send_forbidden_response(&mut self) -> Result<(), H2CornError> {
         self.send_empty_response(status_code::FORBIDDEN).await
-    }
-
-    async fn send_final_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        headers: ResponseHeaders,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError>;
-
-    async fn start_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        headers: ResponseHeaders,
-    ) -> Result<(), H2CornError>;
-
-    async fn send_denial_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError>;
-
-    async fn finish_denial_response(&mut self) -> Result<(), H2CornError>;
-
-    async fn abort_denial_response(&mut self) -> Result<(), H2CornError> {
-        Ok(())
     }
 }
 
@@ -268,6 +251,12 @@ pub(crate) trait AcceptedWebSocketTransport {
         codec: &mut WebSocketCodec,
     ) -> Result<TransportRead, H2CornError>;
 
+    /// Return transport input ownership after decoded WebSocket data has been
+    /// accepted by the inbound byte queue. HTTP/1 has no explicit credit;
+    /// HTTP/2 retains it to make a stalled ASGI receiver exert real flow
+    /// control instead of moving an unbounded backlog into this session.
+    fn release_consumed_input(&mut self) {}
+
     async fn finish_session(
         &mut self,
         state: &mut AcceptedWebSocketState,
@@ -278,13 +267,15 @@ pub(crate) struct WebSocketContext {
     pub(crate) request: Box<RequestContext>,
     pub(crate) admission: RequestAdmission,
     pub(crate) meta: WebSocketRequestMeta,
+    /// Only long-lived sessions watch for shutdown, so the receiver travels
+    /// with the WebSocket upgrade instead of riding on every request context.
+    pub(crate) shutdown: watch::Receiver<ShutdownState>,
 }
 
 pub(super) struct AcceptedSessionConfig {
     pub(super) max_message_size: Option<NonZeroUsize>,
     pub(super) per_message_deflate: bool,
-    pub(super) ping_interval: Option<Duration>,
-    pub(super) ping_timeout: Option<Duration>,
+    pub(super) keep_alive: Option<WebSocketKeepAlive>,
     pub(super) shutdown: watch::Receiver<ShutdownState>,
 }
 
@@ -313,7 +304,15 @@ pub(crate) fn take_pending_close_frame(
     frame_buf: &mut BytesMut,
 ) -> Result<Option<Bytes>, H2CornError> {
     if let Some(close) = state.take_pending_close() {
-        encode_close_frame_into(close.code(), close.reason(), frame_buf)?;
+        match close {
+            PendingClose::Empty => {
+                frame_buf.clear();
+                frame_buf.extend_from_slice(b"\x88\x00");
+            },
+            PendingClose::Coded { code, reason } => {
+                encode_close_frame_into(code.get(), &reason, frame_buf)?;
+            },
+        }
         return Ok(Some(frame_buf.split().freeze()));
     }
     Ok(None)
@@ -340,28 +339,34 @@ where
         config.websocket.per_message_deflate && context.meta.per_message_deflate;
     let timeout_handshake = config.timeout_handshake;
     let max_message_size: Option<NonZeroUsize> = config.websocket.max_message_size;
+    let inbound_byte_capacity =
+        max_message_size.map_or(WEBSOCKET_INBOUND_BYTE_CAPACITY, NonZeroUsize::get);
     let timeout_graceful_shutdown = config.timeout_graceful_shutdown;
-    let ping_interval = config.websocket.ping_interval;
-    let ping_timeout = config.websocket.ping_timeout;
-    let shutdown = request.connection.shutdown.clone();
+    let keep_alive = config.websocket.keep_alive;
 
-    let mut running_app = start_websocket_app(context);
+    let shutdown = context.shutdown.clone();
+    let mut running_app = start_websocket_app(context, inbound_byte_capacity);
 
-    let first = match timeout(timeout_handshake, receive_handshake_event(&mut running_app)).await {
-        Ok(result) => match result {
-            Ok(first) => first,
-            Err(err) => return fail_handshake(transport, &mut running_app, &access_log, err).await,
-        },
-        Err(_) => {
-            return fail_handshake(
-                transport,
-                &mut running_app,
-                &access_log,
-                WebSocketError::HandshakeTimedOut,
-            )
-            .await;
-        },
-    };
+    let first =
+        match with_optional_timeout(timeout_handshake, receive_handshake_event(&mut running_app))
+            .await
+        {
+            Ok(result) => match result {
+                Ok(first) => first,
+                Err(err) => {
+                    return fail_handshake(transport, &mut running_app, &access_log, err).await;
+                },
+            },
+            Err(_) => {
+                return fail_handshake(
+                    transport,
+                    &mut running_app,
+                    &access_log,
+                    WebSocketError::HandshakeTimedOut,
+                )
+                .await;
+            },
+        };
     match first {
         HandshakeEvent::Accept {
             subprotocol,
@@ -370,12 +375,10 @@ where
             let subprotocol = subprotocol.as_ref().map(AsRef::as_ref);
             if let Err(err) =
                 validate_accepted_subprotocol(&running_app.requested_subprotocols, subprotocol)
-                    .and_then(|()| validate_accept_headers(&headers))
             {
                 return fail_handshake(transport, &mut running_app, &access_log, err).await;
             }
 
-            running_app.send_buffer.begin_accepted_drain();
             transport
                 .send_accept(subprotocol, headers, per_message_deflate)
                 .await?;
@@ -387,10 +390,15 @@ where
             running_app.task.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
-        HandshakeEvent::DenialStart { status, headers } => {
+        HandshakeEvent::DenialStart {
+            status,
+            headers,
+            control,
+        } => {
             let (tx_bytes, _) =
-                drive_denial_response(transport, status, headers, &mut running_app).await?;
-            access_log.emit_http_response(status, tx_bytes);
+                drive_denial_response(transport, status, headers, control, &mut running_app)
+                    .await?;
+            access_log.emit_http_response(status.get(), tx_bytes);
             running_app.task.settle(timeout_graceful_shutdown).await?;
             return Ok(());
         },
@@ -400,8 +408,7 @@ where
     let mut outcome = run_accepted_session(transport, &mut running_app, AcceptedSessionConfig {
         max_message_size,
         per_message_deflate,
-        ping_interval,
-        ping_timeout,
+        keep_alive,
         shutdown,
     })
     .await?;
@@ -432,7 +439,7 @@ mod tests {
     use bytes::BytesMut;
 
     use super::{
-        AcceptedWebSocketState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE,
+        AcceptedWebSocketState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE, PendingClose,
         append_ws_accept_headers, take_pending_close_frame,
     };
 
@@ -500,8 +507,10 @@ mod tests {
             .expect("a later valid close is harmless");
 
         let close = state.take_pending_close().expect("close remains queued");
-        assert_eq!(close.code(), 1000);
-        assert_eq!(close.reason(), "first");
+        assert!(matches!(
+            close,
+            PendingClose::Coded { code, reason } if code.get() == 1000 && reason.as_ref() == "first"
+        ));
         assert_eq!(state.close_code_or(1002), 1001);
         assert!(state.take_pending_close().is_none());
     }

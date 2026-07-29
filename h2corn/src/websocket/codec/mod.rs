@@ -45,20 +45,49 @@ mod wire {
 }
 
 use std::fmt;
+use std::num::NonZeroU16;
 
 use bytes::Bytes;
 pub(crate) use decode::WebSocketCodec;
-pub(super) use frame::{
-    EncodedFrameHeader, encode_close_frame_into, encode_frame_header, encode_frame_into,
-    validate_close_code,
-};
+pub(crate) use frame::{EncodedFrameHeader, encode_frame_header};
+pub(super) use frame::{encode_close_frame_into, encode_frame_into};
 
 use crate::error::WebSocketProtocolError;
-use crate::hpack::BytesStr;
+use crate::http::types::BytesStr;
 
 pub(super) const MAX_CLOSE_REASON_LEN: usize = 123;
 
 pub(crate) type WebSocketCloseCode = u16;
+
+/// A close status which RFC 6455 permits on the wire.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ValidCloseCode(NonZeroU16);
+
+impl ValidCloseCode {
+    pub(crate) const fn get(self) -> WebSocketCloseCode {
+        self.0.get()
+    }
+}
+
+impl TryFrom<WebSocketCloseCode> for ValidCloseCode {
+    type Error = crate::error::H2CornError;
+
+    fn try_from(code: WebSocketCloseCode) -> Result<Self, Self::Error> {
+        frame::validate_close_code(code)?;
+        Ok(Self(
+            NonZeroU16::new(code).expect("valid websocket close codes are non-zero"),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum DecodedPeerClose {
+    Empty,
+    Coded {
+        code: ValidCloseCode,
+        reason: Option<BytesStr>,
+    },
+}
 
 #[derive(Debug)]
 pub(crate) enum DecodedFrame {
@@ -66,10 +95,7 @@ pub(crate) enum DecodedFrame {
     Binary(Bytes),
     Ping(Bytes),
     Pong,
-    Close {
-        code: WebSocketCloseCode,
-        reason: Option<BytesStr>,
-    },
+    Close(DecodedPeerClose),
 }
 
 #[derive(Debug)]

@@ -9,8 +9,8 @@ use super::RequestedSubprotocols;
 use super::session::WebSocketContext;
 use crate::app_call::AppCallArgs;
 use crate::bridge::{
-    ASGI_QUEUE_CAPACITY, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendBuffer,
-    WebSocketSendState,
+    WEBSOCKET_OUTBOUND_QUEUE_CAPACITY, WebSocketInboundSender, WebSocketOutboundEvent,
+    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
 };
 use crate::error::H2CornError;
 use crate::pyloop::SlotFuture;
@@ -114,7 +114,7 @@ pub(super) enum AppStep {
 }
 
 pub(super) struct RunningWebSocketApp {
-    pub(super) recv_tx: mpsc::Sender<WebSocketInboundEvent>,
+    pub(super) recv_tx: WebSocketInboundSender,
     pub(super) requested_subprotocols: RequestedSubprotocols,
     pub(super) send_state: WebSocketSendState,
     pub(super) send_buffer: WebSocketSendBuffer,
@@ -134,33 +134,63 @@ impl RunningWebSocketApp {
             if let Some(event) = self.send_buffer.take_ready() {
                 return AppStep::Event(event);
             }
+            match self.send_rx.try_recv() {
+                Ok(event) => return AppStep::Event(event),
+                Err(mpsc::error::TryRecvError::Empty) => {},
+                // Once the app has dropped its sender, it cannot produce a
+                // later event. Join it rather than selecting a permanently
+                // ready closed receiver.
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    if self.task.is_joined() {
+                        return AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())));
+                    }
+                    self.task.join_store().await;
+                    continue;
+                },
+            }
             if self.task.is_joined() {
                 return AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())));
             }
             tokio::select! {
+                // The sender places the first handshake event inline before
+                // forwarding later events, so preserve that producer order
+                // when both sources became ready while this task was parked.
+                biased;
                 () = self.send_buffer.wait_ready() => {}
+                event = self.send_rx.recv() => {
+                    if let Some(event) = event {
+                        return AppStep::Event(event);
+                    }
+                }
                 () = self.task.join_store() => {}
             }
         }
     }
 }
 
-pub(super) fn start_websocket_app(ctx: WebSocketContext) -> RunningWebSocketApp {
+pub(super) fn start_websocket_app(
+    ctx: WebSocketContext,
+    inbound_byte_capacity: usize,
+) -> RunningWebSocketApp {
     let WebSocketContext {
         request: ctx,
         admission,
         meta,
+        shutdown,
     } = ctx;
-    let (recv_tx, recv_rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
-    let (send_tx, send_rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
+    // The session took its own handle before starting the app. Dropped by
+    // name rather than with `..`, which would keep it alive to end of scope.
+    drop(shutdown);
+    let (recv_tx, recv_rx) = websocket_inbound_channel(inbound_byte_capacity);
+    let (send_tx, send_rx) = mpsc::channel(WEBSOCKET_OUTBOUND_QUEUE_CAPACITY);
     let (send_state, send_buffer) = WebSocketSendState::new();
     let requested_subprotocols = meta.requested_subprotocols;
     let scope_subprotocols = requested_subprotocols.clone();
-    let app = Arc::clone(&ctx.connection.app);
+    let connection = Arc::clone(&ctx.connection);
     let task_send_state = send_state.clone();
 
     let app_task = start_app_call(
-        app,
+        connection,
         AppCallArgs::websocket(ctx, scope_subprotocols, recv_rx, task_send_state, send_tx),
         admission,
     );

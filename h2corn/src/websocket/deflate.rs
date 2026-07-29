@@ -1,8 +1,8 @@
 use bytes::{Bytes, BytesMut};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
-use memchr::memchr;
 
 use crate::error::WebSocketProtocolError;
+use crate::http::header::protocol_token_is_valid;
 
 const PERMESSAGE_DEFLATE: &[u8] = b"permessage-deflate";
 const TAIL: &[u8; 4] = b"\x00\x00\xff\xff";
@@ -27,9 +27,16 @@ pub(crate) trait PerMessageDeflateMode {
         payload: &[u8],
     ) -> Result<Option<Bytes>, flate2::CompressError>;
 
-    fn decompress(
+    fn begin_decompress(inflater: &mut Self::Inflater);
+
+    fn push_decompress(
         inflater: &mut Self::Inflater,
-        payload: &[u8],
+        input: &[u8],
+        max_message_size: Option<usize>,
+    ) -> Result<(), WebSocketProtocolError>;
+
+    fn finish_decompress(
+        inflater: &mut Self::Inflater,
         max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError>;
 }
@@ -115,32 +122,46 @@ impl MessageInflater {
         }
     }
 
-    pub(crate) fn decompress(
-        &mut self,
-        payload: &[u8],
-        max_message_size: Option<usize>,
-    ) -> Result<Bytes, WebSocketProtocolError> {
+    pub(crate) fn begin(&mut self) {
         self.decoder.reset(false);
         self.out.clear();
-        self.out
-            .reserve(decompressed_capacity(payload.len(), max_message_size));
+    }
 
-        let mut input = payload;
-        let mut flushing_tail = false;
+    pub(crate) fn push(
+        &mut self,
+        mut input: &[u8],
+        max_message_size: Option<usize>,
+    ) -> Result<(), WebSocketProtocolError> {
+        self.inflate(&mut input, FlushDecompress::Sync, max_message_size)?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        max_message_size: Option<usize>,
+    ) -> Result<Bytes, WebSocketProtocolError> {
+        let mut tail = TAIL.as_slice();
+        let status = self.inflate(&mut tail, FlushDecompress::Finish, max_message_size)?;
+        if status != Status::StreamEnd && !tail.is_empty() {
+            return Err(WebSocketProtocolError::InvalidCompressedPayload);
+        }
+        Ok(self.out.split().freeze())
+    }
+
+    fn inflate(
+        &mut self,
+        input: &mut &[u8],
+        flush: FlushDecompress,
+        max_message_size: Option<usize>,
+    ) -> Result<Status, WebSocketProtocolError> {
+        self.out
+            .reserve(decompressed_capacity(input.len(), max_message_size));
         loop {
             let before = self.decoder.total_out();
             let consumed_before = self.decoder.total_in();
             let status = self
                 .decoder
-                .decompress_uninit(
-                    input,
-                    self.out.spare_capacity_mut(),
-                    if flushing_tail {
-                        FlushDecompress::Finish
-                    } else {
-                        FlushDecompress::Sync
-                    },
-                )
+                .decompress_uninit(input, self.out.spare_capacity_mut(), flush)
                 .map_err(|_| WebSocketProtocolError::InvalidCompressedPayload)?;
             let written = (self.decoder.total_out() - before) as usize;
             // SAFETY: `decompress_uninit` writes exactly `written`
@@ -153,16 +174,12 @@ impl MessageInflater {
                 return Err(WebSocketProtocolError::MessageTooLarge);
             }
             let consumed = (self.decoder.total_in() - consumed_before) as usize;
-            input = &input[consumed..];
-            if status == Status::StreamEnd || (flushing_tail && input.is_empty()) {
-                return Ok(self.out.split().freeze());
+            *input = &input[consumed..];
+            if input.is_empty() || status == Status::StreamEnd {
+                return Ok(status);
             }
-            if input.is_empty() {
-                if flushing_tail {
-                    return Err(WebSocketProtocolError::InvalidCompressedPayload);
-                }
-                input = TAIL;
-                flushing_tail = true;
+            if consumed == 0 && written == 0 {
+                return Err(WebSocketProtocolError::InvalidCompressedPayload);
             }
             self.out.reserve(self.out.len().max(FLATE_MIN_GROWTH));
         }
@@ -201,14 +218,27 @@ impl PerMessageDeflateMode for PerMessageDeflateEnabled {
             .compress(payload)
     }
 
-    fn decompress(
+    fn begin_decompress(inflater: &mut Self::Inflater) {
+        inflater.get_or_insert_with(MessageInflater::new).begin();
+    }
+
+    fn push_decompress(
         inflater: &mut Self::Inflater,
-        payload: &[u8],
+        input: &[u8],
+        max_message_size: Option<usize>,
+    ) -> Result<(), WebSocketProtocolError> {
+        inflater
+            .get_or_insert_with(MessageInflater::new)
+            .push(input, max_message_size)
+    }
+
+    fn finish_decompress(
+        inflater: &mut Self::Inflater,
         max_message_size: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
         inflater
             .get_or_insert_with(MessageInflater::new)
-            .decompress(payload, max_message_size)
+            .finish(max_message_size)
     }
 }
 
@@ -226,32 +256,211 @@ impl PerMessageDeflateMode for PerMessageDeflateDisabled {
         Ok(None)
     }
 
-    fn decompress(
+    fn begin_decompress((): &mut Self::Inflater) {}
+
+    fn push_decompress(
         (): &mut Self::Inflater,
         _: &[u8],
+        _: Option<usize>,
+    ) -> Result<(), WebSocketProtocolError> {
+        Err(WebSocketProtocolError::ExtensionsNotNegotiated)
+    }
+
+    fn finish_decompress(
+        (): &mut Self::Inflater,
         _: Option<usize>,
     ) -> Result<Bytes, WebSocketProtocolError> {
         Err(WebSocketProtocolError::ExtensionsNotNegotiated)
     }
 }
 
-pub(crate) fn requested_by_client(value: &[u8]) -> bool {
-    let mut rest = Some(value);
-    while let Some(current) = rest {
-        let (extension, next) = memchr(b',', current).map_or((current, None), |index| {
-            (&current[..index], Some(&current[index + 1..]))
-        });
-        let extension = extension.trim_ascii();
-        let end = memchr(b';', extension).unwrap_or(extension.len());
-        if extension[..end]
-            .trim_ascii()
-            .eq_ignore_ascii_case(PERMESSAGE_DEFLATE)
-        {
+enum ExtensionParameterValue<'a> {
+    Token(&'a [u8]),
+    Quoted(&'a [u8]),
+}
+
+impl ExtensionParameterValue<'_> {
+    fn valid_window_bits(self) -> bool {
+        match self {
+            Self::Token(value) => window_bits_are_valid(value),
+            Self::Quoted(value) => quoted_window_bits_are_valid(value),
+        }
+    }
+}
+
+/// Select only an offer the server can actually honor. Invalid offers are not
+/// protocol errors: RFC 7692 lets a server decline one and select a later
+/// valid offer from the same header value.
+pub(crate) fn offers_compatible_permessage_deflate(value: &[u8]) -> bool {
+    let mut index = 0;
+    'offers: while index < value.len() {
+        skip_bws(value, &mut index);
+        let Some(name) = read_token(value, &mut index) else {
+            if !skip_malformed_offer(value, &mut index) {
+                return false;
+            }
+            continue;
+        };
+        let target = name.eq_ignore_ascii_case(PERMESSAGE_DEFLATE);
+        let mut compatible = target;
+        let mut seen = 0_u8;
+
+        loop {
+            skip_bws(value, &mut index);
+            match value.get(index) {
+                Some(b';') => index += 1,
+                Some(b',') | None => break,
+                _ => {
+                    if !skip_malformed_offer(value, &mut index) {
+                        return false;
+                    }
+                    continue 'offers;
+                },
+            }
+            skip_bws(value, &mut index);
+            let Some(parameter) = read_token(value, &mut index) else {
+                if !skip_malformed_offer(value, &mut index) {
+                    return false;
+                }
+                continue 'offers;
+            };
+            skip_bws(value, &mut index);
+            let has_value = value.get(index) == Some(&b'=');
+            let parameter_value = if has_value {
+                index += 1;
+                skip_bws(value, &mut index);
+                let parsed_value = if value.get(index) == Some(&b'"') {
+                    read_quoted_string(value, &mut index).map(ExtensionParameterValue::Quoted)
+                } else {
+                    read_token(value, &mut index).map(ExtensionParameterValue::Token)
+                };
+                let Some(parsed_value) = parsed_value else {
+                    if !skip_malformed_offer(value, &mut index) {
+                        return false;
+                    }
+                    continue 'offers;
+                };
+                Some(parsed_value)
+            } else {
+                None
+            };
+
+            if !target {
+                continue;
+            }
+            let (bit, valid) = if parameter.eq_ignore_ascii_case(b"client_no_context_takeover") {
+                (1, parameter_value.is_none())
+            } else if parameter.eq_ignore_ascii_case(b"server_no_context_takeover") {
+                (2, parameter_value.is_none())
+            } else if parameter.eq_ignore_ascii_case(b"client_max_window_bits") {
+                (4, parameter_value.is_none_or(valid_window_bits))
+            } else if parameter.eq_ignore_ascii_case(b"server_max_window_bits") {
+                (8, false)
+            } else {
+                (16, false)
+            };
+            if seen & bit != 0 || !valid {
+                compatible = false;
+            }
+            seen |= bit;
+        }
+        if target && compatible {
             return true;
         }
-        rest = next;
+        if value.get(index) == Some(&b',') {
+            index += 1;
+            continue;
+        }
+        return false;
     }
     false
+}
+
+fn valid_window_bits(value: ExtensionParameterValue<'_>) -> bool {
+    value.valid_window_bits()
+}
+
+fn quoted_window_bits_are_valid(value: &[u8]) -> bool {
+    let mut unescaped = [0; 2];
+    let mut length = 0;
+    let mut index = 0;
+    while let Some(&byte) = value.get(index) {
+        index += 1;
+        let byte = if byte == b'\\' {
+            let Some(&escaped) = value.get(index) else {
+                return false;
+            };
+            index += 1;
+            escaped
+        } else {
+            byte
+        };
+        let Some(slot) = unescaped.get_mut(length) else {
+            return false;
+        };
+        *slot = byte;
+        length += 1;
+    }
+    window_bits_are_valid(&unescaped[..length])
+}
+
+const fn window_bits_are_valid(value: &[u8]) -> bool {
+    matches!(value, [b'8'..=b'9'] | [b'1', b'0'..=b'5'])
+}
+
+/// A malformed offer does not invalidate later comma-separated offers.
+///
+/// The enclosing header value is an extension list; once one member cannot
+/// be parsed, discard that member and resume at the next list delimiter.
+fn skip_malformed_offer(value: &[u8], index: &mut usize) -> bool {
+    while let Some(&byte) = value.get(*index) {
+        *index += 1;
+        if byte == b',' {
+            return true;
+        }
+    }
+    false
+}
+
+fn skip_bws(value: &[u8], index: &mut usize) {
+    while value
+        .get(*index)
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        *index += 1;
+    }
+}
+
+fn read_token<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
+    let start = *index;
+    while value
+        .get(*index)
+        .is_some_and(|byte| protocol_token_is_valid(&[*byte]))
+    {
+        *index += 1;
+    }
+    (*index > start).then(|| &value[start..*index])
+}
+
+fn read_quoted_string<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
+    let start = *index;
+    *index += 1;
+    while let Some(&byte) = value.get(*index) {
+        *index += 1;
+        match byte {
+            b'\"' => return Some(&value[start + 1..*index - 1]),
+            b'\\' => {
+                let escaped = *value.get(*index)?;
+                if escaped.is_ascii_control() || escaped == 0x7F {
+                    return None;
+                }
+                *index += 1;
+            },
+            byte if byte.is_ascii_control() || byte == 0x7F => return None,
+            _ => {},
+        }
+    }
+    None
 }
 
 fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
@@ -261,7 +470,9 @@ fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{PerMessageDeflateEnabled, PerMessageDeflateMode, requested_by_client};
+    use super::{
+        PerMessageDeflateEnabled, PerMessageDeflateMode, offers_compatible_permessage_deflate,
+    };
 
     #[test]
     fn negotiated_codec_state_is_lazy_and_directional() {
@@ -287,14 +498,27 @@ mod tests {
     }
 
     #[test]
-    fn requested_by_client_matches_permessage_deflate_in_any_position() {
-        assert!(requested_by_client(b"permessage-deflate"));
-        assert!(requested_by_client(
+    fn deflate_offer_parser_selects_a_later_compatible_offer() {
+        assert!(offers_compatible_permessage_deflate(b"permessage-deflate"));
+        assert!(offers_compatible_permessage_deflate(
             b"foo, permessage-deflate; client_max_window_bits"
         ));
-        assert!(requested_by_client(
+        assert!(offers_compatible_permessage_deflate(
             b"x-webkit-deflate-frame, permessage-deflate; server_no_context_takeover"
         ));
-        assert!(!requested_by_client(b"foo, bar"));
+        assert!(offers_compatible_permessage_deflate(
+            b"permessage-deflate; server_max_window_bits=12, permessage-deflate"
+        ));
+        for offer in [
+            b"permessage-deflate; client_max_window_bits=07".as_slice(),
+            b"permessage-deflate; client_max_window_bits=16",
+            b"permessage-deflate; client_max_window_bits=8; client_max_window_bits=9",
+            b"permessage-deflate; server_max_window_bits=12",
+            b"permessage-deflate; unknown",
+            b"permessage-deflate; client_no_context_takeover=yes",
+            b"permessage-deflate; =8",
+        ] {
+            assert!(!offers_compatible_permessage_deflate(offer), "{offer:?}");
+        }
     }
 }

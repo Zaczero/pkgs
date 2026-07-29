@@ -68,9 +68,16 @@ impl<const N: usize> SegmentCursor<N> {
         }
     }
 
-    pub(super) fn take_masked_payload(&mut self, len: usize, mask: [u8; 4]) -> Bytes {
+    /// Consume one available masked region. Callers retain the returned mask
+    /// phase across regions, so compressed input can be inflated and released
+    /// one transport segment at a time instead of materializing a whole frame.
+    pub(super) fn take_masked_chunk(
+        &mut self,
+        len: usize,
+        key: MaskKey,
+        phase: usize,
+    ) -> (BytesMut, usize) {
         debug_assert!(len <= self.len);
-        let key = MaskKey::new(mask);
 
         // A transport segment commonly contains exactly one complete WebSocket
         // frame. When its backing allocation is no longer shared with the
@@ -92,13 +99,13 @@ impl<const N: usize> SegmentCursor<N> {
             payload.advance(self.offset);
             self.offset = 0;
             self.len -= len;
-            apply_websocket_mask_phase(payload.as_mut(), key, 0);
-            return payload.freeze();
+            let phase = apply_websocket_mask_phase(payload.as_mut(), key, phase);
+            return (payload, phase);
         }
 
         let mut out = BytesMut::with_capacity(len);
         let mut remaining = len;
-        let mut phase = 0;
+        let mut phase = phase;
         self.len -= len;
         while remaining != 0 {
             let front = self
@@ -118,7 +125,7 @@ impl<const N: usize> SegmentCursor<N> {
                 self.offset += take;
             }
         }
-        out.freeze()
+        (out, phase)
     }
 }
 
@@ -126,7 +133,7 @@ impl<const N: usize> SegmentCursor<N> {
 mod tests {
     use bytes::Bytes;
 
-    use super::SegmentCursor;
+    use super::{MaskKey, SegmentCursor};
 
     #[test]
     fn complete_unique_segment_is_unmasked_in_place() {
@@ -145,7 +152,7 @@ mod tests {
         cursor.push(segment);
         cursor.skip(prefix_len);
 
-        let payload = cursor.take_masked_payload(7, mask);
+        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), 0);
 
         assert_eq!(payload.as_ref(), b"payload");
         assert_eq!(
@@ -169,7 +176,7 @@ mod tests {
         let mut cursor = SegmentCursor::<2>::default();
         cursor.push(segment);
 
-        let payload = cursor.take_masked_payload(7, mask);
+        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), 0);
 
         assert_eq!(payload.as_ref(), b"payload");
         assert_ne!(other_owner.as_ref(), b"payload");

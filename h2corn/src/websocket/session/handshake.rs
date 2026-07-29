@@ -2,14 +2,14 @@ use pyo3::pybacked::PyBackedStr;
 
 use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
-use crate::access_log::WebSocketAccessLogState;
+use crate::access_log::{ResponseLogState, WebSocketAccessLogState};
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
+use crate::http::header::ResponseHeaderControl;
 use crate::http::response::{
-    ResponseAction, ResponseActionSink, ResponseActions, ResponseController, apply_http_event,
-    finalize_response,
+    HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
-use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+use crate::http::types::{FinalResponseStatus, ResponseHeaders, status_code};
 
 pub(super) enum HandshakeEvent {
     Accept {
@@ -18,60 +18,10 @@ pub(super) enum HandshakeEvent {
     },
     Close,
     DenialStart {
-        status: HttpStatusCode,
+        status: FinalResponseStatus,
         headers: ResponseHeaders,
+        control: ResponseHeaderControl,
     },
-}
-
-struct DenialHttpTransport<'a, T> {
-    transport: &'a mut T,
-    tx_bytes: u64,
-}
-
-impl<T> ResponseActionSink for DenialHttpTransport<'_, T>
-where
-    T: WebSocketHandshakeTransport,
-{
-    async fn apply_response_actions(
-        &mut self,
-        actions: &mut ResponseActions,
-    ) -> Result<(), H2CornError> {
-        for action in actions.drain(..) {
-            match action {
-                ResponseAction::Final { start, body } => {
-                    self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
-                    let (status, headers) = start.into_status_headers();
-                    self.transport
-                        .send_final_denial_response(status, headers, body)
-                        .await?;
-                },
-                ResponseAction::Start { start } => {
-                    let (status, headers) = start.into_status_headers();
-                    self.transport
-                        .start_denial_response(status, headers)
-                        .await?;
-                },
-                ResponseAction::Body(body) => {
-                    self.tx_bytes = self.tx_bytes.saturating_add(body.len() as u64);
-                    self.transport.send_denial_body(body).await?;
-                },
-                ResponseAction::Finish => self.transport.finish_denial_response().await?,
-                ResponseAction::InternalError => {
-                    self.transport.send_internal_error_response().await?;
-                },
-                ResponseAction::AbortIncomplete => {
-                    self.transport.abort_denial_response().await?;
-                },
-                // `parse_denial_body_event` admits only Start/Body events, so
-                // the pathsend and trailer actions can never be produced for
-                // a denial response; fail the session, never the process.
-                action @ (ResponseAction::File { .. } | ResponseAction::FinishWithTrailers(_)) => {
-                    return WebSocketError::unexpected_denial_body_event(&action).err();
-                },
-            }
-        }
-        Ok(())
-    }
 }
 
 fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent, H2CornError> {
@@ -84,9 +34,15 @@ fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent
             headers,
         }),
         WebSocketOutboundEvent::Close { .. } => Ok(HandshakeEvent::Close),
-        WebSocketOutboundEvent::HttpResponseStart { status, headers } => {
-            Ok(HandshakeEvent::DenialStart { status, headers })
-        },
+        WebSocketOutboundEvent::HttpResponseStart {
+            status,
+            headers,
+            control,
+        } => Ok(HandshakeEvent::DenialStart {
+            status,
+            headers,
+            control,
+        }),
         other => WebSocketError::unexpected_initial_event(&other).err(),
     }
 }
@@ -114,27 +70,27 @@ pub(super) async fn receive_handshake_event(
 
 pub(super) async fn drive_denial_response<T>(
     transport: &mut T,
-    status: HttpStatusCode,
+    status: FinalResponseStatus,
     headers: ResponseHeaders,
+    control: ResponseHeaderControl,
     running_app: &mut RunningWebSocketApp,
 ) -> Result<(u64, bool), H2CornError>
 where
-    T: WebSocketHandshakeTransport,
+    T: HttpResponseTransport,
 {
     let mut response = ResponseController::new(false, false);
     let mut actions = ResponseActions::new();
-    let mut transport = DenialHttpTransport {
-        transport,
-        tx_bytes: 0,
-    };
+    let mut response_log = ResponseLogState::default();
     apply_http_event(
         &mut response,
-        &mut transport,
+        transport,
         &mut actions,
+        &mut response_log,
         HttpOutboundEvent::Start {
             status,
             headers,
             trailers: false,
+            control,
         },
     )
     .await?;
@@ -144,24 +100,44 @@ where
             AppStep::Event(outbound) => {
                 let flush_result = match parse_denial_body_event(outbound) {
                     Ok(event) => {
-                        apply_http_event(&mut response, &mut transport, &mut actions, event).await
+                        apply_http_event(
+                            &mut response,
+                            transport,
+                            &mut actions,
+                            &mut response_log,
+                            event,
+                        )
+                        .await
                     },
                     Err(err) => Err(err),
                 };
                 if let Err(err) = flush_result {
-                    finalize_response(&mut response, &mut transport, &mut actions, Err(err))
-                        .await?;
-                    return Ok((transport.tx_bytes, false));
+                    finalize_response(
+                        &mut response,
+                        transport,
+                        &mut actions,
+                        &mut response_log,
+                        Err(err),
+                    )
+                    .await?;
+                    return Ok((response_log.response_body_bytes, false));
                 }
             },
             AppStep::Done(result) => {
-                finalize_response(&mut response, &mut transport, &mut actions, result).await?;
-                return Ok((transport.tx_bytes, true));
+                finalize_response(
+                    &mut response,
+                    transport,
+                    &mut actions,
+                    &mut response_log,
+                    result,
+                )
+                .await?;
+                return Ok((response_log.response_body_bytes, true));
             },
         }
     }
 
-    Ok((transport.tx_bytes, false))
+    Ok((response_log.response_body_bytes, false))
 }
 
 pub(super) async fn fail_handshake<T, E>(
@@ -191,12 +167,13 @@ mod tests {
 
     use super::{HandshakeEvent, drive_denial_response, receive_handshake_event};
     use crate::bridge::{
-        PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent, WebSocketSendDisposition,
-        WebSocketSendState,
+        PayloadBytes, WebSocketOutboundEvent, WebSocketSendDisposition, WebSocketSendState,
+        websocket_inbound_channel,
     };
     use crate::error::{ErrorKind, H2CornError, HttpResponseError};
-    use crate::http::response::FinalResponseBody;
-    use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+    use crate::http::header::ResponseHeaderControl;
+    use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
+    use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, status_code};
     use crate::pyloop::TaskSlot;
     use crate::runtime::{AppRuntimeHandle, test_fixtures};
     use crate::websocket::RequestedSubprotocols;
@@ -208,6 +185,45 @@ mod tests {
         calls: Vec<&'static str>,
         body_chunks: Vec<Bytes>,
         final_bodies: Vec<Bytes>,
+    }
+
+    impl HttpResponseTransport for RecordingHandshakeTransport {
+        async fn apply_response_action(
+            &mut self,
+            action: ResponseAction,
+        ) -> Result<(), H2CornError> {
+            match action {
+                ResponseAction::Final { body, .. } => {
+                    self.calls.push("send_final_denial_response");
+                    self.final_bodies.push(match body {
+                        FinalResponseBody::Empty => Bytes::new(),
+                        FinalResponseBody::Bytes(body) => Bytes::copy_from_slice(body.as_ref()),
+                        FinalResponseBody::File { .. } | FinalResponseBody::Suppressed { .. } => {
+                            unreachable!(
+                                "websocket denial responses never send files or suppressed bodies"
+                            )
+                        },
+                    });
+                },
+                ResponseAction::Start { .. } => self.calls.push("start_denial_response"),
+                ResponseAction::Body(body) => {
+                    self.calls.push("send_denial_body");
+                    self.body_chunks.push(Bytes::copy_from_slice(body.as_ref()));
+                },
+                ResponseAction::Finish => self.calls.push("finish_denial_response"),
+                ResponseAction::InternalError => self.calls.push("send_internal_error_response"),
+                ResponseAction::AbortIncomplete => self.calls.push("abort_denial_response"),
+                ResponseAction::File { .. } | ResponseAction::FinishWithTrailers(_) => {
+                    unreachable!("websocket denials do not admit files or trailers")
+                },
+            }
+            Ok(())
+        }
+
+        async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+            self.calls.push("flush");
+            Ok(())
+        }
     }
 
     impl WebSocketHandshakeTransport for RecordingHandshakeTransport {
@@ -232,48 +248,10 @@ mod tests {
             self.calls.push("send_accept");
             Ok(())
         }
+    }
 
-        async fn send_final_denial_response(
-            &mut self,
-            _status: HttpStatusCode,
-            _headers: ResponseHeaders,
-            body: FinalResponseBody,
-        ) -> Result<(), H2CornError> {
-            self.calls.push("send_final_denial_response");
-            self.final_bodies.push(match body {
-                FinalResponseBody::Empty => Bytes::new(),
-                FinalResponseBody::Bytes(body) => Bytes::copy_from_slice(body.as_ref()),
-                FinalResponseBody::File { .. } | FinalResponseBody::Suppressed { .. } => {
-                    unreachable!("websocket denial responses never send files or suppressed bodies")
-                },
-            });
-            Ok(())
-        }
-
-        async fn start_denial_response(
-            &mut self,
-            _status: HttpStatusCode,
-            _headers: ResponseHeaders,
-        ) -> Result<(), H2CornError> {
-            self.calls.push("start_denial_response");
-            Ok(())
-        }
-
-        async fn send_denial_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-            self.calls.push("send_denial_body");
-            self.body_chunks.push(Bytes::copy_from_slice(body.as_ref()));
-            Ok(())
-        }
-
-        async fn finish_denial_response(&mut self) -> Result<(), H2CornError> {
-            self.calls.push("finish_denial_response");
-            Ok(())
-        }
-
-        async fn abort_denial_response(&mut self) -> Result<(), H2CornError> {
-            self.calls.push("abort_denial_response");
-            Ok(())
-        }
+    fn final_status(status: HttpStatusCode) -> FinalResponseStatus {
+        FinalResponseStatus::new(status).expect("test status is final")
     }
 
     fn test_app() -> AppRuntimeHandle {
@@ -300,7 +278,7 @@ mod tests {
         event: WebSocketOutboundEvent,
         task: WebSocketAppTask,
     ) -> RunningWebSocketApp {
-        let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
         let (_send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -341,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn unary_denial_response_collapses_into_final_response() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -363,8 +341,9 @@ mod tests {
 
         let (tx_bytes, app_finished) = drive_denial_response(
             &mut transport,
-            status_code::FORBIDDEN,
+            final_status(status_code::FORBIDDEN),
             Vec::new(),
+            ResponseHeaderControl::default(),
             &mut running_app,
         )
         .await
@@ -372,14 +351,70 @@ mod tests {
 
         assert_eq!(tx_bytes, 6);
         assert!(!app_finished);
-        assert_eq!(transport.calls, ["send_final_denial_response"]);
+        assert_eq!(transport.calls, ["send_final_denial_response", "flush"]);
+        assert_eq!(transport.final_bodies, [Bytes::from_static(b"denied")]);
+    }
+
+    #[tokio::test]
+    async fn forwarded_denial_body_precedes_app_completion() {
+        let mut transport = RecordingHandshakeTransport::default();
+        let status = final_status(HttpStatusCode::new(401).expect("401 is a valid status"));
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (send_tx, send_rx) = mpsc::channel(1);
+        let (send_state, send_buffer) = WebSocketSendState::new();
+        assert!(matches!(
+            send_state.push_or_forward(WebSocketOutboundEvent::HttpResponseStart {
+                status,
+                headers: ResponseHeaders::new(),
+                control: ResponseHeaderControl::default(),
+            }),
+            WebSocketSendDisposition::Buffered
+        ));
+        send_buffer
+            .take_ready()
+            .expect("the handshake start consumed the inline event");
+        let body = match send_state.push_or_forward(WebSocketOutboundEvent::HttpResponseBody {
+            body: PayloadBytes::from(Bytes::from_static(b"denied")),
+            more_body: false,
+        }) {
+            WebSocketSendDisposition::Forward(event) => event,
+            WebSocketSendDisposition::Buffered | WebSocketSendDisposition::Closed => {
+                unreachable!("the second handshake event must enter the bounded channel")
+            },
+        };
+        send_tx
+            .try_send(body)
+            .expect("the forwarded denial body fits the empty bounded channel");
+        let mut running_app = RunningWebSocketApp {
+            recv_tx,
+            requested_subprotocols: RequestedSubprotocols::default(),
+            send_state,
+            send_buffer,
+            send_rx,
+            task: completed_app_task(&test_app()),
+        };
+        let _keep_sender_alive = send_tx;
+
+        let (tx_bytes, app_finished) = drive_denial_response(
+            &mut transport,
+            status,
+            ResponseHeaders::new(),
+            ResponseHeaderControl::default(),
+            &mut running_app,
+        )
+        .await
+        .expect("the forwarded unary denial body is emitted");
+
+        assert_eq!(tx_bytes, 6);
+        assert!(!app_finished);
+        assert_eq!(transport.calls, ["send_final_denial_response", "flush"]);
         assert_eq!(transport.final_bodies, [Bytes::from_static(b"denied")]);
     }
 
     #[tokio::test]
     async fn empty_denial_response_finishes_as_final_response_when_app_ends() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         let mut running_app = RunningWebSocketApp {
@@ -394,8 +429,9 @@ mod tests {
 
         let (tx_bytes, app_finished) = drive_denial_response(
             &mut transport,
-            status_code::FORBIDDEN,
+            final_status(status_code::FORBIDDEN),
             Vec::new(),
+            ResponseHeaderControl::default(),
             &mut running_app,
         )
         .await
@@ -403,14 +439,14 @@ mod tests {
 
         assert_eq!(tx_bytes, 0);
         assert!(app_finished);
-        assert_eq!(transport.calls, ["send_final_denial_response"]);
+        assert_eq!(transport.calls, ["send_final_denial_response", "flush"]);
         assert_eq!(transport.final_bodies, [Bytes::new()]);
     }
 
     #[tokio::test]
     async fn incomplete_denial_response_aborts_transport_when_app_ends() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -432,8 +468,9 @@ mod tests {
 
         let err = drive_denial_response(
             &mut transport,
-            status_code::FORBIDDEN,
+            final_status(status_code::FORBIDDEN),
             Vec::new(),
+            ResponseHeaderControl::default(),
             &mut running_app,
         )
         .await
@@ -443,10 +480,14 @@ mod tests {
             err.kind(),
             ErrorKind::HttpResponse(HttpResponseError::AppReturnedWithoutCompletingResponse)
         ));
+        // Each applied batch ends with a flush, so a streamed denial body
+        // reaches the client instead of waiting in the write buffer.
         assert_eq!(transport.calls, [
             "start_denial_response",
             "send_denial_body",
-            "abort_denial_response"
+            "flush",
+            "abort_denial_response",
+            "flush"
         ]);
         assert_eq!(transport.body_chunks, [Bytes::from_static(b"denied")]);
         drop(running_app);
@@ -456,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn denial_response_future_stays_within_size_budget() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = mpsc::channel::<WebSocketInboundEvent>(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -478,8 +519,9 @@ mod tests {
 
         let future = drive_denial_response(
             &mut transport,
-            status_code::FORBIDDEN,
+            final_status(status_code::FORBIDDEN),
             Vec::new(),
+            ResponseHeaderControl::default(),
             &mut running_app,
         );
 

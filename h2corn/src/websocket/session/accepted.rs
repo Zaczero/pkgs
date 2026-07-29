@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use pyo3::pybacked::PyBackedStr;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use super::super::app::RunningWebSocketApp;
@@ -13,16 +13,35 @@ use super::{
     AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport,
     EncodedWebSocketFrame, FrameFlushMode, TransportRead, shutdown_close_code,
 };
-use crate::async_util::{send_best_effort, send_with_backpressure};
-use crate::bridge::{PayloadBytes, WebSocketInboundEvent, WebSocketOutboundEvent};
+use crate::bridge::{
+    PayloadBytes, WEBSOCKET_OUTBOUND_QUEUE_CAPACITY, WebSocketDisconnect, WebSocketInboundMessage,
+    WebSocketInboundSender, WebSocketInboundTrySendError, WebSocketOutboundEvent,
+};
+use crate::config::WebSocketKeepAlive;
 use crate::error::{ErrorExt, FailureDomain, H2CornError, WebSocketError, WebSocketFrameKind};
-use crate::hpack::BytesStr;
+use crate::http::types::BytesStr;
 use crate::runtime::{ShutdownKind, ShutdownState};
-use crate::websocket::codec::{DecodedFrame, WebSocketCodec, encode_frame_into};
+use crate::websocket::codec::{DecodedFrame, DecodedPeerClose, WebSocketCodec, encode_frame_into};
 use crate::websocket::deflate::{
     PerMessageDeflateDisabled, PerMessageDeflateEnabled, PerMessageDeflateMode,
 };
 use crate::websocket::{WebSocketCloseCode, close_code};
+
+/// Frames coalesced into one vectored write before the session looks at
+/// anything else. Matches the outbound channel capacity, so one full snapshot
+/// still leaves in a single write.
+const MAX_OUTBOUND_BATCH_FRAMES: usize = WEBSOCKET_OUTBOUND_QUEUE_CAPACITY;
+/// Payload bytes coalesced into one batch, matching the HTTP/2 fair-write
+/// quantum so a session cannot hold more outbound data than a stream may.
+const MAX_OUTBOUND_BATCH_BYTES: usize = 64 * 1024;
+
+/// Why a batch stopped: the queue ran dry, or the fairness quantum was reached
+/// with work still waiting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutboundBatchEnd {
+    Drained,
+    Capped,
+}
 
 pub(super) struct AcceptedSessionOutcome {
     pub(super) state: AcceptedWebSocketState,
@@ -40,11 +59,89 @@ enum AcceptedOutboundEvent {
     },
 }
 
+impl AcceptedOutboundEvent {
+    fn payload_len(&self) -> usize {
+        match self {
+            Self::SendText(text) => text.len(),
+            Self::SendBytes(bytes) => bytes.len(),
+            // A close frame ends the batch anyway.
+            Self::Close { .. } => 0,
+        }
+    }
+}
+
+/// Where the keepalive is in its cycle.
+///
+/// One ping is outstanding at a time, so exactly one deadline exists at a
+/// time. Holding "when to ping next" and "when the pong is overdue" as two
+/// independent instants let the next ping re-arm the deadline the previous one
+/// was being judged by: with the interval shorter than the timeout — the
+/// obvious reading of those two knobs — a peer that never answered was never
+/// timed out, because the deadline moved forward with every ping.
+enum PingPhase {
+    /// Nothing outstanding; the next ping goes out at this instant.
+    Idle { next_ping: TokioInstant },
+    /// A ping is outstanding and has to be answered by this instant.
+    AwaitingPong { deadline: TokioInstant },
+}
+
+/// Keepalive schedule for one accepted session. Constructed only when
+/// `WebSocketKeepAlive` is configured, so interval-off cannot leave a
+/// free-floating timeout behind.
 struct PingState {
-    next_ping: Option<TokioInstant>,
-    pong_deadline: Option<TokioInstant>,
-    interval: Option<Duration>,
+    phase: PingPhase,
+    interval: Duration,
     timeout: Option<Duration>,
+}
+
+impl PingState {
+    fn new(keep_alive: WebSocketKeepAlive) -> Self {
+        Self {
+            phase: PingPhase::Idle {
+                next_ping: TokioInstant::now() + keep_alive.interval,
+            },
+            interval: keep_alive.interval,
+            timeout: keep_alive.timeout,
+        }
+    }
+
+    const fn ping_at(&self) -> Option<TokioInstant> {
+        match self.phase {
+            PingPhase::Idle { next_ping } => Some(next_ping),
+            PingPhase::AwaitingPong { .. } => None,
+        }
+    }
+
+    const fn pong_at(&self) -> Option<TokioInstant> {
+        match self.phase {
+            PingPhase::AwaitingPong { deadline } => Some(deadline),
+            PingPhase::Idle { .. } => None,
+        }
+    }
+
+    /// Without a timeout there is no way to tell an outstanding ping from an
+    /// answered one, so the schedule simply continues.
+    fn on_ping_sent(&mut self) {
+        self.phase = match self.timeout {
+            Some(timeout) => PingPhase::AwaitingPong {
+                deadline: TokioInstant::now() + timeout,
+            },
+            None => PingPhase::Idle {
+                next_ping: TokioInstant::now() + self.interval,
+            },
+        };
+    }
+
+    /// Any pong answers the outstanding ping — h2corn's pings carry no payload
+    /// to match against, and a peer that is talking is a peer that is alive.
+    /// An unsolicited pong does not postpone the next keepalive.
+    fn on_pong(&mut self) {
+        if matches!(self.phase, PingPhase::AwaitingPong { .. }) {
+            self.phase = PingPhase::Idle {
+                next_ping: TokioInstant::now() + self.interval,
+            };
+        }
+    }
 }
 
 /// The accepted-session driver: owns the codec, compression state, ping
@@ -54,7 +151,7 @@ struct PingState {
 struct AcceptedSession<'a, T, M: PerMessageDeflateMode> {
     transport: &'a mut T,
     running_app: &'a mut RunningWebSocketApp,
-    recv_tx: mpsc::Sender<WebSocketInboundEvent>,
+    recv_tx: WebSocketInboundSender,
     shutdown: watch::Receiver<ShutdownState>,
     codec: WebSocketCodec,
     inflater: M::Inflater,
@@ -62,7 +159,11 @@ struct AcceptedSession<'a, T, M: PerMessageDeflateMode> {
     state: AcceptedWebSocketState,
     rx_bytes: u64,
     tx_bytes: u64,
-    ping: PingState,
+    ping: Option<PingState>,
+    /// At most one decoded message waits for byte capacity. The wait is
+    /// selected alongside peer terminal/control input, so a stopped ASGI app
+    /// cannot pin the WebSocket driver at `send().await`.
+    pending_inbound: Option<WebSocketInboundMessage>,
 }
 
 impl<'a, T, M> AcceptedSession<'a, T, M>
@@ -88,12 +189,8 @@ where
             state: AcceptedWebSocketState::default(),
             rx_bytes: 0,
             tx_bytes: 0,
-            ping: PingState {
-                next_ping: next_ping_deadline(config.ping_interval),
-                pong_deadline: None,
-                interval: config.ping_interval,
-                timeout: config.ping_timeout,
-            },
+            ping: config.keep_alive.map(PingState::new),
+            pending_inbound: None,
         }
     }
 
@@ -105,6 +202,7 @@ where
             if let ControlFlow::Break(result) = self.drain_decoded_frames().await? {
                 break result;
             }
+            self.release_consumed_input();
             if let ControlFlow::Break(result) = self.wait_session_event().await? {
                 break result;
             }
@@ -121,72 +219,100 @@ where
     async fn wait_session_event(
         &mut self,
     ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
-        let ping_sleep = sleep_until_or_pending(self.ping.next_ping);
-        let pong_timeout = sleep_until_or_pending(self.ping.pong_deadline);
+        let next_ping = self.ping.as_ref().and_then(PingState::ping_at);
+        let pong_deadline = self.ping.as_ref().and_then(PingState::pong_at);
+        let ping_sleep = sleep_until_or_pending(next_ping);
+        let pong_timeout = sleep_until_or_pending(pong_deadline);
+        let pending_inbound_len = self
+            .pending_inbound
+            .as_ref()
+            .map(WebSocketInboundMessage::len);
+        let pending_tx = self.recv_tx.clone();
+        let pending_capacity = async move {
+            match pending_inbound_len {
+                Some(len) => pending_tx.acquire_bytes(len).await,
+                None => pending::<Result<_, ()>>().await,
+            }
+        };
 
         tokio::select! {
+            biased;
             () = self.running_app.task.join_store(), if !self.running_app.task.is_joined() => {
-                // Messages the app sent just before returning may have become
-                // ready in the same instant as its completion — drain them onto
-                // the wire before acting on the result, or the final sends of a
-                // `send(...); return` app are lost to select ordering.
-                if let ControlFlow::Break(result) = self.process_outbound_batch(None).await? {
-                    return Ok(ControlFlow::Break(result));
-                }
-                self.running_app.task.take_outcome().unwrap_or(Ok(()))?;
-                if !self.state.close_started() {
-                    self.state.queue_close_if_open(close_code::NORMAL, "")?;
-                }
-                Ok(ControlFlow::Break(Ok(())))
+                self.finish_after_app().await
             }
             outbound_event = self.running_app.send_rx.recv() => {
                 if let Some(outbound_event) = outbound_event {
                     let first = parse_accepted_outbound_event(outbound_event)?;
-                    return self.process_outbound_batch(Some(first)).await;
+                    return Ok(self
+                        .process_outbound_batch(Some(first))
+                        .await?
+                        .map_continue(|_| ()));
                 }
-                // All senders are gone, but events buffered just before the
-                // last sender dropped may still be queued — drain them onto
-                // the wire before ending the session, mirroring the
-                // app-completion arm above.
-                if let ControlFlow::Break(result) = self.process_outbound_batch(None).await? {
-                    return Ok(ControlFlow::Break(result));
-                }
-                Ok(ControlFlow::Break(Ok(())))
+                // All senders are gone, which means the application is on its
+                // way out — the same end as its task completing, reached by
+                // whichever the select observed first.
+                self.finish_after_app().await
             },
-            () = ping_sleep, if self.ping.next_ping.is_some() => {
+            () = ping_sleep, if next_ping.is_some() => {
                 self.send_ping_and_arm_timeout().await?;
                 Ok(ControlFlow::Continue(()))
             },
-            () = pong_timeout, if self.ping.pong_deadline.is_some() => {
-                self.abort_for_ping_timeout().await;
+            () = pong_timeout, if pong_deadline.is_some() => {
+                self.abort_for_ping_timeout();
                 Ok(ControlFlow::Break(Ok(())))
             },
             changed = self.shutdown.changed() => {
                 let shutdown_kind = changed.ok().and_then(|()| self.shutdown.borrow().kind());
                 if let Some(kind) = shutdown_kind {
-                    self.initiate_server_shutdown(kind).await?;
+                    self.initiate_server_shutdown(kind)?;
                     Ok(ControlFlow::Break(Ok(())))
                 } else {
                     Ok(ControlFlow::Continue(()))
                 }
             },
+            permit = pending_capacity, if pending_inbound_len.is_some() => {
+                let message = self.pending_inbound.take().expect("capacity wait requires a pending message");
+                self.recv_tx.send_reserved(message, permit.map_err(|()| {
+                    WebSocketError::receive_channel_closed(WebSocketFrameKind::Binary).into_error()
+                })?).map_err(|_| {
+                    WebSocketError::receive_channel_closed(WebSocketFrameKind::Binary).into_error()
+                })?;
+                Ok(ControlFlow::Continue(()))
+            }
             read = self.transport.read_into_codec(&mut self.codec) => {
                 self.handle_transport_read(read?).await
             }
         }
     }
 
-    /// Drain every outbound event that is already available — `first`, then
+    /// Drain the outbound events that are already available — `first`, then
     /// the buffered handshake queue, then anything sitting in the channel —
     /// flushing buffered frames once at the end of the batch.
+    ///
+    /// Bounded on both frames and payload bytes: every receive frees a
+    /// channel slot the application can refill at once, so without a bound one
+    /// batch could in principle grow while the producer keeps up, holding
+    /// every encoded frame in memory and delaying reads, pings and shutdown.
+    /// Whatever is left simply forms the next batch.
+    ///
+    /// Measured caveat: a Python producer could not actually sustain it —
+    /// removing the bound and flooding from an ASGI app did not starve the
+    /// session, because the Rust drain empties the channel faster than
+    /// `await send()` can refill it. The bound is kept as an explicit
+    /// worst-case cap (and to match the HTTP/2 fair-write quantum), not as a
+    /// fix for a demonstrated starvation.
     async fn process_outbound_batch(
         &mut self,
         first: Option<AcceptedOutboundEvent>,
-    ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
+    ) -> Result<ControlFlow<Result<(), H2CornError>, OutboundBatchEnd>, H2CornError> {
         let mut next = first;
-        let mut sent = false;
+        let mut frames = 0_usize;
+        let mut payload_bytes = 0_usize;
 
-        loop {
+        let end = loop {
+            if frames >= MAX_OUTBOUND_BATCH_FRAMES || payload_bytes >= MAX_OUTBOUND_BATCH_BYTES {
+                break OutboundBatchEnd::Capped;
+            }
             let outbound = if let Some(outbound) = next.take() {
                 outbound
             } else if let Some(outbound) = self.running_app.send_buffer.take_ready() {
@@ -194,24 +320,75 @@ where
             } else {
                 match self.running_app.send_rx.try_recv() {
                     Ok(outbound) => parse_accepted_outbound_event(outbound)?,
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                        break OutboundBatchEnd::Drained;
+                    },
                 }
             };
 
-            if sent && matches!(outbound, AcceptedOutboundEvent::Close { .. }) {
+            if frames > 0 && matches!(outbound, AcceptedOutboundEvent::Close { .. }) {
                 self.transport.flush_buffered_frames().await?;
             }
 
-            sent = true;
+            frames += 1;
+            payload_bytes = payload_bytes.saturating_add(outbound.payload_len());
             if let ControlFlow::Break(result) = self.handle_outbound(outbound).await? {
                 return Ok(ControlFlow::Break(result));
             }
-        }
+        };
 
-        if sent {
+        if frames > 0 {
             self.transport.flush_buffered_frames().await?;
         }
-        Ok(ControlFlow::Continue(()))
+        Ok(ControlFlow::Continue(end))
+    }
+
+    /// End the session because the application can produce nothing more.
+    ///
+    /// Its task completing and its sender being dropped are two observations of
+    /// one event, and the `select!` may see either first. Both must end the
+    /// session identically: drain what it queued, surface its result, and send
+    /// the normal close — a path that skipped the close left the client with a
+    /// bare EOF and the session logged as 1005 for roughly half of a
+    /// `send(...); return` app's connections.
+    async fn finish_after_app(
+        &mut self,
+    ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
+        // Messages sent in the same instant as the app returned are still
+        // queued; they go onto the wire before the result is acted on.
+        if let ControlFlow::Break(result) = self.drain_outbound().await? {
+            return Ok(ControlFlow::Break(result));
+        }
+        if !self.running_app.task.is_joined() {
+            self.running_app.task.join_store().await;
+        }
+        let app_result = self.running_app.task.take_outcome().unwrap_or(Ok(()));
+        if !self.state.close_started() {
+            self.state.queue_close_if_open(close_code::NORMAL, "")?;
+        }
+        // Return the application outcome inside the completed session rather
+        // than through this method's error channel. The caller must always
+        // run transport finalization, task settlement, and access logging
+        // after a session has accepted the WebSocket handshake.
+        Ok(ControlFlow::Break(app_result))
+    }
+
+    /// Write everything the application queued, past the fairness quantum.
+    ///
+    /// Used only where nothing can produce more and no later batch will run:
+    /// there a single bounded batch does not defer the rest, it discards it.
+    async fn drain_outbound(
+        &mut self,
+    ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
+        loop {
+            match self.process_outbound_batch(None).await? {
+                ControlFlow::Break(result) => return Ok(ControlFlow::Break(result)),
+                ControlFlow::Continue(OutboundBatchEnd::Capped) => {},
+                ControlFlow::Continue(OutboundBatchEnd::Drained) => {
+                    return Ok(ControlFlow::Continue(()));
+                },
+            }
+        }
     }
 
     async fn flush_ready_outbound(
@@ -226,7 +403,10 @@ where
         else {
             return Ok(ControlFlow::Continue(()));
         };
-        self.process_outbound_batch(Some(outbound_event)).await
+        Ok(self
+            .process_outbound_batch(Some(outbound_event))
+            .await?
+            .map_continue(|_| ()))
     }
 
     async fn handle_outbound(
@@ -236,12 +416,12 @@ where
         match outbound {
             AcceptedOutboundEvent::SendText(text) => {
                 self.tx_bytes = self.tx_bytes.saturating_add(text.len() as u64);
-                self.send_message_frame(0x1, text.as_bytes()).await?;
+                self.send_message_frame(0x1, text.into()).await?;
                 Ok(ControlFlow::Continue(()))
             },
             AcceptedOutboundEvent::SendBytes(data) => {
                 self.tx_bytes = self.tx_bytes.saturating_add(data.len() as u64);
-                self.send_binary_message_frame(data).await?;
+                self.send_message_frame(0x2, data).await?;
                 Ok(ControlFlow::Continue(()))
             },
             AcceptedOutboundEvent::Close { code, reason } => {
@@ -256,13 +436,22 @@ where
         }
     }
 
-    async fn send_message_frame(&mut self, opcode: u8, payload: &[u8]) -> Result<(), H2CornError> {
-        let compressed_payload: Option<Bytes> = M::compress(&mut self.deflater, payload)
+    /// Send one application message, text or binary.
+    ///
+    /// The payload owns its bytes, so an uncompressed message is written from
+    /// the application's own buffer with no copy — text included, which used
+    /// to take a separate path that copied every message into the frame
+    /// buffer. Compression produces new bytes and those are owned in turn.
+    async fn send_message_frame(
+        &mut self,
+        opcode: u8,
+        payload: PayloadBytes,
+    ) -> Result<(), H2CornError> {
+        let compressed: Option<Bytes> = M::compress(&mut self.deflater, payload.as_ref())
             .map_err(|_| WebSocketError::CompressionFailed.into_error())?;
-        let (payload, compressed) = compressed_payload
-            .as_deref()
-            .map_or((payload, false), |payload| (payload, true));
-        send_encoded_frame(
+        let (payload, compressed) =
+            compressed.map_or((payload, false), |compressed| (compressed.into(), true));
+        send_segmented_frame(
             self.transport,
             opcode,
             payload,
@@ -272,70 +461,34 @@ where
         .await
     }
 
-    async fn send_binary_message_frame(
-        &mut self,
-        payload: PayloadBytes,
-    ) -> Result<(), H2CornError> {
-        let compressed_payload: Option<Bytes> =
-            M::compress(&mut self.deflater, payload.as_ref())
-                .map_err(|_| WebSocketError::CompressionFailed.into_error())?;
-        match compressed_payload {
-            Some(compressed) => {
-                send_segmented_frame(
-                    self.transport,
-                    0x2,
-                    compressed.into(),
-                    FrameFlushMode::Buffered,
-                    true,
-                )
-                .await
-            },
-            None => {
-                send_segmented_frame(
-                    self.transport,
-                    0x2,
-                    payload,
-                    FrameFlushMode::Buffered,
-                    false,
-                )
-                .await
-            },
-        }
-    }
-
     async fn send_ping_and_arm_timeout(&mut self) -> Result<(), H2CornError> {
         send_encoded_frame(self.transport, 0x9, &[], FrameFlushMode::Immediate, false).await?;
-        self.ping.next_ping = self
-            .ping
-            .interval
-            .map(|interval| TokioInstant::now() + interval);
-        if let Some(timeout_duration) = self.ping.timeout {
-            self.ping.pong_deadline = Some(TokioInstant::now() + timeout_duration);
+        if let Some(ping) = &mut self.ping {
+            ping.on_ping_sent();
         }
         Ok(())
     }
 
-    async fn abort_for_ping_timeout(&mut self) {
+    fn abort_for_ping_timeout(&mut self) {
         self.running_app.close_outbound();
         self.state.mark_peer_reset(close_code::ABNORMAL_CLOSURE);
-        send_best_effort(&self.recv_tx, WebSocketInboundEvent::Disconnect {
+        self.recv_tx.disconnect(WebSocketDisconnect {
             code: close_code::ABNORMAL_CLOSURE,
-            reason: Some("ping timeout".into()),
-        })
-        .await;
+            reason: BytesStr::from("ping timeout"),
+        });
         self.running_app.task.abort();
     }
 
-    async fn initiate_server_shutdown(&mut self, kind: ShutdownKind) -> Result<(), H2CornError> {
+    fn initiate_server_shutdown(&mut self, kind: ShutdownKind) -> Result<(), H2CornError> {
         self.terminate_session(shutdown_close_code(kind), None, |state, code| {
             state.queue_close_if_open(code, "")
         })
-        .await
     }
 
-    /// Stop accepting app sends, deliver the disconnect event, and apply the
-    /// close-state transition for a session ending on `code`.
-    async fn terminate_session(
+    /// Stop accepting app sends, advance close state, then publish terminal
+    /// disconnect. Publication is synchronous so a full inbound data queue
+    /// cannot block peer Close, ping timeout, or transport end.
+    fn terminate_session(
         &mut self,
         code: WebSocketCloseCode,
         reason: Option<BytesStr>,
@@ -345,12 +498,12 @@ where
         ) -> Result<(), H2CornError>,
     ) -> Result<(), H2CornError> {
         self.running_app.close_outbound();
-        send_best_effort(&self.recv_tx, WebSocketInboundEvent::Disconnect {
+        update_state(&mut self.state, code)?;
+        self.recv_tx.disconnect(WebSocketDisconnect {
             code,
-            reason,
-        })
-        .await;
-        update_state(&mut self.state, code)
+            reason: reason.unwrap_or_default(),
+        });
+        Ok(())
     }
 
     async fn drain_decoded_frames(
@@ -366,8 +519,7 @@ where
                 Err(err) => {
                     self.terminate_session(err.close_code, None, |state, code| {
                         state.queue_close_if_open(code, "")
-                    })
-                    .await?;
+                    })?;
                     self.running_app.task.abort();
                     return Ok(ControlFlow::Break(
                         WebSocketError::Protocol(err.error).err(),
@@ -386,14 +538,19 @@ where
         read: TransportRead,
     ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
         match read {
-            TransportRead::Progress => self.drain_decoded_frames().await,
+            TransportRead::Progress => {
+                let result = self.drain_decoded_frames().await?;
+                if matches!(result, ControlFlow::Continue(())) {
+                    self.release_consumed_input();
+                }
+                Ok(result)
+            },
             TransportRead::PeerGone => {
                 let code = close_code::NO_STATUS_RECEIVED;
                 self.terminate_session(code, None, |state, code| {
                     state.mark_peer_gone(code);
                     Ok(())
-                })
-                .await?;
+                })?;
                 Ok(ControlFlow::Break(Ok(())))
             },
             TransportRead::PeerGoneSilent => {
@@ -406,8 +563,7 @@ where
                 self.terminate_session(code, Some(reason), |state, code| {
                     state.mark_peer_reset(code);
                     Ok(())
-                })
-                .await?;
+                })?;
                 Ok(ControlFlow::Break(Ok(())))
             },
         }
@@ -420,23 +576,17 @@ where
         match frame {
             DecodedFrame::Text(text) => {
                 self.rx_bytes = self.rx_bytes.saturating_add(text.len() as u64);
-                send_with_backpressure(
-                    &self.recv_tx,
-                    WebSocketInboundEvent::ReceiveText(text),
-                    || WebSocketError::receive_channel_closed(WebSocketFrameKind::Text),
+                self.queue_inbound(
+                    WebSocketInboundMessage::Text(text),
+                    WebSocketFrameKind::Text,
                 )
-                .await?;
-                Ok(ControlFlow::Continue(()))
             },
             DecodedFrame::Binary(data) => {
                 self.rx_bytes = self.rx_bytes.saturating_add(data.len() as u64);
-                send_with_backpressure(
-                    &self.recv_tx,
-                    WebSocketInboundEvent::ReceiveBytes(data),
-                    || WebSocketError::receive_channel_closed(WebSocketFrameKind::Binary),
+                self.queue_inbound(
+                    WebSocketInboundMessage::Bytes(data),
+                    WebSocketFrameKind::Binary,
                 )
-                .await?;
-                Ok(ControlFlow::Continue(()))
             },
             DecodedFrame::Ping(payload) => {
                 send_encoded_frame(
@@ -450,16 +600,55 @@ where
                 Ok(ControlFlow::Continue(()))
             },
             DecodedFrame::Pong => {
-                self.ping.pong_deadline = None;
+                if let Some(ping) = &mut self.ping {
+                    ping.on_pong();
+                }
                 Ok(ControlFlow::Continue(()))
             },
-            DecodedFrame::Close { code, reason } => {
-                self.terminate_session(code, reason, |state, code| {
+            DecodedFrame::Close(DecodedPeerClose::Coded { code, reason }) => {
+                self.terminate_session(code.get(), reason, |state, code| {
                     state.queue_close_if_open(code, "")
-                })
-                .await?;
+                })?;
                 Ok(ControlFlow::Break(Ok(())))
             },
+            DecodedFrame::Close(DecodedPeerClose::Empty) => {
+                self.running_app.close_outbound();
+                self.recv_tx.disconnect(WebSocketDisconnect {
+                    code: close_code::NO_STATUS_RECEIVED,
+                    reason: BytesStr::default(),
+                });
+                self.state.queue_empty_close_if_open();
+                Ok(ControlFlow::Break(Ok(())))
+            },
+        }
+    }
+
+    fn queue_inbound(
+        &mut self,
+        message: WebSocketInboundMessage,
+        kind: WebSocketFrameKind,
+    ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
+        match self.recv_tx.try_send(message) {
+            Ok(()) => Ok(ControlFlow::Continue(())),
+            Err(WebSocketInboundTrySendError::Full(message)) => {
+                if self.pending_inbound.is_none() {
+                    self.pending_inbound = Some(message);
+                }
+                // Keep draining control frames while one message waits for
+                // byte ownership. Further data cannot be retained without
+                // defeating that bound, and once peer terminal state arrives
+                // it is deliberately superseded by the disconnect event.
+                Ok(ControlFlow::Continue(()))
+            },
+            Err(WebSocketInboundTrySendError::Closed) => {
+                WebSocketError::receive_channel_closed(kind).err()
+            },
+        }
+    }
+
+    fn release_consumed_input(&mut self) {
+        if self.pending_inbound.is_none() {
+            self.transport.release_consumed_input();
         }
     }
 
@@ -550,11 +739,6 @@ where
             .run()
             .await
     }
-}
-
-fn next_ping_deadline(ping_interval: Option<Duration>) -> Option<TokioInstant> {
-    let now = TokioInstant::now();
-    ping_interval.map(|interval| now + interval)
 }
 
 async fn sleep_until_or_pending(deadline: Option<TokioInstant>) {
