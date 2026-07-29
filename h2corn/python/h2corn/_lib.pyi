@@ -2,16 +2,17 @@ from collections.abc import Awaitable, Callable
 from typing import final
 
 from ._config import Config
+from ._server import TlsMaterial
 from ._types import Application, State
 
-__all__ = ['LifespanHandoff', 'emit_banner', 'serve_fds', 'validate_config']
+__all__ = ['_LifespanHandoff', '_PreparedTls', 'emit_banner', 'prepare_tls', 'serve_fds']
+
 
 @final
-class LifespanHandoff:
+class _LifespanHandoff:
     """Exact, immutable Python-to-Rust ownership handoff for an active primary
-    lifespan runner. The Python wrapper remains usable by generic callbacks;
-    h2corn consumes this object to call the original app directly and install
-    the loop-local state dictionary on the main shard.
+    lifespan runner. Implementation object for secondary-loop state — not public
+    API; the Python name is private.
     """
     def __new__(
         cls,
@@ -20,10 +21,28 @@ class LifespanHandoff:
         required: bool,
         startup_timeout: float | None,
         shutdown_timeout: float | None,
-    ) -> LifespanHandoff:
+    ) -> _LifespanHandoff:
         """Create and return a new object.  See help(type) for accurate signature."""
 
-def emit_banner(config: Config) -> None:
+@final
+class _PreparedTls:
+    """Validated, immutable TLS acceptor state prepared once from PEM bytes.
+
+    Built while the process can still read the key files; workers reuse the
+    same value after privilege drop and never reopen the paths.
+    """
+
+def prepare_tls(
+    config: Config,
+    tls_material: TlsMaterial | None = None,
+) -> _PreparedTls:
+    """Convert PEM material into an immutable native TLS acceptor, or plaintext.
+
+    Runs the same `server_config` extraction serving uses so `--check-config`
+    rejects bad cert/key/CA bytes before any worker starts.
+    """
+
+def emit_banner(config: Config, tls: _PreparedTls) -> None:
     """Print the startup banner for a validated server configuration."""
 
 def serve_fds(
@@ -32,11 +51,14 @@ def serve_fds(
     config: Config,
     shutdown_trigger: Awaitable[str],
     retire_trigger: Callable[[], None] | None = None,
-    lifespan_handoff: LifespanHandoff | None = None,
+    lifespan_handoff: _LifespanHandoff | None = None,
     ready_trigger: Callable[[], None] | None = None,
     quiesce_fd: int | None = None,
+    *,
+    prepared_tls: _PreparedTls,
 ) -> Awaitable[None]:
-    """Adopt listener file descriptors and run one worker until shutdown."""
+    """Adopt listener file descriptors and run one worker until shutdown.
 
-def validate_config(config: Config) -> None:
-    """Validate and normalize a Python `Config`, raising on invalid combinations."""
+    `prepared_tls` is required: PEM is converted once in `prepare_tls` and
+    reused here. There is no path that reopens certificate files in a worker.
+    """

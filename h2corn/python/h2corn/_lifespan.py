@@ -6,22 +6,32 @@ from typing import cast
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, MutableMapping
+    from collections.abc import Awaitable
     from typing import Any
 
-    from ._config import LifespanMode
-    from ._lib import LifespanHandoff
     from ._types import (
         Application,
         FrameworkASGIApp,
         FrameworkMessage,
-        FrameworkReceive,
-        FrameworkSend,
         State,
     )
 
 
-async def cancel_task(task: asyncio.Future[Any] | None) -> None:
+async def cancel_task(
+    task: asyncio.Future[Any] | None,
+    *,
+    timeout: float | None = None,
+) -> None:
+    """Cancel `task` and wait for it to settle.
+
+    `timeout` bounds that wait. Without one this waits as long as the task
+    takes, which is right when the task is known to be cooperative — but an
+    application that catches `CancelledError` and never returns is not, and
+    a configured lifespan timeout that then waited forever was no timeout at
+    all. On expiry the task is left running and detached: it still owns
+    whatever the application opened, and taking that away underneath it
+    would be worse than the process ending with it open.
+    """
     if task is None:
         return
     if not task.done():
@@ -32,9 +42,21 @@ async def cancel_task(task: asyncio.Future[Any] | None) -> None:
     # a repeated cancellation can make a Server reusable while its previous
     # lifespan task is still running.
     deferred_cancellation: asyncio.CancelledError | None = None
+    expires_at = (
+        None
+        if timeout is None or timeout <= 0
+        else asyncio.get_running_loop().time() + timeout
+    )
     while not task.done():
+        if expires_at is not None and asyncio.get_running_loop().time() >= expires_at:
+            if deferred_cancellation is not None:
+                raise deferred_cancellation
+            return
         try:
-            await asyncio.shield(task)
+            if expires_at is None:
+                await asyncio.shield(task)
+            else:
+                await asyncio.wait([task], timeout=0.005)
         except asyncio.CancelledError as exc:
             if task.done():
                 break
@@ -49,54 +71,7 @@ async def cancel_task(task: asyncio.Future[Any] | None) -> None:
         raise deferred_cancellation
 
 
-async def serve_with_lifespan(
-    app: Application,
-    serve: Callable[[Application, LifespanHandoff | None], Awaitable[None]],
-    *,
-    mode: LifespanMode = 'auto',
-    startup_timeout: float | None = None,
-    shutdown_timeout: float | None = None,
-):
-    if mode == 'off':
-        await serve(app, None)
-        return
-
-    lifespan = LifespanRunner(app)
-    try:
-        await _await_with_timeout(
-            lifespan.startup(required=mode == 'on'),
-            startup_timeout,
-            'lifespan startup timed out',
-        )
-    except BaseException:
-        await lifespan.discard_task()
-        raise
-    try:
-        # Rust consumes the exact typed handoff and calls the original app
-        # directly. The wrapper remains the portable state-copying fallback.
-        from ._lib import LifespanHandoff
-
-        handoff = LifespanHandoff(
-            app,
-            lifespan.state,
-            mode == 'on',
-            startup_timeout,
-            shutdown_timeout,
-        )
-        await serve(lifespan.app, handoff)
-    finally:
-        try:
-            await _await_with_timeout(
-                lifespan.shutdown(),
-                shutdown_timeout,
-                'lifespan shutdown timed out',
-            )
-        except BaseException:
-            await lifespan.discard_task()
-            raise
-
-
-async def _await_with_timeout(
+async def await_with_timeout(
     awaitable: Awaitable[None],
     timeout_seconds: float | None,
     message: str,
@@ -123,27 +98,39 @@ class LifespanRunner:
         self._task: asyncio.Future[None] | None = None
         self._active = False
 
-        async def scope_state_app(
-            scope: MutableMapping[str, Any],
-            receive: FrameworkReceive,
-            send: FrameworkSend,
-        ) -> None:
-            if scope['type'] in ('http', 'websocket') and self.state:
-                scope['state'] = self.state.copy()
-            await self._app(scope, receive, send)
+    async def discard_task(self, timeout: float | None = None) -> bool:
+        """Abandon the lifespan task, waiting at most `timeout` for it.
 
-        self.app: FrameworkASGIApp = scope_state_app
-
-    async def discard_task(self) -> None:
+        Returns `True` when the task has settled (or there was none). Returns
+        `False` and retains `_task` when the bound expires while the task is
+        still running: the task still owns whatever the application opened, so
+        callers that guard reuse must keep waiting until it actually finishes.
+        """
         task = self._task
-        self._task = None
+        if task is None:
+            return True
         self._active = False
+        try:
+            await cancel_task(task, timeout=timeout)
+        except (Exception, asyncio.CancelledError):
+            pass
+        if not task.done():
+            return False
+        self._task = None
+        return True
+
+    async def wait_retained_task(self) -> None:
+        """Wait for a task still held after `discard_task` returned `False`."""
+        task = self._task
         if task is None:
             return
         try:
-            await cancel_task(task)
+            await asyncio.shield(task)
         except (Exception, asyncio.CancelledError):
             pass
+        finally:
+            if task.done():
+                self._task = None
 
     async def _exchange(self, message: FrameworkMessage):
         assert self._task is not None
@@ -204,16 +191,25 @@ class LifespanRunner:
             return
         exc = self._task.exception()
         self._task = None
-        if (
-            startup_seen
-            and exc is not None
-            and not isinstance(exc, (AssertionError, KeyError, TypeError))
-        ):
-            raise exc
+        # In `auto` mode any exception means "this application does not do
+        # lifespan", and the server carries on without it. That is the spec's
+        # fallback, and it costs nothing in practice because a framework that
+        # *does* implement lifespan reports a real startup failure through
+        # `lifespan.startup.failed` — Starlette sends exactly that before
+        # re-raising, so a genuine failure is already loud above and never
+        # reaches here. Neither the exception's type nor whether the
+        # application happened to call `receive()` distinguishes the two cases:
+        # an HTTP-only application that calls `receive()` unconditionally hits
+        # both. `on` mode fails instead, because there the operator asked for
+        # lifespan and wants to know why it did not run.
         if required:
+            # Chained, not re-raised bare: the application's exception alone
+            # reads like the server failed (an app raising `TimeoutError` looks
+            # exactly like the startup timeout), while the diagnosis alone
+            # hides where it came from.
             raise RuntimeError(
                 'lifespan startup is required but the app does not support it'
-            )
+            ) from exc
         return
 
     async def shutdown(self):
@@ -262,13 +258,15 @@ async def start_lifespan_runner(
 ) -> LifespanRunner:
     """Start one secondary-loop runner and return its owning object."""
     try:
-        await _await_with_timeout(
+        await await_with_timeout(
             runner.startup(required=required),
             startup_timeout,
             'lifespan startup timed out',
         )
     except BaseException:
-        await runner.discard_task()
+        # Bound discard by the same startup budget: an app that ignores
+        # cancellation must not turn a timed-out startup into an unbounded wait.
+        await runner.discard_task(startup_timeout)
         raise
     return runner
 
@@ -280,11 +278,13 @@ async def stop_lifespan_runner(
 ) -> None:
     """Stop one secondary-loop runner, always cleaning up its app task."""
     try:
-        await _await_with_timeout(
+        await await_with_timeout(
             runner.shutdown(),
             shutdown_timeout,
             'lifespan shutdown timed out',
         )
     except BaseException:
-        await runner.discard_task()
+        await runner.discard_task(shutdown_timeout)
+        await runner.wait_retained_task()
         raise
+    await runner.wait_retained_task()

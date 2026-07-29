@@ -9,10 +9,14 @@ import sys
 import textwrap
 import threading
 import weakref
+from contextlib import suppress
 from pathlib import Path
+from typing import TypedDict
 
+import h2.exceptions
 import pytest
 from h2corn import Config, Server
+from h2corn import _server as server_module
 
 from tests._support import (
     assert_serve_reusable,
@@ -31,6 +35,11 @@ pytestmark = [
         reason='POSIX worker supervisor (fork workers, signals, unix sockets)',
     ),
 ]
+
+
+class _PrivilegeIdentity(TypedDict, total=False):
+    user: int
+    group: int
 
 
 async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
@@ -104,15 +113,18 @@ async def test_shutdown_during_lifespan_startup_is_not_lost() -> None:
     task = asyncio.create_task(server.serve())
     await asyncio.wait_for(startup_entered.wait(), timeout=2)
     assert server.addresses
+    generation = server._generation
+    assert generation is not None
 
     await asyncio.to_thread(server.shutdown)
     finish_startup.set()
 
     await asyncio.wait_for(task, timeout=2)
+    await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
     assert server.addresses == ()
 
 
-async def test_repeated_cancellation_waits_for_primary_lifespan_before_reuse() -> None:
+async def test_cancelled_startup_releases_public_caller_before_lifespan_cleanup() -> None:
     startup_entered = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
@@ -157,15 +169,18 @@ async def test_repeated_cancellation_waits_for_primary_lifespan_before_reuse() -
     await asyncio.wait_for(startup_entered.wait(), timeout=2)
     first.cancel()
     await asyncio.wait_for(cleanup_started.wait(), timeout=2)
-    first.cancel()
-    await asyncio.sleep(0)
-    assert not first.done(), 'repeated cancellation must retain lifespan ownership'
-    with pytest.raises(RuntimeError, match='active serve'):
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, timeout=2)
+
+    retained_generation = server._generation
+    assert retained_generation is not None
+    assert server.releasing is True
+    assert not retained_generation.released.done()
+    with pytest.raises(RuntimeError, match='still releasing a previous serve'):
         await server.serve()
 
     release_cleanup.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(first, timeout=2)
+    await asyncio.wait_for(asyncio.shield(retained_generation.released), timeout=2)
 
     assert cleanup_finished.is_set()
     assert active_lifespans == 0
@@ -174,6 +189,140 @@ async def test_repeated_cancellation_waits_for_primary_lifespan_before_reuse() -
     await assert_serve_reusable(server)
     assert generation == 2
     assert max_active_lifespans == 1
+
+
+async def test_startup_timeout_returns_before_retained_lifespan_cleanup() -> None:
+    startup_entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    lifespan_runs = 0
+
+    async def app(scope, receive, _send):
+        nonlocal lifespan_runs
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        lifespan_runs += 1
+        if lifespan_runs > 1:
+            await _send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await _send({'type': 'lifespan.shutdown.complete'})
+            return
+        startup_entered.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='on',
+            timeout_lifespan_startup=0.2,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+
+    with pytest.raises(RuntimeError, match='lifespan startup timed out'):
+        await asyncio.wait_for(asyncio.shield(serving), timeout=0.05)
+
+    generation = server._generation
+    assert generation is not None
+    assert server.releasing is True
+    assert not generation.released.done()
+
+    release_cleanup.set()
+    with pytest.raises(RuntimeError, match='lifespan startup timed out'):
+        await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
+    assert server.releasing is False
+    await assert_serve_reusable(server)
+
+
+async def test_shutdown_timeout_returns_before_retained_lifespan_cleanup() -> None:
+    shutdown_entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    lifespan_runs = 0
+
+    async def app(scope, receive, send):
+        nonlocal lifespan_runs
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        lifespan_runs += 1
+        await send({'type': 'lifespan.startup.complete'})
+        assert (await receive())['type'] == 'lifespan.shutdown'
+        if lifespan_runs > 1:
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+        shutdown_entered.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='on',
+            timeout_lifespan_shutdown=0.2,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await wait_for_server(server, serving)
+    server.shutdown()
+    await asyncio.wait_for(shutdown_entered.wait(), timeout=2)
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+
+    with pytest.raises(RuntimeError, match='lifespan shutdown timed out'):
+        await asyncio.wait_for(asyncio.shield(serving), timeout=0.05)
+
+    generation = server._generation
+    assert generation is not None
+    assert server.releasing is True
+    assert not generation.released.done()
+
+    release_cleanup.set()
+    with pytest.raises(RuntimeError, match='lifespan shutdown timed out'):
+        await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
+    assert server.releasing is False
+    await assert_serve_reusable(server)
+
+
+@pytest.mark.parametrize('identity', [{'user': 1}, {'group': 1}])
+async def test_embedded_serve_rejects_pidfile_across_privilege_drop(
+    tmp_path: Path,
+    identity: _PrivilegeIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def app(_scope, _receive, _send):
+        raise AssertionError('invalid embedded configuration must not start the app')
+
+    pid = tmp_path / 'h2corn.pid'
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), pid=pid, access_log=False, **identity),
+    )
+
+    def reject_privilege_drop(_identity) -> None:
+        raise AssertionError('invalid embedded configuration reached privilege drop')
+
+    monkeypatch.setattr(server_module, 'drop_process_privileges', reject_privilege_drop)
+
+    with pytest.raises(
+        ValueError,
+        match=r'use h2corn\.serve\(\) so the privileged supervisor owns the pidfile',
+    ):
+        await server.serve()
+    assert not pid.exists()
 
 
 async def test_cancelling_serve_waits_for_native_graceful_drain_before_reuse() -> None:
@@ -308,16 +457,164 @@ async def test_shutdown_waits_for_cancelled_request_cleanup_before_reuse() -> No
 
     server.shutdown()
     await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
-    assert not serving.done(), 'serve must retain cancelled Python task ownership'
     with pytest.raises(RuntimeError, match='already has an active serve'):
         await server.serve()
 
+    # `timeout_graceful_shutdown` is a real bound: serve() stops waiting for
+    # cleanup that outlives it rather than hanging on the application — and
+    # says so, because an application that ignores cancellation is a bug the
+    # operator needs to see.
+    with pytest.raises(RuntimeError, match='requests still running'):
+        await asyncio.wait_for(serving, timeout=2)
+    assert not cleanup_done.is_set(), 'the app is still cleaning up'
+    assert server.releasing is True
+
+    # The generation still owns the app, its shards and its lifespan, so
+    # reuse stays blocked until it has really let go.
+    with pytest.raises(RuntimeError, match='still releasing a previous serve'):
+        await server.serve()
+
+    # Reuse unblocks by itself once the straggler settles; wait for generation
+    # release rather than polling private drain state.
+    generation = server._generation
+    assert generation is not None
     release_cleanup.set()
-    await asyncio.wait_for(serving, timeout=2)
-    assert cleanup_done.is_set()
+    await asyncio.wait_for(cleanup_done.wait(), timeout=5)
+    await asyncio.wait_for(asyncio.shield(generation.released), timeout=5)
     await asyncio.gather(request, return_exceptions=True)
+    assert server.releasing is False
 
     await assert_serve_reusable(server)
+
+
+async def test_lifespan_shutdown_runs_only_after_request_releases_the_app() -> None:
+    """Lifespan shutdown closes what startup opened; a request may still use it.
+
+    When cleanup outlives the graceful deadline, `serve()` stops waiting and
+    `releasing` is true — but lifespan shutdown must not run until the request
+    has actually released the application, and it must run exactly once after.
+    """
+    order: list[str] = []
+    request_started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            while True:
+                message = await receive()
+                if message['type'] == 'lifespan.shutdown':
+                    order.append('lifespan-shutdown')
+                    await send({'type': 'lifespan.shutdown.complete'})
+                    return
+                await send({'type': 'lifespan.startup.complete'})
+            return
+        request_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release_cleanup.wait()
+            order.append('request-cleanup-done')
+            raise
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='on',
+            timeout_graceful_shutdown=0.05,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await wait_for_server(server, serving)
+    port = int(server.addresses[0].rsplit(':', 1)[1])
+    request = asyncio.create_task(
+        http1_request(
+            port=port,
+            request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+        )
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=2)
+
+    server.shutdown()
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
+    with pytest.raises(RuntimeError, match='requests still running'):
+        await asyncio.wait_for(serving, timeout=2)
+
+    assert server.releasing is True
+    assert order == [], 'nothing may have shut down while the request runs'
+    with pytest.raises(RuntimeError, match='still releasing a previous serve'):
+        await server.serve()
+
+    generation = server._generation
+    assert generation is not None
+    release_cleanup.set()
+    await asyncio.wait_for(asyncio.shield(generation.released), timeout=5)
+    await asyncio.gather(request, return_exceptions=True)
+    assert order == ['request-cleanup-done', 'lifespan-shutdown']
+    assert server.releasing is False
+    await assert_serve_reusable(server)
+
+
+async def test_generation_holds_through_lifespan_shutdown_so_two_cannot_overlap() -> (
+    None
+):
+    """Ownership stays until lifespan finishes, not when native drain alone ends.
+
+    After acceptance stops and the native server has released listeners, lifespan
+    shutdown may still own application resources. Clearing `_generation` at that
+    native boundary would let a second `serve()` start a second lifespan while
+    the first is still shutting down.
+    """
+    active_lifespans = 0
+    max_active_lifespans = 0
+    shutdown_entered = asyncio.Event()
+    release_shutdown = asyncio.Event()
+
+    async def app(scope, receive, send):
+        nonlocal active_lifespans, max_active_lifespans
+        if scope['type'] != 'lifespan':
+            await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b''})
+            return
+        active_lifespans += 1
+        max_active_lifespans = max(max_active_lifespans, active_lifespans)
+        try:
+            assert (await receive())['type'] == 'lifespan.startup'
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            shutdown_entered.set()
+            await release_shutdown.wait()
+            await send({'type': 'lifespan.shutdown.complete'})
+        finally:
+            active_lifespans -= 1
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='on'),
+    )
+    first = asyncio.create_task(server.serve())
+    await wait_for_server(server, first)
+    server.shutdown()
+    await asyncio.wait_for(shutdown_entered.wait(), timeout=2)
+
+    assert server._generation is not None
+    assert not first.done()
+    assert active_lifespans == 1
+    with pytest.raises(RuntimeError, match='active serve'):
+        await server.serve()
+    assert max_active_lifespans == 1
+    assert active_lifespans == 1
+
+    release_shutdown.set()
+    await asyncio.wait_for(first, timeout=2)
+    assert active_lifespans == 0
+    assert server._generation is None
+
+    await assert_serve_reusable(server)
+    assert max_active_lifespans == 1
 
 
 async def test_repeated_cancellation_cannot_interrupt_native_drain(
@@ -334,8 +631,13 @@ async def test_repeated_cancellation_cannot_interrupt_native_drain(
         fds,
         _config,
         shutdown_trigger,
+        _retire_trigger,
+        _lifespan_handoff,
+        ready_trigger,
         *_args,
+        **_kwargs,
     ) -> None:
+        ready_trigger()
         native_started.set()
         try:
             assert await shutdown_trigger == 'stop'
@@ -381,13 +683,18 @@ async def test_native_cancelled_error_propagates_without_shutdown_spin(
         fds,
         _config,
         shutdown_trigger,
+        _retire_trigger,
+        _lifespan_handoff,
+        ready_trigger,
         *_args,
+        **_kwargs,
     ) -> None:
         nonlocal calls
         calls += 1
         try:
             if calls == 1:
                 raise asyncio.CancelledError
+            ready_trigger()
             assert await shutdown_trigger == 'stop'
         finally:
             for fd in fds:
@@ -424,7 +731,11 @@ async def test_synchronous_native_setup_failure_clears_state_before_reuse(
         fds,
         _config,
         shutdown_trigger,
+        _retire_trigger,
+        _lifespan_handoff,
+        ready_trigger,
         *_args,
+        **_kwargs,
     ):
         nonlocal calls
         calls += 1
@@ -436,6 +747,7 @@ async def test_synchronous_native_setup_failure_clears_state_before_reuse(
 
         async def run() -> None:
             try:
+                ready_trigger()
                 assert await shutdown_trigger == 'stop'
             finally:
                 for fd in fds:
@@ -523,7 +835,7 @@ async def test_server_rejects_concurrent_serve_calls() -> None:
 
 
 async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
-    from h2corn._lib import serve_fds
+    from h2corn._lib import prepare_tls, serve_fds
 
     async def app(scope, receive, send):
         raise AssertionError('listener adoption must fail before app dispatch')
@@ -551,6 +863,7 @@ async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
                     None,
                     None,
                     quiesce_read_fd,
+                    prepared_tls=prepare_tls(config),
                 )
         finally:
             os.close(quiesce_write_fd)
@@ -578,7 +891,7 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
     listener_fds: list[int],
     quiesce_fd: int | None,
 ) -> None:
-    from h2corn._lib import serve_fds
+    from h2corn._lib import prepare_tls, serve_fds
 
     async def app(scope, receive, send):
         raise AssertionError('descriptor validation precedes app dispatch')
@@ -598,6 +911,7 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
             None,
             None,
             quiesce_fd,
+            prepared_tls=prepare_tls(config),
         )
 
 
@@ -885,6 +1199,66 @@ async def test_unix_socket_serving(unix_socket_dir: Path) -> None:
     assert body == b'uds'
 
 
+async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutdown(
+    tmp_path: Path,
+) -> None:
+    """When stderr is a regular file the batched sink must retain every line.
+
+    A burst larger than one sink buffer (32 KiB) forces at least one full
+    batch plus a trailing partial batch; graceful shutdown has to drain both
+    or the last requests vanish from the log.
+    """
+    # ~64-byte access-log lines; 800 requests ≈ 50 KiB > INITIAL_CAPACITY (32 KiB).
+    request_count = 800
+    log_path = tmp_path / 'access.log'
+    marker = '/access-log-marker'
+
+    module_source = """
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+    """
+
+    with log_path.open('wb') as log_file:
+        process, port = await _spawn_server_process(
+            tmp_path=tmp_path,
+            module_name='access_log_burst_app',
+            module_source=module_source,
+            workers=1,
+            extra_args=['--access-log', '--lifespan', 'off'],
+            stderr=log_file,
+        )
+        try:
+            await wait_for_port(port, timeout=10)
+            # Concurrent burst so the sink writer is still busy when later
+            # lines arrive and coalesce into additional batches.
+            results = await asyncio.gather(
+                *[h2_request(port=port, path=marker) for _ in range(request_count)]
+            )
+            assert all(status == 204 and body == b'' for status, body in results)
+            # Let every completed request emit into the sink before SIGTERM.
+            await asyncio.sleep(0.1)
+        finally:
+            await _terminate_process(process)
+
+    # Re-open after the process closes stderr so the file view is complete.
+    text = log_path.read_text(errors='replace')
+    assert len(text) > 32 * 1024, (
+        f'burst must exceed one sink batch; log is only {len(text)} bytes'
+    )
+    # Access-log lines look like: client "GET /access-log-marker HTTP/2" 204 ...
+    # Status may be plain or ANSI-styled; match the marker path and 204 digits.
+    line_re = re.compile(re.escape(marker) + r'.*\b204\b')
+    logged = [line for line in text.splitlines() if line_re.search(line)]
+    assert len(logged) == request_count, (
+        f'expected {request_count} access-log lines, found {len(logged)}; '
+        f'file has {len(text)} bytes and {text.count(chr(10))} newlines'
+    )
+    # The last batch is the whole point: the final request must be present,
+    # not only early lines that flushed while the sink was still draining.
+    assert marker in logged[-1]
+
+
 async def test_unix_socket_cleanup_removes_owned_socket_path(
     unix_socket_dir: Path,
 ) -> None:
@@ -1108,31 +1482,168 @@ async def test_worker_supervisor_shutdown_is_not_blocked_by_limit_connections(
             await _terminate_process(process)
 
 
-@pytest.mark.parametrize('workers', [1, 2])
-async def test_worker_supervisor_signal_controls_keep_serving_requests(
-    tmp_path: Path,
-    workers: int,
-) -> None:
+@pytest.mark.skipif(sys.platform != 'linux', reason='worker-set inspection uses /proc')
+async def test_supervisor_signal_worker_transitions(tmp_path: Path) -> None:
+    """Signals are observable worker-set changes, not merely live requests."""
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
         module_name='signal_app',
         module_source="""
+        import os
+
         async def app(scope, receive, send):
             await send({'type': 'http.response.start', 'status': 200, 'headers': [(b'content-type', b'text/plain')]})
-            await send({'type': 'http.response.body', 'body': b'signal-control'})
+            await send({'type': 'http.response.body', 'body': str(os.getpid()).encode()})
         """,
-        workers=workers,
+        workers=2,
     )
 
     try:
         await wait_for_port(port)
-        await _wait_for_h2_success(port=port, body=b'signal-control')
-        for sig in (signal.SIGTTOU, signal.SIGTTIN, signal.SIGTTOU, signal.SIGHUP):
-            process.send_signal(sig)
-            await _wait_for_h2_success(port=port, body=b'signal-control')
+        initial = set(
+            await _wait_for_worker_count(
+                supervisor_pid=process.pid,
+                count=2,
+            )
+        )
+        process.send_signal(signal.SIGTTOU)
+        [after_down] = await _wait_for_worker_count(
+            supervisor_pid=process.pid,
+            count=1,
+        )
+        assert after_down in initial
+        process.send_signal(signal.SIGTTOU)
+        # The second scale-down is a deliberate no-op, so the set remains
+        # singleton while the server still handles an actual request.
+        assert await _wait_for_worker_count(
+            supervisor_pid=process.pid,
+            count=1,
+        ) == [after_down]
+        assert (await h2_request(port=port))[0] == 200
+
+        process.send_signal(signal.SIGTTIN)
+        after_up = set(
+            await _wait_for_worker_count(
+                supervisor_pid=process.pid,
+                count=2,
+            )
+        )
+        assert after_down in after_up
+        assert after_up - {after_down}
+
+        process.send_signal(signal.SIGHUP)
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            reloaded = set(_worker_pids(process.pid))
+            if len(reloaded) == 2 and reloaded.isdisjoint(after_up):
+                break
+            assert asyncio.get_running_loop().time() < deadline, (
+                f'SIGHUP did not replace {after_up}; current workers are {reloaded}'
+            )
+            await asyncio.sleep(0.02)
+        assert (await h2_request(port=port))[0] == 200
         assert process.returncode is None
     finally:
         await _terminate_process(process)
+
+
+async def test_max_requests_jitter_applied_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a positive retirement budget draws jitter, and exactly once."""
+    from h2corn import _server, _supervisor
+    from h2corn._lib import prepare_tls
+
+    class FakeWorker:
+        next_pid = 10_000
+
+        def __init__(self) -> None:
+            self.pid = FakeWorker.next_pid
+            FakeWorker.next_pid += 1
+            self._sentinel, self._sentinel_write = os.pipe()
+
+        @property
+        def sentinel(self) -> int:
+            return self._sentinel
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def join(self, _timeout: float | None = None) -> None:
+            pass
+
+        def close(self) -> None:
+            for fd in (self._sentinel, self._sentinel_write):
+                with suppress(OSError):
+                    os.close(fd)
+
+    captured_configs: list[Config] = []
+
+    class FakeContext:
+        def Process(self, *, kwargs, **_ignored):  # noqa: N802
+            captured_configs.append(kwargs['config'])
+            return FakeWorker()
+
+    monkeypatch.setattr(_supervisor.multiprocessing, 'get_context', lambda _name: FakeContext())
+    monkeypatch.setattr(_supervisor, '_log_line', lambda _message: None)
+
+    async def app(*_args: object) -> None:
+        pass
+
+    def spawn_with(config: Config, randint) -> int:
+        monkeypatch.setattr(_supervisor.random, 'randint', randint)
+        supervisor = _supervisor._Supervisor(
+            app=app,
+            config=config,
+            fds=(),
+            identity=_server.ProcessIdentity(),
+            prepared_tls=prepare_tls(config),
+        )
+        try:
+            return supervisor.spawn_worker()
+        finally:
+            for fd in supervisor.worker_controls.values():
+                with suppress(OSError):
+                    os.close(fd)
+            for fd in supervisor.worker_quiesce_writes.values():
+                with suppress(OSError):
+                    os.close(fd)
+            for worker in supervisor.workers.values():
+                worker.close()
+            supervisor.selector.close()
+
+    draws: list[tuple[int, int]] = []
+    assert spawn_with(
+        Config(workers=1, max_requests=11, max_requests_jitter=7),
+        lambda low, high: draws.append((low, high)) or 7,
+    ) != -1
+    assert captured_configs[-1].max_requests == 18
+    assert draws == [(0, 7)]
+
+    def rng_must_not_run(*_args: object) -> int:
+        raise AssertionError('zero budget or zero jitter must not draw randomness')
+
+    assert spawn_with(
+        Config(workers=1, max_requests=0), rng_must_not_run
+    ) != -1
+    assert captured_configs[-1].max_requests == 0
+    # A nonzero jitter without a budget is rejected at configuration ingress,
+    # so no worker path can draw randomness for that illegal state.
+    with pytest.raises(ValueError, match='jitter requires max_requests'):
+        Config(workers=1, max_requests=0, max_requests_jitter=7)
+    assert spawn_with(
+        Config(workers=1, max_requests=11, max_requests_jitter=0), rng_must_not_run
+    ) != -1
+    assert captured_configs[-1].max_requests == 11
 
 
 async def test_rolling_reload_waits_for_replacement_readiness(tmp_path: Path) -> None:
@@ -1241,10 +1752,25 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 0.5
+        served = 0
         while loop.time() < deadline:
-            status, body = await asyncio.wait_for(h2_request(port=port), timeout=0.3)
+            try:
+                status, body = await asyncio.wait_for(
+                    h2_request(port=port), timeout=0.3
+                )
+            except (h2.exceptions.ProtocolError, OSError, TimeoutError):
+                # A connection opened into the scale-down window can receive
+                # the retiring worker's GOAWAY before its request is answered
+                # (the h2 client then refuses to send on a closed connection),
+                # or be refused outright. That is what a graceful retirement
+                # looks like from outside, and a real client retries. The claim
+                # under test is about *which* worker answers, so only answered
+                # requests count — and at least one must be.
+                continue
+            served += 1
             assert status == 200
             assert int(body) in old_workers
+        assert served, 'no request was answered during scale-down'
 
         [final_worker] = await _wait_for_worker_count(
             supervisor_pid=process.pid,
@@ -1395,11 +1921,23 @@ async def test_worker_supervisor_recycles_workers_after_max_requests(
     assert 'Stopped worker' in stderr
 
 
-async def test_worker_supervisor_replaces_blocked_worker_before_grace_deadline(
+async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_deadline(
     tmp_path: Path,
 ) -> None:
+    """A wedged worker gets request cleanup before the supervisor kills it."""
     blocked_path = tmp_path / 'blocked-worker'
     stderr_lines: list[bytes] = []
+    healthcheck_failed = asyncio.Event()
+    graceful_timeout = 8.0
+
+    async def collect_stderr(stream: asyncio.StreamReader | None) -> None:
+        if stream is None:
+            return
+        while line := await stream.readline():
+            stderr_lines.append(line)
+            if b'failed healthcheck and will be replaced' in line:
+                healthcheck_failed.set()
+
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
         module_name='watchdog_overlap_app',
@@ -1425,11 +1963,11 @@ async def test_worker_supervisor_replaces_blocked_worker_before_grace_deadline(
             '--timeout-worker-healthcheck',
             '3',
             '--timeout-graceful-shutdown',
-            '8',
+            str(graceful_timeout),
         ],
         stderr=asyncio.subprocess.PIPE,
     )
-    stderr_task = asyncio.create_task(_collect_lines(process.stderr, stderr_lines))
+    stderr_task = asyncio.create_task(collect_stderr(process.stderr))
     blocking: asyncio.Task[tuple[int, bytes]] | None = None
 
     try:
@@ -1441,17 +1979,29 @@ async def test_worker_supervisor_replaces_blocked_worker_before_grace_deadline(
         await _wait_for_path(blocked_path)
         assert blocked_path.read_text() == body.decode()
 
+        # This is the boundary at which the supervisor opens ``request
+        # cleanup``. Native request draining owns the first configured grace;
+        # Python cancellation and ASGI cleanup own the second.
+        await asyncio.wait_for(healthcheck_failed.wait(), timeout=5)
         next_pid = await _wait_for_pid_change(port=port, previous_pid=body, timeout=10)
         assert next_pid != body
         overlapping_workers = set(_worker_pids(process.pid))
         assert overlapping_workers == {int(body), int(next_pid)}
         assert not _all_dead([int(body)]), (
-            'replacement must serve before the blocked worker retirement deadline'
+            'replacement must serve while the blocked worker is in request cleanup'
+        )
+
+        # A one-grace deadline kills here, precisely when Python has only
+        # begun cancellation. The blocked app cannot acknowledge native drain,
+        # so it must still be alive until the second grace expires.
+        await asyncio.sleep(graceful_timeout + 0.5)
+        assert not _all_dead([int(body)]), (
+            'worker died before its request-cleanup grace elapsed'
         )
         [only_worker] = await _wait_for_worker_count(
             supervisor_pid=process.pid,
             count=1,
-            timeout=10,
+            timeout=graceful_timeout + 5,
         )
         assert only_worker == int(next_pid)
         assert _all_dead([int(body)])
@@ -1467,7 +2017,7 @@ async def test_worker_supervisor_replaces_blocked_worker_before_grace_deadline(
 
     stderr = b''.join(stderr_lines).decode()
     assert (
-        f'Worker [{body.decode()}] exceeded graceful shutdown timeout; killing'
+        f'Worker [{body.decode()}] exceeded request cleanup timeout; killing'
         in stderr
     )
     assert f'Stopped worker [{body.decode()}]' in stderr

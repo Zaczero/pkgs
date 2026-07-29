@@ -145,6 +145,32 @@ def _toml_value(value: object) -> _TomlLiteralValue:
     raise TypeError(f'unsupported configuration value: {value!r}')
 
 
+_TOML_SHORTHAND_ESCAPES = {
+    '\\': '\\\\',
+    '"': '\\"',
+    '\b': '\\b',
+    '\f': '\\f',
+    '\n': '\\n',
+    '\r': '\\r',
+    '\t': '\\t',
+}
+
+
+def _toml_escape_char(char: str) -> str:
+    """Escape one character for a TOML basic string.
+
+    TOML forbids raw control characters, and only some of them have a
+    shorthand — the rest need `\\uXXXX`, or `--print-config` emits output that
+    is not valid TOML.
+    """
+    shorthand = _TOML_SHORTHAND_ESCAPES.get(char)
+    if shorthand is not None:
+        return shorthand
+    if char < ' ' or char == '\x7f':
+        return f'\\u{ord(char):04X}'
+    return char
+
+
 def _toml_literal(value: _TomlLiteralValue) -> str:
     match value:
         case True:
@@ -152,17 +178,7 @@ def _toml_literal(value: _TomlLiteralValue) -> str:
         case False:
             return 'false'
         case str():
-            escaped = (
-                value
-                .replace('\\', '\\\\')
-                .replace('"', '\\"')
-                .replace('\b', '\\b')
-                .replace('\f', '\\f')
-                .replace('\n', '\\n')
-                .replace('\r', '\\r')
-                .replace('\t', '\\t')
-            )
-            return f'"{escaped}"'
+            return '"' + ''.join(map(_toml_escape_char, value)) + '"'
         case int() | float():
             return str(value)
         case tuple() | list():
@@ -178,7 +194,7 @@ def _print_config(config: Config) -> None:
                 value = 'inherit'
             else:
                 continue
-        lines.append(f'{option.toml_key} = {_toml_literal(_toml_value(value))}')
+        lines.append(f'{option.name} = {_toml_literal(_toml_value(value))}')
     sys.stdout.write('\n'.join(lines) + '\n')
 
 
@@ -404,9 +420,11 @@ def run_cli(
         _print_config(config)
         return
     if cli_settings.check_config:
-        from ._lib import validate_config
+        from ._lib import prepare_tls
+        from ._server import load_tls_material
 
-        validate_config(config)
+        # Same native path as serving: PEM bytes → prepare_tls → server_config.
+        prepare_tls(config, load_tls_material(config))
         return
     if cli_settings.reload:
         from ._reload import serve_with_reload

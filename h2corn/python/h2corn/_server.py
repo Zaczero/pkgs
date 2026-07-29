@@ -5,22 +5,31 @@ import os
 import re
 import sys
 import threading
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Literal, cast
+from enum import Enum
+from pathlib import Path
+from typing import cast
 
 from ._cli import ImportSettings, run_cli
 from ._config import Config
-from ._lifespan import cancel_task, serve_with_lifespan
-from ._socket import bound_addresses, bound_sockets, nonblocking_pipe
+from ._lifespan import LifespanRunner, await_with_timeout, cancel_task
+from ._socket import (
+    _lease_owned_fds,  # pyright: ignore[reportPrivateUsage]
+    _ListenerLease,  # pyright: ignore[reportPrivateUsage]
+    bound_addresses,
+    bound_sockets,
+    nonblocking_pipe,
+)
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
-    from ._lib import LifespanHandoff
+    from ._lib import _LifespanHandoff, _PreparedTls
     from ._types import Application, ASGIApp
 
 
@@ -50,11 +59,56 @@ class ProcessIdentity:
     username: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TlsMaterial:
+    """
+    PEM bytes for the configured TLS identity.
+
+    A private key is normally readable only by the user the server starts
+    as, so it is a privileged resource in exactly the way a port below 1024
+    is: read it while the process can, and carry the bytes across the
+    `setuid` that follows.
+    """
+
+    certificate: bytes
+    private_key: bytes
+    client_ca: bytes | None
+
+
+def _read_pem(path: os.PathLike[str] | str, setting: str) -> bytes:
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read()
+    except OSError as exc:
+        raise ValueError(f'{setting}: {exc.strerror}: {path}') from exc
+
+
+def load_tls_material(config: Config) -> TlsMaterial | None:
+    """Read the configured TLS files, or return `None` when TLS is off."""
+    if config.certfile is None:
+        return None
+    # Config validation pairs certfile with keyfile, and ca_certs with
+    # cert_reqs, so only the presence of a certificate is checked here.
+    assert config.keyfile is not None
+    return TlsMaterial(
+        certificate=_read_pem(config.certfile, 'certfile'),
+        private_key=_read_pem(config.keyfile, 'keyfile'),
+        client_ca=(
+            None if config.ca_certs is None else _read_pem(config.ca_certs, 'ca_certs')
+        ),
+    )
+
+
 @contextmanager
 def _pidfile(config: Config):
+    """Open the pidfile and yield its descriptor (or `None` when unset).
+
+    The open fd is part of the supervisor's child-discard set: workers must
+    not inherit a write handle on the live pidfile.
+    """
     path = config.pid
     if path is None:
-        yield
+        yield None
         return
 
     pid_text = f'{os.getpid()}\n'.encode()
@@ -73,7 +127,7 @@ def _pidfile(config: Config):
 
     try:
         _ = os.write(fd, pid_text)
-        yield
+        yield fd
     finally:
         try:
             is_ours = os.path.samestat(os.fstat(fd), os.lstat(path))
@@ -83,8 +137,14 @@ def _pidfile(config: Config):
         if is_ours:
             try:
                 path.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                # Most often a server that dropped privileges into a
+                # directory it may no longer write. Saying so beats leaving
+                # an operator to find a stale pidfile and wonder.
+                warnings.warn(
+                    f'could not remove the pidfile {path}: {exc.strerror}',
+                    stacklevel=2,
+                )
 
 
 @contextmanager
@@ -169,6 +229,66 @@ def drop_process_privileges(identity: ProcessIdentity) -> None:
         os.setuid(identity.uid)
 
 
+def _resolve_on_owning_loop(
+    waiter: asyncio.Future[None],
+    error: BaseException | None,
+) -> None:
+    def settle() -> None:
+        if waiter.done():
+            return
+        if error is None:
+            waiter.set_result(None)
+        else:
+            waiter.set_exception(error)
+
+    loop = waiter.get_loop()
+    if loop.is_closed():
+        return
+    try:
+        loop.call_soon_threadsafe(settle)
+    except RuntimeError:
+        # The loop closed between the check and the call, which means the
+        # task waiting on it is gone too. There is no one left to tell.
+        pass
+
+
+class _Readiness(Enum):
+    """Whether this server is accepting connections, and if not, why not.
+
+    The four states are what `wait_started()` has to distinguish: a server
+    that has not begun, one on its way up, one accepting, and one on its way
+    down. A server both serving and shutting down is not representable.
+    """
+
+    IDLE = 'idle'
+    STARTING = 'starting'
+    SERVING = 'serving'
+    STOPPING = 'stopping'
+
+
+class _ShutdownKind(Enum):
+    STOP = 'stop'
+    RESTART = 'restart'
+
+
+@dataclass(slots=True)
+class _ServeGeneration:
+    """One exclusive serve lifecycle.
+
+    The generation remains the sole owner of listeners, native drain, primary
+    lifespan, secondary lifespans and the reuse guard until every one has
+    actually released. A public return or timeout is not ownership release:
+    `returned` may settle at the graceful deadline while `released` still
+    owns the application.
+    """
+
+    loop: asyncio.AbstractEventLoop
+    shutdown: asyncio.Future[_ShutdownKind]
+    returned: asyncio.Future[None]
+    released: asyncio.Task[None]
+    quiesce_write_fd: int | None = None
+
+
 class Server:
     """
     In-process, single-worker ASGI server.
@@ -182,6 +302,13 @@ class Server:
     The configured `bind` listeners are opened, lifespan startup runs, then
     the server processes requests until [`shutdown()`][h2corn.Server.shutdown]
     is called or the surrounding task is cancelled.
+
+    `Config` describes a whole deployment, so some of its settings belong to
+    the supervisor that runs several workers rather than to one server.
+    `workers` is refused outright — asking for eight and getting one is not
+    a detail — while `max_requests`, `max_requests_jitter` and
+    `timeout_worker_healthcheck` only say when a supervisor would replace a
+    worker, so [`serve()`][h2corn.Server.serve] warns and carries on.
 
     Example:
 
@@ -202,12 +329,87 @@ class Server:
         self.app = app
         self.config = Config() if config is None else config
         self._state_lock = threading.Lock()
-        self._shutdown_future: asyncio.Future[str] | None = None
-        self._quiesce_write_fd: int | None = None
-        self._serve_loop: asyncio.AbstractEventLoop | None = None
-        self._pending_shutdown: Literal['stop', 'restart'] | None = None
-        self._serving = False
+        self._generation: _ServeGeneration | None = None
         self._addresses: tuple[str, ...] = ()
+        self._readiness = _Readiness.IDLE
+        self._started_waiters: list[asyncio.Future[None]] = []
+
+    def _settle_started(self, state: _Readiness, error: BaseException | None) -> None:
+        """Answer everyone currently waiting to hear that this server started.
+
+        Readiness is a fact about the process, not about one event loop: a
+        `Server` may be driven from another thread's loop entirely, so each
+        waiter is resolved on the loop it is waiting in.
+
+        Only success is remembered. A failure belongs to the lifecycle it
+        ended, so someone who starts waiting afterwards is asking about the
+        next one and waits for it, rather than inheriting an answer to a
+        question they did not ask.
+        """
+        with self._state_lock:
+            if self._readiness is state and state is _Readiness.SERVING:
+                return
+            self._readiness = state
+            waiters = self._started_waiters
+            self._started_waiters = []
+        for waiter in waiters:
+            _resolve_on_owning_loop(waiter, error)
+
+    def _forget_started_waiter(self, waiter: asyncio.Future[None]) -> None:
+        with self._state_lock:
+            if waiter in self._started_waiters:
+                self._started_waiters.remove(waiter)
+
+    async def wait_started(self) -> None:
+        """
+        Wait until this server is accepting connections.
+
+        Resolves once the listeners are live, so a caller that starts
+        `serve()` as a task can await this instead of watching
+        [`addresses`][h2corn.Server.addresses] for one to appear.
+
+        Raises rather than waiting when waiting cannot end well: whatever
+        stopped the server if it stops without ever serving, and
+        `RuntimeError` if it is already shutting down — a server on its way
+        down is not one that is about to come up.
+
+        Example:
+
+            serving = asyncio.create_task(server.serve())
+            await server.wait_started()
+            # the port is open here
+        """
+        loop = asyncio.get_running_loop()
+        with self._state_lock:
+            if self._readiness is _Readiness.SERVING:
+                return
+            if self._readiness is _Readiness.STOPPING:
+                # Waiting would mean waiting for the lifecycle after this one,
+                # which is not what anyone means by "wait until it starts".
+                raise RuntimeError('the server is shutting down')
+            waiter = loop.create_future()
+            self._started_waiters.append(waiter)
+        # This waiter belongs to this call alone, so cancelling it affects
+        # nobody else — and awaiting it directly is what lets a caller who
+        # gives up take its future off the list on the way out.
+        waiter.add_done_callback(self._forget_started_waiter)
+        await waiter
+
+    @property
+    def releasing(self) -> bool:
+        """
+        Whether a previous `serve()` is still releasing its requests.
+
+        `serve()` stops waiting once the graceful budget is spent, but requests
+        that ignored cancellation keep the application and its loop shards
+        alive. While this is true the same `Server` cannot `serve()` again.
+        Lifespan shutdown runs only after those requests finally release.
+        """
+        with self._state_lock:
+            generation = self._generation
+            if generation is None:
+                return False
+            return generation.returned.done() and not generation.released.done()
 
     @property
     def addresses(self) -> tuple[str, ...]:
@@ -219,15 +421,14 @@ class Server:
         assigned — bind to port `0` and read the address back from here:
 
             server = Server(app, Config(bind=('127.0.0.1:0',)))
-            task = asyncio.create_task(server.serve())
-            while not server.addresses:
-                await asyncio.sleep(0)
+            serving = asyncio.create_task(server.serve())
+            await server.wait_started()
             host, _, port = server.addresses[0].rpartition(':')
         """
         with self._state_lock:
             return self._addresses
 
-    def shutdown(self, kind: Literal['stop', 'restart'] = 'stop') -> None:
+    def shutdown(self) -> None:
         """
         Initiate a graceful shutdown of an in-flight `serve()` call.
 
@@ -237,145 +438,161 @@ class Server:
         synchronous Python code cannot be preempted in-process; use supervised
         workers when a hard kill bound is required.
         """
-        with self._state_lock:
-            future = self._shutdown_future
-            loop = self._serve_loop
-            if future is None or loop is None:
-                # Lifespan startup runs before the Rust server creates its
-                # shutdown future. Retain the first request so a caller can
-                # stop a Server as soon as its lifecycle has begun.
-                if self._serving and self._pending_shutdown is None:
-                    self._pending_shutdown = kind
-                return
+        self._request_shutdown(_ShutdownKind.STOP)
 
-            quiesce_write_fd = self._quiesce_write_fd
-            self._quiesce_write_fd = None
-            if quiesce_write_fd is not None:
-                try:
-                    os.write(quiesce_write_fd, b'R' if kind == 'restart' else b'S')
-                except OSError:
-                    # Closing the writer becomes a fail-closed native stop.
-                    pass
-                finally:
-                    os.close(quiesce_write_fd)
+    def _request_shutdown(self, kind: _ShutdownKind) -> None:
+        """Request stop or restart on the active generation, if any.
+
+        The generation is published before binding and lifespan startup, so an
+        immediate request is retained rather than dropped on the floor.
+        """
+        # Acceptance stops here, so this server is no longer one that
+        # `wait_started()` can report as started, and anyone still waiting to
+        # hear that it did is told what actually happened instead.
+        self._settle_started(
+            _Readiness.STOPPING, RuntimeError('the server is shutting down')
+        )
+        with self._state_lock:
+            generation = self._generation
+            if generation is None:
+                return
+            future = generation.shutdown
+            loop = generation.loop
+            quiesce_write_fd = generation.quiesce_write_fd
+            generation.quiesce_write_fd = None
 
             def _resolve() -> None:
                 if not future.done():
                     future.set_result(kind)
 
-            # Keep the lifecycle state locked through publication to prevent
-            # cleanup from closing the loop between the snapshot and enqueue.
+            # `_clear_generation()` takes this lock before its owning
+            # lifecycle can be forgotten and its loop closed. Publishing while
+            # the generation is still locked makes a snapshot of that loop
+            # and a closed loop mutually exclusive.
             loop.call_soon_threadsafe(_resolve)
 
-    def restart(self) -> None:
-        """
-        Equivalent to `shutdown('restart')`.
+        if quiesce_write_fd is not None:
+            try:
+                os.write(
+                    quiesce_write_fd,
+                    b'R' if kind is _ShutdownKind.RESTART else b'S',
+                )
+            except OSError:
+                # Closing the writer becomes a fail-closed native stop.
+                pass
+            finally:
+                os.close(quiesce_write_fd)
 
-        Used by the supervisor to distinguish a graceful reload from a
-        terminal stop. Outside the supervisor, this behaves the same as
-        `shutdown()`.
-        """
-        self.shutdown('restart')
-
-    async def serve_inherited_fds(
+    def _finish_returned(
         self,
-        app: Application,
-        fds: list[int],
-        retire_trigger: Callable[[], None] | None = None,
-        lifespan_handoff: LifespanHandoff | None = None,
-        ready_trigger: Callable[[], None] | None = None,
-        quiesce_fd: int | None = None,
+        generation: _ServeGeneration,
+        error: BaseException | None,
     ) -> None:
-        """Transfer listener ownership into one native serve lifecycle.
+        """Settle the public caller boundary for one generation once."""
+        if generation.returned.done():
+            return
+        if error is None:
+            generation.returned.set_result(None)
+        else:
+            generation.returned.set_exception(error)
 
-        This is the supervisor/worker entry seam: forked workers hand their
-        inherited listener fds (and control triggers) straight to the native
-        server, bypassing the socket binding that [`serve()`]
-        [h2corn.Server.serve] performs. Ownership of `fds` transfers
-        unconditionally. Most embedders want `serve()` instead.
-        """
-        from ._lib import serve_fds
-
-        loop = asyncio.get_running_loop()
-        shutdown_future = loop.create_future()
-        internal_quiesce_write_fd: int | None = None
-        if quiesce_fd is None and sys.platform != 'win32':
-            quiesce_fd, internal_quiesce_write_fd = nonblocking_pipe()
+    def _clear_generation(
+        self, generation: _ServeGeneration, task: asyncio.Task[None]
+    ) -> None:
+        """Drop the reuse guard only after this generation has fully released."""
         with self._state_lock:
-            if self._shutdown_future is not None:
-                if internal_quiesce_write_fd is not None:
-                    assert quiesce_fd is not None
-                    os.close(quiesce_fd)
-                    os.close(internal_quiesce_write_fd)
-                raise RuntimeError('this Server already has an active serve() call')
-            self._serve_loop = loop
-            self._shutdown_future = shutdown_future
-            self._quiesce_write_fd = internal_quiesce_write_fd
-            pending_shutdown = self._pending_shutdown
-            self._pending_shutdown = None
+            if self._generation is generation:
+                self._generation = None
+        # Consume any lifecycle exception once the public boundary has already
+        # observed it (or timed out); otherwise asyncio warns on abandon.
+        if not task.cancelled():
+            task.exception()
 
-        if pending_shutdown is not None:
-            self.shutdown(pending_shutdown)
-
-        async def _await_shutdown() -> Literal['stop', 'restart']:
-            return await shutdown_future
-
-        shutdown_task = asyncio.create_task(_await_shutdown())
+    async def _await_generation(self, generation: _ServeGeneration) -> None:
+        """Wait on the public boundary, absorbing cancellation into shutdown."""
         cancellation: asyncio.CancelledError | None = None
-        try:
-            native_serve = asyncio.ensure_future(
-                serve_fds(
-                    app,
-                    fds,
-                    self.config,
-                    shutdown_task,
-                    retire_trigger,
-                    lifespan_handoff,
-                    ready_trigger,
-                    quiesce_fd,
+        while True:
+            try:
+                await asyncio.shield(generation.returned)
+                break
+            except asyncio.CancelledError as exc:
+                if generation.returned.done():
+                    break
+                if cancellation is None:
+                    cancellation = exc
+                    self._request_shutdown(_ShutdownKind.STOP)
+                continue
+            except BaseException:
+                if cancellation is not None:
+                    raise cancellation from None
+                raise
+        if cancellation is not None:
+            raise cancellation
+        await generation.returned
+
+    def _claim_generation(
+        self,
+        body: Callable[[_ServeGeneration], Awaitable[None]],
+    ) -> _ServeGeneration:
+        """Publish a generation before any binding or lifespan work begins."""
+        loop = asyncio.get_running_loop()
+        with self._state_lock:
+            existing = self._generation
+            if existing is not None:
+                if existing.returned.done() and not existing.released.done():
+                    raise RuntimeError(
+                        'this Server is still releasing a previous serve() call'
+                    )
+                raise RuntimeError('this Server already has an active serve() call')
+
+            shutdown = loop.create_future()
+            returned = loop.create_future()
+            holder: list[_ServeGeneration] = []
+
+            async def _lifecycle() -> None:
+                generation = holder[0]
+                error: BaseException | None = None
+                try:
+                    await body(generation)
+                except BaseException as exc:
+                    error = exc
+                    raise
+                finally:
+                    self._finish_returned(generation, error)
+                    self._settle_started(
+                        _Readiness.IDLE,
+                        RuntimeError('the server stopped before it started serving')
+                        if error is None
+                        else error,
+                    )
+
+            released = loop.create_task(_lifecycle())
+            generation = _ServeGeneration(
+                loop=loop,
+                shutdown=shutdown,
+                returned=returned,
+                released=released,
+            )
+            holder.append(generation)
+            released.add_done_callback(
+                lambda task, generation=generation: self._clear_generation(
+                    generation, task
                 )
             )
-            while True:
-                shielded = asyncio.shield(native_serve)
-                try:
-                    # Rust remains the sole owner until its bounded graceful
-                    # drain and loop-thread teardown actually complete.
-                    await shielded
-                    break
-                except asyncio.CancelledError as exc:
-                    if native_serve.cancelled():
-                        # asyncio.shield is cancelled both when its caller is
-                        # cancelled and when the inner future is cancelled.
-                        # Inspect the owned future to distinguish the latter;
-                        # its cancellation is a native failure, not a graceful
-                        # shutdown request to absorb.
-                        await native_serve
-                    if cancellation is None:
-                        cancellation = exc
-                        self.shutdown()
-                    # A second cancel must not expose a half-drained Server.
-                    continue
-            if cancellation is not None:
-                raise cancellation
-        finally:
-            try:
-                await cancel_task(shutdown_task)
-            finally:
-                with self._state_lock:
-                    quiesce_write_fd = self._quiesce_write_fd
-                    self._quiesce_write_fd = None
-                    if self._shutdown_future is shutdown_future:
-                        self._shutdown_future = None
-                        self._serve_loop = None
-                if quiesce_write_fd is not None:
-                    os.close(quiesce_write_fd)
+            self._generation = generation
+            # Publication is one transaction: a cross-thread shutdown must
+            # observe STARTING with the generation it is stopping, never a
+            # later write that resurrects readiness after STOPPING.
+            self._readiness = _Readiness.STARTING
+        return generation
 
     async def serve(self) -> None:
         """
         Run the server until shutdown.
 
         Binds the configured listeners, runs ASGI lifespan startup, processes
-        requests, then runs lifespan shutdown when the loop exits.
+        requests, then runs lifespan shutdown after the native drain has fully
+        released the application.
 
         One lifecycle at a time, reusable afterwards: once a `serve()` call
         has fully finished, the same `Server` can `serve()` again with fresh
@@ -383,72 +600,448 @@ class Server:
         Cancelling the `serve()` task does not abort in-flight work — it
         triggers the same bounded graceful drain as
         [`shutdown()`][h2corn.Server.shutdown] and re-raises the cancellation
-        only after the native server has fully drained and released its
-        listeners.
+        once that drain finishes or its budget runs out.
+
+        The budget is real: an application that catches `CancelledError` and
+        never finishes cannot hold `serve()` open. `serve()` raises
+        `RuntimeError` instead, naming the problem. Lifespan shutdown still
+        runs after those requests finally release; until then the same
+        `Server` cannot `serve()` again.
 
         Raises `NotImplementedError` if `Config.workers` is not 1; multi-worker
         deployments must go through [`serve`][h2corn.serve].
         """
+        generation = self._claim_generation(self._serve_embedded)
+        await self._await_generation(generation)
+
+    async def _serve_worker_fds(
+        self,
+        fds: list[int],
+        *,
+        retire_trigger: Callable[[], None] | None = None,
+        ready_trigger: Callable[[], None] | None = None,
+        drain_complete_trigger: Callable[[], None] | None = None,
+        quiesce_fd: int | None = None,
+        prepared_tls: _PreparedTls,
+    ) -> None:
+        """Run one worker lifecycle from already-owned listener fds.
+
+        Supervisor workers hand inherited listeners and control triggers here
+        instead of rebinding. Ownership of `fds` transfers unconditionally.
+        """
+
+        async def _body(generation: _ServeGeneration) -> None:
+            listeners = _lease_owned_fds(fds)
+            try:
+                await self._serve_with_primary_lifespan(
+                    generation,
+                    listeners,
+                    retire_trigger=retire_trigger,
+                    ready_trigger=ready_trigger,
+                    drain_complete_trigger=drain_complete_trigger,
+                    quiesce_fd=quiesce_fd,
+                    prepared_tls=prepared_tls,
+                )
+            finally:
+                for listener in reversed(listeners):
+                    listener.release()
+
+        generation = self._claim_generation(_body)
+        await self._await_generation(generation)
+
+    def _warn_about_supervisor_only_settings(self) -> None:
+        """Name the settings this entry point cannot act on.
+
+        These are honoured for a worker the supervisor drives (it owns the
+        process model they describe), so the warning belongs to `serve()`,
+        which is the entry point that has no supervisor behind it.
+        """
+        default = Config()
+        ignored = [
+            name
+            for name in (
+                'max_requests',
+                'max_requests_jitter',
+                'timeout_worker_healthcheck',
+            )
+            if getattr(self.config, name) != getattr(default, name)
+        ]
+        if ignored:
+            names = ', '.join(ignored)
+            verb = 'describes' if len(ignored) == 1 else 'describe'
+            warnings.warn(
+                f'{names} {verb} when a supervisor replaces a worker, and '
+                'nothing supervises Server.serve(): it will run until you '
+                'shut it down. Use h2corn.serve() to get that.',
+                stacklevel=3,
+            )
+
+    async def _serve_embedded(self, generation: _ServeGeneration) -> None:
+        """Bind listeners and run one embedded lifecycle for `serve()`."""
+        if self.config.pid is not None and (
+            self.config.user is not None or self.config.group is not None
+        ):
+            raise ValueError(
+                'Server.serve() cannot combine pid with user or group; '
+                'use h2corn.serve() so the privileged supervisor owns the pidfile'
+            )
         if self.config.workers != 1:
             raise NotImplementedError(
                 'Server.serve() is the in-process API and only supports workers=1'
             )
-
-        with self._state_lock:
-            if self._serving:
-                raise RuntimeError('this Server already has an active serve() call')
-            self._serving = True
-            self._pending_shutdown = None
-        try:
-            await self._serve_once()
-        finally:
-            with self._state_lock:
-                self._serving = False
-                self._pending_shutdown = None
-
-    async def _serve_once(self) -> None:
-        """Run one reusable server lifecycle after concurrency is guarded."""
+        self._warn_about_supervisor_only_settings()
         identity = resolve_process_identity(self.config)
+        # Everything that needs the starting user's privileges is acquired
+        # before `drop_process_privileges` below: the listening sockets and
+        # the TLS key, which is routinely root-owned and mode 0600.
+        # Read PEM → prepare acceptor → banner, all before the drop so workers
+        # never reopen certificate paths.
+        from ._lib import emit_banner, prepare_tls
+
+        tls_material = load_tls_material(self.config)
+        prepared_tls = prepare_tls(self.config, tls_material)
         with (
             _process_umask(self.config),
             bound_sockets(
                 self.config,
                 socket_owner=(identity.uid, identity.gid),
-            ) as socks,
+            ) as leases,
         ):
             with self._state_lock:
-                self._addresses = bound_addresses(socks)
+                self._addresses = bound_addresses(
+                    tuple(lease.socket for lease in leases if lease.socket is not None)
+                )
             try:
-                drop_process_privileges(identity)
+                # The pidfile is written before the drop for the same reason
+                # the listeners are bound before it: its directory is often
+                # writable only by the starting user.
                 with _pidfile(self.config):
-                    from ._lib import emit_banner
-
                     # replace() must clear the synced host/port convenience pair:
                     # bind plus host/port together fail validation.
                     emit_banner(
-                        replace(self.config, bind=self.addresses, host=None, port=None)
+                        replace(self.config, bind=self.addresses, host=None, port=None),
+                        prepared_tls,
                     )
-
-                    async def _serve_app(
-                        app: Application,
-                        lifespan_handoff: LifespanHandoff | None,
-                    ) -> None:
-                        await self.serve_inherited_fds(
-                            app,
-                            [sock.detach() for sock in socks],
-                            lifespan_handoff=lifespan_handoff,
-                        )
-
-                    await serve_with_lifespan(
-                        self.app,
-                        _serve_app,
-                        mode=self.config.lifespan,
-                        startup_timeout=self.config.timeout_lifespan_startup,
-                        shutdown_timeout=self.config.timeout_lifespan_shutdown,
+                    drop_process_privileges(identity)
+                    await self._serve_with_primary_lifespan(
+                        generation,
+                        leases,
+                        prepared_tls=prepared_tls,
                     )
             finally:
                 with self._state_lock:
                     self._addresses = ()
+
+    async def _serve_with_primary_lifespan(
+        self,
+        generation: _ServeGeneration,
+        listeners: Sequence[_ListenerLease],
+        *,
+        retire_trigger: Callable[[], None] | None = None,
+        ready_trigger: Callable[[], None] | None = None,
+        drain_complete_trigger: Callable[[], None] | None = None,
+        quiesce_fd: int | None = None,
+        prepared_tls: _PreparedTls,
+    ) -> None:
+        """Run primary lifespan around the native server for one generation."""
+        mode = self.config.lifespan
+        startup_timeout = self.config.timeout_lifespan_startup
+        shutdown_timeout = self.config.timeout_lifespan_shutdown
+        if mode == 'off':
+            await self._native_serve(
+                generation,
+                listeners,
+                lifespan_handoff=None,
+                retire_trigger=retire_trigger,
+                ready_trigger=ready_trigger,
+                quiesce_fd=quiesce_fd,
+                prepared_tls=prepared_tls,
+            )
+            return
+
+        def release_pre_native_listeners() -> None:
+            # Lifespan is the last fallible step before native ownership. A
+            # public startup error must not leave the bound descriptors (or a
+            # created Unix path) live while retained lifespan cleanup runs.
+            for listener in reversed(listeners):
+                listener.release()
+            with self._state_lock:
+                self._addresses = ()
+
+        lifespan = LifespanRunner(self.app)
+        try:
+            await self._run_primary_startup(
+                generation,
+                lifespan,
+                mode,
+                startup_timeout,
+                release_pre_native_listeners,
+            )
+        except _StartupAborted:
+            # Shutdown was requested before startup finished; the public
+            # boundary settles without error and cancellation is re-raised
+            # by the caller if that is how stop was asked for.
+            return
+        except BaseException as exc:
+            release_pre_native_listeners()
+            await self._retain_until_lifespan_settles(
+                generation, lifespan, startup_timeout, exc
+            )
+            raise
+
+        try:
+            from ._lib import _LifespanHandoff
+
+            handoff = _LifespanHandoff(
+                self.app,
+                lifespan.state,
+                mode == 'on',
+                startup_timeout,
+                shutdown_timeout,
+            )
+            await self._native_serve(
+                generation,
+                listeners,
+                lifespan_handoff=handoff,
+                retire_trigger=retire_trigger,
+                ready_trigger=ready_trigger,
+                quiesce_fd=quiesce_fd,
+                prepared_tls=prepared_tls,
+            )
+        finally:
+            # Native drain is complete: every request has released the
+            # application, so lifespan shutdown can close what startup opened.
+            # A supervised worker reports this exact boundary before starting
+            # lifespan shutdown, so the supervisor can give that separate
+            # phase its own hard-stop deadline.
+            if drain_complete_trigger is not None:
+                drain_complete_trigger()
+            try:
+                await await_with_timeout(
+                    lifespan.shutdown(),
+                    shutdown_timeout,
+                    'lifespan shutdown timed out',
+                )
+            except BaseException as exc:
+                await self._retain_until_lifespan_settles(
+                    generation, lifespan, shutdown_timeout, exc
+                )
+                raise
+
+    async def _run_primary_startup(
+        self,
+        generation: _ServeGeneration,
+        lifespan: LifespanRunner,
+        mode: str,
+        startup_timeout: float | None,
+        release_pre_native_listeners: Callable[[], None],
+    ) -> None:
+        """Run primary lifespan startup, aborting if shutdown is requested first."""
+        startup = asyncio.ensure_future(
+            await_with_timeout(
+                lifespan.startup(required=mode == 'on'),
+                startup_timeout,
+                'lifespan startup timed out',
+            )
+        )
+
+        async def _wait_shutdown() -> None:
+            # Shield so cancelling this waiter cannot cancel the generation's
+            # shutdown future (asyncio cancels a Future when its last waiter
+            # is cancelled).
+            await asyncio.shield(generation.shutdown)
+
+        stop = asyncio.create_task(_wait_shutdown())
+        try:
+            done, _pending = await asyncio.wait(
+                {startup, stop},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if startup in done:
+                await startup
+                return
+            # Shutdown won the race: abandon startup so a cooperative app
+            # observes cancellation, and retain ownership if it does not.
+            release_pre_native_listeners()
+            self._finish_returned(generation, None)
+            startup.cancel()
+            try:
+                await startup
+            except (Exception, asyncio.CancelledError):
+                pass
+            settled = await lifespan.discard_task(startup_timeout)
+            if not settled:
+                await lifespan.wait_retained_task()
+            raise _StartupAborted
+        finally:
+            if not stop.done():
+                stop.cancel()
+                try:
+                    await stop
+                except (Exception, asyncio.CancelledError):
+                    pass
+            if not startup.done():
+                startup.cancel()
+                try:
+                    await startup
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+    async def _retain_until_lifespan_settles(
+        self,
+        generation: _ServeGeneration,
+        lifespan: LifespanRunner,
+        timeout: float | None,
+        error: BaseException,
+    ) -> None:
+        """Publish the public error, then wait out a cancellation-resistant task."""
+        self._finish_returned(generation, error)
+        settled = await lifespan.discard_task(timeout)
+        if not settled:
+            await lifespan.wait_retained_task()
+
+    async def _native_serve(
+        self,
+        generation: _ServeGeneration,
+        listeners: Sequence[_ListenerLease],
+        *,
+        lifespan_handoff: _LifespanHandoff | None,
+        retire_trigger: Callable[[], None] | None,
+        ready_trigger: Callable[[], None] | None,
+        quiesce_fd: int | None,
+        prepared_tls: _PreparedTls,
+    ) -> None:
+        """Drive one native serve lifecycle owned by `generation`."""
+        from ._lib import serve_fds
+
+        internal_quiesce_write_fd: int | None = None
+        if quiesce_fd is None and sys.platform != 'win32':
+            quiesce_fd, internal_quiesce_write_fd = nonblocking_pipe()
+        with self._state_lock:
+            if self._generation is not generation:
+                if internal_quiesce_write_fd is not None:
+                    assert quiesce_fd is not None
+                    os.close(quiesce_fd)
+                    os.close(internal_quiesce_write_fd)
+                raise RuntimeError('this Server already has an active serve() call')
+            generation.quiesce_write_fd = internal_quiesce_write_fd
+
+        def _mark_started() -> None:
+            # Readiness is SERVING only after lifespan startup (already done
+            # when this runs) and native acceptance.
+            self._settle_started(_Readiness.SERVING, None)
+            if ready_trigger is not None:
+                ready_trigger()
+
+        if generation.shutdown.done():
+            # A request published before native construction still stops
+            # acceptance immediately once the native side exists.
+            self._request_shutdown(generation.shutdown.result())
+
+        async def _await_shutdown() -> str:
+            # Shield: cancel_task(shutdown_task) must not cancel the
+            # generation future that _request_shutdown publishes into.
+            kind = await asyncio.shield(generation.shutdown)
+            return kind.value
+
+        shutdown_task = asyncio.create_task(_await_shutdown())
+        # The drain's budget is an instant, not a task: it starts when shutdown
+        # is requested, and whether it has passed is a question for the clock.
+        drain_expires_at: float | None = None
+        try:
+            native_serve = asyncio.ensure_future(
+                serve_fds(
+                    self.app,
+                    [listener.transfer() for listener in listeners],
+                    self.config,
+                    shutdown_task,
+                    retire_trigger,
+                    lifespan_handoff,
+                    _mark_started,
+                    quiesce_fd,
+                    prepared_tls=prepared_tls,
+                )
+            )
+            while True:
+                shielded = asyncio.shield(native_serve)
+                try:
+                    if drain_expires_at is None:
+                        if generation.shutdown.done():
+                            if native_serve.done():
+                                await shielded
+                                break
+                            # The native side spends up to
+                            # `timeout_graceful_shutdown` letting requests
+                            # finish and only then cancels them, so cleanup
+                            # gets the same budget again. A zero budget still
+                            # waits for an empty drain to finish; only a
+                            # positive budget can settle the public boundary
+                            # early while ownership continues.
+                            budget = 2 * self.config.timeout_graceful_shutdown
+                            if budget <= 0:
+                                await shielded
+                                break
+                            drain_expires_at = generation.loop.time() + budget
+                            continue
+                        await asyncio.wait(
+                            (shielded, shutdown_task),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    else:
+                        remaining = drain_expires_at - generation.loop.time()
+                        if remaining > 0:
+                            try:
+                                await asyncio.wait_for(shielded, remaining)
+                            except TimeoutError:
+                                pass
+                        if native_serve.done():
+                            await asyncio.shield(native_serve)
+                            break
+                        # Budget spent with the native server still releasing.
+                        # Public callers may leave; this generation keeps
+                        # ownership until drain and lifespan shutdown finish.
+                        self._finish_returned(
+                            generation,
+                            RuntimeError(
+                                'shutdown finished with requests still running: they '
+                                'ignored cancellation for longer than '
+                                f'{2 * self.config.timeout_graceful_shutdown:g}s '
+                                '(twice timeout_graceful_shutdown). Lifespan '
+                                'shutdown will run after those requests release'
+                            ),
+                        )
+                        await asyncio.shield(native_serve)
+                        return
+                    if native_serve.done():
+                        await shielded
+                        break
+                    continue
+                except asyncio.CancelledError:
+                    if native_serve.cancelled():
+                        # Native cancellation is a real failure, not a graceful
+                        # request to absorb into shutdown.
+                        await native_serve
+                    # The released task is not cancelled by the public caller;
+                    # keep draining under the generation's ownership.
+                    if not generation.shutdown.done():
+                        self._request_shutdown(_ShutdownKind.STOP)
+                    continue
+        finally:
+            try:
+                await cancel_task(shutdown_task)
+            finally:
+                with self._state_lock:
+                    if self._generation is generation:
+                        quiesce_write_fd = generation.quiesce_write_fd
+                        generation.quiesce_write_fd = None
+                    else:
+                        quiesce_write_fd = None
+                if quiesce_write_fd is not None:
+                    os.close(quiesce_write_fd)
+
+
+class _StartupAborted(BaseException):
+    """Internal: primary lifespan startup stopped because shutdown was requested."""
 
 
 def serve(app: Application, config: Config | None = None) -> None:
@@ -485,8 +1078,8 @@ def serve(app: Application, config: Config | None = None) -> None:
     if sys.platform != 'win32':
         from ._supervisor import serve_with_supervisor
 
-        with _process_umask(config), _pidfile(config):
-            serve_with_supervisor(app, config)
+        with _process_umask(config), _pidfile(config) as pid_fd:
+            serve_with_supervisor(app, config, pid_fd=pid_fd)
         return
 
     with asyncio.Runner(loop_factory=event_loop_factory(config.loop)) as runner:
@@ -494,19 +1087,26 @@ def serve(app: Application, config: Config | None = None) -> None:
 
 
 def _serve_import_target(import_settings: ImportSettings, config: Config) -> None:
-    if sys.platform != 'win32' and (
-        config.user is not None or config.group is not None
-    ):
+    """Serve a `module:attr` target, importing it inside each worker.
+
+    The import is deferred rather than done here and inherited through `fork`,
+    so a replacement worker picks up the current code — which is what makes
+    `SIGHUP` reload the application rather than restart workers around the
+    module the parent imported at startup. It also stops workers sharing
+    whatever the import opened.
+    """
+    if sys.platform != 'win32':
         from ._supervisor import serve_with_supervisor
 
-        with _process_umask(config), _pidfile(config):
-            serve_with_supervisor(import_settings, config)
+        with _process_umask(config), _pidfile(config) as pid_fd:
+            serve_with_supervisor(import_settings, config, pid_fd=pid_fd)
         return
 
     serve(import_target(import_settings), config)
 
 
-def _load_env_file(path: Path):
+def load_env_file(path: Path) -> None:
+    """Apply an env file to this process, without overriding what is set."""
     with path.open(encoding='utf-8') as handle:
         for number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
@@ -550,7 +1150,7 @@ def import_target(import_settings: ImportSettings) -> ASGIApp:
         raise ValueError('target must be in module:app form')
 
     if import_settings.env_file is not None:
-        _load_env_file(import_settings.env_file)
+        load_env_file(import_settings.env_file)
 
     import_dir = (
         os.getcwd()

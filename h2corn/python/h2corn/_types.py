@@ -6,6 +6,28 @@ Headers = Iterable[HeaderPair]
 State = dict[str, Any]
 ExtensionParameters = dict[str, Any]
 
+class TLSExtension(TypedDict):
+    """
+    The negotiated TLS parameters, under `scope["extensions"]["tls"]`.
+
+    Present only on connections h2corn terminated itself; a connection
+    arriving through a TLS-terminating proxy has no `tls` key at all.
+
+    `client_cert_chain` holds the certificates the peer presented, in PEM,
+    leaf first — empty unless `cert_reqs` asked for one. When the chain is
+    nonempty, `client_cert_name` is the leaf subject as an RFC 4514 string.
+    `client_cert_error` is always `None`: a certificate that fails verification
+    fails the handshake and never reaches an application.
+    """
+
+    server_cert: str | None
+    client_cert_chain: tuple[str, ...]
+    client_cert_name: str | None
+    client_cert_error: str | None
+    tls_version: int | None
+    cipher_suite: int | None
+
+
 # Functional syntax preserves the ASGI extension names verbatim; dotted keys
 # cannot be declared with class-syntax TypedDict fields.
 HTTPExtensions = TypedDict(
@@ -13,11 +35,15 @@ HTTPExtensions = TypedDict(
     {
         'http.response.pathsend': ExtensionParameters,
         'http.response.trailers': NotRequired[ExtensionParameters],
+        'tls': NotRequired[TLSExtension],
     },
 )
 WebSocketExtensions = TypedDict(
     'WebSocketExtensions',
-    {'websocket.http.response': ExtensionParameters},
+    {
+        'websocket.http.response': ExtensionParameters,
+        'tls': NotRequired[TLSExtension],
+    },
 )
 Extensions = HTTPExtensions | WebSocketExtensions
 

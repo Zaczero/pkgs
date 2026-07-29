@@ -20,6 +20,7 @@ from h2corn import (
     Send,
     SendMessage,
     Server,
+    TLSExtension,
     WebSocketClose,
     WebSocketDisconnect,
     WebSocketExtensions,
@@ -164,10 +165,40 @@ def test_typeddict_runtime_required_keys_match_static_contract() -> None:
     }
     assert WebSocketScope.__optional_keys__ == {'root_path', 'client', 'state'}
     assert HTTPExtensions.__required_keys__ == {'http.response.pathsend'}
-    assert HTTPExtensions.__optional_keys__ == {'http.response.trailers'}
+    assert HTTPExtensions.__optional_keys__ == {'http.response.trailers', 'tls'}
     assert WebSocketExtensions.__required_keys__ == {'websocket.http.response'}
+    # `tls` is optional on both because the extension requires it to be absent
+    # from a connection that is not TLS — h2corn sets every one of its keys.
+    assert TLSExtension.__required_keys__ == {
+        'server_cert',
+        'client_cert_chain',
+        'client_cert_name',
+        'client_cert_error',
+        'tls_version',
+        'cipher_suite',
+    }
+    assert TLSExtension.__optional_keys__ == frozenset()
 
 
 def test_top_level_does_not_expose_typing_bootstrap_state() -> None:
     assert not hasattr(h2corn, 'TYPE_CHECKING')
     assert not hasattr(h2corn, 'Any')
+
+
+def test_server_public_surface_is_generation_lifecycle_only() -> None:
+    """Embedders see only serve, shutdown, wait_started, addresses, releasing."""
+    public = {
+        name
+        for name in dir(Server)
+        if not name.startswith('_') and name not in {'app', 'config'}
+    }
+    assert public == {
+        'addresses',
+        'releasing',
+        'serve',
+        'shutdown',
+        'wait_started',
+    }
+    assert not hasattr(Server, 'restart')
+    assert not hasattr(Server, 'serve_inherited_fds')
+    assert not hasattr(h2corn, 'LifespanHandoff')

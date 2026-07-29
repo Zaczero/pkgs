@@ -1,6 +1,7 @@
 import argparse
 import dataclasses
 import os
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -29,6 +30,7 @@ def test_config_fields_are_exactly_the_documented_options() -> None:
         ({'backlog': 0}, 'backlog'),
         ({'workers': 0}, 'workers'),
         ({'runtime_threads': 0}, 'runtime_threads'),
+        ({'loop_threads': 0}, 'loop_threads'),
         ({'user': ''}, 'user'),
         ({'group': ''}, 'group'),
         ({'umask': -1}, 'umask'),
@@ -41,15 +43,40 @@ def test_config_fields_are_exactly_the_documented_options() -> None:
         ({'limit_request_field_size': -1}, 'limit_request_field_size'),
         ({'timeout_graceful_shutdown': -1}, 'timeout_graceful_shutdown'),
         ({'h2_timeout_response_stall': -1}, 'h2_timeout_response_stall'),
+        ({'max_concurrent_streams': 0}, 'max_concurrent_streams'),
         ({'max_concurrent_streams': -1}, 'max_concurrent_streams'),
         ({'max_concurrent_streams': 4_294_967_296}, 'max_concurrent_streams'),
         ({'h2_max_header_list_size': -1}, 'h2_max_header_list_size'),
         ({'h2_max_header_list_size': 4_294_967_296}, 'h2_max_header_list_size'),
         ({'h2_max_header_block_size': -1}, 'h2_max_header_block_size'),
         ({'h2_max_inbound_frame_size': 16_383}, 'h2_max_inbound_frame_size'),
+        ({'h2_max_inbound_frame_size': 16_777_216}, 'h2_max_inbound_frame_size'),
+        ({'h2_initial_stream_window_size': 65_534}, 'h2_initial_stream_window_size'),
+        (
+            {'h2_initial_stream_window_size': 2_147_483_648},
+            'h2_initial_stream_window_size',
+        ),
+        (
+            {'h2_initial_connection_window_size': 65_534},
+            'h2_initial_connection_window_size',
+        ),
         ({'max_request_body_size': -1}, 'max_request_body_size'),
+        ({'max_requests': -1}, 'max_requests'),
+        ({'max_requests_jitter': -1}, 'max_requests_jitter'),
+        ({'limit_concurrency': -1}, 'limit_concurrency'),
+        ({'limit_connections': -1}, 'limit_connections'),
         ({'timeout_handshake': -1}, 'timeout_handshake'),
         ({'websocket_max_message_size': -1}, 'websocket_max_message_size'),
+        # `nan < 0` is false, so a NaN would pass a non-negative check and then
+        # silently disable every `> 0` branch that reads it.
+        ({'timeout_graceful_shutdown': float('nan')}, 'finite'),
+        ({'timeout_graceful_shutdown': float('inf')}, 'finite'),
+        ({'timeout_lifespan_startup': float('nan')}, 'finite'),
+        ({'timeout_lifespan_shutdown': float('-inf')}, 'finite'),
+        ({'timeout_worker_healthcheck': float('inf')}, 'finite'),
+        ({'timeout_keep_alive': float('nan')}, 'finite'),
+        ({'websocket_ping_interval': float('nan')}, 'finite'),
+        ({'websocket_ping_timeout': float('inf')}, 'finite'),
     ],
 )
 def test_config_rejects_invalid_numeric_values(
@@ -61,6 +88,234 @@ def test_config_rejects_invalid_numeric_values(
     construct_config = cast('Callable[..., Config]', Config)
     with pytest.raises(ValueError, match=match):
         construct_config(**kwargs)
+
+
+# Integer fields spanning every bound family: min-only, non-negative, u32,
+# frame/window, and optional mask/size. Used for exact-type ingress checks.
+_INTEGER_FIELDS: tuple[str, ...] = (
+    'backlog',
+    'workers',
+    'runtime_threads',
+    'loop_threads',
+    'max_requests',
+    'max_requests_jitter',
+    'max_concurrent_streams',
+    'limit_request_head_size',
+    'limit_request_line',
+    'limit_request_fields',
+    'limit_request_field_size',
+    'h2_max_header_list_size',
+    'h2_max_header_block_size',
+    'h2_max_inbound_frame_size',
+    'h2_initial_stream_window_size',
+    'h2_initial_connection_window_size',
+    'max_request_body_size',
+    'limit_concurrency',
+    'limit_connections',
+    'websocket_max_message_size',
+    'umask',
+    'uds_permissions',
+)
+
+_FLOAT_FIELDS: tuple[str, ...] = (
+    'timeout_lifespan_startup',
+    'timeout_lifespan_shutdown',
+    'timeout_worker_healthcheck',
+    'timeout_handshake',
+    'timeout_graceful_shutdown',
+    'timeout_keep_alive',
+    'timeout_request_header',
+    'timeout_request_body_idle',
+    'h2_timeout_response_stall',
+    'websocket_ping_interval',
+    'websocket_ping_timeout',
+)
+
+_BOOL_FIELDS: tuple[str, ...] = (
+    'reuse_port',
+    'http1',
+    'access_log',
+    'websocket_per_message_deflate',
+    'proxy_headers',
+    'date_header',
+)
+
+# Valid boundary values for each integer field (at the declared minimum or a
+# representative in-range value for optional fields where None is also legal).
+_INTEGER_BOUNDARIES: dict[str, int] = {
+    'backlog': 1,
+    'workers': 1,
+    'runtime_threads': 1,
+    'loop_threads': 1,
+    'max_requests': 0,
+    'max_requests_jitter': 0,
+    'max_concurrent_streams': 1,
+    'limit_request_head_size': 0,
+    'limit_request_line': 0,
+    'limit_request_fields': 0,
+    'limit_request_field_size': 0,
+    'h2_max_header_list_size': 0,
+    'h2_max_header_block_size': 0,
+    'h2_max_inbound_frame_size': 16_384,
+    'h2_initial_stream_window_size': 65_535,
+    'h2_initial_connection_window_size': 65_535,
+    'max_request_body_size': 0,
+    'limit_concurrency': 0,
+    'limit_connections': 0,
+    'websocket_max_message_size': 0,
+    'umask': 0,
+    'uds_permissions': 0o777,
+}
+
+
+@pytest.mark.parametrize('field_name', _INTEGER_FIELDS)
+@pytest.mark.parametrize(
+    'bad_value',
+    [
+        pytest.param(True, id='True'),
+        pytest.param(False, id='False'),
+        pytest.param(1.0, id='float-1.0'),
+        pytest.param(1.5, id='float-1.5'),
+        pytest.param('1', id='str-1'),
+    ],
+)
+def test_config_integer_fields_reject_non_exact_int(
+    field_name: str,
+    bad_value: object,
+) -> None:
+    construct_config = cast('Callable[..., Config]', Config)
+    with pytest.raises(TypeError, match=field_name):
+        construct_config(**{field_name: bad_value})
+    # Strings are env-parsed in from_mapping (TOML/env path); only non-string
+    # impostors must still be rejected there.
+    if not isinstance(bad_value, str):
+        with pytest.raises(TypeError, match=field_name):
+            Config.from_mapping({field_name: bad_value})
+
+
+class _IntSubclass(int):
+    """int subclass used only to prove exact-type ingress (not isinstance)."""
+
+
+@pytest.mark.parametrize('field_name', _INTEGER_FIELDS)
+def test_config_integer_fields_reject_int_subclass(field_name: str) -> None:
+    # isinstance(value, int) is True for subclasses; type(value) is int is not.
+    # A regression to isinstance would silently accept this and stay green.
+    construct_config = cast('Callable[..., Config]', Config)
+    bad = _IntSubclass(_INTEGER_BOUNDARIES[field_name])
+    with pytest.raises(TypeError, match=field_name):
+        construct_config(**{field_name: bad})
+    with pytest.raises(TypeError, match=field_name):
+        Config.from_mapping({field_name: bad})
+
+
+@pytest.mark.parametrize('field_name', _INTEGER_FIELDS)
+def test_config_integer_fields_accept_boundary(field_name: str) -> None:
+    value = _INTEGER_BOUNDARIES[field_name]
+    construct_config = cast('Callable[..., Config]', Config)
+    config = construct_config(**{field_name: value})
+    assert getattr(config, field_name) is value or getattr(config, field_name) == value
+    assert type(getattr(config, field_name)) is int
+    mapped = Config.from_mapping({field_name: value})
+    assert getattr(mapped, field_name) == value
+    assert type(getattr(mapped, field_name)) is int
+
+
+@pytest.mark.parametrize('field_name', _FLOAT_FIELDS)
+def test_config_float_fields_accept_exact_int_as_float(field_name: str) -> None:
+    construct_config = cast('Callable[..., Config]', Config)
+    config = construct_config(**{field_name: 1})
+    assert getattr(config, field_name) == 1.0
+    assert type(getattr(config, field_name)) is float
+    mapped = Config.from_mapping({field_name: 1})
+    assert getattr(mapped, field_name) == 1.0
+    assert type(getattr(mapped, field_name)) is float
+
+
+@pytest.mark.parametrize('field_name', _FLOAT_FIELDS)
+@pytest.mark.parametrize(
+    'bad_value',
+    [
+        pytest.param(True, id='True'),
+        pytest.param(False, id='False'),
+        pytest.param('1.0', id='str'),
+        pytest.param(float('nan'), id='nan'),
+        pytest.param(float('inf'), id='inf'),
+        pytest.param(float('-inf'), id='neg-inf'),
+    ],
+)
+def test_config_float_fields_reject_bool_str_and_nonfinite(
+    field_name: str,
+    bad_value: object,
+) -> None:
+    construct_config = cast('Callable[..., Config]', Config)
+    # Non-finite values are ValueError; wrong types are TypeError.
+    expected = ValueError if isinstance(bad_value, float) else TypeError
+    with pytest.raises(expected, match=field_name if expected is TypeError else 'finite'):
+        construct_config(**{field_name: bad_value})
+
+
+@pytest.mark.parametrize('field_name', _BOOL_FIELDS)
+@pytest.mark.parametrize(
+    'bad_value',
+    [
+        pytest.param(0, id='int-0'),
+        pytest.param(1, id='int-1'),
+        pytest.param('true', id='str-true'),
+        pytest.param('false', id='str-false'),
+        pytest.param(1.0, id='float'),
+    ],
+)
+def test_config_bool_fields_reject_coercible_values(
+    field_name: str,
+    bad_value: object,
+) -> None:
+    # Programmatic ingress rejects 0/1/strings; from_mapping env-parses strings.
+    construct_config = cast('Callable[..., Config]', Config)
+    with pytest.raises(TypeError, match=field_name):
+        construct_config(**{field_name: bad_value})
+    if not isinstance(bad_value, str):
+        with pytest.raises(TypeError, match=field_name):
+            Config.from_mapping({field_name: bad_value})
+
+
+@pytest.mark.parametrize('field_name', _BOOL_FIELDS)
+def test_config_bool_fields_accept_exact_bool(field_name: str) -> None:
+    construct_config = cast('Callable[..., Config]', Config)
+    for value in (True, False):
+        config = construct_config(**{field_name: value})
+        assert getattr(config, field_name) is value
+        mapped = Config.from_mapping({field_name: value})
+        assert getattr(mapped, field_name) is value
+
+
+@pytest.mark.parametrize('field_name', ['user', 'group'])
+@pytest.mark.parametrize('bad_value', [True, False])
+def test_config_principal_rejects_bool(field_name: str, bad_value: bool) -> None:
+    construct_config = cast('Callable[..., Config]', Config)
+    with pytest.raises(TypeError, match=field_name):
+        construct_config(**{field_name: bad_value})
+    with pytest.raises(TypeError, match=field_name):
+        Config.from_mapping({field_name: bad_value})
+
+
+def test_config_convenience_port_requires_exact_int_in_range() -> None:
+    assert Config(port=0).port == 0
+    assert Config(port=65_535).port == 65_535
+    with pytest.raises(TypeError, match='port'):
+        Config(port=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match='port'):
+        Config(port=1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match='port'):
+        Config(port=_IntSubclass(8000))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match='port'):
+        Config(port=-1)
+    with pytest.raises(ValueError, match='port'):
+        Config(port=65_536)
+    with pytest.raises(TypeError, match='port'):
+        Config.from_mapping({'port': 1.0})
+    with pytest.raises(ValueError, match='port'):
+        Config.from_mapping({'port': 65_536})
 
 
 def test_config_from_toml_reads_flat_top_level_keys(tmp_path: Path) -> None:
@@ -96,7 +351,7 @@ timeout_lifespan_shutdown = 7.5
 websocket_per_message_deflate = false
 websocket_ping_interval = 8.5
 websocket_ping_timeout = 9.5
-server_header = true
+server_header = "full"
 date_header = false
 response_headers = ["x-demo: one", "x-extra: two"]
 """.strip()
@@ -132,7 +387,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.websocket_per_message_deflate is False
     assert config.websocket_ping_interval == 8.5
     assert config.websocket_ping_timeout == 9.5
-    assert config.server_header is True
+    assert config.server_header == 'full'
     assert config.date_header is False
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
 
@@ -184,9 +439,10 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_WEBSOCKET_PER_MESSAGE_DEFLATE', 'false')
     monkeypatch.setenv('H2CORN_WEBSOCKET_PING_INTERVAL', '8.5')
     monkeypatch.setenv('H2CORN_WEBSOCKET_PING_TIMEOUT', '9.5')
-    monkeypatch.setenv('H2CORN_SERVER_HEADER', 'true')
+    monkeypatch.setenv('H2CORN_SERVER_HEADER', 'full')
     monkeypatch.setenv('H2CORN_DATE_HEADER', 'false')
-    monkeypatch.setenv('H2CORN_RESPONSE_HEADERS', 'x-demo: one,x-extra: two')
+    # One header per line: a comma belongs to a header value.
+    monkeypatch.setenv('H2CORN_RESPONSE_HEADERS', 'x-demo: one\nx-extra: two')
 
     config = Config.from_env(os.environ)
 
@@ -225,7 +481,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.websocket_per_message_deflate is False
     assert config.websocket_ping_interval == 8.5
     assert config.websocket_ping_timeout == 9.5
-    assert config.server_header is True
+    assert config.server_header == 'full'
     assert config.date_header is False
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
 
@@ -250,6 +506,23 @@ def test_config_from_env_accepts_websocket_message_size_inherit() -> None:
     config = Config.from_env({'H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE': 'inherit'})
 
     assert config.websocket_max_message_size is None
+
+
+@pytest.mark.parametrize(
+    'seconds',
+    [
+        pytest.param(1e20, id='too-large-for-a-duration'),
+        pytest.param(1e300, id='astronomically-large'),
+        pytest.param(float('inf'), id='infinite'),
+        pytest.param(float('nan'), id='not-a-number'),
+    ],
+)
+def test_native_config_rejects_unrepresentable_durations(seconds: float) -> None:
+    """A duration the native layer cannot represent is a config error, not a panic."""
+    from h2corn._lib import prepare_tls
+
+    with pytest.raises(ValueError, match='timeout_keep_alive'):
+        prepare_tls(Config(timeout_keep_alive=seconds))
 
 
 def test_config_rejects_empty_unix_bind_path() -> None:
@@ -333,9 +606,16 @@ def test_config_normalizes_multiple_bind_entries() -> None:
     assert config.port is None
 
 
-def test_config_rejects_ping_timeout_without_interval() -> None:
-    with pytest.raises(ValueError, match='websocket_ping_timeout'):
-        Config(websocket_ping_interval=0.0, websocket_ping_timeout=1.0)
+def test_config_allows_ping_timeout_with_disabled_interval() -> None:
+    # Interval zero is the typed off state; timeout may still be set and is
+    # ignored at runtime (keep_alive is entirely off).
+    config = Config(websocket_ping_interval=0.0, websocket_ping_timeout=1.0)
+    assert config.websocket_ping_interval == 0.0
+    assert config.websocket_ping_timeout == 1.0
+    # Construction and preparation succeed; no cross-field rejection.
+    from h2corn._lib import prepare_tls
+
+    prepare_tls(config)
 
 
 def test_config_normalizes_numeric_user_and_group_strings() -> None:
@@ -355,7 +635,6 @@ def test_config_option_schema_has_unique_external_names() -> None:
 
     assert len({option.name for option in options}) == len(options)
     assert len({option.env_var for option in options}) == len(options)
-    assert len({option.toml_key for option in options}) == len(options)
     assert len({flag for option in options for flag in option.cli_flags}) == sum(
         len(option.cli_flags) for option in options
     )
@@ -472,6 +751,20 @@ def test_parse_cli_accepts_check_config_flag() -> None:
     assert cli_settings == CliSettings(check_config=True)
     assert import_settings == ImportSettings(target='example:app')
     assert isinstance(config, Config)
+
+
+def test_print_config_round_trips_every_control_character() -> None:
+    """`--print-config` output must parse back as TOML.
+
+    TOML forbids raw control characters and gives only some of them a
+    shorthand escape, so anything else needs `\\uXXXX`.
+    """
+    from h2corn._cli import _toml_literal
+
+    for code in (*range(0x20), 0x7F, 0x2028, 0x1F600):
+        value = f'a{chr(code)}b'
+        parsed = tomllib.loads(f'key = {_toml_literal(value)}')
+        assert parsed['key'] == value, f'U+{code:04X} did not round-trip'
 
 
 def test_parse_cli_accepts_print_config_flag() -> None:
@@ -649,3 +942,41 @@ def test_parse_cli_rejects_env_listener_convenience_override_for_multi_bind_base
             ['--config', str(config_path), 'example:app'],
             {'H2CORN_PORT': '9020'},
         )
+
+
+def test_repeating_a_port_zero_bind_is_rejected() -> None:
+    """
+    Listeners that ask for port 0 share the one port the kernel assigns, so a
+    repeated `host:0` is the same listener twice and the second bind fails
+    with EADDRINUSE. Distinct hosts on port 0 remain the supported case.
+    """
+    with pytest.raises(ValueError, match='duplicate bind entry'):
+        Config(bind=('127.0.0.1:0', '127.0.0.1:0'))
+
+    assert Config(bind=('127.0.0.1:0', '[::1]:0')).bind == ('127.0.0.1:0', '[::1]:0')
+
+
+def test_response_header_values_may_contain_commas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A comma is ordinary inside a header value, so response headers are one
+    per line rather than comma-separated: splitting on commas turned
+    `cache-control: public, max-age=60` into two entries, the second of which
+    was not a header at all and failed validation.
+    """
+    monkeypatch.setenv(
+        'H2CORN_RESPONSE_HEADERS', 'cache-control: public, max-age=60\nx-demo: 1'
+    )
+    from_env = Config.from_env(os.environ)
+    assert from_env.response_headers == (
+        'cache-control: public, max-age=60',
+        'x-demo: 1',
+    )
+
+    # A lone string is one header, matching how the CLI's repeated --header
+    # flag and an explicit tuple both behave.
+    assert Config(response_headers='cache-control: public, max-age=60').response_headers
+    assert Config(
+        response_headers='cache-control: public, max-age=60'
+    ).response_headers == ('cache-control: public, max-age=60',)

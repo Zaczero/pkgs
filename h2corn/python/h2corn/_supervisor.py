@@ -11,9 +11,11 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from multiprocessing.process import BaseProcess
+from typing import Any, cast
 
 from ._cli import ImportSettings
-from ._lifespan import cancel_task, serve_with_lifespan
+from ._lifespan import cancel_task
+from ._reload import take_reload_parent_liveness_fd
 from ._socket import (
     bound_addresses,
     bound_sockets,
@@ -26,11 +28,8 @@ from ._socket import (
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
-    from typing import Any
-
     from ._config import Config
-    from ._lib import LifespanHandoff
+    from ._lib import _PreparedTls
     from ._server import ProcessIdentity
     from ._types import Application
 
@@ -40,75 +39,104 @@ _WORKER_FAILURE_BACKOFF_MAX = 1.0
 _CONTROL_HEARTBEAT = b'H'
 _CONTROL_RETIRE = b'R'
 _CONTROL_READY = b'Y'
+_CONTROL_LIFESPAN = b'L'
 _QUIESCE_RESTART = b'R'
 _QUIESCE_STOP = b'S'
 _RESTART_SIGNAL = signal.SIGUSR1
+# `epoll_wait` takes its timeout as a signed 32-bit count of milliseconds.
+_MAX_SELECT_TIMEOUT = (2**31 - 1) / 1000
 
 
 @dataclass(slots=True)
 class _ReloadCycle:
-    replacement: int | None = None
-    target: int | None = None
+    target: int
+    replacement: int
+
+
+@dataclass(slots=True)
+class _WorkerRetirement:
+    """One worker's current supervisor-owned hard-stop phase."""
+
+    phase: str
+    deadline: float | None
 
 
 @dataclass(slots=True)
 class _WorkerRetirements:
+    """Hard-stop deadlines advanced by the worker's lifecycle acknowledgement.
+
+    The native server owns the first graceful request wait, then Python task
+    cancellation/cleanup gets the same configured interval.  Only once native
+    ownership has drained can primary lifespan shutdown start, and the worker
+    tells the supervisor exactly when that happened.  Lifespan therefore gets
+    its own configured deadline rather than sharing a wall-clock guess started
+    before request cancellation even began.
+    """
+
     graceful_timeout: float
-    deadlines: dict[int, float] = field(default_factory=dict[int, float])
+    lifespan_timeout: float
+    retirements: dict[int, _WorkerRetirement] = field(
+        default_factory=dict[int, _WorkerRetirement]
+    )
 
     def begin(self, sentinel: int) -> None:
         # A repeated reason to retire the same worker must not extend its hard
-        # ownership deadline.
-        self.deadlines.setdefault(
+        # ownership deadline or rewind an already acknowledged lifecycle.
+        self.retirements.setdefault(
             sentinel,
-            time.monotonic() + self.graceful_timeout,
+            _WorkerRetirement(
+                'request cleanup',
+                time.monotonic() + 2 * self.graceful_timeout,
+            ),
         )
+
+    def begin_lifespan_shutdown(self, sentinel: int) -> bool:
+        """Advance a retiring worker only after native request ownership drains."""
+        retirement = self.retirements.get(sentinel)
+        if retirement is None or retirement.phase == 'lifespan shutdown':
+            return False
+        retirement.phase = 'lifespan shutdown'
+        retirement.deadline = (
+            None
+            if self.lifespan_timeout <= 0
+            else time.monotonic() + self.lifespan_timeout
+        )
+        return True
 
     def finish(self, sentinel: int) -> None:
-        self.deadlines.pop(sentinel, None)
+        self.retirements.pop(sentinel, None)
 
     def pop_oldest(self) -> int | None:
-        if not self.deadlines:
+        if not self.retirements:
             return None
-        sentinel = next(iter(self.deadlines))
-        del self.deadlines[sentinel]
+        sentinel = next(iter(self.retirements))
+        del self.retirements[sentinel]
         return sentinel
 
-    def pop_expired(self, now: float) -> tuple[int, ...]:
+    def pop_expired(self, now: float) -> tuple[tuple[int, str], ...]:
         expired = tuple(
-            sentinel for sentinel, deadline in self.deadlines.items() if deadline <= now
+            (sentinel, retirement.phase)
+            for sentinel, retirement in self.retirements.items()
+            if retirement.deadline is not None and retirement.deadline <= now
         )
-        for sentinel in expired:
-            del self.deadlines[sentinel]
+        for sentinel, _phase in expired:
+            del self.retirements[sentinel]
         return expired
 
     def next_timeout(self, now: float) -> float | None:
-        if not self.deadlines:
+        deadlines = [
+            retirement.deadline
+            for retirement in self.retirements.values()
+            if retirement.deadline is not None
+        ]
+        if not deadlines:
             return None
-        return max(0.0, min(self.deadlines.values()) - now)
+        return max(0.0, min(deadlines) - now)
 
 
 def _log_line(message: str):
     sys.stderr.write(f'{message}\n')
     sys.stderr.flush()
-
-
-def _terminate_workers(
-    workers: Collection[BaseProcess],
-    *,
-    graceful_timeout: float,
-):
-    deadline = time.monotonic() + graceful_timeout
-    for worker in workers:
-        if worker.is_alive():
-            worker.terminate()
-    for worker in workers:
-        remaining = max(0.0, deadline - time.monotonic())
-        worker.join(remaining)
-    for worker in workers:
-        if worker.is_alive():
-            worker.kill()
-            worker.join()
 
 
 def _restart_worker(worker: BaseProcess):
@@ -121,8 +149,16 @@ def _restart_worker(worker: BaseProcess):
 
 
 def _send_worker_quiesce(fd: int, *, restart: bool) -> OSError | None:
+    """Ask a worker to quiesce; return only a genuinely unexpected failure.
+
+    `EPIPE` means the worker already closed its read end — it is on its way out
+    already, which is the state the signal was asking for. Reporting that as a
+    failure sends an operator chasing a normal shutdown race.
+    """
     try:
         os.write(fd, _QUIESCE_RESTART if restart else _QUIESCE_STOP)
+    except BrokenPipeError:
+        return None
     except OSError as exc:
         return exc
     finally:
@@ -173,14 +209,20 @@ def _install_parent_death_signal(expected_supervisor_pid: int) -> None:
 
 def _worker_entry(
     app: Application | ImportSettings,
+    *,
     config: Config,
     fds: tuple[int, ...],
     identity: ProcessIdentity,
+    prepared_tls: _PreparedTls,
     expected_supervisor_pid: int,
     inherited_supervisor_fds: tuple[int, ...] = (),
     control_write_fd: int | None = None,
     quiesce_read_fd: int | None = None,
 ):
+    from typing import cast
+
+    import h2corn._server as _server_mod
+
     from ._server import (
         Server,
         drop_process_privileges,
@@ -188,9 +230,20 @@ def _worker_entry(
         import_target,
     )
 
-    # `fork` copies every supervisor-side control end into the new worker. None
-    # is useful there, and retaining them prevents EOF while growing each
-    # successive worker's descriptor table quadratically.
+    # Clear the parent's signal-wakeup routing before closing its pipe ends:
+    # a signal after a bare close would write into a recycled descriptor.
+    try:
+        signal.set_wakeup_fd(-1)
+    except ValueError:
+        # Documented to raise off the main thread; workers are forked from
+        # the main thread, but a non-main entry must not leave the rest of
+        # the discard set behind.
+        pass
+
+    # Explicit discard only: every prior worker sentinel, parent control and
+    # quiesce end, the opposite ends of *this* worker's pipes, the signal
+    # wakeup pair, the pidfile, and any reload-parent liveness read end.
+    # Unrelated application descriptors are left alone.
     for inherited_fd in inherited_supervisor_fds:
         try:
             os.close(inherited_fd)
@@ -203,6 +256,7 @@ def _worker_entry(
     active_app = import_target(app) if isinstance(app, ImportSettings) else app
     server = Server(active_app, _clone_config(config, workers=1))
     ready = False
+    native_drain_complete = False
 
     def _send_control(message: bytes):
         if control_write_fd is None:
@@ -214,9 +268,14 @@ def _worker_entry(
 
     async def _heartbeat_loop(interval: float):
         while True:
-            # Readiness is level-triggered once achieved. If an earlier write
-            # hit EAGAIN behind queued heartbeats, a later tick republishes it.
-            _send_control(_CONTROL_READY if ready else _CONTROL_HEARTBEAT)
+            # Readiness and native-drain completion are level-triggered. If an
+            # earlier write hit EAGAIN behind queued heartbeats, a later tick
+            # republishes the current lifecycle phase rather than letting a
+            # full pipe turn graceful cleanup into an arbitrary hard kill.
+            if native_drain_complete:
+                _send_control(_CONTROL_LIFESPAN)
+            else:
+                _send_control(_CONTROL_READY if ready else _CONTROL_HEARTBEAT)
             await asyncio.sleep(interval)
 
     def _mark_ready() -> None:
@@ -224,39 +283,41 @@ def _worker_entry(
         ready = True
         _send_control(_CONTROL_READY)
 
-    async def _serve_app(
-        app: Application,
-        lifespan_handoff: LifespanHandoff | None,
-    ) -> None:
+    def _mark_native_drain_complete() -> None:
+        nonlocal native_drain_complete
+        native_drain_complete = True
+        _send_control(_CONTROL_LIFESPAN)
+
+    async def _run_worker():
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, server.shutdown)
         loop.add_signal_handler(signal.SIGTERM, server.shutdown)
         if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
-            loop.add_signal_handler(_RESTART_SIGNAL, server.restart)
-        await server.serve_inherited_fds(
-            app,
-            list(fds),
-            (lambda: _send_control(_CONTROL_RETIRE))
-            if config.max_requests > 0
-            else None,
-            lifespan_handoff,
-            ready_trigger=_mark_ready,
-            quiesce_fd=quiesce_read_fd,
-        )
-
-    async def _run_worker():
+            loop.add_signal_handler(
+                _RESTART_SIGNAL,
+                # Package-private: supervisor is the sole restart signal owner.
+                lambda: server._request_shutdown(  # pyright: ignore[reportPrivateUsage]
+                    cast('Any', _server_mod)._ShutdownKind.RESTART
+                ),
+            )
         heartbeat_task = (
             asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
             if config.timeout_worker_healthcheck > 0
             else None
         )
         try:
-            await serve_with_lifespan(
-                active_app,
-                _serve_app,
-                mode=config.lifespan,
-                startup_timeout=config.timeout_lifespan_startup,
-                shutdown_timeout=config.timeout_lifespan_shutdown,
+            # Package-private worker entry: Server owns the generation lifecycle.
+            await server._serve_worker_fds(  # pyright: ignore[reportPrivateUsage]
+                list(fds),
+                retire_trigger=(
+                    (lambda: _send_control(_CONTROL_RETIRE))
+                    if config.max_requests > 0
+                    else None
+                ),
+                ready_trigger=_mark_ready,
+                drain_complete_trigger=_mark_native_drain_complete,
+                quiesce_fd=quiesce_read_fd,
+                prepared_tls=prepared_tls,
             )
         finally:
             await cancel_task(heartbeat_task)
@@ -265,6 +326,36 @@ def _worker_entry(
 
     with asyncio.Runner(loop_factory=loop_factory) as runner:
         runner.run(_run_worker())
+
+
+def _posix_worker_selector() -> selectors.BaseSelector:
+    # poll(2) needs no persistent kernel object, so nothing extra is copied
+    # into a forked worker. DefaultSelector on Linux is epoll, which would.
+    return selectors.PollSelector()
+
+
+def _worker_process_fds(worker: BaseProcess) -> tuple[int, ...]:
+    """Parent-side process-management fds for one worker (sentinel pair).
+
+    `Process.sentinel` is only the wait end. The fork Popen keeps a matching
+    write end open in the parent; both must be discarded in later children or
+    each successive worker inherits one more dead handle.
+    """
+    popen: object | None = getattr(worker, '_popen', None)
+    finalizer: object | None = (
+        getattr(popen, 'finalizer', None) if popen is not None else None
+    )
+    raw_args: object | None = (
+        getattr(finalizer, '_args', None) if finalizer is not None else None
+    )
+    if isinstance(raw_args, tuple):
+        return tuple(
+            item for item in cast('tuple[object, ...]', raw_args) if type(item) is int
+        )
+    sentinel = worker.sentinel
+    if type(sentinel) is int:
+        return (sentinel,)
+    return ()
 
 
 @dataclass(slots=True)
@@ -282,8 +373,14 @@ class _Supervisor:
     config: Config
     fds: tuple[int, ...]
     identity: ProcessIdentity
+    prepared_tls: _PreparedTls
+    pid_fd: int | None = None
+    parent_liveness_fd: int | None = None
     supervisor_pid: int = field(default_factory=os.getpid)
-    selector: selectors.BaseSelector = field(default_factory=selectors.DefaultSelector)
+    selector: selectors.BaseSelector = field(default_factory=_posix_worker_selector)
+    # Tagged as the pair from signal_wakeup_pipe(); typed loosely so the
+    # private dataclass need not be re-exported across the package.
+    signal_wakeup: Any | None = None
     workers: dict[int, BaseProcess] = field(default_factory=dict[int, BaseProcess])
     worker_controls: dict[int, int] = field(default_factory=dict[int, int])
     worker_quiesce_writes: dict[int, int] = field(default_factory=dict[int, int])
@@ -292,12 +389,12 @@ class _Supervisor:
     expected_exits: set[int] = field(default_factory=set[int])
     reload_scheduled: set[int] = field(default_factory=set[int])
     reload_queue: deque[int] = field(default_factory=deque[int])
-    reload_cycle: _ReloadCycle = field(default_factory=_ReloadCycle)
+    reload_cycle: _ReloadCycle | None = None
     forced_retirement_reaps: set[int] = field(default_factory=set[int])
     failure_times: deque[float] = field(default_factory=deque[float])
     failure_backoff: float = _WORKER_FAILURE_BACKOFF_INITIAL
     respawn_at: float | None = None
-    any_worker_became_healthy: bool = False
+    ready_workers: set[int] = field(default_factory=set[int])
     stopping: bool = False
     reload_requested: bool = False
     fatal_error: RuntimeError | None = None
@@ -306,13 +403,45 @@ class _Supervisor:
 
     def __post_init__(self) -> None:
         self.target_workers = self.config.workers
-        self.retirements = _WorkerRetirements(self.config.timeout_graceful_shutdown)
+        self.retirements = _WorkerRetirements(
+            self.config.timeout_graceful_shutdown,
+            self.config.timeout_lifespan_shutdown,
+        )
+
+    def _child_discard_fds(
+        self,
+        *,
+        control_read_fd: int,
+        quiesce_write_fd: int,
+    ) -> tuple[int, ...]:
+        """Descriptors a freshly forked worker must close and not retain."""
+        discard: list[int] = [
+            *(
+                fd
+                for worker in self.workers.values()
+                for fd in _worker_process_fds(worker)
+            ),
+            *self.worker_controls.values(),
+            *self.worker_quiesce_writes.values(),
+            control_read_fd,
+            quiesce_write_fd,
+        ]
+        if self.signal_wakeup is not None:
+            discard.append(self.signal_wakeup.read_fd)
+            discard.append(self.signal_wakeup.write_fd)
+        if self.pid_fd is not None:
+            discard.append(self.pid_fd)
+        if self.parent_liveness_fd is not None:
+            discard.append(self.parent_liveness_fd)
+        return tuple(discard)
 
     def active_workers(self) -> int:
         return len(self.workers) - len(self.expected_exits)
 
     def active_worker_capacity(self) -> int:
-        replacement = self.reload_cycle.replacement
+        replacement = (
+            None if self.reload_cycle is None else self.reload_cycle.replacement
+        )
         replacement_is_starting = (
             replacement is not None
             and replacement in self.workers
@@ -331,17 +460,18 @@ class _Supervisor:
         )
 
     def scale_down_candidate(self) -> int | None:
+        replacement = (
+            None if self.reload_cycle is None else self.reload_cycle.replacement
+        )
         for sentinel in reversed(self.workers):
-            if (
-                sentinel not in self.expected_exits
-                and sentinel != self.reload_cycle.replacement
-            ):
+            if sentinel not in self.expected_exits and sentinel != replacement:
                 return sentinel
         return None
 
     def is_viable_reload_replacement(self, sentinel: int) -> bool:
         return (
-            sentinel == self.reload_cycle.replacement
+            self.reload_cycle is not None
+            and sentinel == self.reload_cycle.replacement
             and sentinel not in self.expected_exits
         )
 
@@ -360,26 +490,25 @@ class _Supervisor:
         if worker_max_requests > 0 and self.config.max_requests_jitter > 0:
             worker_max_requests += random.randint(0, self.config.max_requests_jitter)
         worker_config = _clone_config(self.config, max_requests=worker_max_requests)
-        inherited_supervisor_fds = (
-            *self.worker_controls.values(),
-            *self.worker_quiesce_writes.values(),
-            control_read_fd,
-            quiesce_write_fd,
+        inherited_supervisor_fds = self._child_discard_fds(
+            control_read_fd=control_read_fd,
+            quiesce_write_fd=quiesce_write_fd,
         )
         worker: BaseProcess | None = None
         try:
             worker = multiprocessing.get_context('fork').Process(
                 target=_worker_entry,
-                args=(
-                    self.app,
-                    worker_config,
-                    self.fds,
-                    self.identity,
-                    self.supervisor_pid,
-                    inherited_supervisor_fds,
-                    control_write_fd,
-                    quiesce_read_fd,
-                ),
+                args=(self.app,),
+                kwargs={
+                    'config': worker_config,
+                    'fds': self.fds,
+                    'identity': self.identity,
+                    'prepared_tls': self.prepared_tls,
+                    'expected_supervisor_pid': self.supervisor_pid,
+                    'inherited_supervisor_fds': inherited_supervisor_fds,
+                    'control_write_fd': control_write_fd,
+                    'quiesce_read_fd': quiesce_read_fd,
+                },
             )
             worker.start()
         except BaseException:
@@ -395,13 +524,18 @@ class _Supervisor:
         os.close(quiesce_read_fd)
         sentinel = worker.sentinel
         assert isinstance(sentinel, int)
-        _log_line(f'Started worker [{worker.pid}]')
+        # Take ownership of the started process before anything that can
+        # fail: a worker this supervisor does not know about is one it can
+        # neither quiesce nor reap, and it goes on serving after the
+        # supervisor gives up. Logging in particular is fallible — a stderr
+        # sink can be closed or full — and used to run first.
         self.workers[sentinel] = worker
-        self.selector.register(sentinel, selectors.EVENT_READ)
         self.worker_controls[sentinel] = control_read_fd
         self.worker_quiesce_writes[sentinel] = quiesce_write_fd
         self.control_workers[control_read_fd] = sentinel
+        self.selector.register(sentinel, selectors.EVENT_READ)
         self.selector.register(control_read_fd, selectors.EVENT_READ)
+        _log_line(f'Started worker [{worker.pid}]')
         _renew_worker_healthcheck(
             self.heartbeat_deadlines,
             sentinel,
@@ -423,15 +557,23 @@ class _Supervisor:
             self.failure_backoff * 2,
             _WORKER_FAILURE_BACKOFF_MAX,
         )
+        # Gate on whether anything is serving *now*, not on whether anything
+        # ever did. A lifetime latch meant one healthy worker at any point in
+        # the past disabled this for good, so a deployment that came up and
+        # later broke — a bad config push, a dependency outage — respawned
+        # forever in silence. A fleet with one flapping worker still has
+        # healthy ones here and is left alone.
         if (
             len(self.failure_times) >= max(3, self.target_workers * 3)
-            and not self.any_worker_became_healthy
+            and not self.ready_workers
         ):
             self.fatal_error = RuntimeError('worker crash loop detected')
             self.stopping = True
 
-    def retire_worker(self, worker: BaseProcess, *, expected: bool) -> None:
+    def retire_worker(self, worker: BaseProcess) -> None:
         sentinel = worker.sentinel
+        expected = sentinel in self.expected_exits or sentinel in self.reload_scheduled
+        self.ready_workers.discard(sentinel)
         self.expected_exits.discard(sentinel)
         self.retirements.finish(sentinel)
         self.forced_retirement_reaps.discard(sentinel)
@@ -526,13 +668,13 @@ class _Supervisor:
             worker.kill()
 
     def kill_expired_retirements(self) -> None:
-        for sentinel in self.retirements.pop_expired(time.monotonic()):
+        for sentinel, phase in self.retirements.pop_expired(time.monotonic()):
             worker = self.workers.get(sentinel)
             if worker is None:
                 continue
             self.force_kill_retirement(
                 sentinel,
-                f'Worker [{worker.pid}] exceeded graceful shutdown timeout; killing',
+                f'Worker [{worker.pid}] exceeded {phase} timeout; killing',
             )
 
     def drain_control_messages(self, control_fd: int) -> None:
@@ -553,15 +695,54 @@ class _Supervisor:
                     self.config.timeout_worker_healthcheck,
                 )
             if _CONTROL_READY[0] in data:
-                self.any_worker_became_healthy = True
-                if self.is_viable_reload_replacement(sentinel):
-                    target = self.reload_cycle.target
-                    self.reload_cycle.replacement = None
-                    self.reload_cycle.target = None
-                    if target is not None:
-                        self.request_reload_retire(target)
+                self.ready_workers.add(sentinel)
+                reload_cycle = self.reload_cycle
+                if reload_cycle is not None and self.is_viable_reload_replacement(sentinel):
+                    target = reload_cycle.target
+                    self.reload_cycle = None
+                    self.request_reload_retire(target)
             if _CONTROL_RETIRE[0] in data:
                 self.schedule_worker_retire(sentinel)
+            if _CONTROL_LIFESPAN[0] in data:
+                self.retirements.begin_lifespan_shutdown(sentinel)
+
+    def handle_worker_event(self, fileobj: int) -> None:
+        """Consume a control or sentinel event for a worker we own."""
+        if fileobj in self.control_workers:
+            self.drain_control_messages(fileobj)
+            return
+        worker = self.workers.pop(fileobj, None)
+        if worker is None:
+            try:
+                self.selector.unregister(fileobj)
+            except KeyError:
+                pass
+            return
+        if self.reload_cycle is not None and fileobj == self.reload_cycle.replacement:
+            self.reload_cycle = None
+        worker.join()
+        self.retire_worker(worker)
+
+    def wait_for_retired_workers(self, wakeup_fd: int) -> None:
+        """Reap final retirements without giving their phase budgets to startup.
+
+        This is the terminal SIGTERM/SIGINT path.  It still uses the same
+        control pipe and acknowledgement as rolling retirements; closing the
+        selector and joining each worker for one shared grace used to bypass
+        that lifecycle entirely.
+        """
+        for sentinel in tuple(self.workers):
+            self.begin_worker_retirement(sentinel, restart=False)
+        while self.workers:
+            for key, _ in self.selector.select(self.wait_timeout()):
+                fileobj = key.fileobj
+                if not isinstance(fileobj, int):
+                    continue
+                if fileobj == wakeup_fd:
+                    drain_fd(wakeup_fd)
+                else:
+                    self.handle_worker_event(fileobj)
+            self.kill_expired_retirements()
 
     def check_worker_healthchecks(self) -> None:
         if self.config.timeout_worker_healthcheck <= 0:
@@ -607,12 +788,12 @@ class _Supervisor:
         target = self.next_reload_target()
         if (
             target is not None
-            and self.reload_cycle.replacement is None
+            and self.reload_cycle is None
             and not self.expected_exits
             and self.active_workers() <= self.target_workers
         ):
-            self.reload_cycle.target = target
-            self.reload_cycle.replacement = self.spawn_worker()
+            replacement = self.spawn_worker()
+            self.reload_cycle = _ReloadCycle(target, replacement)
             return
         if (
             self.active_workers() < self.target_workers
@@ -638,7 +819,7 @@ class _Supervisor:
     def wait_timeout(self) -> float | None:
         if (
             self.reload_queue
-            and self.reload_cycle.replacement is None
+            and self.reload_cycle is None
             and not self.expected_exits
             and self.active_workers() <= self.target_workers
         ):
@@ -657,7 +838,13 @@ class _Supervisor:
         retirement_timeout = self.retirements.next_timeout(time.monotonic())
         if retirement_timeout is not None:
             timeout_seconds.append(retirement_timeout)
-        return min(timeout_seconds, default=None)
+        timeout = min(timeout_seconds, default=None)
+        if timeout is None:
+            return None
+        # A deadline further out than the selector's wait can express is not an
+        # error — waking early just re-runs this loop — but handing it over
+        # raises `OverflowError` from inside the supervisor.
+        return min(timeout, _MAX_SELECT_TIMEOUT)
 
     def handle_stop(self, *_: object) -> None:
         self.stopping = True
@@ -674,7 +861,7 @@ class _Supervisor:
 
     def run(self) -> None:
         with (
-            signal_wakeup_pipe() as wakeup_fd,
+            signal_wakeup_pipe() as wakeup,
             swap_signal_handlers({
                 signal.SIGINT: self.handle_stop,
                 signal.SIGTERM: self.handle_stop,
@@ -683,7 +870,10 @@ class _Supervisor:
                 signal.SIGTTOU: self.handle_scale_down,
             }),
         ):
-            self.selector.register(wakeup_fd, selectors.EVENT_READ)
+            self.signal_wakeup = wakeup
+            self.selector.register(wakeup.read_fd, selectors.EVENT_READ)
+            if self.parent_liveness_fd is not None:
+                self.selector.register(self.parent_liveness_fd, selectors.EVENT_READ)
             try:
                 self.reconcile()
                 while not self.stopping:
@@ -692,78 +882,104 @@ class _Supervisor:
                         fileobj = key.fileobj
                         if not isinstance(fileobj, int):
                             continue
-                        if fileobj == wakeup_fd:
-                            drain_fd(wakeup_fd)
+                        if fileobj == wakeup.read_fd:
+                            drain_fd(wakeup.read_fd)
                             continue
-                        if fileobj in self.control_workers:
-                            self.drain_control_messages(fileobj)
-                            continue
-                        worker = self.workers.pop(fileobj, None)
-                        if worker is None:
+                        if (
+                            self.parent_liveness_fd is not None
+                            and fileobj == self.parent_liveness_fd
+                        ):
+                            # Watcher SIGKILL (or any exit) closes the write
+                            # end; EOF here is terminal for the whole family.
                             try:
-                                self.selector.unregister(fileobj)
-                            except KeyError:
-                                pass
+                                data = os.read(self.parent_liveness_fd, 1)
+                            except BlockingIOError:
+                                continue
+                            if not data:
+                                self.stopping = True
                             continue
-                        if fileobj == self.reload_cycle.replacement:
-                            self.reload_cycle.replacement = None
-                            self.reload_cycle.target = None
-                        worker.join()
-                        self.retire_worker(
-                            worker,
-                            expected=fileobj in self.expected_exits
-                            or fileobj in self.reload_scheduled,
-                        )
+                        self.handle_worker_event(fileobj)
                     self.check_worker_healthchecks()
                     self.kill_expired_retirements()
                     self.reconcile()
             finally:
                 self.stopping = True
-                _log_line('Shutting down supervisor')
                 try:
-                    self.selector.unregister(wakeup_fd)
+                    _log_line('Shutting down supervisor')
+                except OSError:
+                    pass
+                self.wait_for_retired_workers(wakeup.read_fd)
+                try:
+                    self.selector.unregister(wakeup.read_fd)
                 except KeyError:
                     pass
-                for sentinel in tuple(self.workers):
+                if self.parent_liveness_fd is not None:
                     try:
-                        self.selector.unregister(sentinel)
+                        self.selector.unregister(self.parent_liveness_fd)
                     except KeyError:
                         pass
                 self.selector.close()
 
-                for sentinel in tuple(self.workers):
-                    self.quiesce_worker(sentinel, restart=False)
-                _terminate_workers(
-                    list(self.workers.values()),
-                    graceful_timeout=self.config.timeout_graceful_shutdown,
-                )
-
-                for sentinel in list(self.workers):
-                    worker = self.workers.pop(sentinel)
-                    self.retire_worker(worker, expected=True)
-
                 self.expected_exits.clear()
+                self.signal_wakeup = None
 
 
-def serve_with_supervisor(app: Application | ImportSettings, config: Config) -> None:
+def serve_with_supervisor(
+    app: Application | ImportSettings,
+    config: Config,
+    *,
+    pid_fd: int | None = None,
+) -> None:
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 
-    from ._server import resolve_process_identity
+    from ._server import load_env_file, load_tls_material, resolve_process_identity
+
+    # Strip before any application import: workers inherit the cleaned env.
+    parent_liveness_fd = take_reload_parent_liveness_fd()
 
     identity = resolve_process_identity(config)
-    with bound_sockets(config, socket_owner=(identity.uid, identity.gid)) as socks:
-        from ._lib import emit_banner
+    # An env file holds a deployment's secrets and is routinely readable only
+    # by the starting user, so it is read here rather than in a worker that
+    # has already dropped to an unprivileged identity. Applying it to this
+    # process's environment is what every forked worker inherits, and
+    # clearing the setting is what stops a worker reopening the file.
+    if isinstance(app, ImportSettings) and app.env_file is not None:
+        load_env_file(app.env_file)
+        app = replace(app, env_file=None)
+    # Read PEM and build the acceptor once, while the supervisor still holds
+    # the starting user's privileges: every forked worker reuses the same
+    # prepared state and none of them reopen a key they may no longer read.
+    from ._lib import emit_banner, prepare_tls
 
+    prepared_tls = prepare_tls(config, load_tls_material(config))
+    with bound_sockets(config, socket_owner=(identity.uid, identity.gid)) as leases:
+        sockets = tuple(sock for lease in leases if (sock := lease.socket) is not None)
+        if len(sockets) != len(leases):
+            raise RuntimeError('listener already transferred before serve')
         # Banner shows the RESOLVED addresses (meaningful when binding port 0).
-        emit_banner(replace(config, bind=bound_addresses(socks), host=None, port=None))
+        emit_banner(
+            replace(config, bind=bound_addresses(sockets), host=None, port=None),
+            prepared_tls,
+        )
+        listener_fds = tuple(sock.fileno() for sock in sockets)
         supervisor = _Supervisor(
             app=app,
             config=config,
-            fds=tuple(sock.fileno() for sock in socks),
+            fds=listener_fds,
             identity=identity,
+            prepared_tls=prepared_tls,
+            pid_fd=pid_fd,
+            parent_liveness_fd=parent_liveness_fd,
         )
-        supervisor.run()
+        try:
+            supervisor.run()
+        finally:
+            if parent_liveness_fd is not None:
+                try:
+                    os.close(parent_liveness_fd)
+                except OSError:
+                    pass
 
         if supervisor.fatal_error is not None:
             raise supervisor.fatal_error

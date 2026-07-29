@@ -11,17 +11,24 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
 
-from ._socket import drain_fd, signal_wakeup_pipe, swap_signal_handlers
+from ._config import FdBindSpec, parse_bind_spec
+from ._socket import (
+    drain_fd,
+    nonblocking_pipe,
+    signal_wakeup_pipe,
+    swap_signal_handlers,
+)
 
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from typing import Protocol
+    from typing import Protocol, Self
 
     from ._cli import ImportSettings
     from ._config import Config
@@ -57,6 +64,26 @@ if TYPE_CHECKING:
         def rebuild(self) -> None: ...
         def close(self) -> None: ...
 
+    class _QuietPeriodSelector(Protocol):
+        """The subset of selector behavior the coalescing loop needs."""
+
+        def select(self, timeout: float) -> list[tuple[selectors.SelectorKey, int]]: ...
+
+    class _QuietPeriodNotifier(Protocol):
+        """The one notifier action the coalescing loop can perform."""
+
+        def consume(self) -> bool: ...
+
+    class _ReloadProcess(Protocol):
+        """A child process group leader; its stdio representation is irrelevant."""
+
+        pid: int
+
+        def poll(self) -> int | None: ...
+        def terminate(self) -> None: ...
+        def kill(self) -> None: ...
+        def wait(self, timeout: float | None = None) -> int: ...
+
 
 _RELOAD_IGNORE_DIRS = frozenset({
     '__pycache__',
@@ -68,6 +95,9 @@ _RELOAD_IGNORE_DIRS = frozenset({
     'venv',
 })
 _RELOAD_COALESCE_DELAY = 0.2
+# Private: only the reload watcher sets this; the child supervisor pops it
+# before any application import and watches the read end for EOF.
+_RELOAD_LIVENESS_ENV = '_H2CORN_RELOAD_LIVENESS_FD'
 _INOTIFY_EVENT = struct.Struct('iIII')
 _INOTIFY_DIR_REBUILD_MASK = (
     0x0000_0040  # IN_MOVED_FROM
@@ -281,7 +311,12 @@ class _InotifyNotifier:
             raise OSError(error, os.strerror(error))
         self._fd = fd
         self._watches: dict[int, Path] = {}
-        self._sync_watches()
+        try:
+            self._sync_watches()
+        except BaseException:
+            os.close(self._fd)
+            self._fd = -1
+            raise
 
     def _sync_watches(self):
         active: dict[int, Path] = {}
@@ -459,8 +494,8 @@ def _child_argv(argv: Sequence[str] | None) -> list[str]:
 
 
 def _wait_for_reload_quiet_period(
-    selector: selectors.BaseSelector,
-    notifier: _Notifier,
+    selector: _QuietPeriodSelector,
+    notifier: _QuietPeriodNotifier,
     wakeup_fd: int,
 ) -> tuple[bool, bool]:
     needs_rebuild = False
@@ -483,31 +518,155 @@ def _wait_for_reload_quiet_period(
             deadline = time.monotonic() + _RELOAD_COALESCE_DELAY
 
 
-def _spawn_reload_child(args: list[str], env: Mapping[str, str] | None):
-    child_env = os.environ.copy() if env is None else dict(env)
-    pycache_dir = Path(tempfile.mkdtemp(prefix='h2corn-reload-pyc-'))
-    child_env['PYTHONPYCACHEPREFIX'] = os.fspath(pycache_dir)
-    return (
-        subprocess.Popen([sys.executable, '-m', 'h2corn', *args], env=child_env),
-        pycache_dir,
-    )
+def take_reload_parent_liveness_fd() -> int | None:
+    """Pop the watcher-liveness read fd from the environment, if present."""
+    raw = os.environ.pop(_RELOAD_LIVENESS_ENV, None)
+    if raw is None:
+        return None
+    return int(raw)
 
 
-def _stop_reload_child(
-    process: subprocess.Popen[bytes],
-    graceful_timeout: float,
-    pycache_dir: Path,
-):
-    try:
-        if process.poll() is None:
-            process.terminate()
+def _configured_fd_bind_fds(config: Config) -> tuple[int, ...]:
+    """Listener fds named by `fd://` binds — re-passed on every reload spawn."""
+    fds: list[int] = []
+    for bind in config.bind:
+        match parse_bind_spec(bind):
+            case FdBindSpec(fd):
+                fds.append(fd)
+            case _:
+                pass
+    return tuple(fds)
+
+
+@dataclass(slots=True)
+class _ReloadChild:
+    """One reload generation: process group, pycache dir, liveness write end."""
+
+    process: _ReloadProcess
+    pycache_dir: Path
+    liveness_write_fd: int | None
+
+    @classmethod
+    def spawn(
+        cls,
+        args: list[str],
+        env: Mapping[str, str] | None,
+        *,
+        pass_fds: tuple[int, ...],
+    ) -> Self:
+        # One rollback transaction: pycache dir → liveness pipe → env → child.
+        # Any failure after a step undoes every earlier step.
+        pycache_dir: Path | None = None
+        liveness_read_fd: int | None = None
+        liveness_write_fd: int | None = None
+        process: _ReloadProcess | None = None
+        try:
+            pycache_dir = Path(tempfile.mkdtemp(prefix='h2corn-reload-pyc-'))
+            liveness_read_fd, liveness_write_fd = nonblocking_pipe()
+            child_env = os.environ.copy() if env is None else dict(env)
+            child_env['PYTHONPYCACHEPREFIX'] = os.fspath(pycache_dir)
+            child_env[_RELOAD_LIVENESS_ENV] = str(liveness_read_fd)
+            # Its own process group: the child is a supervisor with workers of
+            # its own, so signalling the child alone reached the middle of the
+            # tree and left the leaves for something else to notice.
+            command = [sys.executable, '-m', 'h2corn', *args]
+            inherit = (liveness_read_fd, *pass_fds)
+            if sys.platform == 'win32':
+                process = subprocess.Popen(command, env=child_env, pass_fds=inherit)
+            else:
+                process = subprocess.Popen(
+                    command,
+                    env=child_env,
+                    process_group=0,
+                    pass_fds=inherit,
+                )
+            # Watcher keeps the write end; the child alone holds the read end.
+            os.close(liveness_read_fd)
+            liveness_read_fd = None
+            return cls(process, pycache_dir, liveness_write_fd)
+        except BaseException:
+            if process is not None:
+                try:
+                    if process.poll() is None:
+                        if sys.platform == 'win32':
+                            process.kill()
+                        else:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                process.kill()
+                        process.wait()
+                except OSError:
+                    pass
+            if liveness_read_fd is not None:
+                try:
+                    os.close(liveness_read_fd)
+                except OSError:
+                    pass
+            if liveness_write_fd is not None:
+                try:
+                    os.close(liveness_write_fd)
+                except OSError:
+                    pass
+            if pycache_dir is not None:
+                shutil.rmtree(pycache_dir, ignore_errors=True)
+            raise
+
+    def stop(self, graceful_timeout: float) -> None:
+        def signal_tree(number: int) -> None:
+            if sys.platform == 'win32':
+                self.process.terminate() if number == signal.SIGTERM else self.process.kill()
+                return
             try:
-                process.wait(timeout=graceful_timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-    finally:
-        shutil.rmtree(pycache_dir, ignore_errors=True)
+                os.killpg(self.process.pid, number)
+            except ProcessLookupError:
+                # The whole group is already gone, which is the goal.
+                pass
+
+        try:
+            if sys.platform == 'win32':
+                if self.process.poll() is None:
+                    signal_tree(signal.SIGTERM)
+                    try:
+                        self.process.wait(timeout=graceful_timeout)
+                    except subprocess.TimeoutExpired:
+                        signal_tree(signal.SIGKILL)
+                        self.process.wait()
+            else:
+                def group_exists() -> bool:
+                    try:
+                        os.killpg(self.process.pid, 0)
+                    except ProcessLookupError:
+                        return False
+                    return True
+
+                # Let the child supervisor orchestrate its normal shutdown.
+                # Its process group remains the completion boundary below.
+                self.process.terminate()
+                deadline = time.monotonic() + max(0.0, graceful_timeout)
+                while group_exists():
+                    # Reap a leader that already exited without mistaking its
+                    # descendants for completion of the process group.
+                    self.process.poll()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        # The leader can exit on SIGTERM before descendants do;
+                        # their shared process group is the ownership boundary.
+                        signal_tree(signal.SIGKILL)
+                        break
+                    time.sleep(min(remaining, 0.01))
+                while group_exists():
+                    signal_tree(signal.SIGKILL)
+                    time.sleep(0.001)
+        finally:
+            write_fd = self.liveness_write_fd
+            self.liveness_write_fd = None
+            if write_fd is not None:
+                try:
+                    os.close(write_fd)
+                except OSError:
+                    pass
+            shutil.rmtree(self.pycache_dir, ignore_errors=True)
 
 
 def serve_with_reload(
@@ -522,49 +681,58 @@ def serve_with_reload(
 ) -> None:
     watch_dirs = _watch_dirs(import_settings, reload_dirs)
     child_args = _child_argv(argv)
-    snapshot = _watch_file_snapshot(
-        watch_dirs,
-        reload_includes,
-        reload_excludes,
-    )
-    child, pycache_dir = _spawn_reload_child(child_args, env)
+    pass_fds = _configured_fd_bind_fds(config)
     stopping = False
 
     def _handle_stop(*_):
         nonlocal stopping
         stopping = True
 
-    _log_line('Reload enabled')
-
+    # Notifier and selector exist before any spawn and always close — a
+    # logging failure during teardown must not skip their cleanup, and a
+    # spawn failure must not leave them behind.
     notifier = _create_notifier(
         watch_dirs,
         reload_includes,
         reload_excludes,
     )
     selector = selectors.DefaultSelector()
-    with (
-        signal_wakeup_pipe() as wakeup_fd,
-        swap_signal_handlers({
-            signal.SIGINT: _handle_stop,
-            signal.SIGTERM: _handle_stop,
-        }),
-    ):
-        selector.register(wakeup_fd, selectors.EVENT_READ)
-        selector.register(notifier.fileno(), selectors.EVENT_READ)
-        try:
+    child: _ReloadChild | None = None
+    try:
+        with (
+            signal_wakeup_pipe() as wakeup,
+            swap_signal_handlers({
+                signal.SIGINT: _handle_stop,
+                signal.SIGTERM: _handle_stop,
+            }),
+        ):
+            selector.register(wakeup.read_fd, selectors.EVENT_READ)
+            selector.register(notifier.fileno(), selectors.EVENT_READ)
+            # Taken once the watches exist, so an edit made while they were being
+            # registered still shows up as a difference.
+            snapshot = _watch_file_snapshot(
+                watch_dirs,
+                reload_includes,
+                reload_excludes,
+            )
+            child = _ReloadChild.spawn(child_args, env, pass_fds=pass_fds)
+            try:
+                _log_line('Reload enabled')
+            except OSError:
+                pass
             while not stopping:
                 for key, _ in selector.select():
                     fileobj = key.fileobj
                     if not isinstance(fileobj, int):
                         continue
-                    if fileobj == wakeup_fd:
-                        drain_fd(wakeup_fd)
+                    if fileobj == wakeup.read_fd:
+                        drain_fd(wakeup.read_fd)
                         continue
                     needs_rebuild = notifier.consume()
                     stop_requested, pending_rebuild = _wait_for_reload_quiet_period(
                         selector,
                         notifier,
-                        wakeup_fd,
+                        wakeup.read_fd,
                     )
                     needs_rebuild |= pending_rebuild
                     if stop_requested:
@@ -581,14 +749,23 @@ def serve_with_reload(
                     if not changed_paths:
                         continue
                     snapshot = next_snapshot
-                    _log_line(_reload_change_message(changed_paths))
-                    _stop_reload_child(
-                        child,
-                        config.timeout_graceful_shutdown,
-                        pycache_dir,
-                    )
-                    child, pycache_dir = _spawn_reload_child(child_args, env)
-        finally:
+                    try:
+                        _log_line(_reload_change_message(changed_paths))
+                    except OSError:
+                        pass
+                    child.stop(config.timeout_graceful_shutdown)
+                    child = _ReloadChild.spawn(child_args, env, pass_fds=pass_fds)
+    finally:
+        try:
             selector.close()
+        except OSError:
+            pass
+        try:
             notifier.close()
-            _stop_reload_child(child, config.timeout_graceful_shutdown, pycache_dir)
+        except OSError:
+            pass
+        if child is not None:
+            try:
+                child.stop(config.timeout_graceful_shutdown)
+            except OSError:
+                pass

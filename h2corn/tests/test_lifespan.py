@@ -2,9 +2,51 @@ import asyncio
 from typing import Any
 
 import pytest
-from h2corn._lifespan import serve_with_lifespan
+from h2corn import Config, Server
+from h2corn._config import LifespanMode
+from h2corn._lifespan import LifespanRunner, await_with_timeout
+
+from tests._support import wait_for_server
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _run_lifespan(
+    app,
+    *,
+    mode: LifespanMode = 'auto',
+    startup_timeout: float | None = None,
+    shutdown_timeout: float | None = None,
+    after_startup=None,
+) -> None:
+    """Drive one primary lifespan the way Server does, without binding."""
+    if mode == 'off':
+        if after_startup is not None:
+            await after_startup(None)
+        return
+    runner = LifespanRunner(app)
+    try:
+        await await_with_timeout(
+            runner.startup(required=mode == 'on'),
+            startup_timeout,
+            'lifespan startup timed out',
+        )
+    except BaseException:
+        await runner.discard_task(startup_timeout)
+        raise
+    try:
+        if after_startup is not None:
+            await after_startup(runner)
+    finally:
+        try:
+            await await_with_timeout(
+                runner.shutdown(),
+                shutdown_timeout,
+                'lifespan shutdown timed out',
+            )
+        except BaseException:
+            await runner.discard_task(shutdown_timeout)
+            raise
 
 
 async def test_lifespan_startup_failure_is_reported() -> None:
@@ -15,11 +57,11 @@ async def test_lifespan_startup_failure_is_reported() -> None:
         assert message['type'] == 'lifespan.startup'
         await send({'type': 'lifespan.startup.failed', 'message': 'boom'})
 
-    async def serve(_app, _handoff):
-        raise AssertionError('serve callback should not run after startup failure')
+    async def after(_runner):
+        raise AssertionError('serve body should not run after startup failure')
 
     with pytest.raises(RuntimeError, match='lifespan startup failed: boom'):
-        await serve_with_lifespan(app, serve)
+        await _run_lifespan(app, after_startup=after)
 
 
 async def test_lifespan_missing_protocol_is_treated_as_optional() -> None:
@@ -28,12 +70,11 @@ async def test_lifespan_missing_protocol_is_treated_as_optional() -> None:
     async def app(scope, _receive, _send):
         assert scope['type'] == 'lifespan'
 
-    async def serve(_app, _handoff):
+    async def after(_runner):
         nonlocal served
         served = True
 
-    await serve_with_lifespan(app, serve)
-
+    await _run_lifespan(app, after_startup=after)
     assert served is True
 
 
@@ -43,14 +84,12 @@ async def test_lifespan_can_be_disabled() -> None:
     async def app(scope, _receive, _send):
         raise AssertionError('lifespan scope should not be used when disabled')
 
-    async def serve(wrapped_app, handoff):
+    async def after(runner):
         nonlocal served
         served = True
-        assert wrapped_app is app
-        assert handoff is None
+        assert runner is None
 
-    await serve_with_lifespan(app, serve, mode='off')
-
+    await _run_lifespan(app, mode='off', after_startup=after)
     assert served is True
 
 
@@ -58,54 +97,93 @@ async def test_lifespan_on_requires_support() -> None:
     async def app(scope, _receive, _send):
         assert scope['type'] == 'lifespan'
 
-    async def serve(_app, _handoff):
-        raise AssertionError('serve callback should not run without required lifespan')
+    async def after(_runner):
+        raise AssertionError('serve body should not run without required lifespan')
 
     with pytest.raises(
         RuntimeError,
         match='lifespan startup is required but the app does not support it',
     ):
-        await serve_with_lifespan(app, serve, mode='on')
+        await _run_lifespan(app, mode='on', after_startup=after)
 
 
-async def test_lifespan_state_is_copied_into_request_scopes() -> None:
-    seen_states: list[dict[str, Any]] = []
+@pytest.mark.parametrize('mode', ['auto', 'on'])
+async def test_lifespan_falls_back_when_the_app_never_reads_the_scope(
+    mode: LifespanMode,
+) -> None:
+    served = False
 
-    async def app(scope, receive, send):
-        if scope['type'] == 'lifespan':
-            startup = await receive()
-            assert startup['type'] == 'lifespan.startup'
-            scope['state']['ready'] = True
-            await send({'type': 'lifespan.startup.complete'})
-            shutdown = await receive()
-            assert shutdown['type'] == 'lifespan.shutdown'
-            await send({'type': 'lifespan.shutdown.complete'})
-            return
+    async def app(scope, _receive, _send):
+        assert scope['type'] == 'http', 'this app only speaks HTTP'
 
-        seen_states.append(scope.get('state', {}))
+    async def after(_runner):
+        nonlocal served
+        served = True
 
-    async def receive():
-        raise AssertionError('request receive should not run')
+    if mode == 'on':
+        with pytest.raises(RuntimeError, match='does not support it') as raised:
+            await _run_lifespan(app, mode=mode, after_startup=after)
+        assert isinstance(raised.value.__cause__, AssertionError)
+        assert served is False
+    else:
+        await _run_lifespan(app, mode=mode, after_startup=after)
+        assert served is True
 
-    async def send(_message):
-        return None
 
-    async def serve(wrapped_app, handoff):
-        assert type(handoff).__name__ == 'LifespanHandoff'
-        with pytest.raises(AttributeError):
-            handoff.required = False
-        first_scope: dict[str, Any] = {'type': 'http'}
-        await wrapped_app(first_scope, receive, send)
-        assert first_scope['state'] == {'ready': True}
-        first_scope['state']['ready'] = False
+@pytest.mark.parametrize(
+    'error', [AssertionError('boom'), KeyError('boom'), RuntimeError('boom')]
+)
+async def test_lifespan_auto_falls_back_on_any_exception(error: Exception) -> None:
+    served = False
 
-        second_scope: dict[str, Any] = {'type': 'websocket'}
-        await wrapped_app(second_scope, receive, send)
-        assert second_scope['state'] == {'ready': True}
+    async def app(_scope, receive, _send):
+        await receive()
+        raise error
 
-    await serve_with_lifespan(app, serve)
+    async def after(_runner):
+        nonlocal served
+        served = True
 
-    assert seen_states == [{'ready': False}, {'ready': True}]
+    await _run_lifespan(app, mode='auto', after_startup=after)
+    assert served is True
+
+
+@pytest.mark.parametrize(
+    'error', [AssertionError('boom'), KeyError('boom'), RuntimeError('boom')]
+)
+async def test_lifespan_on_reports_the_diagnosis_and_keeps_the_cause(
+    error: Exception,
+) -> None:
+    served = False
+
+    async def app(_scope, receive, _send):
+        await receive()
+        raise error
+
+    async def after(_runner):
+        nonlocal served
+        served = True
+
+    with pytest.raises(RuntimeError, match='does not support it') as raised:
+        await _run_lifespan(app, mode='on', after_startup=after)
+    assert isinstance(raised.value.__cause__, type(error))
+    assert served is False
+
+
+async def test_lifespan_startup_failed_message_is_loud_in_auto_mode() -> None:
+    served = False
+
+    async def app(_scope, receive, send):
+        await receive()
+        await send({'type': 'lifespan.startup.failed', 'message': 'db is down'})
+
+    async def after(_runner):
+        nonlocal served
+        served = True
+
+    with pytest.raises(RuntimeError, match='db is down'):
+        await _run_lifespan(app, mode='auto', after_startup=after)
+    assert served is False
 
 
 async def test_lifespan_startup_timeout_is_reported() -> None:
@@ -115,11 +193,11 @@ async def test_lifespan_startup_timeout_is_reported() -> None:
         assert message['type'] == 'lifespan.startup'
         await asyncio.sleep(0.05)
 
-    async def serve(_app, _handoff):
-        raise AssertionError('serve callback should not run after startup timeout')
+    async def after(_runner):
+        raise AssertionError('serve body should not run after startup timeout')
 
     with pytest.raises(RuntimeError, match='lifespan startup timed out'):
-        await serve_with_lifespan(app, serve, startup_timeout=0.01)
+        await _run_lifespan(app, after_startup=after, startup_timeout=0.01)
 
 
 async def test_repeated_cancellation_waits_for_lifespan_child_cleanup() -> None:
@@ -144,10 +222,7 @@ async def test_repeated_cancellation_waits_for_lifespan_child_cleanup() -> None:
             cleanup_finished.set()
             raise
 
-    async def serve(_app, _handoff):
-        raise AssertionError('serve callback should not run during startup')
-
-    serving = asyncio.create_task(serve_with_lifespan(app, serve, mode='on'))
+    serving = asyncio.create_task(_run_lifespan(app, mode='on'))
     await asyncio.wait_for(startup_entered.wait(), timeout=1)
     serving.cancel()
     await asyncio.wait_for(cleanup_started.wait(), timeout=1)
@@ -172,11 +247,11 @@ async def test_lifespan_shutdown_timeout_is_reported() -> None:
         assert shutdown['type'] == 'lifespan.shutdown'
         await asyncio.sleep(0.05)
 
-    async def serve(_app, _handoff):
+    async def after(_runner):
         return None
 
     with pytest.raises(RuntimeError, match='lifespan shutdown timed out'):
-        await serve_with_lifespan(app, serve, shutdown_timeout=0.01)
+        await _run_lifespan(app, after_startup=after, shutdown_timeout=0.01)
 
 
 async def test_lifespan_shutdown_failure_cleans_up_app_task() -> None:
@@ -194,11 +269,11 @@ async def test_lifespan_shutdown_failure_cleans_up_app_task() -> None:
         await send({'type': 'lifespan.shutdown.failed', 'message': 'boom'})
         await asyncio.sleep(10)
 
-    async def serve(_app, _handoff):
+    async def after(_runner):
         return None
 
     with pytest.raises(RuntimeError, match='lifespan shutdown failed: boom'):
-        await serve_with_lifespan(app, serve)
+        await _run_lifespan(app, after_startup=after)
 
     assert app_task is not None
     assert app_task.cancelled()
@@ -211,8 +286,159 @@ async def test_lifespan_app_timeout_error_is_not_rewritten_as_server_timeout() -
         assert startup['type'] == 'lifespan.startup'
         raise TimeoutError('custom-timeout')
 
-    async def serve(_app, _handoff):
+    async def after(_runner):
         return None
 
-    with pytest.raises(TimeoutError, match='custom-timeout'):
-        await serve_with_lifespan(app, serve, startup_timeout=1.0)
+    with pytest.raises(RuntimeError, match='does not support it') as raised:
+        await _run_lifespan(
+            app, mode='on', after_startup=after, startup_timeout=1.0
+        )
+    assert isinstance(raised.value.__cause__, TimeoutError)
+    assert str(raised.value.__cause__) == 'custom-timeout'
+
+
+async def test_startup_timeout_is_bounded_by_an_app_that_ignores_cancellation() -> None:
+    released = asyncio.Event()
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'lifespan'
+        await receive()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await released.wait()
+            raise
+
+    async def after(_runner):
+        raise AssertionError('serve must not run: startup never completed')
+
+    try:
+        with pytest.raises(RuntimeError, match='lifespan startup timed out'):
+            await asyncio.wait_for(
+                _run_lifespan(
+                    app, mode='on', after_startup=after, startup_timeout=0.05
+                ),
+                timeout=5,
+            )
+    finally:
+        released.set()
+        await asyncio.sleep(0)
+
+
+async def test_discard_task_retains_task_until_it_settles() -> None:
+    """discard_task returns False and keeps ownership when the task outlives timeout."""
+    release = asyncio.Event()
+
+    async def resistant() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # Swallow cancellation until the test releases ownership.
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+
+    runner = LifespanRunner(lambda *_: None)  # type: ignore[arg-type]
+    runner._task = asyncio.get_running_loop().create_task(resistant())
+    runner._active = True
+    # Let the task enter its sleep so cancel cannot finish it before it runs.
+    await asyncio.sleep(0)
+    assert not runner._task.done()
+    settled = await runner.discard_task(timeout=0.01)
+    assert settled is False
+    assert runner._task is not None
+    assert not runner._task.done()
+    release.set()
+    # Wake the sleeping task so it can observe the release.
+    runner._task.cancel()
+    await asyncio.wait_for(asyncio.shield(runner._task), timeout=1)
+    assert await runner.discard_task() is True
+    assert runner._task is None
+
+
+async def test_server_shutdown_during_blocked_startup_never_serves() -> None:
+    startup_entered = asyncio.Event()
+    finish_startup = asyncio.Event()
+    saw_http = False
+
+    async def app(scope, receive, send):
+        nonlocal saw_http
+        if scope['type'] == 'lifespan':
+            assert (await receive())['type'] == 'lifespan.startup'
+            startup_entered.set()
+            await finish_startup.wait()
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+        saw_http = True
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='on'),
+    )
+    task = asyncio.create_task(server.serve())
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    assert server.addresses
+    server.shutdown()
+    finish_startup.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert saw_http is False
+    assert server.addresses == ()
+
+
+async def test_wait_started_stays_pending_while_lifespan_startup_holds() -> None:
+    startup_entered = asyncio.Event()
+    finish_startup = asyncio.Event()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            assert (await receive())['type'] == 'lifespan.startup'
+            startup_entered.set()
+            await finish_startup.wait()
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    server = Server(
+        app,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='on'),
+    )
+    serving = asyncio.create_task(server.serve())
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    assert server.addresses, 'listeners bind before lifespan startup finishes'
+    waiting = asyncio.create_task(server.wait_started())
+    await asyncio.sleep(0)
+    assert not waiting.done(), 'readiness must wait for lifespan + native acceptance'
+    finish_startup.set()
+    await asyncio.wait_for(waiting, timeout=2)
+    server.shutdown()
+    await asyncio.wait_for(serving, timeout=2)
+
+
+async def test_zero_graceful_timeout_on_empty_server_completes() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            raise AssertionError('lifespan off')
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    server = Server(
+        app,
+        Config(
+            bind=('127.0.0.1:0',),
+            access_log=False,
+            lifespan='off',
+            timeout_graceful_shutdown=0,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await wait_for_server(server, serving)
+    server.shutdown()
+    await asyncio.wait_for(serving, timeout=2)
+    assert server.addresses == ()
+    assert server.releasing is False

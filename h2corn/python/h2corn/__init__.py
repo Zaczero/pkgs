@@ -18,7 +18,14 @@ constructable from environment variables or a TOML file.
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 from typing import Any as _Any
 
-from ._config import CertReqsMode, Config, LifespanMode, LoopImpl, ProxyProtocolMode
+from ._config import (
+    CertReqsMode,
+    Config,
+    LifespanMode,
+    LoopImpl,
+    ProxyProtocolMode,
+    ServerHeaderMode,
+)
 
 if _TYPE_CHECKING:
     from ._server import Server, serve
@@ -53,6 +60,7 @@ if _TYPE_CHECKING:
         Send,
         SendMessage,
         State,
+        TLSExtension,
         WebSocketAccept,
         WebSocketClose,
         WebSocketConnect,
@@ -103,7 +111,9 @@ __all__ = (
     'Send',
     'SendMessage',
     'Server',
+    'ServerHeaderMode',
     'State',
+    'TLSExtension',
     'WebSocketAccept',
     'WebSocketClose',
     'WebSocketConnect',
