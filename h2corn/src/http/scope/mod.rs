@@ -7,12 +7,13 @@ use http::Method;
 use memchr::memchr;
 use pyo3::intern;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 
 use crate::ascii;
-use crate::hpack::BytesStr;
+use crate::config::ServerConfig;
 use crate::http::types::{
-    HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaders,
+    BytesStr, HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaders,
 };
 use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
@@ -65,12 +66,7 @@ pub(crate) fn build_http_scope<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
-    build_base_scope::<true>(
-        py,
-        ctx,
-        http_scope_extensions(py, ctx.request.accepts_trailers())?,
-        &[],
-    )
+    build_base_scope::<true>(py, ctx, http_scope_extensions(py, ctx)?, &[])
 }
 
 pub(crate) fn build_websocket_scope<'py>(
@@ -81,7 +77,7 @@ pub(crate) fn build_websocket_scope<'py>(
     build_base_scope::<false>(
         py,
         ctx,
-        websocket_scope_extensions(py)?,
+        websocket_scope_extensions(py, ctx)?,
         requested_subprotocols,
     )
 }
@@ -123,7 +119,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         "path" => path_to_python(py, path.as_ref()),
         "query_string" => query_string_to_python(py, query),
         if !view.root_path.is_empty() => {
-            "root_path" => PyString::new(py, view.root_path.as_ref()),
+            "root_path" => root_path_to_python(py, &ctx.connection.config, view.root_path.as_ref()),
         },
         "server" => server_scope_value(py, ctx, view.server)?,
         "headers" => headers_to_python(py, &request.headers)?,
@@ -143,30 +139,80 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     }))
 }
 
-fn http_scope_extensions(py: Python<'_>, accepts_trailers: bool) -> PyResult<Bound<'_, PyDict>> {
-    if accepts_trailers {
-        Ok(py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
-            "http.response.trailers" => py_dict!(py, {}),
-        }))
-    } else {
-        Ok(py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
-        }))
-    }
+/// Cache one dict per known shape and hand the same object to every scope.
+///
+/// Rebuilding the ASGI version dict per request cost a measured 599
+/// instructions — 1.75 % of this server's per-request work — to produce a value
+/// identical every time.
+///
+/// The trade is that a mutation would be seen by every later scope, so this is
+/// only for what an application reads and never writes — which rules out
+/// `extensions`, where an application may add its own namespaced key.
+fn cached_dict<'py>(
+    py: Python<'py>,
+    cell: &'static PyOnceLock<Py<PyDict>>,
+    build: impl FnOnce() -> PyResult<Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    Ok(cell
+        .get_or_try_init(py, || -> PyResult<Py<PyDict>> { Ok(build()?.unbind()) })?
+        .bind(py)
+        .clone())
 }
 
-fn websocket_scope_extensions(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    Ok(py_dict!(py, {
+fn http_scope_extensions<'py>(
+    py: Python<'py>,
+    ctx: &RequestContext,
+) -> PyResult<Bound<'py, PyDict>> {
+    // Deliberately per-request, unlike `asgi`: an application may write its own
+    // namespaced key here (`scope["extensions"]["application.private"]`), and a
+    // shared dict would carry that write into every later request. Worth the
+    // measured 525 instructions.
+    let extensions = if ctx.request.accepts_trailers() {
+        py_dict!(py, {
+            "http.response.pathsend" => py_dict!(py, {}),
+            "http.response.trailers" => py_dict!(py, {}),
+        })
+    } else {
+        py_dict!(py, {
+            "http.response.pathsend" => py_dict!(py, {}),
+        })
+    };
+    add_tls_extension(py, ctx, &extensions)?;
+    Ok(extensions)
+}
+
+fn websocket_scope_extensions<'py>(
+    py: Python<'py>,
+    ctx: &RequestContext,
+) -> PyResult<Bound<'py, PyDict>> {
+    let extensions = py_dict!(py, {
         "websocket.http.response" => py_dict!(py, {}),
-    }))
+    });
+    add_tls_extension(py, ctx, &extensions)?;
+    Ok(extensions)
+}
+
+/// Add `tls` when the connection has one — the extension requires the key to
+/// be absent, not empty, on a connection that is not TLS.
+fn add_tls_extension(
+    py: Python<'_>,
+    ctx: &RequestContext,
+    extensions: &Bound<'_, PyDict>,
+) -> PyResult<()> {
+    if let Some(tls) = ctx.connection.tls_scope_extension(py)? {
+        extensions.set_item(pyo3::intern!(py, "tls"), tls)?;
+    }
+    Ok(())
 }
 
 fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    Ok(py_dict!(py, {
-        "version" => "3.0",
-        "spec_version" => "2.5",
-    }))
+    static ASGI: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
+    cached_dict(py, &ASGI, || {
+        Ok(py_dict!(py, {
+            "version" => "3.0",
+            "spec_version" => "2.5",
+        }))
+    })
 }
 
 pub(crate) fn headers_to_python<'py>(
@@ -185,6 +231,28 @@ pub(crate) fn headers_to_python<'py>(
             )
         }),
     )
+}
+
+/// The configured root path is the same string on every request under a
+/// mounted application, so it is built once; a forwarded prefix is not, and is
+/// built per request.
+///
+/// Identity, not equality, decides: the view borrows the configuration's own
+/// string unless a trusted proxy replaced it, and comparing the pointers says
+/// which happened without walking the bytes.
+fn root_path_to_python<'py>(
+    py: Python<'py>,
+    config: &ServerConfig,
+    root_path: &str,
+) -> Bound<'py, PyString> {
+    if !std::ptr::eq(root_path, config.root_path.as_ref()) {
+        return PyString::new(py, root_path);
+    }
+    config
+        .root_path_scope
+        .get_or_init(py, || PyString::new(py, root_path).unbind())
+        .bind(py)
+        .clone()
 }
 
 fn scope_type_to_python<const IS_HTTP: bool>(py: Python<'_>) -> Bound<'_, PyString> {
@@ -309,25 +377,24 @@ fn method_to_python<'py>(py: Python<'py>, method: &Method) -> Bound<'py, PyStrin
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::sync::Arc;
 
     use http::Method;
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use pyo3::{PyResult, Python};
 
     use super::{build_http_scope, build_websocket_scope, decode_path};
-    use crate::hpack::BytesStr;
+    use crate::config::ServerConfig;
     use crate::http::header_meta::RequestHeaderMeta;
-    use crate::http::types::{HttpVersion, RequestHead, RequestHeaders, RequestTarget};
+    use crate::http::types::{BytesStr, HttpVersion, RequestHead, RequestHeaders, RequestTarget};
     use crate::proxy_protocol::{ClientAddr, ServerAddr};
-    use crate::runtime::{ConnectionContext, RequestContext};
+    use crate::runtime::{ConnectionContext, RequestContext, test_fixtures};
 
     fn init_python() {
         Python::initialize();
     }
 
     fn test_connection(py: Python<'_>) -> ConnectionContext {
-        use crate::runtime::test_fixtures;
-
         test_fixtures::connection_context(py)
     }
 
@@ -342,6 +409,54 @@ mod tests {
             headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
+    }
+
+    #[test]
+    fn configured_root_path_is_built_once_and_a_forwarded_prefix_is_not() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let config = ServerConfig {
+                root_path: Box::from("/api"),
+                ..test_fixtures::server_config_parts()
+            };
+            let connection = test_fixtures::connection_context_with(py, Arc::new(config));
+
+            let scope_one = {
+                let request = RequestContext::new(connection.clone(), test_request());
+                build_http_scope(py, &request)?
+            };
+            let scope_two = {
+                let request = RequestContext::new(connection.clone(), test_request());
+                build_http_scope(py, &request)?
+            };
+            // A forwarded prefix is a different value per request and must not
+            // come from the cache.
+            let scope_three = {
+                let mut overridden = RequestContext::new(connection.clone(), test_request());
+                overridden
+                    .scope_overrides
+                    .get_or_insert_with(Box::default)
+                    .root_path = Some(Box::from("/api/edge"));
+                build_http_scope(py, &overridden)?
+            };
+            drop(connection);
+
+            let root_one = scope_one.get_item("root_path")?.expect("root_path exists");
+            let root_two = scope_two.get_item("root_path")?.expect("root_path exists");
+            let root_three = scope_three
+                .get_item("root_path")?
+                .expect("root_path exists");
+
+            assert_eq!(root_one.extract::<String>()?, "/api");
+            assert!(
+                root_one.is(&root_two),
+                "the configured root path is the same string every request"
+            );
+            assert_eq!(root_three.extract::<String>()?, "/api/edge");
+            assert!(!root_three.is(&root_one));
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -420,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn http_scope_metadata_dicts_are_isolated_per_request() {
+    fn http_scope_shares_asgi_metadata_and_isolates_extensions() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
@@ -455,11 +570,13 @@ mod tests {
                 .expect("pathsend extension exists")
                 .cast_into::<PyDict>()?;
 
-            assert!(!asgi_one.is(&asgi_two));
+            // `asgi` is constant metadata and is deliberately one shared
+            // object; `extensions` stays per-request, because an application
+            // may write its own keys there.
+            assert!(asgi_one.is(&asgi_two));
             assert!(!extensions_one.is(&extensions_two));
             assert!(!pathsend_one.is(&pathsend_two));
 
-            asgi_one.set_item("version", "mutated")?;
             extensions_one.set_item("application.private", true)?;
             pathsend_one.set_item("application.private", true)?;
 
@@ -478,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn websocket_scope_metadata_dicts_are_isolated_per_request() {
+    fn websocket_scope_extension_dicts_are_isolated_per_request() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());

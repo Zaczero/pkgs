@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::ops::BitOrAssign;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
 
@@ -25,15 +27,101 @@ const MONTHS: [[u8; 3]; 12] = [
 ];
 const RESPONSE_HAS_SERVER: u8 = 1 << 0;
 const RESPONSE_HAS_DATE: u8 = 1 << 1;
-const RESPONSE_CONTENT_LENGTH_SCANNED: u8 = 1 << 2;
-const RESPONSE_HAS_CONTENT_LENGTH: u8 = 1 << 3;
-const RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE: u8 = 1 << 4;
 
+static RESPONSE_HEADER_STRIP_COUNTS: [[AtomicU64; 5]; 2] = [
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
+];
+
+/// Application response fields whose transport semantics h2corn owns.
+/// Names reach this classifier only after grammar validation and ASCII
+/// normalisation, making this the one owner for both configuration and ASGI
+/// response-header policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ApplicationResponseField {
+    Connection,
+    KeepAlive,
+    ProxyConnection,
+    Te,
+    TransferEncoding,
+    Upgrade,
+    Other,
+}
+
+/// Fixed application fields stripped at ASGI ingress. `transfer-encoding` is
+/// intentionally absent: ASGI requires that field to be ignored silently.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ResponseHeaderStrips(u8);
+
+impl ResponseHeaderStrips {
+    const CONNECTION: u8 = 1 << 0;
+    const KEEP_ALIVE: u8 = 1 << 1;
+    const PROXY_CONNECTION: u8 = 1 << 2;
+    const TE: u8 = 1 << 3;
+    const UPGRADE: u8 = 1 << 4;
+
+    pub(crate) const fn insert(&mut self, field: ApplicationResponseField) {
+        self.0 |= match field {
+            ApplicationResponseField::Connection => Self::CONNECTION,
+            ApplicationResponseField::KeepAlive => Self::KEEP_ALIVE,
+            ApplicationResponseField::ProxyConnection => Self::PROXY_CONNECTION,
+            ApplicationResponseField::Te => Self::TE,
+            ApplicationResponseField::Upgrade => Self::UPGRADE,
+            ApplicationResponseField::TransferEncoding | ApplicationResponseField::Other => 0,
+        };
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Response-start facts retained after transport-owned fields are removed.
+/// `Connection` never travels as an application header: HTTP/1 consumes these
+/// facts to choose connection lifetime/Upgrade syntax and HTTP/2 ignores them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ResponseConnectionDirective {
+    #[default]
+    None,
+    Close,
+    Upgrade,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ResponseHeaderControl {
+    pub(crate) directive: ResponseConnectionDirective,
+    pub(crate) strips: ResponseHeaderStrips,
+}
+
+/// The `Connection` tokens h2corn acts on.
+///
+/// A request may repeat the header, so these accumulate across occurrences:
+/// `Connection: close` followed by `Connection: upgrade` means both.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConnectionHeaderTokens {
     pub close: bool,
     pub upgrade: bool,
     pub http2_settings: bool,
+}
+
+impl BitOrAssign for ConnectionHeaderTokens {
+    fn bitor_assign(&mut self, other: Self) {
+        self.close |= other.close;
+        self.upgrade |= other.upgrade;
+        self.http2_settings |= other.http2_settings;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,13 +131,27 @@ enum ResponseContentLength {
     NeedsRewrite,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResponseHeaderScan {
-    content_length: usize,
+    content_length: ResponseContentLength,
     flags: u8,
 }
 
+#[derive(Debug)]
+pub(crate) struct ForwardedView<'a> {
+    pub(crate) client_host: Option<&'a str>,
+    pub(crate) proto: Option<&'a str>,
+    pub(crate) host: Option<(&'a str, Option<u16>)>,
+}
+
 impl ResponseHeaderScan {
+    const fn new() -> Self {
+        Self {
+            content_length: ResponseContentLength::Missing,
+            flags: 0,
+        }
+    }
+
     const fn has_server(self) -> bool {
         self.flags & RESPONSE_HAS_SERVER != 0
     }
@@ -59,19 +161,11 @@ impl ResponseHeaderScan {
     }
 
     const fn content_length_state(self) -> ResponseContentLength {
-        assert!(
-            self.flags & RESPONSE_CONTENT_LENGTH_SCANNED != 0,
-            "response content-length must be scanned before reading",
-        );
-        if self.flags & RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE != 0 {
-            ResponseContentLength::NeedsRewrite
-        } else if self.flags & RESPONSE_HAS_CONTENT_LENGTH != 0 {
-            ResponseContentLength::Valid(self.content_length)
-        } else {
-            ResponseContentLength::Missing
-        }
+        self.content_length
     }
 
+    /// A single syntactically valid declared length. Missing, malformed, and
+    /// conflicting lengths deliberately collapse to `None`.
     pub(crate) const fn content_length(self) -> Option<usize> {
         match self.content_length_state() {
             ResponseContentLength::Valid(len) => Some(len),
@@ -80,36 +174,60 @@ impl ResponseHeaderScan {
     }
 
     fn observe_content_length(&mut self, value: &[u8]) {
-        if self.flags & (RESPONSE_HAS_CONTENT_LENGTH | RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE) != 0 {
-            self.flags |= RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
-            return;
-        }
-        if let Some(len) =
-            parse_content_length_header(value).and_then(|len| usize::try_from(len).ok())
-        {
-            self.content_length = len;
-            self.flags |= RESPONSE_HAS_CONTENT_LENGTH;
-        } else {
-            self.flags |= RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
-        }
-    }
-
-    const fn finish_content_length_scan(&mut self) {
-        self.flags |= RESPONSE_CONTENT_LENGTH_SCANNED;
+        self.content_length = match (
+            self.content_length,
+            parse_content_length_header(value).and_then(|len| usize::try_from(len).ok()),
+        ) {
+            (ResponseContentLength::Missing, Some(len)) => ResponseContentLength::Valid(len),
+            _ => ResponseContentLength::NeedsRewrite,
+        };
     }
 
     const fn set_content_length(&mut self, len: usize) {
-        self.content_length = len;
-        self.flags |= RESPONSE_CONTENT_LENGTH_SCANNED | RESPONSE_HAS_CONTENT_LENGTH;
-        self.flags &= !RESPONSE_CONTENT_LENGTH_NEEDS_REWRITE;
+        self.content_length = ResponseContentLength::Valid(len);
+    }
+
+    const fn clear_content_length(&mut self) {
+        self.content_length = ResponseContentLength::Missing;
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ForwardedView<'a> {
-    pub(crate) client_host: Option<&'a str>,
-    pub(crate) proto: Option<&'a str>,
-    pub(crate) host: Option<(&'a str, Option<u16>)>,
+pub(crate) const fn application_response_field(name: &[u8]) -> ApplicationResponseField {
+    match name {
+        b"connection" => ApplicationResponseField::Connection,
+        b"keep-alive" => ApplicationResponseField::KeepAlive,
+        b"proxy-connection" => ApplicationResponseField::ProxyConnection,
+        b"te" => ApplicationResponseField::Te,
+        b"transfer-encoding" => ApplicationResponseField::TransferEncoding,
+        b"upgrade" => ApplicationResponseField::Upgrade,
+        _ => ApplicationResponseField::Other,
+    }
+}
+
+/// Bounded per-protocol/per-fixed-field observability for policy stripping.
+/// The first event is diagnostic; subsequent events only increment one of ten
+/// atomics. Values and application-controlled names never reach the log.
+pub(crate) fn observe_response_header_strips(http2: bool, strips: ResponseHeaderStrips) {
+    if strips.is_empty() {
+        return;
+    }
+    let protocol = usize::from(http2);
+    for (bit, name) in [
+        (ResponseHeaderStrips::CONNECTION, "connection"),
+        (ResponseHeaderStrips::KEEP_ALIVE, "keep-alive"),
+        (ResponseHeaderStrips::PROXY_CONNECTION, "proxy-connection"),
+        (ResponseHeaderStrips::TE, "te"),
+        (ResponseHeaderStrips::UPGRADE, "upgrade"),
+    ] {
+        if strips.0 & bit == 0 {
+            continue;
+        }
+        let index = bit.trailing_zeros() as usize;
+        if RESPONSE_HEADER_STRIP_COUNTS[protocol][index].fetch_add(1, Ordering::Relaxed) == 0 {
+            let protocol = if http2 { "HTTP/2" } else { "HTTP/1.1" };
+            eprintln!("h2corn: stripped application {name} response header for {protocol}");
+        }
+    }
 }
 
 pub(crate) fn last_csv_token(value: &str) -> &str {
@@ -198,11 +316,171 @@ pub(crate) fn header_is_single_token(value: &[u8], token: &[u8]) -> bool {
 }
 
 pub(crate) fn parse_content_length_header(value: &[u8]) -> Option<u64> {
-    parse_pos::<u64, false>(value.trim_ascii()).ok()
+    let mut parsed = None;
+    for member in split_commas_bytes(value) {
+        let member = member.trim_ascii();
+        if member.is_empty() || !member.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        let value = parse_pos::<u64, false>(member).ok()?;
+        match parsed {
+            Some(previous) if previous != value => return None,
+            Some(_) => {},
+            None => parsed = Some(value),
+        }
+    }
+    parsed
+}
+
+/// Validate the grammar shared by HTTP/1 absolute-form and HTTP/2 `:scheme`.
+///
+/// Scheme values are protocol syntax, not arbitrary UTF-8. Keeping this at
+/// ingress gives both protocols the same answer before a scope exists.
+pub(crate) fn request_scheme_is_valid(value: &[u8]) -> bool {
+    let Some((&first, rest)) = value.split_first() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && rest
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'-' | b'.'))
+}
+
+/// Check authority syntax without imposing a server-side port range.
+///
+/// The port is a decimal token in HTTP syntax; rejecting `99999` here merely
+/// turns an application routing decision into a parser limitation. IPv6 must
+/// be bracketed when it shares an authority with an optional port.
+pub(crate) fn request_authority_is_valid(value: &[u8]) -> bool {
+    if value.is_empty()
+        || value.iter().any(|byte| {
+            !byte.is_ascii()
+                || byte.is_ascii_control()
+                || matches!(*byte, b' ' | b'@' | b',' | b'/' | b'?' | b'#')
+        })
+        || !percent_escapes_are_valid(value)
+    {
+        return false;
+    }
+
+    if let Some(rest) = value.strip_prefix(b"[") {
+        let Some(close) = rest.iter().position(|byte| *byte == b']') else {
+            return false;
+        };
+        let host = &rest[..close];
+        let suffix = &rest[close + 1..];
+        if host.is_empty() || host.contains(&b'[') || host.contains(&b']') {
+            return false;
+        }
+        return match suffix {
+            [] => true,
+            [b':', port @ ..] => !port.is_empty() && port.iter().all(u8::is_ascii_digit),
+            _ => false,
+        };
+    }
+
+    if value.contains(&b'[') || value.contains(&b']') {
+        return false;
+    }
+    match memchr(b':', value) {
+        None => true,
+        Some(colon) if memchr(b':', &value[colon + 1..]).is_none() => {
+            let (host, port) = (&value[..colon], &value[colon + 1..]);
+            !host.is_empty() && !port.is_empty() && port.iter().all(u8::is_ascii_digit)
+        },
+        Some(_) => false,
+    }
+}
+
+/// Validate an origin-form path or the method-specific asterisk form.
+pub(crate) fn request_path_is_valid(method: &http::Method, value: &[u8]) -> bool {
+    if value == b"*" {
+        return *method == http::Method::OPTIONS;
+    }
+    value.starts_with(b"/")
+        && value.iter().all(|byte| {
+            byte.is_ascii() && !byte.is_ascii_control() && !matches!(*byte, b' ' | b'#' | 0x7F)
+        })
+        && percent_escapes_are_valid(value)
+}
+
+/// An HTTP token is the grammar used by `:protocol` and WebSocket subprotocols.
+pub(crate) fn protocol_token_is_valid(value: &[u8]) -> bool {
+    request_header_name_needs_lowercase(value).is_some()
+}
+
+/// Fields whose semantics are fixed before a trailer section is reached.
+///
+/// Extension fields deliberately remain admissible. Their defining extension,
+/// rather than this generic HTTP transport, decides whether it permits a
+/// trailer occurrence. `content-digest` is such a trailer-safe extension.
+pub(crate) fn trailer_field_name_is_forbidden(name: &[u8]) -> bool {
+    [
+        b"connection".as_slice(),
+        b"proxy-connection",
+        b"keep-alive",
+        b"transfer-encoding",
+        b"upgrade",
+        b"te",
+        b"host",
+        b"content-length",
+        b"trailer",
+        b"authorization",
+        b"proxy-authorization",
+        b"www-authenticate",
+        b"proxy-authenticate",
+        b"if-match",
+        b"if-none-match",
+        b"if-modified-since",
+        b"if-unmodified-since",
+        b"if-range",
+        b"cache-control",
+        b"pragma",
+        b"expires",
+        b"content-encoding",
+        b"content-language",
+        b"content-location",
+        b"content-range",
+        b"content-type",
+        b"last-modified",
+        b"etag",
+    ]
+    .iter()
+    .any(|forbidden| name.eq_ignore_ascii_case(forbidden))
+}
+
+/// Headers owned by framing or connection setup cannot be configured as
+/// response defaults: they would otherwise be copied into every response
+/// before the protocol writer gets a chance to choose the real value.
+pub(crate) const fn configured_response_field_is_forbidden(name: &[u8]) -> bool {
+    matches!(
+        application_response_field(name),
+        ApplicationResponseField::Connection
+            | ApplicationResponseField::ProxyConnection
+            | ApplicationResponseField::KeepAlive
+            | ApplicationResponseField::TransferEncoding
+            | ApplicationResponseField::Upgrade
+            | ApplicationResponseField::Te
+    ) || name.eq_ignore_ascii_case(b"content-length")
+        || name.eq_ignore_ascii_case(b"trailer")
+}
+
+fn percent_escapes_are_valid(value: &[u8]) -> bool {
+    let mut rest = value;
+    while let Some(index) = memchr(b'%', rest) {
+        let Some(hex) = rest.get(index + 1..index + 3) else {
+            return false;
+        };
+        if !hex.iter().all(u8::is_ascii_hexdigit) {
+            return false;
+        }
+        rest = &rest[index + 3..];
+    }
+    true
 }
 
 pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
-    let mut scan = ResponseHeaderScan::default();
+    let mut scan = ResponseHeaderScan::new();
 
     for (name, _) in headers {
         match name.kind() {
@@ -216,7 +494,7 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
 }
 
 pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
-    let mut scan = ResponseHeaderScan::default();
+    let mut scan = ResponseHeaderScan::new();
 
     for (name, value) in headers {
         match name.kind() {
@@ -226,7 +504,6 @@ pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHea
             _ => {},
         }
     }
-    scan.finish_content_length_scan();
     scan
 }
 
@@ -344,33 +621,36 @@ pub(crate) fn apply_default_response_headers_with_scan(
 ) {
     let defaults = &config.response_headers;
     headers.reserve(
-        usize::from(defaults.server_header && !scan.has_server())
+        usize::from(defaults.server_header.is_some() && !scan.has_server())
             + usize::from(defaults.date_header && !scan.has_date())
             + defaults.extra_headers.len(),
     );
     append_default_response_headers(headers, scan, defaults);
 }
 
+/// Fill in what the application did not send, most specific source first.
+///
+/// The ladder is: the application's own header wins, then a header the
+/// operator configured by name, then this server's built-in defaults. That
+/// ordering is why the configured headers are applied first — a `server:`
+/// given with `--header` is a deliberate choice and must beat the generic
+/// `server_header` mode.
 fn append_default_response_headers(
     headers: &mut ResponseHeaders,
     scan: &mut ResponseHeaderScan,
     defaults: &ResponseHeaderConfig,
 ) {
-    if defaults.server_header && !scan.has_server() {
-        headers.push((
-            Bytes::from_static(b"server").into(),
-            Bytes::from_static(b"h2corn").into(),
-        ));
-        scan.flags |= RESPONSE_HAS_SERVER;
-    }
-    if defaults.date_header && !scan.has_date() {
-        headers.push((
-            Bytes::from_static(b"date").into(),
-            cached_date_value().into(),
-        ));
-        scan.flags |= RESPONSE_HAS_DATE;
-    }
     for header in &defaults.extra_headers {
+        // Configured headers are defaults, exactly like `server` and `date`:
+        // an application that set the name itself keeps its own value, and the
+        // response never carries the same name twice. Appending regardless put
+        // two of them on the wire.
+        if headers
+            .iter()
+            .any(|(name, _)| name.as_bytes().eq_ignore_ascii_case(header.name.as_ref()))
+        {
+            continue;
+        }
         match header.kind {
             ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
             ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
@@ -382,6 +662,22 @@ fn append_default_response_headers(
             Bytes::clone(&header.value).into(),
         ));
     }
+    if let Some(server) = &defaults.server_header
+        && !scan.has_server()
+    {
+        headers.push((
+            Bytes::from_static(b"server").into(),
+            Bytes::clone(server).into(),
+        ));
+        scan.flags |= RESPONSE_HAS_SERVER;
+    }
+    if defaults.date_header && !scan.has_date() {
+        headers.push((
+            Bytes::from_static(b"date").into(),
+            cached_date_value().into(),
+        ));
+        scan.flags |= RESPONSE_HAS_DATE;
+    }
 }
 
 pub(crate) fn prepare_fixed_length_response_headers_with_scan(
@@ -390,13 +686,50 @@ pub(crate) fn prepare_fixed_length_response_headers_with_scan(
     defaults: &ResponseHeaderConfig,
     len: usize,
 ) {
-    let additional = usize::from(defaults.server_header && !scan.has_server())
+    let additional = usize::from(defaults.server_header.is_some() && !scan.has_server())
         + usize::from(defaults.date_header && !scan.has_date())
         + defaults.extra_headers.len()
         + usize::from(scan.content_length_state() == ResponseContentLength::Missing);
     headers.reserve(additional);
     append_default_response_headers(headers, scan, defaults);
     canonicalize_fixed_length_response_headers_with_scan(headers, scan, len);
+}
+
+pub(crate) fn prepare_response_headers_without_content_length(
+    headers: &mut ResponseHeaders,
+    scan: &mut ResponseHeaderScan,
+    defaults: &ResponseHeaderConfig,
+) {
+    let additional = usize::from(defaults.server_header.is_some() && !scan.has_server())
+        + usize::from(defaults.date_header && !scan.has_date())
+        + defaults.extra_headers.len();
+    headers.reserve(additional);
+    append_default_response_headers(headers, scan, defaults);
+    if scan.content_length_state() != ResponseContentLength::Missing {
+        headers.retain(|(name, _)| name.kind() != ResponseHeaderKind::ContentLength);
+        scan.clear_content_length();
+    }
+}
+
+/// Prepare an indeterminate-length response. A valid declared length remains
+/// on the wire and is returned for stream enforcement; any invalid or
+/// conflicting declaration is removed before a protocol writer can emit it.
+pub(crate) fn prepare_streaming_response_headers_with_scan(
+    headers: &mut ResponseHeaders,
+    scan: &mut ResponseHeaderScan,
+    defaults: &ResponseHeaderConfig,
+) -> Option<usize> {
+    let length = scan.content_length();
+    if length.is_some() {
+        let additional = usize::from(defaults.server_header.is_some() && !scan.has_server())
+            + usize::from(defaults.date_header && !scan.has_date())
+            + defaults.extra_headers.len();
+        headers.reserve(additional);
+        append_default_response_headers(headers, scan, defaults);
+    } else {
+        prepare_response_headers_without_content_length(headers, scan, defaults);
+    }
+    length
 }
 
 pub(crate) fn apply_default_response_headers(headers: &mut ResponseHeaders, config: &ServerConfig) {
@@ -484,7 +817,7 @@ pub(crate) fn parse_x_forwarded_for_value<'a>(
         }
         let normalized = parse_host_port(host).map_or(host, |(host, _)| host);
         furthest_host = Some(normalized);
-        if !trusted_host_matches(&config.proxy.trusted_peers, normalized, false) {
+        if !trusted_host_matches(&config.proxy.trusted_peers, normalized) {
             return Some(normalized);
         }
     }
@@ -538,25 +871,69 @@ mod tests {
     use bytes::Bytes;
 
     use super::{
-        ResponseContentLength, civil_from_days, format_http_date, inspect_response_headers,
-        last_csv_token, parse_content_length_header, parse_host_port,
-        prepare_fixed_length_response_headers_with_scan,
+        ResponseContentLength, civil_from_days, format_http_date, inspect_response_default_headers,
+        inspect_response_headers, last_csv_token, parse_content_length_header, parse_host_port,
+        parse_x_forwarded_for_value, prepare_fixed_length_response_headers_with_scan,
+        request_authority_is_valid, request_path_is_valid, request_scheme_is_valid,
     };
-    use crate::config::{ConfiguredResponseHeader, ResponseHeaderConfig};
+    use crate::config::{
+        ConfiguredResponseHeader, ProxyConfig, ResponseHeaderConfig, ServerConfig,
+    };
     use crate::http::header_value::header_value_is_valid;
     use crate::http::types::ResponseHeaders;
+    use crate::proxy_protocol::{ProxyProtocolMode, parse_trusted_peer};
+    use crate::runtime::test_fixtures;
 
     #[test]
     fn content_length_parser_accepts_trimmed_ascii_digits() {
-        assert_eq!(parse_content_length_header(b"42"), Some(42));
-        assert_eq!(parse_content_length_header(b" 42\t"), Some(42));
+        for (value, expected) in [
+            (b"0".as_slice(), 0),
+            (b"1", 1),
+            (b"18446744073709551615", u64::MAX),
+            (b" 42\t", 42),
+            (b"42, 42", 42),
+            (b"42,42, 42\t", 42),
+        ] {
+            assert_eq!(parse_content_length_header(value), Some(expected));
+        }
     }
 
     #[test]
     fn content_length_parser_rejects_invalid_values() {
         assert_eq!(parse_content_length_header(b""), None);
         assert_eq!(parse_content_length_header(b"4x"), None);
+        assert_eq!(parse_content_length_header(b"42, 43"), None);
+        assert_eq!(parse_content_length_header(b"42,"), None);
+        assert_eq!(parse_content_length_header(b",42"), None);
+        assert_eq!(parse_content_length_header(b"+1"), None);
+        assert_eq!(parse_content_length_header(b"18446744073709551616"), None);
         assert_eq!(parse_content_length_header(b"\xff"), None);
+    }
+
+    #[test]
+    fn request_target_grammar_rejects_only_raw_illegal_octets() {
+        assert!(request_scheme_is_valid(b"https+unix.1"));
+        assert!(!request_scheme_is_valid(b"1https"));
+        assert!(request_authority_is_valid(b"example:99999"));
+        assert!(request_authority_is_valid(b"[2001:db8::1]:443"));
+        assert!(request_authority_is_valid(b"example"));
+        for authority in [
+            b"user@example:443".as_slice(),
+            b"example,other",
+            b"example/path",
+            b"[2001:db8::1",
+            b"2001:db8::1",
+            b"example:http",
+        ] {
+            assert!(!request_authority_is_valid(authority), "{authority:?}");
+        }
+        let get = http::Method::GET;
+        let options = http::Method::OPTIONS;
+        assert!(request_path_is_valid(&get, b"/%00/ok%20here"));
+        assert!(!request_path_is_valid(&get, b"/bad%0"));
+        assert!(!request_path_is_valid(&get, b"/bad#fragment"));
+        assert!(request_path_is_valid(&options, b"*"));
+        assert!(!request_path_is_valid(&get, b"*"));
     }
 
     #[test]
@@ -608,6 +985,23 @@ mod tests {
     }
 
     #[test]
+    fn unix_trust_never_skips_textual_x_forwarded_for_hops() {
+        let config = ServerConfig {
+            proxy: ProxyConfig {
+                trust_headers: true,
+                trusted_peers: Box::new([parse_trusted_peer("unix").unwrap()]),
+                protocol: ProxyProtocolMode::Off,
+            },
+            ..test_fixtures::server_config_parts()
+        };
+
+        assert_eq!(
+            parse_x_forwarded_for_value("203.0.113.10, 198.51.100.7", &config),
+            Some("198.51.100.7"),
+        );
+    }
+
+    #[test]
     fn response_header_scan_detects_default_headers_and_content_length() {
         let headers = vec![
             (
@@ -632,7 +1026,13 @@ mod tests {
             scan.content_length_state(),
             ResponseContentLength::Valid(42)
         );
-        assert_eq!(scan.content_length(), Some(42));
+    }
+
+    #[test]
+    fn default_response_header_scan_has_a_complete_missing_length_state() {
+        let scan = inspect_response_default_headers(&ResponseHeaders::new());
+
+        assert_eq!(scan.content_length(), None);
     }
 
     #[test]
@@ -654,7 +1054,6 @@ mod tests {
             scan.content_length_state(),
             ResponseContentLength::NeedsRewrite
         );
-        assert_eq!(scan.content_length(), None);
     }
 
     #[test]
@@ -670,7 +1069,6 @@ mod tests {
             scan.content_length_state(),
             ResponseContentLength::NeedsRewrite
         );
-        assert_eq!(scan.content_length(), None);
     }
 
     #[test]
@@ -694,7 +1092,7 @@ mod tests {
             ),
         ];
         let defaults = ResponseHeaderConfig {
-            server_header: true,
+            server_header: Some(Bytes::from_static(b"h2corn")),
             date_header: true,
             extra_headers: Box::new([ConfiguredResponseHeader::new(
                 Bytes::from_static(b"x-extra"),
@@ -705,13 +1103,15 @@ mod tests {
 
         prepare_fixed_length_response_headers_with_scan(&mut headers, &mut scan, &defaults, 5);
 
+        // The application's own headers keep their order; anything added
+        // follows, configured headers before this server's own defaults.
         let names: Vec<&[u8]> = headers.iter().map(|(name, _)| name.as_bytes()).collect();
         assert_eq!(names, [
             b"x-first".as_slice(),
             b"content-length".as_slice(),
             b"date".as_slice(),
-            b"server".as_slice(),
             b"x-extra".as_slice(),
+            b"server".as_slice(),
         ]);
         assert_eq!(headers[1].1.as_bytes(), b"5");
         assert_eq!(scan.content_length(), Some(5));
@@ -721,7 +1121,7 @@ mod tests {
     fn fixed_length_preparation_appends_defaults_then_canonical_length() {
         let mut headers = ResponseHeaders::new();
         let defaults = ResponseHeaderConfig {
-            server_header: true,
+            server_header: Some(Bytes::from_static(b"h2corn")),
             date_header: true,
             extra_headers: Box::new([]),
         };
@@ -742,7 +1142,7 @@ mod tests {
     fn fixed_length_preparation_canonicalizes_configured_content_length() {
         let mut headers = ResponseHeaders::new();
         let defaults = ResponseHeaderConfig {
-            server_header: false,
+            server_header: None,
             date_header: false,
             extra_headers: Box::new([
                 ConfiguredResponseHeader::new(

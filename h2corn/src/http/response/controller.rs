@@ -1,5 +1,7 @@
 use std::mem;
 
+use pyo3::exceptions::PyValueError;
+
 use super::actions;
 use crate::error::{self, ErrorExt};
 use crate::{bridge, http};
@@ -9,8 +11,14 @@ enum ResponseState {
     WaitingForStart,
     Started(StartedResponse),
     WaitingForTrailers {
-        buffered: http::types::ResponseHeaders,
+        buffered: http::types::ResponseTrailers,
     },
+    /// The response is already finished on the wire, but the application
+    /// declared trailers and is entitled to send them. A response with no
+    /// content has no trailer section to put them in, so they are consumed
+    /// and discarded — the alternative, closing the stream first, makes a
+    /// well-behaved application's own `send()` fail.
+    DiscardingTrailers,
     Complete,
     Aborted,
 }
@@ -18,7 +26,7 @@ enum ResponseState {
 impl ResponseState {
     const fn waiting_for_trailers() -> Self {
         Self::WaitingForTrailers {
-            buffered: http::types::ResponseHeaders::new(),
+            buffered: http::types::ResponseTrailers::new(),
         }
     }
 }
@@ -27,6 +35,13 @@ impl ResponseState {
 struct StartedResponse {
     start: actions::ResponseStart,
     body: StartedBody,
+    declared_length: Option<DeclaredLength>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DeclaredLength {
+    expected: usize,
+    sent: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,10 +72,6 @@ impl StartedResponse {
         }
     }
 
-    const fn pathsend_len_hint(&self) -> Option<usize> {
-        self.start.content_length_hint()
-    }
-
     const fn expects_trailers(&self) -> bool {
         match self.body {
             StartedBody::Unsent { expects_trailers }
@@ -74,10 +85,76 @@ impl StartedResponse {
     const fn body_started(&self) -> bool {
         !matches!(self.body, StartedBody::Unsent { .. })
     }
+
+    fn record_streaming_body(
+        &mut self,
+        len: usize,
+        final_chunk: bool,
+    ) -> Result<(), error::H2CornError> {
+        let Some(declared) = &mut self.declared_length else {
+            return Ok(());
+        };
+        let Some(sent) = declared.sent.checked_add(len) else {
+            return Err(error::H2CornError::from(PyValueError::new_err(
+                "streamed response body exceeds its declared content-length",
+            )));
+        };
+        if sent > declared.expected || (final_chunk && sent != declared.expected) {
+            return Err(error::H2CornError::from(PyValueError::new_err(
+                "streamed response body does not match its declared content-length",
+            )));
+        }
+        declared.sent = sent;
+        Ok(())
+    }
+}
+
+/// Whether a response may carry a body, and how its length is framed.
+///
+/// Decided from the request method and the response status together, because
+/// each forbids content for its own reason: a `HEAD` response describes a body
+/// it does not send, while 204 and 205 have no content to describe at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResponsePayload {
+    /// Written as the application sends it.
+    Send,
+    /// Suppressed, but `Content-Length` still reports what the body would have
+    /// been — a `HEAD` response, or 304, which names a representation it is
+    /// deliberately not sending.
+    Described,
+    /// Suppressed with no content framing at all: 204 and 205 cannot carry a
+    /// body, and RFC 9110 §8.6 forbids `Content-Length` on 204.
+    Absent,
+}
+
+impl ResponsePayload {
+    const fn resolve(head_only: bool, status: http::types::HttpStatusCode) -> Self {
+        match status.get() {
+            204 | 205 => Self::Absent,
+            304 => Self::Described,
+            _ if head_only => Self::Described,
+            _ => Self::Send,
+        }
+    }
+
+    const fn suppresses_body(self) -> bool {
+        !matches!(self, Self::Send)
+    }
+
+    /// What `Content-Length` should report for a suppressed body: the length
+    /// the application would have sent, or nothing at all when the status
+    /// cannot describe content.
+    const fn described_len(self, len: usize) -> usize {
+        match self {
+            Self::Described => len,
+            Self::Send | Self::Absent => 0,
+        }
+    }
 }
 
 pub(crate) struct ResponseController {
     head_only: bool,
+    payload: ResponsePayload,
     supports_response_trailers: bool,
     state: ResponseState,
 }
@@ -86,6 +163,7 @@ impl ResponseController {
     pub(crate) const fn new(head_only: bool, supports_response_trailers: bool) -> Self {
         Self {
             head_only,
+            payload: ResponsePayload::Send,
             supports_response_trailers,
             state: ResponseState::WaitingForStart,
         }
@@ -95,35 +173,12 @@ impl ResponseController {
         matches!(self.state, ResponseState::Complete)
     }
 
-    pub(crate) const fn needs_live_stream(&self) -> bool {
-        match &self.state {
-            ResponseState::Started(StartedResponse {
-                body: StartedBody::Streaming { .. },
-                ..
-            })
-            | ResponseState::WaitingForTrailers { .. } => true,
-            ResponseState::WaitingForStart
-            | ResponseState::Started(_)
-            | ResponseState::Complete
-            | ResponseState::Aborted => false,
-        }
-    }
-
-    pub(crate) const fn pathsend_len_hint(&self) -> Option<usize> {
-        match &self.state {
-            ResponseState::Started(started) => started.pathsend_len_hint(),
-            ResponseState::WaitingForStart
-            | ResponseState::WaitingForTrailers { .. }
-            | ResponseState::Complete
-            | ResponseState::Aborted => None,
-        }
-    }
-
     pub(crate) fn handle_start(
         &mut self,
-        status: http::types::HttpStatusCode,
+        status: http::types::FinalResponseStatus,
         headers: http::types::ResponseHeaders,
         trailers: bool,
+        control: http::header::ResponseHeaderControl,
     ) -> Result<(), error::H2CornError> {
         if !matches!(self.state, ResponseState::WaitingForStart) {
             return error::HttpResponseError::StartAlreadyReceived.err();
@@ -131,11 +186,18 @@ impl ResponseController {
         if trailers && !self.supports_response_trailers {
             return error::HttpResponseError::TrailersNotAdvertised.err();
         }
+        self.payload = ResponsePayload::resolve(self.head_only, status.get());
+        let start = actions::ResponseStart::from_final(status, headers, control);
+        let declared_length = matches!(self.payload, ResponsePayload::Send)
+            .then(|| start.declared_content_length())
+            .flatten()
+            .map(|expected| DeclaredLength { expected, sent: 0 });
         self.state = ResponseState::Started(StartedResponse {
-            start: actions::ResponseStart::new(status, headers),
+            start,
             body: StartedBody::Unsent {
                 expects_trailers: trailers,
             },
+            declared_length,
         });
         Ok(())
     }
@@ -149,7 +211,7 @@ impl ResponseController {
         let mut started = self.take_started(error::HttpResponseError::BodyBeforeStart)?;
         let final_chunk = !more_body;
 
-        if self.head_only {
+        if self.payload.suppresses_body() {
             let (expects_trailers, previous_len) = match started.body {
                 StartedBody::Unsent { expects_trailers } => (expects_trailers, 0),
                 StartedBody::SuppressingHead {
@@ -157,16 +219,31 @@ impl ResponseController {
                     len,
                 } => (expects_trailers, len),
                 StartedBody::Streaming { .. } => {
-                    unreachable!("HEAD responses never stream body bytes")
+                    unreachable!("a suppressed response never streams body bytes")
                 },
             };
             let len = previous_len.saturating_add(body.len());
             self.state = if final_chunk {
-                complete_or_wait_for_trailers(
+                // The response goes out complete here rather than opening a
+                // chunked body to carry trailers: HTTP/1 would write a
+                // terminator and trailer lines into a response the client
+                // reads as bodyless, and the next response on the connection
+                // would begin mid-frame. Declared trailers are still awaited
+                // — see `DiscardingTrailers` — so the application's own
+                // `send()` does not fail against a closed stream.
+                let expects = expects_trailers;
+                let state = complete_response(
                     actions,
                     &mut started,
-                    actions::FinalResponseBody::Suppressed { len },
-                )
+                    actions::FinalResponseBody::Suppressed {
+                        len: self.payload.described_len(len),
+                    },
+                );
+                if expects {
+                    ResponseState::DiscardingTrailers
+                } else {
+                    state
+                }
             } else {
                 started.body = StartedBody::SuppressingHead {
                     expects_trailers,
@@ -185,6 +262,12 @@ impl ResponseController {
             };
             self.state = complete_response(actions, &mut started, body);
             return Ok(());
+        }
+
+        if let Err(err) = started.record_streaming_body(body.len(), final_chunk) {
+            actions.push(actions::ResponseAction::AbortIncomplete);
+            self.state = ResponseState::Aborted;
+            return Err(err);
         }
 
         if !started.body_started() {
@@ -219,12 +302,22 @@ impl ResponseController {
             self.state = ResponseState::Started(started);
             return error::HttpResponseError::PathsendMixedWithBody.err();
         }
-        let start = actions::ResponseStart::new(status, http::types::ResponseHeaders::new());
-        actions.push(actions::ResponseAction::Final {
-            start,
-            body: actions::FinalResponseBody::Empty,
-        });
-        self.state = ResponseState::Complete;
+        let start = actions::ResponseStart::from_final(
+            http::types::FinalResponseStatus::new(status)
+                .expect("pathsend substitutions are final response statuses"),
+            http::types::ResponseHeaders::new(),
+            http::header::ResponseHeaderControl::default(),
+        );
+        self.state = if started.expects_trailers() {
+            actions.push(actions::ResponseAction::Start { start });
+            ResponseState::waiting_for_trailers()
+        } else {
+            actions.push(actions::ResponseAction::Final {
+                start,
+                body: actions::FinalResponseBody::Empty,
+            });
+            ResponseState::Complete
+        };
         Ok(())
     }
 
@@ -240,12 +333,20 @@ impl ResponseController {
             return error::HttpResponseError::PathsendMixedWithBody.err();
         }
 
-        if self.head_only {
-            self.state = complete_or_wait_for_trailers(
+        if self.payload.suppresses_body() {
+            let expects_trailers = started.expects_trailers();
+            let state = complete_response(
                 actions,
                 &mut started,
-                actions::FinalResponseBody::Suppressed { len },
+                actions::FinalResponseBody::Suppressed {
+                    len: self.payload.described_len(len),
+                },
             );
+            self.state = if expects_trailers {
+                ResponseState::DiscardingTrailers
+            } else {
+                state
+            };
             return Ok(());
         }
 
@@ -254,6 +355,11 @@ impl ResponseController {
             // chunk emission downstream); the file is already closed.
             http::pathsend::PathSource::Buffered(data) => {
                 if started.expects_trailers() {
+                    if let Err(err) = started.record_streaming_body(len, false) {
+                        actions.push(actions::ResponseAction::AbortIncomplete);
+                        self.state = ResponseState::Aborted;
+                        return Err(err);
+                    }
                     actions.push(started.take_start_action());
                     if !data.is_empty() {
                         actions.push(actions::ResponseAction::Body(data.into()));
@@ -270,6 +376,11 @@ impl ResponseController {
             },
             http::pathsend::PathSource::File(file) => {
                 if started.expects_trailers() {
+                    if let Err(err) = started.record_streaming_body(len, false) {
+                        actions.push(actions::ResponseAction::AbortIncomplete);
+                        self.state = ResponseState::Aborted;
+                        return Err(err);
+                    }
                     actions.push(started.take_start_action());
                     actions.push(actions::ResponseAction::File { file, len });
                     self.state = ResponseState::waiting_for_trailers();
@@ -288,13 +399,22 @@ impl ResponseController {
     pub(crate) fn handle_trailers(
         &mut self,
         actions: &mut actions::ResponseActions,
-        headers: http::types::ResponseHeaders,
+        headers: http::types::ResponseTrailers,
         more_trailers: bool,
     ) -> Result<(), error::H2CornError> {
+        if matches!(self.state, ResponseState::DiscardingTrailers) {
+            // Consumed, never written: the response they belong to carries no
+            // content, so there is no trailer section on the wire for them.
+            let _ = headers;
+            if !more_trailers {
+                self.state = ResponseState::Complete;
+            }
+            return Ok(());
+        }
         let ResponseState::WaitingForTrailers { buffered } = &mut self.state else {
             return error::HttpResponseError::TrailersBeforeBodyCompleted.err();
         };
-        buffered.extend(headers);
+        buffered.append(headers);
         if !more_trailers {
             actions.push(actions::ResponseAction::FinishWithTrailers(mem::take(
                 buffered,
@@ -336,7 +456,9 @@ impl ResponseController {
                     unreachable!()
                 };
                 actions.push(
-                    started.into_final_action(actions::FinalResponseBody::Suppressed { len }),
+                    started.into_final_action(actions::FinalResponseBody::Suppressed {
+                        len: self.payload.described_len(len),
+                    }),
                 );
                 Ok(())
             },
@@ -367,14 +489,6 @@ impl ResponseController {
     }
 }
 
-fn wait_for_trailers(
-    actions: &mut actions::ResponseActions,
-    started: &mut StartedResponse,
-) -> ResponseState {
-    actions.push(started.take_start_action());
-    ResponseState::waiting_for_trailers()
-}
-
 fn complete_response(
     actions: &mut actions::ResponseActions,
     started: &mut StartedResponse,
@@ -382,18 +496,6 @@ fn complete_response(
 ) -> ResponseState {
     actions.push(started.take_final_action(body));
     ResponseState::Complete
-}
-
-fn complete_or_wait_for_trailers(
-    actions: &mut actions::ResponseActions,
-    started: &mut StartedResponse,
-    body: actions::FinalResponseBody,
-) -> ResponseState {
-    if started.expects_trailers() {
-        wait_for_trailers(actions, started)
-    } else {
-        complete_response(actions, started, body)
-    }
 }
 
 #[cfg(test)]
@@ -409,6 +511,10 @@ mod tests {
     use super::ResponseController;
     use crate::{bridge, error, http};
 
+    fn final_status(status: http::types::HttpStatusCode) -> http::types::FinalResponseStatus {
+        http::types::FinalResponseStatus::new(status).expect("test status is final")
+    }
+
     fn event_requests_pathsend(
         controller: &mut ResponseController,
         actions: &mut http::response::ResponseActions,
@@ -420,8 +526,9 @@ mod tests {
                 status,
                 headers,
                 trailers,
+                control,
             } => controller
-                .handle_start(status, headers, trailers)
+                .handle_start(status, headers, trailers, control)
                 .map(|()| false),
             bridge::HttpOutboundEvent::Body { body, more_body } => controller
                 .handle_body(actions, body, more_body)
@@ -446,12 +553,13 @@ mod tests {
                 &mut controller,
                 &mut actions,
                 bridge::HttpOutboundEvent::Start {
-                    status: http::types::status_code::OK,
+                    status: final_status(http::types::status_code::OK),
                     headers: vec![(
                         Bytes::from_static(b"x-demo").into(),
                         Bytes::from_static(b"1").into(),
                     )],
                     trailers: false,
+                    control: http::header::ResponseHeaderControl::default(),
                 },
             )
             .expect("response start is accepted")
@@ -490,7 +598,11 @@ mod tests {
     }
 
     #[test]
-    fn head_only_responses_wait_for_trailers_after_suppressed_body() {
+    fn head_only_responses_complete_without_a_trailer_section() {
+        // A response with no content has no trailer section to put trailers
+        // in. This used to open a streaming body and finish it with
+        // trailers, which HTTP/1 wrote as a chunked terminator and trailer
+        // lines into a response the client reads as bodyless.
         let mut controller = ResponseController::new(true, true);
         let mut actions = http::response::ResponseActions::new();
 
@@ -498,9 +610,10 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: http::types::status_code::OK,
+                status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: true,
+                control: http::header::ResponseHeaderControl::default(),
             },
         )
         .expect("response start is accepted");
@@ -515,38 +628,135 @@ mod tests {
             },
         )
         .expect("suppressed head-only body is accepted");
-        assert_eq!(actions.len(), 1);
-        match actions.pop().expect("streaming start action exists") {
-            http::response::ResponseAction::Start { start } => {
-                let (status, headers) = start.into_status_headers();
-                assert_eq!(status, http::types::status_code::OK);
-                assert!(headers.is_empty());
-            },
-            _ => panic!("expected streaming start action"),
-        }
+        // Complete on the wire, but not yet done: the application declared
+        // trailers and must be able to send them without hitting a closed
+        // stream.
         assert!(!controller.is_complete());
+        assert_eq!(actions.len(), 1);
+        match actions.pop().expect("final action exists") {
+            http::response::ResponseAction::Final { start, body } => {
+                let (status, _headers) = start.into_status_headers();
+                assert_eq!(status, http::types::status_code::OK);
+                // The head still describes the length a GET would return.
+                assert!(matches!(
+                    body,
+                    http::response::FinalResponseBody::Suppressed { len: 6 }
+                ));
+            },
+            _ => panic!("expected a final action, not a streaming start"),
+        }
+
+        // Trailers the application declared are accepted and dropped: there
+        // is nowhere on the wire for them to go, and refusing them would
+        // fail an application that did nothing wrong.
+        event_requests_pathsend(
+            &mut controller,
+            &mut actions,
+            bridge::HttpOutboundEvent::Trailers {
+                headers: http::types::ResponseTrailers::try_from(vec![(
+                    Bytes::from_static(b"x-finished").into(),
+                    Bytes::from_static(b"yes").into(),
+                )])
+                .expect("extension trailers are valid"),
+                more_trailers: false,
+            },
+        )
+        .expect("declared trailers are accepted");
+        assert!(controller.is_complete());
+        assert!(actions.is_empty(), "no trailer bytes may reach the wire");
+    }
+
+    #[test]
+    fn head_pathsend_with_declared_trailers_finishes_without_a_trailer_section() {
+        let mut controller = ResponseController::new(true, true);
+        let mut actions = http::response::ResponseActions::new();
+
+        event_requests_pathsend(
+            &mut controller,
+            &mut actions,
+            bridge::HttpOutboundEvent::Start {
+                status: final_status(http::types::status_code::OK),
+                headers: Vec::new(),
+                trailers: true,
+                control: http::header::ResponseHeaderControl::default(),
+            },
+        )
+        .expect("response start is accepted");
+
+        controller
+            .handle_pathsend(
+                &mut actions,
+                http::pathsend::PathSource::Buffered(Bytes::from_static(b"hidden")),
+                6,
+            )
+            .expect("suppressed pathsend is accepted");
+
+        assert!(!controller.is_complete());
+        assert!(matches!(
+            actions.pop().expect("pathsend completes on the wire"),
+            http::response::ResponseAction::Final {
+                body: http::response::FinalResponseBody::Suppressed { len: 6 },
+                ..
+            }
+        ));
 
         event_requests_pathsend(
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Trailers {
-                headers: vec![(
+                headers: http::types::ResponseTrailers::try_from(vec![(
                     Bytes::from_static(b"x-finished").into(),
                     Bytes::from_static(b"yes").into(),
-                )],
+                )])
+                .expect("extension trailers are valid"),
                 more_trailers: false,
             },
         )
-        .expect("trailers complete the response");
+        .expect("declared trailers are discarded");
         assert!(controller.is_complete());
-        assert_eq!(actions.len(), 1);
-        match actions.pop().expect("finish-with-trailers action exists") {
-            http::response::ResponseAction::FinishWithTrailers(trailers) => {
-                assert_eq!(trailers.len(), 1);
-                assert_eq!(trailers[0].0.as_ref(), b"x-finished");
-                assert_eq!(trailers[0].1.as_ref(), b"yes");
-            },
-            _ => panic!("expected finish-with-trailers action"),
+        assert!(
+            actions.is_empty(),
+            "suppressed trailers never reach the wire"
+        );
+    }
+
+    #[test]
+    fn bodyless_status_pathsend_with_declared_trailers_finishes_without_a_trailer_section() {
+        for (status, expected_len) in [
+            (http::types::status_code::NO_CONTENT, 0),
+            (http::types::status_code::NOT_MODIFIED, 6),
+        ] {
+            let mut controller = ResponseController::new(false, true);
+            let mut actions = http::response::ResponseActions::new();
+
+            controller
+                .handle_start(
+                    final_status(status),
+                    Vec::new(),
+                    true,
+                    http::header::ResponseHeaderControl::default(),
+                )
+                .expect("response start is accepted");
+            controller
+                .handle_pathsend(
+                    &mut actions,
+                    http::pathsend::PathSource::Buffered(Bytes::from_static(b"hidden")),
+                    6,
+                )
+                .expect("suppressed pathsend is accepted");
+
+            assert!(matches!(
+                actions.pop().expect("pathsend completes on the wire"),
+                http::response::ResponseAction::Final {
+                    body: http::response::FinalResponseBody::Suppressed { len },
+                    ..
+                } if len == expected_len
+            ));
+            controller
+                .handle_trailers(&mut actions, http::types::ResponseTrailers::new(), false)
+                .expect("declared trailers are discarded");
+            assert!(controller.is_complete());
+            assert!(actions.is_empty());
         }
     }
 
@@ -559,13 +769,13 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: http::types::status_code::OK,
+                status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
+                control: http::header::ResponseHeaderControl::default(),
             },
         )
         .expect("response start is accepted");
-        assert!(!controller.needs_live_stream());
 
         event_requests_pathsend(
             &mut controller,
@@ -576,7 +786,6 @@ mod tests {
             },
         )
         .expect("streaming body is accepted");
-        assert!(controller.needs_live_stream());
 
         event_requests_pathsend(
             &mut controller,
@@ -588,7 +797,59 @@ mod tests {
         )
         .expect("final empty body completes the stream");
         assert!(controller.is_complete());
-        assert!(!controller.needs_live_stream());
+    }
+
+    #[test]
+    fn declared_streaming_content_length_requires_exact_final_byte_count() {
+        fn controller() -> ResponseController {
+            let mut controller = ResponseController::new(false, false);
+            controller
+                .handle_start(
+                    final_status(http::types::status_code::OK),
+                    vec![(
+                        Bytes::from_static(b"content-length").into(),
+                        Bytes::from_static(b"3").into(),
+                    )],
+                    false,
+                    http::header::ResponseHeaderControl::default(),
+                )
+                .expect("start accepts a syntactically valid length");
+            controller
+        }
+
+        let mut exact = controller();
+        let mut actions = http::response::ResponseActions::new();
+        exact
+            .handle_body(&mut actions, Bytes::from_static(b"a").into(), true)
+            .expect("prefix fits");
+        exact
+            .handle_body(&mut actions, Bytes::from_static(b"bc").into(), false)
+            .expect("final byte count matches");
+        assert!(exact.is_complete());
+
+        let mut short = controller();
+        short
+            .handle_body(&mut actions, Bytes::from_static(b"a").into(), true)
+            .expect("prefix fits");
+        assert!(
+            short
+                .handle_body(&mut actions, Bytes::from_static(b"b").into(), false)
+                .is_err()
+        );
+        assert!(matches!(
+            actions.last(),
+            Some(http::response::ResponseAction::AbortIncomplete)
+        ));
+
+        let mut long = controller();
+        assert!(
+            long.handle_body(&mut actions, Bytes::from_static(b"abcd").into(), true)
+                .is_err()
+        );
+        assert!(matches!(
+            actions.last(),
+            Some(http::response::ResponseAction::AbortIncomplete)
+        ));
     }
 
     #[test]
@@ -620,9 +881,10 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: http::types::status_code::OK,
+                status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
+                control: http::header::ResponseHeaderControl::default(),
             },
         )
         .expect("response start is accepted");
@@ -674,12 +936,13 @@ mod tests {
         actions: &mut http::response::ResponseActions,
     ) {
         event_requests_pathsend(controller, actions, bridge::HttpOutboundEvent::Start {
-            status: http::types::status_code::OK,
+            status: final_status(http::types::status_code::OK),
             headers: vec![(
                 Bytes::from_static(b"content-type").into(),
                 Bytes::from_static(b"image/png").into(),
             )],
             trailers: false,
+            control: http::header::ResponseHeaderControl::default(),
         })
         .expect("response start is accepted");
         assert!(actions.is_empty());
@@ -754,9 +1017,10 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: http::types::status_code::OK,
+                status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
+                control: http::header::ResponseHeaderControl::default(),
             },
         )
         .expect("response start is accepted");
@@ -791,8 +1055,22 @@ mod tests {
             ErrorKind::Other,
         ] {
             let err = error::PathsendError::open_failed(path, Error::from(kind));
-            assert_eq!(err.io_error_kind(), kind);
+            match err {
+                error::PathsendError::OpenFailed { source, .. } => {
+                    assert_eq!(source.kind(), kind);
+                },
+                error::PathsendError::NotRegularFile { .. } => {
+                    panic!("open_failed must produce OpenFailed")
+                },
+            }
         }
+        let not_regular = error::PathsendError::NotRegularFile {
+            path: path.to_path_buf(),
+        };
+        assert!(matches!(
+            not_regular,
+            error::PathsendError::NotRegularFile { .. }
+        ));
     }
 
     #[test]
@@ -804,9 +1082,10 @@ mod tests {
             &mut controller,
             &mut actions,
             bridge::HttpOutboundEvent::Start {
-                status: http::types::status_code::OK,
+                status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
+                control: http::header::ResponseHeaderControl::default(),
             },
         )
         .expect("response start is accepted");

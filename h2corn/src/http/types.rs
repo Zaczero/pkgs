@@ -4,6 +4,7 @@ pub(crate) mod status_code {
     pub(crate) const SWITCHING_PROTOCOLS: HttpStatusCode = HttpStatusCode::constant(101);
     pub(crate) const OK: HttpStatusCode = HttpStatusCode::constant(200);
     pub(crate) const NO_CONTENT: HttpStatusCode = HttpStatusCode::constant(204);
+    pub(crate) const RESET_CONTENT: HttpStatusCode = HttpStatusCode::constant(205);
     pub(crate) const PARTIAL_CONTENT: HttpStatusCode = HttpStatusCode::constant(206);
     pub(crate) const NOT_MODIFIED: HttpStatusCode = HttpStatusCode::constant(304);
     pub(crate) const BAD_REQUEST: HttpStatusCode = HttpStatusCode::constant(400);
@@ -22,7 +23,7 @@ pub(crate) mod status_code {
 
 use std::mem::size_of;
 use std::num::NonZeroU16;
-use std::ops::Range;
+use std::ops::{self, Range};
 use std::str::Utf8Error;
 use std::{fmt, str};
 
@@ -32,9 +33,9 @@ use http::method::InvalidMethod;
 use pyo3::pybacked::PyBackedBytes;
 use smallvec::SmallVec;
 
-use crate::hpack::BytesStr;
 use crate::http::header::{
-    lowercase_header_name_is_valid, protocol_is_websocket, request_header_name_needs_lowercase,
+    protocol_is_websocket, request_authority_is_valid, request_header_name_needs_lowercase,
+    trailer_field_name_is_forbidden,
 };
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
@@ -94,7 +95,42 @@ macro_rules! known_request_header_names {
 
 const H1_HEADER_INLINE_CAPACITY: usize = 8;
 
-pub(crate) type ResponseHeaders = Vec<(ResponseHeaderName, ResponseHeaderValue)>;
+pub(crate) type ResponseField = (ResponseHeaderName, ResponseHeaderValue);
+pub(crate) type ResponseHeaders = Vec<ResponseField>;
+
+/// Fields emitted after a response body. Constructing this type validates the
+/// trailer-only policy at the Python ingress, so neither HTTP writer has to
+/// remember a late filtering rule.
+#[derive(Debug, Default)]
+pub(crate) struct ResponseTrailers(ResponseHeaders);
+
+impl TryFrom<ResponseHeaders> for ResponseTrailers {
+    type Error = crate::error::H2CornError;
+
+    fn try_from(headers: ResponseHeaders) -> Result<Self, Self::Error> {
+        if headers
+            .iter()
+            .any(|(name, _)| trailer_field_name_is_forbidden(name.as_bytes()))
+        {
+            return Err(crate::error::HttpResponseError::InvalidResponseTrailerField.into());
+        }
+        Ok(Self(headers))
+    }
+}
+
+impl ResponseTrailers {
+    pub(crate) const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub(crate) fn append(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    pub(crate) fn as_fields(&self) -> &[ResponseField] {
+        &self.0
+    }
+}
 
 /// An ASGI/HTTP response status: exactly one three-digit non-zero code.
 ///
@@ -126,6 +162,38 @@ impl HttpStatusCode {
     pub(crate) const fn get(self) -> u16 {
         self.0.get()
     }
+
+    pub(crate) const fn is_informational(self) -> bool {
+        matches!(self.get(), 100..=199)
+    }
+
+    /// RFC 9110 §8.6 forbids this field for informational, 204, and 205 responses.
+    /// Other bodyless statuses deliberately retain their representation
+    /// metadata: notably, a 304 may carry the length a 200 would have sent.
+    pub(crate) fn forbids_content_length(self) -> bool {
+        matches!(self.get(), 100..=199 | 204) || self == status_code::RESET_CONTENT
+    }
+}
+
+/// A status that may terminate an ASGI response. Informational codes need a
+/// separate HTTP event sequence which ASGI does not define, so response
+/// actions can only be built after this conversion succeeds.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub(crate) struct FinalResponseStatus(HttpStatusCode);
+
+impl FinalResponseStatus {
+    pub(crate) const fn new(status: HttpStatusCode) -> Option<Self> {
+        if status.is_informational() {
+            None
+        } else {
+            Some(Self(status))
+        }
+    }
+
+    pub(crate) const fn get(self) -> HttpStatusCode {
+        self.0
+    }
 }
 
 impl fmt::Display for HttpStatusCode {
@@ -136,6 +204,87 @@ impl fmt::Display for HttpStatusCode {
 
 const _: () = assert!(size_of::<HttpStatusCode>() == size_of::<u16>());
 const _: () = assert!(size_of::<Option<HttpStatusCode>>() == size_of::<u16>());
+
+/// Owned UTF-8 string backed by `Bytes`.
+///
+/// HTTP/application text (paths, authorities, schemes, WebSocket reasons), not
+/// HPACK table state.
+#[doc(hidden)]
+#[derive(Clone, Eq, PartialEq, Hash, Default)]
+pub(crate) struct BytesStr(Bytes);
+
+impl BytesStr {
+    pub(crate) const fn from_static_bytes(value: &'static [u8]) -> Self {
+        Self(Bytes::from_static(value))
+    }
+
+    pub(crate) const fn from_static(value: &'static str) -> Self {
+        Self::from_static_bytes(value.as_bytes())
+    }
+
+    pub(crate) unsafe fn from_validated_ascii(value: Bytes) -> Self {
+        debug_assert!(value.iter().all(u8::is_ascii));
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        // SAFETY: `BytesStr` is only constructed through validated UTF-8
+        // conversion paths or from string literals, so its backing bytes are
+        // always valid UTF-8.
+        unsafe { str::from_utf8_unchecked(self.0.as_ref()) }
+    }
+
+    pub(crate) fn into_inner(self) -> Bytes {
+        self.0
+    }
+}
+
+impl ops::Deref for BytesStr {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<[u8]> for BytesStr {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<str> for BytesStr {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for BytesStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<&str> for BytesStr {
+    fn from(value: &str) -> Self {
+        Self(Bytes::copy_from_slice(value.as_bytes()))
+    }
+}
+
+impl From<String> for BytesStr {
+    fn from(value: String) -> Self {
+        Self(Bytes::from(value))
+    }
+}
+
+impl TryFrom<Bytes> for BytesStr {
+    type Error = str::Utf8Error;
+
+    fn try_from(bytes: Bytes) -> Result<Self, Self::Error> {
+        str::from_utf8(bytes.as_ref())?;
+        Ok(Self(bytes))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RequestAuthority(BytesStr);
@@ -174,6 +323,41 @@ impl AsRef<str> for RequestAuthority {
     }
 }
 
+/// An authority suitable for a plain CONNECT tunnel.
+///
+/// RFC 9112/9113 require a port for tunnel targets. Keeping that distinction
+/// in the target type means a generic CONNECT cannot accidentally reuse the
+/// port-optional authority accepted by extended CONNECT.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConnectAuthority(RequestAuthority);
+
+impl TryFrom<BytesStr> for ConnectAuthority {
+    type Error = BytesStr;
+
+    fn try_from(value: BytesStr) -> Result<Self, Self::Error> {
+        let bytes = value.as_bytes();
+        let has_port = bytes.strip_prefix(b"[").map_or_else(
+            || bytes.contains(&b':'),
+            |rest| {
+                rest.iter()
+                    .position(|byte| *byte == b']')
+                    .is_some_and(|close| matches!(rest.get(close + 1..), Some([b':', ..])))
+            },
+        );
+        if request_authority_is_valid(value.as_ref()) && has_port {
+            Ok(Self(RequestAuthority::new(value)))
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl ConnectAuthority {
+    const fn as_request_authority(&self) -> &RequestAuthority {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RequestTarget {
     Normal {
@@ -183,12 +367,52 @@ pub(crate) enum RequestTarget {
     Connect(Box<ConnectTarget>),
 }
 
+/// A CONNECT target: either a plain tunnel or RFC 8441 extended CONNECT.
+///
+/// Extended CONNECT always carries all three of protocol, scheme and path, and
+/// a plain tunnel carries none of them — so they live in one variant each
+/// rather than as three `Option`s that must agree.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ConnectTarget {
-    authority: RequestAuthority,
-    protocol: Option<Protocol>,
-    scheme: Option<BytesStr>,
-    path_and_query: Option<BytesStr>,
+pub(crate) enum ConnectTarget {
+    Tunnel {
+        authority: ConnectAuthority,
+    },
+    Extended {
+        authority: RequestAuthority,
+        protocol: Protocol,
+        scheme: BytesStr,
+        path_and_query: BytesStr,
+    },
+}
+
+impl ConnectTarget {
+    const fn authority(&self) -> &RequestAuthority {
+        match self {
+            Self::Tunnel { authority } => authority.as_request_authority(),
+            Self::Extended { authority, .. } => authority,
+        }
+    }
+
+    const fn scheme(&self) -> Option<&BytesStr> {
+        match self {
+            Self::Tunnel { .. } => None,
+            Self::Extended { scheme, .. } => Some(scheme),
+        }
+    }
+
+    const fn path_and_query(&self) -> Option<&BytesStr> {
+        match self {
+            Self::Tunnel { .. } => None,
+            Self::Extended { path_and_query, .. } => Some(path_and_query),
+        }
+    }
+
+    const fn protocol(&self) -> Option<&Protocol> {
+        match self {
+            Self::Tunnel { .. } => None,
+            Self::Extended { protocol, .. } => Some(protocol),
+        }
+    }
 }
 
 impl RequestTarget {
@@ -199,13 +423,8 @@ impl RequestTarget {
         }
     }
 
-    pub(crate) fn connect(authority: RequestAuthority) -> Self {
-        Self::Connect(Box::new(ConnectTarget {
-            authority,
-            protocol: None,
-            scheme: None,
-            path_and_query: None,
-        }))
+    pub(crate) fn connect(authority: ConnectAuthority) -> Self {
+        Self::Connect(Box::new(ConnectTarget::Tunnel { authority }))
     }
 
     pub(crate) fn extended_connect(
@@ -214,25 +433,25 @@ impl RequestTarget {
         scheme: BytesStr,
         path_and_query: BytesStr,
     ) -> Self {
-        Self::Connect(Box::new(ConnectTarget {
+        Self::Connect(Box::new(ConnectTarget::Extended {
             authority,
-            protocol: Some(protocol),
-            scheme: Some(scheme),
-            path_and_query: Some(path_and_query),
+            protocol,
+            scheme,
+            path_and_query,
         }))
     }
 
     pub(crate) const fn authority(&self) -> Option<&RequestAuthority> {
         match self {
             Self::Normal { .. } => None,
-            Self::Connect(target) => Some(&target.authority),
+            Self::Connect(target) => Some(target.authority()),
         }
     }
 
     pub(crate) const fn scheme(&self) -> Option<&BytesStr> {
         match self {
             Self::Normal { scheme, .. } => Some(scheme),
-            Self::Connect(target) => target.scheme.as_ref(),
+            Self::Connect(target) => target.scheme(),
         }
     }
 
@@ -243,14 +462,14 @@ impl RequestTarget {
     pub(crate) const fn path_and_query(&self) -> Option<&BytesStr> {
         match self {
             Self::Normal { path_and_query, .. } => Some(path_and_query),
-            Self::Connect(target) => target.path_and_query.as_ref(),
+            Self::Connect(target) => target.path_and_query(),
         }
     }
 
     pub(crate) const fn protocol(&self) -> Option<&Protocol> {
         match self {
             Self::Normal { .. } => None,
-            Self::Connect(target) => target.protocol.as_ref(),
+            Self::Connect(target) => target.protocol(),
         }
     }
 
@@ -266,9 +485,8 @@ impl RequestTarget {
         match self {
             Self::Normal { path_and_query, .. } => path_and_query,
             Self::Connect(target) => target
-                .path_and_query
-                .as_ref()
-                .unwrap_or_else(|| target.authority.as_bytes_str()),
+                .path_and_query()
+                .unwrap_or_else(|| target.authority().as_bytes_str()),
         }
     }
 }
@@ -728,11 +946,20 @@ pub(crate) struct ResponseHeaderName(HeaderBytes);
 
 impl ResponseHeaderName {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
-        if !lowercase_header_name_is_valid(value.as_ref()) {
-            return None;
+        let needs_lowercase = request_header_name_needs_lowercase(value.as_ref())?;
+        if !needs_lowercase {
+            let kind = ResponseHeaderKind::from_bytes(value.as_ref());
+            return Some(Self(HeaderBytes::response_name_python(value, kind)));
         }
-        let kind = ResponseHeaderKind::from_bytes(value.as_ref());
-        Some(Self(HeaderBytes::response_name_python(value, kind)))
+        let normalized = Bytes::from(
+            value
+                .as_ref()
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>(),
+        );
+        let kind = ResponseHeaderKind::from_bytes(normalized.as_ref());
+        Some(Self(HeaderBytes::response_name_rust(normalized, kind)))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -756,7 +983,10 @@ impl AsRef<[u8]> for ResponseHeaderName {
 
 impl From<Bytes> for ResponseHeaderName {
     fn from(value: Bytes) -> Self {
-        assert!(lowercase_header_name_is_valid(value.as_ref()));
+        assert!(matches!(
+            request_header_name_needs_lowercase(value.as_ref()),
+            Some(false)
+        ));
         let kind = ResponseHeaderKind::from_bytes(value.as_ref());
         Self(HeaderBytes::response_name_rust(value, kind))
     }
@@ -767,7 +997,16 @@ pub(crate) struct ResponseHeaderValue(HeaderBytes);
 
 impl ResponseHeaderValue {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
-        header_value_is_valid(value.as_ref()).then_some(Self(value.into()))
+        (header_value_is_valid(value.as_ref())
+            && !value
+                .as_ref()
+                .first()
+                .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+            && !value
+                .as_ref()
+                .last()
+                .is_some_and(|byte| matches!(*byte, b' ' | b'\t')))
+        .then_some(Self(value.into()))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -944,11 +1183,11 @@ mod tests {
     use http::Method;
 
     use super::{
-        H1_HEADER_INLINE_CAPACITY, H1RequestHeaders, HttpStatusCode, HttpVersion,
-        KnownRequestHeaderName, Protocol, RequestAuthority, RequestHead, RequestHeaderNameRef,
-        RequestHeaders, RequestTarget, parse_request_method,
+        BytesStr, ConnectAuthority, H1_HEADER_INLINE_CAPACITY, H1RequestHeaders, HttpStatusCode,
+        HttpVersion, KnownRequestHeaderName, Protocol, RequestAuthority, RequestHead,
+        RequestHeaderNameRef, RequestHeaders, RequestTarget, ResponseTrailers,
+        parse_request_method,
     };
-    use crate::hpack::BytesStr;
     use crate::http::header_meta::RequestHeaderMeta;
 
     #[test]
@@ -1020,7 +1259,8 @@ mod tests {
 
     #[test]
     fn connect_request_target_without_path_uses_authority_for_logging() {
-        let authority = RequestAuthority::new(BytesStr::from_static("example.com:443"));
+        let authority = ConnectAuthority::try_from(BytesStr::from_static("example.com:443"))
+            .expect("test tunnel authority has a port");
         let target = RequestTarget::connect(authority);
 
         assert_eq!(target.scheme_str(), "");
@@ -1028,6 +1268,13 @@ mod tests {
         assert_eq!(target.protocol(), None);
         assert!(target.is_connect());
         assert_eq!(target.log_target().as_str(), "example.com:443");
+    }
+
+    #[test]
+    fn connect_authority_requires_a_port_after_generic_validation() {
+        let _ = ConnectAuthority::try_from(BytesStr::from_static("example.com")).unwrap_err();
+        let _ = ConnectAuthority::try_from(BytesStr::from_static("[::1]")).unwrap_err();
+        let _ = ConnectAuthority::try_from(BytesStr::from_static("example.com:443")).unwrap();
     }
 
     #[test]
@@ -1148,5 +1395,21 @@ mod tests {
             assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);
             assert!(headers.auxiliary.is_empty());
         }
+    }
+
+    #[test]
+    fn response_trailers_allow_extensions_and_reject_framing_fields() {
+        let extension = ResponseTrailers::try_from(vec![(
+            Bytes::from_static(b"x-checksum").into(),
+            Bytes::from_static(b"abc").into(),
+        )])
+        .expect("extension trailers are permitted");
+        assert_eq!(extension.as_fields().len(), 1);
+
+        ResponseTrailers::try_from(vec![(
+            Bytes::from_static(b"content-length").into(),
+            Bytes::from_static(b"1").into(),
+        )])
+        .unwrap_err();
     }
 }

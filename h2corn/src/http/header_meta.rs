@@ -1,14 +1,13 @@
 use std::num::NonZeroU32;
-use std::str::from_utf8;
 
 use bytes::Bytes;
 
 use crate::ascii;
-use crate::hpack::BytesStr;
-use crate::http::types::KnownRequestHeaderName;
+use crate::http::header::protocol_token_is_valid;
+use crate::http::types::{BytesStr, KnownRequestHeaderName};
 use crate::websocket::{
-    WEBSOCKET_KEY_LEN, WEBSOCKET_VERSION, WebSocketRequestMeta,
-    websocket_requested_permessage_deflate,
+    ParsedRequestedSubprotocols, ParsedWebSocketRequestMeta, WEBSOCKET_KEY_LEN, WEBSOCKET_VERSION,
+    WebSocketKey, offers_compatible_permessage_deflate,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -39,12 +38,34 @@ impl ProxyHeaderSlots {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ParsedWebSocketKey {
+    #[default]
+    Missing,
+    Valid(WebSocketKey),
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ParsedWebSocketVersion {
+    #[default]
+    Missing,
+    Supported,
+    Unsupported,
+    Duplicate,
+}
+
+impl ParsedWebSocketVersion {
+    pub(crate) const fn is_unsupported(self) -> bool {
+        matches!(self, Self::Missing | Self::Unsupported)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WebSocketHandshakeMeta {
-    pub(crate) key: Option<[u8; WEBSOCKET_KEY_LEN]>,
-    pub(crate) key_duplicate: bool,
-    pub(crate) request: WebSocketRequestMeta,
-    pub(crate) version_supported: bool,
+    pub(crate) key: ParsedWebSocketKey,
+    pub(crate) request: ParsedWebSocketRequestMeta,
+    pub(crate) version: ParsedWebSocketVersion,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -163,21 +184,30 @@ impl RequestHeaderMeta {
                 self.rare_mut().proxy_headers.x_forwarded_prefix = Some(slot());
             },
             KnownRequestHeaderName::SecWebSocketVersion => {
-                self.rare_mut().websocket.version_supported |= value_bytes == WEBSOCKET_VERSION;
+                let version = &mut self.rare_mut().websocket.version;
+                *version = match *version {
+                    ParsedWebSocketVersion::Missing if value_bytes == WEBSOCKET_VERSION => {
+                        ParsedWebSocketVersion::Supported
+                    },
+                    ParsedWebSocketVersion::Missing => ParsedWebSocketVersion::Unsupported,
+                    _ => ParsedWebSocketVersion::Duplicate,
+                };
             },
             KnownRequestHeaderName::SecWebSocketKey => {
-                let websocket = &mut self.rare_mut().websocket;
-                if websocket.key.is_some() {
-                    websocket.key_duplicate = true;
-                } else if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes)
-                    && websocket_key_is_syntactically_valid(value_bytes)
-                {
-                    websocket.key = Some(key);
-                }
+                let key = &mut self.rare_mut().websocket.key;
+                *key = match *key {
+                    ParsedWebSocketKey::Missing
+                        if let Ok(&key) = <&[u8; WEBSOCKET_KEY_LEN]>::try_from(value_bytes)
+                            && websocket_key_is_syntactically_valid(value_bytes) =>
+                    {
+                        ParsedWebSocketKey::Valid(key)
+                    },
+                    _ => ParsedWebSocketKey::Invalid,
+                };
             },
             KnownRequestHeaderName::SecWebSocketExtensions => {
                 self.rare_mut().websocket.request.per_message_deflate |=
-                    websocket_requested_permessage_deflate(value_bytes);
+                    offers_compatible_permessage_deflate(value_bytes);
             },
             _ => {},
         }
@@ -192,47 +222,64 @@ fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
             .all(|byte| ascii::is_base64(*byte))
 }
 
-fn push_requested_subprotocols(value: &Bytes, out: &mut WebSocketRequestMeta) {
-    if from_utf8(value.as_ref()).is_err() {
+fn push_requested_subprotocols(value: &Bytes, out: &mut ParsedWebSocketRequestMeta) {
+    if matches!(
+        out.requested_subprotocols,
+        ParsedRequestedSubprotocols::Invalid
+    ) {
         return;
     }
-
-    out.requested_subprotocols.extend(
-        value
-            .as_ref()
-            .split(|&byte| byte == b',')
-            .map(<[u8]>::trim_ascii)
-            .filter(|item| !item.is_empty())
-            .map(|item| {
-                let bytes = value.slice_ref(item);
-                // SAFETY: the complete header value was validated as UTF-8, and
-                // this slice is borrowed from that same value on byte boundaries.
-                unsafe { BytesStr::from_validated_utf8(bytes) }
-            }),
-    );
+    for item in value
+        .as_ref()
+        .split(|&byte| byte == b',')
+        .map(<[u8]>::trim_ascii)
+    {
+        if item.is_empty() {
+            continue;
+        }
+        if !protocol_token_is_valid(item) {
+            out.requested_subprotocols = ParsedRequestedSubprotocols::Invalid;
+            return;
+        }
+        let bytes = value.slice_ref(item);
+        let ParsedRequestedSubprotocols::Valid(requested) = &mut out.requested_subprotocols else {
+            unreachable!("invalid subprotocols returned before appending")
+        };
+        // SAFETY: an HTTP token is ASCII and therefore valid UTF-8.
+        requested.push(unsafe { BytesStr::from_validated_ascii(bytes) });
+    }
 }
 
-fn push_copied_requested_subprotocols(value: &[u8], out: &mut WebSocketRequestMeta) {
-    let Ok(value) = from_utf8(value) else {
+fn push_copied_requested_subprotocols(value: &[u8], out: &mut ParsedWebSocketRequestMeta) {
+    if matches!(
+        out.requested_subprotocols,
+        ParsedRequestedSubprotocols::Invalid
+    ) {
         return;
-    };
-    out.requested_subprotocols.extend(
-        value
-            .split(',')
-            .map(str::trim_ascii)
-            .filter(|item| !item.is_empty())
-            .map(BytesStr::from),
-    );
+    }
+    for item in value.split(|&byte| byte == b',').map(<[u8]>::trim_ascii) {
+        if item.is_empty() {
+            continue;
+        }
+        if !protocol_token_is_valid(item) {
+            out.requested_subprotocols = ParsedRequestedSubprotocols::Invalid;
+            return;
+        }
+        let ParsedRequestedSubprotocols::Valid(requested) = &mut out.requested_subprotocols else {
+            unreachable!("invalid subprotocols returned before appending")
+        };
+        // SAFETY: an HTTP token is ASCII and therefore valid UTF-8.
+        requested.push(unsafe { BytesStr::from_validated_ascii(Bytes::copy_from_slice(item)) });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
 
-    use super::{ProxyHeaderSlots, RequestHeaderMeta};
-    use crate::hpack::BytesStr;
-    use crate::http::types::KnownRequestHeaderName;
-    use crate::websocket::RequestedSubprotocols;
+    use super::{ParsedWebSocketKey, ParsedWebSocketVersion, ProxyHeaderSlots, RequestHeaderMeta};
+    use crate::http::types::{BytesStr, KnownRequestHeaderName};
+    use crate::websocket::{ParsedRequestedSubprotocols, RequestedSubprotocols};
 
     #[test]
     fn ordinary_header_metadata_stays_inline_without_a_rare_sidecar() {
@@ -290,13 +337,56 @@ mod tests {
         );
 
         let websocket = meta.websocket().expect("WebSocket metadata sidecar exists");
-        assert!(websocket.version_supported);
-        assert_eq!(websocket.key, Some(*b"dGhlIHNhbXBsZSBub25jZQ=="));
+        assert_eq!(websocket.version, ParsedWebSocketVersion::Supported);
+        assert_eq!(
+            websocket.key,
+            ParsedWebSocketKey::Valid(*b"dGhlIHNhbXBsZSBub25jZQ==")
+        );
         let expected: RequestedSubprotocols = smallvec::smallvec![
             BytesStr::from_static("chat"),
             BytesStr::from_static("superchat"),
         ];
-        assert_eq!(websocket.request.requested_subprotocols, expected);
+        assert_eq!(
+            websocket.request.requested_subprotocols,
+            ParsedRequestedSubprotocols::Valid(expected)
+        );
         assert!(websocket.request.per_message_deflate);
+    }
+
+    #[test]
+    fn websocket_key_is_invalid_after_a_malformed_or_second_occurrence() {
+        let valid = Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ==");
+        let malformed = Bytes::from_static(b"not-a-websocket-key");
+
+        for (first, second) in [(&malformed, &valid), (&valid, &malformed), (&valid, &valid)] {
+            let mut meta = RequestHeaderMeta::default();
+            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, first, 0);
+            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, second, 1);
+            assert_eq!(
+                meta.websocket()
+                    .expect("key creates handshake metadata")
+                    .key,
+                ParsedWebSocketKey::Invalid
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_version_is_duplicate_after_any_second_occurrence() {
+        for (first, second) in [
+            (b"12".as_slice(), b"13".as_slice()),
+            (b"13", b"12"),
+            (b"13", b"13"),
+        ] {
+            let mut meta = RequestHeaderMeta::default();
+            meta.observe_known_header_slice(KnownRequestHeaderName::SecWebSocketVersion, first, 0);
+            meta.observe_known_header_slice(KnownRequestHeaderName::SecWebSocketVersion, second, 1);
+            assert_eq!(
+                meta.websocket()
+                    .expect("version creates handshake metadata")
+                    .version,
+                ParsedWebSocketVersion::Duplicate
+            );
+        }
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::bridge::{ASGI_QUEUE_CAPACITY, RequestBodyCounter, RequestInputShared};
+use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, RequestBodyCounter, RequestInputShared};
 use crate::http::planner::{RequestInputPlan, RequestLaunchPlan};
 use crate::runtime::{AppRuntime, RequestAdmission, StreamInput, try_acquire_request_admission};
 
@@ -16,7 +16,7 @@ pub(crate) struct StreamRequestInput {
 
 impl StreamRequestInput {
     pub(crate) fn new(count_body_bytes: bool) -> Self {
-        let (tx, rx) = mpsc::channel(ASGI_QUEUE_CAPACITY);
+        let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
         Self {
             tx,
             rx,

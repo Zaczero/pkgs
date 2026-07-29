@@ -1,4 +1,4 @@
-use crate::access_log::HttpAccessLogState;
+use crate::access_log::{HttpAccessLogState, ResponseLogState};
 use crate::error::H2CornError;
 use crate::http::app::{HttpRequestBody, run_asgi_http_request};
 use crate::http::response::HttpResponseTransport;
@@ -16,7 +16,9 @@ where
     F: FnOnce() -> u64,
 {
     let access_log = HttpAccessLogState::new(&ctx);
-    let result = run_asgi_http_request(ctx, request_body, admission, transport).await;
-    access_log.emit_http_response(transport.response_log_state(), read_body_bytes);
+    let mut response_log = ResponseLogState::default();
+    let result =
+        run_asgi_http_request(ctx, request_body, admission, transport, &mut response_log).await;
+    access_log.emit_http_response(response_log, read_body_bytes);
     result
 }

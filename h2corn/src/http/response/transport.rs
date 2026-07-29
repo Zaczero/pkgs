@@ -1,85 +1,33 @@
-use std::fs::File;
-
-use super::actions::{FinalResponseBody, ResponseAction, ResponseActions, ResponseStart};
-use crate::access_log::ResponseLogState;
-use crate::bridge::PayloadBytes;
+use super::actions::{ResponseAction, ResponseActions};
 use crate::error::H2CornError;
-use crate::http::types::ResponseHeaders;
-
-/// The driver-facing seam: response progress is communicated as a batch of
-/// `ResponseAction`s, and each sink decides how to lower them onto its wire.
-/// Full HTTP transports get this via the blanket impl below; restricted sinks
-/// (websocket denial responses) implement it directly with a narrower action
-/// vocabulary.
-pub(crate) trait ResponseActionSink {
-    async fn apply_response_actions(
-        &mut self,
-        actions: &mut ResponseActions,
-    ) -> Result<(), H2CornError>;
-}
-
-impl<T: HttpResponseTransport> ResponseActionSink for T {
-    async fn apply_response_actions(
-        &mut self,
-        actions: &mut ResponseActions,
-    ) -> Result<(), H2CornError> {
-        HttpResponseTransport::apply_response_actions(self, actions).await
-    }
-}
 
 pub(crate) trait HttpResponseTransport {
-    async fn send_final_response(
-        &mut self,
-        start: ResponseStart,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError>;
+    /// Put one action on the wire.
+    ///
+    /// The action enum is the whole vocabulary of a response, so a transport
+    /// says how it writes each kind and nothing else. Everything the response
+    /// machinery emits arrives here.
+    async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError>;
 
-    async fn start_streaming_response(&mut self, start: ResponseStart) -> Result<(), H2CornError>;
-
-    async fn send_streaming_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError>;
-
-    async fn send_streaming_file(&mut self, file: File, len: usize) -> Result<(), H2CornError>;
-
-    async fn finish_streaming_response(&mut self) -> Result<(), H2CornError>;
-
-    async fn finish_streaming_with_trailers(
-        &mut self,
-        trailers: ResponseHeaders,
-    ) -> Result<(), H2CornError>;
-
-    async fn send_internal_error_response(&mut self) -> Result<(), H2CornError>;
-
-    async fn abort_incomplete_response(&mut self) -> Result<(), H2CornError>;
-
-    fn response_log_state(&self) -> ResponseLogState;
+    /// Push anything still buffered to the peer.
+    ///
+    /// Called once a batch of actions has been applied, which is exactly the
+    /// moment the application has nothing more ready to send. Chunks within a
+    /// batch still coalesce, so throughput streaming keeps its one write per
+    /// batch, while a server-sent-events app that emits one small event and
+    /// then waits does not leave that event sitting in a buffer.
+    async fn flush_buffered(&mut self) -> Result<(), H2CornError>;
 
     async fn apply_response_actions(
         &mut self,
         actions: &mut ResponseActions,
     ) -> Result<(), H2CornError> {
+        let applied = !actions.is_empty();
         for action in actions.drain(..) {
-            match action {
-                ResponseAction::Final { start, body } => {
-                    self.send_final_response(start, body).await?;
-                },
-                ResponseAction::Start { start } => {
-                    self.start_streaming_response(start).await?;
-                },
-                ResponseAction::Body(body) => self.send_streaming_body(body).await?,
-                ResponseAction::File { file, len } => {
-                    self.send_streaming_file(*file, len).await?;
-                },
-                ResponseAction::Finish => self.finish_streaming_response().await?,
-                ResponseAction::FinishWithTrailers(trailers) => {
-                    self.finish_streaming_with_trailers(trailers).await?;
-                },
-                ResponseAction::InternalError => {
-                    self.send_internal_error_response().await?;
-                },
-                ResponseAction::AbortIncomplete => {
-                    self.abort_incomplete_response().await?;
-                },
-            }
+            self.apply_response_action(action).await?;
+        }
+        if applied {
+            self.flush_buffered().await?;
         }
         Ok(())
     }

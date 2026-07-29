@@ -7,7 +7,7 @@ use std::{fmt, future};
 
 use bytes::Bytes;
 pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared};
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError};
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
@@ -16,21 +16,30 @@ use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 #[cfg(test)]
 pub(crate) use websocket::WebSocketSendDisposition;
 pub(crate) use websocket::{
-    PyWebSocketReceive, PyWebSocketSend, WebSocketSendBuffer, WebSocketSendState,
+    PyWebSocketReceive, PyWebSocketSend, WebSocketDisconnect, WebSocketInboundMessage,
+    WebSocketInboundReceiver, WebSocketInboundSender, WebSocketInboundTrySendError,
+    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
 };
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
-    AsgiChannel, AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError, into_pyerr,
+    AsgiChannel, AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError,
+    WebSocketError, into_pyerr,
 };
-use crate::hpack::BytesStr;
+use crate::http::header::{
+    ApplicationResponseField, ResponseConnectionDirective, ResponseHeaderControl,
+    application_response_field, protocol_token_is_valid, split_commas_bytes,
+};
 use crate::http::types::{
-    HttpStatusCode, ResponseHeaderName, ResponseHeaderValue, ResponseHeaders,
+    BytesStr, FinalResponseStatus, HttpStatusCode, ResponseHeaderName, ResponseHeaderValue,
+    ResponseHeaders, ResponseTrailers,
 };
 use crate::pyloop::{PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, runtime};
 use crate::python::{StaticPyKey, py_dict};
 use crate::runtime::H2InputCredit;
-use crate::websocket::WebSocketCloseCode;
+use crate::websocket::{
+    SEC_WEBSOCKET_EXTENSIONS_HEADER_BYTES, SEC_WEBSOCKET_PROTOCOL_HEADER_BYTES, WebSocketCloseCode,
+};
 
 macro_rules! asgi_item {
     ($fn:ident, $name:literal) => {
@@ -42,7 +51,13 @@ macro_rules! asgi_item {
     };
 }
 
-pub(crate) const ASGI_QUEUE_CAPACITY: usize = 32;
+/// Small event queues are appropriate for HTTP body chunks and outbound ASGI
+/// notifications. Complete inbound WebSocket messages are byte-accounted in
+/// `bridge::websocket`; giving all three one capacity hid their very different
+/// retention costs.
+pub(crate) const HTTP_ASGI_QUEUE_CAPACITY: usize = 32;
+pub(crate) const WEBSOCKET_OUTBOUND_QUEUE_CAPACITY: usize = 32;
+pub(crate) const WEBSOCKET_INBOUND_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) enum HttpInboundEvent {
@@ -75,9 +90,10 @@ pub(crate) enum WebSocketInboundEvent {
 #[derive(Debug)]
 pub(crate) enum HttpOutboundEvent {
     Start {
-        status: HttpStatusCode,
+        status: FinalResponseStatus,
         headers: ResponseHeaders,
         trailers: bool,
+        control: ResponseHeaderControl,
     },
     Body {
         body: PayloadBytes,
@@ -87,7 +103,7 @@ pub(crate) enum HttpOutboundEvent {
         path: PathBuf,
     },
     Trailers {
-        headers: ResponseHeaders,
+        headers: ResponseTrailers,
         more_trailers: bool,
     },
 }
@@ -105,8 +121,9 @@ pub(crate) enum WebSocketOutboundEvent {
         reason: Option<PyBackedStr>,
     },
     HttpResponseStart {
-        status: HttpStatusCode,
+        status: FinalResponseStatus,
         headers: ResponseHeaders,
+        control: ResponseHeaderControl,
     },
     HttpResponseBody {
         body: PayloadBytes,
@@ -115,9 +132,15 @@ pub(crate) enum WebSocketOutboundEvent {
 }
 
 #[derive(Debug)]
+/// An outbound payload that owns its bytes, whoever produced them.
+///
+/// Text carries its Python owner rather than a copy: a WebSocket message the
+/// application sent as `str` is written straight from the interpreter's buffer,
+/// exactly like `bytes`.
 pub(crate) enum PayloadBytes {
     Rust(Bytes),
     Python(PyBackedBytes),
+    Text(PyBackedStr),
 }
 
 impl PayloadBytes {
@@ -133,6 +156,7 @@ impl PayloadBytes {
         match self {
             Self::Rust(bytes) => bytes.as_ref(),
             Self::Python(bytes) => bytes.as_ref(),
+            Self::Text(text) => text.as_bytes(),
         }
     }
 }
@@ -152,6 +176,12 @@ impl From<Bytes> for PayloadBytes {
 impl From<PyBackedBytes> for PayloadBytes {
     fn from(value: PyBackedBytes) -> Self {
         Self::Python(value)
+    }
+}
+
+impl From<PyBackedStr> for PayloadBytes {
+    fn from(value: PyBackedStr) -> Self {
+        Self::Text(value)
     }
 }
 
@@ -227,8 +257,20 @@ impl<'py> AsgiMessage<'py> {
         )
     }
 
-    fn headers(&self) -> Result<ResponseHeaders, H2CornError> {
+    fn response_headers(&self) -> Result<ResponseHeaders, H2CornError> {
         parse_headers(self.headers_item()?)
+    }
+
+    fn application_response_headers(
+        &self,
+    ) -> Result<(ResponseHeaders, ResponseHeaderControl), H2CornError> {
+        let mut headers = self.response_headers()?;
+        let control = validate_application_response_headers(&mut headers)?;
+        Ok((headers, control))
+    }
+
+    fn response_trailers(&self) -> Result<ResponseTrailers, H2CornError> {
+        ResponseTrailers::try_from(parse_headers(self.headers_item()?)?)
     }
 
     fn status(&self, container: AsgiContainer) -> Result<HttpStatusCode, H2CornError> {
@@ -339,15 +381,19 @@ impl ReadyAwaitable {
 /// fresh awaitable per send we hand out a reference to one cached instance per
 /// shard (see [`ready_none`]). It holds no state and takes `&self`, so sharing
 /// it is sound even under repeated or concurrent awaits (including across
-/// free-threaded shard threads): `__next__` just raises `StopIteration(None)`
+/// free-threaded shard threads): `__next__` just raises a bare `StopIteration`
 /// synchronously, with nothing to corrupt.
+///
+/// The raise carries no argument. `StopIteration()` and `StopIteration(None)`
+/// both have `.value is None`, which is what `await` reads; passing `None`
+/// only differs in `.args`, and costs a one-element tuple on every `send()`.
 #[pyclass(frozen, name = "_ReadyNone")]
 pub struct ReadyNone;
 
 #[pymethods]
 impl ReadyNone {
-    fn send(&self, py: Python<'_>, _value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        Err(PyStopIteration::new_err((py.None(),)))
+    fn send(&self, _value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        Err(PyStopIteration::new_err(()))
     }
 
     const fn close(&self) {}
@@ -360,8 +406,8 @@ impl ReadyNone {
         self_
     }
 
-    fn __next__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Err(PyStopIteration::new_err((py.None(),)))
+    fn __next__(&self) -> PyResult<Py<PyAny>> {
+        Err(PyStopIteration::new_err(()))
     }
 }
 
@@ -650,7 +696,7 @@ where
 }
 
 fn parse_header_iterable(value: &Bound<'_, PyAny>) -> Result<ResponseHeaders, H2CornError> {
-    let mut headers = ResponseHeaders::with_capacity(value.len().unwrap_or_default());
+    let mut headers = ResponseHeaders::new();
     for item in value.try_iter()? {
         let (name, value) = item?.extract::<(PyBackedBytes, PyBackedBytes)>()?;
         headers.push(parse_response_header(name, value)?);
@@ -695,6 +741,80 @@ fn parse_response_header(
     let value = ResponseHeaderValue::from_python(value)
         .ok_or_else(|| H2CornError::from(HttpResponseError::InvalidResponseHeaderValue))?;
     Ok((name, value))
+}
+
+fn validate_application_response_headers(
+    headers: &mut ResponseHeaders,
+) -> Result<ResponseHeaderControl, H2CornError> {
+    let mut control = ResponseHeaderControl::default();
+    let mut has_upgrade = false;
+    let mut invalid = false;
+
+    headers.retain(|(name, value)| {
+        match application_response_field(name.as_bytes()) {
+            // ASGI explicitly assigns this field to the server. It is the one
+            // deliberately silent strip: applications are allowed to send it.
+            ApplicationResponseField::TransferEncoding => false,
+            ApplicationResponseField::Te
+            | ApplicationResponseField::KeepAlive
+            | ApplicationResponseField::ProxyConnection => {
+                control
+                    .strips
+                    .insert(application_response_field(name.as_bytes()));
+                false
+            },
+            ApplicationResponseField::Connection => {
+                control.strips.insert(ApplicationResponseField::Connection);
+                for token in split_commas_bytes(value.as_bytes()).map(<[u8]>::trim_ascii) {
+                    match token {
+                        b"close" if control.directive != ResponseConnectionDirective::Upgrade => {
+                            control.directive = ResponseConnectionDirective::Close;
+                        },
+                        b"keep-alive" => {},
+                        b"upgrade" if control.directive != ResponseConnectionDirective::Close => {
+                            control.directive = ResponseConnectionDirective::Upgrade;
+                        },
+                        _ => {
+                            invalid = true;
+                            return false;
+                        },
+                    }
+                }
+                false
+            },
+            ApplicationResponseField::Upgrade => {
+                let valid = split_commas_bytes(value.as_bytes()).all(|token| {
+                    let token = token.trim_ascii();
+                    !token.is_empty() && protocol_token_is_valid(token)
+                });
+                invalid |= !valid || has_upgrade;
+                has_upgrade = true;
+                valid
+            },
+            ApplicationResponseField::Other => {
+                if name.as_bytes() == b"trailer" {
+                    // The ASGI trailers extension puts semantic announcement
+                    // policy in the framework. Only its list grammar belongs
+                    // to the server; actual trailer fields stay separately
+                    // validated by ResponseTrailers.
+                    split_commas_bytes(value.as_bytes()).all(|field| {
+                        let field = field.trim_ascii();
+                        !field.is_empty() && protocol_token_is_valid(field)
+                    })
+                } else {
+                    true
+                }
+            },
+        }
+    });
+
+    // `retain` cannot carry an error. Recheck the observable facts after the
+    // one-pass transformation so invalid Connection/Upgrade syntax raises out
+    // of send(), rather than turning into an accidental strip.
+    if invalid || (control.directive == ResponseConnectionDirective::Upgrade) != has_upgrade {
+        return Err(HttpResponseError::InvalidResponseHeaderValue.into());
+    }
+    Ok(control)
 }
 
 fn extract_payload_bytes(value: &Bound<'_, PyAny>) -> Result<PayloadBytes, H2CornError> {
@@ -796,13 +916,21 @@ pub(crate) fn parse_http_outbound_event(
     let message_type = message.message_type()?;
     match message_type {
         "http.response.start" => {
-            let status = message.status(AsgiContainer::HttpResponseStart)?;
-            let headers = message.headers()?;
+            let status = FinalResponseStatus::new(
+                message.status(AsgiContainer::HttpResponseStart)?,
+            )
+            .ok_or_else(|| {
+                H2CornError::from(PyValueError::new_err(
+                    "informational response statuses are not supported by ASGI http.response.start",
+                ))
+            })?;
+            let (headers, control) = message.application_response_headers()?;
             let trailers = message.trailers_flag()?;
             Ok(HttpOutboundEvent::Start {
                 status,
                 headers,
                 trailers,
+                control,
             })
         },
         "http.response.body" => {
@@ -814,7 +942,7 @@ pub(crate) fn parse_http_outbound_event(
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),
         "http.response.trailers" => {
-            let headers = message.headers()?;
+            let headers = message.response_trailers()?;
             let more_trailers = message.more_trailers_flag()?;
             Ok(HttpOutboundEvent::Trailers {
                 headers,
@@ -834,7 +962,23 @@ pub(crate) fn parse_websocket_outbound_event(
     match message_type {
         "websocket.accept" => {
             let subprotocol = message.subprotocol()?;
-            let headers = message.headers()?;
+            let (mut headers, _) = message.application_response_headers()?;
+            // Connection is handled by the generic response policy above.
+            // The WebSocket transport exclusively owns its Upgrade and Accept
+            // fields, so application copies are deliberately ignored.
+            headers.retain(|(name, _)| {
+                !name.as_bytes().eq_ignore_ascii_case(b"upgrade")
+                    && !name
+                        .as_bytes()
+                        .eq_ignore_ascii_case(b"sec-websocket-accept")
+            });
+            if headers.iter().any(|(name, _)| {
+                let name = name.as_bytes();
+                name.eq_ignore_ascii_case(SEC_WEBSOCKET_PROTOCOL_HEADER_BYTES)
+                    || name.eq_ignore_ascii_case(SEC_WEBSOCKET_EXTENSIONS_HEADER_BYTES)
+            }) {
+                return WebSocketError::AcceptHeadersForbidden.err();
+            }
             Ok(WebSocketOutboundEvent::Accept {
                 subprotocol,
                 headers,
@@ -850,9 +994,20 @@ pub(crate) fn parse_websocket_outbound_event(
             Ok(WebSocketOutboundEvent::Close { code, reason })
         },
         "websocket.http.response.start" => {
-            let status = message.status(AsgiContainer::WebSocketHttpResponseStart)?;
-            let headers = message.headers()?;
-            Ok(WebSocketOutboundEvent::HttpResponseStart { status, headers })
+            let status = FinalResponseStatus::new(
+                message.status(AsgiContainer::WebSocketHttpResponseStart)?,
+            )
+            .ok_or_else(|| {
+                H2CornError::from(PyValueError::new_err(
+                    "informational response statuses are not supported by ASGI websocket.http.response.start",
+                ))
+            })?;
+            let (headers, control) = message.application_response_headers()?;
+            Ok(WebSocketOutboundEvent::HttpResponseStart {
+                status,
+                headers,
+                control,
+            })
         },
         "websocket.http.response.body" => {
             let body = message.body_or_empty()?;
@@ -871,6 +1026,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
+    use pyo3::ffi::c_str;
     use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyTuple};
     use pyo3::{PyResult, Python};
     use tokio::sync::{Mutex, mpsc, oneshot};
@@ -882,6 +1038,7 @@ mod tests {
     };
     use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError};
     use crate::h2_frame::StreamId;
+    use crate::http::header::ResponseConnectionDirective;
     use crate::http::types::status_code;
     use crate::python::py_dict;
     use crate::runtime::H2InputCreditQueue;
@@ -1003,6 +1160,53 @@ mod tests {
     }
 
     #[test]
+    fn websocket_accept_owns_handshake_headers_at_ingress() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let message = py_dict!(py, {
+                "type" => "websocket.accept",
+                "headers" => [
+                    (PyBytes::new(py, b"x-before"), PyBytes::new(py, b"one")),
+                    (PyBytes::new(py, b"connection"), PyBytes::new(py, b"upgrade")),
+                    (PyBytes::new(py, b"upgrade"), PyBytes::new(py, b"not-websocket")),
+                    (PyBytes::new(py, b"sec-websocket-accept"), PyBytes::new(py, b"bogus")),
+                    (PyBytes::new(py, b"x-after"), PyBytes::new(py, b"two")),
+                ],
+            });
+
+            let WebSocketOutboundEvent::Accept { headers, .. } =
+                parse_websocket_outbound_event(&message).expect("accept headers are parsed")
+            else {
+                panic!("websocket.accept must produce an accept event");
+            };
+            let fields = headers
+                .iter()
+                .map(|(name, value)| (name.as_bytes(), value.as_bytes()))
+                .collect::<Vec<_>>();
+            assert_eq!(fields, [
+                (b"x-before".as_slice(), b"one".as_slice()),
+                (b"x-after".as_slice(), b"two".as_slice())
+            ]);
+
+            for name in [
+                b"sec-websocket-protocol".as_slice(),
+                b"sec-websocket-extensions",
+            ] {
+                let message = py_dict!(py, {
+                    "type" => "websocket.accept",
+                    "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"value"))],
+                });
+                assert!(
+                    parse_websocket_outbound_event(&message).is_err(),
+                    "{name:?}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn http_response_start_defaults_trailers_to_false() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -1017,8 +1221,8 @@ mod tests {
             let event = parse_http_outbound_event(&message).unwrap();
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { status, trailers: false, headers }
-                    if status == status_code::OK && headers.len() == 1
+                super::HttpOutboundEvent::Start { status, trailers: false, headers, .. }
+                    if status.get() == status_code::OK && headers.len() == 1
                         && headers[0].0.as_ref() == b"content-length"
                         && headers[0].1.as_ref() == b"2"
             ));
@@ -1062,11 +1266,198 @@ mod tests {
             let event = parse_http_outbound_event(&message).unwrap();
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { status, trailers: false, ref headers }
-                    if status == status_code::OK && headers.len() == 1
+                super::HttpOutboundEvent::Start { status, trailers: false, ref headers, .. }
+                    if status.get() == status_code::OK && headers.len() == 1
                         && headers[0].0.as_ref() == b"x-demo"
                         && headers[0].1.as_ref() == b"1"
             ));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn response_header_iterable_never_calls_len() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let locals = PyDict::new(py);
+            py.run(
+                c_str!(
+                    r#"
+import sys
+class Headers:
+    def __init__(self, kind):
+        self.kind = kind
+    def __iter__(self):
+        return iter(((b"x-test", b"ok"),))
+    def __len__(self):
+        if self.kind == 0:
+            raise AssertionError("__len__ must not run")
+        if self.kind == 1:
+            return sys.maxsize
+        return -1
+headers = (Headers(0), Headers(1), Headers(2))
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )?;
+            let header_sets = locals
+                .get_item("headers")?
+                .expect("test created header iterables");
+            for headers in header_sets.try_iter()? {
+                let message = PyDict::new(py);
+                message.set_item("type", "http.response.start")?;
+                message.set_item("status", 200)?;
+                message.set_item("headers", headers?)?;
+                parse_http_outbound_event(&message).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn response_headers_and_trailers_enforce_their_own_field_policies() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            for name in [b"upgrade".as_slice(), b"connection"] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => 200,
+                    "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
+                });
+                assert!(parse_http_outbound_event(&message).is_err(), "{name:?}");
+            }
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => [
+                    (PyBytes::new(py, b"Transfer-Encoding"), PyBytes::new(py, b"gzip")),
+                    (PyBytes::new(py, b"TE"), PyBytes::new(py, b"trailers")),
+                    (PyBytes::new(py, b"Content-Type"), PyBytes::new(py, b"text/plain")),
+                ],
+            });
+            let event = parse_http_outbound_event(&message).expect("fixed fields are stripped");
+            assert!(matches!(
+                event,
+                super::HttpOutboundEvent::Start { ref headers, .. }
+                    if headers.len() == 1
+                        && headers[0].0.as_ref() == b"content-type"
+            ));
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => [
+                    (PyBytes::new(py, b"connection"), PyBytes::new(py, b"content-security-policy")),
+                    (PyBytes::new(py, b"content-security-policy"), PyBytes::new(py, b"default-src 'self'")),
+                ],
+            });
+            let _error = parse_http_outbound_event(&message).unwrap_err();
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 103,
+            });
+            let _error = parse_http_outbound_event(&message).unwrap_err();
+
+            for value in [b"".as_slice(), b"internal\t whitespace"] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => 200,
+                    "headers" => [(PyBytes::new(py, b"x-test"), PyBytes::new(py, value))],
+                });
+                assert!(parse_http_outbound_event(&message).is_ok(), "{value:?}");
+            }
+            for value in [
+                b" leading".as_slice(),
+                b"trailing ",
+                b"\tleading",
+                b"trailing\t",
+            ] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => 200,
+                    "headers" => [(PyBytes::new(py, b"x-test"), PyBytes::new(py, value))],
+                });
+                assert!(parse_http_outbound_event(&message).is_err(), "{value:?}");
+            }
+
+            for name in [
+                b"content-length".as_slice(),
+                b"authorization",
+                b"content-type",
+            ] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.trailers",
+                    "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
+                });
+                assert!(parse_http_outbound_event(&message).is_err(), "{name:?}");
+            }
+            for name in [b"x-checksum".as_slice(), b"content-digest"] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.trailers",
+                    "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
+                });
+                assert!(parse_http_outbound_event(&message).is_ok(), "{name:?}");
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn response_connection_directive_has_exactly_one_meaning() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            for (connection, upgrade, directive) in [
+                (
+                    b"close".as_slice(),
+                    false,
+                    ResponseConnectionDirective::Close,
+                ),
+                (b"upgrade", true, ResponseConnectionDirective::Upgrade),
+                (b"keep-alive", false, ResponseConnectionDirective::None),
+                (b"close, close", false, ResponseConnectionDirective::Close),
+                (
+                    b"upgrade, upgrade",
+                    true,
+                    ResponseConnectionDirective::Upgrade,
+                ),
+            ] {
+                let mut headers = vec![(
+                    PyBytes::new(py, b"connection"),
+                    PyBytes::new(py, connection),
+                )];
+                if upgrade {
+                    headers.push((PyBytes::new(py, b"upgrade"), PyBytes::new(py, b"h2c")));
+                }
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => 200,
+                    "headers" => headers,
+                });
+                let event = parse_http_outbound_event(&message)
+                    .expect("valid response connection directive");
+                assert!(matches!(
+                    event,
+                    super::HttpOutboundEvent::Start { control, .. }
+                        if control.directive == directive
+                ));
+            }
+
+            let contradictory = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => [
+                    (PyBytes::new(py, b"connection"), PyBytes::new(py, b"close, upgrade")),
+                    (PyBytes::new(py, b"upgrade"), PyBytes::new(py, b"h2c")),
+                ],
+            });
+            let _ = parse_http_outbound_event(&contradictory)
+                .expect_err("contradictory connection directives are rejected");
             Ok(())
         })
         .unwrap();

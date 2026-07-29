@@ -16,6 +16,7 @@ from h2corn import Config
 
 from tests._support import (
     h2_request,
+    http1_request,
     open_h2_connection,
     read_h2_response,
     running_server,
@@ -234,17 +235,58 @@ async def test_app_timer_and_sleep_interleave_with_pump() -> None:
     assert all(status == 200 and body == b'slept' for status, body in bodies)
 
 
-async def test_scope_metadata_mutation_is_request_local() -> None:
+@pytest.mark.parametrize(
+    ('status', 'expected_length'),
+    [
+        # RFC 9110 forbids Content-Length on 204.  205 cannot carry content;
+        # 304 describes a representation it deliberately does not send.
+        (204, None),
+        (205, None),
+        (304, b'9'),
+    ],
+)
+async def test_statuses_that_forbid_content_send_none(
+    status: int, expected_length: bytes | None
+) -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': status, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'forbidden'})
+
+    async with running_server(app, _config()) as server:
+        http1_status, headers, body, _trailers = await asyncio.wait_for(
+            http1_request(
+                port=server_port(server),
+                request=b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+                head_only=True,
+            ),
+            timeout=5,
+        )
+        h2_status, h2_body = await asyncio.wait_for(
+            h2_request(port=server_port(server)), timeout=5
+        )
+
+    assert (http1_status, body) == (status, b'')
+    assert headers.get(b'content-length') == expected_length
+    assert (h2_status, h2_body) == (status, b'')
+
+
+async def test_extension_mutation_is_request_local() -> None:
+    """An app may add its own key under `extensions`; it must not persist.
+
+    `scope["asgi"]` is deliberately not covered: it is constant protocol
+    metadata, so one dict is shared by every scope rather than rebuilt per
+    request. Nothing writes to it, and rebuilding it measured 599
+    instructions/request.
+    """
     requests = 0
 
     async def app(scope, receive, send):
         nonlocal requests
+        assert scope['asgi']['version'] == '3.0'
         if requests == 0:
-            scope['asgi']['version'] = 'application-mutated'
             scope['extensions']['application.private'] = {}
             scope['extensions']['http.response.pathsend']['application.private'] = True
         else:
-            assert scope['asgi']['version'] == '3.0'
             assert 'application.private' not in scope['extensions']
             assert (
                 'application.private'

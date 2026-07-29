@@ -9,6 +9,7 @@ use bytes::Bytes;
 use rustix::fs::fcntl_rdadvise;
 #[cfg(target_os = "linux")]
 use rustix::fs::{Advice, fadvise};
+use rustix::fs::{CWD, FileType, Mode, OFlags, fstat, openat};
 use tokio::task::{JoinHandle, spawn_blocking};
 
 use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
@@ -82,14 +83,17 @@ impl PathCursor {
         self.buffered.start == self.buffered.end && self.unread_file_len != 0
     }
 
-    const fn record_read(&mut self, read: usize) {
+    fn record_read(&mut self, read: usize) -> io::Result<()> {
         self.buffered = 0..read;
         self.file_offset += read as u64;
         if read == 0 {
-            self.unread_file_len = 0;
+            if self.unread_file_len != 0 {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+            }
         } else {
             self.unread_file_len = self.unread_file_len.saturating_sub(read);
         }
+        Ok(())
     }
 
     fn consume_buffered(&mut self, len: usize) {
@@ -163,7 +167,7 @@ impl PathStreamer {
             buffer: Some(buffer),
         };
         let read = read?;
-        self.cursor.record_read(read);
+        self.cursor.record_read(read)?;
         Ok(())
     }
 
@@ -224,51 +228,79 @@ pub(crate) enum PathSource {
     File(Box<File>),
 }
 
-pub(crate) async fn open_pathsend_file(
-    path: PathBuf,
-    len_hint: Option<usize>,
-) -> Result<(PathSource, usize), H2CornError> {
-    Ok(spawn_blocking(move || {
-        let pathsend_io_error = |err| PathsendError::open_failed(&path, err);
-        let mut file = File::open(&path).map_err(pathsend_io_error)?;
-        let len = if let Some(len) = len_hint {
-            len
-        } else {
-            file.metadata().map_err(pathsend_io_error)?.len() as usize
-        };
-        if len <= PATHSEND_PRELOAD_MAX {
-            let mut data = Vec::with_capacity(len);
-            (&mut file)
-                .take(len as u64)
-                .read_to_end(&mut data)
-                .map_err(pathsend_io_error)?;
-            return Ok((PathSource::Buffered(data.into()), len));
-        }
-        // Best-effort sequential read-ahead hint for the streamed file.
-        #[cfg(target_os = "linux")]
-        let _ = fadvise(&file, 0, None, Advice::Sequential);
-        #[cfg(target_os = "macos")]
-        let _ = fcntl_rdadvise(&file, 0, len as u64);
-        Ok::<_, PathsendError>((PathSource::File(Box::new(file)), len))
-    })
-    .await??)
+pub(crate) async fn open_pathsend_file(path: PathBuf) -> Result<(PathSource, usize), H2CornError> {
+    Ok(spawn_blocking(move || open_pathsend_file_blocking(path)).await??)
+}
+
+/// Single blocking-pool hop: open the path, admit only a regular file, then
+/// either preload or retain the same descriptor. Length comes from that fd's
+/// fstat (streamed) or from the bytes actually read (preloaded) — never from
+/// application `Content-Length`.
+fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), PathsendError> {
+    let pathsend_io_error = |err: rustix::io::Errno| PathsendError::open_failed(&path, err.into());
+    // NONBLOCK so FIFOs / other blocking objects cannot pin a pool thread on
+    // open; the subsequent fstat type check rejects anything that is not a
+    // regular file. No NOFOLLOW: a symlink to a regular file is a normal
+    // file-serving case.
+    let fd = openat(
+        CWD,
+        &path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(pathsend_io_error)?;
+    let stat = fstat(&fd).map_err(pathsend_io_error)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(PathsendError::NotRegularFile { path });
+    }
+    let len = usize::try_from(stat.st_size).map_err(|_| {
+        PathsendError::open_failed(
+            &path,
+            io::Error::new(io::ErrorKind::InvalidData, "file size does not fit usize"),
+        )
+    })?;
+    let mut file = File::from(fd);
+    if len <= PATHSEND_PRELOAD_MAX {
+        let mut data = Vec::with_capacity(len);
+        (&mut file)
+            .take(len as u64)
+            .read_to_end(&mut data)
+            .map_err(|err| PathsendError::open_failed(&path, err))?;
+        // Preloaded length is the bytes actually read, not the fstat snapshot
+        // alone — a concurrent truncate is reflected in the response length.
+        let read_len = data.len();
+        return Ok((PathSource::Buffered(data.into()), read_len));
+    }
+    // Best-effort sequential read-ahead hint for the streamed file.
+    #[cfg(target_os = "linux")]
+    let _ = fadvise(&file, 0, None, Advice::Sequential);
+    #[cfg(target_os = "macos")]
+    let _ = fcntl_rdadvise(&file, 0, len as u64);
+    Ok((PathSource::File(Box::new(file)), len))
 }
 
 #[cfg(test)]
 mod tests {
     use std::env::temp_dir;
-    use std::fs::{File, remove_file, write};
+    use std::fs::{File, create_dir, remove_dir, remove_file, write};
     use std::io::Read;
     use std::mem::size_of;
+    use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::process::id;
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use rustix::fs::{CWD, Mode, mkfifoat};
     use tokio::task::{spawn_blocking, yield_now};
 
-    use super::{PATHSEND_SENDFILE_MIN, PathReadResult, PathReadState, PathStreamer};
-    use crate::config::PATHSEND_READ_BUFFER_SIZE;
+    use super::{
+        PATHSEND_SENDFILE_MIN, PathReadResult, PathReadState, PathSource, PathStreamer,
+        open_pathsend_file, open_pathsend_file_blocking,
+    };
+    use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
+    use crate::error::{ErrorKind, PathsendError};
 
     #[test]
     fn accounting_cursor_preserves_streamer_layout_budget() {
@@ -342,6 +374,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rolling_reader_rejects_eof_before_the_admitted_length() {
+        let path = temp_file(b"partial");
+        let file = File::open(&path).expect("temporary pathsend file opens");
+        let mut streamer = PathStreamer::new(file, b"partial".len() + 1, true);
+
+        streamer
+            .fill()
+            .await
+            .expect("the delivered prefix is read normally");
+        let delivered = streamer.remaining().len();
+        streamer.consume(delivered);
+
+        let err = streamer
+            .fill()
+            .await
+            .expect_err("a short file cannot end a declared response cleanly");
+        assert!(
+            matches!(err.kind(), ErrorKind::Io(err) if err.kind() == std::io::ErrorKind::UnexpectedEof)
+        );
+        assert!(
+            !streamer.is_drained(),
+            "the missing byte remains observable"
+        );
+        remove_file(path).expect("temporary pathsend file is removed");
+    }
+
+    #[tokio::test]
     async fn cancelled_fill_resumes_the_owned_blocking_read() {
         let payload = vec![b'y'; 4096];
         let payload_len = payload.len();
@@ -375,5 +434,108 @@ mod tests {
             .expect("the next fill resumes the same owned read task");
         assert_eq!(streamer.remaining(), payload);
         remove_file(path).expect("temporary pathsend file is removed");
+    }
+
+    #[test]
+    fn open_admits_regular_file_and_preloads_under_limit() {
+        let payload = b"pathsend-regular";
+        let path = temp_file(payload);
+        let (source, len) =
+            open_pathsend_file_blocking(path.clone()).expect("regular file is admitted");
+        assert_eq!(len, payload.len());
+        match source {
+            PathSource::Buffered(data) => assert_eq!(&data[..], payload),
+            PathSource::File(_) => panic!("payload under preload limit must be buffered"),
+        }
+        remove_file(path).expect("temporary pathsend file is removed");
+    }
+
+    #[test]
+    fn open_streams_when_over_preload_limit() {
+        let payload = vec![b'z'; PATHSEND_PRELOAD_MAX + 1];
+        let path = temp_file(&payload);
+        let (source, len) =
+            open_pathsend_file_blocking(path.clone()).expect("large regular file is admitted");
+        assert_eq!(len, payload.len());
+        assert!(matches!(source, PathSource::File(_)));
+        remove_file(path).expect("temporary pathsend file is removed");
+    }
+
+    #[test]
+    fn open_rejects_directory() {
+        let path = temp_dir().join(format!("h2corn-pathsend-dir-{}-{}", id(), unique_suffix()));
+        create_dir(&path).expect("temporary directory is created");
+        let err = open_pathsend_file_blocking(path.clone()).expect_err("directory is rejected");
+        assert!(matches!(err, PathsendError::NotRegularFile { .. }));
+        remove_dir(path).expect("temporary directory is removed");
+    }
+
+    #[test]
+    fn open_rejects_fifo_without_blocking() {
+        let path = temp_dir().join(format!("h2corn-pathsend-fifo-{}-{}", id(), unique_suffix()));
+        mkfifoat(CWD, &path, Mode::RUSR | Mode::WUSR).expect("fifo is created");
+        let err = open_pathsend_file_blocking(path.clone()).expect_err("fifo is rejected");
+        assert!(matches!(err, PathsendError::NotRegularFile { .. }));
+        remove_file(path).expect("fifo is removed");
+    }
+
+    #[test]
+    fn open_rejects_unix_socket() {
+        let path = temp_dir().join(format!("h2corn-pathsend-sock-{}-{}", id(), unique_suffix()));
+        let _listener = UnixListener::bind(&path).expect("unix socket is bound");
+        let err = open_pathsend_file_blocking(path.clone()).expect_err("socket is rejected");
+        // Linux open(2) of an AF_UNIX pathname fails with ENXIO before fstat;
+        // either OpenFailed or NotRegularFile keeps it out of the body path.
+        assert!(
+            matches!(
+                err,
+                PathsendError::NotRegularFile { .. } | PathsendError::OpenFailed { .. }
+            ),
+            "unexpected rejection: {err:?}"
+        );
+        remove_file(path).expect("socket is removed");
+    }
+
+    #[test]
+    fn open_rejects_character_device() {
+        let path = PathBuf::from("/dev/null");
+        let err = open_pathsend_file_blocking(path).expect_err("device is rejected");
+        assert!(matches!(err, PathsendError::NotRegularFile { .. }));
+    }
+
+    #[test]
+    fn open_follows_symlink_to_regular_file() {
+        let payload = b"via-symlink";
+        let target = temp_file(payload);
+        let link = temp_dir().join(format!("h2corn-pathsend-link-{}-{}", id(), unique_suffix()));
+        symlink(&target, &link).expect("symlink is created");
+        let (source, len) =
+            open_pathsend_file_blocking(link.clone()).expect("symlink to regular file is admitted");
+        assert_eq!(len, payload.len());
+        match source {
+            PathSource::Buffered(data) => assert_eq!(&data[..], payload),
+            PathSource::File(_) => panic!("payload under preload limit must be buffered"),
+        }
+        remove_file(link).expect("symlink is removed");
+        remove_file(target).expect("temporary pathsend file is removed");
+    }
+
+    #[tokio::test]
+    async fn open_async_returns_descriptor_length() {
+        let payload = b"async-open";
+        let path = temp_file(payload);
+        let (source, len) = open_pathsend_file(path.clone())
+            .await
+            .expect("async open admits regular file");
+        assert_eq!(len, payload.len());
+        assert!(matches!(source, PathSource::Buffered(_)));
+        remove_file(path).expect("temporary pathsend file is removed");
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos()
     }
 }

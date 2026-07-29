@@ -39,7 +39,32 @@ impl RequestRejection {
     }
 }
 
-pub(crate) fn reject_oversized_request(
+/// Every reason a request is refused before an application can see it, for a
+/// caller that has already ruled out a WebSocket handshake.
+///
+/// HTTP/1 had no way to express a `CONNECT` target at all, so it never asked
+/// this and handed tunnel requests to the application as an ordinary `GET /`.
+pub(crate) fn reject_before_launch(
+    request: &RequestHead,
+    max_request_body_size: Option<NonZeroU64>,
+) -> Result<(), RequestRejection> {
+    reject_oversized_request(request, max_request_body_size)?;
+    reject_tunnel(request)
+}
+
+/// A tunnel has no request/response shape to give an ASGI application.
+///
+/// Kept apart from the size check because a WebSocket handshake over HTTP/2 is
+/// itself an extended `CONNECT`: only a request already known not to be one may
+/// be turned away here.
+const fn reject_tunnel(request: &RequestHead) -> Result<(), RequestRejection> {
+    if request.is_connect() {
+        return Err(RequestRejection::not_implemented());
+    }
+    Ok(())
+}
+
+fn reject_oversized_request(
     request: &RequestHead,
     max_request_body_size: Option<NonZeroU64>,
 ) -> Result<(), RequestRejection> {
@@ -76,10 +101,12 @@ pub(crate) fn plan_request<WebSocketMeta>(
     match websocket {
         Some(Ok(meta)) => Ok(RequestLaunchPlan::WebSocket { meta }),
         Some(Err(rejection)) => Err(rejection),
-        None if request.is_connect() => Err(RequestRejection::not_implemented()),
-        None => Ok(RequestLaunchPlan::Http {
-            input: plan_http_input(input_finished, access_log),
-        }),
+        None => {
+            reject_tunnel(request)?;
+            Ok(RequestLaunchPlan::Http {
+                input: plan_http_input(input_finished, access_log),
+            })
+        },
     }
 }
 
@@ -93,11 +120,10 @@ mod tests {
         RequestInputPlan, RequestLaunchPlan, plan_http_input, plan_request,
         reject_oversized_request,
     };
-    use crate::hpack::BytesStr;
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
-        HttpVersion, Protocol, RequestAuthority, RequestHead, RequestHeaders, RequestTarget,
-        status_code,
+        BytesStr, ConnectAuthority, HttpVersion, Protocol, RequestAuthority, RequestHead,
+        RequestHeaders, RequestTarget, status_code,
     };
 
     fn http_request(content_length: Option<u64>) -> RequestHead {
@@ -134,9 +160,10 @@ mod tests {
         RequestHead {
             http_version: HttpVersion::Http2,
             method: Method::CONNECT,
-            target: RequestTarget::connect(RequestAuthority::new(BytesStr::from_static(
-                "example.com:443",
-            ))),
+            target: RequestTarget::connect(
+                ConnectAuthority::try_from(BytesStr::from_static("example.com:443"))
+                    .expect("test tunnel authority has a port"),
+            ),
             headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
