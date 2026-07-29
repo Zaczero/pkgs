@@ -1,13 +1,20 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tokio::io::AsyncWrite;
 
 use super::ENCODED_HEADER_BLOCK_CAPACITY;
 use super::flush::write_frame;
-use crate::error::H2CornError;
-use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, StreamId};
+use crate::error::{H2CornError, H2Error};
+use crate::h2_frame;
+use crate::h2_frame::{
+    FrameFlags, FrameHeader, FramePayload, FramePayloadLen, FrameType, StreamId,
+};
 use crate::hpack::Encoder;
 use crate::http::digits;
-use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
+use crate::http::types::{
+    HttpStatusCode, ResponseField, ResponseHeaders, ResponseTrailers, status_code,
+};
+
+const LOCAL_ENCODER_TABLE_SIZE: usize = h2_frame::DEFAULT_HEADER_TABLE_SIZE;
 
 pub(super) struct HeaderEncodeState {
     encoder: Encoder,
@@ -33,15 +40,38 @@ impl HeaderEncodeState {
         self.block.as_ref()
     }
 
-    pub(super) fn encode_trailers(&mut self, headers: &ResponseHeaders) -> &[u8] {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "trailer encoding has the same typed fallible boundary as every protocol writer"
+    )]
+    pub(super) fn encode_trailers(
+        &mut self,
+        trailers: &ResponseTrailers,
+    ) -> Result<Bytes, H2Error> {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
-        encode_header_block(&mut self.encoder, &mut self.block, None, headers);
-        self.block.as_ref()
+        encode_header_fields(&mut self.encoder, &mut self.block, trailers.as_fields());
+        Ok(self.block.clone().freeze())
     }
 
-    pub(super) fn update_max_size(&mut self, size: usize) {
-        self.encoder.update_max_size(size);
+    pub(super) fn update_max_size(&mut self, peer: usize) {
+        self.encoder
+            .update_max_size(peer.min(LOCAL_ENCODER_TABLE_SIZE));
+    }
+
+    #[cfg(test)]
+    pub(super) const fn encoder_max_size(&self) -> usize {
+        self.encoder.max_size()
+    }
+
+    #[cfg(test)]
+    pub(super) fn encoder_table_size(&self) -> usize {
+        self.encoder.table_size()
+    }
+
+    #[cfg(test)]
+    pub(super) fn encoder_table_len(&self) -> usize {
+        self.encoder.table_len()
     }
 }
 
@@ -50,39 +80,21 @@ pub(super) async fn write_header_block<W>(
     stream_id: StreamId,
     end_stream: bool,
     header_block: &[u8],
-    max_frame_size: usize,
+    max_frame_size: FramePayloadLen,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
 {
-    if header_block.len() <= max_frame_size {
-        return write_frame(
-            writer,
-            FrameHeader {
-                frame_type: FrameType::HEADERS,
-                flags: FrameFlags::END_HEADERS
-                    | if end_stream {
-                        FrameFlags::END_STREAM
-                    } else {
-                        FrameFlags::EMPTY
-                    },
-                stream_id: Some(stream_id),
-            },
-            header_block,
-        )
-        .await;
-    }
-
+    // One HEADERS frame followed by CONTINUATIONs, each carrying at most one
+    // frame's worth of the block. `take` produces the payload and the rest
+    // together, so no chunk can exceed what its length field can express.
+    let mut rest = header_block;
     let mut first = true;
-    let mut cursor = 0;
-
     loop {
-        let remaining = &header_block[cursor..];
-        let chunk_len = remaining.len().min(max_frame_size);
-        let chunk = &remaining[..chunk_len];
-        cursor += chunk_len;
+        let (payload, remaining) = FramePayload::take(rest, max_frame_size);
+        rest = remaining;
 
-        let is_last = cursor == header_block.len();
+        let is_last = rest.is_empty();
         let mut flags = if is_last {
             FrameFlags::END_HEADERS
         } else {
@@ -91,12 +103,12 @@ where
         if first && end_stream {
             flags |= FrameFlags::END_STREAM;
         }
-
         let frame_type = if first {
             FrameType::HEADERS
         } else {
             FrameType::CONTINUATION
         };
+
         write_frame(
             writer,
             FrameHeader {
@@ -104,7 +116,7 @@ where
                 flags,
                 stream_id: Some(stream_id),
             },
-            chunk,
+            payload,
         )
         .await?;
 
@@ -140,7 +152,7 @@ fn encode_status_header(encoder: &Encoder, out: &mut BytesMut, status: HttpStatu
     }
 }
 
-fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &ResponseHeaders) {
+fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &[ResponseField]) {
     for (name, value) in headers {
         encoder.encode_field_bytes(name.as_bytes(), value.as_bytes(), out);
     }
@@ -148,6 +160,8 @@ fn encode_header_fields(encoder: &mut Encoder, out: &mut BytesMut, headers: &Res
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::HeaderEncodeState;
     use crate::http::types::{ResponseHeaders, status_code};
 
@@ -175,5 +189,62 @@ mod tests {
         let block = state.encode_response(status_code::NOT_FOUND, &ResponseHeaders::new());
 
         assert_eq!(block, &[0x8D]);
+    }
+
+    #[test]
+    fn encoder_peer_limit_is_locally_capped() {
+        let mut state = HeaderEncodeState::new();
+
+        state.update_max_size(0);
+        let zero_block = state.encode_response(status_code::OK, &ResponseHeaders::new());
+        assert!(!zero_block.is_empty());
+        assert_eq!(state.encoder_max_size(), 0);
+        assert_eq!(state.encoder_table_size(), 0);
+        assert_eq!(state.encoder_table_len(), 0);
+
+        state.update_max_size(usize::MAX);
+        let capped_block = state.encode_response(status_code::OK, &ResponseHeaders::new());
+        assert!(!capped_block.is_empty());
+        assert_eq!(state.encoder_max_size(), super::LOCAL_ENCODER_TABLE_SIZE);
+    }
+
+    #[test]
+    fn encoder_unique_values_remain_locally_bounded() {
+        let mut state = HeaderEncodeState::new();
+        let value = Bytes::from(vec![b'x'; 1024]);
+        state.update_max_size(usize::MAX);
+
+        for index in 0..10_000 {
+            let headers = vec![(
+                Bytes::from(format!("x-unique-{index}")).into(),
+                value.clone().into(),
+            )];
+            let _ = state.encode_response(status_code::OK, &headers);
+        }
+
+        assert!(state.encoder_table_size() <= super::LOCAL_ENCODER_TABLE_SIZE);
+        assert!(state.encoder_table_len() <= 4);
+    }
+
+    #[test]
+    fn encoder_zero_disables_dynamic_indexing() {
+        let mut state = HeaderEncodeState::new();
+        state.update_max_size(0);
+        let headers = vec![
+            (
+                Bytes::from_static(b"x-first").into(),
+                Bytes::from_static(b"one").into(),
+            ),
+            (
+                Bytes::from_static(b"x-second").into(),
+                Bytes::from_static(b"two").into(),
+            ),
+        ];
+
+        let _ = state.encode_response(status_code::OK, &headers);
+
+        assert_eq!(state.encoder_max_size(), 0);
+        assert_eq!(state.encoder_table_size(), 0);
+        assert_eq!(state.encoder_table_len(), 0);
     }
 }

@@ -13,7 +13,7 @@ use tokio::time::Instant as TokioInstant;
 
 use super::StreamMap;
 use super::deadline::DeadlineQueue;
-use super::request::{HeaderLimits, PendingHeaders};
+use super::request::{HeaderBlockTarget, HeaderLimits, PendingHeaderBlock};
 use super::writer::{H2WriterHandle, WriterState};
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{RequestBodyCounter, RequestInputShared};
@@ -358,6 +358,9 @@ pub(super) struct RequestSpawnContext<'a> {
     pub(super) streams: &'a mut StreamMap<InboundStream>,
     pub(super) connection: &'a ConnectionContext,
     pub(super) tasks: &'a mut RequestTasks,
+    /// Borrowed from the connection loop: only a WebSocket upgrade keeps a
+    /// handle, so ordinary requests never clone one.
+    pub(super) shutdown: &'a watch::Receiver<ShutdownState>,
 }
 
 /// Connection-owned request tasks.
@@ -390,17 +393,23 @@ pub(super) enum RequestTaskCancellation {
 
 impl RequestTask {
     async fn cancel(&mut self) {
-        let Some(mut task) = self.task.take() else {
+        if self.task.is_none() {
             return;
-        };
+        }
         if let Some(RequestTaskCancellation::AfterPendingReceive(disconnect)) =
             self.cancellation.take()
             && let Some(pending) = disconnect.pending_resolution()
         {
+            // The handle deliberately stays inside `self` across this await:
+            // if the connection's grace deadline drops this future here, the
+            // task has to be aborted by the drop above, not detached.
             pending.wait().await;
         }
-        task.abort();
-        let _ = (&mut task).await;
+        if let Some(task) = self.task.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.task = None;
     }
 }
 
@@ -413,7 +422,7 @@ impl RequestTasks {
         let completion_capacity = limit.saturating_mul(2);
         let (completed_tx, completed_rx) = mpsc::channel(completion_capacity);
         Self {
-            active: new_stream_map(limit),
+            active: new_stream_map(),
             limit,
             completed_tx,
             completed_rx,
@@ -461,10 +470,17 @@ impl RequestTasks {
     }
 
     pub(super) async fn cancel_all(&mut self) {
-        let active = replace(&mut self.active, new_stream_map(self.limit));
-        for (_, mut task) in active {
-            task.cancel().await;
+        // Cancelled in place, keyed rather than by moving the map out: a
+        // dropped cancellation future must leave every remaining handle where
+        // this scope's `Drop` can still abort it, instead of detaching them
+        // with the local it was holding.
+        let stream_ids: Vec<StreamId> = self.active.keys().copied().collect();
+        for stream_id in stream_ids {
+            if let Some(task) = self.active.get_mut(&stream_id) {
+                task.cancel().await;
+            }
         }
+        self.active.clear();
         self.reap_completed();
     }
 
@@ -495,6 +511,10 @@ impl RequestTasks {
 
 impl Drop for RequestTasks {
     fn drop(&mut self) {
+        // Dropping a `JoinHandle` detaches the task, leaving application code
+        // running with nothing left to wait on it. This only runs when the
+        // connection itself is going away, so anything still here is
+        // abandoned; a task that finished on its own was reaped long before.
         for (_, mut task) in self.active.drain() {
             if let Some(task) = task.task.take() {
                 task.abort();
@@ -508,14 +528,13 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) connection: H2WriterHandle,
     pub(super) writer: WriterState<W>,
     pub(super) context: ConnectionContext,
-    pub(super) secure: bool,
     pub(super) shutdown: watch::Receiver<ShutdownState>,
     pub(super) decoder: Decoder,
     pub(super) streams: StreamMap<InboundStream>,
     /// Protocol-closed streams retained only while their ASGI input backlog
     /// drains. RFC 9113 excludes these from SETTINGS_MAX_CONCURRENT_STREAMS.
     retained_closed_streams: usize,
-    pub(super) pending_headers: Option<PendingHeaders>,
+    pub(super) pending_headers: Option<PendingHeaderBlock>,
     pub(super) last_client_stream_id: Option<StreamId>,
     pub(super) connection_window: ReceiveWindowState,
     pub(super) local_max_frame_size: usize,
@@ -666,11 +685,10 @@ impl<R, W> H2ConnectionState<R, W> {
         connection: H2WriterHandle,
         writer: WriterState<W>,
         context: ConnectionContext,
-        secure: bool,
         shutdown: watch::Receiver<ShutdownState>,
         drain_state: ConnectionDrainState,
     ) -> Self {
-        let stream_capacity = context.config.http2.max_concurrent_streams as usize;
+        let stream_capacity = context.config.http2.max_concurrent_streams.get() as usize;
         let local_max_frame_size = context.config.http2.max_inbound_frame_size.get() as usize;
         let initial_connection_window = context.config.http2.initial_connection_window_size.get();
         Self {
@@ -678,10 +696,9 @@ impl<R, W> H2ConnectionState<R, W> {
             connection,
             writer,
             context,
-            secure,
             shutdown,
             decoder: Decoder::new(h2_frame::DEFAULT_HEADER_TABLE_SIZE),
-            streams: new_stream_map(stream_capacity),
+            streams: new_stream_map(),
             retained_closed_streams: 0,
             pending_headers: None,
             last_client_stream_id: None,
@@ -702,7 +719,9 @@ impl<R, W> H2ConnectionState<R, W> {
             .len()
             .checked_sub(self.retained_closed_streams)
             .expect("retained closed stream accounting cannot exceed the stream map")
-            + usize::from(self.pending_headers.is_some())
+            + usize::from(self.pending_headers.as_ref().is_some_and(|pending| {
+                matches!(pending.target, HeaderBlockTarget::RequestHead { .. })
+            }))
     }
 
     pub(super) fn wire_is_idle(&self) -> bool {
@@ -898,11 +917,19 @@ impl RequestInputDeadline {
     }
 }
 
+/// What a stream absent from the map is, per RFC 9113 §5.1.
+///
+/// A client-initiated id above the highest one seen has not been opened yet;
+/// at or below it, it was opened and has since been retired. An
+/// *even* id is server-initiated, and h2corn never initiates a stream — it
+/// advertises no push — so every even id is idle forever and stays that way.
+/// Calling those closed let a peer drive per-id work for streams that could
+/// not exist.
 fn missing_receive_state(
     stream_id: StreamId,
     last_client_stream_id: Option<StreamId>,
 ) -> ReceiveState {
-    if stream_id.is_client_initiated() && last_client_stream_id.is_none_or(|last| stream_id > last)
+    if !stream_id.is_client_initiated() || last_client_stream_id.is_none_or(|last| stream_id > last)
     {
         ReceiveState::Idle
     } else {
@@ -912,9 +939,11 @@ fn missing_receive_state(
 
 #[cfg(test)]
 mod tests {
-    use std::future::pending;
+    use std::future::{Future, pending};
     use std::num::NonZeroU32;
+    use std::pin::Pin;
     use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
 
     use bytes::Bytes;
     use tokio::sync::{mpsc, oneshot};
@@ -1015,6 +1044,42 @@ mod tests {
         dropped_rx
             .await
             .expect("request task was aborted and dropped");
+    }
+
+    /// Poll a future exactly once, without a dependency on a combinator crate.
+    fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
+        let waker = Waker::noop();
+        future.as_mut().poll(&mut Context::from_waker(waker))
+    }
+
+    #[tokio::test]
+    async fn abandoned_cancellation_keeps_every_task_handle_owned() {
+        // `cancel_all` awaits each task in turn. If it moved the map into a
+        // local first, dropping that future part-way would drop every handle
+        // it had taken — and a dropped `JoinHandle` detaches, leaving
+        // application code running with nothing to wait on it. Cancelling in
+        // place keeps them here, where this scope's `Drop` still aborts them.
+        let mut tasks = RequestTasks::new(4);
+        for raw_id in [1_u32, 3, 5] {
+            let stream_id = StreamId::new(raw_id).expect("non-zero stream id");
+            tasks.spawn(stream_id, RequestTaskCancellation::Immediate, pending());
+        }
+        assert_eq!(tasks.active_count(), 3);
+
+        {
+            let cancelling = tasks.cancel_all();
+            tokio::pin!(cancelling);
+            assert!(
+                poll_once(cancelling.as_mut()).is_pending(),
+                "cancellation has to still be in flight, or this proves nothing"
+            );
+        }
+
+        assert_eq!(
+            tasks.active_count(),
+            3,
+            "an abandoned cancellation must not hand the handles to a local"
+        );
     }
 
     #[tokio::test]

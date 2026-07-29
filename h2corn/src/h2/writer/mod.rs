@@ -8,11 +8,12 @@ use std::fs::File;
 
 use smallvec::SmallVec;
 
-pub(super) use self::driver::{H2WriterHandle, WriterState, init_writer};
+pub(super) use self::driver::{GrantSendWindowError, H2WriterHandle, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
-use crate::h2_frame::{ErrorCode, PeerSettings, StreamId, WindowIncrement};
-use crate::http::types::{HttpStatusCode, ResponseHeaders};
+use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
+use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers};
 use crate::inline_fifo::InlineFifo;
+use crate::websocket::EncodedFrameHeader;
 
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 const ENCODED_HEADER_BLOCK_CAPACITY: usize = 1024;
@@ -21,32 +22,25 @@ const FAIR_WRITE_QUANTUM: usize = 64 * 1024;
 const H2_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 
-const INLINE_DATA_PREFIX_CAPACITY: usize = 10;
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
 type ResponseDeadlineUpdateBatch = SmallVec<[StreamId; 8]>;
 pub(super) type WriterCommandBatch = InlineFifo<WriterCommand, 3>;
 
+/// One WebSocket frame carried as a single H2 DATA payload: frame header plus
+/// application bytes. `END_STREAM` is never set for this shape.
 #[derive(Debug)]
-pub(super) struct PrefixedData {
-    prefix: [u8; INLINE_DATA_PREFIX_CAPACITY],
-    prefix_len: u8,
+pub(super) struct WebSocketData {
+    header: EncodedFrameHeader,
     payload: PayloadBytes,
 }
 
-impl PrefixedData {
-    fn new(prefix: &[u8], payload: PayloadBytes) -> Self {
-        assert!(prefix.len() <= INLINE_DATA_PREFIX_CAPACITY);
-        let mut inline_prefix = [0; INLINE_DATA_PREFIX_CAPACITY];
-        inline_prefix[..prefix.len()].copy_from_slice(prefix);
-        Self {
-            prefix: inline_prefix,
-            prefix_len: prefix.len() as u8,
-            payload,
-        }
+impl WebSocketData {
+    pub(super) const fn new(header: EncodedFrameHeader, payload: PayloadBytes) -> Self {
+        Self { header, payload }
     }
 
-    pub(super) fn prefix(&self) -> &[u8] {
-        &self.prefix[..usize::from(self.prefix_len)]
+    pub(super) fn header(&self) -> &[u8] {
+        self.header.as_slice()
     }
 
     pub(super) fn payload(&self) -> &[u8] {
@@ -54,11 +48,11 @@ impl PrefixedData {
     }
 
     pub(super) fn len(&self) -> usize {
-        self.prefix().len() + self.payload.len()
+        self.header().len() + self.payload.len()
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum WindowTarget {
     Connection,
     Stream(StreamId),
@@ -80,17 +74,16 @@ pub(super) enum WriterCommand {
     },
     SendTrailers {
         stream_id: StreamId,
-        headers: ResponseHeaders,
+        headers: ResponseTrailers,
     },
     SendData {
         stream_id: StreamId,
         data: PayloadBytes,
         end_stream: bool,
     },
-    SendPrefixedData {
+    SendWebSocketData {
         stream_id: StreamId,
-        data: Box<PrefixedData>,
-        end_stream: bool,
+        data: Box<WebSocketData>,
     },
     SendPath {
         stream_id: StreamId,
@@ -104,13 +97,8 @@ pub(super) enum WriterCommand {
         error_code: ErrorCode,
     },
     SendSettingsAck,
-    UpdatePeerSettings(PeerSettings),
     PeerReset {
         stream_id: StreamId,
-    },
-    GrantSendWindow {
-        target: WindowTarget,
-        increment: WindowIncrement,
     },
     SendWindowUpdate {
         target: WindowTarget,
@@ -132,14 +120,12 @@ impl WriterCommand {
             | Self::SendFinal { stream_id, .. }
             | Self::SendTrailers { stream_id, .. }
             | Self::SendData { stream_id, .. }
-            | Self::SendPrefixedData { stream_id, .. }
+            | Self::SendWebSocketData { stream_id, .. }
             | Self::SendPath { stream_id, .. }
             | Self::SendReset { stream_id, .. }
             | Self::PeerReset { stream_id } => Some(*stream_id),
             Self::FlushBufferedOutput
             | Self::SendSettingsAck
-            | Self::UpdatePeerSettings(_)
-            | Self::GrantSendWindow { .. }
             | Self::SendWindowUpdate { .. }
             | Self::PingAck(_)
             | Self::Goaway { .. } => None,

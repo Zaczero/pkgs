@@ -33,7 +33,8 @@ use crate::h2::StreamMap;
 #[cfg(test)]
 use crate::h2::new_stream_map;
 use crate::h2_frame::{
-    self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FrameType, StreamId,
+    self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FramePayload, FramePayloadLen,
+    FrameType, StreamId,
 };
 use crate::http::pathsend::{PathStreamer, SendfileCursor};
 use crate::sendfile::WriteTarget;
@@ -53,7 +54,7 @@ struct FlushBodyParts<'a, W> {
     writer: &'a mut BufWriter<W>,
     ready_streams: &'a mut ReadyStreamQueue,
     connection_send_window: &'a mut i64,
-    data_frame_size: usize,
+    data_frame_size: FramePayloadLen,
     stream_budget: usize,
     response_closes: &'a mut ResponseCloseBatch,
 }
@@ -113,9 +114,13 @@ pub(crate) enum FlushPassResult {
 }
 
 impl<W> FlushBodyParts<'_, W> {
-    fn next_body_write_len(&mut self, limit: usize, remaining_len: usize) -> usize {
-        let chunk_len = limit.min(remaining_len).min(self.stream_budget);
-        self.stream_budget -= chunk_len;
+    const fn next_body_write_len(
+        &mut self,
+        limit: FramePayloadLen,
+        remaining_len: usize,
+    ) -> FramePayloadLen {
+        let chunk_len = limit.min_usize(remaining_len).min_usize(self.stream_budget);
+        self.stream_budget -= chunk_len.as_usize();
         chunk_len
     }
 
@@ -124,26 +129,37 @@ impl<W> FlushBodyParts<'_, W> {
     }
 }
 
-pub(super) fn send_limit(
+pub(super) const fn send_limit(
     connection_send_window: i64,
     stream_send_window: i64,
-    data_frame_size: usize,
-) -> Option<usize> {
+    data_frame_size: FramePayloadLen,
+) -> Option<FramePayloadLen> {
     if connection_send_window <= 0 || stream_send_window <= 0 {
         return None;
     }
-    Some(usize::min(
-        data_frame_size,
-        usize::min(connection_send_window as usize, stream_send_window as usize),
-    ))
+    Some(
+        data_frame_size
+            .min_usize(connection_send_window as usize)
+            .min_usize(stream_send_window as usize),
+    )
 }
 
-pub(super) fn outbound_data_frame_size(peer_max_frame_size: usize) -> usize {
-    peer_max_frame_size.min(H2_OUTBOUND_DATA_FRAME_SIZE_TARGET)
+pub(super) const fn outbound_data_frame_size(
+    peer_max_frame_size: FramePayloadLen,
+) -> FramePayloadLen {
+    // The target is a constant well inside the wire length field, so the
+    // result carries that proof no matter what the peer advertised.
+    const { FramePayloadLen::constant(H2_OUTBOUND_DATA_FRAME_SIZE_TARGET) }
+        .min_usize(peer_max_frame_size.as_usize())
 }
 
-fn fair_write_quantum(max_frame_size: usize) -> usize {
-    max_frame_size.max(FAIR_WRITE_QUANTUM)
+const fn fair_write_quantum(max_frame_size: FramePayloadLen) -> usize {
+    let quantum = max_frame_size.as_usize();
+    if quantum > FAIR_WRITE_QUANTUM {
+        quantum
+    } else {
+        FAIR_WRITE_QUANTUM
+    }
 }
 
 async fn flush_chunk_body<W>(
@@ -312,7 +328,7 @@ where
 
     let remaining = sendfile.remaining();
     let chunk_len = context.next_body_write_len(limit, remaining);
-    let end_stream = path_ends_stream && chunk_len == remaining;
+    let end_stream = path_ends_stream && chunk_len.as_usize() == remaining;
     let header = h2_frame::encode_frame_header(
         FrameHeader {
             frame_type: FrameType::DATA,
@@ -328,10 +344,10 @@ where
     let (file, offset) = sendfile.parts();
     context.writer.write_all(&header).await?;
     context.writer.flush().await?;
-    W::send_file(context.writer, file, offset, chunk_len).await?;
+    W::send_file(context.writer, file, offset, chunk_len.as_usize()).await?;
     drop(sendfile);
 
-    let chunk_len = chunk_len as i64;
+    let chunk_len = i64::from(chunk_len.get());
     *context.connection_send_window -= chunk_len;
     stream.send_window -= chunk_len;
     stream.note_body_progress(Instant::now());
@@ -346,7 +362,11 @@ where
     Ok(SendfileProgress::Continue)
 }
 
-fn data_frame_header(len: usize, end_stream: bool, stream_id: StreamId) -> [u8; FRAME_HEADER_LEN] {
+fn data_frame_header(
+    len: FramePayloadLen,
+    end_stream: bool,
+    stream_id: StreamId,
+) -> [u8; FRAME_HEADER_LEN] {
     h2_frame::encode_frame_header(
         FrameHeader {
             frame_type: FrameType::DATA,
@@ -383,7 +403,10 @@ fn collect_data_frames<'a, W>(
     };
     'segments: for (segment, may_end) in segments {
         if segment.is_empty() {
-            batch.push(data_frame_header(0, may_end, stream_id), &[]);
+            batch.push(
+                data_frame_header(FramePayloadLen::ZERO, may_end, stream_id),
+                &[],
+            );
             batch.drained_segments += 1;
             if may_end {
                 batch.ended_stream = true;
@@ -407,13 +430,14 @@ fn collect_data_frames<'a, W>(
                 break 'segments;
             };
             let chunk_len = context.next_body_write_len(limit, segment.len() - pos);
-            let end_stream = may_end && pos + chunk_len == segment.len();
+            let chunk = chunk_len.as_usize();
+            let end_stream = may_end && pos + chunk == segment.len();
             batch.push(
                 data_frame_header(chunk_len, end_stream, stream_id),
-                &segment[pos..pos + chunk_len],
+                &segment[pos..pos + chunk],
             );
-            batch.total += chunk_len;
-            pos += chunk_len;
+            batch.total += chunk;
+            pos += chunk;
             if end_stream {
                 batch.drained_segments += 1;
                 batch.ended_stream = true;
@@ -436,9 +460,9 @@ fn collect_data_frames<'a, W>(
 }
 
 /// Collect DATA frames from logical chunks that may have two physically
-/// separate buffers. A prefixed WebSocket message therefore remains one H2
-/// DATA frame when it fits the peer/window limit, while writev retains the
-/// original payload owner.
+/// separate buffers. A WebSocket frame therefore remains one H2 DATA frame
+/// when it fits the peer/window limit, while writev retains the original
+/// payload owner.
 fn collect_chunk_data_frames<'a, W>(
     context: &mut FlushBodyParts<'_, W>,
     stream: &StreamWriteState,
@@ -458,7 +482,10 @@ fn collect_chunk_data_frames<'a, W>(
     'chunks: for chunk in chunks {
         let remaining_len = chunk.remaining_len();
         if remaining_len == 0 {
-            batch.push(data_frame_header(0, chunk.end_stream, stream_id), &[]);
+            batch.push(
+                data_frame_header(FramePayloadLen::ZERO, chunk.end_stream, stream_id),
+                &[],
+            );
             batch.drained_segments += 1;
             if chunk.end_stream {
                 batch.ended_stream = true;
@@ -483,15 +510,16 @@ fn collect_chunk_data_frames<'a, W>(
                 break 'chunks;
             };
             let chunk_len = context.next_body_write_len(limit, remaining_len - pos);
-            let end_stream = chunk.end_stream && pos + chunk_len == remaining_len;
-            let (first, second) = chunk.remaining_slices(pos, chunk_len);
+            let taken = chunk_len.as_usize();
+            let end_stream = chunk.end_stream && pos + taken == remaining_len;
+            let (first, second) = chunk.remaining_slices(pos, taken);
             batch.push_pair(
                 data_frame_header(chunk_len, end_stream, stream_id),
                 first,
                 second,
             );
-            batch.total += chunk_len;
-            pos += chunk_len;
+            batch.total += taken;
+            pos += taken;
             if end_stream {
                 batch.drained_segments += 1;
                 batch.ended_stream = true;
@@ -514,8 +542,7 @@ fn collect_chunk_data_frames<'a, W>(
 }
 
 /// Write `[header|payload]*` as one vectored write sequence: flush the
-/// buffered writer first, then drive `write_vectored` over the raw target
-/// with `IoSlice::advance_slices` handling partial writes.
+/// buffered writer first, then complete the raw target write.
 async fn write_frames_vectored<W>(
     writer: &mut BufWriter<W>,
     headers: &[[u8; FRAME_HEADER_LEN]],
@@ -536,19 +563,7 @@ where
         payload_index += usize::from(*payload_count);
     }
     debug_assert_eq!(payload_index, payloads.len());
-    let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
-    let mut bufs = slices.as_mut_slice();
-    while remaining > 0 {
-        let written = writer.get_mut().write_vectored(bufs).await?;
-        if written == 0 {
-            return Err(H2CornError::from(io::Error::from(io::ErrorKind::WriteZero)));
-        }
-        remaining -= written;
-        if remaining == 0 {
-            break;
-        }
-        io::IoSlice::advance_slices(&mut bufs, written);
-    }
+    crate::async_util::write_all_vectored(writer.get_mut(), slices.as_mut_slice()).await?;
     Ok(())
 }
 
@@ -557,7 +572,7 @@ pub(super) async fn flush_pending_data_tracked<W>(
     streams: &mut StreamMap<StreamWriteState>,
     ready_streams: &mut ReadyStreamQueue,
     connection_send_window: &mut i64,
-    peer_max_frame_size: usize,
+    peer_max_frame_size: FramePayloadLen,
     header_state: &mut HeaderEncodeState,
     tracking: FlushTracking<'_>,
 ) -> Result<FlushPassResult, H2CornError>
@@ -607,8 +622,8 @@ where
 
         stream.restore_body(body);
         if let Some(trailers) = stream.take_trailers_if_body_idle() {
-            let block = header_state.encode_trailers(&trailers);
-            write_header_block(writer, stream_id, true, block, peer_max_frame_size).await?;
+            let block = header_state.encode_trailers(&trailers)?;
+            write_header_block(writer, stream_id, true, &block, peer_max_frame_size).await?;
             stream.finish(stream_id, tracking.response_closes);
         }
 
@@ -648,7 +663,7 @@ async fn flush_pending_data<W>(
     streams: &mut StreamMap<StreamWriteState>,
     ready_streams: &mut ReadyStreamQueue,
     connection_send_window: &mut i64,
-    peer_max_frame_size: usize,
+    peer_max_frame_size: FramePayloadLen,
     header_state: &mut HeaderEncodeState,
     response_closes: &mut ResponseCloseBatch,
 ) -> Result<FlushPassResult, H2CornError>
@@ -690,7 +705,7 @@ where
             },
             stream_id: Some(stream_id),
         },
-        &[],
+        FramePayload::EMPTY,
     )
 }
 
@@ -709,7 +724,7 @@ where
             flags: FrameFlags::EMPTY,
             stream_id: Some(stream_id),
         },
-        &error_code.to_be_bytes(),
+        FramePayload::fixed(&error_code.to_be_bytes()),
     )
     .await
 }
@@ -717,7 +732,7 @@ where
 pub(super) async fn write_frame<W>(
     writer: &mut W,
     header: FrameHeader,
-    payload: &[u8],
+    payload: FramePayload<'_>,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
@@ -725,7 +740,7 @@ where
     let header = h2_frame::encode_frame_header(header, payload.len());
     writer.write_all(&header).await?;
     if !payload.is_empty() {
-        writer.write_all(payload).await?;
+        writer.write_all(payload.as_bytes()).await?;
     }
     Ok(())
 }
@@ -746,7 +761,8 @@ where
 mod tests {
     use super::*;
     use crate::bridge::PayloadBytes;
-    use crate::h2::writer::PrefixedData;
+    use crate::h2::writer::WebSocketData;
+    use crate::websocket::session::EncodedWebSocketFrame;
 
     const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
     const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
@@ -841,16 +857,31 @@ mod tests {
         frames
     }
 
+    fn binary_websocket_frame(payload: &'static [u8]) -> WebSocketData {
+        match EncodedWebSocketFrame::segmented(
+            0x2,
+            PayloadBytes::from(Bytes::from_static(payload)),
+            false,
+        ) {
+            EncodedWebSocketFrame::Segmented { header, payload } => {
+                WebSocketData::new(header, payload)
+            },
+            EncodedWebSocketFrame::Contiguous(_) => {
+                unreachable!("segmented constructor yields Segmented")
+            },
+        }
+    }
+
     #[tokio::test]
-    async fn prefixed_payload_is_one_h2_data_frame_without_joining_buffers() {
+    async fn websocket_data_is_one_h2_data_frame_without_joining_buffers() {
         let stream_id = StreamId::new(1).unwrap();
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
         let mut header_state = HeaderEncodeState::new();
 
-        let payload = Bytes::from_static(b"body");
+        let payload = b"body";
         let stream = writer_stream(
             &mut streams,
             stream_id,
@@ -858,10 +889,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_prefixed_data(
-                Box::new(PrefixedData::new(b"\x82\x04", PayloadBytes::from(payload))),
-                false,
-            )
+            .queue_websocket_data(Box::new(binary_websocket_frame(payload)))
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -871,7 +899,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -885,12 +913,18 @@ mod tests {
             stream_id.get()
         )]);
         assert_eq!(parse_data_payload(&writer.get_ref().bytes), b"\x82\x04body");
+        // WebSocket DATA never carries END_STREAM.
+        assert_eq!(
+            parse_data_frames(&writer.get_ref().bytes)[0].1 & FrameFlags::END_STREAM.bits(),
+            0
+        );
+        assert!(!streams.is_empty());
     }
 
     #[tokio::test]
-    async fn prefixed_payload_resumes_across_prefix_window_boundary() {
+    async fn websocket_data_resumes_across_header_window_boundary_without_end_stream() {
         let stream_id = StreamId::new(1).unwrap();
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -899,13 +933,7 @@ mod tests {
         let stream = writer_stream(&mut streams, stream_id, 1);
         stream.open_response(false).unwrap();
         stream
-            .queue_prefixed_data(
-                Box::new(PrefixedData::new(
-                    b"\x82\x04",
-                    PayloadBytes::from(Bytes::from_static(b"body")),
-                )),
-                true,
-            )
+            .queue_websocket_data(Box::new(binary_websocket_frame(b"body")))
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -915,7 +943,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -932,7 +960,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -940,12 +968,14 @@ mod tests {
         .unwrap();
         writer.flush().await.unwrap();
 
+        // Only the valid WebSocket shape: no END_STREAM on either DATA frame.
         assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![
             (1, 0, 1),
-            (5, FrameFlags::END_STREAM.bits(), 1)
+            (5, 0, 1)
         ]);
         assert_eq!(parse_data_payload(&writer.get_ref().bytes), b"\x82\x04body");
-        assert!(streams.is_empty());
+        // Stream remains open after WebSocket DATA (close is a separate path).
+        assert!(!streams.is_empty());
     }
 
     #[tokio::test]
@@ -955,7 +985,7 @@ mod tests {
         write(&path, b"abc").unwrap();
         let file = File::open(&path).unwrap();
 
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -980,7 +1010,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            INITIAL_STREAM_WINDOW_SIZE as usize,
+            FramePayloadLen::constant(INITIAL_STREAM_WINDOW_SIZE as usize),
             &mut header_state,
             &mut response_closes,
         )
@@ -1025,7 +1055,7 @@ mod tests {
         let stream_id = StreamId::new(1).unwrap();
         let frame_size = 16 * 1024;
 
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -1059,7 +1089,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            frame_size,
+            FramePayloadLen::constant(frame_size),
             &mut header_state,
             &mut response_closes,
         )
@@ -1091,7 +1121,7 @@ mod tests {
     async fn empty_chunks_emit_empty_data_frames_in_batch() {
         let stream_id = StreamId::new(1).unwrap();
 
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -1122,7 +1152,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -1147,7 +1177,7 @@ mod tests {
         let window = 8 * 1024_i64;
         let body = vec![b'z'; 12 * 1024];
 
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -1168,7 +1198,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -1193,7 +1223,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            16 * 1024,
+            FramePayloadLen::constant(16 * 1024),
             &mut header_state,
             &mut response_closes,
         )
@@ -1216,7 +1246,7 @@ mod tests {
         let stream_a = StreamId::new(1).unwrap();
         let stream_b = StreamId::new(3).unwrap();
 
-        let mut streams = new_stream_map(2);
+        let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
         let mut response_closes = ResponseCloseBatch::new();
         let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -1255,7 +1285,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            FAIR_WRITE_QUANTUM,
+            FramePayloadLen::constant(FAIR_WRITE_QUANTUM),
             &mut header_state,
             &mut response_closes,
         )
@@ -1275,7 +1305,7 @@ mod tests {
             &mut streams,
             &mut ready_streams,
             &mut connection_send_window,
-            FAIR_WRITE_QUANTUM,
+            FramePayloadLen::constant(FAIR_WRITE_QUANTUM),
             &mut header_state,
             &mut response_closes,
         )

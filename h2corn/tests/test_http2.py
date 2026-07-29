@@ -1,6 +1,9 @@
 import asyncio
+import os
+import socket
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -115,6 +118,32 @@ async def test_http2_response_defaults_apply_to_normal_app_responses() -> None:
     assert b'date' in headers
 
 
+@pytest.mark.parametrize(
+    ('status', 'content_length'),
+    [(204, None), (304, b'0')],
+)
+async def test_http2_content_length_is_omitted_only_for_statuses_that_forbid_it(
+    status: int,
+    content_length: bytes | None,
+) -> None:
+    async def app(_scope, _receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': status,
+            'headers': [(b'content-length', b'7')],
+        })
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, Config(port=0)) as server:
+        response_status, response_headers, body = await asyncio.wait_for(
+            h2_request_with_headers(port=server_port(server)), timeout=5
+        )
+
+    assert response_status == status
+    assert dict(response_headers).get(b'content-length') == content_length
+    assert body == b''
+
+
 async def test_h2_request_round_trip() -> None:
     async def app(scope, receive, send):
         assert scope['type'] == 'http'
@@ -135,16 +164,19 @@ async def test_h2_request_round_trip() -> None:
     assert body == b'hello from h2corn'
 
 
-async def test_empty_body_request_omits_empty_state_and_terminal_receive_event() -> (
+async def test_empty_body_request_gets_empty_state_and_terminal_receive_event() -> (
     None
 ):
     received = []
-    has_state = None
+    state = None
 
     async def app(scope, receive, send):
-        nonlocal has_state
+        nonlocal state
         assert scope['type'] == 'http'
-        has_state = 'state' in scope
+        # Present even though this app's lifespan stored nothing: the key says
+        # the server supports lifespan state, and an app reading it directly
+        # would otherwise get a `KeyError` decided by unrelated startup code.
+        state = scope.get('state', 'missing')
         first = await receive()
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
@@ -157,7 +189,7 @@ async def test_empty_body_request_omits_empty_state_and_terminal_receive_event()
             h2_request(port=server_port(server)), timeout=5
         )
 
-    assert has_state is False
+    assert state == {}
     assert received == [
         {'type': 'http.request'},
         {'type': 'http.disconnect'},
@@ -360,6 +392,9 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
     lock = threading.Lock()
     startups: list[int] = []
     shutdowns: list[int] = []
+    # One secondary fails only after every other secondary has published
+    # startup completion, so rollback must reach every retained owner.
+    success_barrier = threading.Barrier(3, timeout=2)
 
     async def app(scope, receive, send):
         assert scope['type'] == 'lifespan'
@@ -368,10 +403,19 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
             startups.append(loop_id)
             startup_ordinal = len(startups)
         assert (await receive())['type'] == 'lifespan.startup'
-        if startup_ordinal == 4:
+        if loop_id != main_loop_id and startup_ordinal == 4:
+            try:
+                success_barrier.wait()
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError('successful secondaries did not complete') from exc
             await send({'type': 'lifespan.startup.failed', 'message': 'secondary'})
             return
         await send({'type': 'lifespan.startup.complete'})
+        if loop_id != main_loop_id:
+            try:
+                success_barrier.wait()
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError('secondary startups lost a peer') from exc
         assert (await receive())['type'] == 'lifespan.shutdown'
         await send({'type': 'lifespan.shutdown.complete'})
         with lock:
@@ -386,8 +430,11 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
 
     assert startups[0] == main_loop_id
     assert len(set(startups)) == 4
+    # Every retained successful lifespan — primary plus secondaries that
+    # crossed startup completion — receives exactly one shutdown.
     assert set(shutdowns) == set(startups[:-1])
     assert startups[-1] not in shutdowns
+    assert len(shutdowns) == len(set(shutdowns))
 
 
 @pytest.mark.skipif(
@@ -397,14 +444,18 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
 async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> None:
     main_loop_id = id(asyncio.get_running_loop())
     lock = threading.Lock()
-    secondary_start_barrier = threading.Barrier(4, timeout=2)
+    secondary_count = 4
+    secondary_start_barrier = threading.Barrier(secondary_count, timeout=2)
     rollback_barrier = threading.Barrier(2, timeout=2)
     cancelled_cleanup_done = threading.Event()
-    secondary_ordinal = 0
+    secondary_loop_ids: list[int] = []
     secondary_shutdowns: list[int] = []
+    # Every secondary startup is awaited under this bound (no abort_all). A
+    # peer that ignores cancellation until the bound is spent forces the wall
+    # clock to at least this long before rollback can finish.
+    startup_timeout = 0.5
 
     async def app(scope, receive, send):
-        nonlocal secondary_ordinal
         assert scope['type'] == 'lifespan'
         loop_id = id(asyncio.get_running_loop())
         assert (await receive())['type'] == 'lifespan.startup'
@@ -416,25 +467,32 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
             return
 
         with lock:
-            role = secondary_ordinal
-            secondary_ordinal += 1
+            secondary_loop_ids.append(loop_id)
         try:
             secondary_start_barrier.wait()
         except threading.BrokenBarrierError as exc:
             raise AssertionError('secondary startups did not overlap') from exc
 
-        if role == 3:
-            # Let the two successful runners publish completion first so they
+        # Roles by stable loop-id order so hang vs fail is not a race on
+        # arrival: highest id fails, next hangs until startup cancel/timeout.
+        with lock:
+            ranked = sorted(set(secondary_loop_ids))
+            role = ranked.index(loop_id)
+
+        if role == secondary_count - 1:
+            # Let the successful runners publish completion first so they
             # deterministically exercise transactional rollback.
             await asyncio.sleep(0.05)
             await send({'type': 'lifespan.startup.failed', 'message': 'secondary'})
             return
-        if role == 2:
+        if role == secondary_count - 2:
             try:
                 await asyncio.Future()
             except asyncio.CancelledError:
-                # Cleanup is deliberately asynchronous. Rust must not stop the
-                # loop or begin successful-runner rollback before it finishes.
+                # Cleanup is deliberately asynchronous. Successful-runner
+                # shutdown must wait for it (cancelled_cleanup_done) before
+                # completing; the hang itself is only released by the startup
+                # bound or by discard after a peer failure's rollback path.
                 await asyncio.sleep(0.05)
                 cancelled_cleanup_done.set()
                 raise
@@ -456,19 +514,116 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
             port=0,
             loop_threads=5,
             lifespan='on',
-            timeout_lifespan_startup=10,
+            timeout_lifespan_startup=startup_timeout,
             access_log=False,
         ),
     )
     loop = asyncio.get_running_loop()
     started = loop.time()
-    with pytest.raises(RuntimeError, match='lifespan startup failed: secondary'):
+    # Lowest-index error wins: depending on shard index order the hang may
+    # surface as startup timeout and the explicit failure as secondary — both
+    # are real startup failures under the await-all-bounded-outcomes contract.
+    with pytest.raises(
+        RuntimeError,
+        match=r'lifespan startup (failed: secondary|timed out)',
+    ):
         await server.serve()
 
-    assert loop.time() - started < 3
+    elapsed = loop.time() - started
+    # Floor: the hanging peer is only released when its startup bound fires.
+    # Ceiling: that bound, plus the deliberate 50ms cleanup sleeps and the
+    # 2-party rollback barrier (ready as soon as cleanup finishes — not its
+    # full timeout), with a little free-thread scheduling headroom.
+    assert elapsed >= startup_timeout * 0.5
+    assert elapsed < startup_timeout + 0.05 + 0.05 + 0.5
     assert cancelled_cleanup_done.is_set()
     assert len(secondary_shutdowns) == 2
     assert len(set(secondary_shutdowns)) == 2
+
+
+@pytest.mark.skipif(
+    not _gil_is_disabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _lifespan
+
+    main_loop_id = id(asyncio.get_running_loop())
+    secondary_cleanup_started = threading.Event()
+    release_secondary_cleanup = threading.Event()
+    stop_entered = threading.Event()
+    stop_completed = threading.Event()
+    release_stop = threading.Event()
+    secondary_loops: list[asyncio.AbstractEventLoop] = []
+    original_stop_lifespan_runner = _lifespan.stop_lifespan_runner
+
+    async def observe_stop_lifespan_runner(runner, *, shutdown_timeout):
+        stop_entered.set()
+        try:
+            return await original_stop_lifespan_runner(
+                runner, shutdown_timeout=shutdown_timeout
+            )
+        finally:
+            stop_completed.set()
+            await asyncio.to_thread(release_stop.wait)
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        if id(asyncio.get_running_loop()) == main_loop_id:
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.complete'})
+            return
+
+        secondary_loops.append(asyncio.get_running_loop())
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            secondary_cleanup_started.set()
+            while not release_secondary_cleanup.is_set():
+                try:
+                    await asyncio.to_thread(release_secondary_cleanup.wait)
+                except asyncio.CancelledError:
+                    task = asyncio.current_task()
+                    assert task is not None
+                    task.uncancel()
+            raise
+
+    monkeypatch.setattr(
+        _lifespan, 'stop_lifespan_runner', observe_stop_lifespan_runner
+    )
+    server = Server(
+        app,
+        Config(
+            port=0,
+            loop_threads=2,
+            lifespan='on',
+            timeout_lifespan_startup=0.05,
+            access_log=False,
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await asyncio.wait_for(asyncio.to_thread(secondary_cleanup_started.wait), timeout=2)
+    await asyncio.wait_for(asyncio.to_thread(stop_entered.wait), timeout=2)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(stop_completed.wait), timeout=0.2)
+    except TimeoutError:
+        stop_completed_early = False
+    else:
+        stop_completed_early = True
+    loops_remain_open = secondary_loops and all(
+        not loop.is_closed() for loop in secondary_loops
+    )
+    release_secondary_cleanup.set()
+    release_stop.set()
+    with pytest.raises(RuntimeError, match='lifespan startup timed out'):
+        await asyncio.wait_for(serving, timeout=2)
+    assert not stop_completed_early, 'the retained task still owns its secondary loop'
+    assert loops_remain_open
+    assert all(loop.is_closed() for loop in secondary_loops)
 
 
 @pytest.mark.skipif(
@@ -948,6 +1103,186 @@ async def test_http_response_pathsend_synthesizes_content_length_when_missing(
     assert dict(headers)[b'content-length'] == str(len(payload)).encode()
 
 
+async def test_http_response_pathsend_replaces_wrong_content_length(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / 'wrong-length.bin'
+    payload = b'h2-actual-file-bytes'
+    file_path.write_bytes(payload)
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                (b'content-type', b'application/octet-stream'),
+                (b'content-length', b'99999'),
+            ],
+        })
+        await send({'type': 'http.response.pathsend', 'path': str(file_path)})
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, headers, body = await asyncio.wait_for(
+            h2_request_with_headers(port=server_port(server)),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == payload
+    assert dict(headers)[b'content-length'] == str(len(payload)).encode()
+
+
+async def test_http_response_pathsend_rejects_non_regular_files(
+    tmp_path: Path,
+) -> None:
+    dir_path = tmp_path / 'dir'
+    dir_path.mkdir()
+    fifo_path = tmp_path / 'fifo'
+    os.mkfifo(fifo_path)
+    sock_path = tmp_path / 'sock'
+    # Bind then leave the socket path in place for pathsend to open.
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(sock_path))
+    device_path = Path('/dev/null')
+
+    async def app(scope, receive, send):
+        path = scope['path'].lstrip('/')
+        target = {
+            'dir': dir_path,
+            'fifo': fifo_path,
+            'sock': sock_path,
+            'dev': device_path,
+        }[path]
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.pathsend', 'path': str(target)})
+
+    config = Config(port=0)
+    try:
+        async with running_server(app, config) as server:
+            port = server_port(server)
+            for name in ('dir', 'fifo', 'sock', 'dev'):
+                status, body = await asyncio.wait_for(
+                    h2_request(port=port, path=f'/{name}'),
+                    timeout=5,
+                )
+                assert status == 403, name
+                assert body == b''
+    finally:
+        listener.close()
+
+
+def _native_thread_count() -> int:
+    return len(os.listdir(f'/proc/{os.getpid()}/task'))
+
+
+def _threads_waiting_on_pipe() -> int:
+    """Count threads blocked in the classic FIFO open/read wait paths."""
+    blocked = 0
+    task_root = Path(f'/proc/{os.getpid()}/task')
+    for tid_dir in task_root.iterdir():
+        try:
+            wchan = (tid_dir / 'wchan').read_text().strip()
+        except OSError:
+            continue
+        if wchan in {
+            'pipe_wait',
+            'pipe_read',
+            'wait_for_partner',
+            'unix_stream_data_wait',
+            'fifo_open',
+        }:
+            blocked += 1
+    return blocked
+
+
+async def test_http_response_pathsend_fifo_16_returns_to_baseline(
+    tmp_path: Path,
+) -> None:
+    """16 concurrent pathsend opens of a FIFO with no peer must 403 promptly
+    without leaving blocking-pool threads stuck in the open wait.
+    """
+    fifo_path = tmp_path / 'flood.fifo'
+    os.mkfifo(fifo_path)
+    regular_path = tmp_path / 'ok.bin'
+    regular_path.write_bytes(b'post-flood-ok')
+
+    async def app(scope, receive, send):
+        target = regular_path if scope['path'] == '/ok' else fifo_path
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.pathsend', 'path': str(target)})
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        # Warm the process so baseline includes runtime/worker threads.
+        warm_status, _ = await asyncio.wait_for(h2_request(port=port, path='/'), timeout=5)
+        assert warm_status == 403
+        await asyncio.sleep(0.1)
+        baseline = _native_thread_count()
+        assert _threads_waiting_on_pipe() == 0
+
+        results = await asyncio.wait_for(
+            asyncio.gather(*[h2_request(port=port) for _ in range(16)]),
+            timeout=5,
+        )
+        assert all(status == 403 and body == b'' for status, body in results)
+
+        # Stuck opens hold a pool thread for the process lifetime. Idle
+        # blocking-pool retention is expected; the load-bearing checks are
+        # that no waiter remains and the pool still serves a real file.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if _threads_waiting_on_pipe() == 0:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail(
+                f'blocking pool threads remain waiting on the FIFO: '
+                f'pipe_waiters={_threads_waiting_on_pipe()} '
+                f'threads={_native_thread_count()} baseline={baseline}'
+            )
+
+        status, body = await asyncio.wait_for(
+            h2_request(port=port, path='/ok'),
+            timeout=5,
+        )
+        assert status == 200
+        assert body == b'post-flood-ok'
+        assert _threads_waiting_on_pipe() == 0
+        # Thread count must not remain inflated by 16 stuck openers.
+        assert _native_thread_count() < baseline + 16
+
+
+async def test_http_response_pathsend_follows_symlink_to_regular_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / 'target.bin'
+    payload = b'h2-symlink-payload'
+    target.write_bytes(payload)
+    link = tmp_path / 'link.bin'
+    link.symlink_to(target)
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'application/octet-stream')],
+        })
+        await send({'type': 'http.response.pathsend', 'path': str(link)})
+
+    config = Config(port=0)
+    async with running_server(app, config) as server:
+        status, headers, body = await asyncio.wait_for(
+            h2_request_with_headers(port=server_port(server)),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == payload
+    assert dict(headers)[b'content-length'] == str(len(payload)).encode()
+
+
 async def test_http_response_pathsend_streams_large_file(tmp_path: Path) -> None:
     file_path = tmp_path / 'large-payload.bin'
     payload = (b'large-pathsend-' * 22000)[:300000]
@@ -1026,6 +1361,45 @@ async def test_h2_head_pathsend_synthesizes_content_length_and_keeps_empty_body(
     assert status == 200
     assert body == b''
     assert dict(headers)[b'content-length'] == str(len(payload)).encode()
+
+
+@pytest.mark.parametrize(
+    ('method', 'response_status'), [('HEAD', 200), ('GET', 204), ('GET', 304)]
+)
+async def test_h2_suppressed_pathsend_discards_declared_trailers(
+    tmp_path: Path,
+    method: str,
+    response_status: int,
+) -> None:
+    file_path = tmp_path / 'head-h2-pathsend-trailers.txt'
+    file_path.write_bytes(b'hidden')
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': response_status,
+            'headers': [(b'trailer', b'x-finished')],
+            'trailers': True,
+        })
+        await send({'type': 'http.response.pathsend', 'path': str(file_path)})
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
+
+    async with running_server(app, Config(port=0)) as server:
+        status, body, trailers = await asyncio.wait_for(
+            h2_request_details(
+                port=server_port(server),
+                method=method,
+                extra_headers=[(b'te', b'trailers')],
+            ),
+            timeout=5,
+        )
+
+    assert status == response_status
+    assert body == b''
+    assert trailers == []
 
 
 async def test_http_response_pathsend_can_be_followed_by_trailers(

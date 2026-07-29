@@ -1,16 +1,15 @@
 use std::num::NonZeroUsize;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use tokio::sync::mpsc;
 
 use super::H2WriterHandle;
-use super::http::send_final_response;
-use crate::bridge::PayloadBytes;
+use super::http::H2HttpTransport;
 use crate::error::H2CornError;
 use crate::h2_frame::{ErrorCode, StreamId};
-use crate::http::response::FinalResponseBody;
+use crate::http::response::{HttpResponseTransport, ResponseAction, ResponseActions};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
-use crate::runtime::StreamInput;
+use crate::runtime::{H2InputCredit, StreamInput};
 use crate::websocket::WebSocketCodec;
 use crate::websocket::session::{
     AcceptedWebSocketState, AcceptedWebSocketTransport, EncodedWebSocketFrame, FrameFlushMode,
@@ -25,6 +24,11 @@ struct H2WebSocketTransport {
     stream_id: StreamId,
     stream_rx: mpsc::Receiver<StreamInput>,
     frame_buf: BytesMut,
+    /// DATA credit stays owned by the WebSocket session until its decoded
+    /// message has entered the byte-bounded ASGI queue. Releasing at codec
+    /// ingestion lets a paused application turn the H2 receive window into
+    /// an unbounded source of complete WebSocket messages.
+    pending_input_credits: Vec<H2InputCredit>,
 }
 
 impl WebSocketHandshakeTransport for H2WebSocketTransport {
@@ -50,48 +54,34 @@ impl WebSocketHandshakeTransport for H2WebSocketTransport {
             .send_headers(self.stream_id, status_code::OK, response_headers, false)
             .await
     }
+}
 
-    async fn send_final_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        headers: ResponseHeaders,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError> {
-        send_final_response(&self.connection, self.stream_id, status, headers, body).await
-    }
-
-    async fn start_denial_response(
-        &mut self,
-        status: HttpStatusCode,
-        headers: ResponseHeaders,
-    ) -> Result<(), H2CornError> {
-        self.connection
-            .send_headers(self.stream_id, status, headers, false)
+impl HttpResponseTransport for H2WebSocketTransport {
+    async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
+        H2HttpTransport::new(&self.connection, self.stream_id)
+            .apply_response_action(action)
             .await
     }
 
-    async fn send_denial_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-        self.connection.send_data(self.stream_id, body, false).await
-    }
-
-    async fn finish_denial_response(&mut self) -> Result<(), H2CornError> {
-        self.connection
-            .send_data(self.stream_id, Bytes::new(), true)
+    async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+        H2HttpTransport::new(&self.connection, self.stream_id)
+            .flush_buffered()
             .await
     }
 
-    async fn abort_denial_response(&mut self) -> Result<(), H2CornError> {
-        let _ = self
-            .connection
-            .reset_stream(self.stream_id, ErrorCode::INTERNAL_ERROR)
-            .await;
-        Ok(())
+    async fn apply_response_actions(
+        &mut self,
+        actions: &mut ResponseActions,
+    ) -> Result<(), H2CornError> {
+        H2HttpTransport::new(&self.connection, self.stream_id)
+            .apply_response_actions(actions)
+            .await
     }
 }
 
 impl AcceptedWebSocketTransport for H2WebSocketTransport {
     fn websocket_codec(&mut self, max_message_size: Option<NonZeroUsize>) -> WebSocketCodec {
-        WebSocketCodec::segmented(max_message_size)
+        WebSocketCodec::with_options(max_message_size)
     }
 
     async fn send_frame(
@@ -107,7 +97,7 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             },
             EncodedWebSocketFrame::Segmented { header, payload } => {
                 self.connection
-                    .send_prefixed_data(self.stream_id, header.as_slice(), payload, false)
+                    .send_websocket_data(self.stream_id, header, payload)
                     .await
             },
         }
@@ -121,6 +111,10 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
         &mut self.frame_buf
     }
 
+    fn release_consumed_input(&mut self) {
+        self.pending_input_credits.clear();
+    }
+
     async fn read_into_codec(
         &mut self,
         codec: &mut WebSocketCodec,
@@ -129,14 +123,14 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             Some(StreamInput::Data { body, credit }) => {
                 codec.push_segment(body);
                 if let Some(credit) = credit {
-                    credit.release();
+                    self.pending_input_credits.push(credit);
                 }
                 Ok(TransportRead::Progress)
             },
             Some(StreamInput::BufferedData { body, credit }) => {
                 codec.push_segment(body.freeze());
                 if let Some(credit) = credit {
-                    credit.release();
+                    self.pending_input_credits.push(credit);
                 }
                 Ok(TransportRead::Progress)
             },
@@ -145,7 +139,7 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
                     codec.push_segment(body);
                 }
                 if let Some(credit) = credit {
-                    credit.release();
+                    self.pending_input_credits.push(credit);
                 }
                 Ok(TransportRead::Progress)
             },
@@ -193,6 +187,7 @@ pub(super) async fn handle_request(
         stream_id,
         stream_rx,
         frame_buf: BytesMut::with_capacity(INITIAL_FRAME_BUF_CAPACITY),
+        pending_input_credits: Vec::new(),
     };
     run_websocket(&mut transport, context).await
 }

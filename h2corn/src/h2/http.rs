@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::num::NonZeroU64;
 use std::task::Poll;
 
@@ -10,7 +9,7 @@ use super::websocket::handle_request as handle_websocket_request;
 use super::writer::{WriterCommand, WriterCommandBatch};
 use super::{H2WriterHandle, InboundStream, RequestSpawnContext};
 use crate::access_log::{HttpAccessLogState, ResponseLogState};
-use crate::bridge::{PayloadBytes, RequestBodyCounter};
+use crate::bridge::RequestBodyCounter;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::H2CornError;
 use crate::h2_frame::{ErrorCode, StreamId};
@@ -19,19 +18,28 @@ use crate::http::app::{
     start_asgi_http_request, try_complete_http_request,
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
+use crate::http::header::observe_response_header_strips;
 use crate::http::planner::{RequestRejection, plan_request};
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
 };
 use crate::http::run_request::run_http_request;
-use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders, status_code};
+use crate::http::types::{RequestHead, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput};
 use crate::websocket::{WebSocketContext, validate_websocket_request};
 
-struct H2HttpTransport<'a> {
+pub(super) struct H2HttpTransport<'a> {
     connection: &'a H2WriterHandle,
     stream_id: StreamId,
-    response_log: ResponseLogState,
+}
+
+impl<'a> H2HttpTransport<'a> {
+    pub(super) const fn new(connection: &'a H2WriterHandle, stream_id: StreamId) -> Self {
+        Self {
+            connection,
+            stream_id,
+        }
+    }
 }
 
 struct H2HttpRequestContext {
@@ -41,73 +49,25 @@ struct H2HttpRequestContext {
     input: AppRequestInput,
 }
 
-impl H2HttpTransport<'_> {
-    async fn send_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
-        log_response_action(&mut self.response_log, &action);
+impl HttpResponseTransport for H2HttpTransport<'_> {
+    async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
         let mut commands = WriterCommandBatch::new();
         append_response_action(
             self.stream_id,
             &mut commands,
             action,
             self.connection.config(),
-        );
+        )?;
         self.connection
             .send_commands(self.stream_id, commands)
             .await
     }
-}
 
-impl HttpResponseTransport for H2HttpTransport<'_> {
-    async fn send_final_response(
-        &mut self,
-        start: ResponseStart,
-        body: FinalResponseBody,
-    ) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::Final { start, body })
-            .await
-    }
-
-    async fn start_streaming_response(&mut self, start: ResponseStart) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::Start { start })
-            .await
-    }
-
-    async fn send_streaming_body(&mut self, body: PayloadBytes) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::Body(body)).await
-    }
-
-    async fn send_streaming_file(&mut self, file: File, len: usize) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::File {
-            file: Box::new(file),
-            len,
-        })
-        .await
-    }
-
-    async fn finish_streaming_response(&mut self) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::Finish).await
-    }
-
-    async fn finish_streaming_with_trailers(
-        &mut self,
-        trailers: ResponseHeaders,
-    ) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::FinishWithTrailers(trailers))
-            .await
-    }
-
-    async fn send_internal_error_response(&mut self) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::InternalError)
-            .await
-    }
-
-    async fn abort_incomplete_response(&mut self) -> Result<(), H2CornError> {
-        self.send_response_action(ResponseAction::AbortIncomplete)
-            .await
-    }
-
-    fn response_log_state(&self) -> ResponseLogState {
-        self.response_log
+    async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+        // Nothing to do: every action is handed to the connection's writer
+        // task, which flushes once per batch it drains. There is no
+        // per-response buffer held here.
+        Ok(())
     }
 
     async fn apply_response_actions(
@@ -118,16 +78,16 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
             return Ok(());
         }
 
+        // One batch, one handoff to the writer task: the per-action default
+        // would send each command on its own.
         let mut commands = WriterCommandBatch::new();
-
         for action in actions.drain(..) {
-            log_response_action(&mut self.response_log, &action);
             append_response_action(
                 self.stream_id,
                 &mut commands,
                 action,
                 self.connection.config(),
-            );
+            )?;
         }
 
         self.connection
@@ -249,6 +209,7 @@ fn prepare_and_spawn_request(
                     request,
                     admission,
                     meta,
+                    shutdown: context.shutdown.clone(),
                 },
                 stream_id,
                 input.rx,
@@ -270,7 +231,7 @@ fn spawn_http_request(
     task: H2HttpRequestContext,
 ) {
     tasks.spawn(stream_id, cancellation, async move {
-        let _ = Box::pin(handle_http_request(stream_id, task)).await;
+        crate::server::report_request_failure(Box::pin(handle_http_request(stream_id, task)).await);
     });
 }
 
@@ -310,7 +271,6 @@ async fn handle_http_request(
     let mut transport = H2HttpTransport {
         connection: &task.connection,
         stream_id,
-        response_log: ResponseLogState::default(),
     };
     let AppRequestInput::Stream {
         rx: request_body_rx,
@@ -339,14 +299,19 @@ async fn run_no_body_http_request(
     transport: &mut H2HttpTransport<'_>,
 ) -> Result<(), H2CornError> {
     let access_log = HttpAccessLogState::new(&ctx);
+    let mut response_log = ResponseLogState::default();
     let RunningHttpRequest { state, app_task } =
         start_asgi_http_request(ctx, HttpRequestBody::NoBody, admission);
     tokio::pin!(app_task);
     let result = match poll_app_task_once(app_task.as_mut()) {
-        Poll::Ready(app_result) => try_complete_http_request(state, transport, app_result).await,
-        Poll::Pending => drive_pinned_http_request(state, app_task.as_mut(), transport).await,
+        Poll::Ready(app_result) => {
+            try_complete_http_request(state, transport, &mut response_log, app_result).await
+        },
+        Poll::Pending => {
+            drive_pinned_http_request(state, app_task.as_mut(), transport, &mut response_log).await
+        },
     };
-    access_log.emit_http_response(transport.response_log_state(), || 0);
+    access_log.emit_http_response(response_log, || 0);
     result
 }
 
@@ -396,9 +361,16 @@ fn append_response_action(
     commands: &mut WriterCommandBatch,
     action: ResponseAction,
     config: &ServerConfig,
-) {
+) -> Result<(), H2CornError> {
     match action {
-        ResponseAction::Final { start, body } => {
+        ResponseAction::Final { mut start, body } => {
+            if start.status() == status_code::UPGRADE_REQUIRED {
+                return Err(H2CornError::from(pyo3::exceptions::PyValueError::new_err(
+                    "HTTP/2 responses cannot advertise an Upgrade",
+                )));
+            }
+            start.strip_http2_only_fields();
+            observe_response_header_strips(true, start.control().strips);
             push_final_response_commands(
                 stream_id,
                 commands,
@@ -408,7 +380,14 @@ fn append_response_action(
             );
         },
         ResponseAction::Start { mut start } => {
-            start.apply_default_headers(config);
+            if start.status() == status_code::UPGRADE_REQUIRED {
+                return Err(H2CornError::from(pyo3::exceptions::PyValueError::new_err(
+                    "HTTP/2 responses cannot advertise an Upgrade",
+                )));
+            }
+            let _declared_length = start.prepare_streaming(&config.response_headers);
+            start.strip_http2_only_fields();
+            observe_response_header_strips(true, start.control().strips);
             let (status, headers) = start.into_status_headers();
             commands.push_back(WriterCommand::SendHeaders {
                 stream_id,
@@ -447,46 +426,7 @@ fn append_response_action(
             error_code: ErrorCode::INTERNAL_ERROR,
         }),
     }
-}
-
-fn log_response_action(response_log: &mut ResponseLogState, action: &ResponseAction) {
-    match action {
-        ResponseAction::Final { start, body } => {
-            response_log.started(start.status());
-            if !matches!(
-                body,
-                FinalResponseBody::Empty | FinalResponseBody::Suppressed { .. }
-            ) {
-                response_log.sent_body(body.len());
-            }
-        },
-        ResponseAction::Start { start } => response_log.started(start.status()),
-        ResponseAction::Body(body) => response_log.sent_body(body.len()),
-        ResponseAction::File { len, .. } => response_log.sent_body(*len),
-        ResponseAction::InternalError => response_log.internal_error(),
-        ResponseAction::Finish
-        | ResponseAction::FinishWithTrailers(_)
-        | ResponseAction::AbortIncomplete => {},
-    }
-}
-
-pub(super) async fn send_final_response(
-    connection: &H2WriterHandle,
-    stream_id: StreamId,
-    status: HttpStatusCode,
-    headers: ResponseHeaders,
-    body: FinalResponseBody,
-) -> Result<(), H2CornError> {
-    let start = ResponseStart::new(status, headers);
-    let mut commands = WriterCommandBatch::new();
-    push_final_response_commands(
-        stream_id,
-        &mut commands,
-        start,
-        body,
-        &connection.config().response_headers,
-    );
-    connection.send_commands(stream_id, commands).await
+    Ok(())
 }
 
 #[cfg(test)]
@@ -501,7 +441,6 @@ mod tests {
     };
     use crate::config::ResponseHeaderConfig;
     use crate::h2_frame::StreamId;
-    use crate::http::header::inspect_response_headers;
     use crate::http::response::ResponseStart;
     use crate::http::types::{ResponseHeaders, status_code};
 
@@ -541,7 +480,15 @@ mod tests {
             } => {
                 assert_eq!(status, status_code::OK);
                 assert!(!end_stream);
-                assert_eq!(inspect_response_headers(&headers).content_length(), Some(1));
+                // The header the peer actually receives, rather than a
+                // scanner accessor that exists only to be asserted on.
+                assert_eq!(
+                    headers
+                        .iter()
+                        .find(|(name, _)| name.as_ref() == b"content-length")
+                        .map(|(_, value)| value.as_ref()),
+                    Some(b"1".as_slice())
+                );
             },
             other => panic!("expected headers before pathsend, got {other:?}"),
         }
@@ -575,7 +522,15 @@ mod tests {
                 ..
             } => {
                 assert!(end_stream);
-                assert_eq!(inspect_response_headers(&headers).content_length(), Some(0));
+                // The header the peer actually receives, rather than a
+                // scanner accessor that exists only to be asserted on.
+                assert_eq!(
+                    headers
+                        .iter()
+                        .find(|(name, _)| name.as_ref() == b"content-length")
+                        .map(|(_, value)| value.as_ref()),
+                    Some(b"0".as_slice())
+                );
             },
             other => panic!("expected one terminal headers command, got {other:?}"),
         }

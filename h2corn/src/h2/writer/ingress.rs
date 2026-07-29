@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt, H2CornError, H2Error};
-use crate::h2::{LAZY_STREAM_CAPACITY, StreamMap, new_stream_map};
+use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::StreamId;
 use crate::inline_fifo::InlineFifo;
 
@@ -125,13 +125,11 @@ impl WriterIngressQueue {
 }
 
 impl WriterIngress {
-    pub(super) fn new(max_concurrent_streams: usize) -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
             queue: Mutex::new(WriterIngressQueue::Open(OpenWriterIngressQueue {
-                ready_streams: VecDeque::with_capacity(
-                    max_concurrent_streams.min(LAZY_STREAM_CAPACITY),
-                ),
-                streams: new_stream_map(max_concurrent_streams),
+                ready_streams: VecDeque::new(),
+                streams: new_stream_map(),
             })),
             has_pending: AtomicBool::new(false),
             notify: Notify::new(),
@@ -234,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_typestate_rejects_new_commands() {
-        let ingress = WriterIngress::new(1);
+        let ingress = WriterIngress::new();
         ingress.close().await;
 
         assert!(
@@ -252,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn command_capacity_backpressures_and_close_releases_waiters() {
-        let ingress = WriterIngress::new(1);
+        let ingress = WriterIngress::new();
         let stream_id = StreamId::new(1).expect("non-zero stream id");
 
         for _ in 0..WRITER_CHANNEL_CAPACITY {

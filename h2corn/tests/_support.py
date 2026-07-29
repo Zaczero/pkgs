@@ -6,8 +6,9 @@ from pathlib import Path
 import h2.config
 import h2.connection
 import h2.events
+import h2.settings
 from h2corn import Config, Server
-from h2corn._config import TcpBindSpec, UnixBindSpec, parse_bind_spec
+from h2corn._config import TcpBindSpec, parse_bind_spec
 
 
 async def open_h2_connection(
@@ -16,6 +17,7 @@ async def open_h2_connection(
     port: int | None = None,
     uds: Path | None = None,
     prefix: bytes = b'',
+    max_header_list_size: int | None = None,
 ) -> tuple[
     asyncio.StreamReader,
     asyncio.StreamWriter,
@@ -28,11 +30,20 @@ async def open_h2_connection(
     else:
         assert port is not None
         reader, writer = await asyncio.open_connection(host, port)
-        authority = f'{host}:{port}'.encode()
+        # An IPv6 literal must be bracketed in an authority (RFC 3986 §3.2.2);
+        # unbracketed, it is malformed and the server is right to refuse it.
+        literal = f'[{host}]' if ':' in host else host
+        authority = f'{literal}:{port}'.encode()
 
     conn = h2.connection.H2Connection(
         config=h2.config.H2Configuration(client_side=True, header_encoding=None)
     )
+    if max_header_list_size is not None:
+        conn.local_settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = max_header_list_size
+        # h2 applies an advertised setting to its decoder on the peer's ACK.
+        # A peer may answer the opening request in the same read as that ACK,
+        # so accept the advertised limit from the first response frame too.
+        conn.decoder.max_header_list_size = max_header_list_size
     conn.initiate_connection()
     writer.write(prefix + conn.data_to_send())
     await writer.drain()
@@ -221,7 +232,7 @@ async def read_http_request_body(receive) -> bytes:
     chunks = bytearray()
     while True:
         message = await receive()
-        assert message['type'] == 'http.request'
+        assert message['type'] == 'http.request', message
         chunks.extend(message.get('body', b''))
         if not message.get('more_body', False):
             return bytes(chunks)
@@ -320,39 +331,26 @@ async def wait_for_server(
     task: asyncio.Task,
     timeout: float = 5.0,
 ) -> None:
-    """Wait until `server` has bound its listeners and they accept.
+    """Wait until `server` is accepting connections.
 
-    Readiness comes from `Server.addresses` (the resolved binds), so this
-    works for port-0 configs; a failed startup surfaces the task's error
-    instead of timing out.
+    `Server.wait_started()` is the server's own readiness signal, so there
+    is nothing to poll; racing it against the serve task turns a startup
+    failure into that failure rather than a timeout.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        if task.done():
-            task.result()
-            raise AssertionError('server task finished before binding')
-        if server.addresses:
-            break
-        if loop.time() >= deadline:
-            raise TimeoutError('timed out waiting for the server to bind')
-        await asyncio.sleep(0.01)
-    while True:
-        pending_unix = []
-        pending_ports = []
-        for bind in server.addresses:
-            spec = parse_bind_spec(bind)
-            if isinstance(spec, TcpBindSpec):
-                pending_ports.append((spec.host, spec.port))
-            elif isinstance(spec, UnixBindSpec):
-                pending_unix.append(spec.path)
-        if all(_port_is_open(host, port) for host, port in pending_ports) and all(
-            path.exists() for path in pending_unix
-        ):
-            return
-        if loop.time() >= deadline:
-            raise TimeoutError(f'timed out waiting for listeners {server.addresses}')
-        await asyncio.sleep(0.01)
+    waiting = asyncio.ensure_future(server.wait_started())
+    done, _pending = await asyncio.wait(
+        (waiting, task), timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+    )
+    if not done:
+        waiting.cancel()
+        raise TimeoutError('timed out waiting for the server to start serving')
+    if task in done:
+        # Whatever ended the server is the real answer, even when readiness
+        # resolved in the same pass.
+        waiting.cancel()
+        task.result()
+        raise AssertionError('server task finished before it started serving')
+    await waiting
 
 
 async def assert_serve_reusable(server: Server, timeout: float = 2) -> None:
@@ -361,15 +359,6 @@ async def assert_serve_reusable(server: Server, timeout: float = 2) -> None:
     await wait_for_server(server, task, timeout=timeout)
     server.shutdown()
     await asyncio.wait_for(task, timeout=timeout)
-
-
-def _port_is_open(host: str, port: int) -> bool:
-    family = socket.AF_INET6 if ':' in host else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.1)
-        if family == socket.AF_INET6:
-            return sock.connect_ex((host, port, 0, 0)) == 0
-        return sock.connect_ex((host, port)) == 0
 
 
 async def wait_for_port(port: int, timeout: float = 5.0) -> None:

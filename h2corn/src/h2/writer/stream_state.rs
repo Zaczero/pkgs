@@ -3,13 +3,13 @@ use std::mem;
 
 use tokio::time::Instant;
 
-use super::{PrefixedData, ResponseCloseBatch};
+use super::{ResponseCloseBatch, WebSocketData};
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
 use crate::h2::StreamMap;
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::PathStreamer;
-use crate::http::types::ResponseHeaders;
+use crate::http::types::ResponseTrailers;
 use crate::inline_fifo::InlineFifo;
 
 #[derive(Debug)]
@@ -22,7 +22,7 @@ pub(super) struct PendingChunk {
 #[derive(Debug)]
 enum PendingChunkData {
     Plain(PayloadBytes),
-    Prefixed(Box<PrefixedData>),
+    WebSocket(Box<WebSocketData>),
 }
 
 pub(super) type PendingChunks = InlineFifo<PendingChunk, 2>;
@@ -33,13 +33,6 @@ pub(super) struct ReadyStreamQueue {
 }
 
 impl ReadyStreamQueue {
-    pub(super) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            queue: VecDeque::with_capacity(capacity),
-        }
-    }
-
-    #[cfg(test)]
     pub(super) const fn new() -> Self {
         Self {
             queue: VecDeque::new(),
@@ -110,7 +103,7 @@ pub(super) enum ResponseWriteState {
     AwaitingHeaders,
     Open {
         body: StreamBodyState,
-        trailers: Option<ResponseHeaders>,
+        trailers: Option<ResponseTrailers>,
     },
     Closed,
 }
@@ -192,7 +185,7 @@ impl StreamWriteState {
         self.pending_body_since = self.has_pending_output().then_some(now);
     }
 
-    pub(super) const fn take_trailers_if_body_idle(&mut self) -> Option<ResponseHeaders> {
+    pub(super) const fn take_trailers_if_body_idle(&mut self) -> Option<ResponseTrailers> {
         match &mut self.response {
             ResponseWriteState::Open { body, trailers } if body.is_idle() => trailers.take(),
             ResponseWriteState::Open { .. }
@@ -201,7 +194,7 @@ impl StreamWriteState {
         }
     }
 
-    pub(super) fn queue_trailers(&mut self, headers: ResponseHeaders) -> Result<(), H2CornError> {
+    pub(super) fn queue_trailers(&mut self, headers: ResponseTrailers) -> Result<(), H2CornError> {
         match &mut self.response {
             ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => {
                 return H2Error::ResponseTrailersOnClosedOrUnopenedStream.err();
@@ -228,15 +221,16 @@ impl StreamWriteState {
         })
     }
 
-    pub(super) fn queue_prefixed_data(
+    pub(super) fn queue_websocket_data(
         &mut self,
-        data: Box<PrefixedData>,
-        end_stream: bool,
+        data: Box<WebSocketData>,
     ) -> Result<(), H2CornError> {
         self.queue_chunk(PendingChunk {
-            data: PendingChunkData::Prefixed(data),
+            data: PendingChunkData::WebSocket(data),
             offset: 0,
-            end_stream,
+            // WebSocket DATA never closes the stream; the close frame and
+            // session teardown own stream end separately.
+            end_stream: false,
         })
     }
 
@@ -326,7 +320,7 @@ impl PendingChunk {
     fn len(&self) -> usize {
         match &self.data {
             PendingChunkData::Plain(bytes) => bytes.len(),
-            PendingChunkData::Prefixed(data) => data.len(),
+            PendingChunkData::WebSocket(data) => data.len(),
         }
     }
 
@@ -334,16 +328,16 @@ impl PendingChunk {
         let offset = self.offset + additional_offset;
         match &self.data {
             PendingChunkData::Plain(bytes) => (&bytes.as_ref()[offset..offset + len], &[]),
-            PendingChunkData::Prefixed(data) => {
-                let prefix = data.prefix();
-                if offset >= prefix.len() {
-                    let payload_offset = offset - prefix.len();
+            PendingChunkData::WebSocket(data) => {
+                let header = data.header();
+                if offset >= header.len() {
+                    let payload_offset = offset - header.len();
                     return (&data.payload()[payload_offset..payload_offset + len], &[]);
                 }
-                let prefix_len = len.min(prefix.len() - offset);
-                let payload_len = len - prefix_len;
+                let header_len = len.min(header.len() - offset);
+                let payload_len = len - header_len;
                 (
-                    &prefix[offset..offset + prefix_len],
+                    &header[offset..offset + header_len],
                     &data.payload()[..payload_len],
                 )
             },
@@ -381,7 +375,7 @@ mod tests {
     #[test]
     fn ready_queue_owns_schedule_membership_transitions() {
         let stream_id = StreamId::new(1).expect("test stream id is valid");
-        let mut streams = new_stream_map(1);
+        let mut streams = new_stream_map();
         streams.insert(stream_id, StreamWriteState::new(0xFFFF));
         let mut ready = ReadyStreamQueue::new();
 

@@ -23,8 +23,145 @@ pub(crate) const FRAME_HEADER_LEN: usize = 9;
 pub(crate) const GOAWAY_FIXED_PAYLOAD_LEN: usize = 8;
 pub(crate) const GOAWAY_FRAME_PREFIX_LEN: usize = FRAME_HEADER_LEN + GOAWAY_FIXED_PAYLOAD_LEN;
 pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
+/// One wire entry per field of [`Settings`].
+const MAX_SETTINGS_ENTRIES: usize = 7;
+/// GOAWAY debug data is advisory, so it is truncated to keep the frame length
+/// provably encodable instead of failing the connection teardown it explains.
+const MAX_GOAWAY_DEBUG_LEN: usize = 1024;
 
 const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
+
+/// A frame-header rejection whose stream identity is available before any
+/// payload is buffered. Keeping that identity lets the HTTP/2 driver apply a
+/// stream-scoped FRAME_SIZE_ERROR where the frame type requires one.
+#[derive(Debug)]
+pub(crate) enum FrameReadError {
+    Other(H2CornError),
+    DeclaredPayloadLength {
+        stream_id: Option<StreamId>,
+        error: H2Error,
+    },
+}
+
+impl From<H2CornError> for FrameReadError {
+    fn from(error: H2CornError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// The wire length of a frame payload.
+///
+/// The HTTP/2 length field is three bytes, so a longer payload would silently
+/// truncate on the wire. Every construction is either a compile-time constant
+/// or a narrowing of one, which is why the encoder below has no runtime check
+/// and no panic path at all.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct FramePayloadLen(u32);
+
+impl FramePayloadLen {
+    pub(crate) const ZERO: Self = Self(0);
+
+    /// Build from a runtime length, rejecting anything the wire cannot carry.
+    pub(crate) const fn new(len: usize) -> Option<Self> {
+        if len > MAX_FRAME_SIZE_UPPER_BOUND {
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the bound above limits the value to 24 bits"
+        )]
+        Some(Self(len as u32))
+    }
+
+    /// Build from a constant. An over-long constant fails the build.
+    pub(crate) const fn constant(len: usize) -> Self {
+        assert!(
+            len <= MAX_FRAME_SIZE_UPPER_BOUND,
+            "frame payload constant exceeds the HTTP/2 length field"
+        );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the assertion above bounds the value to 24 bits"
+        )]
+        Self(len as u32)
+    }
+
+    /// Narrow to `other` when that is smaller. A valid length can only stay
+    /// valid, so clamping chains need no further checks.
+    pub(crate) const fn min_usize(self, other: usize) -> Self {
+        if other < self.0 as usize {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the comparison above bounds `other` by an already valid length"
+            )]
+            Self(other as u32)
+        } else {
+            self
+        }
+    }
+
+    pub(crate) const fn get(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// A frame payload whose length is known to fit the wire length field.
+///
+/// The bytes and their encoded length are produced together, so they cannot
+/// disagree, and there is no way to build one that is too long.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FramePayload<'a> {
+    bytes: &'a [u8],
+    len: FramePayloadLen,
+}
+
+impl<'a> FramePayload<'a> {
+    pub(crate) const EMPTY: Self = Self {
+        bytes: &[],
+        len: FramePayloadLen::ZERO,
+    };
+
+    /// A payload whose size is fixed by its type.
+    pub(crate) const fn fixed<const N: usize>(bytes: &'a [u8; N]) -> Self {
+        Self {
+            bytes,
+            len: FramePayloadLen::constant(N),
+        }
+    }
+
+    /// Split off at most `limit` bytes; the remainder feeds the next frame.
+    pub(crate) const fn take(bytes: &'a [u8], limit: FramePayloadLen) -> (Self, &'a [u8]) {
+        let len = limit.min_usize(bytes.len());
+        let (payload, rest) = bytes.split_at(len.as_usize());
+        (
+            Self {
+                bytes: payload,
+                len,
+            },
+            rest,
+        )
+    }
+
+    pub(crate) const fn len(self) -> FramePayloadLen {
+        self.len
+    }
+
+    pub(crate) const fn as_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.len.is_zero()
+    }
+}
 
 /// A valid HTTP/2 stream identifier.
 ///
@@ -279,11 +416,15 @@ impl Settings {
     }
 }
 
+/// Peer settings after validation.
+///
+/// `max_frame_size` is already a [`FramePayloadLen`]: the range check happens
+/// once here, at the wire boundary, so nothing downstream re-clamps it.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PeerSettings {
     pub header_table_size: Option<usize>,
     pub initial_window_size: Option<u32>,
-    pub max_frame_size: Option<NonZeroU32>,
+    pub max_frame_size: Option<FramePayloadLen>,
 }
 
 impl TryFrom<Settings> for PeerSettings {
@@ -296,17 +437,19 @@ impl TryFrom<Settings> for PeerSettings {
             return H2Error::SettingsInitialWindowSizeExceededLimit.err();
         }
 
-        if let Some(size) = settings.max_frame_size
-            && !(DEFAULT_MAX_FRAME_SIZE..=MAX_FRAME_SIZE_UPPER_BOUND)
-                .contains(&(size.get() as usize))
-        {
-            return H2Error::SettingsMaxFrameSizeOutOfRange.err();
-        }
+        let max_frame_size = settings
+            .max_frame_size
+            .map(|size| {
+                FramePayloadLen::new(size.get() as usize)
+                    .filter(|size| size.as_usize() >= DEFAULT_MAX_FRAME_SIZE)
+                    .ok_or(H2Error::SettingsMaxFrameSizeOutOfRange)
+            })
+            .transpose()?;
 
         Ok(Self {
             header_table_size: settings.header_table_size.map(|value| value as usize),
             initial_window_size: settings.initial_window_size,
-            max_frame_size: settings.max_frame_size,
+            max_frame_size,
         })
     }
 }
@@ -315,6 +458,11 @@ impl TryFrom<Settings> for PeerSettings {
 pub(crate) struct BufferedConnectionReader<R> {
     reader: R,
     buffer: BytesMut,
+    /// A fixed-size control frame can be rejected from its nine-byte header.
+    /// Its payload still occupies the wire and must be skipped before the
+    /// next header is decoded, otherwise one stream error becomes an infinite
+    /// loop over the same frame.
+    discard_payload_len: usize,
 }
 
 impl<R> BufferedConnectionReader<R>
@@ -327,11 +475,16 @@ where
         Self {
             reader,
             buffer: BytesMut::with_capacity(READ_BUFFER_INITIAL_CAPACITY),
+            discard_payload_len: 0,
         }
     }
 
     pub(crate) const fn with_buffer(reader: R, buffer: BytesMut) -> Self {
-        Self { reader, buffer }
+        Self {
+            reader,
+            buffer,
+            discard_payload_len: 0,
+        }
     }
 
     pub(crate) async fn read_at_least(&mut self, len: usize) -> Result<bool, H2CornError> {
@@ -369,32 +522,46 @@ where
     pub(crate) async fn read_frame(
         &mut self,
         max_frame_size: usize,
-    ) -> Result<Option<RawFrame>, H2CornError> {
+    ) -> Result<Option<RawFrame>, FrameReadError> {
+        self.discard_rejected_payload().await?;
         if !self.read_at_least(FRAME_HEADER_LEN).await? {
             if self.buffer.is_empty() {
                 return Ok(None);
             }
-            return H2Error::FrameHeaderClosed.err();
+            return Err(H2CornError::from(H2Error::FrameHeaderClosed).into());
         }
 
         let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
             unreachable!("frame header is buffered")
         };
         let payload_len = decode_u24([header[0], header[1], header[2]]);
+        let stream_id = StreamId::new(
+            u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & STREAM_ID_MASK,
+        );
         if payload_len > max_frame_size {
-            return H2Error::frame_length_exceeds_peer_max(payload_len, max_frame_size).err();
+            return Err(H2CornError::from(H2Error::frame_length_exceeds_peer_max(
+                payload_len,
+                max_frame_size,
+            ))
+            .into());
+        }
+
+        let frame_type = FrameType::new(header[3]);
+        let flags = FrameFlags::new(header[4]);
+        if let Err(error) = validate_declared_payload_length(frame_type, flags, payload_len) {
+            self.buffer.advance(FRAME_HEADER_LEN);
+            self.discard_payload_len = payload_len;
+            return Err(FrameReadError::DeclaredPayloadLength { stream_id, error });
         }
 
         let total_len = FRAME_HEADER_LEN + payload_len;
         if !self.read_at_least(total_len).await? {
-            return H2Error::FramePayloadClosed.err();
+            return Err(H2CornError::from(H2Error::FramePayloadClosed).into());
         }
 
         let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
             unreachable!("frame header is buffered")
         };
-        let frame_type = FrameType::new(header[3]);
-        let flags = FrameFlags::new(header[4]);
         let stream_id = StreamId::new(
             u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & STREAM_ID_MASK,
         );
@@ -410,6 +577,48 @@ where
             payload,
         }))
     }
+
+    async fn discard_rejected_payload(&mut self) -> Result<(), H2CornError> {
+        while self.discard_payload_len != 0 {
+            if self.buffer.is_empty()
+                && !self
+                    .read_more_capped(self.discard_payload_len.min(READ_BUFFER_INITIAL_CAPACITY))
+                    .await?
+            {
+                return H2Error::FramePayloadClosed.err();
+            }
+            let consumed = self.buffer.len().min(self.discard_payload_len);
+            self.buffer.advance(consumed);
+            self.discard_payload_len -= consumed;
+        }
+        Ok(())
+    }
+}
+
+/// Reject fixed-size control frames from their nine-byte header, before a
+/// hostile declared length can grow the connection buffer.
+pub(crate) fn validate_declared_payload_length(
+    frame_type: FrameType,
+    flags: FrameFlags,
+    payload_len: usize,
+) -> Result<(), H2Error> {
+    let exact = |expected, error| (payload_len == expected).then_some(()).ok_or(error);
+    match frame_type {
+        FrameType::PING => exact(8, H2Error::PingPayloadInvalidLength),
+        FrameType::RST_STREAM => exact(4, H2Error::RstStreamPayloadInvalidLength),
+        FrameType::WINDOW_UPDATE => exact(4, H2Error::WindowUpdatePayloadInvalidLength),
+        FrameType::PRIORITY => exact(5, H2Error::PriorityPayloadInvalidLength),
+        FrameType::SETTINGS if flags.contains(FrameFlags::ACK) => {
+            exact(0, H2Error::SettingsAckPayloadNotEmpty)
+        },
+        FrameType::SETTINGS => (payload_len.is_multiple_of(SETTING_ENTRY_LEN))
+            .then_some(())
+            .ok_or(H2Error::SettingsPayloadLengthInvalid),
+        FrameType::GOAWAY => (payload_len >= GOAWAY_FIXED_PAYLOAD_LEN)
+            .then_some(())
+            .ok_or(H2Error::InvalidGoawayFrame),
+        _ => Ok(()),
+    }
 }
 
 const fn decode_u24(bytes: [u8; 3]) -> usize {
@@ -417,9 +626,8 @@ const fn decode_u24(bytes: [u8; 3]) -> usize {
     ((b0 as usize) << 16) | ((b1 as usize) << 8) | (b2 as usize)
 }
 
-pub(crate) fn encode_frame_header(header: FrameHeader, payload_len: usize) -> [u8; 9] {
-    assert!(payload_len <= MAX_FRAME_SIZE_UPPER_BOUND);
-    let len = (payload_len as u32).to_be_bytes();
+pub(crate) fn encode_frame_header(header: FrameHeader, payload_len: FramePayloadLen) -> [u8; 9] {
+    let len = payload_len.get().to_be_bytes();
     let stream_id = header.stream_id.map_or(0, StreamId::get).to_be_bytes();
     [
         len[1],
@@ -434,15 +642,27 @@ pub(crate) fn encode_frame_header(header: FrameHeader, payload_len: usize) -> [u
     ]
 }
 
-pub(crate) fn append_frame(dst: &mut BytesMut, header: FrameHeader, payload: &[u8]) {
-    dst.reserve(FRAME_HEADER_LEN + payload.len());
-    dst.extend_from_slice(&encode_frame_header(header, payload.len()));
+/// Append a frame whose payload has a fixed size, so its length is validated
+/// at compile time.
+pub(crate) fn append_frame<const N: usize>(
+    dst: &mut BytesMut,
+    header: FrameHeader,
+    payload: &[u8; N],
+) {
+    dst.reserve(FRAME_HEADER_LEN + N);
+    dst.extend_from_slice(&encode_frame_header(
+        header,
+        const { FramePayloadLen::constant(N) },
+    ));
     dst.extend_from_slice(payload);
 }
 
 pub(crate) fn append_settings(dst: &mut BytesMut, settings: Settings) {
-    let payload_len = settings.iter().count() * size_of::<WireSetting>();
-    dst.reserve(FRAME_HEADER_LEN + payload_len);
+    // One entry per field of `Settings`, so the whole payload is bounded by a
+    // constant and the narrowing below carries that proof.
+    let payload_len = const { FramePayloadLen::constant(MAX_SETTINGS_ENTRIES * SETTING_ENTRY_LEN) }
+        .min_usize(settings.iter().count() * SETTING_ENTRY_LEN);
+    dst.reserve(FRAME_HEADER_LEN + payload_len.as_usize());
     dst.extend_from_slice(&encode_frame_header(
         FrameHeader {
             frame_type: FrameType::SETTINGS,
@@ -518,6 +738,10 @@ pub(crate) fn append_goaway(
     error_code: ErrorCode,
     debug: &[u8],
 ) {
+    let debug = &debug[..debug.len().min(MAX_GOAWAY_DEBUG_LEN)];
+    let payload_len =
+        const { FramePayloadLen::constant(GOAWAY_FIXED_PAYLOAD_LEN + MAX_GOAWAY_DEBUG_LEN) }
+            .min_usize(GOAWAY_FIXED_PAYLOAD_LEN + debug.len());
     dst.reserve(GOAWAY_FRAME_PREFIX_LEN + debug.len());
     dst.extend_from_slice(&encode_frame_header(
         FrameHeader {
@@ -525,7 +749,7 @@ pub(crate) fn append_goaway(
             flags: FrameFlags::EMPTY,
             stream_id: None,
         },
-        8 + debug.len(),
+        payload_len,
     ));
     dst.extend_from_slice(&last_stream_id.map_or(0, StreamId::get).to_be_bytes());
     dst.extend_from_slice(&error_code.to_be_bytes());
@@ -632,7 +856,7 @@ mod tests {
                 flags: FrameFlags::EMPTY,
                 stream_id: Some(StreamId::new(1).unwrap()),
             },
-            0x4000,
+            FramePayloadLen::constant(0x4000),
         );
         assert_eq!(&encoded[..3], &[0x00, 0x40, 0x00]);
     }
@@ -651,5 +875,127 @@ mod tests {
             .apply_wire_pair(SettingId::MAX_FRAME_SIZE, 0)
             .unwrap_err();
         assert_eq!(err.to_string(), "invalid SETTINGS_MAX_FRAME_SIZE value");
+    }
+
+    #[test]
+    fn fixed_control_lengths_fail_from_the_nine_byte_header() {
+        for (frame_type, valid, invalid) in [
+            (FrameType::PING, 8, [7, 9]),
+            (FrameType::RST_STREAM, 4, [3, 5]),
+            (FrameType::WINDOW_UPDATE, 4, [3, 5]),
+            (FrameType::PRIORITY, 5, [4, 6]),
+        ] {
+            validate_declared_payload_length(frame_type, FrameFlags::EMPTY, valid).unwrap();
+            for len in invalid {
+                assert!(
+                    validate_declared_payload_length(frame_type, FrameFlags::EMPTY, len).is_err()
+                );
+            }
+        }
+        validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::ACK, 0).unwrap();
+        assert!(validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::ACK, 1).is_err());
+        validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::EMPTY, 6).unwrap();
+        assert!(
+            validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::EMPTY, 5).is_err()
+        );
+        validate_declared_payload_length(FrameType::GOAWAY, FrameFlags::EMPTY, 8).unwrap();
+        assert!(validate_declared_payload_length(FrameType::GOAWAY, FrameFlags::EMPTY, 7).is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_control_length_fails_without_waiting_for_its_payload() {
+        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::time::{Duration, timeout};
+
+        let (mut client, server) = duplex(FRAME_HEADER_LEN);
+        client
+            .write_all(&[
+                0,
+                0,
+                9, // invalid PING length, but below the peer frame limit
+                FrameType::PING.bits(),
+                FrameFlags::EMPTY.bits(),
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await
+            .unwrap();
+        let mut reader = BufferedConnectionReader::new(server);
+
+        let result = timeout(
+            Duration::from_millis(100),
+            reader.read_frame(DEFAULT_MAX_FRAME_SIZE),
+        )
+        .await
+        .expect("the nine-byte header must reject before the payload is read");
+        let error = result.expect_err("the invalid PING header must be rejected");
+        assert!(matches!(error, FrameReadError::DeclaredPayloadLength {
+            error: H2Error::PingPayloadInvalidLength,
+            ..
+        }));
+    }
+
+    #[tokio::test]
+    async fn malformed_control_length_discards_its_payload_before_the_next_header() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (mut client, server) = duplex(64);
+        client
+            .write_all(&[
+                0,
+                0,
+                4, // PRIORITY must have a five-byte payload.
+                FrameType::PRIORITY.bits(),
+                FrameFlags::EMPTY.bits(),
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                8,
+                FrameType::PING.bits(),
+                FrameFlags::EMPTY.bits(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await
+            .unwrap();
+        let mut reader = BufferedConnectionReader::new(server);
+
+        let error = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
+            .await
+            .expect_err("the short PRIORITY is rejected");
+        assert!(matches!(error, FrameReadError::DeclaredPayloadLength {
+            stream_id: Some(stream_id),
+            error: H2Error::PriorityPayloadInvalidLength,
+        } if stream_id.get() == 1));
+
+        let frame = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
+            .await
+            .expect("the rejected payload is skipped")
+            .expect("the following PING is present");
+        assert_eq!(frame.header.frame_type, FrameType::PING);
+        assert_eq!(frame.payload.as_ref(), &[0; 8]);
     }
 }
