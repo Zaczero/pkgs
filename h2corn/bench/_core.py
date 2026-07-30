@@ -20,6 +20,7 @@ import socket
 import statistics
 import struct
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -33,7 +34,7 @@ import h2.connection
 import h2.events
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 HOST = '127.0.0.1'
 PORT = 8000
@@ -42,6 +43,10 @@ UNIX_SOCKET_PATH = RESULTS_DIRECTORY / 'benchmark.sock'
 STATIC_FILE_PATH = Path('bench/_file_response_payload.bin')
 STATIC_FILE_BODY = b'\x00' * (128 * 1024)
 DOWNLOAD_BODY = b'x' * (128 * 1024)
+LARGE_UPLOAD_PATH = Path('bench/_large_upload_payload.bin')
+# Exceeds the 6.25 MiB BDP of the shaped 1 Gbit, 50 ms path and matches
+# h2corn's advertised HTTP/2 receive window.
+LARGE_UPLOAD_SIZE = 8 * 1024 * 1024
 K6_SCRIPT = Path('bench/k6/ws.js')
 
 #: Load generators are given the deadline plus this much slack before the run
@@ -50,6 +55,10 @@ LOAD_GRACE_SECONDS = 30.0
 SERVER_READY_TIMEOUT_SECONDS = 15.0
 #: Time between server start and the first request of a trial.
 SETTLE_SECONDS = 0.25
+#: ``smaps_rollup`` walks a process's mappings. One snapshot per second keeps
+#: that work far below the request path while still making a ten-second trial
+#: a high-water sample rather than a steady-state reading.
+PSS_SAMPLE_INTERVAL_SECONDS = 1.0
 
 BenchmarkType = Literal[
     'h1',
@@ -61,6 +70,7 @@ BenchmarkType = Literal[
     'h2_download',
     'h1_stream',
     'h2_stream',
+    'h2_upload',
     'ws',
 ]
 
@@ -72,6 +82,12 @@ class BenchmarkError(RuntimeError):
 class Metrics(TypedDict):
     rps: float
     latency_percentiles: dict[str, float]
+
+
+class MeasuredMetrics(Metrics):
+    """Load metrics together with the deployment's sampled peak PSS."""
+
+    peak_memory_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +105,7 @@ class ResponseContract:
     unix_socket: bool = False
     method: Literal['GET', 'POST'] = 'GET'
     request_body: bytes = b''
+    request_body_path: Path | None = None
     response_body: bytes = b''
     content_type: str = 'text/plain'
 
@@ -139,6 +156,17 @@ RESPONSE_CONTRACTS: dict[BenchmarkType, ResponseContract] = {
         request_body=b'x' * 1024,
         response_body=b'stream-started\n1024\nstream-finished\n',
     ),
+    # ``request_body`` is the compact exact-body probe. The load generator
+    # reads the 8 MiB body from disk so it does not put an enormous argv or a
+    # persistent 8 MiB Python object into the server-memory measurement.
+    'h2_upload': ResponseContract(
+        '/streaming-post-fast',
+        protocol='2',
+        method='POST',
+        request_body=b'x' * 1024,
+        request_body_path=LARGE_UPLOAD_PATH,
+        response_body=b'1024',
+    ),
     'ws': ResponseContract(
         '/ws',
         driver='k6',
@@ -171,6 +199,8 @@ class Scenario:
             .replace('/', '_')
             .replace('(', '')
             .replace(')', '')
+            .replace(',', '')
+            .replace('-', '_')
             .replace(' ', '_')
         )
         return f'benchmark_{cleaned}'
@@ -183,6 +213,16 @@ def ensure_static_file_payload() -> None:
         return
     STATIC_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATIC_FILE_PATH.write_bytes(STATIC_FILE_BODY)
+
+
+def ensure_large_upload_payload() -> None:
+    if (
+        LARGE_UPLOAD_PATH.exists()
+        and LARGE_UPLOAD_PATH.stat().st_size == LARGE_UPLOAD_SIZE
+    ):
+        return
+    LARGE_UPLOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LARGE_UPLOAD_PATH.write_bytes(b'x' * LARGE_UPLOAD_SIZE)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -467,7 +507,7 @@ class ServerRun:
     worker_pids: tuple[int, ...]
 
     def memory_bytes(self) -> int:
-        """Proportional set size of the supervisor and every worker.
+        """Return a current PSS snapshot of the supervisor and every worker.
 
         Not summed `VmHWM`: peak RSS counts every shared file-backed page in
         full, in each process that maps it, so N workers sharing one extension
@@ -476,8 +516,6 @@ class ServerRun:
         PSS divides each shared page by the number of processes mapping it,
         which is the number that answers "what does this deployment cost".
 
-        Read once at the end of the measured window, so it is the steady state
-        rather than a high-water mark.
         """
         total = 0
         for pid in (self.pid, *self.worker_pids):
@@ -490,6 +528,35 @@ class ServerRun:
                     total += int(line.split()[1]) * 1024
                     break
         return total
+
+
+def measure_peak_memory(
+    server: ServerRun, action: Callable[[], Metrics]
+) -> tuple[Metrics, int]:
+    """Run one measured action and return its maximum periodically sampled PSS.
+
+    ``smaps_rollup`` is deliberately read only once per second: a PSS snapshot
+    requires walking every mapping of the supervisor and its workers, so a
+    higher cadence would make the observer part of a short benchmark's load.
+    A normal ten-second trial still receives an initial sample, about nine
+    periodic samples, and a final sample.
+    """
+    samples = [server.memory_bytes()]
+    stop = threading.Event()
+
+    def sample() -> None:
+        while not stop.wait(PSS_SAMPLE_INTERVAL_SECONDS):
+            samples.append(server.memory_bytes())
+
+    sampler = threading.Thread(target=sample, name='h2corn-bench-pss', daemon=True)
+    sampler.start()
+    try:
+        metrics = action()
+    finally:
+        stop.set()
+        sampler.join()
+        samples.append(server.memory_bytes())
+    return metrics, max(samples)
 
 
 @contextmanager
@@ -650,7 +717,14 @@ def run_oha(
         '-m',
         contract.method,
     ]
-    if contract.request_body:
+    if contract.request_body_path is not None:
+        command += [
+            '-D',
+            str(contract.request_body_path),
+            '-T',
+            'application/octet-stream',
+        ]
+    elif contract.request_body:
         command += [
             '-d',
             contract.request_body.decode(),

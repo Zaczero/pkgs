@@ -64,6 +64,15 @@ and recorded, and the rest of the comparison still publishes. If **h2corn**
 fails a cell the whole run stops: that is our bug, not a fact about someone
 else's server.
 
+**Memory is peak PSS.** The harness snapshots the proportional set size of the
+supervisor and every worker at the start, once per second, and at the end of the
+measured window; the chart carries the largest snapshot from all trials as
+**peak memory (PSS)**. A
+`smaps_rollup` read walks every mapping, so once per second keeps the observer
+out of the request path while still giving a ten-second trial roughly eleven
+high-water samples. PSS divides shared pages among their mappings, unlike RSS,
+which would count one extension module in full in every worker.
+
 **Access logging is on for every server.** That is how these servers are
 deployed, and log construction is part of the work they do. Server output goes
 to `/dev/null`, so no server pays for a log sink the others avoid — never point
@@ -84,6 +93,17 @@ Useful flags: `--types h1 h2` to narrow a run, `--servers h2corn` for a quick
 smoke, `--duration` / `--warmup-duration`, `--max-trials`, and the
 `--scenario-budget` / `--suite-budget` ceilings.
 
+The default suite stages its loopback primary profile and a separate 50 ms RTT
+profile. The latter runs inside `unshare -rn`: it brings up loopback, installs
+`tc qdisc replace dev lo root netem delay 25ms rate 1gbit`, then measures a
+real TCP request/response RTT and refuses to report the shaped cells unless it
+falls within 50 ±15 ms. If the namespace, `tc`, or RTT check fails, the profile
+is skipped with the reason printed and written to its raw records; it never
+falls back to unshaped loopback numbers. Only streaming POSTs, streaming
+downloads, an 8 MiB HTTP/2 upload, and the multiplexed HTTP/2 case get this
+profile. Small requests remain loopback-only because at 50 ms their rate mostly
+measures generator concurrency divided by RTT.
+
 ## Paired A/B
 
 ```bash
@@ -103,7 +123,7 @@ interval excludes zero, and the memory both sides cost. An interval that still
 spans zero when the budget runs out is reported as inconclusive — that is an
 answer, not a failure.
 
-Memory is **PSS**, not summed peak RSS. Peak RSS counts every shared
+Memory is **peak PSS**, not summed RSS. RSS counts every shared
 file-backed page in full in each process that maps it, so four workers sharing
 one extension module report it four times, and two builds whose code merely
 pages in differently look megabytes apart while costing the same memory.

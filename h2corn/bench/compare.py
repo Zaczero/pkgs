@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import shlex
-import statistics
 import sys
 import time
 from datetime import UTC, datetime
@@ -38,7 +37,9 @@ try:
         Scenario,
         check_response,
         duration_seconds,
+        ensure_large_upload_payload,
         ensure_static_file_payload,
+        measure_peak_memory,
         paired_comparison,
         run_load,
         running_server,
@@ -53,7 +54,9 @@ except ModuleNotFoundError:  # Direct ``python bench/compare.py`` execution.
         Scenario,
         check_response,
         duration_seconds,
+        ensure_large_upload_payload,
         ensure_static_file_payload,
+        measure_peak_memory,
         paired_comparison,
         run_load,
         running_server,
@@ -124,9 +127,12 @@ def measure(
     ) as server:
         check_response(scenario)
         run_load(scenario, duration=warmup, concurrency=concurrency)
-        metrics = run_load(scenario, duration=duration, concurrency=concurrency)
+        metrics, peak_memory_bytes = measure_peak_memory(
+            server,
+            lambda: run_load(scenario, duration=duration, concurrency=concurrency),
+        )
         check_response(scenario)
-        return metrics, server.memory_bytes()
+        return metrics, peak_memory_bytes
 
 
 def compare(
@@ -195,9 +201,7 @@ def compare(
             'ci_percent': list(result.ci_percent),
             'significant': result.significant,
         },
-        'memory_median_bytes': {
-            name: statistics.median(values) for name, values in memory.items()
-        },
+        'peak_memory_bytes': {name: max(values) for name, values in memory.items()},
     }
 
 
@@ -240,6 +244,8 @@ def main() -> int:
     )
 
     ensure_static_file_payload()
+    if args.scenario == 'h2_upload':
+        ensure_large_upload_payload()
     print(f'=== {control.name} vs {candidate.name}: {scenario.name} ===')
     try:
         record = compare(
@@ -264,7 +270,7 @@ def main() -> int:
 
     comparison = record['comparison']
     low, high = comparison['ci_percent']
-    memory = record['memory_median_bytes']
+    memory = record['peak_memory_bytes']
     print()
     print(f'{control.name:>16}: {comparison["control_median"]:>12,.0f} RPS')
     print(f'{candidate.name:>16}: {comparison["candidate_median"]:>12,.0f} RPS')
@@ -273,7 +279,7 @@ def main() -> int:
         f'(95% CI {low:+.2f}%..{high:+.2f}%)'
     )
     print(
-        f'{"memory (PSS)":>16}: {memory[control.name] / 1e6:,.1f} MB -> '
+        f'{"peak memory (PSS)":>16}: {memory[control.name] / 1e6:,.1f} MB -> '
         f'{memory[candidate.name] / 1e6:,.1f} MB'
     )
     if record['stopped'] == 'time-budget':
