@@ -1374,12 +1374,109 @@ def _parked_websocket_app(done: asyncio.Event):
     return app
 
 
-async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
-    """Peer Close must pass a byte-full inbound queue and blocked producer.
+@pytest.mark.parametrize('transport', ['h2', 'http1'])
+async def test_websocket_inbound_backpressure_preserves_ordered_messages(
+    transport: str,
+) -> None:
+    """A byte-full queue stalls decoding, not ordered data delivery.
 
-    Ordinary backpressure may stall further data delivery; it must never block
-    Close echo, TCP teardown, or the eventual ordered delivery of the 32 byte-
-    budgeted messages followed by disconnect once the application resumes.
+    A peer Close or Ping queued behind unread application data is therefore
+    delayed until the application drains. Server shutdown and locally
+    scheduled ping timeouts stay independently selectable while this data
+    plane is stalled; dedicated guards cover those paths below.
+    """
+    payloads = [bytes([index]) for index in range(6)]
+    gate = asyncio.Event()
+    finished = asyncio.Event()
+    received: list = []
+    app = _full_inbound_queue_app(gate, finished, received)
+    client_data = b''.join(
+        _encode_ws_client_frame(0x2, payload) for payload in payloads
+    ) + _encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big'))
+
+    config = Config(
+        port=0,
+        websocket_max_message_size=4,
+        timeout_graceful_shutdown=5.0,
+    )
+    async with running_server(app, config) as server:
+        if transport == 'h2':
+            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+                port=server_port(server),
+                path='/ws',
+            )
+            try:
+                assert handshake.terminal is None
+                conn.send_data(stream_id, client_data, end_stream=False)
+                writer.write(conn.data_to_send())
+                await writer.drain()
+
+                close_task = asyncio.create_task(
+                    _read_ws_server_result(
+                        reader,
+                        writer,
+                        conn,
+                        stream_id,
+                        handshake,
+                    )
+                )
+                await asyncio.wait({close_task}, timeout=0.2)
+                assert not close_task.done(), (
+                    'peer Close passed unread application data before the '
+                    'inbound queue was drained'
+                )
+                gate.set()
+                await asyncio.wait_for(finished.wait(), timeout=2.0)
+                terminal, detail, frames = await asyncio.wait_for(close_task, timeout=2.0)
+                assert terminal == 'ended', (terminal, detail, frames)
+                close_frames = [payload for opcode, payload in frames if opcode == 0x8]
+                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
+                    1000
+                ]
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        else:
+            reader, writer, _ = await _http1_open_websocket_stream(
+                port=server_port(server),
+                path='/ws',
+            )
+            try:
+                writer.write(client_data)
+                await writer.drain()
+
+                close_task = asyncio.create_task(_read_http1_ws_server_result(reader))
+                await asyncio.wait({close_task}, timeout=0.2)
+                assert not close_task.done(), (
+                    'peer Close passed unread application data before the '
+                    'inbound queue was drained'
+                )
+                gate.set()
+                await asyncio.wait_for(finished.wait(), timeout=2.0)
+                frames = await asyncio.wait_for(close_task, timeout=2.0)
+                close_frames = [payload for opcode, payload in frames if opcode == 0x8]
+                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
+                    1000
+                ]
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+    messages = [
+        message['bytes']
+        for message in received
+        if message['type'] == 'websocket.receive'
+    ]
+    assert messages == payloads
+    assert received[-1] == {'type': 'websocket.disconnect', 'code': 1000}
+
+
+async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
+    """Peer Close follows a byte-full inbound queue without dropping data.
+
+    The Close deliberately waits behind the 33 messages while the application
+    is paused. Once it resumes, every message arrives in order before the
+    disconnect and the Close echo.
     """
     queued_messages = 32
     message_size = 512 * 1024
@@ -1406,6 +1503,8 @@ async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
             writer.write(_encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')))
             await writer.drain()
 
+            gate.set()
+            await asyncio.wait_for(finished.wait(), timeout=2.0)
             frames = await asyncio.wait_for(
                 _read_http1_ws_server_result(reader),
                 timeout=2.0,
@@ -1415,9 +1514,6 @@ async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
             ]
             assert close_frames, frames
             assert _decode_ws_close_payload(close_frames[0])[0] == 1000
-
-            gate.set()
-            await asyncio.wait_for(finished.wait(), timeout=2.0)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -1427,13 +1523,13 @@ async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
         for message in received
         if message['type'] == 'websocket.receive'
     ]
-    assert texts == payloads[:queued_messages]
+    assert texts == payloads
     assert received[-1]['type'] == 'websocket.disconnect'
     assert received[-1]['code'] == 1000
 
 
 async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
-    """RFC 8441 Close passes a byte-full queue and blocked 33rd producer."""
+    """RFC 8441 Close follows the full queue without dropping message 33."""
     queued_messages = 32
     inbound_budget = 2 * 1024 * 1024
     # One complete WebSocket message fits in one max-sized H2 DATA frame.
@@ -1486,6 +1582,8 @@ async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
                 await send_ws_bytes(_encode_ws_client_frame(0x2, payload))
             await send_ws_bytes(_encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')))
 
+            gate.set()
+            await asyncio.wait_for(finished.wait(), timeout=2.0)
             terminal, detail, frames = await asyncio.wait_for(
                 _read_ws_server_result(
                     reader,
@@ -1502,9 +1600,6 @@ async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
             ]
             assert close_frames, frames
             assert _decode_ws_close_payload(close_frames[0])[0] == 1000
-
-            gate.set()
-            await asyncio.wait_for(finished.wait(), timeout=2.0)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -1514,20 +1609,28 @@ async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
         for message in received
         if message['type'] == 'websocket.receive'
     ]
-    assert messages == payloads[:queued_messages]
+    assert messages == payloads
     assert received[-1]['type'] == 'websocket.disconnect'
     assert received[-1]['code'] == 1000
 
 
-async def test_http1_websocket_ping_timeout_with_full_inbound_queue() -> None:
-    """Ping timeout must abort the transport even when the data plane is full."""
-    capacity = 32
+@pytest.mark.parametrize('queued_messages', [32, 33, 64])
+async def test_http1_websocket_ping_timeout_with_full_inbound_queue(
+    queued_messages: int,
+) -> None:
+    """A local ping timeout fires at every stalled inbound queue depth.
+
+    At 33 and 64 messages, capacity acquisition is pending and transport reads
+    are paused. The timeout must still win that selection rather than waiting
+    for the application to resume.
+    """
     done = asyncio.Event()
     app = _parked_websocket_app(done)
     interval, timeout = 0.05, 0.1
 
     config = Config(
         port=0,
+        websocket_max_message_size=32,
         websocket_ping_interval=interval,
         websocket_ping_timeout=timeout,
         timeout_graceful_shutdown=5.0,
@@ -1538,10 +1641,8 @@ async def test_http1_websocket_ping_timeout_with_full_inbound_queue() -> None:
             path='/ws',
         )
         try:
-            for index in range(capacity):
-                writer.write(
-                    _encode_ws_client_frame(0x1, f'msg-{index}'.encode())
-                )
+            for index in range(queued_messages):
+                writer.write(_encode_ws_client_frame(0x1, bytes([index])))
             await writer.drain()
 
             closed = await asyncio.wait_for(
@@ -1556,20 +1657,24 @@ async def test_http1_websocket_ping_timeout_with_full_inbound_queue() -> None:
             await writer.wait_closed()
 
 
-async def test_h2_websocket_ping_timeout_with_full_inbound_queue() -> None:
-    """RFC 8441 ping timeout must terminate the session past a full data queue.
+@pytest.mark.parametrize('queued_messages', [32, 33, 64])
+async def test_h2_websocket_ping_timeout_with_full_inbound_queue(
+    queued_messages: int,
+) -> None:
+    """RFC 8441 local ping timeouts win at every stalled queue depth.
 
     Peer-reset finish does not RST the H2 stream (same as other 1006 paths);
     the load-bearing signal is that the application is aborted while the
-    inbound data plane is still full.
+    inbound data plane is still full. At 33 and 64 messages this specifically
+    proves the timeout is independent of the pending-capacity wait.
     """
-    capacity = 32
     done = asyncio.Event()
     app = _parked_websocket_app(done)
     interval, timeout = 0.05, 0.1
 
     config = Config(
         port=0,
+        websocket_max_message_size=32,
         websocket_ping_interval=interval,
         websocket_ping_timeout=timeout,
         timeout_graceful_shutdown=5.0,
@@ -1581,10 +1686,10 @@ async def test_h2_websocket_ping_timeout_with_full_inbound_queue() -> None:
         )
         try:
             assert handshake.terminal is None
-            for index in range(capacity):
+            for index in range(queued_messages):
                 conn.send_data(
                     stream_id,
-                    _encode_ws_client_frame(0x1, f'msg-{index}'.encode()),
+                    _encode_ws_client_frame(0x1, bytes([index])),
                     end_stream=False,
                 )
             writer.write(conn.data_to_send())
@@ -1594,6 +1699,100 @@ async def test_h2_websocket_ping_timeout_with_full_inbound_queue() -> None:
         finally:
             writer.close()
             await writer.wait_closed()
+
+
+@pytest.mark.parametrize('transport', ['h2', 'http1'])
+@pytest.mark.parametrize('queued_messages', [32, 33, 64])
+async def test_websocket_shutdown_reaches_a_fully_paused_inbound_queue(
+    transport: str,
+    queued_messages: int,
+) -> None:
+    """Server shutdown wins over a full or pending inbound data plane.
+
+    With 33 or 64 messages the next decoded message is waiting for byte
+    ownership and no transport read is selectable. Shutdown must still send
+    its close and publish disconnect before the application is allowed to
+    drain data.
+    """
+    gate = asyncio.Event()
+    finished = asyncio.Event()
+    received: list = []
+    app = _full_inbound_queue_app(gate, finished, received)
+    client_data = b''.join(
+        _encode_ws_client_frame(0x2, bytes([index]))
+        for index in range(queued_messages)
+    )
+    config = Config(
+        port=0,
+        websocket_max_message_size=32,
+        timeout_graceful_shutdown=5.0,
+    )
+
+    async with running_server(app, config) as server:
+        if transport == 'h2':
+            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+                port=server_port(server),
+                path='/ws',
+            )
+            try:
+                assert handshake.terminal is None
+                conn.send_data(stream_id, client_data, end_stream=False)
+                writer.write(conn.data_to_send())
+                await writer.drain()
+
+                server.shutdown()
+                # A graceful H2 shutdown sends GOAWAY before the existing
+                # stream's Close DATA. hyper-h2 closes its connection state at
+                # GOAWAY, so inspect the raw continuation as the shutdown
+                # close-code test does.
+                raw_frames = await read_raw_h2_frames(
+                    reader,
+                    timeout=0.2,
+                    stop_at_goaway=False,
+                )
+                ws_buffer = b''.join(
+                    payload
+                    for frame_type, _flags, frame_stream_id, payload in raw_frames
+                    if frame_type == 0x00 and frame_stream_id == stream_id
+                )
+                frames, remainder = _parse_ws_frames(ws_buffer)
+                assert remainder == b''
+                close_frames = [payload for opcode, payload in frames if opcode == 0x8]
+                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
+                    1001
+                ]
+
+                gate.set()
+                await asyncio.wait_for(finished.wait(), timeout=2.0)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        else:
+            reader, writer, _ = await _http1_open_websocket_stream(
+                port=server_port(server),
+                path='/ws',
+            )
+            try:
+                writer.write(client_data)
+                await writer.drain()
+
+                server.shutdown()
+                frames = await asyncio.wait_for(
+                    _read_http1_ws_server_result(reader),
+                    timeout=2.0,
+                )
+                close_frames = [payload for opcode, payload in frames if opcode == 0x8]
+                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
+                    1001
+                ]
+
+                gate.set()
+                await asyncio.wait_for(finished.wait(), timeout=2.0)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+    assert received[-1] == {'type': 'websocket.disconnect', 'code': 1001}
 
 
 async def test_websocket_ping_interval_zero_emits_no_ping() -> None:

@@ -43,7 +43,7 @@ fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent
             headers,
             control,
         }),
-        other => WebSocketError::unexpected_initial_event(&other).err(),
+        other => WebSocketError::unexpected_initial_event(other.message_type()).err(),
     }
 }
 
@@ -54,7 +54,7 @@ fn parse_denial_body_event(
         WebSocketOutboundEvent::HttpResponseBody { body, more_body } => {
             Ok(HttpOutboundEvent::Body { body, more_body })
         },
-        other => WebSocketError::unexpected_denial_body_event(&other).err(),
+        other => WebSocketError::unexpected_denial_body_event(other.message_type()).err(),
     }
 }
 

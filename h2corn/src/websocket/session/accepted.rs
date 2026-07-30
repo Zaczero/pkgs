@@ -160,9 +160,11 @@ struct AcceptedSession<'a, T, M: PerMessageDeflateMode> {
     rx_bytes: u64,
     tx_bytes: u64,
     ping: Option<PingState>,
-    /// At most one decoded message waits for byte capacity. The wait is
-    /// selected alongside peer terminal/control input, so a stopped ASGI app
-    /// cannot pin the WebSocket driver at `send().await`.
+    /// One decoded message waits for byte capacity. While it does, the
+    /// session retains transport input and does not decode past it: retaining
+    /// more would turn the byte budget into an unbounded data queue, while
+    /// discarding would violate ordered delivery. Local outbound, shutdown,
+    /// and keepalive events remain independently selectable.
     pending_inbound: Option<WebSocketInboundMessage>,
 }
 
@@ -279,7 +281,7 @@ where
                 })?;
                 Ok(ControlFlow::Continue(()))
             }
-            read = self.transport.read_into_codec(&mut self.codec) => {
+            read = self.transport.read_into_codec(&mut self.codec), if pending_inbound_len.is_none() => {
                 self.handle_transport_read(read?).await
             }
         }
@@ -509,6 +511,14 @@ where
     async fn drain_decoded_frames(
         &mut self,
     ) -> Result<ControlFlow<Result<(), H2CornError>>, H2CornError> {
+        // `run` enters here before waiting for another event, and a transport
+        // read also enters here directly. Both paths must honor the same
+        // stalled data-plane boundary rather than decoding the next frame in
+        // the already-buffered input segment.
+        if self.pending_inbound.is_some() {
+            return Ok(ControlFlow::Continue(()));
+        }
+
         loop {
             let frame = match self
                 .codec
@@ -529,6 +539,12 @@ where
 
             if let ControlFlow::Break(result) = self.handle_decoded_frame(frame).await? {
                 return Ok(ControlFlow::Break(result));
+            }
+            if self.pending_inbound.is_some() {
+                // This message consumed the last byte ownership. Do not
+                // decode a later frame or read more transport input until the
+                // application releases capacity and this message is queued.
+                return Ok(ControlFlow::Continue(()));
             }
         }
     }
@@ -631,13 +647,8 @@ where
         match self.recv_tx.try_send(message) {
             Ok(()) => Ok(ControlFlow::Continue(())),
             Err(WebSocketInboundTrySendError::Full(message)) => {
-                if self.pending_inbound.is_none() {
-                    self.pending_inbound = Some(message);
-                }
-                // Keep draining control frames while one message waits for
-                // byte ownership. Further data cannot be retained without
-                // defeating that bound, and once peer terminal state arrives
-                // it is deliberately superseded by the disconnect event.
+                debug_assert!(self.pending_inbound.is_none());
+                self.pending_inbound = Some(message);
                 Ok(ControlFlow::Continue(()))
             },
             Err(WebSocketInboundTrySendError::Closed) => {
@@ -659,13 +670,17 @@ where
         let err = err.into();
         self.running_app.close_outbound();
         let close_code = match err.failure_domain() {
-            FailureDomain::PeerProtocol => close_code::PROTOCOL_ERROR,
-            FailureDomain::Configuration
-            | FailureDomain::TransportIo
-            | FailureDomain::AppContract
-            | FailureDomain::InternalInvariant => close_code::INTERNAL_ERROR,
+            FailureDomain::PeerProtocol => Some(close_code::PROTOCOL_ERROR),
+            FailureDomain::AppContract | FailureDomain::InternalInvariant => {
+                Some(close_code::INTERNAL_ERROR)
+            },
+            // No wire remains for a close frame after a transport failure, and
+            // configuration is not a peer-visible websocket condition.
+            FailureDomain::Configuration | FailureDomain::TransportIo => None,
         };
-        self.state.queue_close_if_open(close_code, "")?;
+        if let Some(close_code) = close_code {
+            self.state.queue_close_if_open(close_code, "")?;
+        }
         self.running_app.task.abort();
         Ok(ControlFlow::Break(Err(err)))
     }
@@ -680,7 +695,9 @@ fn parse_accepted_outbound_event(
         WebSocketOutboundEvent::Close { code, reason } => {
             Ok(AcceptedOutboundEvent::Close { code, reason })
         },
-        unexpected => WebSocketError::unexpected_outbound_event_after_accept(&unexpected).err(),
+        unexpected => {
+            WebSocketError::unexpected_outbound_event_after_accept(unexpected.message_type()).err()
+        },
     }
 }
 
