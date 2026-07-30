@@ -78,42 +78,6 @@ async def _http1_after_split_proxy_prefix(
         await writer.wait_closed()
 
 
-async def test_proxy_headers_default_rewrites_scope_from_trusted_peer() -> None:
-    async def app(scope, receive, send):
-        payload = (
-            f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
-            f'{scope["server"][1]}|{scope.get("root_path", "")}'
-        ).encode()
-        await send({
-            'type': 'http.response.start',
-            'status': 200,
-            'headers': [(b'content-type', b'text/plain')],
-        })
-        await send({'type': 'http.response.body', 'body': payload})
-
-    config = Config(
-        port=0,
-        forwarded_allow_ips=('127.0.0.1',),
-    )
-    async with running_server(app, config) as server:
-        status, body = await asyncio.wait_for(
-            h2_request(
-                port=server_port(server),
-                extra_headers=[
-                    (
-                        b'forwarded',
-                        b'for=203.0.113.10;proto=https;host=example.com:8443',
-                    ),
-                    (b'x-forwarded-prefix', b'/api'),
-                ],
-            ),
-            timeout=5,
-        )
-
-    assert status == 200
-    assert body == b'https|203.0.113.10|example.com|8443|/api'
-
-
 async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
     async def app(scope, receive, send):
         payload = (

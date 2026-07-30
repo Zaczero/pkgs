@@ -654,10 +654,15 @@ def test_websocket_max_message_size_defaults_to_safe_cap() -> None:
     assert config.websocket_max_message_size == 16_777_216
 
 
-def test_config_defaults_prioritize_proxy_compatibility_and_upload_throughput() -> None:
+def test_config_does_not_trust_forwarding_headers_by_default() -> None:
     config = Config()
 
-    assert config.proxy_headers is True
+    assert config.proxy_headers is False
+
+
+def test_config_defaults_prioritize_upload_throughput() -> None:
+    config = Config()
+
     assert config.h2_initial_stream_window_size == 8 * 1024 * 1024
     assert config.h2_initial_connection_window_size == 8 * 1024 * 1024
 

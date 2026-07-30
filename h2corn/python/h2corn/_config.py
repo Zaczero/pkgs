@@ -1044,8 +1044,8 @@ class Config:
         cli_type=float,
     )
     proxy_headers: bool = _option(
-        default=True,
-        doc='Trust proxy headers (e.g., Forwarded, X-Forwarded-*) from the default loopback and Unix-socket peers, or peers in `forwarded_allow_ips`. Use false when no trusted proxy sets them.',
+        default=False,
+        doc='Trust proxy headers (e.g., Forwarded, X-Forwarded-*) if the client IP is in `forwarded_allow_ips`.',
         env_parse=_parse_bool,
         converter=_exact_bool('proxy_headers'),
         cli_action='bool',
