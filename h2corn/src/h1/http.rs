@@ -623,19 +623,19 @@ fn append_response_headers(
         // paired `Connection: upgrade` directive was validated at ingress.
         // The directive itself is transport-owned and was removed there, so
         // regenerate the fixed HTTP/1 syntax here.
-        dst.extend_from_slice(b"Connection: Upgrade\r\n");
+        dst.extend_from_slice(b"connection: upgrade\r\n");
     }
     match framing {
         BodyFraming::KnownLength(len) => {
-            append_header_line_with_decimal(dst, b"Content-Length", len);
+            append_header_line_with_decimal(dst, b"content-length", len);
         },
         BodyFraming::Chunked => {
-            dst.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
+            dst.extend_from_slice(b"transfer-encoding: chunked\r\n");
         },
         BodyFraming::None => {},
     }
     if close_after {
-        dst.extend_from_slice(b"Connection: close\r\n");
+        dst.extend_from_slice(b"connection: close\r\n");
     }
     dst.extend_from_slice(b"\r\n");
 }
@@ -739,6 +739,23 @@ mod tests {
         out.clear();
         append_status_line(&mut out, HttpStatusCode::new(999).unwrap());
         assert_eq!(out.as_slice(), b"HTTP/1.1 999 \r\n");
+    }
+
+    #[test]
+    fn status_line_preserves_standard_canonical_reasons() {
+        for code in 100..600 {
+            let status = HttpStatusCode::new(code).unwrap();
+            let expected = http::StatusCode::from_u16(code)
+                .ok()
+                .and_then(|status| status.canonical_reason())
+                .map_or_else(
+                    || format!("HTTP/1.1 {code} \r\n"),
+                    |reason| format!("HTTP/1.1 {code} {reason}\r\n"),
+                );
+            let mut out = ResponseBuf::new();
+            append_status_line(&mut out, status);
+            assert_eq!(out.as_slice(), expected.as_bytes(), "{code}");
+        }
     }
 
     #[test]

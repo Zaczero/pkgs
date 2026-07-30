@@ -63,7 +63,7 @@ impl RequestRoute {
 enum UpgradeRequest {
     WebSocket {
         key: WebSocketKey,
-        meta: WebSocketRequestMeta,
+        meta: Box<WebSocketRequestMeta>,
     },
     WebSocketBadRequest,
     WebSocketUnsupportedVersion,
@@ -71,6 +71,10 @@ enum UpgradeRequest {
         settings: PeerSettings,
     },
 }
+
+const _: () = assert!(std::mem::size_of::<UpgradeRequest>() == 40);
+const _: () = assert!(std::mem::size_of::<RequestRoute>() == 40);
+const _: () = assert!(std::mem::size_of::<ParsedRequest>() == 192);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestBodyKind {
@@ -164,6 +168,7 @@ where
                 &connection.config,
                 connection.security.h1_scheme(),
                 request_head_timeout(&connection.config, first_request),
+                first_request,
             ) => parsed,
         }?;
 
@@ -176,7 +181,7 @@ where
         } = parsed;
         match route {
             RequestRoute::Http(body_kind) => {
-                if handle_http_request(
+                match handle_http_request(
                     RequestContext::new(connection.clone(), request),
                     body_kind,
                     persistence,
@@ -186,10 +191,14 @@ where
                         writer: &mut writer,
                     },
                 )
-                .await?
-                    == ConnectionPersistence::Close
+                .await
                 {
-                    break;
+                    Ok(ConnectionPersistence::Close) => break,
+                    Ok(ConnectionPersistence::KeepAlive) => {},
+                    Err(err) => {
+                        crate::server::report_request_failure(Err(err));
+                        break;
+                    },
                 }
             },
             RequestRoute::Upgrade(upgrade) => {
@@ -250,11 +259,11 @@ where
                 .await?;
                 return Ok(());
             };
-            Box::pin(websocket::handle_request(
+            let result = Box::pin(websocket::handle_request(
                 WebSocketContext {
                     request: RequestContext::new(context.connection, request),
                     admission,
-                    meta,
+                    meta: *meta,
                     shutdown: context.shutdown,
                 },
                 key,
@@ -262,7 +271,14 @@ where
                 buffer,
                 writer,
             ))
-            .await
+            .await;
+            match result {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    crate::server::report_request_failure(Err(err));
+                    Ok(())
+                },
+            }
         },
         UpgradeRequest::WebSocketUnsupportedVersion => {
             let response = HandshakeRejection::unsupported_version();

@@ -344,6 +344,7 @@ async fn read_request_head<R, W>(
     writer: &mut BufWriter<W>,
     config: &ServerConfig,
     timeout_duration: Option<Duration>,
+    first_request: bool,
     limit_request_head_size: Option<usize>,
 ) -> Result<Option<Bytes>, H2CornError>
 where
@@ -377,15 +378,12 @@ where
             .await?;
             return Ok(None);
         }
-        if !read_more(
-            reader,
-            buffer,
-            timeout_duration,
-            Http1Error::RequestHeadTimedOut,
-            read_cap,
-        )
-        .await?
-        {
+        let timeout_error = if !first_request && buffer.is_empty() {
+            Http1Error::KeepAliveTimedOut
+        } else {
+            Http1Error::RequestHeadTimedOut
+        };
+        if !read_more(reader, buffer, timeout_duration, timeout_error, read_cap).await? {
             if buffer.is_empty() {
                 return Ok(None);
             }
@@ -432,11 +430,7 @@ fn parse_headers_or_reject<'a>(
     // `head_lines` removes the CR from each legal CRLF delimiter. Validate it
     // first, while a second CR in `value\r\r\n` is still observable rather
     // than mistaken for that delimiter and sanitised away.
-    if head
-        .iter()
-        .enumerate()
-        .any(|(index, byte)| *byte == b'\r' && head.get(index + 1) != Some(&b'\n'))
-    {
+    if memchr_iter(b'\r', head).any(|index| head.get(index + 1) != Some(&b'\n')) {
         return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
     }
     let mut header_state = HeaderParseState::new(head.clone());
@@ -454,6 +448,10 @@ fn parse_headers_or_reject<'a>(
     HeadParseOutcome::Parsed(header_state)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the complete HTTP/1 request transition keeps parsing and route selection together"
+)]
 fn parsed_request_from_head(
     head: &Bytes,
     line: RequestLineParts<'_>,
@@ -535,7 +533,10 @@ fn parsed_request_from_head(
                     && let ParsedWebSocketKey::Valid(key) = websocket.key
                     && let Some(meta) = websocket.request.clone().into_valid() =>
             {
-                RequestRoute::Upgrade(UpgradeRequest::WebSocket { key, meta })
+                RequestRoute::Upgrade(UpgradeRequest::WebSocket {
+                    key,
+                    meta: Box::new(meta),
+                })
             },
             Some(websocket) if !websocket.version.is_unsupported() => bad_request,
             _ => RequestRoute::Upgrade(UpgradeRequest::WebSocketUnsupportedVersion),
@@ -575,6 +576,7 @@ pub(super) async fn read_request<R, W>(
     config: &ServerConfig,
     scheme: &'static str,
     timeout_duration: Option<Duration>,
+    first_request: bool,
 ) -> Result<Option<ParsedRequest>, H2CornError>
 where
     R: AsyncRead + Unpin,
@@ -592,6 +594,7 @@ where
         writer,
         config,
         timeout_duration,
+        first_request,
         limit_request_head_size,
     )
     .await?
@@ -1340,6 +1343,7 @@ mod tests {
             test_server_config(),
             "http",
             None,
+            true,
         )
         .await;
         write_task.await.expect("writer task finishes");
@@ -1395,6 +1399,51 @@ mod tests {
         let encoded = base64url_encode(&[0x00, 0x05, 0x00, 0x00, 0x00, 0x00]);
         let err = parse_http2_settings(&encoded).unwrap_err();
         assert_eq!(err.to_string(), "invalid SETTINGS_MAX_FRAME_SIZE value");
+    }
+
+    #[tokio::test]
+    async fn request_head_timeouts_distinguish_idle_keep_alive_from_partial_headers() {
+        let (_client, mut server) = duplex(64);
+        let mut writer = BufWriter::new(sink());
+        let mut buffer = BytesMut::new();
+        let Err(idle) = read_request(
+            &mut server,
+            &mut buffer,
+            &mut writer,
+            test_server_config(),
+            "http",
+            Some(Duration::ZERO),
+            false,
+        )
+        .await
+        else {
+            panic!("an idle keep-alive connection times out");
+        };
+        assert_eq!(
+            idle.to_string(),
+            "keep-alive connection idled out before the next request"
+        );
+
+        let (_client, mut server) = duplex(64);
+        let mut writer = BufWriter::new(sink());
+        let mut buffer = BytesMut::from(&b"GET"[..]);
+        let Err(partial) = read_request(
+            &mut server,
+            &mut buffer,
+            &mut writer,
+            test_server_config(),
+            "http",
+            Some(Duration::ZERO),
+            false,
+        )
+        .await
+        else {
+            panic!("a partial request head times out");
+        };
+        assert_eq!(
+            partial.to_string(),
+            "HTTP/1.1 request head did not arrive within timeout_request_header"
+        );
     }
 
     #[tokio::test]
@@ -1590,6 +1639,16 @@ mod tests {
     async fn read_request_rejects_raw_header_value_controls_after_ows_trimming() {
         let parsed =
             read_test_request(b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Demo: \x0cvalue\r\n\r\n")
+                .await
+                .expect("malformed request receives a response");
+
+        assert!(parsed.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_a_second_cr_before_the_line_terminator() {
+        let parsed =
+            read_test_request(b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Demo: value\r\r\n\r\n")
                 .await
                 .expect("malformed request receives a response");
 

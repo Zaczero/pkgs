@@ -1139,6 +1139,40 @@ async def test_http1_rejects_control_bytes_before_stripping_ows(
     assert (status, body) == (400, b'')
 
 
+async def test_http1_rejects_a_second_cr_before_the_line_terminator() -> None:
+    """A stray CR must not be stripped into a valid field value."""
+    called = False
+
+    async def app(scope, receive, send):
+        nonlocal called
+        called = True
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    request = (
+        b'GET /double-cr HTTP/1.1\r\n'
+        b'Host: example.test\r\n'
+        b'X-Demo: value\r\r\n'
+        b'\r\n'
+    )
+    async with running_server(app, Config(port=0, lifespan='off')) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(request)
+            await writer.drain()
+            status, headers, body, _trailers = await asyncio.wait_for(
+                read_http1_response(reader), timeout=5
+            )
+            closed = await asyncio.wait_for(reader.read(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert called is False
+    assert (status, body, closed) == (400, b'', b'')
+    assert headers[b'connection'] == b'close'
+
+
 async def test_http1_rejects_control_bytes_in_raw_chunked_trailer() -> None:
     """Trailer validation must use raw bytes before removing OWS too."""
     seen_body = []
@@ -1492,13 +1526,14 @@ async def test_upgrade_header_is_a_list_of_protocols() -> None:
                 b'\r\n'
             )
             await writer.drain()
-            status, _headers, _body, _trailers = await read_http1_response(reader)
+            status, headers, _body, _trailers = await read_http1_response(reader)
         finally:
             writer.close()
             with suppress(OSError):
                 await writer.wait_closed()
 
     assert status == 101
+    assert headers[b'sec-websocket-accept'] == b's3pPLMBiTxaQ9kYGzzhZRbK+xOo='
 
 
 async def test_head_with_trailers_writes_no_body_framing() -> None:
