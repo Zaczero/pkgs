@@ -52,9 +52,9 @@ impl Default for Http2Config {
             max_header_block_size: None,
             max_inbound_frame_size: NonZeroU32::new(DEFAULT_MAX_FRAME_SIZE as u32)
                 .expect("default HTTP/2 frame size is non-zero"),
-            initial_stream_window_size: NonZeroU32::new(1 << 20)
+            initial_stream_window_size: NonZeroU32::new(8 << 20)
                 .expect("default stream window is non-zero"),
-            initial_connection_window_size: NonZeroU32::new(2 << 20)
+            initial_connection_window_size: NonZeroU32::new(8 << 20)
                 .expect("default connection window is non-zero"),
             timeout_response_stall: None,
         }

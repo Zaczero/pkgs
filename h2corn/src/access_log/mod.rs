@@ -156,14 +156,23 @@ impl fmt::Display for Escaped<'_> {
     }
 }
 
-struct HostDisplay<'a>(&'a str);
+impl AsRef<str> for Escaped<'_> {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
 
-impl fmt::Display for HostDisplay<'_> {
+struct HostDisplay<T>(T);
+
+impl<T> fmt::Display for HostDisplay<T>
+where
+    T: AsRef<str> + fmt::Display,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.contains(':') && !self.0.starts_with('[') {
+        if self.0.as_ref().contains(':') && !self.0.as_ref().starts_with('[') {
             write!(f, "[{}]", self.0)
         } else {
-            f.write_str(self.0)
+            write!(f, "{}", self.0)
         }
     }
 }
@@ -181,8 +190,8 @@ impl ClientLabel {
     }
 
     fn as_str(&self) -> &str {
-        // SAFETY: `ClientLabel::build` only writes ASCII via `fmt::Write`,
-        // host strings, digits, and punctuation.
+        // SAFETY: `ClientLabel::build` only writes valid UTF-8 strings or
+        // ASCII punctuation and padding. `Escaped` also emits valid UTF-8.
         unsafe { str::from_utf8_unchecked(self.0.as_slice()) }
     }
 }
@@ -329,7 +338,7 @@ mod observe_tests {
 
     use super::ResponseLogState;
     use crate::bridge::PayloadBytes;
-    use crate::http::response::{FinalResponseBody, ResponseAction, ResponseStart};
+    use crate::http::response::{FinalResponseBody, ResponseAction, ResponseBody, ResponseStart};
     use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers, status_code};
 
     fn start(status: HttpStatusCode) -> ResponseStart {
@@ -346,15 +355,17 @@ mod observe_tests {
         assert_eq!(log.status, Some(status_code::OK));
         assert_eq!(log.response_body_bytes, 0);
 
-        log.observe(&ResponseAction::Body(PayloadBytes::from(
-            Bytes::from_static(b"hi"),
+        log.observe(&ResponseAction::Body(ResponseBody::new(
+            PayloadBytes::from(Bytes::from_static(b"hi")),
         )));
         assert_eq!(log.response_body_bytes, 2);
 
         let mut log = ResponseLogState::default();
         log.observe(&ResponseAction::Final {
             start: start(status_code::NO_CONTENT),
-            body: FinalResponseBody::Bytes(PayloadBytes::from(Bytes::from_static(b"abc"))),
+            body: FinalResponseBody::Bytes(ResponseBody::new(PayloadBytes::from(
+                Bytes::from_static(b"abc"),
+            ))),
         });
         assert_eq!(log.status, Some(status_code::NO_CONTENT));
         assert_eq!(log.response_body_bytes, 3);
@@ -409,8 +420,8 @@ mod observe_tests {
         log.observe(&ResponseAction::Start {
             start: start(status_code::OK),
         });
-        log.observe(&ResponseAction::Body(PayloadBytes::from(
-            Bytes::from_static(b"partial"),
+        log.observe(&ResponseAction::Body(ResponseBody::new(
+            PayloadBytes::from(Bytes::from_static(b"partial")),
         )));
         log.observe(&ResponseAction::InternalError);
         assert_eq!(log.status, Some(status_code::INTERNAL_SERVER_ERROR));
@@ -444,7 +455,7 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     if config.http1.enabled {
         let _ = writeln!(
             stderr,
-            "HTTP/1 compatibility is enabled; disable with --no-http1",
+            "HTTP/1 compatibility is enabled; disable with http1=False (--no-http1)",
         );
     }
 
@@ -560,7 +571,12 @@ fn write_access_log_line(
 
 fn append_client(out: &mut impl fmt::Write, info: &ConnectionInfo) -> fmt::Result {
     if let Some(client) = &info.client {
-        return write!(out, "{}:{}", HostDisplay(client.host.as_ref()), client.port);
+        return write!(
+            out,
+            "{}:{}",
+            HostDisplay(Escaped(client.host.as_ref())),
+            client.port
+        );
     }
 
     match &info.actual_peer {
@@ -579,9 +595,9 @@ fn append_log_client(out: &mut impl fmt::Write, ctx: &RequestContext) -> fmt::Re
     );
     if let Some((host, port)) = view.client {
         if port == 0 {
-            write!(out, "{}", HostDisplay(host))
+            write!(out, "{}", HostDisplay(Escaped(host)))
         } else {
-            write!(out, "{}:{port}", HostDisplay(host))
+            write!(out, "{}:{port}", HostDisplay(Escaped(host)))
         }
     } else {
         append_client(out, &connection.info)
@@ -761,16 +777,28 @@ const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use bytes::Bytes;
     use http::Method;
+    use pyo3::Python;
 
     use super::{
         AccessLogRequest, Escaped, RequestSummaryDisplay, RequestSummaryKind, append_client,
         write_bytes_to, write_duration_to, write_io_summary_to,
     };
-    use crate::http::types::{BytesStr, HttpVersion};
-    use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ConnectionPeer, ServerAddr};
+    use crate::config::{ProxyConfig, ServerConfig};
+    use crate::http::header_meta::RequestHeaderMeta;
+    use crate::http::types::{
+        BytesStr, H1RequestHeaders, HttpVersion, RequestHead, RequestHeaders, RequestTarget,
+    };
+    use crate::proxy_protocol::{
+        ClientAddr, ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr,
+        parse_trusted_peer,
+    };
+    use crate::runtime::{ConnectionShared, RequestContext, test_fixtures};
+    use crate::tls::ConnectionSecurity;
 
     fn render(f: impl FnOnce(&mut String)) -> String {
         let mut out = String::new();
@@ -828,6 +856,60 @@ mod tests {
         };
 
         assert_eq!(format_client(&info), "[2001:db8::1]:443");
+    }
+
+    #[test]
+    fn forged_x_forwarded_for_never_reaches_the_log_client_column() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = Arc::new(ServerConfig {
+                proxy: ProxyConfig {
+                    trust_headers: true,
+                    trusted_peers: Box::new([parse_trusted_peer("127.0.0.1").unwrap()]),
+                    protocol: ProxyProtocolMode::Off,
+                },
+                ..test_fixtures::server_config_parts()
+            });
+            let info = ConnectionInfo::from_peer(
+                ConnectionPeer::Tcp(SocketAddr::from(([127, 0, 0, 1], 54321))),
+                None,
+                &config.proxy,
+            );
+            assert!(info.proxy_headers_trusted);
+            let connection = ConnectionShared::new(
+                test_fixtures::app_runtime(py),
+                config,
+                info,
+                ConnectionSecurity::Plaintext,
+            );
+
+            let head =
+                Bytes::from_static(b"X-Forwarded-For: 1.1.1.1 \"GET /admin HTTP/1.1\" 200\r\n");
+            let mut headers = H1RequestHeaders::new(head.clone());
+            let value = &head[b"X-Forwarded-For: ".len()..head.len() - 2];
+            let known_header = headers
+                .push(b"X-Forwarded-For", value)
+                .unwrap()
+                .expect("X-Forwarded-For is a known header");
+            let mut header_meta = RequestHeaderMeta::default();
+            header_meta.observe_known_header_slice(known_header, value, 0);
+            let request = RequestHead {
+                http_version: HttpVersion::Http1_1,
+                method: Method::GET,
+                target: RequestTarget::normal(
+                    BytesStr::from_static("http"),
+                    BytesStr::from_static("/"),
+                ),
+                headers: RequestHeaders::from_h1(headers),
+                header_meta,
+            };
+
+            let context = RequestContext::new(connection.clone(), request);
+            drop(connection);
+            let label = super::ClientLabel::build(&context);
+            assert_eq!(label.as_str().trim_end(), "127.0.0.1:54321");
+            assert!(!label.as_str().trim_end().contains([' ', '"']));
+        });
     }
 
     #[test]

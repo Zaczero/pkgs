@@ -78,7 +78,7 @@ async def _http1_after_split_proxy_prefix(
         await writer.wait_closed()
 
 
-async def test_proxy_headers_rewrite_scope_from_trusted_peer() -> None:
+async def test_proxy_headers_default_rewrites_scope_from_trusted_peer() -> None:
     async def app(scope, receive, send):
         payload = (
             f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
@@ -93,7 +93,6 @@ async def test_proxy_headers_rewrite_scope_from_trusted_peer() -> None:
 
     config = Config(
         port=0,
-        proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:

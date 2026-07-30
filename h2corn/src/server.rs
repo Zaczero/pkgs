@@ -332,9 +332,24 @@ fn report_failure(subject: &str, result: Result<(), H2CornError>) {
         FailureDomain::AppContract
         | FailureDomain::InternalInvariant
         | FailureDomain::Configuration => {
-            eprintln!("{subject} failed: {error}");
+            eprintln!("{subject} failed: {}", format_failure(&error));
         },
     }
+}
+
+fn format_failure(error: &H2CornError) -> String {
+    let ErrorKind::Python(error) = error.kind() else {
+        return error.to_string();
+    };
+    Python::attach(|py| {
+        error
+            .traceback(py)
+            .and_then(|traceback| traceback.format().ok())
+            .map_or_else(
+                || error.to_string(),
+                |traceback| format!("{traceback}{error}"),
+            )
+    })
 }
 
 fn report_connection_failure(result: Result<(), H2CornError>) {
@@ -473,7 +488,7 @@ async fn serve_listeners(
                     if let Some(Err(join_error)) = joined
                         && !join_error.is_cancelled()
                     {
-                        eprintln!("connection task failed: {join_error}");
+                        eprintln!("connection task panicked: {join_error}");
                     }
                     continue;
                 }
@@ -655,7 +670,7 @@ where
         Ok::<_, H2CornError>(ConnectionStart { proxy, protocol })
     })
     .await
-    .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
+    .map_err(|_| H2Error::PlaintextHandshakeTimedOut)?;
     let connection_start = match connection_start {
         Ok(start) => start,
         Err(err)
@@ -710,7 +725,7 @@ async fn serve_tls_connection(
     ));
     let connection_start = with_optional_timeout(config.timeout_handshake, negotiation)
         .await
-        .map_err(|_| H2Error::ConnectionHandshakeTimedOut)?;
+        .map_err(|_| H2Error::TlsHandshakeTimedOut)?;
     let Some((proxy, protocol, reader, writer, session)) = connection_start? else {
         return Ok(());
     };

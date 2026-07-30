@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{fmt, io};
 
-use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::{PyErr, PyResult};
 use thiserror::Error;
 use tokio::task::JoinError;
@@ -87,8 +87,14 @@ impl H2CornError {
 pub(crate) enum AsgiContainer {
     Message,
     HttpResponseStart,
+    HttpResponseBody,
     HttpResponsePathsend,
+    HttpResponseTrailers,
+    WebSocketAccept,
+    WebSocketSend,
+    WebSocketClose,
     WebSocketHttpResponseStart,
+    WebSocketHttpResponseBody,
 }
 
 impl fmt::Display for AsgiContainer {
@@ -96,8 +102,14 @@ impl fmt::Display for AsgiContainer {
         f.write_str(match self {
             Self::Message => "ASGI message",
             Self::HttpResponseStart => "http.response.start",
+            Self::HttpResponseBody => "http.response.body",
             Self::HttpResponsePathsend => "http.response.pathsend",
+            Self::HttpResponseTrailers => "http.response.trailers",
+            Self::WebSocketAccept => "websocket.accept",
+            Self::WebSocketSend => "websocket.send",
+            Self::WebSocketClose => "websocket.close",
             Self::WebSocketHttpResponseStart => "websocket.http.response.start",
+            Self::WebSocketHttpResponseBody => "websocket.http.response.body",
         })
     }
 }
@@ -112,16 +124,16 @@ impl fmt::Display for AsgiChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Http => "HTTP",
-            Self::WebSocket => "WebSocket",
+            Self::WebSocket => "websocket",
         })
     }
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum ConfigError {
-    #[error("invalid trusted proxy entry: {value}")]
+    #[error("invalid trusted proxy entry: {value:?}")]
     InvalidTrustedProxyEntry { value: Box<str> },
-    #[error("invalid trusted proxy CIDR prefix: {value}")]
+    #[error("invalid trusted proxy CIDR prefix: {value:?}")]
     InvalidTrustedProxyCidrPrefix { value: Box<str> },
     #[error("{name} must be a non-negative number of seconds that fits a duration")]
     InvalidDuration { name: &'static str },
@@ -235,6 +247,13 @@ pub(crate) enum AsgiError {
         container: AsgiContainer,
         field: &'static str,
     },
+    #[error("{container} {field} must be {expected}, got {actual}")]
+    InvalidFieldType {
+        container: AsgiContainer,
+        field: &'static str,
+        expected: &'static str,
+        actual: Box<str>,
+    },
     #[error("unsupported {channel} ASGI outbound message: {message_type}")]
     UnsupportedOutboundMessage {
         channel: AsgiChannel,
@@ -249,6 +268,20 @@ impl AsgiError {
         Self::MissingField { container, field }
     }
 
+    pub(crate) const fn invalid_field_type(
+        container: AsgiContainer,
+        field: &'static str,
+        expected: &'static str,
+        actual: Box<str>,
+    ) -> Self {
+        Self::InvalidFieldType {
+            container,
+            field,
+            expected,
+            actual,
+        }
+    }
+
     pub(crate) fn unsupported_outbound_message(channel: AsgiChannel, message_type: &str) -> Self {
         Self::UnsupportedOutboundMessage {
             channel,
@@ -259,8 +292,10 @@ impl AsgiError {
 
 #[derive(Clone, Copy, Debug, Error)]
 pub(crate) enum Http1Error {
-    #[error("HTTP/1.1 request head timed out")]
+    #[error("HTTP/1.1 request head did not arrive within timeout_request_header")]
     RequestHeadTimedOut,
+    #[error("keep-alive connection idled out before the next request")]
+    KeepAliveTimedOut,
     #[error("HTTP/1.1 request body timed out")]
     RequestBodyTimedOut,
     #[error("connection closed while reading the HTTP/1.1 request head")]
@@ -343,14 +378,28 @@ pub(crate) enum HttpResponseError {
     InvalidResponseHeaderValue,
     #[error("response trailers contain a field that is forbidden after the body")]
     InvalidResponseTrailerField,
-    #[error("response status must be a three-digit code")]
-    StatusMustBeThreeDigitCode,
+    #[error("{container} status must be a three-digit code, got {status}")]
+    StatusMustBeThreeDigitCode {
+        container: AsgiContainer,
+        status: Box<str>,
+    },
+    #[error(
+        "{container} status must be a final response code; ASGI has no way to send an informational {status}"
+    )]
+    InformationalStatusUnsupported {
+        container: AsgiContainer,
+        status: u16,
+    },
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum H2Error {
-    #[error("HTTP/2 handshake timed out")]
-    ConnectionHandshakeTimedOut,
+    #[error("plaintext connection preamble did not arrive within timeout_handshake")]
+    PlaintextHandshakeTimedOut,
+    #[error("TLS handshake did not complete within timeout_handshake")]
+    TlsHandshakeTimedOut,
+    #[error("HTTP/2 handshake did not complete within timeout_handshake")]
+    Http2HandshakeTimedOut,
     #[error("invalid SETTINGS_ENABLE_PUSH value")]
     SettingsEnablePushInvalid,
     #[error("invalid SETTINGS_MAX_FRAME_SIZE value")]
@@ -490,13 +539,13 @@ impl H2Error {
 
 #[derive(Debug, Error)]
 pub(crate) enum PathsendError {
-    #[error("http.response.pathsend failed for file {path}: {source}")]
+    #[error("http.response.pathsend failed for file {path:?}: {source}")]
     OpenFailed {
         path: Box<str>,
         #[source]
         source: io::Error,
     },
-    #[error("http.response.pathsend rejected non-regular file {path}")]
+    #[error("http.response.pathsend rejected non-regular file {path:?}")]
     NotRegularFile { path: PathBuf },
 }
 
@@ -509,7 +558,9 @@ impl PathsendError {
     }
 
     const fn failure_domain(&self) -> FailureDomain {
-        FailureDomain::TransportIo
+        // The application chose the filesystem path. Even an I/O error on
+        // that path is actionable application state, not peer transport noise.
+        FailureDomain::AppContract
     }
 }
 
@@ -589,14 +640,19 @@ pub(crate) enum WebSocketError {
     AcceptSubprotocolEmpty,
     #[error("websocket.accept subprotocol must be requested by the client")]
     AcceptSubprotocolNotRequested,
-    #[error("websocket receive channel closed while delivering a {frame_kind} frame")]
+    #[error(
+        "application stopped receiving before the connection closed; a {frame_kind} frame was dropped"
+    )]
     ReceiveChannelClosed { frame_kind: WebSocketFrameKind },
     #[error("websocket app returned before handshake")]
     AppEndedBeforeHandshake,
-    #[error("unexpected websocket event {context}: {event}")]
+    #[error(
+        "unexpected {message_type} {context}; the app must send {} first",
+        context.expected_message_types()
+    )]
     UnexpectedEvent {
         context: WebSocketEventContext,
-        event: Box<str>,
+        message_type: Box<str>,
     },
 }
 
@@ -605,23 +661,23 @@ impl WebSocketError {
         Self::ReceiveChannelClosed { frame_kind }
     }
 
-    pub(crate) fn unexpected_event(context: WebSocketEventContext, event: impl fmt::Debug) -> Self {
+    pub(crate) fn unexpected_event(context: WebSocketEventContext, message_type: &str) -> Self {
         Self::UnexpectedEvent {
             context,
-            event: format!("{event:?}").into_boxed_str(),
+            message_type: message_type.into(),
         }
     }
 
-    pub(crate) fn unexpected_initial_event(event: impl fmt::Debug) -> Self {
-        Self::unexpected_event(WebSocketEventContext::BeforeHandshake, event)
+    pub(crate) fn unexpected_initial_event(message_type: &str) -> Self {
+        Self::unexpected_event(WebSocketEventContext::BeforeHandshake, message_type)
     }
 
-    pub(crate) fn unexpected_outbound_event_after_accept(event: impl fmt::Debug) -> Self {
-        Self::unexpected_event(WebSocketEventContext::AfterAccept, event)
+    pub(crate) fn unexpected_outbound_event_after_accept(message_type: &str) -> Self {
+        Self::unexpected_event(WebSocketEventContext::AfterAccept, message_type)
     }
 
-    pub(crate) fn unexpected_denial_body_event(event: impl fmt::Debug) -> Self {
-        Self::unexpected_event(WebSocketEventContext::DuringDenialResponse, event)
+    pub(crate) fn unexpected_denial_body_event(message_type: &str) -> Self {
+        Self::unexpected_event(WebSocketEventContext::DuringDenialResponse, message_type)
     }
 
     const fn failure_domain(&self) -> FailureDomain {
@@ -634,10 +690,9 @@ impl WebSocketError {
             | Self::AcceptSubprotocolEmpty
             | Self::AcceptSubprotocolNotRequested
             | Self::AppEndedBeforeHandshake
-            | Self::UnexpectedEvent { .. } => FailureDomain::AppContract,
-            Self::CompressionFailed | Self::ReceiveChannelClosed { .. } => {
-                FailureDomain::InternalInvariant
-            },
+            | Self::UnexpectedEvent { .. }
+            | Self::ReceiveChannelClosed { .. } => FailureDomain::AppContract,
+            Self::CompressionFailed => FailureDomain::InternalInvariant,
         }
     }
 }
@@ -671,6 +726,16 @@ impl fmt::Display for WebSocketEventContext {
             Self::AfterAccept => "after accept",
             Self::DuringDenialResponse => "during denial response",
         })
+    }
+}
+
+impl WebSocketEventContext {
+    const fn expected_message_types(self) -> &'static str {
+        match self {
+            Self::BeforeHandshake => "websocket.accept or websocket.close",
+            Self::AfterAccept => "websocket.send or websocket.close",
+            Self::DuringDenialResponse => "websocket.http.response.body",
+        }
     }
 }
 
@@ -754,6 +819,110 @@ where
         ErrorKind::Asgi(AsgiError::SendAfterClose) => {
             PyOSError::new_err(AsgiError::SendAfterClose.to_string())
         },
+        ErrorKind::Asgi(err @ AsgiError::InvalidFieldType { .. }) => {
+            PyTypeError::new_err(err.to_string())
+        },
+        ErrorKind::Asgi(
+            err @ (AsgiError::MissingField { .. }
+            | AsgiError::WebSocketSendRequiresExactlyOnePayload),
+        ) => PyValueError::new_err(err.to_string()),
+        ErrorKind::HttpResponse(
+            err @ (HttpResponseError::InvalidResponseHeaderName
+            | HttpResponseError::InvalidResponseHeaderValue
+            | HttpResponseError::InvalidResponseTrailerField
+            | HttpResponseError::StatusMustBeThreeDigitCode { .. }
+            | HttpResponseError::InformationalStatusUnsupported { .. }),
+        ) => PyValueError::new_err(err.to_string()),
+        ErrorKind::WebSocket(
+            err @ (WebSocketError::CloseReasonTooLong
+            | WebSocketError::CloseCodeInvalid
+            | WebSocketError::AcceptSubprotocolEmpty),
+        ) => PyValueError::new_err(err.to_string()),
         other => PyRuntimeError::new_err(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use pyo3::Python;
+    use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+
+    use super::{
+        AsgiContainer, AsgiError, FailureDomain, H2CornError, HttpResponseError, PathsendError,
+        WebSocketError, WebSocketEventContext, WebSocketFrameKind, into_pyerr,
+    };
+
+    #[test]
+    fn unexpected_websocket_events_name_the_asgi_type_without_payload() {
+        let error = WebSocketError::unexpected_event(
+            WebSocketEventContext::BeforeHandshake,
+            "websocket.send",
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "unexpected websocket.send before handshake; the app must send websocket.accept or websocket.close first"
+        );
+        assert!(!error.to_string().contains("sk-live-SECRET-TOKEN-12345"));
+    }
+
+    #[test]
+    fn pathsend_failures_and_abandoned_websocket_receivers_are_reportable() {
+        let pathsend = H2CornError::from(PathsendError::open_failed(
+            std::path::Path::new("/tmp/missing"),
+            io::Error::from(io::ErrorKind::NotFound),
+        ));
+        assert_eq!(pathsend.failure_domain(), FailureDomain::AppContract);
+
+        let receiver = H2CornError::from(WebSocketError::receive_channel_closed(
+            WebSocketFrameKind::Text,
+        ));
+        assert_eq!(receiver.failure_domain(), FailureDomain::AppContract);
+        assert_eq!(
+            receiver.to_string(),
+            "application stopped receiving before the connection closed; a text frame was dropped"
+        );
+    }
+
+    #[test]
+    fn asgi_value_and_sequence_errors_have_stable_python_types() {
+        Python::initialize();
+        Python::attach(|py| {
+            let missing = into_pyerr(AsgiError::missing_field(
+                AsgiContainer::HttpResponseStart,
+                "status",
+            ));
+            assert!(missing.is_instance_of::<PyValueError>(py));
+
+            let type_error = into_pyerr(AsgiError::invalid_field_type(
+                AsgiContainer::HttpResponseStart,
+                "status",
+                "an int",
+                "str".into(),
+            ));
+            assert!(type_error.is_instance_of::<PyTypeError>(py));
+            assert_eq!(
+                type_error.to_string(),
+                "TypeError: http.response.start status must be an int, got str"
+            );
+
+            let invalid_status = into_pyerr(HttpResponseError::StatusMustBeThreeDigitCode {
+                container: AsgiContainer::HttpResponseStart,
+                status: "99".into(),
+            });
+            assert!(invalid_status.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                invalid_status.to_string(),
+                "ValueError: http.response.start status must be a three-digit code, got 99"
+            );
+
+            let out_of_order = into_pyerr(HttpResponseError::BodyBeforeStart);
+            assert!(out_of_order.is_instance_of::<PyRuntimeError>(py));
+
+            let unexpected = into_pyerr(WebSocketError::unexpected_initial_event("websocket.send"));
+            assert!(unexpected.is_instance_of::<PyRuntimeError>(py));
+        });
     }
 }

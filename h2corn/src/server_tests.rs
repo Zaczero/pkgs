@@ -6,8 +6,9 @@ use std::os::unix::net::UnixListener;
 use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::pipe::pipe;
 
-use super::{ListenerFd, adopt_all, adopt_listeners};
+use super::{ListenerFd, adopt_all, adopt_listeners, format_failure};
 use crate::config::BindTarget;
+use crate::error::H2CornError;
 
 /// Pipe write ends to hand to the code under test, paired with their read ends.
 ///
@@ -90,4 +91,23 @@ fn tls_adoption_rejects_unix_listeners_at_the_ownership_boundary() {
             .contains("TLS is supported only on TCP listeners")
     );
     std::fs::remove_file(path).expect("temporary Unix listener path is removable");
+}
+
+#[test]
+fn application_failures_keep_the_python_traceback() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|py| {
+        let err = py
+            .run(
+                pyo3::ffi::c_str!("def crash():\n    1 / 0\ncrash()"),
+                None,
+                None,
+            )
+            .expect_err("the Python application crashes");
+        let message = format_failure(&H2CornError::from(err));
+
+        assert!(message.starts_with("Traceback (most recent call last):"));
+        assert!(message.contains("line 2, in crash"));
+        assert!(message.contains("ZeroDivisionError: division by zero"));
+    });
 }

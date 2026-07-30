@@ -187,17 +187,8 @@ impl<'py> PyConfig<'py> {
         Ok(peers.into_vec().into_boxed_slice())
     }
 
-    fn websocket_message_size_limit(
-        &self,
-        max_request_body_size: Option<NonZeroU64>,
-    ) -> PyResult<Option<NonZeroUsize>> {
-        if let Some(value) = self.get::<Option<usize>>("websocket_max_message_size")? {
-            return Ok(NonZeroUsize::new(value));
-        }
-        Ok(max_request_body_size.map(|limit| {
-            let limit = limit.get().min(usize::MAX as u64) as usize;
-            NonZeroUsize::new(limit).expect("clamped body limit is positive")
-        }))
+    fn websocket_message_size_limit(&self) -> PyResult<Option<NonZeroUsize>> {
+        Ok(NonZeroUsize::new(self.get("websocket_max_message_size")?))
     }
 
     fn binds(&self) -> PyResult<Box<[BindTarget]>> {
@@ -237,7 +228,7 @@ impl<'py> PyConfig<'py> {
         })
     }
 
-    fn websocket(&self, max_request_body_size: Option<NonZeroU64>) -> PyResult<WebSocketConfig> {
+    fn websocket(&self) -> PyResult<WebSocketConfig> {
         let keep_alive = match self.optional_duration("websocket_ping_interval")? {
             None => None,
             Some(interval) => Some(crate::config::WebSocketKeepAlive {
@@ -246,7 +237,7 @@ impl<'py> PyConfig<'py> {
             }),
         };
         Ok(WebSocketConfig {
-            max_message_size: self.websocket_message_size_limit(max_request_body_size)?,
+            max_message_size: self.websocket_message_size_limit()?,
             per_message_deflate: self.get("websocket_per_message_deflate")?,
             keep_alive,
         })
@@ -323,7 +314,7 @@ impl<'py> PyConfig<'py> {
             max_requests: self.nonzero_u64("max_requests")?,
             runtime_threads: self.get("runtime_threads")?,
             loop_threads: self.get("loop_threads")?,
-            websocket: self.websocket(max_request_body_size)?,
+            websocket: self.websocket()?,
             proxy: self.proxy()?,
             tls,
             timeout_handshake: self.optional_duration("timeout_handshake")?,
