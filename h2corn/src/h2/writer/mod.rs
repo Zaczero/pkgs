@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 pub(super) use self::driver::{GrantSendWindowError, H2WriterHandle, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
+use crate::http::response::ResponseBytePermit;
 use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers};
 use crate::inline_fifo::InlineFifo;
 use crate::websocket::EncodedFrameHeader;
@@ -21,6 +22,10 @@ const FRAME_BUFFER_CAPACITY: usize = 64;
 const FAIR_WRITE_QUANTUM: usize = 64 * 1024;
 const H2_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
+/// Per-connection payload retention limit for HTTP response bodies. One
+/// oversized ASGI body may occupy the full budget; all later sends wait until
+/// bytes are written or the response is dropped.
+const H2_OUTBOUND_RESPONSE_BYTE_CAPACITY: u32 = 2 * 1024 * 1024;
 
 type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
 type ResponseDeadlineUpdateBatch = SmallVec<[StreamId; 8]>;
@@ -71,6 +76,7 @@ pub(super) enum WriterCommand {
         status: HttpStatusCode,
         headers: ResponseHeaders,
         data: PayloadBytes,
+        credit: Option<ResponseBytePermit>,
     },
     SendTrailers {
         stream_id: StreamId,
@@ -79,6 +85,7 @@ pub(super) enum WriterCommand {
     SendData {
         stream_id: StreamId,
         data: PayloadBytes,
+        credit: Option<ResponseBytePermit>,
         end_stream: bool,
     },
     SendWebSocketData {

@@ -33,8 +33,8 @@ use writer::{GrantSendWindowError, H2WriterHandle, WindowTarget, WriterState, in
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
 use crate::h2_frame::{
-    self, ErrorCode, FrameFlags, FrameReadError, FrameType, PeerSettings, RawFrame, StreamId,
-    WindowIncrement,
+    self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType, PeerSettings,
+    RawFrame, StreamId, WindowIncrement,
 };
 use crate::hpack::DecoderError;
 use crate::http::body::RequestBodyProgress;
@@ -47,6 +47,10 @@ use crate::sendfile::WriteTarget;
 /// buffered. Timers are selected first on every turn, and after this many
 /// consecutive frames the connection yields to other Tokio tasks.
 const MAX_CONSECUTIVE_PEER_FRAMES: usize = 32;
+/// Replenish upload credit before a bandwidth-delay product drains it. A
+/// custom smaller receive window cannot wait for this much credit or it would
+/// deadlock after its first full window, so it refreshes at its full size.
+const INPUT_WINDOW_UPDATE_THRESHOLD: u32 = 256 * 1024;
 
 type StreamMap<T> = HashMap<StreamId, T, BuildNoHashHasher<StreamId>>;
 
@@ -64,7 +68,7 @@ enum H2PeerFailure {
 enum IngestEvent {
     Continue,
     ShutdownChanged,
-    Frame(RawFrame),
+    Frame(FrameRead),
     FrameLengthExceeded {
         stream_id: Option<StreamId>,
         error: H2Error,
@@ -190,15 +194,19 @@ where
 }
 
 impl<R, W> H2ConnectionState<R, W> {
-    /// Per-frame flow-control arithmetic: the halfway marks that trigger a
-    /// window update, and how the frame's payload splits into delivered and
-    /// padding bytes.
+    /// Per-frame flow-control arithmetic: the receive-credit thresholds that
+    /// trigger a window update, and how the frame's payload splits into
+    /// delivered and padding bytes.
     fn data_accounting(&self, payload_len: usize, flow_control_len: u32) -> DataAccounting {
         let http2 = &self.context.config.http2;
         let data_len = u32::try_from(payload_len).expect("DATA frame length fits u32");
         DataAccounting {
-            connection_window_threshold: http2.initial_connection_window_size.get() / 2,
-            stream_window_threshold: http2.initial_stream_window_size.get() / 2,
+            connection_window_threshold: input_window_update_threshold(
+                http2.initial_connection_window_size,
+            ),
+            stream_window_threshold: input_window_update_threshold(
+                http2.initial_stream_window_size,
+            ),
             data_len,
             discarded_len: flow_control_len
                 .checked_sub(data_len)
@@ -412,6 +420,10 @@ fn earlier_deadline(
     }
 }
 
+fn input_window_update_threshold(initial_window: NonZeroU32) -> u32 {
+    initial_window.get().min(INPUT_WINDOW_UPDATE_THRESHOLD)
+}
+
 /// Per-connection stream-keyed containers start empty and grow with the
 /// streams that actually arrive.
 ///
@@ -436,17 +448,13 @@ where
         return Ok(());
     }
 
-    let connection_window_threshold = state
-        .context
-        .config
-        .http2
-        .initial_connection_window_size
-        .get()
-        / 2;
+    let connection_window_threshold =
+        input_window_update_threshold(state.context.config.http2.initial_connection_window_size);
     let mut stream_updates = SmallVec::<[(StreamId, WindowIncrement); 8]>::new();
     let mut streams_with_credit = SmallVec::<[StreamId; 8]>::new();
     let mut ready_streams = SmallVec::<[StreamId; 8]>::new();
-    let stream_window_threshold = state.context.config.http2.initial_stream_window_size.get() / 2;
+    let stream_window_threshold =
+        input_window_update_threshold(state.context.config.http2.initial_stream_window_size);
 
     loop {
         state
@@ -634,7 +642,7 @@ where
         read_h2_preface(&mut reader),
     )
     .await
-    .map_err(|_| H2Error::ConnectionHandshakeTimedOut)??;
+    .map_err(|_| H2Error::Http2HandshakeTimedOut)??;
     let peer_settings = upgraded.peer_settings;
     let mut connection =
         start_h2_connection(reader, writer, connection, shutdown, Some(peer_settings)).await?;
@@ -1208,7 +1216,9 @@ where
         state.request_tasks.reap_completed();
         let mut stop_after_flush = false;
         let event = ingest_connection_input(state).await?;
-        if !matches!(&event, IngestEvent::Frame(_)) {
+        if matches!(&event, IngestEvent::Frame(_)) {
+            consecutive_peer_frames += 1;
+        } else {
             consecutive_peer_frames = 0;
         }
         match event {
@@ -1276,7 +1286,6 @@ where
                 }
             },
             IngestEvent::Frame(frame) => {
-                consecutive_peer_frames += 1;
                 if advance_connection_with_peer_frame(state, frame).await? {
                     stop_after_flush = true;
                 }
@@ -1353,7 +1362,7 @@ where
 }
 
 fn map_frame_ingest_result(
-    frame: Result<Option<RawFrame>, FrameReadError>,
+    frame: Result<Option<FrameRead>, FrameReadError>,
 ) -> Result<IngestEvent, H2CornError> {
     match frame {
         Ok(Some(frame)) => Ok(IngestEvent::Frame(frame)),
@@ -1442,7 +1451,7 @@ where
         () = &mut outbound_notified => Ok(IngestEvent::Continue),
         () = &mut input_notified => Ok(IngestEvent::Continue),
         () = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
-        frame = state.reader.read_frame(state.local_max_frame_size) => map_frame_ingest_result(frame),
+        frame = state.reader.read_frame(state.local_max_frame_size, is_handled_frame) => map_frame_ingest_result(frame),
     }
 }
 
@@ -1771,12 +1780,12 @@ where
 
 async fn validate_frame_order<R, W>(
     state: &mut H2ConnectionState<R, W>,
-    frame: &RawFrame,
+    header: FrameHeader,
 ) -> Result<bool, H2CornError>
 where
     W: WriteTarget,
 {
-    if state.pending_headers.is_some() && frame.header.frame_type != FrameType::CONTINUATION {
+    if state.pending_headers.is_some() && header.frame_type != FrameType::CONTINUATION {
         state
             .peer_failure(H2PeerFailure::protocol(H2Error::HeaderBlockInterrupted))
             .await?;
@@ -1785,7 +1794,7 @@ where
     if state.client_preface == ClientPrefaceState::Active {
         return Ok(true);
     }
-    if frame.header.frame_type != FrameType::SETTINGS {
+    if header.frame_type != FrameType::SETTINGS {
         state
             .peer_failure(H2PeerFailure::protocol(
                 H2Error::FirstClientFrameMustBeSettings,
@@ -1793,7 +1802,7 @@ where
             .await?;
         return Ok(false);
     }
-    if frame.header.flags.contains(FrameFlags::ACK) {
+    if header.flags.contains(FrameFlags::ACK) {
         state
             .peer_failure(H2PeerFailure::protocol(
                 H2Error::FirstClientSettingsMustNotAck,
@@ -1840,6 +1849,20 @@ where
 
 async fn advance_connection_with_peer_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
+    frame: FrameRead,
+) -> Result<bool, H2CornError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
+{
+    match frame {
+        FrameRead::Handled(frame) => advance_connection_with_handled_frame(state, frame).await,
+        FrameRead::Ignored(header) => advance_connection_with_ignored_frame(state, header).await,
+    }
+}
+
+async fn advance_connection_with_handled_frame<R, W>(
+    state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
 ) -> Result<bool, H2CornError>
 where
@@ -1851,7 +1874,7 @@ where
     if reject_oversized_frame(state, &frame).await? {
         return Ok(false);
     }
-    if !validate_frame_order(state, &frame).await? {
+    if !validate_frame_order(state, frame.header).await? {
         return Ok(false);
     }
 
@@ -1884,9 +1907,39 @@ where
         FrameType::DATA => {
             handle_data_frame(state, frame).await?;
         },
-        _ => {},
+        _ => unreachable!("the reader discards frames outside the dispatcher vocabulary"),
     }
     Ok(false)
+}
+
+async fn advance_connection_with_ignored_frame<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+    header: FrameHeader,
+) -> Result<bool, H2CornError>
+where
+    W: WriteTarget,
+{
+    apply_writer_response_closes(state).await;
+    Ok(!validate_frame_order(state, header).await?)
+}
+
+/// The reader uses this exact dispatcher vocabulary to decide whether a
+/// payload must be materialized. Add a type here before adding its dispatch
+/// arm, otherwise an extension frame is intentionally consumed and ignored.
+const fn is_handled_frame(frame_type: FrameType) -> bool {
+    matches!(
+        frame_type,
+        FrameType::SETTINGS
+            | FrameType::PING
+            | FrameType::WINDOW_UPDATE
+            | FrameType::RST_STREAM
+            | FrameType::GOAWAY
+            | FrameType::PRIORITY
+            | FrameType::PUSH_PROMISE
+            | FrameType::HEADERS
+            | FrameType::CONTINUATION
+            | FrameType::DATA
+    )
 }
 
 fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool), H2CornError> {
@@ -1935,10 +1988,8 @@ mod tests {
     use super::*;
     use crate::h2_frame::FrameHeader;
 
-    const INITIAL_STREAM_WINDOW_SIZE: u32 = 1 << 20;
-    const INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 << 20;
-    const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_STREAM_WINDOW_SIZE / 2;
-    const CONNECTION_WINDOW_UPDATE_THRESHOLD: u32 = INITIAL_CONNECTION_WINDOW_SIZE / 2;
+    const INITIAL_STREAM_WINDOW_SIZE: u32 = 8 << 20;
+    const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INPUT_WINDOW_UPDATE_THRESHOLD;
 
     #[derive(Default)]
     struct RecordingWriter {
@@ -2190,14 +2241,14 @@ mod tests {
     }
 
     #[test]
-    fn receive_window_update_threshold_is_half_window() {
+    fn receive_window_update_threshold_is_fixed_except_for_smaller_windows() {
         assert_eq!(
-            CONNECTION_WINDOW_UPDATE_THRESHOLD,
-            INITIAL_CONNECTION_WINDOW_SIZE / 2
+            input_window_update_threshold(NonZeroU32::new(INITIAL_STREAM_WINDOW_SIZE).unwrap()),
+            INPUT_WINDOW_UPDATE_THRESHOLD
         );
         assert_eq!(
-            STREAM_WINDOW_UPDATE_THRESHOLD,
-            INITIAL_STREAM_WINDOW_SIZE / 2
+            input_window_update_threshold(NonZeroU32::new(0xFFFF).unwrap()),
+            0xFFFF
         );
     }
 }

@@ -9,12 +9,14 @@ use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
 use crate::h2::StreamMap;
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::PathStreamer;
+use crate::http::response::ResponseBytePermit;
 use crate::http::types::ResponseTrailers;
 use crate::inline_fifo::InlineFifo;
 
 #[derive(Debug)]
 pub(super) struct PendingChunk {
     data: PendingChunkData,
+    credit: Option<ResponseBytePermit>,
     offset: usize,
     pub(super) end_stream: bool,
 }
@@ -212,10 +214,12 @@ impl StreamWriteState {
     pub(super) fn queue_data(
         &mut self,
         data: PayloadBytes,
+        credit: Option<ResponseBytePermit>,
         end_stream: bool,
     ) -> Result<(), H2CornError> {
         self.queue_chunk(PendingChunk {
             data: PendingChunkData::Plain(data),
+            credit,
             offset: 0,
             end_stream,
         })
@@ -227,6 +231,7 @@ impl StreamWriteState {
     ) -> Result<(), H2CornError> {
         self.queue_chunk(PendingChunk {
             data: PendingChunkData::WebSocket(data),
+            credit: None,
             offset: 0,
             // WebSocket DATA never closes the stream; the close frame and
             // session teardown own stream end separately.
@@ -344,8 +349,11 @@ impl PendingChunk {
         }
     }
 
-    pub(super) const fn consume(&mut self, len: usize) {
+    pub(super) fn consume(&mut self, len: usize) {
         self.offset += len;
+        if let Some(credit) = &mut self.credit {
+            credit.release_written(len);
+        }
     }
 }
 

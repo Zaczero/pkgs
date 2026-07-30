@@ -22,8 +22,9 @@ use super::stream_state::{
     ReadyStreamQueue, StreamWriteState, notify_response_close, writer_stream,
 };
 use super::{
-    FRAME_BUFFER_CAPACITY, H2_WRITER_BUFFER_CAPACITY, ResponseCloseBatch,
-    ResponseDeadlineUpdateBatch, WebSocketData, WindowTarget, WriterCommand, WriterCommandBatch,
+    FRAME_BUFFER_CAPACITY, H2_OUTBOUND_RESPONSE_BYTE_CAPACITY, H2_WRITER_BUFFER_CAPACITY,
+    ResponseCloseBatch, ResponseDeadlineUpdateBatch, WebSocketData, WindowTarget, WriterCommand,
+    WriterCommandBatch,
 };
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
@@ -40,6 +41,7 @@ use crate::h2_frame::{
 };
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
+use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers};
 #[cfg(test)]
 use crate::proxy_protocol::ProxyProtocolMode;
@@ -50,6 +52,7 @@ use crate::websocket::EncodedFrameHeader;
 pub(crate) struct H2WriterHandle {
     ingress: Arc<WriterIngress>,
     config: Arc<ServerConfig>,
+    response_budget: ResponseByteBudget,
 }
 
 pub(crate) struct WriterState<W> {
@@ -120,6 +123,10 @@ impl<W> WriterLoopParts<'_, W> {
 }
 
 impl H2WriterHandle {
+    pub(crate) fn response_byte_budget(&self) -> ResponseByteBudget {
+        self.response_budget.clone()
+    }
+
     fn send_command(
         &self,
         stream_id: StreamId,
@@ -165,6 +172,7 @@ impl H2WriterHandle {
         self.send_command(stream_id, WriterCommand::SendData {
             stream_id,
             data: data.into(),
+            credit: None,
             end_stream,
         })
     }
@@ -686,6 +694,7 @@ async fn handle_send_data<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
     data: PayloadBytes,
+    credit: Option<ResponseBytePermit>,
     end_stream: bool,
 ) -> Result<(), H2CornError>
 where
@@ -696,7 +705,7 @@ where
         stream_id,
         context.initial_stream_send_window,
     );
-    if stream.queue_data(data, end_stream).is_err() {
+    if stream.queue_data(data, credit, end_stream).is_err() {
         let _ = force_reset_stream(
             context.writer,
             context.frame_buf,
@@ -747,6 +756,7 @@ async fn handle_send_final<W>(
     status: HttpStatusCode,
     headers: ResponseHeaders,
     data: PayloadBytes,
+    mut credit: Option<ResponseBytePermit>,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
@@ -796,6 +806,9 @@ where
         )
         .await?;
         *context.connection_send_window -= i64::from(payload.len().get());
+        if let Some(credit) = &mut credit {
+            credit.release_written(payload.len().as_usize());
+        }
 
         notify_response_close(context.response_closes, stream_id);
         return Ok(());
@@ -805,7 +818,7 @@ where
     if end_stream {
         return Ok(());
     }
-    handle_send_data(context, stream_id, data, true).await
+    handle_send_data(context, stream_id, data, credit, true).await
 }
 
 async fn handle_send_path<W>(
@@ -929,9 +942,10 @@ where
             status,
             headers,
             data,
+            credit,
         } => {
             let mut send = context.send_context();
-            handle_send_final(&mut send, stream_id, status, headers, data).await?;
+            handle_send_final(&mut send, stream_id, status, headers, data, credit).await?;
         },
         WriterCommand::SendTrailers { stream_id, headers } => {
             let mut send = context.send_context();
@@ -940,9 +954,17 @@ where
         WriterCommand::SendData {
             stream_id,
             data,
+            credit,
             end_stream,
         } => {
-            handle_send_data(&mut context.send_context(), stream_id, data, end_stream).await?;
+            handle_send_data(
+                &mut context.send_context(),
+                stream_id,
+                data,
+                credit,
+                end_stream,
+            )
+            .await?;
         },
         WriterCommand::SendWebSocketData { stream_id, data } => {
             handle_send_websocket_data(&mut context.send_context(), stream_id, data).await?;
@@ -1064,6 +1086,7 @@ where
     let connection = H2WriterHandle {
         ingress: Arc::clone(&writer_state.ingress),
         config,
+        response_budget: ResponseByteBudget::new(H2_OUTBOUND_RESPONSE_BYTE_CAPACITY),
     };
     Ok((writer_state, connection))
 }
@@ -1077,9 +1100,12 @@ mod tests {
 
     use tokio::io::{AsyncWrite, BufWriter};
 
-    use super::{PeerSettings, StreamWriteState, WriterState};
+    use super::{PeerSettings, StreamWriteState, WindowTarget, WriterCommand, WriterState};
+    use crate::bridge::PayloadBytes;
     use crate::h2::new_stream_map;
-    use crate::h2_frame::{self, FramePayloadLen, StreamId};
+    use crate::h2_frame::{self, ErrorCode, FramePayloadLen, StreamId, WindowIncrement};
+    use crate::http::response::ResponseByteBudget;
+    use crate::http::types::{ResponseHeaders, status_code};
     use crate::sendfile::WriteTarget;
 
     #[derive(Default)]
@@ -1114,6 +1140,213 @@ mod tests {
         ) -> io::Result<()> {
             unreachable!("writer-state tests never send files")
         }
+    }
+
+    #[tokio::test]
+    async fn response_byte_credit_survives_ingress_drain_until_data_is_written() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let mut writer = WriterState::new_test(TestWriter);
+        writer
+            .send_headers(stream_id, status_code::OK, ResponseHeaders::new(), false)
+            .await
+            .expect("response headers are queued");
+        writer.connection_send_window = 0;
+        writer
+            .streams
+            .get_mut(&stream_id)
+            .expect("headers create stream state")
+            .send_window = 0;
+
+        let budget = ResponseByteBudget::new(64 * 1024);
+        let credit = budget
+            .acquire(64 * 1024)
+            .await
+            .expect("budget stays open")
+            .expect("non-empty body consumes credit");
+        writer
+            .ingress
+            .enqueue(stream_id, WriterCommand::SendData {
+                stream_id,
+                data: PayloadBytes::from(bytes::Bytes::from(vec![b'x'; 64 * 1024])),
+                credit: Some(credit),
+                end_stream: false,
+            })
+            .await
+            .expect("writer accepts body command");
+        writer
+            .drain_app_writes()
+            .await
+            .expect("ingress moves body into stream state");
+
+        let first_next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64 * 1024).await }
+        });
+        let second_next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64 * 1024).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !first_next.is_finished() && !second_next.is_finished(),
+            "draining command ingress must not release payload credit"
+        );
+
+        writer
+            .grant_send_window(
+                WindowTarget::Connection,
+                WindowIncrement::new(64 * 1024).expect("positive test increment"),
+            )
+            .expect("connection window grant is valid");
+        writer
+            .grant_send_window(
+                WindowTarget::Stream(stream_id),
+                WindowIncrement::new(64 * 1024).expect("positive test increment"),
+            )
+            .expect("stream window grant is valid");
+        writer
+            .flush_pending_output()
+            .await
+            .expect("granted DATA frame writes");
+        drop(writer);
+
+        let resumed = tokio::time::timeout(std::time::Duration::from_secs(1), first_next)
+            .await
+            .expect("written bytes wake one waiting body")
+            .expect("first waiter task joins")
+            .expect("budget remains open");
+        assert!(
+            resumed.is_some(),
+            "one full frame's credit admits the first waiting body"
+        );
+        assert!(
+            !second_next.is_finished(),
+            "one 64 KiB window grant must not admit a second 64 KiB body"
+        );
+        drop(resumed);
+        second_next.abort();
+    }
+
+    #[tokio::test]
+    async fn response_byte_credit_reset_wakes_waiting_producer() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let budget = ResponseByteBudget::new(64);
+        let mut writer = WriterState::new_test(TestWriter);
+        writer
+            .send_headers(stream_id, status_code::OK, ResponseHeaders::new(), false)
+            .await
+            .expect("response headers are queued");
+        let credit = budget
+            .acquire(64)
+            .await
+            .expect("budget stays open")
+            .expect("body consumes credit");
+        writer
+            .process_command(WriterCommand::SendData {
+                stream_id,
+                data: PayloadBytes::from(bytes::Bytes::from_static(b"body")),
+                credit: Some(credit),
+                end_stream: false,
+            })
+            .await
+            .expect("body enters pending stream state");
+        let next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!next.is_finished(), "pending stream body keeps its credit");
+        writer
+            .reset_stream(stream_id, ErrorCode::CANCEL)
+            .await
+            .expect("local reset succeeds");
+        drop(writer);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), next)
+                .await
+                .expect("reset releases a blocked producer")
+                .expect("producer task joins")
+                .expect("budget remains open")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn response_byte_credit_cancellation_wakes_waiting_producer() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let budget = ResponseByteBudget::new(64);
+        let writer = WriterState::new_test(TestWriter);
+        let credit = budget
+            .acquire(64)
+            .await
+            .expect("budget stays open")
+            .expect("body consumes credit");
+        writer
+            .ingress
+            .enqueue(stream_id, WriterCommand::SendData {
+                stream_id,
+                data: PayloadBytes::from(bytes::Bytes::from_static(b"body")),
+                credit: Some(credit),
+                end_stream: false,
+            })
+            .await
+            .expect("cancellable app write enters ingress");
+        let next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!next.is_finished(), "undrained app write keeps its credit");
+        writer.drop_ingress_stream(stream_id).await;
+        drop(writer);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), next)
+                .await
+                .expect("cancelling an app write releases a blocked producer")
+                .expect("producer task joins")
+                .expect("budget remains open")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn response_byte_credit_connection_teardown_wakes_waiting_producer() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let budget = ResponseByteBudget::new(64);
+        let mut writer = WriterState::new_test(TestWriter);
+        let credit = budget
+            .acquire(64)
+            .await
+            .expect("budget stays open")
+            .expect("body consumes credit");
+        writer
+            .send_headers(stream_id, status_code::OK, ResponseHeaders::new(), false)
+            .await
+            .expect("response headers are queued");
+        writer
+            .process_command(WriterCommand::SendData {
+                stream_id,
+                data: PayloadBytes::from(bytes::Bytes::from_static(b"body")),
+                credit: Some(credit),
+                end_stream: false,
+            })
+            .await
+            .expect("body enters stream state before teardown");
+        let next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!next.is_finished(), "pending stream body keeps its credit");
+        drop(writer);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), next)
+                .await
+                .expect("connection teardown releases a blocked producer")
+                .expect("producer task joins")
+                .expect("budget remains open")
+                .is_some()
+        );
     }
 
     #[test]

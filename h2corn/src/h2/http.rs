@@ -14,8 +14,8 @@ use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::H2CornError;
 use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::{
-    HttpRequestBody, RunningHttpRequest, drive_pinned_http_request, poll_app_task_once,
-    start_asgi_http_request, try_complete_http_request,
+    HttpRequestBody, HttpSendState, RunningHttpRequest, drive_pinned_http_request,
+    poll_app_task_once, start_asgi_http_request, try_complete_http_request,
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
 use crate::http::header::observe_response_header_strips;
@@ -50,6 +50,10 @@ struct H2HttpRequestContext {
 }
 
 impl HttpResponseTransport for H2HttpTransport<'_> {
+    fn new_http_send_state(&self) -> HttpSendState {
+        HttpSendState::with_response_budget(self.connection.response_byte_budget())
+    }
+
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
         let mut commands = WriterCommandBatch::new();
         append_response_action(
@@ -300,8 +304,12 @@ async fn run_no_body_http_request(
 ) -> Result<(), H2CornError> {
     let access_log = HttpAccessLogState::new(&ctx);
     let mut response_log = ResponseLogState::default();
-    let RunningHttpRequest { state, app_task } =
-        start_asgi_http_request(ctx, HttpRequestBody::NoBody, admission);
+    let RunningHttpRequest { state, app_task } = start_asgi_http_request(
+        ctx,
+        HttpRequestBody::NoBody,
+        admission,
+        transport.new_http_send_state(),
+    );
     tokio::pin!(app_task);
     let result = match poll_app_task_once(app_task.as_mut()) {
         Poll::Ready(app_result) => {
@@ -333,12 +341,16 @@ fn push_final_response_commands(
                 end_stream: true,
             });
         },
-        FinalResponseBody::Bytes(body) => commands.push_back(WriterCommand::SendFinal {
-            stream_id,
-            status,
-            headers,
-            data: body,
-        }),
+        FinalResponseBody::Bytes(body) => {
+            let (data, credit) = body.into_parts();
+            commands.push_back(WriterCommand::SendFinal {
+                stream_id,
+                status,
+                headers,
+                data,
+                credit,
+            });
+        },
         FinalResponseBody::File { file, len } => {
             commands.push_back(WriterCommand::SendHeaders {
                 stream_id,
@@ -396,11 +408,15 @@ fn append_response_action(
                 end_stream: false,
             });
         },
-        ResponseAction::Body(body) => commands.push_back(WriterCommand::SendData {
-            stream_id,
-            data: body,
-            end_stream: false,
-        }),
+        ResponseAction::Body(body) => {
+            let (data, credit) = body.into_parts();
+            commands.push_back(WriterCommand::SendData {
+                stream_id,
+                data,
+                credit,
+                end_stream: false,
+            });
+        },
         ResponseAction::File { file, len } => commands.push_back(WriterCommand::SendPath {
             stream_id,
             file,
@@ -410,6 +426,7 @@ fn append_response_action(
         ResponseAction::Finish => commands.push_back(WriterCommand::SendData {
             stream_id,
             data: Bytes::new().into(),
+            credit: None,
             end_stream: true,
         }),
         ResponseAction::FinishWithTrailers(headers) => {

@@ -423,7 +423,12 @@ fn validate_regular_h2_field(
     name: Bytes,
     value: Bytes,
 ) -> Result<ValidatedH2RegularField, H2Error> {
-    if !lowercase_header_name_is_valid(name.as_ref())
+    // Generated names are grammar-proven lower-case HTTP tokens. Try that
+    // exact classification before scanning the generic-name path; unknown
+    // names, including every upper-case spelling, still require the full H2
+    // lower-case validation below.
+    let known_name = KnownRequestHeaderName::from_bytes(name.as_ref());
+    if (known_name.is_none() && !lowercase_header_name_is_valid(name.as_ref()))
         || !header_value_is_valid(value.as_ref())
         || value
             .first()
@@ -436,7 +441,6 @@ fn validate_regular_h2_field(
     }
     // SAFETY: a valid HTTP field name is an ASCII token.
     let name = unsafe { BytesStr::from_validated_ascii(name) };
-    let known_name = KnownRequestHeaderName::from_bytes(name.as_ref());
     match known_name {
         Some(
             KnownRequestHeaderName::Connection
@@ -828,6 +832,38 @@ mod tests {
         let mut decoder = Decoder::new(4096);
         let result = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false);
 
+        assert!(matches!(
+            result,
+            Err(RequestHeadError::Stream {
+                error_code: ErrorCode::PROTOCOL_ERROR,
+            })
+        ));
+    }
+
+    #[test]
+    fn unknown_field_names_keep_h2_lowercase_token_validation() {
+        let valid = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"x-extension_1", b"ok"),
+        ]);
+        let invalid = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"x invalid", b"bad"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        decode_request_head(&mut decoder, valid, HeaderLimits::new(None, None), false)
+            .expect("valid unknown field must be accepted");
+
+        let mut decoder = Decoder::new(4096);
+        let result =
+            decode_request_head(&mut decoder, invalid, HeaderLimits::new(None, None), false);
         assert!(matches!(
             result,
             Err(RequestHeadError::Stream {

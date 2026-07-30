@@ -92,6 +92,39 @@ async def _read_through_ping_ack(
             return frames
 
 
+async def test_unknown_extension_frame_is_discarded_before_following_ping() -> None:
+    async def app(_scope, _receive, send):
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(port=0, h2_max_inbound_frame_size=SERVER_MAX_FRAME_SIZE)
+    async with running_server(app, config) as server:
+        reader, writer, _conn, _authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        try:
+            payload = b'x' * SERVER_MAX_FRAME_SIZE
+            unknown = _encode_h2_frame(0xF0, payload)
+            ping = b'unknown!'
+            writer.write(unknown[:17])
+            await writer.drain()
+            for offset in range(17, len(unknown), 4096):
+                writer.write(unknown[offset : offset + 4096])
+                await writer.drain()
+            writer.write(_encode_h2_frame(0x06, ping))
+            await writer.drain()
+
+            frames = await _read_through_ping_ack(reader, ping)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert any(
+        frame_type == 0x06 and flags & 0x01 and payload == ping
+        for frame_type, flags, _stream_id, payload in frames
+    )
+
+
 async def _h2_expect_error(
     *,
     port: int,
@@ -2389,7 +2422,7 @@ async def test_window_updates_after_local_half_close_retain_no_writer_state(
     after every batch is a processing barrier: it rules out merely buffering
     the attack frames while claiming flat retention.
     """
-    streams = 20_000
+    streams = 5_000
     # One request at a time is load-bearing: this leak evades concurrent-stream
     # accounting, so the test must not depend on any concurrent stream slot.
     batch = 1
@@ -2539,9 +2572,11 @@ if __name__ == '__main__':
     # attack. That prevents allocator arenas from being returned between the
     # two runs, so `attack_growth` is the incremental cost of the late updates
     # rather than a noisy process-wide RSS movement. The reproduced writer
-    # resurrection retained about 0.49 KiB per stream — nearly 10 MiB here.
-    assert attack_growth <= 5 * 1024, (
-        f'half-closed updates added {attack_growth} KiB over 20,000 streams '
+    # resurrection retained about 0.49 KiB per stream — roughly 2.5 MiB
+    # here. Scale the cap with the stream count so this remains a practical
+    # release gate while still separating the reproduced defect by 2x.
+    assert attack_growth <= 1280, (
+        f'half-closed updates added {attack_growth} KiB over {streams} streams '
         f'after a {control_growth} KiB matched control'
     )
 
@@ -3350,7 +3385,19 @@ async def test_tracked_rejected_stream_insertion_then_successful_request() -> No
     assert not any(frame_type == 0x07 for frame_type, *_ in frames)
 
 
-async def test_header_block_interrupted_is_connection_protocol_error() -> None:
+@pytest.mark.parametrize(
+    ('interrupting_type', 'interrupting_payload', 'interrupting_flags', 'interrupting_stream_id'),
+    [
+        pytest.param(0x00, b'x', 0x01, 1, id='data'),
+        pytest.param(0xF0, b'x' * SERVER_MAX_FRAME_SIZE, 0x00, 0, id='unknown-extension'),
+    ],
+)
+async def test_non_continuation_interrupts_header_block(
+    interrupting_type: int,
+    interrupting_payload: bytes,
+    interrupting_flags: int,
+    interrupting_stream_id: int,
+) -> None:
     async def app(scope, receive, send):
         raise AssertionError('interrupted header block must not reach the app')
 
@@ -3371,7 +3418,12 @@ async def test_header_block_interrupted_is_connection_protocol_error() -> None:
             )
             writer.write(
                 _encode_h2_frame(0x01, block[:8], flags=0x01, stream_id=1)
-                + _encode_h2_frame(0x00, b'x', flags=0x01, stream_id=1)
+                + _encode_h2_frame(
+                    interrupting_type,
+                    interrupting_payload,
+                    flags=interrupting_flags,
+                    stream_id=interrupting_stream_id,
+                )
             )
             await writer.drain()
             frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=True)

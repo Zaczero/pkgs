@@ -203,7 +203,10 @@ where
         *context.connection_send_window -= total as i64;
         stream.send_window -= total as i64;
         for _ in 0..drained_segments {
-            pending.pop_front();
+            let mut chunk = pending
+                .pop_front()
+                .expect("frame batch drains only queued chunks");
+            chunk.consume(chunk.remaining_len());
         }
         if tail_consumed != 0
             && let Some(front) = pending.front_mut()
@@ -1071,13 +1074,13 @@ mod tests {
         let chunk_b = vec![b'b'; 10 * 1024];
         let chunk_c = vec![b'c'; 4];
         stream
-            .queue_data(Bytes::from(chunk_a.clone()).into(), false)
+            .queue_data(Bytes::from(chunk_a.clone()).into(), None, false)
             .unwrap();
         stream
-            .queue_data(Bytes::from(chunk_b.clone()).into(), false)
+            .queue_data(Bytes::from(chunk_b.clone()).into(), None, false)
             .unwrap();
         stream
-            .queue_data(Bytes::from(chunk_c.clone()).into(), true)
+            .queue_data(Bytes::from(chunk_c.clone()).into(), None, true)
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -1134,13 +1137,13 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_data(Bytes::from_static(b"").into(), false)
+            .queue_data(Bytes::from_static(b"").into(), None, false)
             .unwrap();
         stream
-            .queue_data(Bytes::from_static(b"body").into(), false)
+            .queue_data(Bytes::from_static(b"body").into(), None, false)
             .unwrap();
         stream
-            .queue_data(Bytes::from_static(b"").into(), true)
+            .queue_data(Bytes::from_static(b"").into(), None, true)
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -1186,7 +1189,7 @@ mod tests {
         let stream = writer_stream(&mut streams, stream_id, window);
         stream.open_response(false).unwrap();
         stream
-            .queue_data(Bytes::from(body.clone()).into(), true)
+            .queue_data(Bytes::from(body.clone()).into(), None, true)
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -1261,6 +1264,7 @@ mod tests {
         stream
             .queue_data(
                 Bytes::from(vec![b'a'; FAIR_WRITE_QUANTUM + 32]).into(),
+                None,
                 true,
             )
             .unwrap();
@@ -1273,7 +1277,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_data(Bytes::from_static(b"tiny").into(), true)
+            .queue_data(Bytes::from_static(b"tiny").into(), None, true)
             .unwrap();
         ready_streams.schedule(stream, stream_b, false);
 

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import h2.events
+import h2.settings
 import pytest
 from fastapi import FastAPI
 from h2corn import Config, Server
@@ -25,6 +26,8 @@ from tests._support import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+H2_OUTBOUND_RESPONSE_BYTE_CAPACITY = 2 * 1024 * 1024
 
 
 def _gil_is_disabled() -> bool:
@@ -162,6 +165,72 @@ async def test_h2_request_round_trip() -> None:
 
     assert status == 200
     assert body == b'hello from h2corn'
+
+
+async def test_h2_response_body_byte_budget_waits_for_flow_control_progress() -> None:
+    body_admitted = asyncio.Queue()
+
+    async def app(_scope, _receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        for index in range(H2_OUTBOUND_RESPONSE_BYTE_CAPACITY // (64 * 1024) + 1):
+            await send({
+                'type': 'http.response.body',
+                'body': bytes([index]) * (64 * 1024),
+                'more_body': True,
+            })
+            body_admitted.put_nowait(index)
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, Config(port=0, lifespan='off')) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        try:
+            stream_id = conn.get_next_available_stream_id()
+            conn.update_settings({h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 0})
+            # The HTTP/2 default connection window is 65,535 bytes. Make it
+            # exactly one conventional body chunk so the following stream
+            # grant writes 64 KiB and leaves both send windows at zero.
+            conn.increment_flow_control_window(1)
+            conn.send_headers(
+                stream_id,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', b'/'),
+                ],
+                end_stream=True,
+            )
+            writer.write(conn.data_to_send())
+            await writer.drain()
+
+            for expected in range(H2_OUTBOUND_RESPONSE_BYTE_CAPACITY // (64 * 1024)):
+                assert (
+                    await asyncio.wait_for(body_admitted.get(), timeout=5) == expected
+                )
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(body_admitted.get(), timeout=0.1)
+
+            conn.increment_flow_control_window(64 * 1024, stream_id=stream_id)
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            assert await asyncio.wait_for(body_admitted.get(), timeout=5) == (
+                H2_OUTBOUND_RESPONSE_BYTE_CAPACITY // (64 * 1024)
+            )
+
+            status, body, _trailers = await read_h2_response(
+                reader,
+                writer,
+                conn,
+                stream_id,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert status == 200
+    assert len(body) == H2_OUTBOUND_RESPONSE_BYTE_CAPACITY + 64 * 1024
 
 
 async def test_empty_body_request_gets_empty_state_and_terminal_receive_event() -> (

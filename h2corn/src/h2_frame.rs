@@ -346,6 +346,14 @@ pub(crate) struct RawFrame {
     pub payload: Bytes,
 }
 
+/// A frame read from the peer. Unhandled extension frames retain their header
+/// for connection-order validation but never materialize their payload.
+#[derive(Clone, Debug)]
+pub(crate) enum FrameRead {
+    Handled(RawFrame),
+    Ignored(FrameHeader),
+}
+
 #[derive(FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
 struct WireSetting {
@@ -522,7 +530,8 @@ where
     pub(crate) async fn read_frame(
         &mut self,
         max_frame_size: usize,
-    ) -> Result<Option<RawFrame>, FrameReadError> {
+        is_handled_frame: fn(FrameType) -> bool,
+    ) -> Result<Option<FrameRead>, FrameReadError> {
         self.discard_rejected_payload().await?;
         if !self.read_at_least(FRAME_HEADER_LEN).await? {
             if self.buffer.is_empty() {
@@ -554,6 +563,22 @@ where
             return Err(FrameReadError::DeclaredPayloadLength { stream_id, error });
         }
 
+        if !is_handled_frame(frame_type) {
+            // RFC 9113 permits extension frames that this connection does
+            // not implement. Their payload is inert here, so consume it
+            // through the capped discard path instead of growing the
+            // connection buffer just to create a RawFrame the dispatcher
+            // would immediately drop.
+            self.buffer.advance(FRAME_HEADER_LEN);
+            self.discard_payload_len = payload_len;
+            self.discard_rejected_payload().await?;
+            return Ok(Some(FrameRead::Ignored(FrameHeader {
+                frame_type,
+                flags,
+                stream_id,
+            })));
+        }
+
         let total_len = FRAME_HEADER_LEN + payload_len;
         if !self.read_at_least(total_len).await? {
             return Err(H2CornError::from(H2Error::FramePayloadClosed).into());
@@ -568,14 +593,14 @@ where
         self.buffer.advance(FRAME_HEADER_LEN);
         let payload = self.buffer.split_to(payload_len).freeze();
 
-        Ok(Some(RawFrame {
+        Ok(Some(FrameRead::Handled(RawFrame {
             header: FrameHeader {
                 frame_type,
                 flags,
                 stream_id,
             },
             payload,
-        }))
+        })))
     }
 
     async fn discard_rejected_payload(&mut self) -> Result<(), H2CornError> {
@@ -926,7 +951,7 @@ mod tests {
 
         let result = timeout(
             Duration::from_millis(100),
-            reader.read_frame(DEFAULT_MAX_FRAME_SIZE),
+            reader.read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true),
         )
         .await
         .expect("the nine-byte header must reject before the payload is read");
@@ -982,7 +1007,7 @@ mod tests {
         let mut reader = BufferedConnectionReader::new(server);
 
         let error = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE)
+            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true)
             .await
             .expect_err("the short PRIORITY is rejected");
         assert!(matches!(error, FrameReadError::DeclaredPayloadLength {
@@ -991,11 +1016,132 @@ mod tests {
         } if stream_id.get() == 1));
 
         let frame = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE)
+            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true)
             .await
             .expect("the rejected payload is skipped")
             .expect("the following PING is present");
+        let FrameRead::Handled(frame) = frame else {
+            panic!("PING belongs to the handled frame vocabulary")
+        };
         assert_eq!(frame.header.frame_type, FrameType::PING);
         assert_eq!(frame.payload.as_ref(), &[0; 8]);
+    }
+
+    #[tokio::test]
+    async fn unknown_frame_payload_is_discarded_in_capped_fragments() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        const UNKNOWN_FRAME: FrameType = FrameType::new(0xF0);
+        const PAYLOAD_LEN: usize = READ_BUFFER_INITIAL_CAPACITY * 4;
+
+        let (mut client, server) = duplex(READ_BUFFER_INITIAL_CAPACITY);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(&encode_frame_header(
+                    FrameHeader {
+                        frame_type: UNKNOWN_FRAME,
+                        flags: FrameFlags::EMPTY,
+                        stream_id: None,
+                    },
+                    FramePayloadLen::constant(PAYLOAD_LEN),
+                ))
+                .await
+                .expect("unknown frame header is written");
+            for _ in 0..4 {
+                client
+                    .write_all(&[0xA5; READ_BUFFER_INITIAL_CAPACITY])
+                    .await
+                    .expect("one payload fragment is written");
+            }
+            client
+                .write_all(&[
+                    0,
+                    0,
+                    8,
+                    FrameType::PING.bits(),
+                    FrameFlags::EMPTY.bits(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await
+                .expect("following PING is written");
+        });
+
+        let mut reader = BufferedConnectionReader::new(server);
+        let ignored = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE, |frame_type| {
+                frame_type != UNKNOWN_FRAME
+            })
+            .await
+            .expect("unknown payload is consumed")
+            .expect("unknown frame header is returned after discard");
+        assert!(matches!(
+            ignored,
+            FrameRead::Ignored(FrameHeader { frame_type, .. }) if frame_type == UNKNOWN_FRAME
+        ));
+        let frame = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE, |frame_type| {
+                frame_type != UNKNOWN_FRAME
+            })
+            .await
+            .expect("following PING is readable")
+            .expect("following PING is returned");
+        writer.await.expect("writer task joins");
+
+        let FrameRead::Handled(frame) = frame else {
+            panic!("PING belongs to the handled frame vocabulary")
+        };
+        assert_eq!(frame.header.frame_type, FrameType::PING);
+        assert_eq!(frame.payload.as_ref(), &[0; 8]);
+        let (_, buffer) = reader.into_parts();
+        assert!(buffer.is_empty());
+        assert!(
+            buffer.capacity() <= READ_BUFFER_INITIAL_CAPACITY * 2,
+            "discarding must retain only the capped reader buffer, not the unknown payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn eof_while_discarding_unknown_frame_payload_is_reported() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (mut client, server) = duplex(64);
+        client
+            .write_all(&encode_frame_header(
+                FrameHeader {
+                    frame_type: FrameType::new(0xF0),
+                    flags: FrameFlags::EMPTY,
+                    stream_id: None,
+                },
+                FramePayloadLen::constant(128),
+            ))
+            .await
+            .expect("unknown frame header is written");
+        client
+            .write_all(&[0xA5; 17])
+            .await
+            .expect("partial payload is written");
+        drop(client);
+
+        let mut reader = BufferedConnectionReader::new(server);
+        let error = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| false)
+            .await
+            .expect_err("EOF in discarded payload is a framing error");
+        assert!(matches!(
+            error,
+            FrameReadError::Other(error)
+                if matches!(error.kind(), crate::error::ErrorKind::H2(H2Error::FramePayloadClosed))
+        ));
     }
 }
