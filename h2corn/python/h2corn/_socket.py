@@ -315,7 +315,7 @@ def _build_tcp_listener(host: str, port: int, config: Config) -> _CreatedListene
             return listener
     if last_error is None:
         raise OSError(f'could not resolve bind address: {host!r}')
-    raise last_error
+    raise OSError(f'could not bind {host}:{port}: {last_error}') from last_error
 
 
 def _lease_owned_fds(fds: Sequence[int]) -> tuple[_CreatedListener, ...]:  # pyright: ignore[reportUnusedFunction]

@@ -397,7 +397,8 @@ class _Supervisor:
     ready_workers: set[int] = field(default_factory=set[int])
     stopping: bool = False
     reload_requested: bool = False
-    fatal_error: RuntimeError | None = None
+    fatal_error: str | None = None
+    last_failure_exit_code: int | None = None
     target_workers: int = field(init=False)
     retirements: _WorkerRetirements = field(init=False)
 
@@ -543,9 +544,11 @@ class _Supervisor:
         )
         return sentinel
 
-    def record_worker_failure(self) -> None:
+    def record_worker_failure(self, exit_code: int | None = None) -> None:
         if self.stopping:
             return
+        if exit_code is not None:
+            self.last_failure_exit_code = exit_code
         now = time.monotonic()
         self.failure_times.append(now)
         while (
@@ -564,10 +567,18 @@ class _Supervisor:
         # forever in silence. A fleet with one flapping worker still has
         # healthy ones here and is left alone.
         if (
-            len(self.failure_times) >= max(3, self.target_workers * 3)
+            len(self.failure_times) >= 3
             and not self.ready_workers
         ):
-            self.fatal_error = RuntimeError('worker crash loop detected')
+            last_exit_code = (
+                'unknown'
+                if self.last_failure_exit_code is None
+                else str(self.last_failure_exit_code)
+            )
+            self.fatal_error = (
+                f'Stopped: {len(self.failure_times)} workers exited without ever becoming ready '
+                f'(last exit code {last_exit_code}). The worker error is logged above.'
+            )
             self.stopping = True
 
     def retire_worker(self, worker: BaseProcess) -> None:
@@ -600,7 +611,7 @@ class _Supervisor:
             _log_line(
                 f'Worker [{worker.pid}] exited unexpectedly with code {worker.exitcode}'
             )
-            self.record_worker_failure()
+            self.record_worker_failure(worker.exitcode)
         worker.close()
 
     def schedule_worker_retire(self, sentinel: int) -> None:
@@ -982,4 +993,5 @@ def serve_with_supervisor(
                     pass
 
         if supervisor.fatal_error is not None:
-            raise supervisor.fatal_error
+            _log_line(supervisor.fatal_error)
+            raise SystemExit(1)

@@ -190,10 +190,7 @@ def _print_config(config: Config) -> None:
     for option in config_options():
         value: object = getattr(config, option.name)
         if value is None:
-            if option.name == 'websocket_max_message_size':
-                value = 'inherit'
-            else:
-                continue
+            continue
         lines.append(f'{option.name} = {_toml_literal(_toml_value(value))}')
     sys.stdout.write('\n'.join(lines) + '\n')
 
@@ -346,8 +343,14 @@ def parse_cli(
     config_path = pre_args.config
     if config_path is None and (raw := env.get(CONFIG_PATH_ENV_VAR)):
         config_path = Path(raw)
+    parser = build_parser(Config(), config_path)
     try:
         base = Config.from_toml(config_path) if config_path is not None else Config()
+    except (ValueError, TypeError, OSError) as exc:
+        if config_path is None:
+            parser.error(str(exc))
+        parser.error(f'could not load configuration file {config_path}: {exc}')
+    try:
         environment_values = env_values(env)
         if environment_values:
             values = {
@@ -367,8 +370,8 @@ def parse_cli(
                     for key in CONVENIENCE_KEYS
                 }
             base = Config(**values)
-    except ValueError as exc:
-        pre_parser.error(str(exc))
+    except (ValueError, TypeError, OSError) as exc:
+        parser.error(str(exc))
     parser = build_parser(base, config_path)
     args = parser.parse_args(argv)
     if args.target is None and not (args.check_config or args.print_config):
@@ -376,7 +379,10 @@ def parse_cli(
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
     _apply_tcp_bind_sugar(parser, args, base, values)
-    config = Config(**values)
+    try:
+        config = Config(**values)
+    except (ValueError, TypeError, OSError) as exc:
+        parser.error(str(exc))
     if args.reload and (args.check_config or args.print_config):
         parser.error(
             '--reload cannot be combined with --check-config or --print-config'

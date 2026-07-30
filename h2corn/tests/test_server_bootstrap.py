@@ -961,6 +961,31 @@ def test_import_target_requires_module_app_form() -> None:
         _server.import_target(ImportSettings(target='demoapp'))
 
 
+def test_import_target_names_the_target_when_module_import_fails() -> None:
+    from h2corn import _server
+    from h2corn._cli import ImportSettings
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"could not import module 'nosuchmod' from target 'nosuchmod:app'",
+    ) as raised:
+        _server.import_target(ImportSettings(target='nosuchmod:app'))
+
+    assert isinstance(raised.value.__cause__, ModuleNotFoundError)
+
+
+def test_tcp_listener_error_names_the_failed_bind() -> None:
+    from h2corn import _socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(('127.0.0.1', 0))
+        occupied.listen()
+        host, port = occupied.getsockname()
+
+        with pytest.raises(OSError, match=rf'could not bind {host}:{port}:'):
+            _socket._build_tcp_listener(host, port, Config())
+
+
 def test_import_target_requires_callable_attribute(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1630,7 +1655,7 @@ def test_cli_print_config_works_without_target(
     assert 'workers = 1' in stdout.getvalue()
 
 
-def test_cli_print_config_round_trips_paths_and_inherited_values(
+def test_cli_print_config_round_trips_paths_and_unlimited_values(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1649,7 +1674,7 @@ def test_cli_print_config_round_trips_paths_and_inherited_values(
             '--pid',
             os.fspath(pid_path),
             '--websocket-max-message-size',
-            'inherit',
+            '0',
         ],
     )
 
@@ -1658,10 +1683,10 @@ def test_cli_print_config_round_trips_paths_and_inherited_values(
     printed = stdout.getvalue()
     parsed = tomllib.loads(printed)
     assert parsed['pid'] == os.fspath(pid_path)
-    assert parsed['websocket_max_message_size'] == 'inherit'
+    assert parsed['websocket_max_message_size'] == 0
     assert Config.from_mapping(parsed) == Config(
         pid=pid_path,
-        websocket_max_message_size=None,
+        websocket_max_message_size=0,
     )
 
 
@@ -2280,8 +2305,10 @@ def test_crash_loop_is_detected_after_a_worker_was_once_healthy() -> None:
         supervisor.record_worker_failure()
 
     assert supervisor.stopping
-    assert isinstance(supervisor.fatal_error, RuntimeError)
-    assert 'crash loop' in str(supervisor.fatal_error)
+    assert supervisor.fatal_error == (
+        'Stopped: 3 workers exited without ever becoming ready '
+        '(last exit code unknown). The worker error is logged above.'
+    )
 
 
 def test_crash_loop_spares_a_fleet_that_still_has_a_healthy_worker() -> None:
@@ -2793,9 +2820,22 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
     """Workers retain only stdio, listeners, control-write, and quiesce-read."""
     import signal
 
+    worker_ready_dir = tmp_path / 'worker-ready'
+    worker_ready_dir.mkdir()
     app = tmp_path / 'app.py'
     app.write_text(
+        'import os\n'
+        'from pathlib import Path\n'
         'async def app(scope, receive, send):\n'
+        "    if scope['type'] == 'lifespan':\n"
+        "        message = await receive()\n"
+        "        if message['type'] == 'lifespan.startup':\n"
+        f"            Path({str(worker_ready_dir)!r}, str(os.getpid())).touch()\n"
+        "            await send({'type': 'lifespan.startup.complete'})\n"
+        "            message = await receive()\n"
+        "        if message['type'] == 'lifespan.shutdown':\n"
+        "            await send({'type': 'lifespan.shutdown.complete'})\n"
+        "        return\n"
         "    if scope['type'] == 'http':\n"
         "        await send({'type': 'http.response.start', 'status': 204, "
         "'headers': []})\n"
@@ -2839,6 +2879,7 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
     try:
         deadline = time.monotonic() + 10.0
         workers: list[int] = []
+        worker_ready_pids: set[int] = set()
         while time.monotonic() < deadline:
             try:
                 raw = Path(
@@ -2847,10 +2888,14 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
             except OSError:
                 raw = ''
             workers = [int(item) for item in raw.split()]
-            if len(workers) == 4 and pidfile.exists():
+            worker_ready_pids = {
+                int(path.name) for path in worker_ready_dir.iterdir()
+            }
+            if len(workers) == 4 and set(workers) == worker_ready_pids and pidfile.exists():
                 break
             time.sleep(0.05)
         assert len(workers) == 4, f'expected 4 workers, got {workers}'
+        assert worker_ready_pids == set(workers)
 
         def fd_targets(pid: int) -> dict[int, str]:
             result: dict[int, str] = {}

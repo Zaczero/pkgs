@@ -171,8 +171,11 @@ class LifespanRunner:
                     return
                 case 'lifespan.startup.failed':
                     await self.discard_task()
+                    detail = message.get('message', '')
                     raise RuntimeError(
-                        f'lifespan startup failed: {message.get("message", "")}'
+                        'lifespan startup failed'
+                        if not detail
+                        else f'lifespan startup failed: {detail}'
                     )
                 case _ if not startup_seen:
                     await self.discard_task()
@@ -232,8 +235,11 @@ class LifespanRunner:
                 pass
             case 'lifespan.shutdown.failed':
                 await self.discard_task()
+                detail = message.get('message', '')
                 raise RuntimeError(
-                    f'lifespan shutdown failed: {message.get("message", "")}'
+                    'lifespan shutdown failed'
+                    if not detail
+                    else f'lifespan shutdown failed: {detail}'
                 )
             case message_type:
                 await self.discard_task()

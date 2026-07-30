@@ -64,6 +64,15 @@ async def test_lifespan_startup_failure_is_reported() -> None:
         await _run_lifespan(app, after_startup=after)
 
 
+async def test_lifespan_failure_without_a_message_has_no_dangling_colon() -> None:
+    async def app(_scope, receive, send):
+        await receive()
+        await send({'type': 'lifespan.startup.failed'})
+
+    with pytest.raises(RuntimeError, match=r'^lifespan startup failed$'):
+        await _run_lifespan(app)
+
+
 async def test_lifespan_missing_protocol_is_treated_as_optional() -> None:
     served = False
 

@@ -1848,7 +1848,8 @@ async def test_worker_supervisor_exits_on_startup_watchdog_crash_loop(
     stderr = b''.join(stderr_lines).decode()
     assert exit_code != 0
     assert stderr.count('failed healthcheck and will be replaced') >= 3
-    assert 'worker crash loop detected' in stderr
+    assert 'Stopped: 3 workers exited without ever becoming ready' in stderr
+    assert 'The worker error is logged above.' in stderr
 
 
 @pytest.mark.parametrize('workers', [1, 2])
@@ -1881,7 +1882,8 @@ async def test_worker_supervisor_exits_on_unexpected_clean_worker_exit(
     stderr = b''.join(stderr_lines).decode()
     assert exit_code != 0
     assert 'exited unexpectedly with code 0' in stderr
-    assert 'worker crash loop detected' in stderr
+    assert 'Stopped: 3 workers exited without ever becoming ready' in stderr
+    assert 'last exit code 0' in stderr
 
 
 async def test_worker_supervisor_recycles_workers_after_max_requests(

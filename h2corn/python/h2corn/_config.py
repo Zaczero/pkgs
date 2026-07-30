@@ -98,12 +98,6 @@ def _parse_bind_env(value: str):
     )
 
 
-def _parse_optional_non_negative_int(value: str):
-    if value.strip().lower() == 'inherit':
-        return None
-    return int(value)
-
-
 def _validate_forwarded_allow_ip(value: str):
     if value in {'*', 'unix'}:
         return value
@@ -933,8 +927,8 @@ class Config:
         cli_type=int,
     )
     h2_initial_stream_window_size: int = _option(
-        default=1_048_576,
-        doc='HTTP/2 per-stream receive flow-control window in bytes (SETTINGS_INITIAL_WINDOW_SIZE). Bounds worst-case buffered upload bytes per stream; raise for high-bandwidth-delay uploads.',
+        default=8_388_608,
+        doc='HTTP/2 per-stream receive flow-control window in bytes (SETTINGS_INITIAL_WINDOW_SIZE). Controls inbound upload throughput; response throughput uses the peer-advertised send window. The default is 8 MiB.',
         env_parse=int,
         converter=_bounded_int(
             'h2_initial_stream_window_size',
@@ -944,8 +938,8 @@ class Config:
         cli_type=int,
     )
     h2_initial_connection_window_size: int = _option(
-        default=2_097_152,
-        doc='HTTP/2 connection-wide receive flow-control window in bytes. Bounds total buffered upload bytes per connection.',
+        default=8_388_608,
+        doc='HTTP/2 connection-wide receive flow-control window in bytes. Bounds total charged upload bytes per connection; the default matches the 8 MiB stream window so one upload can use the whole connection budget.',
         env_parse=int,
         converter=_bounded_int(
             'h2_initial_connection_window_size',
@@ -1021,12 +1015,12 @@ class Config:
         converter=_non_negative_float('h2_timeout_response_stall'),
         cli_type=float,
     )
-    websocket_max_message_size: int | None = _option(
+    websocket_max_message_size: int = _option(
         default=16_777_216,
-        doc="Maximum WebSocket message size in bytes. Defaults to 16 MiB. Use 'inherit' to follow `max_request_body_size`, or 0 for no limit.",
-        env_parse=_parse_optional_non_negative_int,
-        converter=_optional_bounded_int('websocket_max_message_size', minimum=0),
-        cli_type=_parse_optional_non_negative_int,
+        doc='Maximum WebSocket message size in bytes. Defaults to 16 MiB; use 0 for no limit.',
+        env_parse=int,
+        converter=_bounded_int('websocket_max_message_size', minimum=0),
+        cli_type=int,
     )
     websocket_per_message_deflate: bool = _option(
         default=True,
@@ -1050,8 +1044,8 @@ class Config:
         cli_type=float,
     )
     proxy_headers: bool = _option(
-        default=False,
-        doc='Trust proxy headers (e.g., Forwarded, X-Forwarded-*) if the client IP is in `forwarded_allow_ips`.',
+        default=True,
+        doc='Trust proxy headers (e.g., Forwarded, X-Forwarded-*) from the default loopback and Unix-socket peers, or peers in `forwarded_allow_ips`. Use false when no trusted proxy sets them.',
         env_parse=_parse_bool,
         converter=_exact_bool('proxy_headers'),
         cli_action='bool',
@@ -1163,6 +1157,14 @@ class Config:
                         pass
         if self.max_requests_jitter > 0 and self.max_requests == 0:
             raise ValueError('max_requests_jitter requires max_requests')
+        if self.h2_initial_stream_window_size > self.h2_initial_connection_window_size:
+            raise ValueError(
+                'h2_initial_stream_window_size '
+                f"'{self.h2_initial_stream_window_size}' exceeds "
+                'h2_initial_connection_window_size '
+                f"'{self.h2_initial_connection_window_size}': "
+                'a stream window cannot exceed its connection window'
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:

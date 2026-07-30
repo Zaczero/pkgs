@@ -213,10 +213,13 @@ def test_config_integer_fields_reject_int_subclass(field_name: str) -> None:
 def test_config_integer_fields_accept_boundary(field_name: str) -> None:
     value = _INTEGER_BOUNDARIES[field_name]
     construct_config = cast('Callable[..., Config]', Config)
-    config = construct_config(**{field_name: value})
+    values = {field_name: value}
+    if field_name == 'h2_initial_connection_window_size':
+        values['h2_initial_stream_window_size'] = value
+    config = construct_config(**values)
     assert getattr(config, field_name) is value or getattr(config, field_name) == value
     assert type(getattr(config, field_name)) is int
-    mapped = Config.from_mapping({field_name: value})
+    mapped = Config.from_mapping(values)
     assert getattr(mapped, field_name) == value
     assert type(getattr(mapped, field_name)) is int
 
@@ -392,15 +395,14 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
 
 
-def test_config_from_toml_accepts_websocket_message_size_inherit(
+def test_config_from_toml_rejects_websocket_message_size_inherit(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('websocket_max_message_size = "inherit"')
 
-    config = Config.from_toml(config_path)
-
-    assert config.websocket_max_message_size is None
+    with pytest.raises(ValueError, match='invalid literal for int'):
+        Config.from_toml(config_path)
 
 
 def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,10 +504,9 @@ def test_config_from_env_accepts_csv_bind_values() -> None:
     assert config.bind == ('127.0.0.1:9000', '[::1]:9000')
 
 
-def test_config_from_env_accepts_websocket_message_size_inherit() -> None:
-    config = Config.from_env({'H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE': 'inherit'})
-
-    assert config.websocket_max_message_size is None
+def test_config_from_env_rejects_websocket_message_size_inherit() -> None:
+    with pytest.raises(ValueError, match='invalid literal for int'):
+        Config.from_env({'H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE': 'inherit'})
 
 
 @pytest.mark.parametrize(
@@ -653,6 +654,34 @@ def test_websocket_max_message_size_defaults_to_safe_cap() -> None:
     assert config.websocket_max_message_size == 16_777_216
 
 
+def test_config_defaults_prioritize_proxy_compatibility_and_upload_throughput() -> None:
+    config = Config()
+
+    assert config.proxy_headers is True
+    assert config.h2_initial_stream_window_size == 8 * 1024 * 1024
+    assert config.h2_initial_connection_window_size == 8 * 1024 * 1024
+
+
+def test_config_rejects_stream_window_larger_than_connection_window() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "h2_initial_stream_window_size '8388608' exceeds "
+            "h2_initial_connection_window_size '1048576': "
+            'a stream window cannot exceed its connection window'
+        ),
+    ):
+        Config(
+            h2_initial_stream_window_size=8 * 1024 * 1024,
+            h2_initial_connection_window_size=1024 * 1024,
+        )
+
+
+def test_config_rejects_websocket_message_size_inherit() -> None:
+    with pytest.raises(ValueError, match='invalid literal for int'):
+        Config.from_mapping({'websocket_max_message_size': 'inherit'})
+
+
 def test_cli_parser_defaults_and_flags_follow_config_option_schema() -> None:
     base = Config(port=9011, http1=False, access_log=False)
     parser = build_parser(base, None)
@@ -692,15 +721,39 @@ def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) ->
     assert config.port == 9020
 
 
-def test_parse_cli_accepts_websocket_message_size_inherit() -> None:
-    cli_settings, import_settings, config = parse_cli(
-        ['--websocket-max-message-size', 'inherit', 'example:app'],
-        {},
-    )
+def test_parse_cli_rejects_websocket_message_size_inherit() -> None:
+    with pytest.raises(SystemExit) as raised:
+        parse_cli(['--websocket-max-message-size', 'inherit', 'example:app'], {})
 
-    assert cli_settings == CliSettings()
-    assert import_settings == ImportSettings(target='example:app')
-    assert config.websocket_max_message_size is None
+    assert raised.value.code == 2
+
+
+def test_parse_cli_reports_configuration_file_errors_through_the_full_parser(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / 'broken.toml'
+    config_path.write_text('workers = 0')
+
+    with pytest.raises(SystemExit) as raised:
+        parse_cli(['--config', str(config_path), 'example:app'], {})
+
+    assert raised.value.code == 2
+    stderr = capsys.readouterr().err
+    assert stderr.startswith('usage: h2corn ')
+    assert str(config_path) in stderr
+    assert 'workers' in stderr
+
+
+def test_parse_cli_reports_cli_configuration_errors_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        parse_cli(['--workers', '0', 'example:app'], {})
+
+    assert raised.value.code == 2
+    stderr = capsys.readouterr().err
+    assert stderr.startswith('usage: h2corn ')
+    assert 'workers' in stderr
 
 
 def test_parse_cli_accepts_factory_flag() -> None:

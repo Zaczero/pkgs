@@ -1160,7 +1160,12 @@ def import_target(import_settings: ImportSettings) -> ASGIApp:
     sys.path[:] = [entry for entry in sys.path if entry != import_dir]
     sys.path.insert(0, import_dir)
 
-    module = importlib.import_module(module_name)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise RuntimeError(
+            f'could not import module {module_name!r} from target {target!r}'
+        ) from exc
     target_obj = getattr(module, attr)
     if not callable(target_obj):
         raise TypeError(f'import target {target!r} is not callable')
