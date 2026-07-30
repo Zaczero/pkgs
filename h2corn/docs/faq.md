@@ -53,6 +53,25 @@ h2corn myproject.asgi:application --workers 4 --no-http1
 
 Django channels and any other ASGI 3 framework work the same way.
 
+## What can an ASGI `send()` call raise?
+
+`h2corn` validates each outbound ASGI message at `await send(message)`. A
+field of the wrong Python type raises `TypeError`. A malformed application
+value raises `ValueError`: this includes a missing required field, an invalid
+response header or trailer field, a non-final or non-three-digit response
+status, an invalid WebSocket close value, an empty accepted subprotocol, or a
+`websocket.send` message that sets neither or both payload fields.
+
+`RuntimeError` reports an invalid message sequence, such as sending a response
+body before `http.response.start`, mixing `http.response.pathsend` with a
+response body, sending trailers at the wrong point, or sending an unexpected
+WebSocket event. Calling `send()` after the stream has closed raises `OSError`.
+An exception raised by the application itself propagates unchanged.
+
+This differs from Uvicorn: it reports several malformed values as
+`RuntimeError`. Catch `ValueError` around `send()` when an application intends
+to replace a malformed outbound message with a valid one.
+
 ## Does `h2corn` support gRPC?
 
 `h2corn` is an ASGI server, not a gRPC server. It speaks HTTP/2 framing

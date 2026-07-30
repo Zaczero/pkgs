@@ -93,7 +93,6 @@ local listener with several workers, looking something like this:
 h2corn hello:app \
   --bind 127.0.0.1:8000 \
   --workers 4 \
-  --proxy-headers \
   --forwarded-allow-ips 127.0.0.1,::1,unix \
   --no-http1
 ```
@@ -106,10 +105,10 @@ you ship it:
   listener instead.
 - **`--workers 4`** is a reasonable starting point on a 4-core box.
   Size it to your workload and revisit after measuring.
-- **`--proxy-headers`** trusts standard `Forwarded` and `X-Forwarded-*`
-  headers, but only when they come from the peers listed in
-  `--forwarded-allow-ips`. Set that list to wherever your proxy
-  actually connects from.
+- **Proxy headers** trust standard `Forwarded` and `X-Forwarded-*` headers
+  from the default loopback and Unix-socket peers. Set
+  `--forwarded-allow-ips` to wherever your proxy actually connects from, or
+  pass `--no-proxy-headers` when there is no trusted proxy.
 - **`--no-http1`** is a fail-closed hardening flag. Once the upstream
   is configured to speak `h2c`, an accidental fallback fails
   immediately instead of quietly serving traffic on the older protocol.

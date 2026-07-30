@@ -38,8 +38,7 @@ descriptions, defaults, and CLI flags live in the
 - `websocket_max_message_size` caps a reassembled message, not one
   frame: fragments are accounted as they arrive, and a compressed
   message is measured after decompression. The default is 16 MiB; set it
-  to the literal string `inherit` to follow `max_request_body_size`, or
-  `0` to remove the cap entirely.
+  to `0` to remove the cap entirely.
 - `websocket_per_message_deflate` controls whether the server accepts
   the [permessage-deflate](https://datatracker.ietf.org/doc/html/rfc7692)
   compression extension when a client offers it.

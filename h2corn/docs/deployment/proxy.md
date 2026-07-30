@@ -26,12 +26,14 @@ can terminate TLS itself instead — see [Direct TLS](tls.md).
 
 ## Proxy headers and PROXY protocol
 
-`h2corn` accepts two kinds of trust hop metadata, both opt-in and
-gated by `--forwarded-allow-ips`:
+`h2corn` trusts standard forwarding headers by default from loopback and
+Unix-socket peers only: the default `--forwarded-allow-ips` is
+`127.0.0.1,::1,unix`. Both kinds of trust-hop metadata remain gated by that
+allow-list:
 
-- **`--proxy-headers`** trusts standard `Forwarded` and `X-Forwarded-*`
-  headers from peers in `--forwarded-allow-ips`. These carry request
-  metadata such as scheme, host, and the original client address.
+- **`--proxy-headers`** is on by default and trusts standard `Forwarded` and
+  `X-Forwarded-*` headers from peers in `--forwarded-allow-ips`. These carry
+  request metadata such as scheme, host, and the original client address.
 - **`--proxy-protocol v1|v2`** parses HAProxy's
   [PROXY protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt)
   on inbound connections. It carries transport-level peer information
@@ -52,8 +54,8 @@ when the upstream is explicitly configured to send it.
     So the proxy has to *replace* the headers it sets and *delete* the ones it
     does not: HAProxy's `http-request set-header`/`del-header`, Caddy's
     `header_up`. The example configurations below do this; if you adapt them,
-    keep that part. Without `--proxy-headers` no forwarding header is trusted
-    at all, which is the right setting when nothing upstream sets them.
+    keep that part. Pass `--no-proxy-headers` when nothing upstream sets
+    forwarding headers.
 
 ## Caddy
 
@@ -71,7 +73,6 @@ Pair it with:
 ```bash
 h2corn hello:app \
   --bind 127.0.0.1:8000 \
-  --proxy-headers \
   --forwarded-allow-ips 127.0.0.1,::1,unix
 ```
 
@@ -114,7 +115,6 @@ Pair it with:
 h2corn hello:app \
   --bind 127.0.0.1:8000 \
   --proxy-protocol v2 \
-  --proxy-headers \
   --forwarded-allow-ips 127.0.0.1,::1,unix \
   --no-http1
 ```
