@@ -1,7 +1,18 @@
 use super::actions::{ResponseAction, ResponseActions};
 use crate::error::H2CornError;
+use crate::http::app::HttpSendState;
 
 pub(crate) trait HttpResponseTransport {
+    /// HTTP/1 has no cross-stream body backlog. HTTP/2 overrides this with a
+    /// connection-wide byte ledger before the ASGI callable is constructed.
+    fn new_http_send_state(&self) -> HttpSendState {
+        // `HttpSendBuffer` owns closure of a live request's outbound side.
+        // The default transport needs only the state here; creating and
+        // immediately dropping a temporary buffer would reject the app's
+        // first body event before the response controller can discard it.
+        HttpSendState::unbounded()
+    }
+
     /// Put one action on the wire.
     ///
     /// The action enum is the whole vocabulary of a response, so a transport

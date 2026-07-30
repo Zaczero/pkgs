@@ -3,8 +3,10 @@ use std::mem;
 use pyo3::exceptions::PyValueError;
 
 use super::actions;
+#[cfg(test)]
+use crate::bridge;
 use crate::error::{self, ErrorExt};
-use crate::{bridge, http};
+use crate::http;
 
 #[derive(Debug)]
 enum ResponseState {
@@ -202,10 +204,20 @@ impl ResponseController {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_body(
         &mut self,
         actions: &mut actions::ResponseActions,
         body: bridge::PayloadBytes,
+        more_body: bool,
+    ) -> Result<(), error::H2CornError> {
+        self.handle_body_with_credit(actions, actions::ResponseBody::new(body), more_body)
+    }
+
+    pub(crate) fn handle_body_with_credit(
+        &mut self,
+        actions: &mut actions::ResponseActions,
+        body: actions::ResponseBody,
         more_body: bool,
     ) -> Result<(), error::H2CornError> {
         let mut started = self.take_started(error::HttpResponseError::BodyBeforeStart)?;
@@ -362,14 +374,16 @@ impl ResponseController {
                     }
                     actions.push(started.take_start_action());
                     if !data.is_empty() {
-                        actions.push(actions::ResponseAction::Body(data.into()));
+                        actions.push(actions::ResponseAction::Body(actions::ResponseBody::new(
+                            data.into(),
+                        )));
                     }
                     self.state = ResponseState::waiting_for_trailers();
                 } else {
                     let body = if data.is_empty() {
                         actions::FinalResponseBody::Empty
                     } else {
-                        actions::FinalResponseBody::Bytes(data.into())
+                        actions::FinalResponseBody::Bytes(actions::ResponseBody::new(data.into()))
                     };
                     self.state = complete_response(actions, &mut started, body);
                 }

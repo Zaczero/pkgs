@@ -28,6 +28,11 @@ const MONTHS: [[u8; 3]; 12] = [
 const RESPONSE_HAS_SERVER: u8 = 1 << 0;
 const RESPONSE_HAS_DATE: u8 = 1 << 1;
 
+/// `server`, `date`, and `content-length` are the only built-in response
+/// fields that default preparation can append. The exact Python-list ingress
+/// reserves these slots before it has selected a response framing path.
+pub(crate) const RESPONSE_DEFAULT_BUILTIN_SLOTS: usize = 3;
+
 static RESPONSE_HEADER_STRIP_COUNTS: [[AtomicU64; 5]; 2] = [
     [
         AtomicU64::new(0),
@@ -225,7 +230,9 @@ pub(crate) fn observe_response_header_strips(http2: bool, strips: ResponseHeader
         let index = bit.trailing_zeros() as usize;
         if RESPONSE_HEADER_STRIP_COUNTS[protocol][index].fetch_add(1, Ordering::Relaxed) == 0 {
             let protocol = if http2 { "HTTP/2" } else { "HTTP/1.1" };
-            eprintln!("h2corn: stripped application {name} response header for {protocol}");
+            eprintln!(
+                "stripped the application's {name} response header: hop-by-hop fields are owned by the {protocol} transport (reported once)"
+            );
         }
     }
 }
@@ -415,38 +422,44 @@ pub(crate) fn protocol_token_is_valid(value: &[u8]) -> bool {
 /// rather than this generic HTTP transport, decides whether it permits a
 /// trailer occurrence. `content-digest` is such a trailer-safe extension.
 pub(crate) fn trailer_field_name_is_forbidden(name: &[u8]) -> bool {
-    [
-        b"connection".as_slice(),
-        b"proxy-connection",
-        b"keep-alive",
-        b"transfer-encoding",
-        b"upgrade",
-        b"te",
-        b"host",
-        b"content-length",
-        b"trailer",
-        b"authorization",
-        b"proxy-authorization",
-        b"www-authenticate",
-        b"proxy-authenticate",
-        b"if-match",
-        b"if-none-match",
-        b"if-modified-since",
-        b"if-unmodified-since",
-        b"if-range",
-        b"cache-control",
-        b"pragma",
-        b"expires",
-        b"content-encoding",
-        b"content-language",
-        b"content-location",
-        b"content-range",
-        b"content-type",
-        b"last-modified",
-        b"etag",
-    ]
-    .iter()
-    .any(|forbidden| name.eq_ignore_ascii_case(forbidden))
+    match name.first().map(u8::to_ascii_lowercase) {
+        Some(b'a') => name.eq_ignore_ascii_case(b"authorization"),
+        Some(b'c') => {
+            name.eq_ignore_ascii_case(b"connection")
+                || name.eq_ignore_ascii_case(b"content-length")
+                || name.eq_ignore_ascii_case(b"cache-control")
+                || name.eq_ignore_ascii_case(b"content-encoding")
+                || name.eq_ignore_ascii_case(b"content-language")
+                || name.eq_ignore_ascii_case(b"content-location")
+                || name.eq_ignore_ascii_case(b"content-range")
+                || name.eq_ignore_ascii_case(b"content-type")
+        },
+        Some(b'e') => name.eq_ignore_ascii_case(b"expires") || name.eq_ignore_ascii_case(b"etag"),
+        Some(b'h') => name.eq_ignore_ascii_case(b"host"),
+        Some(b'i') => {
+            name.eq_ignore_ascii_case(b"if-match")
+                || name.eq_ignore_ascii_case(b"if-none-match")
+                || name.eq_ignore_ascii_case(b"if-modified-since")
+                || name.eq_ignore_ascii_case(b"if-unmodified-since")
+                || name.eq_ignore_ascii_case(b"if-range")
+        },
+        Some(b'k') => name.eq_ignore_ascii_case(b"keep-alive"),
+        Some(b'l') => name.eq_ignore_ascii_case(b"last-modified"),
+        Some(b'p') => {
+            name.eq_ignore_ascii_case(b"proxy-connection")
+                || name.eq_ignore_ascii_case(b"proxy-authorization")
+                || name.eq_ignore_ascii_case(b"proxy-authenticate")
+                || name.eq_ignore_ascii_case(b"pragma")
+        },
+        Some(b't') => {
+            name.eq_ignore_ascii_case(b"transfer-encoding")
+                || name.eq_ignore_ascii_case(b"te")
+                || name.eq_ignore_ascii_case(b"trailer")
+        },
+        Some(b'u') => name.eq_ignore_ascii_case(b"upgrade"),
+        Some(b'w') => name.eq_ignore_ascii_case(b"www-authenticate"),
+        _ => false,
+    }
 }
 
 /// Headers owned by framing or connection setup cannot be configured as
@@ -471,7 +484,9 @@ fn percent_escapes_are_valid(value: &[u8]) -> bool {
         let Some(hex) = rest.get(index + 1..index + 3) else {
             return false;
         };
-        if !hex.iter().all(u8::is_ascii_hexdigit) {
+        if ascii::HEX_VALUE[usize::from(hex[0])] == ascii::INVALID_VALUE
+            || ascii::HEX_VALUE[usize::from(hex[1])] == ascii::INVALID_VALUE
+        {
             return false;
         }
         rest = &rest[index + 3..];
@@ -815,7 +830,7 @@ pub(crate) fn parse_x_forwarded_for_value<'a>(
         if host.is_empty() {
             continue;
         }
-        let normalized = parse_host_port(host).map_or(host, |(host, _)| host);
+        let (normalized, _) = parse_host_port(host)?;
         furthest_host = Some(normalized);
         if !trusted_host_matches(&config.proxy.trusted_peers, normalized) {
             return Some(normalized);
@@ -836,7 +851,7 @@ pub(crate) fn normalize_scheme(scheme: &str) -> Cow<'_, str> {
 pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
     if let Some(value) = value.strip_prefix('[') {
         let (host, rest) = value.split_once(']')?;
-        if host.is_empty() {
+        if !forwarded_host_is_valid(host) {
             return None;
         }
         if rest.is_empty() {
@@ -851,7 +866,7 @@ pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
     if let Some((host, port)) = value.rsplit_once(':')
         && !host.contains(':')
     {
-        if host.is_empty() {
+        if !forwarded_host_is_valid(host) {
             return None;
         }
         return parse_pos::<u16, false>(port.as_bytes())
@@ -859,7 +874,15 @@ pub(crate) fn parse_host_port(value: &str) -> Option<(&str, Option<u16>)> {
             .map(|port| (host, Some(port)));
     }
 
-    (!value.is_empty()).then_some((value, None))
+    forwarded_host_is_valid(value).then_some((value, None))
+}
+
+fn forwarded_host_is_valid(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b':' | b'-'))
 }
 
 fn normalize_forwarded_value(value: &str) -> &str {
@@ -875,6 +898,7 @@ mod tests {
         inspect_response_headers, last_csv_token, parse_content_length_header, parse_host_port,
         parse_x_forwarded_for_value, prepare_fixed_length_response_headers_with_scan,
         request_authority_is_valid, request_path_is_valid, request_scheme_is_valid,
+        trailer_field_name_is_forbidden,
     };
     use crate::config::{
         ConfiguredResponseHeader, ProxyConfig, ResponseHeaderConfig, ServerConfig,
@@ -931,9 +955,54 @@ mod tests {
         let options = http::Method::OPTIONS;
         assert!(request_path_is_valid(&get, b"/%00/ok%20here"));
         assert!(!request_path_is_valid(&get, b"/bad%0"));
+        assert!(!request_path_is_valid(&get, b"/bad%G0"));
         assert!(!request_path_is_valid(&get, b"/bad#fragment"));
         assert!(request_path_is_valid(&options, b"*"));
         assert!(!request_path_is_valid(&get, b"*"));
+    }
+
+    #[test]
+    fn trailer_field_classifier_preserves_the_exact_case_insensitive_set() {
+        for forbidden in [
+            b"connection".as_slice(),
+            b"proxy-connection",
+            b"keep-alive",
+            b"transfer-encoding",
+            b"upgrade",
+            b"te",
+            b"host",
+            b"content-length",
+            b"trailer",
+            b"authorization",
+            b"proxy-authorization",
+            b"www-authenticate",
+            b"proxy-authenticate",
+            b"if-match",
+            b"if-none-match",
+            b"if-modified-since",
+            b"if-unmodified-since",
+            b"if-range",
+            b"cache-control",
+            b"pragma",
+            b"expires",
+            b"content-encoding",
+            b"content-language",
+            b"content-location",
+            b"content-range",
+            b"content-type",
+            b"last-modified",
+            b"etag",
+        ] {
+            assert!(trailer_field_name_is_forbidden(forbidden), "{forbidden:?}");
+            let upper = forbidden
+                .iter()
+                .map(u8::to_ascii_uppercase)
+                .collect::<Vec<_>>();
+            assert!(trailer_field_name_is_forbidden(&upper), "{upper:?}");
+        }
+        for allowed in [b"content-digest".as_slice(), b"digest", b"x-trailer", b""] {
+            assert!(!trailer_field_name_is_forbidden(allowed), "{allowed:?}");
+        }
     }
 
     #[test]
@@ -968,6 +1037,8 @@ mod tests {
         assert_eq!(parse_host_port("example:"), None);
         assert_eq!(parse_host_port("example:abc"), None);
         assert_eq!(parse_host_port("[]:443"), None);
+        assert_eq!(parse_host_port("1.1.1.1 \"GET /admin HTTP/1.1\" 200"), None);
+        assert_eq!(parse_host_port("\u{e9}"), None);
     }
 
     #[test]
@@ -998,6 +1069,23 @@ mod tests {
         assert_eq!(
             parse_x_forwarded_for_value("203.0.113.10, 198.51.100.7", &config),
             Some("198.51.100.7"),
+        );
+    }
+
+    #[test]
+    fn forged_x_forwarded_for_never_becomes_a_client_label() {
+        let config = ServerConfig {
+            proxy: ProxyConfig {
+                trust_headers: true,
+                trusted_peers: Box::new([parse_trusted_peer("unix").unwrap()]),
+                protocol: ProxyProtocolMode::Off,
+            },
+            ..test_fixtures::server_config_parts()
+        };
+
+        assert_eq!(
+            parse_x_forwarded_for_value("1.1.1.1 \"GET /admin HTTP/1.1\" 200", &config),
+            None,
         );
     }
 

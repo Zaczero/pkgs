@@ -7,10 +7,12 @@ use std::{fmt, future};
 
 use bytes::Bytes;
 pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared};
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
-use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
+use pyo3::types::{
+    PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString, PyTypeMethods,
+};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 #[cfg(test)]
@@ -26,9 +28,10 @@ use crate::error::{
     AsgiChannel, AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError,
     WebSocketError, into_pyerr,
 };
+use crate::http::app::HttpSendWaiter;
 use crate::http::header::{
-    ApplicationResponseField, ResponseConnectionDirective, ResponseHeaderControl,
-    application_response_field, protocol_token_is_valid, split_commas_bytes,
+    ApplicationResponseField, RESPONSE_DEFAULT_BUILTIN_SLOTS, ResponseConnectionDirective,
+    ResponseHeaderControl, application_response_field, protocol_token_is_valid, split_commas_bytes,
 };
 use crate::http::types::{
     BytesStr, FinalResponseStatus, HttpStatusCode, ResponseHeaderName, ResponseHeaderValue,
@@ -131,6 +134,18 @@ pub(crate) enum WebSocketOutboundEvent {
     },
 }
 
+impl WebSocketOutboundEvent {
+    pub(crate) const fn message_type(&self) -> &'static str {
+        match self {
+            Self::Accept { .. } => "websocket.accept",
+            Self::SendBytes(_) | Self::SendText(_) => "websocket.send",
+            Self::Close { .. } => "websocket.close",
+            Self::HttpResponseStart { .. } => "websocket.http.response.start",
+            Self::HttpResponseBody { .. } => "websocket.http.response.body",
+        }
+    }
+}
+
 #[derive(Debug)]
 /// An outbound payload that owns its bytes, whoever produced them.
 ///
@@ -212,14 +227,16 @@ impl<'py> AsgiMessage<'py> {
     asgi_item!(status_item, "status");
 
     fn parse(dict: &'py Bound<'py, PyDict>) -> Result<Self, H2CornError> {
+        let value = {
+            static KEY: StaticPyKey = StaticPyKey::new("type");
+            KEY.get_item(dict.py(), dict).map_err(H2CornError::from)?
+        }
+        .ok_or_else(|| AsgiError::missing_field(AsgiContainer::Message, "type").into_error())?;
         Ok(Self {
             dict,
-            message_type: {
-                static KEY: StaticPyKey = StaticPyKey::new("type");
-                KEY.get_item(dict.py(), dict).map_err(H2CornError::from)?
-            }
-            .ok_or_else(|| AsgiError::missing_field(AsgiContainer::Message, "type").into_error())
-            .and_then(|value| cast_into_exact_first::<PyString>(value))?,
+            message_type: cast_exact_first::<PyString>(&value)
+                .map_err(|_| field_type_error(AsgiContainer::Message, "type", "a str", &value))?
+                .to_owned(),
         })
     }
 
@@ -239,91 +256,118 @@ impl<'py> AsgiMessage<'py> {
         value.filter(|value| !value.is_none())
     }
 
-    fn bool_or_false(value: Option<Bound<'py, PyAny>>) -> Result<bool, H2CornError> {
+    fn bool_or_false(
+        container: AsgiContainer,
+        field: &'static str,
+        value: Option<Bound<'py, PyAny>>,
+    ) -> Result<bool, H2CornError> {
         value.map_or(Ok(false), |value| {
-            cast_exact_first::<PyBool>(&value).map_or_else(
-                |_| value.extract::<bool>().map_err(H2CornError::from),
-                |value| Ok(value.is_true()),
-            )
+            cast_exact_first::<PyBool>(&value)
+                .map(PyBoolMethods::is_true)
+                .map_err(|_| field_type_error(container, field, "a bool", &value))
         })
     }
 
     fn payload_bytes_or_empty(
+        container: AsgiContainer,
+        field: &'static str,
         value: Option<Bound<'py, PyAny>>,
     ) -> Result<PayloadBytes, H2CornError> {
         value.map_or_else(
             || Ok(PayloadBytes::from(Bytes::new())),
-            |value| extract_payload_bytes(&value),
+            |value| extract_payload_bytes(container, field, &value),
         )
     }
 
-    fn response_headers(&self) -> Result<ResponseHeaders, H2CornError> {
-        parse_headers(self.headers_item()?)
+    fn response_headers(&self, container: AsgiContainer) -> Result<ResponseHeaders, H2CornError> {
+        parse_headers(container, self.headers_item()?)
     }
 
     fn application_response_headers(
         &self,
+        container: AsgiContainer,
     ) -> Result<(ResponseHeaders, ResponseHeaderControl), H2CornError> {
-        let mut headers = self.response_headers()?;
+        let mut headers = self.response_headers(container)?;
         let control = validate_application_response_headers(&mut headers)?;
         Ok((headers, control))
     }
 
-    fn response_trailers(&self) -> Result<ResponseTrailers, H2CornError> {
-        ResponseTrailers::try_from(parse_headers(self.headers_item()?)?)
+    fn response_trailers(&self, container: AsgiContainer) -> Result<ResponseTrailers, H2CornError> {
+        ResponseTrailers::try_from(parse_headers(container, self.headers_item()?)?)
     }
 
     fn status(&self, container: AsgiContainer) -> Result<HttpStatusCode, H2CornError> {
-        let status = Self::require(container, "status", self.status_item()?)?
-            .extract::<u16>()
-            .map_err(H2CornError::from)?;
-        HttpStatusCode::new(status)
-            .ok_or_else(|| HttpResponseError::StatusMustBeThreeDigitCode.into_error())
-    }
-
-    fn trailers_flag(&self) -> Result<bool, H2CornError> {
-        Self::bool_or_false(self.trailers_item()?)
-    }
-
-    fn body_or_empty(&self) -> Result<PayloadBytes, H2CornError> {
-        Self::payload_bytes_or_empty(self.body_item()?)
-    }
-
-    fn more_body_flag(&self) -> Result<bool, H2CornError> {
-        Self::bool_or_false(self.more_body_item()?)
-    }
-
-    fn path(&self, container: AsgiContainer) -> Result<PathBuf, H2CornError> {
-        Self::require(container, "path", self.path_item()?)?
-            .extract::<&str>()
-            .map(PathBuf::from)
-            .map_err(H2CornError::from)
-    }
-
-    fn more_trailers_flag(&self) -> Result<bool, H2CornError> {
-        Self::bool_or_false(self.more_trailers_item()?)
-    }
-
-    fn optional_backed_str(
-        value: Option<Bound<'py, PyAny>>,
-    ) -> Result<Option<PyBackedStr>, H2CornError> {
-        Self::optional_item(value)
-            .map(|value| extract_backed_str(&value))
-            .transpose()
-    }
-
-    fn subprotocol(&self) -> Result<Option<PyBackedStr>, H2CornError> {
-        Self::optional_backed_str(self.subprotocol_item()?)
-    }
-
-    fn close_code_or_default(&self) -> Result<u16, H2CornError> {
-        Self::optional_item(self.code_item()?).map_or(Ok(1000_u16), |value| {
-            value.extract::<u16>().map_err(H2CornError::from)
+        let value = Self::require(container, "status", self.status_item()?)?;
+        let status = cast_exact_first::<PyInt>(&value)
+            .map_err(|_| field_type_error(container, "status", "an int", &value))?
+            .extract::<i64>()
+            .map_err(|_| HttpResponseError::StatusMustBeThreeDigitCode {
+                container,
+                status: "an integer outside the signed 64-bit range".into(),
+            })?;
+        let display_status = status.to_string().into_boxed_str();
+        let status =
+            u16::try_from(status).map_err(|_| HttpResponseError::StatusMustBeThreeDigitCode {
+                container,
+                status: display_status.clone(),
+            })?;
+        HttpStatusCode::new(status).ok_or_else(|| {
+            HttpResponseError::StatusMustBeThreeDigitCode {
+                container,
+                status: display_status,
+            }
+            .into_error()
         })
     }
 
-    fn reason(&self) -> Result<Option<PyBackedStr>, H2CornError> {
-        Self::optional_backed_str(self.reason_item()?)
+    fn trailers_flag(&self, container: AsgiContainer) -> Result<bool, H2CornError> {
+        Self::bool_or_false(container, "trailers", self.trailers_item()?)
+    }
+
+    fn body_or_empty(&self, container: AsgiContainer) -> Result<PayloadBytes, H2CornError> {
+        Self::payload_bytes_or_empty(container, "body", self.body_item()?)
+    }
+
+    fn more_body_flag(&self, container: AsgiContainer) -> Result<bool, H2CornError> {
+        Self::bool_or_false(container, "more_body", self.more_body_item()?)
+    }
+
+    fn path(&self, container: AsgiContainer) -> Result<PathBuf, H2CornError> {
+        let value = Self::require(container, "path", self.path_item()?)?;
+        Ok(PathBuf::from(
+            extract_backed_str(container, "path", &value)?.as_str(),
+        ))
+    }
+
+    fn more_trailers_flag(&self, container: AsgiContainer) -> Result<bool, H2CornError> {
+        Self::bool_or_false(container, "more_trailers", self.more_trailers_item()?)
+    }
+
+    fn optional_backed_str(
+        container: AsgiContainer,
+        field: &'static str,
+        value: Option<Bound<'py, PyAny>>,
+    ) -> Result<Option<PyBackedStr>, H2CornError> {
+        Self::optional_item(value)
+            .map(|value| extract_backed_str(container, field, &value))
+            .transpose()
+    }
+
+    fn subprotocol(&self, container: AsgiContainer) -> Result<Option<PyBackedStr>, H2CornError> {
+        Self::optional_backed_str(container, "subprotocol", self.subprotocol_item()?)
+    }
+
+    fn close_code_or_default(&self, container: AsgiContainer) -> Result<u16, H2CornError> {
+        Self::optional_item(self.code_item()?).map_or(Ok(1000_u16), |value| {
+            cast_exact_first::<PyInt>(&value)
+                .map_err(|_| field_type_error(container, "code", "an int", &value))?
+                .extract::<u16>()
+                .map_err(|_| WebSocketError::CloseCodeInvalid.into_error())
+        })
+    }
+
+    fn reason(&self, container: AsgiContainer) -> Result<Option<PyBackedStr>, H2CornError> {
+        Self::optional_backed_str(container, "reason", self.reason_item()?)
     }
 
     fn websocket_send_payload(&self) -> Result<WebSocketSendPayload, H2CornError> {
@@ -331,8 +375,16 @@ impl<'py> AsgiMessage<'py> {
             Self::optional_item(self.text_item()?),
             Self::optional_item(self.bytes_item()?),
         ) {
-            (Some(value), None) => Ok(WebSocketSendPayload::Text(extract_backed_str(&value)?)),
-            (None, Some(value)) => Ok(WebSocketSendPayload::Bytes(extract_payload_bytes(&value)?)),
+            (Some(value), None) => Ok(WebSocketSendPayload::Text(extract_backed_str(
+                AsgiContainer::WebSocketSend,
+                "text",
+                &value,
+            )?)),
+            (None, Some(value)) => Ok(WebSocketSendPayload::Bytes(extract_payload_bytes(
+                AsgiContainer::WebSocketSend,
+                "bytes",
+                &value,
+            )?)),
             _ => AsgiError::WebSocketSendRequiresExactlyOnePayload.err(),
         }
     }
@@ -667,7 +719,10 @@ pub(crate) fn build_websocket_inbound_event(
     Ok(dict.into_any().unbind())
 }
 
-fn parse_headers(value: Option<Bound<'_, PyAny>>) -> Result<ResponseHeaders, H2CornError> {
+fn parse_headers(
+    container: AsgiContainer,
+    value: Option<Bound<'_, PyAny>>,
+) -> Result<ResponseHeaders, H2CornError> {
     let Some(value) = value else {
         return Ok(ResponseHeaders::new());
     };
@@ -678,27 +733,57 @@ fn parse_headers(value: Option<Bound<'_, PyAny>>) -> Result<ResponseHeaders, H2C
         return Ok(headers);
     }
 
-    parse_header_iterable(&value)
+    parse_header_iterable(container, &value)
 }
 
-fn cast_into_exact_first<T>(value: Bound<'_, PyAny>) -> Result<Bound<'_, T>, H2CornError>
-where
-    T: PyTypeInfo + PyTypeCheck,
-{
-    match value.cast_into_exact::<T>() {
-        Ok(value) => Ok(value),
-        Err(err) => err
-            .into_inner()
-            .cast_into::<T>()
-            .map_err(PyErr::from)
-            .map_err(H2CornError::from),
-    }
-}
-
-fn parse_header_iterable(value: &Bound<'_, PyAny>) -> Result<ResponseHeaders, H2CornError> {
+fn parse_header_iterable(
+    container: AsgiContainer,
+    value: &Bound<'_, PyAny>,
+) -> Result<ResponseHeaders, H2CornError> {
     let mut headers = ResponseHeaders::new();
-    for item in value.try_iter()? {
-        let (name, value) = item?.extract::<(PyBackedBytes, PyBackedBytes)>()?;
+    let items = value.try_iter().map_err(|_| {
+        field_type_error(
+            container,
+            "headers",
+            "an iterable of two-item (bytes, bytes) pairs",
+            value,
+        )
+    })?;
+    for item in items {
+        let item = item.map_err(|_| {
+            field_type_error(
+                container,
+                "headers",
+                "an iterable of two-item (bytes, bytes) pairs",
+                value,
+            )
+        })?;
+        let pair = item.try_iter().map_err(|_| {
+            field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
+        })?;
+        let fields = pair.collect::<Result<Vec<_>, _>>().map_err(|_| {
+            field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
+        })?;
+        let [name, value] = fields.as_slice() else {
+            return Err(field_type_error(
+                container,
+                "headers",
+                "two-item (bytes, bytes) pairs",
+                &item,
+            ));
+        };
+        let name = cast_exact_first::<PyBytes>(name)
+            .map_err(|_| {
+                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", name)
+            })?
+            .to_owned();
+        let value = cast_exact_first::<PyBytes>(value)
+            .map_err(|_| {
+                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", value)
+            })?
+            .to_owned();
+        let name = PyBackedBytes::from(name);
+        let value = PyBackedBytes::from(value);
         headers.push(parse_response_header(name, value)?);
     }
     Ok(headers)
@@ -707,9 +792,9 @@ fn parse_header_iterable(value: &Bound<'_, PyAny>) -> Result<ResponseHeaders, H2
 fn try_parse_exact_header_list(
     list: &Bound<'_, PyList>,
 ) -> Result<Option<ResponseHeaders>, H2CornError> {
-    let mut headers = ResponseHeaders::with_capacity(list.len());
+    let mut headers = ResponseHeaders::with_capacity(list.len() + RESPONSE_DEFAULT_BUILTIN_SLOTS);
     for item in list.iter() {
-        let Ok(tuple) = item.cast_exact::<PyTuple>() else {
+        let Ok(tuple) = item.cast_exact::<pyo3::types::PyTuple>() else {
             return Ok(None);
         };
         let [name, value] = tuple.as_slice() else {
@@ -817,14 +902,21 @@ fn validate_application_response_headers(
     Ok(control)
 }
 
-fn extract_payload_bytes(value: &Bound<'_, PyAny>) -> Result<PayloadBytes, H2CornError> {
+fn extract_payload_bytes(
+    container: AsgiContainer,
+    field: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<PayloadBytes, H2CornError> {
     cast_exact_first::<PyBytes>(value).map_or_else(
         |_| {
             cast_exact_first::<PyByteArray>(value).map_or_else(
                 |_| {
-                    Err(H2CornError::from(PyTypeError::new_err(
-                        "expected bytes or bytearray for ASGI body bytes",
-                    )))
+                    Err(field_type_error(
+                        container,
+                        field,
+                        "bytes or bytearray",
+                        value,
+                    ))
                 },
                 |bytearray| {
                     Ok(PayloadBytes::from(PyBackedBytes::from(
@@ -837,10 +929,31 @@ fn extract_payload_bytes(value: &Bound<'_, PyAny>) -> Result<PayloadBytes, H2Cor
     )
 }
 
-fn extract_backed_str(value: &Bound<'_, PyAny>) -> Result<PyBackedStr, H2CornError> {
+fn extract_backed_str(
+    container: AsgiContainer,
+    field: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<PyBackedStr, H2CornError> {
     Ok(PyBackedStr::try_from(
-        cast_exact_first::<PyString>(value)?.to_owned(),
+        cast_exact_first::<PyString>(value)
+            .map_err(|_| field_type_error(container, field, "a str", value))?
+            .to_owned(),
     )?)
+}
+
+fn field_type_error(
+    container: AsgiContainer,
+    field: &'static str,
+    expected: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> H2CornError {
+    let actual = value
+        .get_type()
+        .name()
+        .ok()
+        .and_then(|name| name.to_str().ok().map(str::to_owned))
+        .unwrap_or_else(|| String::from("unknown"));
+    AsgiError::invalid_field_type(container, field, expected, actual.into()).into_error()
 }
 
 fn cast_exact_first<'a, 'py, T>(
@@ -908,6 +1021,38 @@ pub(crate) fn send_after_full<T: Send + 'static>(
     Ok(fut.into_bound(py).into_any())
 }
 
+/// Resolve an HTTP ASGI send after its connection-wide byte credit and event
+/// queue slot are both admitted. Cancellation drops any acquired credit.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the returned awaitable and pump resolver require independent Py references"
+)]
+pub(crate) fn await_http_send(
+    py: Python<'_>,
+    shard: Shard,
+    waiter: HttpSendWaiter,
+) -> PyResult<Bound<'_, PyAny>> {
+    let fut = new_rust_future(py, Arc::clone(&shard))?;
+    let waiter_fut = fut.clone_ref(py);
+    let waiter_shard = shard;
+    let join = runtime().spawn(async move {
+        let sent = waiter.send().await;
+        let payload = ResolvePayload::Simple(Box::new(move |py| {
+            if sent {
+                Ok(py.None())
+            } else {
+                Err(into_pyerr(AsgiError::SendAfterClose))
+            }
+        }));
+        waiter_shard.push(PumpEvent::Resolve {
+            fut: waiter_fut,
+            payload,
+        });
+    });
+    fut.get().set_abort(join.abort_handle());
+    Ok(fut.into_bound(py).into_any())
+}
+
 pub(crate) fn parse_http_outbound_event(
     message: &Bound<'_, PyDict>,
 ) -> Result<HttpOutboundEvent, H2CornError> {
@@ -916,16 +1061,16 @@ pub(crate) fn parse_http_outbound_event(
     let message_type = message.message_type()?;
     match message_type {
         "http.response.start" => {
-            let status = FinalResponseStatus::new(
-                message.status(AsgiContainer::HttpResponseStart)?,
-            )
-            .ok_or_else(|| {
-                H2CornError::from(PyValueError::new_err(
-                    "informational response statuses are not supported by ASGI http.response.start",
-                ))
+            let status = message.status(AsgiContainer::HttpResponseStart)?;
+            let status = FinalResponseStatus::new(status).ok_or_else(|| {
+                HttpResponseError::InformationalStatusUnsupported {
+                    container: AsgiContainer::HttpResponseStart,
+                    status: status.get(),
+                }
             })?;
-            let (headers, control) = message.application_response_headers()?;
-            let trailers = message.trailers_flag()?;
+            let (headers, control) =
+                message.application_response_headers(AsgiContainer::HttpResponseStart)?;
+            let trailers = message.trailers_flag(AsgiContainer::HttpResponseStart)?;
             Ok(HttpOutboundEvent::Start {
                 status,
                 headers,
@@ -934,16 +1079,16 @@ pub(crate) fn parse_http_outbound_event(
             })
         },
         "http.response.body" => {
-            let body = message.body_or_empty()?;
-            let more_body = message.more_body_flag()?;
+            let body = message.body_or_empty(AsgiContainer::HttpResponseBody)?;
+            let more_body = message.more_body_flag(AsgiContainer::HttpResponseBody)?;
             Ok(HttpOutboundEvent::Body { body, more_body })
         },
         "http.response.pathsend" => Ok(HttpOutboundEvent::PathSend {
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),
         "http.response.trailers" => {
-            let headers = message.response_trailers()?;
-            let more_trailers = message.more_trailers_flag()?;
+            let headers = message.response_trailers(AsgiContainer::HttpResponseTrailers)?;
+            let more_trailers = message.more_trailers_flag(AsgiContainer::HttpResponseTrailers)?;
             Ok(HttpOutboundEvent::Trailers {
                 headers,
                 more_trailers,
@@ -961,8 +1106,9 @@ pub(crate) fn parse_websocket_outbound_event(
     let message_type = message.message_type()?;
     match message_type {
         "websocket.accept" => {
-            let subprotocol = message.subprotocol()?;
-            let (mut headers, _) = message.application_response_headers()?;
+            let subprotocol = message.subprotocol(AsgiContainer::WebSocketAccept)?;
+            let (mut headers, _) =
+                message.application_response_headers(AsgiContainer::WebSocketAccept)?;
             // Connection is handled by the generic response policy above.
             // The WebSocket transport exclusively owns its Upgrade and Accept
             // fields, so application copies are deliberately ignored.
@@ -989,20 +1135,20 @@ pub(crate) fn parse_websocket_outbound_event(
             WebSocketSendPayload::Bytes(data) => Ok(WebSocketOutboundEvent::SendBytes(data)),
         },
         "websocket.close" => {
-            let code = message.close_code_or_default()?;
-            let reason = message.reason()?;
+            let code = message.close_code_or_default(AsgiContainer::WebSocketClose)?;
+            let reason = message.reason(AsgiContainer::WebSocketClose)?;
             Ok(WebSocketOutboundEvent::Close { code, reason })
         },
         "websocket.http.response.start" => {
-            let status = FinalResponseStatus::new(
-                message.status(AsgiContainer::WebSocketHttpResponseStart)?,
-            )
-            .ok_or_else(|| {
-                H2CornError::from(PyValueError::new_err(
-                    "informational response statuses are not supported by ASGI websocket.http.response.start",
-                ))
+            let status = message.status(AsgiContainer::WebSocketHttpResponseStart)?;
+            let status = FinalResponseStatus::new(status).ok_or_else(|| {
+                HttpResponseError::InformationalStatusUnsupported {
+                    container: AsgiContainer::WebSocketHttpResponseStart,
+                    status: status.get(),
+                }
             })?;
-            let (headers, control) = message.application_response_headers()?;
+            let (headers, control) =
+                message.application_response_headers(AsgiContainer::WebSocketHttpResponseStart)?;
             Ok(WebSocketOutboundEvent::HttpResponseStart {
                 status,
                 headers,
@@ -1010,8 +1156,8 @@ pub(crate) fn parse_websocket_outbound_event(
             })
         },
         "websocket.http.response.body" => {
-            let body = message.body_or_empty()?;
-            let more_body = message.more_body_flag()?;
+            let body = message.body_or_empty(AsgiContainer::WebSocketHttpResponseBody)?;
+            let more_body = message.more_body_flag(AsgiContainer::WebSocketHttpResponseBody)?;
             Ok(WebSocketOutboundEvent::HttpResponseBody { body, more_body })
         },
         _ => AsgiError::unsupported_outbound_message(AsgiChannel::WebSocket, message_type).err(),
@@ -1027,7 +1173,7 @@ mod tests {
 
     use bytes::Bytes;
     use pyo3::ffi::c_str;
-    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyTuple};
+    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyTuple};
     use pyo3::{PyResult, Python};
     use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -1036,10 +1182,14 @@ mod tests {
         WebSocketOutboundEvent, build_http_inbound_event, parse_http_outbound_event,
         parse_websocket_outbound_event,
     };
-    use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError};
+    use crate::config::{ConfiguredResponseHeader, ResponseHeaderConfig};
+    use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError, WebSocketError};
     use crate::h2_frame::StreamId;
-    use crate::http::header::ResponseConnectionDirective;
-    use crate::http::types::status_code;
+    use crate::http::header::{
+        ResponseConnectionDirective, inspect_response_headers,
+        prepare_fixed_length_response_headers_with_scan,
+    };
+    use crate::http::types::{ResponseField, status_code};
     use crate::python::py_dict;
     use crate::runtime::H2InputCreditQueue;
 
@@ -1106,6 +1256,68 @@ mod tests {
     }
 
     #[test]
+    fn asgi_message_boundaries_name_the_event_and_bad_field() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let message = py_dict!(py, { "type" => 1 });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "ASGI message type must be a str, got int"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => "200",
+            });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.start status must be an int, got str"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "http.response.pathsend",
+                "path" => 1,
+            });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.pathsend path must be a str, got int"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "http.response.body",
+                "more_body" => "yes",
+            });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.body more_body must be a bool, got str"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => [1],
+            });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.start headers must be two-item (bytes, bytes) pairs, got int"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "websocket.close",
+                "code" => "1000",
+            });
+            assert_eq!(
+                parse_websocket_outbound_event(&message)
+                    .unwrap_err()
+                    .to_string(),
+                "websocket.close code must be an int, got str"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn websocket_send_accepts_exactly_one_payload_variant() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -1129,6 +1341,27 @@ mod tests {
                 bytes_event,
                 WebSocketOutboundEvent::SendBytes(body) if body.as_ref() == b"hello"
             ));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unexpected_websocket_event_reports_its_asgi_type_not_application_payload() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let message = py_dict!(py, {
+                "type" => "websocket.send",
+                "text" => "sk-live-SECRET-TOKEN-12345",
+            });
+
+            let event = parse_websocket_outbound_event(&message).unwrap();
+            let error = WebSocketError::unexpected_initial_event(event.message_type());
+            assert_eq!(
+                error.to_string(),
+                "unexpected websocket.send before handshake; the app must send websocket.accept or websocket.close first"
+            );
+            assert!(!error.to_string().contains("sk-live-SECRET-TOKEN-12345"));
             Ok(())
         })
         .unwrap();
@@ -1243,8 +1476,14 @@ mod tests {
                 let err = parse_http_outbound_event(&message).unwrap_err();
                 assert!(matches!(
                     err.kind(),
-                    ErrorKind::HttpResponse(HttpResponseError::StatusMustBeThreeDigitCode)
+                    ErrorKind::HttpResponse(HttpResponseError::StatusMustBeThreeDigitCode { .. })
                 ));
+                if status == 99 {
+                    assert_eq!(
+                        err.to_string(),
+                        "http.response.start status must be a three-digit code, got 99"
+                    );
+                }
             }
             Ok(())
         })
@@ -1312,6 +1551,106 @@ headers = (Headers(0), Headers(1), Headers(2))
                 message.set_item("headers", headers?)?;
                 parse_http_outbound_event(&message).unwrap();
             }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn exact_header_list_reserves_all_builtin_default_slots() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            // The ingress reserve covers `server`, `date`, and
+            // `content-length`; the default helper separately reserves any
+            // configured extras because their count belongs to configuration.
+            assert_eq!(std::mem::size_of::<ResponseField>(), 80);
+
+            let one = PyList::new(py, [(PyBytes::new(py, b"x-app"), PyBytes::new(py, b"one"))])?;
+            let mut headers = super::try_parse_exact_header_list(&one)
+                .expect("response header list parses")
+                .expect("exact list stays on the exact path");
+            assert_eq!(headers.capacity(), headers.len() + 3);
+            let allocation = headers.as_ptr();
+            let defaults = ResponseHeaderConfig {
+                server_header: Some(Bytes::from_static(b"h2corn")),
+                date_header: true,
+                extra_headers: Box::new([]),
+            };
+            let mut scan = inspect_response_headers(&headers);
+            prepare_fixed_length_response_headers_with_scan(&mut headers, &mut scan, &defaults, 3);
+            assert_eq!(headers.as_ptr(), allocation, "built-ins do not reallocate");
+            assert_eq!(headers.capacity(), 4);
+            assert_eq!(headers.len(), 4);
+
+            // This is the old `list.len()` capacity. It has one 80-byte
+            // field allocation, and default preparation grows it once to the
+            // four-field (320-byte) allocation. The production path above
+            // must remain the no-growth counterpart of this control.
+            let mut old_capacity = super::try_parse_exact_header_list(&one)
+                .expect("response header list parses")
+                .expect("exact list stays on the exact path");
+            old_capacity.shrink_to_fit();
+            assert_eq!(old_capacity.capacity(), 1);
+            let old_allocation = old_capacity.as_ptr();
+            let mut scan = inspect_response_headers(&old_capacity);
+            prepare_fixed_length_response_headers_with_scan(
+                &mut old_capacity,
+                &mut scan,
+                &defaults,
+                3,
+            );
+            assert_ne!(
+                old_capacity.as_ptr(),
+                old_allocation,
+                "one field grows from 80 to 320 bytes"
+            );
+            assert_eq!(old_capacity.capacity(), 4);
+
+            // Application-provided built-ins leave the three reserved slots
+            // unused; disabled server/date therefore cannot grow this vector.
+            let supplied = PyList::new(py, [
+                (PyBytes::new(py, b"server"), PyBytes::new(py, b"app")),
+                (PyBytes::new(py, b"date"), PyBytes::new(py, b"date")),
+                (PyBytes::new(py, b"content-length"), PyBytes::new(py, b"3")),
+            ])?;
+            let mut supplied = super::try_parse_exact_header_list(&supplied)
+                .expect("response header list parses")
+                .expect("exact list stays on the exact path");
+            let allocation = supplied.as_ptr();
+            let defaults = ResponseHeaderConfig::default();
+            let mut scan = inspect_response_headers(&supplied);
+            prepare_fixed_length_response_headers_with_scan(&mut supplied, &mut scan, &defaults, 3);
+            assert_eq!(supplied.as_ptr(), allocation);
+            assert_eq!(supplied.len(), 3);
+
+            // Configured extras retain their existing exact reserve in the
+            // default helper and are appended once, after application fields.
+            let empty = PyList::empty(py);
+            let mut configured = super::try_parse_exact_header_list(&empty)
+                .expect("response header list parses")
+                .expect("exact list stays on the exact path");
+            let defaults = ResponseHeaderConfig {
+                server_header: None,
+                date_header: false,
+                extra_headers: Box::new([ConfiguredResponseHeader::new(
+                    Bytes::from_static(b"x-configured"),
+                    Bytes::from_static(b"yes"),
+                )]),
+            };
+            let mut scan = inspect_response_headers(&configured);
+            prepare_fixed_length_response_headers_with_scan(
+                &mut configured,
+                &mut scan,
+                &defaults,
+                0,
+            );
+            assert_eq!(
+                configured
+                    .iter()
+                    .map(|(name, _)| name.as_bytes())
+                    .collect::<Vec<_>>(),
+                [b"x-configured".as_slice(), b"content-length"],
+            );
             Ok(())
         })
         .unwrap();

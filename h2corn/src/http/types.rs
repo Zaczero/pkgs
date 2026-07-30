@@ -1,3 +1,8 @@
+#![allow(
+    clippy::arbitrary_source_item_ordering,
+    reason = "the generated known-name table follows its compile-time grammar checker"
+)]
+
 pub(crate) mod status_code {
     use super::HttpStatusCode;
 
@@ -40,12 +45,25 @@ use crate::http::header::{
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
 
+const fn request_header_name_bytes_are_valid(name: &[u8]) -> bool {
+    let mut index = 0;
+    while index < name.len() {
+        if crate::ascii::HEADER_NAME_FLAGS[name[index] as usize] != crate::ascii::HEADER_NAME_VALID
+        {
+            return false;
+        }
+        index += 1;
+    }
+    !name.is_empty()
+}
+
 macro_rules! known_request_header_names {
     ($($first:literal => { $(($variant:ident, $name:literal)),+ $(,)? }),+ $(,)?) => {
         const _: () = {
             $($(
                 assert!(!$name.is_empty());
                 assert!($name[0] == $first);
+                assert!(request_header_name_bytes_are_valid($name));
             )+)+
         };
 
@@ -723,15 +741,24 @@ impl H1RequestHeaders {
         name: &[u8],
         value: &[u8],
     ) -> Result<Option<KnownRequestHeaderName>, ()> {
-        let needs_lowercase = request_header_name_needs_lowercase(name).ok_or(())?;
         if !header_value_is_valid(value) {
             return Err(());
         }
-        let known_name = if needs_lowercase {
-            KnownRequestHeaderName::from_bytes_ignore_ascii_case(name)
+        // Generated names are grammar-proven at compile time, so an exact
+        // match needs neither the generic token scan nor normalisation.
+        let known_name = KnownRequestHeaderName::from_bytes(name);
+        let needs_lowercase = if known_name.is_some() {
+            false
         } else {
-            KnownRequestHeaderName::from_bytes(name)
+            request_header_name_needs_lowercase(name).ok_or(())?
         };
+        let known_name = known_name.or_else(|| {
+            if needs_lowercase {
+                KnownRequestHeaderName::from_bytes_ignore_ascii_case(name)
+            } else {
+                None
+            }
+        });
         let (name_start, name_end, name_auxiliary) = if known_name.is_some() {
             (0, 0, false)
         } else if needs_lowercase {
@@ -1357,6 +1384,30 @@ mod tests {
             RequestHeaderNameRef::Known(KnownRequestHeaderName::UserAgent)
         );
         assert_eq!(headers.iter().len(), 4);
+    }
+
+    #[test]
+    fn h1_known_names_skip_generic_validation_without_relaxing_unknown_names() {
+        let head = Bytes::from_static(b"HOST: example.com\r\nX-Demo: value\r\n");
+        let mut headers = H1RequestHeaders::new(head.clone());
+        headers.push(&head[..4], &head[6..17]).unwrap();
+        headers.push(&head[19..25], &head[27..32]).unwrap();
+
+        let headers = RequestHeaders::from_h1(headers);
+        assert_eq!(
+            headers.get(0).unwrap().name(),
+            RequestHeaderNameRef::Known(KnownRequestHeaderName::Host)
+        );
+        assert_eq!(
+            headers.get(1).unwrap().name(),
+            RequestHeaderNameRef::Other("x-demo")
+        );
+
+        let malformed_head = Bytes::from_static(b"ho st: value");
+        let mut malformed = H1RequestHeaders::new(malformed_head.clone());
+        malformed
+            .push(&malformed_head[..5], &malformed_head[7..])
+            .unwrap_err();
     }
 
     #[test]

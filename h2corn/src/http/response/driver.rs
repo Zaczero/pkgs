@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use super::{actions, controller, transport};
 use crate::access_log::ResponseLogState;
+use crate::http::app::AdmittedHttpOutboundEvent;
 use crate::http::types::{HttpStatusCode, status_code};
 use crate::{bridge, error, http};
 
@@ -36,6 +37,26 @@ pub(crate) async fn apply_http_event<T>(
 where
     T: transport::HttpResponseTransport,
 {
+    apply_admitted_http_event(
+        controller,
+        transport,
+        actions,
+        response_log,
+        AdmittedHttpOutboundEvent::unbounded(event),
+    )
+    .await
+}
+
+pub(crate) async fn apply_admitted_http_event<T>(
+    controller: &mut controller::ResponseController,
+    transport: &mut T,
+    actions: &mut actions::ResponseActions,
+    response_log: &mut ResponseLogState,
+    event: AdmittedHttpOutboundEvent,
+) -> Result<(), error::H2CornError>
+where
+    T: transport::HttpResponseTransport,
+{
     let effect = match handle_http_event_sync(controller, actions, event) {
         Ok(effect) => effect,
         Err(err) => {
@@ -51,7 +72,10 @@ where
         match http::pathsend::open_pathsend_file(path).await {
             Ok((file, len)) => controller.handle_pathsend(actions, file, len)?,
             Err(err) => match pathsend_open_substitute_status(&err) {
-                Some(status) => controller.handle_pathsend_substitute(actions, status)?,
+                Some(status) => {
+                    crate::server::report_request_failure(Err(err));
+                    controller.handle_pathsend_substitute(actions, status)?;
+                },
                 None => return Err(err),
             },
         }
@@ -95,9 +119,10 @@ fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatu
 fn handle_http_event_sync(
     controller: &mut controller::ResponseController,
     actions: &mut actions::ResponseActions,
-    event: bridge::HttpOutboundEvent,
+    event: AdmittedHttpOutboundEvent,
 ) -> Result<HttpEventEffect, error::H2CornError> {
     actions.clear();
+    let AdmittedHttpOutboundEvent { event, credit } = event;
     match event {
         bridge::HttpOutboundEvent::Start {
             status,
@@ -108,7 +133,11 @@ fn handle_http_event_sync(
             .handle_start(status, headers, trailers, control)
             .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::Body { body, more_body } => controller
-            .handle_body(actions, body, more_body)
+            .handle_body_with_credit(
+                actions,
+                actions::ResponseBody::with_credit(body, credit),
+                more_body,
+            )
             .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::PathSend { path } => Ok(HttpEventEffect::PathSend(path)),
         bridge::HttpOutboundEvent::Trailers {

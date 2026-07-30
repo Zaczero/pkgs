@@ -601,7 +601,7 @@ async def test_invalid_response_header_can_be_caught_and_replaced(protocol: str)
                 'status': 200,
                 'headers': [(b'bad\r\nheader', b'value')],
             })
-        except RuntimeError:
+        except ValueError:
             caught.append(scope['path'])
             await send({'type': 'http.response.start', 'status': 418, 'headers': []})
             await send({'type': 'http.response.body', 'body': b'replaced'})
@@ -790,7 +790,7 @@ async def test_h2_dynamic_connection_option_rejects_before_csp_can_be_nominated(
                     (b'content-security-policy', b"default-src 'none'"),
                 ],
             })
-        except RuntimeError:
+        except ValueError:
             caught.append(scope['path'])
             await send({'type': 'http.response.start', 'status': 418, 'headers': []})
             await send({'type': 'http.response.body', 'body': b'rejected'})
@@ -829,7 +829,7 @@ async def test_http1_426_emits_paired_upgrade_advertisement_and_101_is_rejected(
         status_101, _headers_101, body_101 = await _response('h1', server_port(server), '/101')
 
     assert (status_426, body_426) == (426, b'use h2c')
-    assert headers_426[b'connection'] == b'Upgrade'
+    assert headers_426[b'connection'] == b'upgrade'
     assert headers_426[b'upgrade'] == b'h2c'
     assert starts == [101]
     assert (status_101, body_101) == (418, b'no switch')

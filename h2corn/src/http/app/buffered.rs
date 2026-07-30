@@ -1,58 +1,141 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent};
 use crate::buffered_events::BufferedState;
+use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
 
 enum HttpSendMode {
     Inline {
         accepted: u8,
     },
     Streaming {
-        tx: mpsc::Sender<HttpOutboundEvent>,
-        rx: Option<mpsc::Receiver<HttpOutboundEvent>>,
+        tx: mpsc::Sender<AdmittedHttpOutboundEvent>,
+        rx: Option<mpsc::Receiver<AdmittedHttpOutboundEvent>>,
     },
     Closed,
 }
 
-/// Result of handing an ASGI event to the response driver. The common
-/// buffered and sent states carry no channel owner; only a channel proven full
-/// transfers one sender clone into a backpressure waiter.
+/// An ASGI event that has already paid its connection-wide body credit. The
+/// credit stays attached to the event through response lowering and into the
+/// writer's pending DATA chunk.
+#[derive(Debug)]
+pub(crate) struct AdmittedHttpOutboundEvent {
+    pub(crate) event: HttpOutboundEvent,
+    pub(crate) credit: Option<ResponseBytePermit>,
+}
+
+impl AdmittedHttpOutboundEvent {
+    pub(crate) const fn unbounded(event: HttpOutboundEvent) -> Self {
+        Self {
+            event,
+            credit: None,
+        }
+    }
+
+    fn into_event(self) -> HttpOutboundEvent {
+        self.event
+    }
+}
+
+/// Result of handing an ASGI event to the response driver. Only a full event
+/// queue or byte ledger creates a waiter; uncontended sends keep no extra
+/// sender or byte-accounting owner alive.
 pub(crate) enum HttpSendDisposition {
     Buffered,
     Sent,
-    Backpressured {
-        tx: mpsc::Sender<HttpOutboundEvent>,
-        event: HttpOutboundEvent,
-    },
+    Backpressured(HttpSendWaiter),
     Closed,
+}
+
+/// A send that could not enter the bounded event/byte admission path. It
+/// acquires byte credit before awaiting a channel slot, so its body remains
+/// accounted while the sender is suspended.
+pub(crate) struct HttpSendWaiter {
+    state: HttpSendState,
+    event: HttpOutboundEvent,
 }
 
 #[derive(Clone)]
 pub(crate) struct HttpSendState {
-    shared: Arc<BufferedState<HttpSendMode, HttpOutboundEvent, 2>>,
+    shared: Arc<BufferedState<HttpSendMode, AdmittedHttpOutboundEvent, 2>>,
+    budget: Option<ResponseByteBudget>,
+    closed: watch::Receiver<bool>,
+    close_signal: watch::Sender<bool>,
 }
 
 pub(crate) struct HttpSendBuffer {
-    shared: Arc<BufferedState<HttpSendMode, HttpOutboundEvent, 2>>,
-    stream_rx: Option<mpsc::Receiver<HttpOutboundEvent>>,
+    shared: Arc<BufferedState<HttpSendMode, AdmittedHttpOutboundEvent, 2>>,
+    closed: watch::Sender<bool>,
+    stream_rx: Option<mpsc::Receiver<AdmittedHttpOutboundEvent>>,
 }
 
 impl HttpSendState {
+    #[cfg(test)]
     pub(crate) fn new() -> (Self, HttpSendBuffer) {
-        let send_state = Self {
+        let state = Self::unbounded();
+        let buffer = state.buffer();
+        (state, buffer)
+    }
+
+    pub(crate) fn unbounded() -> Self {
+        Self::with_optional_response_budget(None)
+    }
+
+    pub(crate) fn with_response_budget(budget: ResponseByteBudget) -> Self {
+        Self::with_optional_response_budget(Some(budget))
+    }
+
+    fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> Self {
+        let (close_signal, closed) = watch::channel(false);
+        Self {
             shared: Arc::new(BufferedState::new(HttpSendMode::Inline { accepted: 0 })),
-        };
-        let send_buffer = HttpSendBuffer {
-            shared: Arc::clone(&send_state.shared),
+            budget,
+            closed,
+            close_signal,
+        }
+    }
+
+    pub(crate) fn buffer(&self) -> HttpSendBuffer {
+        HttpSendBuffer {
+            shared: Arc::clone(&self.shared),
+            closed: self.close_signal.clone(),
             stream_rx: None,
-        };
-        (send_state, send_buffer)
+        }
     }
 
     pub(crate) fn push_or_forward(&self, event: HttpOutboundEvent) -> HttpSendDisposition {
+        let admitted = match self.try_admit(event) {
+            Ok(event) => event,
+            Err(event) => {
+                return HttpSendDisposition::Backpressured(HttpSendWaiter {
+                    state: self.clone(),
+                    event,
+                });
+            },
+        };
+        self.try_forward(admitted)
+    }
+
+    fn try_admit(
+        &self,
+        event: HttpOutboundEvent,
+    ) -> Result<AdmittedHttpOutboundEvent, HttpOutboundEvent> {
+        let credit = match (&event, &self.budget) {
+            (HttpOutboundEvent::Body { body, .. }, Some(budget)) => {
+                match budget.try_acquire(body.len()) {
+                    Ok(credit) => credit,
+                    Err(_) => return Err(event),
+                }
+            },
+            _ => None,
+        };
+        Ok(AdmittedHttpOutboundEvent { event, credit })
+    }
+
+    fn try_forward(&self, event: AdmittedHttpOutboundEvent) -> HttpSendDisposition {
         let mut inner = self.shared.lock();
         let should_buffer = matches!(
             &inner.state,
@@ -69,31 +152,93 @@ impl HttpSendState {
             return HttpSendDisposition::Buffered;
         }
         if matches!(&inner.state, HttpSendMode::Inline { .. }) {
-            {
-                let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
-                // A fresh bounded channel cannot be full. Keeping the first
-                // two values in the inline FIFO preserves its cheap fast path;
-                // this third accepted event is the first queue admission.
-                tx.try_send(event)
-                    .expect("a newly created outbound channel has capacity");
-                inner.state = HttpSendMode::Streaming { tx, rx: Some(rx) };
-                drop(inner);
-                self.shared.notify_ready();
-                return HttpSendDisposition::Sent;
-            }
+            let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
+            // A fresh bounded channel cannot be full. Keeping the first two
+            // values in the inline FIFO preserves its cheap fast path; this
+            // third accepted event is the first queue admission.
+            tx.try_send(event)
+                .expect("a newly created outbound channel has capacity");
+            inner.state = HttpSendMode::Streaming { tx, rx: Some(rx) };
+            drop(inner);
+            self.shared.notify_ready();
+            return HttpSendDisposition::Sent;
         }
         match &inner.state {
             HttpSendMode::Streaming { tx, .. } => match try_push(tx, event) {
                 TryPush::Sent => HttpSendDisposition::Sent,
-                TryPush::Full(event) => HttpSendDisposition::Backpressured {
-                    tx: tx.clone(),
-                    event,
-                },
+                TryPush::Full(event) => HttpSendDisposition::Backpressured(HttpSendWaiter {
+                    state: self.clone(),
+                    event: event.into_event(),
+                }),
                 TryPush::Closed(_) => HttpSendDisposition::Closed,
             },
             HttpSendMode::Inline { .. } => unreachable!("inline mode returned above"),
             HttpSendMode::Closed => HttpSendDisposition::Closed,
         }
+    }
+
+    async fn admit_after_backpressure(
+        &self,
+        event: HttpOutboundEvent,
+    ) -> Option<AdmittedHttpOutboundEvent> {
+        let credit = match (&event, &self.budget) {
+            (HttpOutboundEvent::Body { body, .. }, Some(budget)) => {
+                let mut closed = self.closed.clone();
+                if *closed.borrow() {
+                    return None;
+                }
+                tokio::select! {
+                    credit = budget.acquire(body.len()) => credit.ok()?,
+                    changed = closed.changed() => {
+                        let _ = changed;
+                        return None;
+                    }
+                }
+            },
+            _ => None,
+        };
+        Some(AdmittedHttpOutboundEvent { event, credit })
+    }
+
+    async fn forward_after_admission(&self, event: AdmittedHttpOutboundEvent) -> bool {
+        let tx = {
+            let mut inner = self.shared.lock();
+            let should_buffer = matches!(
+                &inner.state,
+                HttpSendMode::Inline { accepted } if *accepted < 2
+            );
+            if should_buffer {
+                inner.queue.push_back(event);
+                let HttpSendMode::Inline { accepted } = &mut inner.state else {
+                    unreachable!("inline admission cannot change state while locked")
+                };
+                *accepted += 1;
+                drop(inner);
+                self.shared.notify_ready();
+                return true;
+            }
+            if matches!(&inner.state, HttpSendMode::Inline { .. }) {
+                let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
+                inner.state = HttpSendMode::Streaming { tx, rx: Some(rx) };
+            }
+            match &inner.state {
+                HttpSendMode::Streaming { tx, .. } => tx.clone(),
+                HttpSendMode::Closed => return false,
+                HttpSendMode::Inline { .. } => {
+                    unreachable!("streaming sender is installed before waiting")
+                },
+            }
+        };
+        tx.send(event).await.is_ok()
+    }
+}
+
+impl HttpSendWaiter {
+    pub(crate) async fn send(self) -> bool {
+        let Some(event) = self.state.admit_after_backpressure(self.event).await else {
+            return false;
+        };
+        self.state.forward_after_admission(event).await
     }
 }
 
@@ -113,10 +258,11 @@ impl HttpSendBuffer {
         if let Some(rx) = &mut self.stream_rx {
             rx.close();
         }
+        self.closed.send_replace(true);
         self.shared.notify_ready();
     }
 
-    pub(super) fn take_ready(&mut self) -> Option<HttpOutboundEvent> {
+    pub(super) fn take_ready(&mut self) -> Option<AdmittedHttpOutboundEvent> {
         let mut inner = self.shared.lock();
         if let Some(event) = inner.queue.pop_front() {
             return Some(event);
@@ -131,7 +277,7 @@ impl HttpSendBuffer {
         self.stream_rx.as_mut().and_then(|rx| rx.try_recv().ok())
     }
 
-    pub(super) async fn wait_ready(&mut self) -> Option<HttpOutboundEvent> {
+    pub(super) async fn wait_ready(&mut self) -> Option<AdmittedHttpOutboundEvent> {
         loop {
             if let Some(event) = self.take_ready() {
                 return Some(event);
@@ -144,12 +290,20 @@ impl HttpSendBuffer {
     }
 }
 
+impl Drop for HttpSendBuffer {
+    fn drop(&mut self) {
+        self.close_outbound();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use tokio::time::{Duration, timeout};
 
     use super::{HttpSendDisposition, HttpSendState};
     use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent, PayloadBytes};
+    use crate::http::response::ResponseByteBudget;
 
     fn body_event(body: &'static [u8]) -> HttpOutboundEvent {
         HttpOutboundEvent::Body {
@@ -158,8 +312,8 @@ mod tests {
         }
     }
 
-    fn assert_body_event(event: HttpOutboundEvent, expected: &[u8]) {
-        match event {
+    fn assert_body_event(event: super::AdmittedHttpOutboundEvent, expected: &[u8]) {
+        match event.event {
             HttpOutboundEvent::Body { body, more_body } => {
                 assert_eq!(body.as_ref(), expected);
                 assert!(more_body);
@@ -209,7 +363,7 @@ mod tests {
         }
         assert!(matches!(
             send_state.push_or_forward(body_event(b"backpressured")),
-            HttpSendDisposition::Backpressured { .. }
+            HttpSendDisposition::Backpressured(_)
         ));
         assert_body_event(
             send_buffer
@@ -296,13 +450,13 @@ mod tests {
             assert_eq!(internal_count(), 1, "uncontended sends must not clone");
         }
 
-        let HttpSendDisposition::Backpressured { tx, .. } =
+        let HttpSendDisposition::Backpressured(waiter) =
             send_state.push_or_forward(body_event(b"waiting"))
         else {
-            panic!("a full channel transfers one sender to the waiter")
+            panic!("a full channel creates a backpressure waiter")
         };
-        assert_eq!(tx.strong_count(), 2);
-        drop(tx);
+        assert_eq!(internal_count(), 1, "the waiter owns no sender clone");
+        drop(waiter);
         assert_eq!(internal_count(), 1);
     }
 
@@ -331,18 +485,18 @@ mod tests {
                 HttpSendDisposition::Sent
             ));
         }
-        let HttpSendDisposition::Backpressured { tx, event } =
+        let HttpSendDisposition::Backpressured(waiter) =
             send_state.push_or_forward(body_event(b"blocked"))
         else {
             panic!("the full streaming channel backpressures one sender")
         };
-        let blocked = tokio::spawn(async move { tx.send(event).await });
+        let blocked = tokio::spawn(async move { waiter.send().await });
         tokio::task::yield_now().await;
         assert!(!blocked.is_finished());
 
         send_buffer.close_outbound();
         assert!(
-            blocked.await.expect("blocked send task completes").is_err(),
+            !blocked.await.expect("blocked send task completes"),
             "receiver closure wakes the blocked send with SendAfterClose"
         );
         assert!(matches!(
@@ -359,6 +513,117 @@ mod tests {
             );
         }
         assert!(send_buffer.take_ready().is_none());
+    }
+
+    #[tokio::test]
+    async fn response_byte_credit_blocks_until_written_bytes_are_released() {
+        let budget = ResponseByteBudget::new(64 * 1024);
+        let send_state = HttpSendState::with_response_budget(budget);
+        let mut send_buffer = send_state.buffer();
+
+        assert!(matches!(
+            send_state.push_or_forward(HttpOutboundEvent::Body {
+                body: PayloadBytes::from(Bytes::from(vec![b'a'; 64 * 1024])),
+                more_body: true,
+            }),
+            HttpSendDisposition::Buffered
+        ));
+        let mut first = send_buffer
+            .take_ready()
+            .expect("the budget-filling body is admitted");
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(HttpOutboundEvent::Body {
+                body: PayloadBytes::from(Bytes::from(vec![b'b'; 64 * 1024])),
+                more_body: true,
+            })
+        else {
+            panic!("the next body must wait behind a full byte budget")
+        };
+
+        let blocked = tokio::spawn(waiter.send());
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished(), "no byte credit is available yet");
+
+        first
+            .credit
+            .as_mut()
+            .expect("body carries its response byte credit")
+            .release_written(64 * 1024);
+        assert!(
+            timeout(Duration::from_secs(1), blocked)
+                .await
+                .expect("one released DATA frame wakes one sender")
+                .expect("sender task joins"),
+            "the released credit admits exactly the waiting send"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_oversized_body_occupies_the_full_response_budget() {
+        let budget = ResponseByteBudget::new(64 * 1024);
+        let send_state = HttpSendState::with_response_budget(budget);
+        let mut send_buffer = send_state.buffer();
+
+        assert!(matches!(
+            send_state.push_or_forward(HttpOutboundEvent::Body {
+                body: PayloadBytes::from(Bytes::from(vec![b'a'; 128 * 1024])),
+                more_body: true,
+            }),
+            HttpSendDisposition::Buffered
+        ));
+        let first = send_buffer
+            .take_ready()
+            .expect("one oversized event is admitted");
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"later")),
+            HttpSendDisposition::Backpressured(_)
+        ));
+        drop(first);
+        assert_eq!(
+            send_state
+                .budget
+                .as_ref()
+                .expect("bounded state retains its byte budget")
+                .available(),
+            64 * 1024
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_request_buffer_wakes_a_byte_blocked_send() {
+        let budget = ResponseByteBudget::new(64);
+        let send_state = HttpSendState::with_response_budget(budget);
+        let mut send_buffer = send_state.buffer();
+        assert!(matches!(
+            send_state.push_or_forward(HttpOutboundEvent::Body {
+                body: PayloadBytes::from(Bytes::from(vec![b'a'; 64])),
+                more_body: true,
+            }),
+            HttpSendDisposition::Buffered
+        ));
+        let _retained = send_buffer
+            .take_ready()
+            .expect("the first body keeps the full budget");
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(HttpOutboundEvent::Body {
+                body: PayloadBytes::from(Bytes::from_static(b"next")),
+                more_body: true,
+            })
+        else {
+            panic!("the second body waits for byte credit")
+        };
+        let blocked = tokio::spawn(waiter.send());
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished());
+
+        drop(send_buffer);
+        assert!(
+            !timeout(Duration::from_secs(1), blocked)
+                .await
+                .expect("connection teardown wakes byte waiter")
+                .expect("waiter task joins"),
+            "a torn-down request must not leave an ASGI send waiting for credit"
+        );
     }
 
     #[test]

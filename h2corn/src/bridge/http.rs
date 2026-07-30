@@ -406,8 +406,8 @@ impl PyHttpSend {
             HttpSendDisposition::Buffered | HttpSendDisposition::Sent => {
                 Ok(super::ready_none(py, &self.shard))
             },
-            HttpSendDisposition::Backpressured { tx, event } => {
-                super::send_after_full(py, Arc::clone(&self.shard), tx, event)
+            HttpSendDisposition::Backpressured(waiter) => {
+                super::await_http_send(py, Arc::clone(&self.shard), waiter)
             },
             HttpSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }

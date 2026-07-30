@@ -1,7 +1,9 @@
 use std::fs::File;
 use std::mem;
+use std::sync::Arc;
 
 use smallvec::SmallVec;
+use tokio::sync::{AcquireError, Semaphore, TryAcquireError};
 
 use crate::bridge::PayloadBytes;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
@@ -13,10 +15,145 @@ use crate::http::header::{
 };
 use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, ResponseTrailers};
 
+/// Connection-wide outbound-body capacity. A body keeps this credit from ASGI
+/// admission until its bytes leave the writer or its owning response is
+/// dropped, so event-count queues cannot turn into an unbounded payload queue.
+#[derive(Clone, Debug)]
+pub(crate) struct ResponseByteBudget {
+    permits: Arc<Semaphore>,
+    capacity: u32,
+}
+
+impl ResponseByteBudget {
+    pub(crate) fn new(capacity: u32) -> Self {
+        assert!(
+            capacity != 0,
+            "outbound response byte budget must be non-zero"
+        );
+        Self {
+            permits: Arc::new(Semaphore::new(capacity as usize)),
+            capacity,
+        }
+    }
+
+    fn charge(&self, len: usize) -> u32 {
+        u32::try_from(len).unwrap_or(u32::MAX).min(self.capacity)
+    }
+
+    pub(crate) fn try_acquire(
+        &self,
+        len: usize,
+    ) -> Result<Option<ResponseBytePermit>, TryAcquireError> {
+        let charge = self.charge(len);
+        if charge == 0 {
+            return Ok(None);
+        }
+        Arc::clone(&self.permits)
+            .try_acquire_many_owned(charge)?
+            .forget();
+        // `ResponseBytePermit` returns credit incrementally as DATA is
+        // written, which an opaque semaphore permit cannot represent.
+        Ok(Some(ResponseBytePermit {
+            permits: Arc::clone(&self.permits),
+            remaining: charge,
+        }))
+    }
+
+    pub(crate) async fn acquire(
+        &self,
+        len: usize,
+    ) -> Result<Option<ResponseBytePermit>, AcquireError> {
+        let charge = self.charge(len);
+        if charge == 0 {
+            return Ok(None);
+        }
+        Arc::clone(&self.permits)
+            .acquire_many_owned(charge)
+            .await?
+            .forget();
+        Ok(Some(ResponseBytePermit {
+            permits: Arc::clone(&self.permits),
+            remaining: charge,
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available(&self) -> usize {
+        self.permits.available_permits()
+    }
+}
+
+/// A body-owned portion of a [`ResponseByteBudget`]. Credit can be returned
+/// per DATA frame; dropping it returns anything not yet written.
+#[derive(Debug)]
+pub(crate) struct ResponseBytePermit {
+    permits: Arc<Semaphore>,
+    remaining: u32,
+}
+
+impl ResponseBytePermit {
+    pub(crate) fn release_written(&mut self, len: usize) {
+        let released = u32::try_from(len).unwrap_or(u32::MAX).min(self.remaining);
+        self.remaining -= released;
+        self.permits.add_permits(released as usize);
+    }
+}
+
+impl Drop for ResponseBytePermit {
+    fn drop(&mut self) {
+        self.permits.add_permits(self.remaining as usize);
+    }
+}
+
+/// Response body bytes plus their optional H2 connection credit. HTTP/1 and
+/// internal response construction use the same type with no credit.
+#[derive(Debug)]
+pub(crate) struct ResponseBody {
+    data: PayloadBytes,
+    credit: Option<ResponseBytePermit>,
+}
+
+impl ResponseBody {
+    pub(crate) const fn new(data: PayloadBytes) -> Self {
+        Self { data, credit: None }
+    }
+
+    pub(crate) const fn with_credit(
+        data: PayloadBytes,
+        credit: Option<ResponseBytePermit>,
+    ) -> Self {
+        Self { data, credit }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub(crate) fn into_parts(self) -> (PayloadBytes, Option<ResponseBytePermit>) {
+        (self.data, self.credit)
+    }
+}
+
+impl AsRef<[u8]> for ResponseBody {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+}
+
+impl From<PayloadBytes> for ResponseBody {
+    fn from(data: PayloadBytes) -> Self {
+        Self::new(data)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum FinalResponseBody {
     Empty,
-    Bytes(PayloadBytes),
+    Bytes(ResponseBody),
     // File bodies are rare relative to byte/empty bodies; retain the box so
     // the handle never sets the common response-action enum layout.
     File { file: Box<File>, len: usize },
@@ -154,7 +291,7 @@ pub(crate) enum ResponseAction {
     Start {
         start: ResponseStart,
     },
-    Body(PayloadBytes),
+    Body(ResponseBody),
     File {
         file: Box<File>,
         len: usize,
@@ -171,7 +308,8 @@ pub(crate) type ResponseActions = SmallVec<[ResponseAction; 2]>;
 mod tests {
     use bytes::Bytes;
 
-    use super::ResponseStart;
+    use super::{ResponseAction, ResponseBody, ResponseByteBudget, ResponseStart};
+    use crate::bridge::PayloadBytes;
     use crate::config::ResponseHeaderConfig;
     use crate::http;
 
@@ -201,6 +339,39 @@ mod tests {
                 .filter(|(name, _)| name.as_bytes() == b"content-length")
                 .count(),
             1,
+        );
+    }
+
+    #[tokio::test]
+    async fn discarding_an_unapplied_response_action_releases_body_credit() {
+        let budget = ResponseByteBudget::new(64);
+        let credit = budget
+            .acquire(64)
+            .await
+            .expect("budget is open")
+            .expect("non-empty body consumes credit");
+        let action = ResponseAction::Body(ResponseBody::with_credit(
+            PayloadBytes::from(Bytes::from_static(b"body")),
+            Some(credit),
+        ));
+        let next = tokio::spawn({
+            let budget = budget.clone();
+            async move { budget.acquire(64).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !next.is_finished(),
+            "an unapplied action must retain its body credit"
+        );
+        drop(action);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), next)
+                .await
+                .expect("application failure releases a blocked producer")
+                .expect("producer task joins")
+                .expect("budget remains open")
+                .is_some(),
+            "application failure before transport lowering must not leak credit"
         );
     }
 

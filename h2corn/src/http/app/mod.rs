@@ -5,14 +5,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-pub(crate) use buffered::{HttpSendDisposition, HttpSendState};
+pub(crate) use buffered::{
+    AdmittedHttpOutboundEvent, HttpSendDisposition, HttpSendState, HttpSendWaiter,
+};
 use bytes::Bytes;
 use http::Method;
 use tokio::sync::mpsc;
 
 use self::buffered::HttpSendBuffer;
 use super::response::{
-    HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
+    HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
+    finalize_response,
 };
 use crate::access_log::ResponseLogState;
 use crate::app_call::AppCallArgs;
@@ -57,10 +60,11 @@ pub(crate) fn start_asgi_http_request(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
+    send_state: HttpSendState,
 ) -> RunningHttpRequest<impl Future<Output = Result<(), H2CornError>> + Send> {
     let head_only = ctx.request.method == Method::HEAD;
     let supports_response_trailers = ctx.request.accepts_trailers();
-    let (send_state, send_buffer) = HttpSendState::new();
+    let send_buffer = send_state.buffer();
     // The guard keeps the connection alive, which keeps the app runtime and
     // the teardown tracker alive with it.
     let connection = Arc::clone(&ctx.connection);
@@ -90,7 +94,8 @@ pub(crate) async fn run_asgi_http_request<T>(
 where
     T: HttpResponseTransport,
 {
-    let started = start_asgi_http_request(ctx, request_body, admission);
+    let send_state = transport.new_http_send_state();
+    let started = start_asgi_http_request(ctx, request_body, admission, send_state);
     drive_http_request(started, transport, response_log).await
 }
 
@@ -186,7 +191,8 @@ where
                     break;
                 };
                 if let Err(err) =
-                    apply_http_event(response, transport, actions, response_log, event).await
+                    apply_admitted_http_event(response, transport, actions, response_log, event)
+                        .await
                 {
                     return finalize_response(response, transport, actions, response_log, Err(err))
                         .await;
@@ -236,7 +242,8 @@ where
             // stream; only a later real close reports OSError to the app.
             continue;
         }
-        if let Err(err) = apply_http_event(response, transport, actions, response_log, event).await
+        if let Err(err) =
+            apply_admitted_http_event(response, transport, actions, response_log, event).await
         {
             return finalize_response(response, transport, actions, response_log, Err(err)).await;
         }
@@ -314,7 +321,7 @@ mod tests {
     async fn app_send(state: &HttpSendState, event: HttpOutboundEvent) -> bool {
         match state.push_or_forward(event) {
             HttpSendDisposition::Buffered | HttpSendDisposition::Sent => true,
-            HttpSendDisposition::Backpressured { tx, event } => tx.send(event).await.is_ok(),
+            HttpSendDisposition::Backpressured(waiter) => waiter.send().await,
             HttpSendDisposition::Closed => false,
         }
     }
