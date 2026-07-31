@@ -183,14 +183,17 @@ where
     // flush+write pair per frame.
     let (total, drained_segments, tail_consumed, ended_stream, connection_blocked) = {
         let batch = collect_chunk_data_frames(context, stream, stream_id, pending.iter());
-        if !batch.headers.is_empty() {
-            write_frames_vectored(
+        if !batch.headers.is_empty()
+            && let Err(error) = write_frames_vectored(
                 context.writer,
                 &batch.headers,
                 &batch.payloads,
                 &batch.payload_counts,
             )
-            .await?;
+            .await
+        {
+            stream.abort(stream_id, context.response_closes);
+            return Err(error);
         }
         (
             batch.total,
@@ -203,7 +206,8 @@ where
 
     if total != 0 || drained_segments != 0 {
         *context.connection_send_window -= total as i64;
-        stream.send_window -= total as i64;
+        stream.send_window -= i32::try_from(total)
+            .expect("one fair-write batch fits the signed 31-bit stream-window domain");
         for _ in 0..drained_segments {
             let mut chunk = pending
                 .pop_front()
@@ -245,25 +249,28 @@ where
         if W::SUPPORTS_SENDFILE
             && let Some(sendfile) = streamer.sendfile_cursor()
         {
-            match flush_sendfile_chunk(context, sendfile, path_ends_stream, stream_id, stream)
-                .await?
+            match flush_sendfile_chunk(context, sendfile, path_ends_stream, stream_id, stream).await
             {
-                SendfileProgress::Continue => continue,
-                SendfileProgress::Done(progress) => return Ok(progress),
+                Ok(SendfileProgress::Continue) => continue,
+                Ok(SendfileProgress::Done(progress)) => return Ok(progress),
+                Err(error) => return Err(error),
             }
         }
 
         if streamer.needs_fill()
             && let Err(_err) = streamer.fill().await
         {
-            stream.finish(stream_id, context.response_closes);
+            stream.abort(stream_id, context.response_closes);
             write_stream_reset(context.writer, stream_id, ErrorCode::INTERNAL_ERROR).await?;
             return Ok(FlushBodyProgress::Continue);
         }
 
         if streamer.is_drained() {
             if streamer.end_stream {
-                write_empty_data_frame(context.writer, stream_id, true).await?;
+                if let Err(error) = write_empty_data_frame(context.writer, stream_id, true).await {
+                    stream.abort(stream_id, context.response_closes);
+                    return Err(error);
+                }
                 stream.finish(stream_id, context.response_closes);
             }
             return Ok(FlushBodyProgress::Continue);
@@ -276,21 +283,25 @@ where
             let remaining = streamer.remaining();
             let may_end = streamer.end_stream && streamer.buffered_is_final();
             let batch = collect_data_frames(context, stream, stream_id, [(remaining, may_end)]);
-            if !batch.headers.is_empty() {
-                write_frames_vectored(
+            if !batch.headers.is_empty()
+                && let Err(error) = write_frames_vectored(
                     context.writer,
                     &batch.headers,
                     &batch.payloads,
                     &batch.payload_counts,
                 )
-                .await?;
+                .await
+            {
+                stream.abort(stream_id, context.response_closes);
+                return Err(error);
             }
             (batch.total, batch.ended_stream, batch.connection_blocked)
         };
 
         if total != 0 {
             *context.connection_send_window -= total as i64;
-            stream.send_window -= total as i64;
+            stream.send_window -= i32::try_from(total)
+                .expect("one fair-write batch fits the signed 31-bit stream-window domain");
             streamer.consume(total);
             stream.note_body_progress(Instant::now());
         }
@@ -347,14 +358,24 @@ where
         chunk_len,
     );
     let (file, offset) = sendfile.parts();
-    context.writer.write_all(&header).await?;
-    context.writer.flush().await?;
-    W::send_file(context.writer, file, offset, chunk_len.as_usize()).await?;
+    if let Err(error) = context.writer.write_all(&header).await {
+        stream.abort(stream_id, context.response_closes);
+        return Err(error.into());
+    }
+    if let Err(error) = context.writer.flush().await {
+        stream.abort(stream_id, context.response_closes);
+        return Err(error.into());
+    }
+    if let Err(error) = W::send_file(context.writer, file, offset, chunk_len.as_usize()).await {
+        stream.abort(stream_id, context.response_closes);
+        return Err(error.into());
+    }
     drop(sendfile);
 
     let chunk_len = i64::from(chunk_len.get());
     *context.connection_send_window -= chunk_len;
-    stream.send_window -= chunk_len;
+    stream.send_window -= i32::try_from(chunk_len)
+        .expect("one sendfile frame fits the signed 31-bit stream-window domain");
     stream.note_body_progress(Instant::now());
 
     if end_stream {
@@ -628,7 +649,12 @@ where
         stream.restore_body(body);
         if let Some(trailers) = stream.take_trailers_if_body_idle() {
             let block = header_state.encode_trailers(&trailers)?;
-            write_header_block(writer, stream_id, true, &block, peer_max_frame_size).await?;
+            if let Err(error) =
+                write_header_block(writer, stream_id, true, &block, peer_max_frame_size).await
+            {
+                stream.abort(stream_id, tracking.response_closes);
+                return Err(error);
+            }
             stream.finish(stream_id, tracking.response_closes);
         }
 

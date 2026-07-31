@@ -12,36 +12,69 @@ const MIN_CODE_BITS: usize = 5;
 const ENCODE_CODE_MASK: u64 = u32::MAX as u64;
 const ENCODE_LENGTH_SHIFT: u32 = u32::BITS;
 
+#[derive(Clone, Copy)]
+struct DecodeEntry(u32);
+
+impl DecodeEntry {
+    const fn next(self) -> usize {
+        (self.0 & 0xFF) as usize
+    }
+
+    const fn symbol(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    const fn flags(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+}
+
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
+    let initial_len = buf.len();
+    let mut decoded_len = 0;
 
     buf.reserve(src.len().saturating_mul(8).div_ceil(MIN_CODE_BITS));
 
-    for &byte in src {
-        let (next, symbol, flags) = DECODE_TABLE[state][usize::from(byte >> 4)];
-        if flags & ERROR != 0 {
+    let result = (|| {
+        for &byte in src {
+            let entry = DecodeEntry(DECODE_TABLE[state][usize::from(byte >> 4)]);
+            let flags = entry.flags();
+            if flags & ERROR != 0 {
+                return Err(DecoderError::InvalidHuffmanCode);
+            }
+            if flags & DECODED != 0 {
+                // The reserve bound leaves one uninitialized byte for every decoded symbol.
+                buf.spare_capacity_mut()[decoded_len].write(entry.symbol());
+                decoded_len += 1;
+            }
+            state = entry.next();
+
+            let entry = DecodeEntry(DECODE_TABLE[state][usize::from(byte & 0x0F)]);
+            let flags = entry.flags();
+            if flags & ERROR != 0 {
+                return Err(DecoderError::InvalidHuffmanCode);
+            }
+            if flags & DECODED != 0 {
+                // The reserve bound leaves one uninitialized byte for every decoded symbol.
+                buf.spare_capacity_mut()[decoded_len].write(entry.symbol());
+                decoded_len += 1;
+            }
+            state = entry.next();
+            maybe_eos = flags & MAYBE_EOS != 0;
+        }
+
+        if state != 0 && !maybe_eos {
             return Err(DecoderError::InvalidHuffmanCode);
         }
-        if flags & DECODED != 0 {
-            buf.extend_from_slice(&[symbol]);
-        }
-        state = usize::from(next);
+        Ok(())
+    })();
 
-        let (next, symbol, flags) = DECODE_TABLE[state][usize::from(byte & 0x0F)];
-        if flags & ERROR != 0 {
-            return Err(DecoderError::InvalidHuffmanCode);
-        }
-        if flags & DECODED != 0 {
-            buf.extend_from_slice(&[symbol]);
-        }
-        state = usize::from(next);
-        maybe_eos = flags & MAYBE_EOS != 0;
-    }
-
-    if state != 0 && !maybe_eos {
-        return Err(DecoderError::InvalidHuffmanCode);
-    }
+    // SAFETY: `decoded_len` never exceeds the `MIN_CODE_BITS` reserve bound,
+    // and every counted byte was written into the corresponding spare slot.
+    unsafe { buf.set_len(initial_len + decoded_len) };
+    result?;
 
     Ok(buf.split())
 }

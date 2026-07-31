@@ -1024,6 +1024,22 @@ where
     Ok(false)
 }
 
+fn initial_settings(config: &ServerConfig) -> Settings {
+    Settings {
+        header_table_size: Some(h2_frame::DEFAULT_HEADER_TABLE_SIZE as u32),
+        enable_push: Some(false),
+        max_concurrent_streams: Some(config.http2.max_concurrent_streams.get()),
+        initial_window_size: Some(config.http2.initial_stream_window_size.get()),
+        max_frame_size: Some(config.http2.max_inbound_frame_size),
+        max_header_list_size: config
+            .http2
+            .max_header_list_size
+            .map(NonZeroUsize::get)
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+        enable_connect_protocol: Some(true),
+    }
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "writer ingress is intentionally kept with the initialized writer state"
@@ -1039,19 +1055,7 @@ where
     let ingress = WriterIngress::new();
     let mut writer = BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer);
     let mut frame_buf = BytesMut::with_capacity(FRAME_BUFFER_CAPACITY);
-    let initial_settings = Settings {
-        header_table_size: Some(h2_frame::DEFAULT_HEADER_TABLE_SIZE as u32),
-        enable_push: Some(false),
-        max_concurrent_streams: Some(config.http2.max_concurrent_streams.get()),
-        initial_window_size: Some(config.http2.initial_stream_window_size.get()),
-        max_frame_size: Some(config.http2.max_inbound_frame_size),
-        max_header_list_size: config
-            .http2
-            .max_header_list_size
-            .map(NonZeroUsize::get)
-            .map(|value| value as u32),
-        enable_connect_protocol: Some(true),
-    };
+    let initial_settings = initial_settings(&config);
     h2_frame::append_settings(&mut frame_buf, initial_settings);
     write_frame_buf(&mut writer, &mut frame_buf).await?;
     let initial_connection_window = config.http2.initial_connection_window_size.get();

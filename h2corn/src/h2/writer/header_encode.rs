@@ -11,8 +11,20 @@ use crate::h2_frame::{
 use crate::hpack::Encoder;
 use crate::http::digits;
 use crate::http::types::{
-    HttpStatusCode, ResponseField, ResponseHeaders, ResponseTrailers, status_code,
+    HttpStatusCode, ResponseField, ResponseHeaders, ResponseTrailers, common_status_codes,
+    status_code,
 };
+
+macro_rules! common_status_hpack_index_match {
+    ($(($constant:ident, $line:expr, $hpack:expr)),+ $(,)?) => {
+        const fn common_status_hpack_index(status: HttpStatusCode) -> u8 {
+            match status {
+                $(status_code::$constant => $hpack,)+
+                _ => 0,
+            }
+        }
+    };
+}
 
 const LOCAL_ENCODER_TABLE_SIZE: usize = h2_frame::DEFAULT_HEADER_TABLE_SIZE;
 
@@ -74,6 +86,8 @@ impl HeaderEncodeState {
         self.encoder.table_len()
     }
 }
+
+common_status_codes!(common_status_hpack_index_match);
 
 pub(super) async fn write_header_block<W>(
     writer: &mut W,
@@ -140,15 +154,11 @@ fn encode_header_block(
 }
 
 fn encode_status_header(encoder: &Encoder, out: &mut BytesMut, status: HttpStatusCode) {
-    match status {
-        status_code::OK => out.extend_from_slice(&[0x88]),
-        status_code::NO_CONTENT => out.extend_from_slice(&[0x89]),
-        status_code::PARTIAL_CONTENT => out.extend_from_slice(&[0x8A]),
-        status_code::NOT_MODIFIED => out.extend_from_slice(&[0x8B]),
-        status_code::BAD_REQUEST => out.extend_from_slice(&[0x8C]),
-        status_code::NOT_FOUND => out.extend_from_slice(&[0x8D]),
-        status_code::INTERNAL_SERVER_ERROR => out.extend_from_slice(&[0x8E]),
-        _ => encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status.get()), out),
+    let indexed = common_status_hpack_index(status);
+    if indexed != 0 {
+        out.extend_from_slice(&[indexed]);
+    } else {
+        encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status.get()), out);
     }
 }
 
@@ -164,6 +174,25 @@ mod tests {
 
     use super::HeaderEncodeState;
     use crate::http::types::{ResponseHeaders, status_code};
+
+    macro_rules! common_status_encodings_stay_in_sync {
+        ($(($constant:ident, $line:expr, $hpack:expr)),+ $(,)?) => {
+            #[test]
+            fn every_common_status_has_an_h2_encoding() {
+                let mut state = HeaderEncodeState::new();
+                $(
+                    let block = state.encode_response(status_code::$constant, &ResponseHeaders::new());
+                    if $hpack == 0 {
+                        assert_eq!(block.first(), Some(&0x08), stringify!($constant));
+                    } else {
+                        assert_eq!(block, &[$hpack], stringify!($constant));
+                    }
+                )+
+            }
+        };
+    }
+
+    crate::http::types::common_status_codes!(common_status_encodings_stay_in_sync);
 
     #[test]
     fn response_encode_reuses_header_block_buffer() {

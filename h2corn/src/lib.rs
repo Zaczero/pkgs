@@ -1,5 +1,7 @@
 // Retained for the WebSocket masking SIMD fast path in
 // `websocket::codec::mask`.
+// Derives the response-header variant names in `http::types`.
+#![feature(macro_metavar_expr_concat)]
 #![feature(portable_simd)]
 
 mod access_log;

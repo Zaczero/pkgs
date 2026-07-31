@@ -5,6 +5,7 @@ mod ingress;
 mod stream_state;
 
 use std::fs::File;
+use std::mem::size_of;
 
 use smallvec::SmallVec;
 
@@ -150,3 +151,5 @@ impl WriterCommand {
         }
     }
 }
+
+const _: () = assert!(size_of::<WriterCommand>() <= 88);

@@ -26,6 +26,31 @@ pub(crate) mod status_code {
     pub(crate) const HTTP_VERSION_NOT_SUPPORTED: HttpStatusCode = HttpStatusCode::constant(505);
 }
 
+/// Statuses with a fixed HTTP/1 line. The final value is the HPACK static
+/// table encoding when one exists, otherwise zero. Both protocol writers are
+/// generated from this list so adding a common status is one decision.
+macro_rules! common_status_codes {
+    ($emit:ident) => {
+        $emit! {
+            (SWITCHING_PROTOCOLS, b"HTTP/1.1 101 Switching Protocols\r\n", 0),
+            (OK, b"HTTP/1.1 200 OK\r\n", 0x88),
+            (NO_CONTENT, b"HTTP/1.1 204 No Content\r\n", 0x89),
+            (PARTIAL_CONTENT, b"HTTP/1.1 206 Partial Content\r\n", 0x8A),
+            (NOT_MODIFIED, b"HTTP/1.1 304 Not Modified\r\n", 0x8B),
+            (BAD_REQUEST, b"HTTP/1.1 400 Bad Request\r\n", 0x8C),
+            (FORBIDDEN, b"HTTP/1.1 403 Forbidden\r\n", 0),
+            (NOT_FOUND, b"HTTP/1.1 404 Not Found\r\n", 0x8D),
+            (PAYLOAD_TOO_LARGE, b"HTTP/1.1 413 Payload Too Large\r\n", 0),
+            (URI_TOO_LONG, b"HTTP/1.1 414 URI Too Long\r\n", 0),
+            (UPGRADE_REQUIRED, b"HTTP/1.1 426 Upgrade Required\r\n", 0),
+            (REQUEST_HEADER_FIELDS_TOO_LARGE, b"HTTP/1.1 431 Request Header Fields Too Large\r\n", 0),
+            (INTERNAL_SERVER_ERROR, b"HTTP/1.1 500 Internal Server Error\r\n", 0x8E),
+            (NOT_IMPLEMENTED, b"HTTP/1.1 501 Not Implemented\r\n", 0),
+            (SERVICE_UNAVAILABLE, b"HTTP/1.1 503 Service Unavailable\r\n", 0),
+        }
+    };
+}
+
 use std::mem::size_of;
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
@@ -33,6 +58,7 @@ use std::str::Utf8Error;
 use std::{fmt, str};
 
 use bytes::Bytes;
+pub(crate) use common_status_codes;
 use http::Method;
 use http::method::InvalidMethod;
 use pyo3::pybacked::PyBackedBytes;
@@ -74,6 +100,9 @@ macro_rules! known_request_header_names {
         }
 
         impl KnownRequestHeaderName {
+            pub(crate) const COUNT: usize = [$( $(Self::$variant),+ ),+].len();
+            pub(crate) const ALL: [Self; Self::COUNT] = [$( $(Self::$variant),+ ),+];
+
             pub(crate) const fn from_bytes(name: &[u8]) -> Option<Self> {
                 match name {
                     $($($name => Some(Self::$variant),)+)+
@@ -111,7 +140,7 @@ macro_rules! known_request_header_names {
     };
 }
 
-const H1_HEADER_INLINE_CAPACITY: usize = 8;
+const H1_HEADER_INLINE_CAPACITY: usize = 16;
 
 pub(crate) type ResponseField = (ResponseHeaderName, ResponseHeaderValue);
 pub(crate) type ResponseHeaders = Vec<ResponseField>;
@@ -855,96 +884,6 @@ impl<'a> Iterator for RequestHeadersIter<'a> {
 
 impl ExactSizeIterator for RequestHeadersIter<'_> {}
 
-#[derive(Debug)]
-enum HeaderBytes {
-    Rust(Bytes),
-    Python(PyBackedBytes),
-    RustConnection(Bytes),
-    PythonConnection(PyBackedBytes),
-    RustContentLength(Bytes),
-    PythonContentLength(PyBackedBytes),
-    RustDate(Bytes),
-    PythonDate(PyBackedBytes),
-    RustServer(Bytes),
-    PythonServer(PyBackedBytes),
-    RustTransferEncoding(Bytes),
-    PythonTransferEncoding(PyBackedBytes),
-}
-
-impl HeaderBytes {
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Rust(bytes)
-            | Self::RustConnection(bytes)
-            | Self::RustContentLength(bytes)
-            | Self::RustDate(bytes)
-            | Self::RustServer(bytes)
-            | Self::RustTransferEncoding(bytes) => bytes.as_ref(),
-            Self::Python(bytes)
-            | Self::PythonConnection(bytes)
-            | Self::PythonContentLength(bytes)
-            | Self::PythonDate(bytes)
-            | Self::PythonServer(bytes)
-            | Self::PythonTransferEncoding(bytes) => bytes.as_ref(),
-        }
-    }
-
-    const fn response_name_rust(bytes: Bytes, kind: ResponseHeaderKind) -> Self {
-        match kind {
-            ResponseHeaderKind::Connection => Self::RustConnection(bytes),
-            ResponseHeaderKind::ContentLength => Self::RustContentLength(bytes),
-            ResponseHeaderKind::Date => Self::RustDate(bytes),
-            ResponseHeaderKind::Other => Self::Rust(bytes),
-            ResponseHeaderKind::Server => Self::RustServer(bytes),
-            ResponseHeaderKind::TransferEncoding => Self::RustTransferEncoding(bytes),
-        }
-    }
-
-    const fn response_name_python(bytes: PyBackedBytes, kind: ResponseHeaderKind) -> Self {
-        match kind {
-            ResponseHeaderKind::Connection => Self::PythonConnection(bytes),
-            ResponseHeaderKind::ContentLength => Self::PythonContentLength(bytes),
-            ResponseHeaderKind::Date => Self::PythonDate(bytes),
-            ResponseHeaderKind::Other => Self::Python(bytes),
-            ResponseHeaderKind::Server => Self::PythonServer(bytes),
-            ResponseHeaderKind::TransferEncoding => Self::PythonTransferEncoding(bytes),
-        }
-    }
-
-    const fn response_name_kind(&self) -> ResponseHeaderKind {
-        match self {
-            Self::RustConnection(_) | Self::PythonConnection(_) => ResponseHeaderKind::Connection,
-            Self::RustContentLength(_) | Self::PythonContentLength(_) => {
-                ResponseHeaderKind::ContentLength
-            },
-            Self::RustDate(_) | Self::PythonDate(_) => ResponseHeaderKind::Date,
-            Self::RustServer(_) | Self::PythonServer(_) => ResponseHeaderKind::Server,
-            Self::RustTransferEncoding(_) | Self::PythonTransferEncoding(_) => {
-                ResponseHeaderKind::TransferEncoding
-            },
-            Self::Rust(_) | Self::Python(_) => ResponseHeaderKind::Other,
-        }
-    }
-}
-
-impl AsRef<[u8]> for HeaderBytes {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-impl From<Bytes> for HeaderBytes {
-    fn from(value: Bytes) -> Self {
-        Self::Rust(value)
-    }
-}
-
-impl From<PyBackedBytes> for HeaderBytes {
-    fn from(value: PyBackedBytes) -> Self {
-        Self::Python(value)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseHeaderKind {
     Connection,
@@ -965,6 +904,62 @@ impl ResponseHeaderKind {
             b"transfer-encoding" => Self::TransferEncoding,
             _ => Self::Other,
         }
+    }
+}
+
+macro_rules! response_header_bytes {
+    ($($kind:ident),+ $(,)?) => {
+        #[derive(Debug)]
+        enum HeaderBytes {
+            $(${concat(Rust, $kind)}(Bytes), ${concat(Python, $kind)}(PyBackedBytes),)+
+        }
+
+        impl HeaderBytes {
+            pub(crate) fn as_slice(&self) -> &[u8] {
+                match self {
+                    $(
+                        Self::${concat(Rust, $kind)}(bytes) => bytes.as_ref(),
+                        Self::${concat(Python, $kind)}(bytes) => bytes.as_ref(),
+                    )+
+                }
+            }
+
+            const fn response_name_rust(bytes: Bytes, kind: ResponseHeaderKind) -> Self {
+                match kind {
+                    $(ResponseHeaderKind::$kind => Self::${concat(Rust, $kind)}(bytes),)+
+                }
+            }
+
+            const fn response_name_python(bytes: PyBackedBytes, kind: ResponseHeaderKind) -> Self {
+                match kind {
+                    $(ResponseHeaderKind::$kind => Self::${concat(Python, $kind)}(bytes),)+
+                }
+            }
+
+            const fn response_name_kind(&self) -> ResponseHeaderKind {
+                match self {
+                    $(
+                        Self::${concat(Rust, $kind)}(_) | Self::${concat(Python, $kind)}(_) => {
+                            ResponseHeaderKind::$kind
+                        },
+                    )+
+                }
+            }
+        }
+    };
+}
+response_header_bytes! {
+    Other,
+    Connection,
+    ContentLength,
+    Date,
+    Server,
+    TransferEncoding,
+}
+
+impl AsRef<[u8]> for HeaderBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
     }
 }
 
@@ -1020,7 +1015,10 @@ impl From<Bytes> for ResponseHeaderName {
 }
 
 #[derive(Debug)]
-pub(crate) struct ResponseHeaderValue(HeaderBytes);
+pub(crate) enum ResponseHeaderValue {
+    Rust(Bytes),
+    Python(PyBackedBytes),
+}
 
 impl ResponseHeaderValue {
     pub(crate) fn from_python(value: PyBackedBytes) -> Option<Self> {
@@ -1033,11 +1031,14 @@ impl ResponseHeaderValue {
                 .as_ref()
                 .last()
                 .is_some_and(|byte| matches!(*byte, b' ' | b'\t')))
-        .then_some(Self(value.into()))
+        .then_some(Self::Python(value))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
-        self.0.as_slice()
+        match self {
+            Self::Rust(bytes) => bytes.as_ref(),
+            Self::Python(bytes) => bytes.as_ref(),
+        }
     }
 }
 
@@ -1050,9 +1051,16 @@ impl AsRef<[u8]> for ResponseHeaderValue {
 impl From<Bytes> for ResponseHeaderValue {
     fn from(value: Bytes) -> Self {
         assert!(header_value_is_valid(value.as_ref()));
-        Self(value.into())
+        Self::Rust(value)
     }
 }
+
+const _: () = {
+    assert!(size_of::<HeaderBytes>() == size_of::<Bytes>() + size_of::<usize>());
+    assert!(size_of::<ResponseHeaderName>() == size_of::<HeaderBytes>());
+    assert!(size_of::<ResponseHeaderValue>() == size_of::<HeaderBytes>());
+    assert!(size_of::<ResponseField>() == 2 * size_of::<HeaderBytes>());
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HttpVersion {
@@ -1079,10 +1087,6 @@ pub(crate) struct RequestHead {
 }
 
 impl RequestHead {
-    pub(crate) const fn scheme(&self) -> Option<&BytesStr> {
-        self.target.scheme()
-    }
-
     pub(crate) const fn path_and_query(&self) -> Option<&BytesStr> {
         self.target.path_and_query()
     }
@@ -1208,6 +1212,8 @@ pub(crate) fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod
 mod tests {
     use bytes::Bytes;
     use http::Method;
+    use pyo3::prelude::Python;
+    use pyo3::types::PyBytes;
 
     use super::{
         BytesStr, ConnectAuthority, H1_HEADER_INLINE_CAPACITY, H1RequestHeaders, HttpStatusCode,
@@ -1242,7 +1248,7 @@ mod tests {
     fn response_header_kind_is_classified_at_construction() {
         use bytes::Bytes;
 
-        for (name, expected) in [
+        let classifications = [
             (
                 b"connection".as_slice(),
                 super::ResponseHeaderKind::Connection,
@@ -1258,10 +1264,22 @@ mod tests {
                 super::ResponseHeaderKind::TransferEncoding,
             ),
             (b"content-type".as_slice(), super::ResponseHeaderKind::Other),
-        ] {
+        ];
+        for &(name, expected) in &classifications {
             let name: super::ResponseHeaderName = Bytes::copy_from_slice(name).into();
             assert_eq!(name.kind(), expected);
         }
+
+        Python::initialize();
+        Python::attach(|py| {
+            for &(name, expected) in &classifications {
+                let name = super::ResponseHeaderName::from_python(
+                    pyo3::pybacked::PyBackedBytes::from(PyBytes::new(py, name)),
+                )
+                .expect("test header is valid");
+                assert_eq!(name.kind(), expected);
+            }
+        });
     }
     #[test]
     fn http_status_code_encodes_the_three_digit_invariant_in_two_bytes() {
@@ -1428,7 +1446,7 @@ mod tests {
 
     #[test]
     fn h1_arena_spills_only_above_its_inline_capacity() {
-        for count in [0, 4, 8, 12, 32] {
+        for count in [0, 4, 8, 12, 16, 17, 32] {
             let mut raw = Vec::with_capacity(count * 12);
             for index in 0..count {
                 raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
@@ -1446,6 +1464,25 @@ mod tests {
             assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);
             assert!(headers.auxiliary.is_empty());
         }
+    }
+
+    #[test]
+    fn h1_header_arena_keeps_sixteen_fields_inline() {
+        let count = 16;
+        let mut raw = Vec::with_capacity(count * 12);
+        for index in 0..count {
+            raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
+        }
+        let head = Bytes::from(raw);
+        let mut headers = H1RequestHeaders::new(head.clone());
+        for line in head.as_ref().split(|byte| *byte == b'\n').take(count) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let colon = line.iter().position(|byte| *byte == b':').unwrap();
+            headers
+                .push(&line[..colon], line[colon + 1..].trim_ascii())
+                .unwrap();
+        }
+        assert!(!headers.fields.spilled());
     }
 
     #[test]

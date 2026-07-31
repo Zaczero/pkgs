@@ -90,9 +90,7 @@ async def test_http1_absolute_form_fragment_is_rejected_before_uri_normalizes() 
             http1_request(
                 port=server_port(server),
                 request=(
-                    b'GET http://example/p#frag HTTP/1.1\r\n'
-                    b'Connection: close\r\n'
-                    b'\r\n'
+                    b'GET http://example/p#frag HTTP/1.1\r\nConnection: close\r\n\r\n'
                 ),
             ),
             timeout=5,
@@ -1576,18 +1574,17 @@ async def test_head_with_trailers_writes_no_body_framing() -> None:
     """
 
     async def app(scope, receive, send):
-        await send(
-            {
-                'type': 'http.response.start',
-                'status': 200,
-                'headers': [(b'trailer', b'x-finished')],
-                'trailers': True,
-            }
-        )
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'trailer', b'x-finished')],
+            'trailers': True,
+        })
         await send({'type': 'http.response.body', 'body': b'hello'})
-        await send(
-            {'type': 'http.response.trailers', 'headers': [(b'x-finished', b'yes')]}
-        )
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
 
     async with running_server(app, Config(port=0)) as server:
         reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
@@ -1600,12 +1597,18 @@ async def test_head_with_trailers_writes_no_body_framing() -> None:
                 b'Connection: close\r\n\r\n'
             )
             await writer.drain()
-            head_status, head_headers, head_body, head_trailers = (
-                await read_http1_response(reader, head_only=True)
-            )
-            get_status, _get_headers, get_body, get_trailers = (
-                await read_http1_response(reader)
-            )
+            (
+                head_status,
+                head_headers,
+                head_body,
+                head_trailers,
+            ) = await read_http1_response(reader, head_only=True)
+            (
+                get_status,
+                _get_headers,
+                get_body,
+                get_trailers,
+            ) = await read_http1_response(reader)
         finally:
             writer.close()
             with suppress(OSError):
@@ -1639,37 +1642,41 @@ async def test_suppressed_pathsend_with_trailers_writes_no_body_framing(
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
             await send({'type': 'http.response.body', 'body': payload})
             return
-        await send(
-            {
-                'type': 'http.response.start',
-                'status': status,
-                'headers': [(b'trailer', b'x-finished')],
-                'trailers': True,
-            }
-        )
+        await send({
+            'type': 'http.response.start',
+            'status': status,
+            'headers': [(b'trailer', b'x-finished')],
+            'trailers': True,
+        })
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
-        await send(
-            {'type': 'http.response.trailers', 'headers': [(b'x-finished', b'yes')]}
-        )
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
 
     async with running_server(app, Config(port=0)) as server:
         reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
         try:
             writer.write(
-                method.encode()
-                + b' / HTTP/1.1\r\nHost: x\r\nTE: trailers\r\n\r\n'
+                method.encode() + b' / HTTP/1.1\r\nHost: x\r\nTE: trailers\r\n\r\n'
                 b'GET /second HTTP/1.1\r\nHost: x\r\nTE: trailers\r\n'
                 b'Connection: close\r\n\r\n'
             )
             await writer.drain()
-            head_status, head_headers, head_body, head_trailers = (
-                await read_http1_response(
-                    reader, head_only=method == 'HEAD' or status == 304
-                )
+            (
+                head_status,
+                head_headers,
+                head_body,
+                head_trailers,
+            ) = await read_http1_response(
+                reader, head_only=method == 'HEAD' or status == 304
             )
-            get_status, _get_headers, get_body, get_trailers = (
-                await read_http1_response(reader)
-            )
+            (
+                get_status,
+                _get_headers,
+                get_body,
+                get_trailers,
+            ) = await read_http1_response(reader)
         finally:
             writer.close()
             with suppress(OSError):
@@ -1763,21 +1770,20 @@ async def test_head_trailers_sent_after_the_response_completed_do_not_fail() -> 
     trailer_send_error: list[str] = []
 
     async def app(scope, receive, send):
-        await send(
-            {
-                'type': 'http.response.start',
-                'status': 200,
-                'headers': [(b'trailer', b'x-finished')],
-                'trailers': True,
-            }
-        )
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'trailer', b'x-finished')],
+            'trailers': True,
+        })
         await send({'type': 'http.response.body', 'body': b'hello'})
         if scope['method'] == 'HEAD':
             await head_response_read.wait()
         try:
-            await send(
-                {'type': 'http.response.trailers', 'headers': [(b'x-finished', b'yes')]}
-            )
+            await send({
+                'type': 'http.response.trailers',
+                'headers': [(b'x-finished', b'yes')],
+            })
         except Exception as exc:
             trailer_send_error.append(f'{type(exc).__name__}: {exc}')
 

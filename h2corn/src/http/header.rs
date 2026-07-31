@@ -116,9 +116,9 @@ pub(crate) struct ResponseHeaderControl {
 /// `Connection: close` followed by `Connection: upgrade` means both.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConnectionHeaderTokens {
-    pub close: bool,
-    pub upgrade: bool,
-    pub http2_settings: bool,
+    pub(crate) close: bool,
+    pub(crate) upgrade: bool,
+    pub(crate) http2_settings: bool,
 }
 
 impl BitOrAssign for ConnectionHeaderTokens {
@@ -296,9 +296,15 @@ pub(crate) fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTo
     let mut tokens = ConnectionHeaderTokens::default();
 
     for current in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
-        tokens.close |= current.eq_ignore_ascii_case(b"close");
-        tokens.upgrade |= current.eq_ignore_ascii_case(b"upgrade");
-        tokens.http2_settings |= current.eq_ignore_ascii_case(b"http2-settings");
+        if current.eq_ignore_ascii_case(b"close") {
+            tokens.close = true;
+        }
+        if current.eq_ignore_ascii_case(b"upgrade") {
+            tokens.upgrade = true;
+        }
+        if current.eq_ignore_ascii_case(b"http2-settings") {
+            tokens.http2_settings = true;
+        }
         if tokens.close && tokens.upgrade && tokens.http2_settings {
             return tokens;
         }
@@ -326,10 +332,10 @@ pub(crate) fn parse_content_length_header(value: &[u8]) -> Option<u64> {
     let mut parsed = None;
     for member in split_commas_bytes(value) {
         let member = member.trim_ascii();
-        if member.is_empty() || !member.iter().all(u8::is_ascii_digit) {
+        if member.is_empty() {
             return None;
         }
-        let value = parse_pos::<u64, false>(member).ok()?;
+        let value = parse_pos::<u64, true>(member).ok()?;
         match parsed {
             Some(previous) if previous != value => return None,
             Some(_) => {},
@@ -920,11 +926,19 @@ mod tests {
         ] {
             assert_eq!(parse_content_length_header(value), Some(expected));
         }
+
+        let leading_zeroes = [b'0'; 1024];
+        assert_eq!(parse_content_length_header(&leading_zeroes), Some(0));
+        assert_eq!(
+            parse_content_length_header(&[leading_zeroes.as_slice(), b"1"].concat()),
+            Some(1)
+        );
     }
 
     #[test]
     fn content_length_parser_rejects_invalid_values() {
         assert_eq!(parse_content_length_header(b""), None);
+        assert_eq!(parse_content_length_header(b" \t "), None);
         assert_eq!(parse_content_length_header(b"4x"), None);
         assert_eq!(parse_content_length_header(b"42, 43"), None);
         assert_eq!(parse_content_length_header(b"42,"), None);

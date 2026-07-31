@@ -118,7 +118,7 @@ struct ChunkDeliveryBatch {
 impl ChunkDeliveryBatch {
     fn new() -> Self {
         Self {
-            pending: BytesMut::with_capacity(CHUNK_DELIVERY_BATCH_BYTES),
+            pending: BytesMut::new(),
         }
     }
 
@@ -169,6 +169,9 @@ impl ChunkDeliveryBatch {
             return Ok(());
         }
 
+        if self.pending.is_empty() {
+            self.pending.reserve(CHUNK_DELIVERY_BATCH_BYTES);
+        }
         self.pending.extend_from_slice(&buffer.split_to(chunk_len));
         if self.pending.len() >= CHUNK_DELIVERY_BATCH_BYTES {
             self.flush(tx, body).await;
@@ -1939,6 +1942,88 @@ mod tests {
             _ => panic!("expected body data event"),
         }
         rx.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn chunk_delivery_batch_allocates_only_for_small_decoded_fragments() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut body = RequestBodyState::new(None, None, None);
+
+        let empty = ChunkDeliveryBatch::new();
+        assert_eq!(
+            empty.pending.capacity(),
+            0,
+            "an empty body has no batch allocation"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an empty body makes no delivery call"
+        );
+
+        let mut small = ChunkDeliveryBatch::new();
+        let mut small_input = BytesMut::from(&[b'a'; 1024][..]);
+        small
+            .push(&mut small_input, 1024, &tx, &mut body)
+            .await
+            .expect("small fragment is accepted");
+        assert!(
+            small.pending.capacity() >= super::CHUNK_DELIVERY_BATCH_BYTES,
+            "the first small copy reserves one full batch"
+        );
+        small.flush(&tx, &mut body).await;
+        assert!(matches!(rx.try_recv(), Ok(StreamInput::Data { body, .. }) if body.len() == 1024));
+        assert!(
+            rx.try_recv().is_err(),
+            "one small fragment makes one delivery call"
+        );
+
+        let mut direct = ChunkDeliveryBatch::new();
+        let mut direct_input =
+            BytesMut::from(vec![b'b'; super::CHUNK_DELIVERY_BATCH_BYTES].as_slice());
+        direct
+            .push(
+                &mut direct_input,
+                super::CHUNK_DELIVERY_BATCH_BYTES,
+                &tx,
+                &mut body,
+            )
+            .await
+            .expect("full batch is accepted");
+        assert_eq!(
+            direct.pending.capacity(),
+            0,
+            "a contiguous full batch stays zero-copy"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(StreamInput::Data { body, .. }) if body.len() == super::CHUNK_DELIVERY_BATCH_BYTES)
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "one full fragment makes one delivery call"
+        );
+
+        let mut tiny = ChunkDeliveryBatch::new();
+        for _ in 0..super::CHUNK_DELIVERY_BATCH_BYTES - 1 {
+            let mut input = BytesMut::from(&b"c"[..]);
+            tiny.push(&mut input, 1, &tx, &mut body)
+                .await
+                .expect("one-byte fragment is accepted");
+        }
+        assert!(
+            tiny.pending.capacity() >= super::CHUNK_DELIVERY_BATCH_BYTES,
+            "many tiny fragments reuse the one full batch allocation"
+        );
+        let mut input = BytesMut::from(&b"c"[..]);
+        tiny.push(&mut input, 1, &tx, &mut body)
+            .await
+            .expect("the final one-byte fragment is accepted");
+        assert!(
+            matches!(rx.try_recv(), Ok(StreamInput::Data { body, .. }) if body.len() == super::CHUNK_DELIVERY_BATCH_BYTES)
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "many tiny fragments retain one delivery call"
+        );
     }
 
     #[tokio::test]

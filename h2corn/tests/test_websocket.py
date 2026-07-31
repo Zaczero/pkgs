@@ -10,7 +10,6 @@ import h2.events
 import pytest
 from fastapi import FastAPI, WebSocket
 from h2corn import Config
-from h2corn._server import _ShutdownKind
 
 from tests._support import (
     h2_request,
@@ -1112,7 +1111,9 @@ async def test_http1_websocket_invalid_version_is_rejected_with_426() -> None:
     assert body == b''
 
 
-@pytest.mark.parametrize('handshake', [_h2_websocket_handshake, _http1_websocket_handshake])
+@pytest.mark.parametrize(
+    'handshake', [_h2_websocket_handshake, _http1_websocket_handshake]
+)
 @pytest.mark.parametrize(
     ('version', 'duplicate'),
     [
@@ -1401,7 +1402,13 @@ async def test_websocket_inbound_backpressure_preserves_ordered_messages(
     )
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+            (
+                reader,
+                writer,
+                conn,
+                stream_id,
+                handshake,
+            ) = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )
@@ -1427,12 +1434,14 @@ async def test_websocket_inbound_backpressure_preserves_ordered_messages(
                 )
                 gate.set()
                 await asyncio.wait_for(finished.wait(), timeout=2.0)
-                terminal, detail, frames = await asyncio.wait_for(close_task, timeout=2.0)
+                terminal, detail, frames = await asyncio.wait_for(
+                    close_task, timeout=2.0
+                )
                 assert terminal == 'ended', (terminal, detail, frames)
                 close_frames = [payload for opcode, payload in frames if opcode == 0x8]
-                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
-                    1000
-                ]
+                assert [
+                    _decode_ws_close_payload(payload)[0] for payload in close_frames
+                ] == [1000]
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -1455,9 +1464,9 @@ async def test_websocket_inbound_backpressure_preserves_ordered_messages(
                 await asyncio.wait_for(finished.wait(), timeout=2.0)
                 frames = await asyncio.wait_for(close_task, timeout=2.0)
                 close_frames = [payload for opcode, payload in frames if opcode == 0x8]
-                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
-                    1000
-                ]
+                assert [
+                    _decode_ws_close_payload(payload)[0] for payload in close_frames
+                ] == [1000]
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -1509,9 +1518,7 @@ async def test_http1_websocket_peer_close_drains_full_inbound_queue() -> None:
                 _read_http1_ws_server_result(reader),
                 timeout=2.0,
             )
-            close_frames = [
-                payload for opcode, payload in frames if opcode == 0x8
-            ]
+            close_frames = [payload for opcode, payload in frames if opcode == 0x8]
             assert close_frames, frames
             assert _decode_ws_close_payload(close_frames[0])[0] == 1000
         finally:
@@ -1562,7 +1569,9 @@ async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
                 while offset < len(data):
                     window = conn.local_flow_control_window(stream_id)
                     if window == 0:
-                        inbound = await asyncio.wait_for(reader.read(1 << 16), timeout=3)
+                        inbound = await asyncio.wait_for(
+                            reader.read(1 << 16), timeout=3
+                        )
                         assert inbound, 'server closed while returning DATA credit'
                         conn.receive_data(inbound)
                         pending = conn.data_to_send()
@@ -1595,9 +1604,7 @@ async def test_h2_websocket_peer_close_drains_full_inbound_queue() -> None:
                 timeout=2.0,
             )
             assert terminal == 'ended', (terminal, detail, frames)
-            close_frames = [
-                payload for opcode, payload in frames if opcode == 0x8
-            ]
+            close_frames = [payload for opcode, payload in frames if opcode == 0x8]
             assert close_frames, frames
             assert _decode_ws_close_payload(close_frames[0])[0] == 1000
         finally:
@@ -1719,8 +1726,7 @@ async def test_websocket_shutdown_reaches_a_fully_paused_inbound_queue(
     received: list = []
     app = _full_inbound_queue_app(gate, finished, received)
     client_data = b''.join(
-        _encode_ws_client_frame(0x2, bytes([index]))
-        for index in range(queued_messages)
+        _encode_ws_client_frame(0x2, bytes([index])) for index in range(queued_messages)
     )
     config = Config(
         port=0,
@@ -1730,7 +1736,13 @@ async def test_websocket_shutdown_reaches_a_fully_paused_inbound_queue(
 
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+            (
+                reader,
+                writer,
+                conn,
+                stream_id,
+                handshake,
+            ) = await _h2_open_websocket_stream(
                 port=server_port(server),
                 path='/ws',
             )
@@ -1758,9 +1770,9 @@ async def test_websocket_shutdown_reaches_a_fully_paused_inbound_queue(
                 frames, remainder = _parse_ws_frames(ws_buffer)
                 assert remainder == b''
                 close_frames = [payload for opcode, payload in frames if opcode == 0x8]
-                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
-                    1001
-                ]
+                assert [
+                    _decode_ws_close_payload(payload)[0] for payload in close_frames
+                ] == [1001]
 
                 gate.set()
                 await asyncio.wait_for(finished.wait(), timeout=2.0)
@@ -1782,9 +1794,9 @@ async def test_websocket_shutdown_reaches_a_fully_paused_inbound_queue(
                     timeout=2.0,
                 )
                 close_frames = [payload for opcode, payload in frames if opcode == 0x8]
-                assert [_decode_ws_close_payload(payload)[0] for payload in close_frames] == [
-                    1001
-                ]
+                assert [
+                    _decode_ws_close_payload(payload)[0] for payload in close_frames
+                ] == [1001]
 
                 gate.set()
                 await asyncio.wait_for(finished.wait(), timeout=2.0)
@@ -2802,9 +2814,13 @@ async def test_websocket_client_close_is_acknowledged_and_stream_ends(
     config = Config(port=0)
     async with running_server(app, config) as server:
         if transport == 'h2':
-            reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
-                port=server_port(server), path='/ws'
-            )
+            (
+                reader,
+                writer,
+                conn,
+                stream_id,
+                handshake,
+            ) = await _h2_open_websocket_stream(port=server_port(server), path='/ws')
             try:
                 conn.send_data(
                     stream_id,
@@ -2901,10 +2917,7 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
                 path='/ws',
             )
         if restarting:
-            # Restart belongs to the supervisor, not to the embedder surface,
-            # so it is requested the same package-private way the supervisor
-            # requests it.
-            server._request_shutdown(_ShutdownKind.RESTART)
+            server.request_restart()
         else:
             server.shutdown()
         await asyncio.wait_for(disconnect_event.wait(), timeout=5)
