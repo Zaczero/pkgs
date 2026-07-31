@@ -23,7 +23,9 @@ pub(crate) const FRAME_HEADER_LEN: usize = 9;
 pub(crate) const GOAWAY_FIXED_PAYLOAD_LEN: usize = 8;
 pub(crate) const GOAWAY_FRAME_PREFIX_LEN: usize = FRAME_HEADER_LEN + GOAWAY_FIXED_PAYLOAD_LEN;
 pub(crate) const SETTING_ENTRY_LEN: usize = size_of::<WireSetting>();
-/// One wire entry per field of [`Settings`].
+/// One wire entry per field of [`Settings`]. `Settings::wire_entries` is typed by
+/// this *and* destructures `Settings`, so neither the bound nor a new field
+/// can drift away from the wire encoding.
 const MAX_SETTINGS_ENTRIES: usize = 7;
 /// GOAWAY debug data is advisory, so it is truncated to keep the frame length
 /// provably encodable instead of failing the connection teardown it explains.
@@ -38,7 +40,9 @@ const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
 pub(crate) enum FrameReadError {
     Other(H2CornError),
     DeclaredPayloadLength {
-        stream_id: Option<StreamId>,
+        /// `Some` only when RFC 9113 scopes this violation to the stream —
+        /// see [`DeclaredLengthError`].
+        reset_stream: Option<StreamId>,
         error: H2Error,
     },
 }
@@ -336,8 +340,48 @@ pub(crate) struct RawFrame {
 /// for connection-order validation but never materialize their payload.
 #[derive(Clone, Debug)]
 pub(crate) enum FrameRead {
-    Handled(RawFrame),
+    Handled(RawFrame, HandledFrameKind),
     Ignored(FrameHeader),
+}
+
+/// The frames a connection dispatches, decided once at the wire boundary.
+///
+/// The reader materializes a payload only for these; RFC 9113 §4.1 has it
+/// consume and ignore anything else as an extension frame. Carrying the
+/// classification instead of re-deriving it downstream removes a two-list
+/// arrangement that had to be edited in the right order: adding a dispatch arm
+/// without the reader's predicate silently discarded the frame before dispatch,
+/// and adding the predicate without the arm routed peer input into a panic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HandledFrameKind {
+    Continuation,
+    Data,
+    Goaway,
+    Headers,
+    Ping,
+    Priority,
+    PushPromise,
+    RstStream,
+    Settings,
+    WindowUpdate,
+}
+
+impl HandledFrameKind {
+    pub(crate) const fn classify(frame_type: FrameType) -> Option<Self> {
+        match frame_type {
+            FrameType::CONTINUATION => Some(Self::Continuation),
+            FrameType::DATA => Some(Self::Data),
+            FrameType::GOAWAY => Some(Self::Goaway),
+            FrameType::HEADERS => Some(Self::Headers),
+            FrameType::PING => Some(Self::Ping),
+            FrameType::PRIORITY => Some(Self::Priority),
+            FrameType::PUSH_PROMISE => Some(Self::PushPromise),
+            FrameType::RST_STREAM => Some(Self::RstStream),
+            FrameType::SETTINGS => Some(Self::Settings),
+            FrameType::WINDOW_UPDATE => Some(Self::WindowUpdate),
+            _ => None,
+        }
+    }
 }
 
 #[derive(FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
@@ -359,27 +403,48 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
-    pub(crate) fn iter(self) -> impl Iterator<Item = (SettingId, u32)> {
+    /// Every field in its wire form, present or not.
+    ///
+    /// The return type is sized by [`MAX_SETTINGS_ENTRIES`], which is what
+    /// bounds the declared payload length in `append_settings`. Adding a field
+    /// without growing that bound is therefore a compile error, where before
+    /// it produced a frame declaring fewer bytes than it went on to write —
+    /// the surplus reads as the header of a frame the peer never sent.
+    fn wire_entries(self) -> [(SettingId, Option<u32>); MAX_SETTINGS_ENTRIES] {
+        // Destructured rather than read field by field: a new field fails to
+        // bind here, so it cannot be added without deciding how it reaches the
+        // wire. Reading `self.x` would compile happily and silently never emit
+        // it — the array length alone only catches the *bound*, not the field.
+        let Self {
+            header_table_size,
+            enable_push,
+            max_concurrent_streams,
+            initial_window_size,
+            max_frame_size,
+            max_header_list_size,
+            enable_connect_protocol,
+        } = self;
         [
-            (SettingId::HEADER_TABLE_SIZE, self.header_table_size),
-            (SettingId::ENABLE_PUSH, self.enable_push.map(u32::from)),
-            (
-                SettingId::MAX_CONCURRENT_STREAMS,
-                self.max_concurrent_streams,
-            ),
-            (SettingId::INITIAL_WINDOW_SIZE, self.initial_window_size),
+            (SettingId::HEADER_TABLE_SIZE, header_table_size),
+            (SettingId::ENABLE_PUSH, enable_push.map(u32::from)),
+            (SettingId::MAX_CONCURRENT_STREAMS, max_concurrent_streams),
+            (SettingId::INITIAL_WINDOW_SIZE, initial_window_size),
             (
                 SettingId::MAX_FRAME_SIZE,
-                self.max_frame_size.map(NonZeroU32::get),
+                max_frame_size.map(NonZeroU32::get),
             ),
-            (SettingId::MAX_HEADER_LIST_SIZE, self.max_header_list_size),
+            (SettingId::MAX_HEADER_LIST_SIZE, max_header_list_size),
             (
                 SettingId::ENABLE_CONNECT_PROTOCOL,
-                self.enable_connect_protocol.map(u32::from),
+                enable_connect_protocol.map(u32::from),
             ),
         ]
-        .into_iter()
-        .filter_map(|(id, value)| value.map(|value| (id, value)))
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = (SettingId, u32)> {
+        self.wire_entries()
+            .into_iter()
+            .filter_map(|(id, value)| value.map(|value| (id, value)))
     }
 
     pub(crate) fn apply_wire_pair(&mut self, id: SettingId, value: u32) -> Result<(), H2CornError> {
@@ -516,7 +581,6 @@ where
     pub(crate) async fn read_frame(
         &mut self,
         max_frame_size: usize,
-        is_handled_frame: fn(FrameType) -> bool,
     ) -> Result<Option<FrameRead>, FrameReadError> {
         self.discard_rejected_payload().await?;
         if !self.read_at_least(FRAME_HEADER_LEN).await? {
@@ -543,13 +607,20 @@ where
 
         let frame_type = FrameType::new(header[3]);
         let flags = FrameFlags::new(header[4]);
-        if let Err(error) = validate_declared_payload_length(frame_type, flags, payload_len) {
+        if let Err(violation) = validate_declared_payload_length(frame_type, flags, payload_len) {
             self.buffer.advance(FRAME_HEADER_LEN);
             self.discard_payload_len = payload_len;
-            return Err(FrameReadError::DeclaredPayloadLength { stream_id, error });
+            let (reset_stream, error) = match violation {
+                DeclaredLengthError::Connection(error) => (None, error),
+                DeclaredLengthError::Stream(error) => (stream_id, error),
+            };
+            return Err(FrameReadError::DeclaredPayloadLength {
+                reset_stream,
+                error,
+            });
         }
 
-        if !is_handled_frame(frame_type) {
+        let Some(kind) = HandledFrameKind::classify(frame_type) else {
             // RFC 9113 permits extension frames that this connection does
             // not implement. Their payload is inert here, so consume it
             // through the capped discard path instead of growing the
@@ -563,7 +634,7 @@ where
                 flags,
                 stream_id,
             })));
-        }
+        };
 
         let total_len = FRAME_HEADER_LEN + payload_len;
         if !self.read_at_least(total_len).await? {
@@ -579,14 +650,17 @@ where
         self.buffer.advance(FRAME_HEADER_LEN);
         let payload = self.buffer.split_to(payload_len).freeze();
 
-        Ok(Some(FrameRead::Handled(RawFrame {
-            header: FrameHeader {
-                frame_type,
-                flags,
-                stream_id,
+        Ok(Some(FrameRead::Handled(
+            RawFrame {
+                header: FrameHeader {
+                    frame_type,
+                    flags,
+                    stream_id,
+                },
+                payload,
             },
-            payload,
-        })))
+            kind,
+        )))
     }
 
     async fn discard_rejected_payload(&mut self) -> Result<(), H2CornError> {
@@ -606,28 +680,52 @@ where
     }
 }
 
+/// A fixed-length frame rejected from its nine-byte header.
+///
+/// RFC 9113 scopes these violations by **frame type, not by stream**. Reading
+/// the scope off the frame's stream id instead let a malformed PING, SETTINGS,
+/// RST_STREAM, WINDOW_UPDATE or GOAWAY sent on a live stream be answered with
+/// RST_STREAM while the connection stayed open and out of step.
+#[derive(Debug)]
+pub(crate) enum DeclaredLengthError {
+    /// RFC 9113 §§6.4, 6.5, 6.7, 6.8, 6.9 — the connection ends.
+    Connection(H2Error),
+    /// RFC 9113 §6.3 — PRIORITY alone survives as a stream error.
+    Stream(H2Error),
+}
+
 /// Reject fixed-size control frames from their nine-byte header, before a
 /// hostile declared length can grow the connection buffer.
 pub(crate) fn validate_declared_payload_length(
     frame_type: FrameType,
     flags: FrameFlags,
     payload_len: usize,
-) -> Result<(), H2Error> {
-    let exact = |expected, error| (payload_len == expected).then_some(()).ok_or(error);
+) -> Result<(), DeclaredLengthError> {
+    let exact = |expected, error| {
+        (payload_len == expected)
+            .then_some(())
+            .ok_or(DeclaredLengthError::Connection(error))
+    };
     match frame_type {
         FrameType::PING => exact(8, H2Error::PingPayloadInvalidLength),
         FrameType::RST_STREAM => exact(4, H2Error::RstStreamPayloadInvalidLength),
         FrameType::WINDOW_UPDATE => exact(4, H2Error::WindowUpdatePayloadInvalidLength),
-        FrameType::PRIORITY => exact(5, H2Error::PriorityPayloadInvalidLength),
+        FrameType::PRIORITY => (payload_len == 5)
+            .then_some(())
+            .ok_or(DeclaredLengthError::Stream(
+                H2Error::PriorityPayloadInvalidLength,
+            )),
         FrameType::SETTINGS if flags.contains(FrameFlags::ACK) => {
             exact(0, H2Error::SettingsAckPayloadNotEmpty)
         },
         FrameType::SETTINGS => (payload_len.is_multiple_of(SETTING_ENTRY_LEN))
             .then_some(())
-            .ok_or(H2Error::SettingsPayloadLengthInvalid),
+            .ok_or(DeclaredLengthError::Connection(
+                H2Error::SettingsPayloadLengthInvalid,
+            )),
         FrameType::GOAWAY => (payload_len >= GOAWAY_FIXED_PAYLOAD_LEN)
             .then_some(())
-            .ok_or(H2Error::InvalidGoawayFrame),
+            .ok_or(DeclaredLengthError::Connection(H2Error::InvalidGoawayFrame)),
         _ => Ok(()),
     }
 }
@@ -937,7 +1035,7 @@ mod tests {
 
         let result = timeout(
             Duration::from_millis(100),
-            reader.read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true),
+            reader.read_frame(DEFAULT_MAX_FRAME_SIZE),
         )
         .await
         .expect("the nine-byte header must reject before the payload is read");
@@ -993,20 +1091,20 @@ mod tests {
         let mut reader = BufferedConnectionReader::new(server);
 
         let error = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true)
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await
             .expect_err("the short PRIORITY is rejected");
         assert!(matches!(error, FrameReadError::DeclaredPayloadLength {
-            stream_id: Some(stream_id),
+            reset_stream: Some(stream_id),
             error: H2Error::PriorityPayloadInvalidLength,
         } if stream_id.get() == 1));
 
         let frame = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| true)
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await
             .expect("the rejected payload is skipped")
             .expect("the following PING is present");
-        let FrameRead::Handled(frame) = frame else {
+        let FrameRead::Handled(frame, _) = frame else {
             panic!("PING belongs to the handled frame vocabulary")
         };
         assert_eq!(frame.header.frame_type, FrameType::PING);
@@ -1065,9 +1163,7 @@ mod tests {
 
         let mut reader = BufferedConnectionReader::new(server);
         let ignored = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE, |frame_type| {
-                frame_type != UNKNOWN_FRAME
-            })
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await
             .expect("unknown payload is consumed")
             .expect("unknown frame header is returned after discard");
@@ -1076,15 +1172,13 @@ mod tests {
             FrameRead::Ignored(FrameHeader { frame_type, .. }) if frame_type == UNKNOWN_FRAME
         ));
         let frame = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE, |frame_type| {
-                frame_type != UNKNOWN_FRAME
-            })
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await
             .expect("following PING is readable")
             .expect("following PING is returned");
         writer.await.expect("writer task joins");
 
-        let FrameRead::Handled(frame) = frame else {
+        let FrameRead::Handled(frame, _) = frame else {
             panic!("PING belongs to the handled frame vocabulary")
         };
         assert_eq!(frame.header.frame_type, FrameType::PING);
@@ -1121,7 +1215,7 @@ mod tests {
 
         let mut reader = BufferedConnectionReader::new(server);
         let error = reader
-            .read_frame(DEFAULT_MAX_FRAME_SIZE, |_| false)
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await
             .expect_err("EOF in discarded payload is a framing error");
         assert!(matches!(

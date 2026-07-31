@@ -47,12 +47,10 @@ impl Encoder {
 
         self.current_max_size = size;
         self.table.set_max_size(size);
-
-        if size == self.committed_max_size {
-            self.pending_floor = None;
-            return;
-        }
-
+        // The floor survives a return to the committed size. RFC 7541 §4.2
+        // requires the *smallest* maximum seen between two blocks to be
+        // signalled before the final one, so `4096 -> 0 -> 4096` still owes
+        // the peer a `0` update even though nothing appears to have changed.
         self.pending_floor = Some(self.pending_floor.unwrap_or(size).min(size));
     }
 
@@ -72,15 +70,15 @@ impl Encoder {
     }
 
     pub(crate) fn begin_block(&mut self, dst: &mut BytesMut) {
-        if self.current_max_size == self.committed_max_size {
+        let floor = self
+            .pending_floor
+            .filter(|floor| *floor < self.committed_max_size && *floor < self.current_max_size);
+        if floor.is_none() && self.current_max_size == self.committed_max_size {
             self.pending_floor = None;
             return;
         }
 
-        if let Some(floor) = self.pending_floor
-            && floor < self.committed_max_size
-            && floor < self.current_max_size
-        {
+        if let Some(floor) = floor {
             encode_int(floor, 5, 0x20, dst);
         }
 
@@ -293,12 +291,31 @@ mod tests {
         assert_eq!(&dst[..], &[0x20]);
     }
 
+    /// RFC 7541 §4.2: when the limit changes more than once between blocks,
+    /// the smallest intervening maximum is signalled first and the final one
+    /// second — even when the final value is the one already committed, which
+    /// makes the sequence look like a no-op from the encoder's own state.
     #[test]
-    fn size_update_clears_when_limit_returns_to_committed_value() {
+    fn size_update_signals_the_floor_when_the_limit_returns_to_its_committed_value() {
         let mut encoder = Encoder::new();
         let mut dst = BytesMut::new();
 
         encoder.update_max_size(128);
+        encoder.update_max_size(DEFAULT_HEADER_TABLE_SIZE);
+        encoder.begin_block(&mut dst);
+
+        let mut expected = BytesMut::new();
+        encode_int(128, 5, 0x20, &mut expected);
+        encode_int(DEFAULT_HEADER_TABLE_SIZE, 5, 0x20, &mut expected);
+        assert_eq!(&dst[..], &expected[..]);
+    }
+
+    /// A limit that never moves owes the peer nothing.
+    #[test]
+    fn unchanged_limit_emits_no_size_update() {
+        let mut encoder = Encoder::new();
+        let mut dst = BytesMut::new();
+
         encoder.update_max_size(DEFAULT_HEADER_TABLE_SIZE);
         encoder.begin_block(&mut dst);
 

@@ -35,6 +35,7 @@ use writer::{
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
 use crate::error::{ErrorExt as _, ErrorKind, H2CornError, H2Error};
 use crate::h2_frame::{
+    HandledFrameKind,
     self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType, PeerSettings,
     RawFrame, StreamId, WindowIncrement,
 };
@@ -72,7 +73,7 @@ enum IngestEvent {
     ShutdownChanged,
     Frame(FrameRead),
     FrameLengthExceeded {
-        stream_id: Option<StreamId>,
+        reset_stream: Option<StreamId>,
         error: H2Error,
     },
     PeerClosed,
@@ -1230,8 +1231,8 @@ where
                 state.request_tasks.cancel_all().await;
                 stop_after_flush = true;
             },
-            IngestEvent::FrameLengthExceeded { stream_id, error } => {
-                if let Some(stream_id) = stream_id {
+            IngestEvent::FrameLengthExceeded { reset_stream, error } => {
+                if let Some(stream_id) = reset_stream {
                     state
                         .peer_failure(H2PeerFailure::stream(
                             stream_id,
@@ -1239,16 +1240,14 @@ where
                         ))
                         .await?;
                 } else {
+                    // Through `peer_failure` rather than writing GOAWAY here:
+                    // that path owns the fatal linger and stops the connection,
+                    // where writing the frame directly left the loop running to
+                    // emit a second, contradictory `GOAWAY(NO_ERROR)` after the
+                    // error one.
                     state
-                        .writer
-                        .goaway(
-                            state.last_client_stream_id,
-                            ErrorCode::FRAME_SIZE_ERROR,
-                            error.to_string().into_bytes(),
-                            true,
-                        )
+                        .peer_failure(H2PeerFailure::frame_size(error))
                         .await?;
-                    stop_after_flush = true;
                 }
             },
             IngestEvent::Deadline(deadline) => match deadline {
@@ -1315,6 +1314,13 @@ fn header_block_too_large() -> H2PeerFailure {
     H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, H2Error::FieldBlockTooLarge)
 }
 
+/// A field block still incomplete at the header deadline is abandoned, which
+/// desynchronizes the connection-wide decoder exactly as refusing to decode
+/// one does. See [`header_block_too_large`].
+fn header_block_abandoned() -> H2PeerFailure {
+    H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, H2Error::FieldBlockAbandoned)
+}
+
 async fn handle_request_input_timeout<R, W>(
     state: &mut H2ConnectionState<R, W>,
     deadline: RequestInputDeadline,
@@ -1331,21 +1337,13 @@ where
                 state.pending_headers = Some(pending);
                 return Ok(());
             }
-            // Tracked streams still own an application task; wire RST alone
-            // would leave it alive. New/refused blocks have no owner yet.
-            match pending.target {
-                HeaderBlockTarget::Trailers { .. } | HeaderBlockTarget::RejectedTracked { .. } => {
-                    state
-                        .reset_request_stream(stream_id, ErrorCode::CANCEL)
-                        .await?;
-                },
-                HeaderBlockTarget::RequestHead { .. } | HeaderBlockTarget::RejectedNew { .. } => {
-                    state
-                        .writer
-                        .reset_stream(stream_id, ErrorCode::CANCEL)
-                        .await?;
-                },
-            }
+            // Abandoning the fragments ends the connection for the same reason
+            // `header_block_too_large` does: the peer's encoder has already
+            // applied this block's dynamic-table insertions, so a decoder that
+            // never sees the bytes is permanently behind it. Resetting only the
+            // stalled stream leaves the connection looking healthy until the
+            // next valid request on it fails to decode.
+            state.peer_failure(header_block_abandoned()).await?;
         },
         RequestInputDeadline::Body(stream_id, _) => {
             if let Some(stream) = state.streams.get_mut(&stream_id)
@@ -1366,8 +1364,8 @@ fn map_frame_ingest_result(
     match frame {
         Ok(Some(frame)) => Ok(IngestEvent::Frame(frame)),
         Ok(None) => Ok(IngestEvent::PeerClosed),
-        Err(FrameReadError::DeclaredPayloadLength { stream_id, error }) => {
-            Ok(IngestEvent::FrameLengthExceeded { stream_id, error })
+        Err(FrameReadError::DeclaredPayloadLength { reset_stream, error }) => {
+            Ok(IngestEvent::FrameLengthExceeded { reset_stream, error })
         },
         Err(FrameReadError::Other(err)) => match err.into_kind() {
             ErrorKind::H2(
@@ -1380,7 +1378,7 @@ fn map_frame_ingest_result(
                 | H2Error::PriorityPayloadInvalidLength
                 | H2Error::InvalidGoawayFrame),
             ) => Ok(IngestEvent::FrameLengthExceeded {
-                stream_id: None,
+                reset_stream: None,
                 error,
             }),
             kind => Err(kind.into()),
@@ -1449,7 +1447,7 @@ where
         () = &mut outbound_notified => Ok(IngestEvent::Continue),
         () = &mut input_notified => Ok(IngestEvent::Continue),
         () = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
-        frame = state.reader.read_frame(state.local_max_frame_size.as_usize(), is_handled_frame) => map_frame_ingest_result(frame),
+        frame = state.reader.read_frame(state.local_max_frame_size.as_usize()) => map_frame_ingest_result(frame),
     }
 }
 
@@ -1853,7 +1851,9 @@ where
     W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
 {
     match frame {
-        FrameRead::Handled(frame) => advance_connection_with_handled_frame(state, frame).await,
+        FrameRead::Handled(frame, kind) => {
+            advance_connection_with_handled_frame(state, frame, kind).await
+        },
         FrameRead::Ignored(header) => advance_connection_with_ignored_frame(state, header).await,
     }
 }
@@ -1861,6 +1861,7 @@ where
 async fn advance_connection_with_handled_frame<R, W>(
     state: &mut H2ConnectionState<R, W>,
     frame: RawFrame,
+    kind: HandledFrameKind,
 ) -> Result<bool, H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -1875,36 +1876,35 @@ where
         return Ok(false);
     }
 
-    match frame.header.frame_type {
-        FrameType::SETTINGS => {
+    match kind {
+        HandledFrameKind::Settings => {
             handle_settings_frame(state, frame).await?;
         },
-        FrameType::PING => {
+        HandledFrameKind::Ping => {
             handle_ping_frame(state, frame).await?;
         },
-        FrameType::WINDOW_UPDATE => return handle_window_update_frame(state, frame).await,
-        FrameType::RST_STREAM => {
+        HandledFrameKind::WindowUpdate => return handle_window_update_frame(state, frame).await,
+        HandledFrameKind::RstStream => {
             handle_rst_stream_frame(state, frame).await?;
         },
-        FrameType::GOAWAY => {
+        HandledFrameKind::Goaway => {
             handle_goaway_frame(state, frame).await?;
         },
-        FrameType::PRIORITY => {
+        HandledFrameKind::Priority => {
             handle_priority_frame(state, frame).await?;
         },
-        FrameType::PUSH_PROMISE => {
+        HandledFrameKind::PushPromise => {
             reject_push_promise(state).await?;
         },
-        FrameType::HEADERS => {
+        HandledFrameKind::Headers => {
             handle_headers_frame(state, frame).await?;
         },
-        FrameType::CONTINUATION => {
+        HandledFrameKind::Continuation => {
             handle_continuation_frame(state, frame).await?;
         },
-        FrameType::DATA => {
+        HandledFrameKind::Data => {
             handle_data_frame(state, frame).await?;
         },
-        _ => unreachable!("the reader discards frames outside the dispatcher vocabulary"),
     }
     Ok(false)
 }
@@ -1918,25 +1918,6 @@ where
 {
     apply_writer_response_closes(state).await;
     Ok(!validate_frame_order(state, header).await?)
-}
-
-/// The reader uses this exact dispatcher vocabulary to decide whether a
-/// payload must be materialized. Add a type here before adding its dispatch
-/// arm, otherwise an extension frame is intentionally consumed and ignored.
-const fn is_handled_frame(frame_type: FrameType) -> bool {
-    matches!(
-        frame_type,
-        FrameType::SETTINGS
-            | FrameType::PING
-            | FrameType::WINDOW_UPDATE
-            | FrameType::RST_STREAM
-            | FrameType::GOAWAY
-            | FrameType::PRIORITY
-            | FrameType::PUSH_PROMISE
-            | FrameType::HEADERS
-            | FrameType::CONTINUATION
-            | FrameType::DATA
-    )
 }
 
 fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool), H2CornError> {

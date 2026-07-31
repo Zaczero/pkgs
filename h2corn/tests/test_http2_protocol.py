@@ -1866,7 +1866,20 @@ async def test_h2_header_field_limit_rejects_indexed_cookie_bomb() -> None:
     )
 
 
-async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
+async def test_h2_abandoned_header_fragment_ends_the_connection() -> None:
+    """
+    HPACK's dynamic table is connection-wide.  A field block that times out
+    half-delivered is never fed to the decoder, but the peer's encoder already
+    applied that block's insertions -- so the two tables are permanently out of
+    step and every later block on the connection decodes against the wrong
+    indices.  The connection must die with COMPRESSION_ERROR rather than
+    survive as a connection whose next valid request fails mysteriously.
+
+    One `hpack.Encoder` spans both streams here on purpose.  With a fresh
+    encoder per block, no dynamic-table state crosses streams and the desync
+    this guards against cannot occur at all.
+    """
+
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
@@ -1880,54 +1893,51 @@ async def test_h2_header_fragment_timeout_resets_only_stalled_stream() -> None:
         reader, writer, _conn, authority = await open_h2_connection(
             port=server_port(server)
         )
-        slow_block = hpack.Encoder().encode([
+        encoder = hpack.Encoder()
+        # Both blocks carry a header the static table cannot serve, so the
+        # encoder inserts into its dynamic table for each of them.
+        slow_block = encoder.encode([
             (b':method', b'GET'),
             (b':scheme', b'http'),
             (b':authority', authority),
             (b':path', b'/slow'),
+            (b'x-marker', b'slow-value'),
         ])
-        fast_block = hpack.Encoder().encode([
+        # Encoded, not sent: it advances the peer encoder's dynamic table the
+        # way a real client's next request would, which is what leaves the
+        # server's decoder behind once the first block is abandoned.
+        encoder.encode([
             (b':method', b'GET'),
             (b':scheme', b'http'),
             (b':authority', authority),
             (b':path', b'/fast'),
+            (b'x-marker', b'fast-value'),
         ])
         writer.write(_encode_h2_frame(0x01, slow_block[:8], flags=0x01, stream_id=1))
         await writer.drain()
-        slow_reset = None
-        while slow_reset is None:
-            header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-            length = int.from_bytes(header[:3], 'big')
-            frame_type = header[3]
-            stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-            payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-            if frame_type == 0x03 and stream_id == 1:
-                slow_reset = int.from_bytes(payload[:4], 'big')
 
-        writer.write(_encode_h2_frame(0x01, fast_block, flags=0x05, stream_id=3))
-        await writer.drain()
-        decoder = hpack.Decoder()
-        fast_status = None
-        fast_body = bytearray()
+        goaway_error = None
         try:
-            while fast_status is None or fast_body != b'fast':
+            while goaway_error is None:
                 header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
                 length = int.from_bytes(header[:3], 'big')
                 frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
                 payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x01 and stream_id == 3:
-                    headers = dict(decoder.decode(payload, raw=True))
-                    fast_status = headers.get(b':status')
-                elif frame_type == 0x00 and stream_id == 3:
-                    fast_body.extend(payload)
+                if frame_type == 0x07:
+                    goaway_error = int.from_bytes(payload[4:8], 'big')
+                elif frame_type == 0x03:
+                    pytest.fail(
+                        'the stalled stream was reset and the connection kept, '
+                        'leaving the HPACK decoder behind the peer encoder'
+                    )
+            # The peer is told before the socket goes; a later block would
+            # decode against a table the server never updated.
+            assert not await asyncio.wait_for(reader.read(), timeout=5)
         finally:
             writer.close()
             await writer.wait_closed()
 
-    assert slow_reset == int(h2.errors.ErrorCodes.CANCEL)
-    assert fast_status in {b'200', '200'}
-    assert fast_body == b'fast'
+    assert goaway_error == int(h2.errors.ErrorCodes.COMPRESSION_ERROR)
 
 
 async def test_h2_response_stall_timeout_resets_flow_control_blocked_stream() -> None:
@@ -2335,6 +2345,70 @@ async def test_h2_malformed_priority_resets_only_its_stream() -> None:
         for frame_type, _flags, stream_id, payload in frames
     ), frames
     assert not [frame for frame in frames if frame[0] == 0x07], frames
+
+
+@pytest.mark.parametrize(
+    ('frame_type', 'payload', 'name'),
+    [
+        (0x06, b'\x00' * 7, 'PING'),
+        (0x03, b'\x00' * 3, 'RST_STREAM'),
+        (0x08, b'\x00' * 3, 'WINDOW_UPDATE'),
+        (0x04, b'\x00', 'SETTINGS'),
+        (0x07, b'\x00' * 7, 'GOAWAY'),
+    ],
+)
+async def test_h2_fixed_length_violation_on_a_live_stream_ends_the_connection(
+    frame_type: int, payload: bytes, name: str
+) -> None:
+    """
+    RFC 9113 scopes an invalid fixed length by frame type, not by stream.
+    Sections 6.4, 6.5 and 6.7-6.9 make these connection errors even when the
+    frame arrives carrying a live stream id; only PRIORITY (section 6.3) is a
+    stream error, covered separately above.
+
+    Answering with RST_STREAM instead left the connection open with its frame
+    parser and the peer disagreeing about what had been consumed.
+    """
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    async with running_server(app, Config(port=0, access_log=False)) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        try:
+            await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+            conn.send_headers(
+                1,
+                [
+                    (b':method', b'GET'),
+                    (b':path', b'/one'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                ],
+                end_stream=True,
+            )
+            writer.write(
+                conn.data_to_send()
+                + _encode_h2_frame(frame_type, payload, stream_id=1)
+            )
+            await writer.drain()
+            frames = await read_raw_h2_frames(reader, timeout=2.0, stop_at_goaway=False)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    goaways = [frame for frame in frames if frame[0] == 0x07]
+    assert goaways, f'a malformed {name} must end the connection: {frames}'
+    assert int.from_bytes(goaways[0][3][4:8], 'big') == int(
+        h2.errors.ErrorCodes.FRAME_SIZE_ERROR
+    )
+    # Exactly one: writing the error GOAWAY without going through the fatal
+    # path left the loop running long enough to send a second GOAWAY(NO_ERROR)
+    # contradicting it.
+    assert len(goaways) == 1, f'one GOAWAY, not {len(goaways)}: {goaways}'
 
 
 def _resident_kib(pid: int | None = None) -> int:
@@ -3476,8 +3550,8 @@ async def test_wrong_stream_continuation_is_connection_protocol_error() -> None:
     )
 
 
-async def test_header_timeout_on_tracked_trailers_finalizes_application() -> None:
-    """A stalled trailer block cancels the owning application and frees the slot."""
+async def test_header_timeout_on_tracked_trailers_ends_the_connection() -> None:
+    """A stalled trailer block cancels the owning application and ends the connection."""
     cancelled = asyncio.Event()
     second_started = asyncio.Event()
     # Gate a concurrent stream while the first is open so a double-counted
@@ -3545,43 +3619,23 @@ async def test_header_timeout_on_tracked_trailers_finalizes_application() -> Non
             )
             await writer.drain()
 
-            reset_code = None
-            while reset_code is None:
+            goaway_error = None
+            while goaway_error is None:
                 header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
                 length = int.from_bytes(header[:3], 'big')
                 frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
                 payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x03 and stream_id == 1:
-                    reset_code = int.from_bytes(payload[:4], 'big')
-                assert frame_type != 0x07
+                if frame_type == 0x07:
+                    goaway_error = int.from_bytes(payload[4:8], 'big')
 
             assert await asyncio.wait_for(cancelled.wait(), timeout=2)
-
-            # Fresh encoder: the incomplete trailer block never reached the
-            # server decoder, so dynamic indices from encoding it are local only.
-            # Pending trailers must not double-count: after finalize, a single
-            # concurrent slot is free for stream 3.
-            follow = hpack.Encoder().encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/second'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, follow, flags=0x05, stream_id=3))
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
         finally:
             writer.close()
             await writer.wait_closed()
 
-    assert reset_code == int(h2.errors.ErrorCodes.CANCEL)
-    assert second_started.is_set()
-    assert not any(
-        frame_type == 0x03 and stream_id == 3
-        for frame_type, _f, stream_id, _p in frames
-    )
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
+    # `trailers` was encoded on the same encoder as `head`, so the peer's
+    # dynamic table already holds an entry the server's decoder never saw.
+    # A trailer block is a field block like any other: abandoning it half
+    # delivered desynchronizes the connection-wide compression context, so the
+    # connection ends rather than the stream.
+    assert goaway_error == int(h2.errors.ErrorCodes.COMPRESSION_ERROR)
