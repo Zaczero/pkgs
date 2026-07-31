@@ -132,8 +132,9 @@ impl RequestHeaderMeta {
         known_name: KnownRequestHeaderName,
         value: &Bytes,
         index: usize,
+        collect_proxy_headers: bool,
     ) {
-        self.observe_known_header_value(known_name, value.as_ref(), index);
+        self.observe_known_header_value(known_name, value.as_ref(), index, collect_proxy_headers);
         if known_name == KnownRequestHeaderName::SecWebSocketProtocol {
             push_requested_subprotocols(value, &mut self.rare_mut().websocket.request);
         }
@@ -144,8 +145,9 @@ impl RequestHeaderMeta {
         known_name: KnownRequestHeaderName,
         value: &[u8],
         index: usize,
+        collect_proxy_headers: bool,
     ) {
-        self.observe_known_header_value(known_name, value, index);
+        self.observe_known_header_value(known_name, value, index, collect_proxy_headers);
         if known_name == KnownRequestHeaderName::SecWebSocketProtocol {
             push_copied_requested_subprotocols(value, &mut self.rare_mut().websocket.request);
         }
@@ -156,6 +158,7 @@ impl RequestHeaderMeta {
         known_name: KnownRequestHeaderName,
         value_bytes: &[u8],
         index: usize,
+        collect_proxy_headers: bool,
     ) {
         let slot = || {
             let one_based = index
@@ -166,22 +169,34 @@ impl RequestHeaderMeta {
         };
         match known_name {
             KnownRequestHeaderName::Forwarded => {
-                self.rare_mut().proxy_headers.forwarded = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.forwarded = Some(slot());
+                }
             },
             KnownRequestHeaderName::XForwardedFor => {
-                self.rare_mut().proxy_headers.x_forwarded_for = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.x_forwarded_for = Some(slot());
+                }
             },
             KnownRequestHeaderName::XForwardedProto => {
-                self.rare_mut().proxy_headers.x_forwarded_proto = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.x_forwarded_proto = Some(slot());
+                }
             },
             KnownRequestHeaderName::XForwardedHost => {
-                self.rare_mut().proxy_headers.x_forwarded_host = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.x_forwarded_host = Some(slot());
+                }
             },
             KnownRequestHeaderName::XForwardedPort => {
-                self.rare_mut().proxy_headers.x_forwarded_port = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.x_forwarded_port = Some(slot());
+                }
             },
             KnownRequestHeaderName::XForwardedPrefix => {
-                self.rare_mut().proxy_headers.x_forwarded_prefix = Some(slot());
+                if collect_proxy_headers {
+                    self.rare_mut().proxy_headers.x_forwarded_prefix = Some(slot());
+                }
             },
             KnownRequestHeaderName::SecWebSocketVersion => {
                 let version = &mut self.rare_mut().websocket.version;
@@ -301,14 +316,38 @@ mod tests {
     #[test]
     fn proxy_header_slots_keep_the_last_match() {
         let mut meta = RequestHeaderMeta::default();
-        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 2);
-        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 9);
-        meta.observe_known_header(KnownRequestHeaderName::XForwardedProto, &Bytes::new(), 4);
-        meta.observe_known_header(KnownRequestHeaderName::XForwardedProto, &Bytes::new(), 7);
+        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 2, true);
+        meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 9, true);
+        meta.observe_known_header(
+            KnownRequestHeaderName::XForwardedProto,
+            &Bytes::new(),
+            4,
+            true,
+        );
+        meta.observe_known_header(
+            KnownRequestHeaderName::XForwardedProto,
+            &Bytes::new(),
+            7,
+            true,
+        );
         let slots = *meta.proxy_headers().expect("proxy metadata sidecar exists");
 
         assert_eq!(ProxyHeaderSlots::index(slots.forwarded), Some(9));
         assert_eq!(ProxyHeaderSlots::index(slots.x_forwarded_proto), Some(7));
+    }
+
+    #[test]
+    fn untrusted_proxy_headers_do_not_allocate_the_rare_sidecar() {
+        let mut meta = RequestHeaderMeta::default();
+        meta.observe_known_header(
+            KnownRequestHeaderName::XForwardedFor,
+            &Bytes::from_static(b"198.51.100.9"),
+            0,
+            false,
+        );
+
+        assert!(meta.proxy_headers().is_none());
+        assert!(meta.rare.is_none());
     }
 
     #[test]
@@ -319,21 +358,25 @@ mod tests {
             KnownRequestHeaderName::SecWebSocketVersion,
             &Bytes::from_static(b"13"),
             0,
+            true,
         );
         meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketKey,
             &Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="),
             1,
+            true,
         );
         meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketProtocol,
             &Bytes::from_static(b"chat, superchat"),
             2,
+            true,
         );
         meta.observe_known_header(
             KnownRequestHeaderName::SecWebSocketExtensions,
             &Bytes::from_static(b"permessage-deflate"),
             3,
+            true,
         );
 
         let websocket = meta.websocket().expect("WebSocket metadata sidecar exists");
@@ -360,8 +403,8 @@ mod tests {
 
         for (first, second) in [(&malformed, &valid), (&valid, &malformed), (&valid, &valid)] {
             let mut meta = RequestHeaderMeta::default();
-            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, first, 0);
-            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, second, 1);
+            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, first, 0, true);
+            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, second, 1, true);
             assert_eq!(
                 meta.websocket()
                     .expect("key creates handshake metadata")
@@ -379,8 +422,18 @@ mod tests {
             (b"13", b"13"),
         ] {
             let mut meta = RequestHeaderMeta::default();
-            meta.observe_known_header_slice(KnownRequestHeaderName::SecWebSocketVersion, first, 0);
-            meta.observe_known_header_slice(KnownRequestHeaderName::SecWebSocketVersion, second, 1);
+            meta.observe_known_header_slice(
+                KnownRequestHeaderName::SecWebSocketVersion,
+                first,
+                0,
+                true,
+            );
+            meta.observe_known_header_slice(
+                KnownRequestHeaderName::SecWebSocketVersion,
+                second,
+                1,
+                true,
+            );
             assert_eq!(
                 meta.websocket()
                     .expect("version creates handshake metadata")

@@ -1,10 +1,10 @@
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::str;
 use std::sync::LazyLock;
-use std::{iter, str};
 
 use bytes::{Buf, Bytes, BytesMut};
 use http::{Method, Uri};
-use memchr::{memchr, memchr_iter, memmem};
+use memchr::{memchr, memchr2, memmem};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -90,6 +90,7 @@ struct HeaderParseState {
     http2_settings: Option<PeerSettings>,
     header_field_count: usize,
     header_meta: RequestHeaderMeta,
+    collect_proxy_headers: bool,
 }
 
 /// The configured field policy, applied to trailers as well as headers.
@@ -193,7 +194,7 @@ struct RequestLineParts<'a> {
 }
 
 impl HeaderParseState {
-    fn new(head: Bytes) -> Self {
+    fn new(head: Bytes, collect_proxy_headers: bool) -> Self {
         Self {
             headers: H1RequestHeaders::new(head),
             host_header_index: None,
@@ -204,6 +205,7 @@ impl HeaderParseState {
             http2_settings: None,
             header_field_count: 0,
             header_meta: RequestHeaderMeta::default(),
+            collect_proxy_headers,
         }
     }
 
@@ -240,8 +242,12 @@ impl HeaderParseState {
             return Ok(());
         };
 
-        self.header_meta
-            .observe_known_header_slice(known_name, value, self.headers.len() - 1);
+        self.header_meta.observe_known_header_slice(
+            known_name,
+            value,
+            self.headers.len() - 1,
+            self.collect_proxy_headers,
+        );
         match known_name {
             KnownRequestHeaderName::Host => {
                 if !request_authority_is_valid(value) {
@@ -319,23 +325,34 @@ struct ParsedHead {
     expect_continue: bool,
 }
 
-fn head_lines(head: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut next_start = 0;
-    let mut newlines = memchr_iter(b'\n', head);
-    let mut finished = false;
-    iter::from_fn(move || {
-        if let Some(end) = newlines.next() {
-            let line = &head[next_start..end];
-            next_start = end + 1;
-            return Some(line.strip_suffix(b"\r").unwrap_or(line));
+struct HeadLineCursor<'a> {
+    remaining: &'a [u8],
+    finished: bool,
+}
+
+impl<'a> HeadLineCursor<'a> {
+    const fn new(head: &'a [u8]) -> Self {
+        Self {
+            remaining: head,
+            finished: false,
         }
-        if finished {
-            return None;
+    }
+
+    fn next_line(&mut self) -> HeadParseOutcome<Option<&'a [u8]>> {
+        if self.finished {
+            return HeadParseOutcome::Parsed(None);
         }
-        finished = true;
-        let line = &head[next_start..];
-        Some(line.strip_suffix(b"\r").unwrap_or(line))
-    })
+        let Some(delimiter_start) = memchr2(b'\r', b'\n', self.remaining) else {
+            self.finished = true;
+            return HeadParseOutcome::Parsed(Some(self.remaining));
+        };
+        let (line, delimiter) = self.remaining.split_at(delimiter_start);
+        let [b'\r', b'\n', rest @ ..] = delimiter else {
+            return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
+        };
+        self.remaining = rest;
+        HeadParseOutcome::Parsed(Some(line))
+    }
 }
 
 async fn read_request_head<R, W>(
@@ -421,20 +438,20 @@ fn parse_request_line_or_reject(
     }))
 }
 
-fn parse_headers_or_reject<'a>(
-    lines: impl Iterator<Item = &'a [u8]>,
+fn parse_headers_or_reject(
+    lines: &mut HeadLineCursor<'_>,
     head: &Bytes,
     limit_request_fields: Option<usize>,
     limit_request_field_size: Option<usize>,
+    collect_proxy_headers: bool,
 ) -> HeadParseOutcome<HeaderParseState> {
-    // `head_lines` removes the CR from each legal CRLF delimiter. Validate it
-    // first, while a second CR in `value\r\r\n` is still observable rather
-    // than mistaken for that delimiter and sanitised away.
-    if memchr_iter(b'\r', head).any(|index| head.get(index + 1) != Some(&b'\n')) {
-        return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
-    }
-    let mut header_state = HeaderParseState::new(head.clone());
-    for line in lines {
+    let mut header_state = HeaderParseState::new(head.clone(), collect_proxy_headers);
+    loop {
+        let line = match lines.next_line() {
+            HeadParseOutcome::Parsed(Some(line)) => line,
+            HeadParseOutcome::Parsed(None) => break,
+            HeadParseOutcome::Reject(status) => return HeadParseOutcome::Reject(status),
+        };
         if line.is_empty() {
             continue;
         }
@@ -577,6 +594,7 @@ pub(super) async fn read_request<R, W>(
     scheme: &'static str,
     timeout_duration: Option<Duration>,
     first_request: bool,
+    collect_proxy_headers: bool,
 ) -> Result<Option<ParsedRequest>, H2CornError>
 where
     R: AsyncRead + Unpin,
@@ -601,8 +619,14 @@ where
     else {
         return Ok(None);
     };
-    let mut lines = head_lines(head.as_ref());
-    let Some(request_line) = lines.next() else {
+    let mut lines = HeadLineCursor::new(head.as_ref());
+    let Some(request_line) = (match lines.next_line() {
+        HeadParseOutcome::Parsed(line) => line,
+        HeadParseOutcome::Reject(status) => {
+            write_empty_response(writer, config, status, true).await?;
+            return Ok(None);
+        },
+    }) else {
         return Http1Error::EmptyRequestHead.err();
     };
     let line = match parse_request_line_or_reject(request_line, limit_request_line)? {
@@ -612,15 +636,19 @@ where
             return Ok(None);
         },
     };
-    let header_state =
-        match parse_headers_or_reject(lines, &head, limit_request_fields, limit_request_field_size)
-        {
-            HeadParseOutcome::Parsed(header_state) => header_state,
-            HeadParseOutcome::Reject(status) => {
-                write_empty_response(writer, config, status, true).await?;
-                return Ok(None);
-            },
-        };
+    let header_state = match parse_headers_or_reject(
+        &mut lines,
+        &head,
+        limit_request_fields,
+        limit_request_field_size,
+        collect_proxy_headers,
+    ) {
+        HeadParseOutcome::Parsed(header_state) => header_state,
+        HeadParseOutcome::Reject(status) => {
+            write_empty_response(writer, config, status, true).await?;
+            return Ok(None);
+        },
+    };
 
     let parsed = match parsed_request_from_head(&head, line, header_state, scheme)? {
         HeadParseOutcome::Parsed(parsed) => parsed,
@@ -1250,7 +1278,7 @@ pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
+    use std::num::{NonZeroU32, NonZeroU64};
     use std::time::Duration;
 
     use bytes::BytesMut;
@@ -1260,9 +1288,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        MAX_CHUNK_SIZE_LINE_BYTES, MAX_TRAILER_SECTION_BYTES, drain_chunked_trailers,
-        parse_chunk_size, parse_http2_settings, read_chunk_size_line, read_chunked_body,
-        read_request,
+        ChunkDeliveryBatch, HeadLineCursor, HeadParseOutcome, MAX_CHUNK_SIZE_LINE_BYTES,
+        MAX_TRAILER_SECTION_BYTES, drain_chunked_trailers, parse_chunk_size, parse_http2_settings,
+        read_chunk_size_line, read_chunked_body, read_request, read_request_head,
     };
     use crate::config::{
         BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
@@ -1344,6 +1372,7 @@ mod tests {
             "http",
             None,
             true,
+            false,
         )
         .await;
         write_task.await.expect("writer task finishes");
@@ -1355,6 +1384,23 @@ mod tests {
             .await
             .expect("request parse succeeds")
             .expect("request is present")
+    }
+
+    #[tokio::test]
+    async fn untrusted_proxy_header_reaches_the_asgi_header_list_without_metadata() {
+        let parsed = parse_test_request(
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 198.51.100.9\r\n\r\n",
+        )
+        .await;
+
+        assert!(
+            parsed
+                .request
+                .headers
+                .iter()
+                .any(|header| header.value() == b"198.51.100.9")
+        );
+        assert!(parsed.request.header_meta.proxy_headers().is_none());
     }
 
     const fn unlimited_fields() -> super::FieldLimits {
@@ -1402,6 +1448,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_head_with_an_empty_field_section_is_accepted() {
+        let (mut client, mut server) = duplex(64);
+        client
+            .write_all(b"GET / HTTP/1.1\r\n\r\n")
+            .await
+            .expect("request write succeeds");
+        client.shutdown().await.expect("request shutdown succeeds");
+        let mut writer = BufWriter::new(sink());
+        let head = read_request_head(
+            &mut server,
+            &mut BytesMut::new(),
+            &mut writer,
+            test_server_config(),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("request head reads")
+        .expect("request head is present");
+
+        let mut lines = HeadLineCursor::new(&head);
+        let HeadParseOutcome::Parsed(Some(request_line)) = lines.next_line() else {
+            panic!("request line is available");
+        };
+        assert_eq!(request_line, b"GET / HTTP/1.1");
+        assert!(matches!(lines.next_line(), HeadParseOutcome::Parsed(None)));
+    }
+
+    #[tokio::test]
+    async fn read_request_accepts_a_head_split_mid_crlf() {
+        let (mut client, mut server) = duplex(1);
+        let write_task = spawn(async move {
+            for chunk in [
+                b"GET / HTTP/1.1\r".as_slice(),
+                b"\nHost: example.com\r".as_slice(),
+                b"\n\r".as_slice(),
+                b"\n".as_slice(),
+            ] {
+                client
+                    .write_all(chunk)
+                    .await
+                    .expect("request write succeeds");
+            }
+            client.shutdown().await.expect("request shutdown succeeds");
+        });
+
+        let mut writer = BufWriter::new(sink());
+        let parsed = read_request(
+            &mut server,
+            &mut BytesMut::new(),
+            &mut writer,
+            test_server_config(),
+            "http",
+            None,
+            true,
+            false,
+        )
+        .await;
+        write_task.await.expect("writer task finishes");
+
+        assert!(parsed.expect("request parse succeeds").is_some());
+    }
+
+    #[tokio::test]
     async fn request_head_timeouts_distinguish_idle_keep_alive_from_partial_headers() {
         let (_client, mut server) = duplex(64);
         let mut writer = BufWriter::new(sink());
@@ -1414,6 +1525,7 @@ mod tests {
             "http",
             Some(Duration::ZERO),
             false,
+            false,
         )
         .await
         else {
@@ -1421,7 +1533,7 @@ mod tests {
         };
         assert_eq!(
             idle.to_string(),
-            "keep-alive connection idled out before the next request"
+            "keep-alive connection did not receive the next request within timeout_keep_alive"
         );
 
         let (_client, mut server) = duplex(64);
@@ -1434,6 +1546,7 @@ mod tests {
             test_server_config(),
             "http",
             Some(Duration::ZERO),
+            false,
             false,
         )
         .await
@@ -1989,7 +2102,7 @@ mod tests {
         let mut buffer = BytesMut::new();
         let (tx, mut rx) = mpsc::channel(4);
 
-        let mut body = RequestBodyState::new(None, None, Some(4));
+        let mut body = RequestBodyState::new(None, None, NonZeroU64::new(4));
         let err = read_chunked_body(
             &mut server,
             &mut buffer,

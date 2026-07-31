@@ -127,6 +127,7 @@ pub(super) enum RequestHeadError {
     },
     Stream {
         error_code: ErrorCode,
+        error: H2Error,
     },
 }
 
@@ -138,9 +139,10 @@ impl RequestHeadError {
         }
     }
 
-    pub(super) const fn stream_protocol() -> Self {
+    pub(super) const fn stream_protocol(error: H2Error) -> Self {
         Self::Stream {
             error_code: ErrorCode::PROTOCOL_ERROR,
+            error,
         }
     }
 
@@ -162,6 +164,7 @@ struct RequestHeadBuilder {
     header_meta: RequestHeaderMeta,
     /// When true (TLS), force `:scheme` to `https`; plaintext keeps the peer value.
     force_https: bool,
+    collect_proxy_headers: bool,
 }
 
 /// A regular HTTP/2 field after the syntax shared by request heads and
@@ -182,7 +185,7 @@ enum HeaderSection {
 }
 
 impl RequestHeadBuilder {
-    fn new(limits: HeaderLimits, force_https: bool) -> Self {
+    fn new(limits: HeaderLimits, force_https: bool, collect_proxy_headers: bool) -> Self {
         Self {
             method: None,
             scheme: None,
@@ -195,6 +198,7 @@ impl RequestHeadBuilder {
             budget: HeaderBudget::new(limits),
             header_meta: RequestHeaderMeta::default(),
             force_https,
+            collect_proxy_headers,
         }
     }
 
@@ -213,10 +217,10 @@ impl RequestHeadBuilder {
         }
 
         self.section = HeaderSection::Regular;
-        let field = validate_regular_h2_field(name, value)
-            .map_err(|_| RequestHeadError::stream_protocol())?;
+        let field =
+            validate_regular_h2_field(name, value).map_err(RequestHeadError::stream_protocol)?;
         self.push_regular_header(field)
-            .map_err(|()| RequestHeadError::stream_protocol())
+            .map_err(RequestHeadError::stream_protocol)
     }
 
     fn push_pseudo(&mut self, pseudo: &[u8], value: Bytes) -> Result<(), RequestHeadError> {
@@ -228,54 +232,68 @@ impl RequestHeadBuilder {
                 .last()
                 .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
         {
-            return Err(RequestHeadError::stream_protocol());
+            return Err(RequestHeadError::stream_protocol(
+                H2Error::InvalidRequestPseudoField,
+            ));
         }
         match pseudo {
             b"method" => {
-                let method = parse_request_method(&value)
-                    .map_err(|_| RequestHeadError::stream_protocol())?;
+                let method = parse_request_method(&value).map_err(|_| {
+                    RequestHeadError::stream_protocol(H2Error::InvalidRequestMethod)
+                })?;
                 push_request_pseudo(&mut self.method, self.section, method)
-                    .map_err(|()| RequestHeadError::stream_protocol())
+                    .map_err(RequestHeadError::stream_protocol)
             },
             b"scheme" => {
                 if !request_scheme_is_valid(value.as_ref()) {
-                    return Err(RequestHeadError::stream_protocol());
+                    return Err(RequestHeadError::stream_protocol(
+                        H2Error::InvalidRequestScheme,
+                    ));
                 }
-                let value =
-                    BytesStr::try_from(value).map_err(|_| RequestHeadError::stream_protocol())?;
+                let value = BytesStr::try_from(value).map_err(|_| {
+                    RequestHeadError::stream_protocol(H2Error::InvalidRequestScheme)
+                })?;
                 push_request_pseudo(&mut self.scheme, self.section, value)
-                    .map_err(|()| RequestHeadError::stream_protocol())
+                    .map_err(RequestHeadError::stream_protocol)
             },
             b"authority" => {
                 if !request_authority_is_valid(value.as_ref()) {
-                    return Err(RequestHeadError::stream_protocol());
+                    return Err(RequestHeadError::stream_protocol(
+                        H2Error::InvalidRequestAuthority,
+                    ));
                 }
-                let value =
-                    BytesStr::try_from(value).map_err(|_| RequestHeadError::stream_protocol())?;
+                let value = BytesStr::try_from(value).map_err(|_| {
+                    RequestHeadError::stream_protocol(H2Error::InvalidRequestAuthority)
+                })?;
                 push_request_pseudo(&mut self.authority, self.section, value)
-                    .map_err(|()| RequestHeadError::stream_protocol())
+                    .map_err(RequestHeadError::stream_protocol)
             },
             b"path" => {
-                let value =
-                    BytesStr::try_from(value).map_err(|_| RequestHeadError::stream_protocol())?;
+                let value = BytesStr::try_from(value)
+                    .map_err(|_| RequestHeadError::stream_protocol(H2Error::InvalidRequestPath))?;
                 push_request_pseudo(&mut self.path, self.section, value)
-                    .map_err(|()| RequestHeadError::stream_protocol())
+                    .map_err(RequestHeadError::stream_protocol)
             },
             b"protocol" => {
                 if !protocol_token_is_valid(value.as_ref()) {
-                    return Err(RequestHeadError::stream_protocol());
+                    return Err(RequestHeadError::stream_protocol(
+                        H2Error::InvalidRequestPseudoField,
+                    ));
                 }
-                let value =
-                    Protocol::try_from(value).map_err(|_| RequestHeadError::stream_protocol())?;
+                let value = Protocol::try_from(value).map_err(|_| {
+                    RequestHeadError::stream_protocol(H2Error::InvalidRequestPseudoField)
+                })?;
                 push_request_pseudo(&mut self.protocol, self.section, value)
-                    .map_err(|()| RequestHeadError::stream_protocol())
+                    .map_err(RequestHeadError::stream_protocol)
             },
             // `:status` and unknown pseudos are malformed on requests.
-            _ => Err(RequestHeadError::stream_protocol()),
+            _ => Err(RequestHeadError::stream_protocol(
+                H2Error::InvalidRequestPseudoField,
+            )),
         }
     }
 
-    fn push_regular_header(&mut self, field: ValidatedH2RegularField) -> Result<(), ()> {
+    fn push_regular_header(&mut self, field: ValidatedH2RegularField) -> Result<(), H2Error> {
         let ValidatedH2RegularField {
             name,
             value,
@@ -285,31 +303,36 @@ impl RequestHeadBuilder {
 
         match known_name {
             Some(KnownRequestHeaderName::Host) if !request_authority_is_valid(value_bytes) => {
-                return Err(());
+                return Err(H2Error::InvalidRequestHost);
             },
             Some(KnownRequestHeaderName::Te) => {
                 self.header_meta.set_accepts_trailers();
             },
             Some(KnownRequestHeaderName::ContentLength) => {
-                let parsed = parse_content_length_header(value_bytes).ok_or(())?;
+                let parsed = parse_content_length_header(value_bytes)
+                    .ok_or(H2Error::InvalidRequestContentLength)?;
                 if self
                     .header_meta
                     .content_length()
                     .is_some_and(|existing| existing != parsed)
                 {
-                    return Err(());
+                    return Err(H2Error::ConflictingRequestContentLength);
                 }
                 self.header_meta.set_content_length(Some(parsed));
             },
             _ => {},
         }
         if let Some(known_name) = known_name {
-            self.header_meta
-                .observe_known_header(known_name, &value, self.regular_headers.len());
+            self.header_meta.observe_known_header(
+                known_name,
+                &value,
+                self.regular_headers.len(),
+                self.collect_proxy_headers,
+            );
         }
         if known_name == Some(KnownRequestHeaderName::Host) {
             if self.host_header_index.is_some() {
-                return Err(());
+                return Err(H2Error::DuplicateRequestHost);
             }
             self.host_header_index = Some(self.regular_headers.len());
         }
@@ -319,8 +342,8 @@ impl RequestHeadBuilder {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<RequestHead, ()> {
-        let method = self.method.take().ok_or(())?;
+    fn finish(mut self) -> Result<RequestHead, H2Error> {
+        let method = self.method.take().ok_or(H2Error::MissingRequestMethod)?;
 
         // RFC 9113 8.3.1: a Host header that disagrees with :authority makes
         // the request malformed. This runs before the target below takes the
@@ -335,39 +358,52 @@ impl RequestHeadBuilder {
                 .as_bytes()
                 .eq_ignore_ascii_case(authority.as_ref())
         {
-            return Err(());
+            return Err(H2Error::ConflictingRequestAuthority);
         }
 
         let target = match (method == Method::CONNECT, self.protocol.take()) {
             (false, None) => {
-                let scheme = self.scheme.take().ok_or(())?;
-                let path = self.path.take().ok_or(())?;
+                let scheme = self.scheme.take().ok_or(H2Error::MissingRequestScheme)?;
+                let path = self.path.take().ok_or(H2Error::MissingRequestPath)?;
                 let scheme = self.resolve_scheme(scheme);
-                if !request_scheme_is_valid(scheme.as_ref())
-                    || !request_path_is_valid(&method, path.as_ref())
-                {
-                    return Err(());
+                if !request_scheme_is_valid(scheme.as_ref()) {
+                    return Err(H2Error::InvalidRequestScheme);
+                }
+                if !request_path_is_valid(&method, path.as_ref()) {
+                    return Err(H2Error::InvalidRequestPath);
                 }
                 RequestTarget::normal(scheme, path)
             },
-            (false, Some(_)) => return Err(()),
+            (false, Some(_)) => return Err(H2Error::ProtocolOnNonConnect),
             (true, None) => {
                 if self.scheme.is_some() || self.path.is_some() {
-                    return Err(());
+                    return Err(H2Error::ConnectWithSchemeOrPath);
                 }
-                let authority = self.authority.take().ok_or(())?;
-                RequestTarget::connect(ConnectAuthority::try_from(authority).map_err(|_| ())?)
+                let authority = self
+                    .authority
+                    .take()
+                    .ok_or(H2Error::MissingConnectAuthority)?;
+                RequestTarget::connect(
+                    ConnectAuthority::try_from(authority)
+                        .map_err(|_| H2Error::InvalidConnectAuthority)?,
+                )
             },
             (true, Some(protocol)) => {
-                let scheme = self.scheme.take().ok_or(())?;
-                let path = self.path.take().ok_or(())?;
+                let scheme = self.scheme.take().ok_or(H2Error::MissingRequestScheme)?;
+                let path = self.path.take().ok_or(H2Error::MissingRequestPath)?;
                 let scheme = self.resolve_scheme(scheme);
-                let authority = self.authority.take().ok_or(())?;
-                if !request_scheme_is_valid(scheme.as_ref())
-                    || !request_authority_is_valid(authority.as_ref())
-                    || !request_path_is_valid(&method, path.as_ref())
-                {
-                    return Err(());
+                let authority = self
+                    .authority
+                    .take()
+                    .ok_or(H2Error::MissingConnectAuthority)?;
+                if !request_scheme_is_valid(scheme.as_ref()) {
+                    return Err(H2Error::InvalidRequestScheme);
+                }
+                if !request_authority_is_valid(authority.as_ref()) {
+                    return Err(H2Error::InvalidRequestAuthority);
+                }
+                if !request_path_is_valid(&method, path.as_ref()) {
+                    return Err(H2Error::InvalidRequestPath);
                 }
                 RequestTarget::extended_connect(
                     RequestAuthority::new(authority),
@@ -467,9 +503,12 @@ fn push_request_pseudo<T>(
     slot: &mut Option<T>,
     section: HeaderSection,
     value: T,
-) -> Result<(), ()> {
-    if section != HeaderSection::Pseudo || slot.is_some() {
-        return Err(());
+) -> Result<(), H2Error> {
+    if section != HeaderSection::Pseudo {
+        return Err(H2Error::RequestPseudoFieldAfterRegularField);
+    }
+    if slot.is_some() {
+        return Err(H2Error::DuplicateRequestPseudoField);
     }
     *slot = Some(value);
     Ok(())
@@ -530,9 +569,9 @@ pub(super) fn resolve_request_head(
             .content_length()
             .is_some_and(|content_length| content_length != 0)
     {
-        return Err(RequestHeadError::Stream {
-            error_code: ErrorCode::PROTOCOL_ERROR,
-        });
+        return Err(RequestHeadError::stream_protocol(
+            H2Error::RequestContentLengthMismatch,
+        ));
     }
     Ok(request)
 }
@@ -542,8 +581,9 @@ pub(super) fn decode_request_head(
     block: Bytes,
     limits: HeaderLimits,
     force_https: bool,
+    collect_proxy_headers: bool,
 ) -> Result<RequestHead, RequestHeadError> {
-    let mut builder = RequestHeadBuilder::new(limits, force_https);
+    let mut builder = RequestHeadBuilder::new(limits, force_https, collect_proxy_headers);
     let mut bytes = block;
     match decoder.decode_block(&mut bytes, |field| builder.push(field)) {
         Ok(()) => {},
@@ -551,9 +591,7 @@ pub(super) fn decode_request_head(
         Err(DecodeBlockError::Rejected(err)) => return Err(err),
     }
 
-    builder
-        .finish()
-        .map_err(|()| RequestHeadError::stream_protocol())
+    builder.finish().map_err(RequestHeadError::stream_protocol)
 }
 
 pub(super) fn decode_trailer_block(
@@ -565,14 +603,18 @@ pub(super) fn decode_trailer_block(
     let mut bytes = block;
     match decoder.decode_block(&mut bytes, |field| {
         if field.name().starts_with(b":") {
-            return Err(RequestHeadError::stream_protocol());
+            return Err(RequestHeadError::stream_protocol(
+                H2Error::PseudoFieldInTrailers,
+            ));
         }
         budget.account(&field)?;
         let (name, value) = field.into_parts();
-        let field = validate_regular_h2_field(name, value)
-            .map_err(|_| RequestHeadError::stream_protocol())?;
+        let field =
+            validate_regular_h2_field(name, value).map_err(RequestHeadError::stream_protocol)?;
         if trailer_field_name_is_forbidden(field.name.as_ref()) {
-            return Err(RequestHeadError::stream_protocol());
+            return Err(RequestHeadError::stream_protocol(
+                H2Error::ForbiddenTrailerField,
+            ));
         }
         Ok(())
     }) {
@@ -596,13 +638,7 @@ pub(super) fn decode_discarded_header_block(
 }
 
 fn map_hpack_error(err: DecoderError) -> RequestHeadError {
-    let error = match err {
-        DecoderError::NeedMore(_) => H2Error::IncompleteHpackHeaderBlock,
-        other => H2Error::HpackDecode {
-            detail: format!("{other:?}").into_boxed_str(),
-        },
-    };
-    RequestHeadError::compression(error)
+    RequestHeadError::compression(err.into())
 }
 
 #[cfg(test)]
@@ -613,6 +649,7 @@ mod tests {
     use http::Method;
 
     use super::{HeaderLimits, RequestHeadError, decode_request_head, decode_trailer_block};
+    use crate::error::H2Error;
     use crate::h2_frame::ErrorCode;
     use crate::hpack::{DecodeBlockError, Decoder, DecoderError, Encoder, HpackField};
     use crate::http::types::{KnownRequestHeaderName, RequestHeaderNameRef, status_code};
@@ -652,6 +689,7 @@ mod tests {
             block,
             HeaderLimits::new(NonZeroUsize::new(90), None),
             false,
+            false,
         );
 
         assert!(matches!(
@@ -681,6 +719,7 @@ mod tests {
             block,
             HeaderLimits::new(NonZeroUsize::new(exact_received_size), None),
             false,
+            false,
         )
         .expect("received header list size should ignore synthesized host");
 
@@ -703,8 +742,14 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), true)
-            .expect("valid HTTP/2 request should decode");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            true,
+            false,
+        )
+        .expect("valid HTTP/2 request should decode");
 
         assert_eq!(request.scheme_str(), "https");
     }
@@ -719,11 +764,44 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request =
-            decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false)
-                .expect("valid HTTP/2 request should decode");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        )
+        .expect("valid HTTP/2 request should decode");
 
         assert_eq!(request.scheme_str(), "https");
+    }
+
+    #[test]
+    fn untrusted_proxy_header_stays_in_h2_request_headers_without_proxy_metadata() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"x-forwarded-for", b"198.51.100.9"),
+        ]);
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        )
+        .expect("valid HTTP/2 request should decode");
+
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|header| header.value() == b"198.51.100.9")
+        );
+        assert!(request.header_meta.proxy_headers().is_none());
     }
 
     #[test]
@@ -742,6 +820,7 @@ mod tests {
             &mut decoder,
             block,
             HeaderLimits::new(None, NonZeroUsize::new(1)),
+            false,
             false,
         );
 
@@ -762,23 +841,32 @@ mod tests {
             [].as_slice(),
             [(b":protocol".as_slice(), b"websocket".as_slice())].as_slice(),
         ] {
-            let mut headers: Vec<(&[u8], &[u8])> = vec![
-                (b":method", b"CONNECT"),
-                (b":authority", b"example.com"),
-                (b"host", b"attacker.example"),
-            ];
+            let mut headers: Vec<(&[u8], &[u8])> =
+                vec![(b":method", b"CONNECT"), (b":authority", b"example.com")];
             if !extra.is_empty() {
                 headers.extend_from_slice(&[(b":scheme", b"https"), (b":path", b"/chat")]);
                 headers.extend_from_slice(extra);
             }
+            headers.push((b"host", b"attacker.example"));
             let block = encode_request_block(&headers);
 
             let mut decoder = Decoder::new(4096);
-            let result =
-                decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), true);
+            let result = decode_request_head(
+                &mut decoder,
+                block,
+                HeaderLimits::new(None, None),
+                true,
+                false,
+            );
 
             assert!(
-                matches!(result, Err(RequestHeadError::Stream { .. })),
+                matches!(
+                    result,
+                    Err(RequestHeadError::Stream {
+                        error: H2Error::ConflictingRequestAuthority,
+                        ..
+                    })
+                ),
                 "CONNECT with a mismatched Host must be a stream protocol error, \
                  got {result:?}"
             );
@@ -794,8 +882,14 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), true)
-            .expect("a matching Host is a valid CONNECT request");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            true,
+            false,
+        )
+        .expect("a matching Host is a valid CONNECT request");
 
         assert_eq!(request.method, Method::CONNECT);
     }
@@ -830,14 +924,62 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let result = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false);
+        let result = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        );
 
         assert!(matches!(
             result,
             Err(RequestHeadError::Stream {
                 error_code: ErrorCode::PROTOCOL_ERROR,
+                error: H2Error::InvalidRequestField,
             })
         ));
+    }
+
+    #[test]
+    fn invalid_request_field_does_not_echo_peer_header_data() {
+        let token = "sk-live-SECRET-TOKEN-12345";
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"X-Secret", token.as_bytes()),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let result = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        );
+        let Err(RequestHeadError::Stream { error, .. }) = result else {
+            panic!("upper-case field must be rejected");
+        };
+
+        assert_eq!(error.to_string(), "invalid HTTP/2 request field");
+        assert!(!error.to_string().contains(token));
+    }
+
+    #[test]
+    fn invalid_trailer_field_keeps_its_validation_cause() {
+        let block = encode_request_block(&[(b"X-Secret", b"sk-live-SECRET-TOKEN-12345")]);
+
+        let mut decoder = Decoder::new(4096);
+        let result = decode_trailer_block(&mut decoder, block, HeaderLimits::new(None, None));
+        let Err(RequestHeadError::Stream { error, .. }) = result else {
+            panic!("upper-case trailer field must be rejected");
+        };
+
+        assert!(matches!(error, H2Error::InvalidRequestField));
+        assert!(!error.to_string().contains("sk-live-SECRET-TOKEN-12345"));
     }
 
     #[test]
@@ -858,16 +1000,28 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        decode_request_head(&mut decoder, valid, HeaderLimits::new(None, None), false)
-            .expect("valid unknown field must be accepted");
+        decode_request_head(
+            &mut decoder,
+            valid,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        )
+        .expect("valid unknown field must be accepted");
 
         let mut decoder = Decoder::new(4096);
-        let result =
-            decode_request_head(&mut decoder, invalid, HeaderLimits::new(None, None), false);
+        let result = decode_request_head(
+            &mut decoder,
+            invalid,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        );
         assert!(matches!(
             result,
             Err(RequestHeadError::Stream {
                 error_code: ErrorCode::PROTOCOL_ERROR,
+                ..
             })
         ));
     }
@@ -898,13 +1052,14 @@ mod tests {
             block.freeze(),
             HeaderLimits::new(None, NonZeroUsize::new(1)),
             false,
+            false,
         );
 
         assert!(matches!(
             result,
             Err(RequestHeadError::Connection {
                 error_code: ErrorCode::COMPRESSION_ERROR,
-                ..
+                error: H2Error::InvalidHpackTableIndex,
             })
         ));
     }
@@ -928,11 +1083,13 @@ mod tests {
             bad.freeze(),
             HeaderLimits::new(None, None),
             false,
+            false,
         );
         assert!(matches!(
             first,
             Err(RequestHeadError::Stream {
                 error_code: ErrorCode::PROTOCOL_ERROR,
+                ..
             })
         ));
 
@@ -957,12 +1114,14 @@ mod tests {
             good.freeze(),
             HeaderLimits::new(None, None),
             false,
+            false,
         );
         assert!(
             matches!(
                 second,
                 Err(RequestHeadError::Stream {
                     error_code: ErrorCode::PROTOCOL_ERROR,
+                    ..
                 })
             ),
             "dynamic reuse must not become COMPRESSION_ERROR, got {second:?}"

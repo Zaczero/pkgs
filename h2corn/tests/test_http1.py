@@ -1126,13 +1126,47 @@ async def test_http1_rejects_control_bytes_before_stripping_ows(
 
     request = (
         b'POST /raw-controls HTTP/1.1\r\n'
-        b'Host: example.test\r\n'
-        + field_line
-        + b'\r\n\r\nx'
+        b'Host: example.test\r\n' + field_line + b'\r\n\r\nx'
     )
     async with running_server(app, Config(port=0, lifespan='off')) as server:
         status, _headers, body, _trailers = await asyncio.wait_for(
             http1_request(port=server_port(server), request=request), timeout=5
+        )
+
+    assert called is False
+    assert (status, body) == (400, b'')
+
+
+@pytest.mark.parametrize(
+    'request_bytes',
+    [
+        b'GET /bare-request-line HTTP/1.1\nHost: example.test\r\n\r\n',
+        b'GET /bare-header HTTP/1.1\r\nHost: example.test\n\r\n\r\n',
+        (
+            b'GET /mixed-delimiters HTTP/1.1\r\n'
+            b'Host: example.test\r\n'
+            b'X-Demo: first\n'
+            b'X-Other: second\r\n\r\n'
+        ),
+        (b'GET /lone-cr HTTP/1.1\r\nHost: example.test\rX-Demo: value\r\n\r\n'),
+    ],
+    ids=['request-line', 'header-field', 'mixed-delimiters', 'lone-cr'],
+)
+async def test_http1_rejects_request_heads_without_crlf_line_terminators(
+    request_bytes: bytes,
+) -> None:
+    """Strict CRLF avoids a request-head grammar differential with proxies."""
+    called = False
+
+    async def app(scope, receive, send):
+        nonlocal called
+        called = True
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, Config(port=0, lifespan='off')) as server:
+        status, _headers, body, _trailers = await asyncio.wait_for(
+            http1_request(port=server_port(server), request=request_bytes), timeout=5
         )
 
     assert called is False
@@ -1150,10 +1184,7 @@ async def test_http1_rejects_a_second_cr_before_the_line_terminator() -> None:
         await send({'type': 'http.response.body', 'body': b''})
 
     request = (
-        b'GET /double-cr HTTP/1.1\r\n'
-        b'Host: example.test\r\n'
-        b'X-Demo: value\r\r\n'
-        b'\r\n'
+        b'GET /double-cr HTTP/1.1\r\nHost: example.test\r\nX-Demo: value\r\r\n\r\n'
     )
     async with running_server(app, Config(port=0, lifespan='off')) as server:
         reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
