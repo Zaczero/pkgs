@@ -3302,3 +3302,155 @@ async def test_reserved_opcode_rejected_from_header(
         client_frames=[_encode_ws_client_header_only(opcode, payload_len)],
         expected_code=1002,
     )
+
+
+async def test_h2_websocket_output_is_bounded_by_the_connection_byte_budget() -> None:
+    """
+    HTTP/2 WebSocket DATA shares the connection's outbound byte budget with
+    ordinary responses.  Against a peer advertising a zero stream window the
+    server can never write, so an application that keeps sending must be
+    blocked by that budget -- otherwise every frame it hands over is retained
+    in the per-stream pending queue and the peer chooses how much memory the
+    server spends.
+
+    The writer's command cap does not help: it bounds commands, not bytes, and
+    a command's permit is released as soon as it reaches the pending queue.
+    """
+    # Comfortably larger than H2_OUTBOUND_RESPONSE_BYTE_CAPACITY (2 MiB).
+    chunk = b'x' * (256 * 1024)
+    sends_completed = 0
+    all_sent = asyncio.Event()
+
+    async def app(scope, receive, send):
+        nonlocal sends_completed
+        assert scope['type'] == 'websocket'
+        await receive()
+        await send({'type': 'websocket.accept'})
+        for _ in range(64):
+            await send({'type': 'websocket.send', 'bytes': chunk})
+            sends_completed += 1
+        all_sent.set()
+
+    async with running_server(app, Config(port=0)) as server:
+        _reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server), initial_window_size=0
+        )
+        _send_h2_websocket_headers(
+            conn, writer, authority=authority, path='/flood'
+        )
+        await writer.drain()
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(all_sent.wait(), timeout=2)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert sends_completed > 0, 'the application never got to send anything'
+    assert not all_sent.is_set(), (
+        f'the application sent all 64 chunks ({sends_completed * len(chunk)} bytes) '
+        'into a stream with a zero window: outbound WebSocket bytes are unbounded'
+    )
+    # The ceiling is the 2 MiB connection budget plus what the outbound ASGI
+    # queue holds ahead of it -- that queue is bounded by event count
+    # (WEBSOCKET_OUTBOUND_QUEUE_CAPACITY) rather than by bytes, so a large
+    # message size raises this figure.  What must never happen is the
+    # application running to completion, which is the unbounded case.
+    assert sends_completed < 64, 'the send loop must block, not drain'
+
+
+@pytest.mark.parametrize(
+    ('subprotocol', 'expected'),
+    [('other', ValueError), ('', ValueError)],
+)
+async def test_websocket_accept_subprotocol_error_is_raised_from_send(
+    subprotocol: str, expected: type[BaseException]
+) -> None:
+    """
+    A malformed `websocket.accept` value must raise out of `await send(...)`.
+
+    Validating it later in the session let `send()` return successfully and the
+    request fail afterwards, so an application could neither catch the error
+    nor fall back to a subprotocol the client did offer.
+    """
+    raised: list[BaseException] = []
+    accepted = False
+
+    async def app(scope, receive, send):
+        nonlocal accepted
+        if scope['type'] != 'websocket':
+            return
+        await receive()
+        try:
+            await send({'type': 'websocket.accept', 'subprotocol': subprotocol})
+        except BaseException as exc:
+            raised.append(exc)
+            # Recovering is the point: the client offered 'chat'.
+            await send({'type': 'websocket.accept', 'subprotocol': 'chat'})
+            accepted = True
+            await send({'type': 'websocket.close', 'code': 1000})
+
+    async with running_server(app, Config(port=0)) as server:
+        status, headers, _body = await asyncio.wait_for(
+            _h2_websocket_handshake(
+                port=server_port(server), path='/ws', subprotocol='chat'
+            ),
+            timeout=5,
+        )
+
+    assert raised, 'send() returned successfully for a rejected subprotocol'
+    assert isinstance(raised[0], expected), f'got {type(raised[0]).__name__}'
+    assert accepted, 'the application could not recover and accept'
+    assert status == 200
+    assert headers.get(b'sec-websocket-protocol') == b'chat'
+
+
+
+async def test_h2_websocket_denial_body_is_bounded_by_the_connection_byte_budget() -> None:
+    """
+    A denial response is driven straight from the handshake loop, so it never
+    passes the ASGI admission that charges an ordinary response body. Against a
+    zero stream window its payload would otherwise accumulate in the writer's
+    per-stream queue exactly as accepted WebSocket data used to.
+    """
+    chunk = b'd' * (256 * 1024)
+    sends_completed = 0
+    all_sent = asyncio.Event()
+
+    async def app(scope, receive, send):
+        nonlocal sends_completed
+        if scope['type'] != 'websocket':
+            return
+        await receive()
+        await send({
+            'type': 'websocket.http.response.start',
+            'status': 403,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        for _ in range(64):
+            await send({
+                'type': 'websocket.http.response.body',
+                'body': chunk,
+                'more_body': True,
+            })
+            sends_completed += 1
+        all_sent.set()
+
+    async with running_server(app, Config(port=0)) as server:
+        _reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server), initial_window_size=0
+        )
+        _send_h2_websocket_headers(conn, writer, authority=authority, path='/denied')
+        await writer.drain()
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(all_sent.wait(), timeout=2)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert sends_completed > 0, 'the denial body never started'
+    assert not all_sent.is_set(), (
+        f'the application queued all 64 denial chunks '
+        f'({sends_completed * len(chunk)} bytes) into a zero window'
+    )

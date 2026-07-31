@@ -170,12 +170,13 @@ impl H2WriterHandle {
         &self,
         stream_id: StreamId,
         data: impl Into<PayloadBytes>,
+        credit: Option<ResponseBytePermit>,
         end_stream: bool,
     ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
         self.send_command(stream_id, WriterCommand::SendData {
             stream_id,
             data: data.into(),
-            credit: None,
+            credit,
             end_stream,
         })
     }
@@ -185,10 +186,12 @@ impl H2WriterHandle {
         stream_id: StreamId,
         header: EncodedFrameHeader,
         payload: PayloadBytes,
+        credit: Option<ResponseBytePermit>,
     ) -> impl Future<Output = Result<(), H2CornError>> + '_ {
         self.send_command(stream_id, WriterCommand::SendWebSocketData {
             stream_id,
             data: Box::new(WebSocketData::new(header, payload)),
+            credit,
         })
     }
 
@@ -734,6 +737,7 @@ async fn handle_send_websocket_data<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
     data: Box<WebSocketData>,
+    credit: Option<ResponseBytePermit>,
 ) -> Result<(), H2CornError>
 where
     W: AsyncWrite + Unpin,
@@ -743,7 +747,7 @@ where
         stream_id,
         context.initial_stream_send_window,
     );
-    if stream.queue_websocket_data(data).is_err() {
+    if stream.queue_websocket_data(data, credit).is_err() {
         let _ = force_reset_stream(
             context.writer,
             context.frame_buf,
@@ -979,8 +983,12 @@ where
             )
             .await?;
         },
-        WriterCommand::SendWebSocketData { stream_id, data } => {
-            handle_send_websocket_data(&mut context.send_context(), stream_id, data).await?;
+        WriterCommand::SendWebSocketData {
+            stream_id,
+            data,
+            credit,
+        } => {
+            handle_send_websocket_data(&mut context.send_context(), stream_id, data, credit).await?;
         },
         WriterCommand::SendPath {
             stream_id,

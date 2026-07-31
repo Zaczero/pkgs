@@ -103,6 +103,7 @@ pub(super) enum WriterCommand {
     SendWebSocketData {
         stream_id: StreamId,
         data: Box<WebSocketData>,
+        credit: Option<ResponseBytePermit>,
     },
     SendPath {
         stream_id: StreamId,

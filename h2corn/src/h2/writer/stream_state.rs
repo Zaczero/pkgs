@@ -236,10 +236,11 @@ impl StreamWriteState {
     pub(super) fn queue_websocket_data(
         &mut self,
         data: Box<WebSocketData>,
+        credit: Option<ResponseBytePermit>,
     ) -> Result<(), H2CornError> {
         self.queue_chunk(PendingChunk {
             data: PendingChunkData::WebSocket(data),
-            credit: None,
+            credit,
             offset: 0,
             // WebSocket DATA never closes the stream; the close frame and
             // session teardown own stream end separately.

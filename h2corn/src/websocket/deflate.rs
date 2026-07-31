@@ -161,7 +161,7 @@ impl MessageInflater {
             let consumed_before = self.decoder.total_in();
             let status = self
                 .decoder
-                .decompress_uninit(input, self.out.spare_capacity_mut(), flush)
+                .decompress_uninit(input, inflate_window(&mut self.out, max_message_size), flush)
                 .map_err(|_| WebSocketProtocolError::InvalidCompressedPayload)?;
             let written = (self.decoder.total_out() - before) as usize;
             // SAFETY: `decompress_uninit` writes exactly `written`
@@ -181,7 +181,11 @@ impl MessageInflater {
             if consumed == 0 && written == 0 {
                 return Err(WebSocketProtocolError::InvalidCompressedPayload);
             }
-            self.out.reserve(self.out.len().max(FLATE_MIN_GROWTH));
+            let growth = self.out.len().max(FLATE_MIN_GROWTH);
+            self.out.reserve(match max_message_size {
+                Some(limit) => growth.min(overrun_budget(self.out.len(), limit)),
+                None => growth,
+            });
         }
     }
 }
@@ -463,6 +467,36 @@ fn read_quoted_string<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]
     None
 }
 
+/// One byte past the remaining budget: enough to observe an overrun, never
+/// enough to materialize one.
+const fn overrun_budget(written: usize, limit: usize) -> usize {
+    limit.saturating_sub(written).saturating_add(1)
+}
+
+/// The spare capacity zlib may fill this round.
+///
+/// `BytesMut::reserve` grows geometrically, so handing zlib the whole spare
+/// capacity let a message one byte over `max_message_size` decompress to
+/// *twice* the limit before the length check rejected it — a hostile peer
+/// bought 32 MiB of inflate work and residency at the 16 MiB default for a
+/// 64 KiB compressed frame. Bounding the window makes the check the thing
+/// that stops the work rather than something that reports it afterwards.
+///
+/// At the exact limit the window is one byte, which still lets a terminating
+/// tail that produces no output be consumed.
+fn inflate_window(
+    out: &mut BytesMut,
+    max_message_size: Option<usize>,
+) -> &mut [std::mem::MaybeUninit<u8>] {
+    let written = out.len();
+    let spare = out.spare_capacity_mut();
+    let Some(limit) = max_message_size else {
+        return spare;
+    };
+    let window = spare.len().min(overrun_budget(written, limit));
+    &mut spare[..window]
+}
+
 fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
     let estimated = payload_len.saturating_mul(4).max(64);
     max_message_size.map_or(estimated, |limit| estimated.min(limit))
@@ -470,9 +504,79 @@ fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) ->
 
 #[cfg(test)]
 mod tests {
+    use bytes::BytesMut;
+    use flate2::{Compress, Compression, FlushCompress, Status};
+
     use super::{
-        PerMessageDeflateEnabled, PerMessageDeflateMode as _, offers_compatible_permessage_deflate,
+        MessageInflater, PerMessageDeflateEnabled, PerMessageDeflateMode as _,
+        offers_compatible_permessage_deflate,
     };
+    use crate::error::WebSocketProtocolError;
+
+    /// A raw DEFLATE stream that inflates to `len` bytes, as an RFC 7692
+    /// message payload does.
+    fn compressed_zeroes(len: usize) -> Vec<u8> {
+        let mut compressor = Compress::new(Compression::default(), false);
+        let source = vec![0_u8; len];
+        let mut out = vec![0_u8; len / 8 + 1024];
+        let status = compressor
+            .compress(&source, &mut out, FlushCompress::Sync)
+            .expect("zeroes compress");
+        assert_ne!(status, Status::BufError);
+        let produced = compressor.total_out() as usize;
+        out.truncate(produced);
+        out
+    }
+
+    /// A message over the limit is rejected without first materializing twice
+    /// the limit. Handing zlib the whole geometrically grown spare capacity
+    /// used to decompress 2x `max_message_size` before the length check ran,
+    /// so a small hostile frame bought a large multiple of inflate work.
+    #[test]
+    fn oversized_message_does_not_inflate_past_its_limit() {
+        const LIMIT: usize = 64 * 1024;
+
+        let payload = compressed_zeroes(LIMIT * 4);
+        let mut inflater = MessageInflater::new();
+        inflater.begin();
+        let outcome = inflater
+            .push(&payload, Some(LIMIT))
+            .and_then(|()| inflater.finish(Some(LIMIT)).map(|_| ()));
+
+        assert!(matches!(
+            outcome,
+            Err(WebSocketProtocolError::MessageTooLarge)
+        ));
+        assert!(
+            inflater.out.len() <= LIMIT + 1,
+            "inflated {} bytes against a {LIMIT}-byte limit",
+            inflater.out.len(),
+        );
+    }
+
+    /// A message that exactly reaches the limit is still delivered: the
+    /// one-byte overrun window must not truncate a legal message.
+    #[test]
+    fn message_at_exactly_the_limit_is_accepted() {
+        const LIMIT: usize = 32 * 1024;
+
+        let payload = compressed_zeroes(LIMIT);
+        let mut inflater = MessageInflater::new();
+        inflater.begin();
+        inflater
+            .push(&payload, Some(LIMIT))
+            .expect("a message at the limit inflates");
+        let message = inflater.finish(Some(LIMIT)).expect("and completes");
+
+        assert_eq!(message.len(), LIMIT);
+        assert!(message.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn inflate_window_is_unbounded_without_a_limit() {
+        let mut out = BytesMut::with_capacity(4096);
+        assert_eq!(super::inflate_window(&mut out, None).len(), out.capacity());
+    }
 
     #[test]
     fn negotiated_codec_state_is_lazy_and_directional() {

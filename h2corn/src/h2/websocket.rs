@@ -5,9 +5,13 @@ use tokio::sync::mpsc;
 
 use super::H2WriterHandle;
 use super::http::H2HttpTransport;
-use crate::error::H2CornError;
+use crate::error::{H2CornError, H2Error};
 use crate::h2_frame::{ErrorCode, StreamId};
-use crate::http::response::{HttpResponseTransport, ResponseAction, ResponseActions};
+use crate::bridge::HttpOutboundEvent;
+use crate::http::app::AdmittedHttpOutboundEvent;
+use crate::http::response::{
+    HttpResponseTransport, ResponseAction, ResponseActions, ResponseBytePermit,
+};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::{H2InputCredit, StreamInput};
 use crate::websocket::WebSocketCodec;
@@ -29,6 +33,30 @@ struct H2WebSocketTransport {
     /// ingestion lets a paused application turn the H2 receive window into
     /// an unbounded source of complete WebSocket messages.
     pending_input_credits: Vec<H2InputCredit>,
+}
+
+impl H2WebSocketTransport {
+    /// WebSocket DATA is charged to the same connection-wide outbound budget
+    /// as ordinary response bodies.
+    ///
+    /// Without it a peer that advertises a zero stream window and keeps the
+    /// application sending turns every queued frame into retained memory. The
+    /// writer's *command* channel does not help: it bounds commands, not
+    /// bytes, and its slot frees as soon as the command reaches the per-stream
+    /// pending queue — where the payload then sits, unwritable, until the
+    /// response-stall timeout. The *byte* permit taken here is a different
+    /// thing: it rides on the pending chunk and is returned only as those
+    /// bytes reach the socket.
+    async fn acquire_outbound_credit(
+        &self,
+        len: usize,
+    ) -> Result<Option<ResponseBytePermit>, H2CornError> {
+        self.connection
+            .response_byte_budget()
+            .acquire(len)
+            .await
+            .map_err(|_| H2CornError::from(H2Error::StreamChannelClosed))
+    }
 }
 
 impl WebSocketHandshakeTransport for H2WebSocketTransport {
@@ -57,6 +85,19 @@ impl WebSocketHandshakeTransport for H2WebSocketTransport {
 }
 
 impl HttpResponseTransport for H2WebSocketTransport {
+    /// Delegated, not defaulted: a WebSocket denial body is driven straight
+    /// from the handshake loop and would otherwise reach the writer with no
+    /// byte credit at all — the same hole that let accepted WebSocket data
+    /// bypass the budget.
+    async fn admit_outbound_event(
+        &self,
+        event: HttpOutboundEvent,
+    ) -> Result<AdmittedHttpOutboundEvent, H2CornError> {
+        H2HttpTransport::new(&self.connection, self.stream_id)
+            .admit_outbound_event(event)
+            .await
+    }
+
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
         H2HttpTransport::new(&self.connection, self.stream_id)
             .apply_response_action(action)
@@ -91,13 +132,17 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
     ) -> Result<(), H2CornError> {
         match frame {
             EncodedWebSocketFrame::Contiguous(frame) => {
+                let credit = self.acquire_outbound_credit(frame.len()).await?;
                 self.connection
-                    .send_data(self.stream_id, frame, false)
+                    .send_data(self.stream_id, frame, credit, false)
                     .await
             },
             EncodedWebSocketFrame::Segmented { header, payload } => {
+                let credit = self
+                    .acquire_outbound_credit(header.as_slice().len() + payload.len())
+                    .await?;
                 self.connection
-                    .send_websocket_data(self.stream_id, header, payload)
+                    .send_websocket_data(self.stream_id, header, payload, credit)
                     .await
             },
         }
@@ -156,11 +201,12 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
         state: &mut AcceptedWebSocketState,
     ) -> Result<(), H2CornError> {
         if let Some(frame) = take_pending_close_frame(state, self.frame_buf())? {
+            let close_credit = self.acquire_outbound_credit(frame.len()).await?;
             // END_STREAM rides on the close frame itself: one DATA frame on
             // the wire, and clients observe the close payload and stream end
             // atomically in the same flight.
             self.connection
-                .send_data(self.stream_id, frame, true)
+                .send_data(self.stream_id, frame, close_credit, true)
                 .await?;
             return Ok(());
         }

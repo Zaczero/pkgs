@@ -920,7 +920,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_websocket_data(Box::new(binary_websocket_frame(payload)))
+            .queue_websocket_data(Box::new(binary_websocket_frame(payload)), None)
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -964,7 +964,7 @@ mod tests {
         let stream = writer_stream(&mut streams, stream_id, 1);
         stream.open_response(false).unwrap();
         stream
-            .queue_websocket_data(Box::new(binary_websocket_frame(b"body")))
+            .queue_websocket_data(Box::new(binary_websocket_frame(b"body")), None)
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
