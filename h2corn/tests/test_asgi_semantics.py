@@ -355,3 +355,55 @@ async def test_app_exception_after_cancelled_receive_yields_500() -> None:
             timeout=5,
         )
     assert status == 500
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+@pytest.mark.parametrize('body', [b'', b'payload'], ids=['no-body', 'single-body'])
+async def test_receive_after_body_eof_waits_for_a_real_disconnect(
+    protocol: str, body: bytes
+) -> None:
+    """
+    ASGI sends `http.disconnect` when the response is complete or the client
+    goes away -- not when the request body runs out.
+
+    Answering at body EOF told an application watching for a departed peer
+    that it had one, while the peer was still connected and no response had
+    been sent.  The bodyless and single-body request paths carry the whole body
+    up front and so have no channel to wait on; both had to be given the
+    request's terminal signal.
+    """
+    second: dict[str, str] = {}
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        while True:
+            message = await receive()
+            if not message.get('more_body', False):
+                break
+        try:
+            event = await asyncio.wait_for(receive(), timeout=1.0)
+            second['type'] = event['type']
+        except TimeoutError:
+            second['type'] = 'pending'
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, _config()) as server:
+        if protocol == 'h1':
+            request = (
+                b'POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
+                b'Content-Length: %d\r\n\r\n%s' % (len(body), body)
+                if body
+                else b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'
+            )
+            await asyncio.wait_for(
+                http1_request(port=server_port(server), request=request), timeout=10
+            )
+        else:
+            await asyncio.wait_for(h2_request(port=server_port(server)), timeout=10)
+
+    assert second['type'] == 'pending', (
+        'a receive() after body EOF reported '
+        f'{second["type"]} while the peer was still connected'
+    )

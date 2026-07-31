@@ -146,6 +146,29 @@ impl HttpSendState {
         self.try_forward(admitted)
     }
 
+    /// Resolve once this request is finished — the response has been fully
+    /// sent, or the transport tore the exchange down. The driver closes the
+    /// outbound side at exactly that point.
+    ///
+    /// This is what ASGI's `http.disconnect` names. Running out of *request
+    /// body* is a different event and does not belong here: a bodyless GET
+    /// whose application calls `receive()` a second time is watching for the
+    /// peer to leave, and answering immediately told it the peer had.
+    pub(crate) async fn wait_request_finished(&self) {
+        let mut closed = {
+            let mut inner = self.shared.lock();
+            if matches!(inner.state.mode, HttpSendMode::Closed) {
+                return;
+            }
+            inner
+                .state
+                .close_signal
+                .get_or_insert_with(|| watch::channel(()).0)
+                .subscribe()
+        };
+        let _ = closed.changed().await;
+    }
+
     fn try_admit(
         &self,
         event: HttpOutboundEvent,

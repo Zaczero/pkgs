@@ -118,8 +118,12 @@ impl HttpAppCall {
         }
         let scope = build_http_scope(py, &self.ctx)?;
         let receive = match self.body {
-            HttpRequestBody::NoBody => PyHttpReceive::new_no_body(Arc::clone(&shard)),
-            HttpRequestBody::Single(body) => PyHttpReceive::new_single(Arc::clone(&shard), body),
+            HttpRequestBody::NoBody => {
+                PyHttpReceive::new_no_body(Arc::clone(&shard), self.send_state.clone())
+            },
+            HttpRequestBody::Single(body) => {
+                PyHttpReceive::new_single(Arc::clone(&shard), body, self.send_state.clone())
+            },
             HttpRequestBody::Stream { rx, disconnect } => {
                 PyHttpReceive::new_stream(Arc::clone(&shard), rx, disconnect)
             },

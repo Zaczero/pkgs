@@ -14,7 +14,7 @@ use super::{
 };
 use crate::error::{AsgiError, IntoPyResult as _, into_pyerr};
 use crate::http::app::{HttpSendDisposition, HttpSendState};
-use crate::pyloop::Shard;
+use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future, runtime};
 use crate::runtime::StreamInput;
 
 #[derive(Debug)]
@@ -122,10 +122,19 @@ impl Drop for HttpReceiveWaitGuard {
     }
 }
 
-#[derive(Debug)]
 enum HttpReceiveKind {
-    NoBody(AtomicBool),
-    Single(Mutex<Option<Bytes>>),
+    /// The body is known up front, so there is no channel to await. `finished`
+    /// carries the request's terminal signal instead, so a second `receive()`
+    /// waits for the response to complete or the peer to leave — the same
+    /// thing the streaming kind learns from its channel closing.
+    NoBody {
+        delivered: AtomicBool,
+        finished: HttpSendState,
+    },
+    Single {
+        body: Mutex<Option<Bytes>>,
+        finished: HttpSendState,
+    },
     Stream(Arc<AsyncMutex<Requeueable<HttpReceiveState>>>),
 }
 
@@ -203,10 +212,13 @@ pub struct PyHttpReceive {
 }
 
 impl PyHttpReceive {
-    pub(crate) const fn new_no_body(shard: Shard) -> Self {
+    pub(crate) const fn new_no_body(shard: Shard, finished: HttpSendState) -> Self {
         Self {
             shard,
-            kind: HttpReceiveKind::NoBody(AtomicBool::new(false)),
+            kind: HttpReceiveKind::NoBody {
+                delivered: AtomicBool::new(false),
+                finished,
+            },
         }
     }
 
@@ -226,10 +238,13 @@ impl PyHttpReceive {
         }
     }
 
-    pub(crate) const fn new_single(shard: Shard, body: Bytes) -> Self {
+    pub(crate) const fn new_single(shard: Shard, body: Bytes, finished: HttpSendState) -> Self {
         Self {
             shard,
-            kind: HttpReceiveKind::Single(Mutex::new(Some(body))),
+            kind: HttpReceiveKind::Single {
+                body: Mutex::new(Some(body)),
+                finished,
+            },
         }
     }
 }
@@ -350,25 +365,29 @@ mod tests {
 impl PyHttpReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let event = match &self.kind {
-            HttpReceiveKind::NoBody(state) => {
-                if state.swap(true, Ordering::Relaxed) {
-                    HttpInboundEvent::HttpDisconnect
-                } else {
-                    HttpInboundEvent::Request {
-                        body: Bytes::new(),
-                        more_body: false,
-                        credit: None,
-                    }
+            HttpReceiveKind::NoBody {
+                delivered,
+                finished,
+            } => {
+                if delivered.swap(true, Ordering::Relaxed) {
+                    return disconnect_when_finished(py, &self.shard, finished);
+                }
+                HttpInboundEvent::Request {
+                    body: Bytes::new(),
+                    more_body: false,
+                    credit: None,
                 }
             },
-            HttpReceiveKind::Single(body) => body.lock().take().map_or_else(
-                || HttpInboundEvent::HttpDisconnect,
-                |body| HttpInboundEvent::Request {
+            HttpReceiveKind::Single { body, finished } => {
+                let Some(body) = body.lock().take() else {
+                    return disconnect_when_finished(py, &self.shard, finished);
+                };
+                HttpInboundEvent::Request {
                     body,
                     more_body: false,
                     credit: None,
-                },
-            ),
+                }
+            },
             HttpReceiveKind::Stream(state) => {
                 return receive_or_await(
                     py,
@@ -412,4 +431,35 @@ impl PyHttpSend {
             HttpSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }
     }
+}
+
+/// A `receive()` made after the request body is exhausted.
+///
+/// ASGI sends `http.disconnect` when the response has been fully sent or the
+/// client goes away — never merely because the body ran out. Answering at body
+/// EOF told an application watching for a departed peer that it had one.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "`fut` is the return value; it cannot be dropped before the function ends"
+)]
+fn disconnect_when_finished<'py>(
+    py: Python<'py>,
+    shard: &Shard,
+    finished: &HttpSendState,
+) -> PyResult<Bound<'py, PyAny>> {
+    let fut = new_rust_future(py, Arc::clone(shard))?;
+    let waiter_fut = fut.clone_ref(py);
+    let waiter_shard = Arc::clone(shard);
+    let finished = finished.clone();
+    let join = runtime().spawn(async move {
+        finished.wait_request_finished().await;
+        waiter_shard.push(PumpEvent::Resolve {
+            fut: waiter_fut,
+            payload: ResolvePayload::Simple(Box::new(|py| {
+                build_http_inbound_event(py, HttpInboundEvent::HttpDisconnect)
+            })),
+        });
+    });
+    fut.get().set_abort(join.abort_handle());
+    Ok(fut.into_bound(py).into_any())
 }
