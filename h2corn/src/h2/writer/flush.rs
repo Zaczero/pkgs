@@ -18,6 +18,8 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::time::Instant;
 
+#[cfg(test)]
+use super::ResponseClose;
 use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
 use super::stream_state::writer_stream;
@@ -1029,7 +1031,10 @@ mod tests {
         )]);
         assert!(ready_streams.is_empty());
         assert!(streams.is_empty());
-        assert_eq!(response_closes.as_slice(), &[stream_id]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_id
+        )]);
 
         remove_file(path).unwrap();
     }
@@ -1111,7 +1116,10 @@ mod tests {
         let expected: Vec<u8> = [chunk_a, chunk_b, chunk_c].concat();
         assert_eq!(parse_data_payload(bytes), expected);
         assert!(streams.is_empty());
-        assert_eq!(response_closes.as_slice(), &[stream_id]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_id
+        )]);
         assert_eq!(
             connection_send_window,
             i64::from(INITIAL_CONNECTION_WINDOW_SIZE) - expected.len() as i64
@@ -1169,7 +1177,10 @@ mod tests {
             (0, FrameFlags::END_STREAM.bits(), stream_id.get()),
         ]);
         assert!(streams.is_empty());
-        assert_eq!(response_closes.as_slice(), &[stream_id]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_id
+        )]);
     }
 
     /// A stream-window-limited batch consumes the chunk partially and the
@@ -1241,7 +1252,10 @@ mod tests {
         ]);
         assert_eq!(parse_data_payload(bytes), body);
         assert!(streams.is_empty());
-        assert_eq!(response_closes.as_slice(), &[stream_id]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_id
+        )]);
     }
 
     #[tokio::test]
@@ -1301,7 +1315,10 @@ mod tests {
         assert_eq!(stream_ids, vec![stream_a.get(), stream_b.get()]);
         assert_eq!(ready_streams.iter().collect::<Vec<_>>(), [stream_a]);
         assert!(streams.contains_key(&stream_a));
-        assert_eq!(response_closes.as_slice(), &[stream_b]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_b
+        )]);
         response_closes.clear();
 
         flush_pending_data(
@@ -1326,6 +1343,9 @@ mod tests {
         ]);
         assert!(ready_streams.is_empty());
         assert!(streams.is_empty());
-        assert_eq!(response_closes.as_slice(), &[stream_a]);
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Clean,
+            stream_a
+        )]);
     }
 }

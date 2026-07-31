@@ -19,7 +19,8 @@ use super::flush::{
 use super::header_encode::{HeaderEncodeState, write_header_block};
 use super::ingress::{QueuedStreamCommands, WriterIngress};
 use super::stream_state::{
-    ReadyStreamQueue, StreamWriteState, notify_response_close, writer_stream,
+    ReadyStreamQueue, StreamWriteState, notify_response_abort, notify_response_complete,
+    writer_stream,
 };
 use super::{
     FRAME_BUFFER_CAPACITY, H2_OUTBOUND_RESPONSE_BYTE_CAPACITY, H2_WRITER_BUFFER_CAPACITY,
@@ -600,9 +601,8 @@ where
 {
     streams.remove(&stream_id);
     h2_frame::append_rst_stream(frame_buf, stream_id, error_code);
-    write_frame_buf(writer, frame_buf).await?;
-    notify_response_close(response_closes, stream_id);
-    Ok(())
+    notify_response_abort(response_closes, stream_id);
+    write_frame_buf(writer, frame_buf).await
 }
 
 async fn handle_send_headers<W>(
@@ -627,7 +627,7 @@ where
     .await
     .is_err()
     {
-        notify_response_close(context.response_closes, stream_id);
+        notify_response_abort(context.response_closes, stream_id);
         return Ok(());
     }
 
@@ -655,7 +655,7 @@ where
         // 304 — never enters it, and used to sit in the map for the life of
         // the connection.
         context.streams.remove(&stream_id);
-        notify_response_close(context.response_closes, stream_id);
+        notify_response_complete(context.response_closes, stream_id);
     }
 
     Ok(())
@@ -789,13 +789,13 @@ where
         .await
         .is_err()
         {
-            notify_response_close(context.response_closes, stream_id);
+            notify_response_abort(context.response_closes, stream_id);
             return Ok(());
         }
 
         // Single-shot DATA frame into the BufWriter: small responses
         // coalesce with the HEADERS frame into one sendto on flush.
-        write_frame(
+        if let Err(error) = write_frame(
             context.writer,
             h2_frame::FrameHeader {
                 frame_type: h2_frame::FrameType::DATA,
@@ -804,13 +804,17 @@ where
             },
             payload,
         )
-        .await?;
+        .await
+        {
+            notify_response_abort(context.response_closes, stream_id);
+            return Err(error);
+        }
         *context.connection_send_window -= i64::from(payload.len().get());
         if let Some(credit) = &mut credit {
             credit.release_written(payload.len().as_usize());
         }
 
-        notify_response_close(context.response_closes, stream_id);
+        notify_response_complete(context.response_closes, stream_id);
         return Ok(());
     }
 
@@ -1095,14 +1099,22 @@ where
 mod tests {
     use std::fs::File;
     use std::io;
+    use std::num::NonZeroUsize;
     use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Poll};
 
+    use bytes::BytesMut;
     use tokio::io::{AsyncWrite, BufWriter};
 
-    use super::{PeerSettings, StreamWriteState, WindowTarget, WriterCommand, WriterState};
+    use super::{
+        HeaderEncodeState, PeerSettings, ReadyStreamQueue, ResponseCloseBatch, StreamWriteState,
+        WindowTarget, WriterCommand, WriterCommandBatch, WriterSendParts, WriterState,
+        handle_send_headers,
+    };
     use crate::bridge::PayloadBytes;
-    use crate::h2::new_stream_map;
+    use crate::h2::{ResponseClose, new_stream_map};
     use crate::h2_frame::{self, ErrorCode, FramePayloadLen, StreamId, WindowIncrement};
     use crate::http::response::ResponseByteBudget;
     use crate::http::types::{ResponseHeaders, status_code};
@@ -1140,6 +1152,217 @@ mod tests {
         ) -> io::Result<()> {
             unreachable!("writer-state tests never send files")
         }
+    }
+
+    struct FailingWriter {
+        fail_writes: Arc<AtomicBool>,
+    }
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.fail_writes.load(Ordering::Relaxed) {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "test write failure",
+                )))
+            } else {
+                Poll::Ready(Ok(buf.len()))
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl WriteTarget for FailingWriter {
+        const SUPPORTS_SENDFILE: bool = false;
+
+        async fn send_file(
+            _writer: &mut BufWriter<Self>,
+            _file: &mut File,
+            _offset: &mut u64,
+            _len: usize,
+        ) -> io::Result<()> {
+            unreachable!("failure tests never send files")
+        }
+    }
+
+    #[test]
+    fn initial_settings_saturate_an_oversized_header_list_limit() {
+        let mut config = Arc::into_inner(WriterState::new_test(TestWriter).config)
+            .expect("test writer owns its configuration");
+        let max_wire_value = usize::try_from(u32::MAX).expect("64-bit test host");
+        config.http2.max_header_list_size = NonZeroUsize::new(max_wire_value + 1);
+
+        assert_eq!(
+            super::initial_settings(&config).max_header_list_size,
+            Some(u32::MAX)
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_response_does_not_discard_remaining_global_commands() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let mut writer = WriterState::new_test(TestWriter);
+        let mut commands = WriterCommandBatch::new();
+        commands.push_back(WriterCommand::SendHeaders {
+            stream_id,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            end_stream: false,
+        });
+        commands.push_back(WriterCommand::SendData {
+            stream_id,
+            data: PayloadBytes::from(bytes::Bytes::from_static(b"complete")),
+            credit: None,
+            end_stream: true,
+        });
+        commands.push_back(WriterCommand::FlushBufferedOutput);
+        commands.push_back(WriterCommand::SendSettingsAck);
+        writer
+            .ingress
+            .enqueue_batch(stream_id, commands)
+            .await
+            .expect("writer accepts one submitted command batch");
+
+        assert!(
+            writer
+                .drain_app_writes()
+                .await
+                .expect("the flush command is handled")
+        );
+        assert_eq!(writer.take_response_closes().as_slice(), &[(
+            ResponseClose::Clean,
+            stream_id
+        )]);
+        assert!(
+            writer.has_queued_app_writes(),
+            "the post-flush command remains queued"
+        );
+
+        assert!(
+            writer
+                .drain_app_writes()
+                .await
+                .expect("the remaining command is handled")
+        );
+        assert!(!writer.has_queued_app_writes());
+        drop(writer);
+    }
+
+    #[tokio::test]
+    async fn reset_marks_queued_stream_cleanup_as_abort() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let mut writer = WriterState::new_test(TestWriter);
+        writer
+            .ingress
+            .enqueue(stream_id, WriterCommand::SendSettingsAck)
+            .await
+            .expect("queued command enters ingress");
+
+        writer
+            .process_command(WriterCommand::SendReset {
+                stream_id,
+                error_code: ErrorCode::CANCEL,
+            })
+            .await
+            .expect("reset frame writes");
+        assert_eq!(writer.take_response_closes().as_slice(), &[(
+            ResponseClose::Abort,
+            stream_id
+        )]);
+        assert!(writer.has_queued_app_writes());
+
+        writer.drop_ingress_stream(stream_id).await;
+        assert!(
+            !writer
+                .drain_app_writes()
+                .await
+                .expect("discarded ingress marker drains without a command")
+        );
+        assert!(!writer.has_queued_app_writes());
+        drop(writer);
+    }
+
+    #[tokio::test]
+    async fn failed_headers_and_data_writes_mark_streams_as_abort() {
+        let stream_id = StreamId::new(1).expect("test stream id is valid");
+        let fail_writes = Arc::new(AtomicBool::new(true));
+        let mut raw_writer = BufWriter::with_capacity(1, FailingWriter {
+            fail_writes: Arc::clone(&fail_writes),
+        });
+        let mut frame_buf = BytesMut::new();
+        let mut streams = new_stream_map();
+        let mut ready_streams = ReadyStreamQueue::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = i64::from(h2_frame::DEFAULT_WINDOW_SIZE);
+        let mut header_state = HeaderEncodeState::new();
+        let mut context = WriterSendParts {
+            writer: &mut raw_writer,
+            frame_buf: &mut frame_buf,
+            streams: &mut streams,
+            ready_streams: &mut ready_streams,
+            response_closes: &mut response_closes,
+            connection_send_window: &mut connection_send_window,
+            initial_stream_send_window: i64::from(h2_frame::DEFAULT_WINDOW_SIZE),
+            peer_max_frame_size: FramePayloadLen::constant(h2_frame::DEFAULT_MAX_FRAME_SIZE),
+            header_state: &mut header_state,
+        };
+        handle_send_headers(
+            &mut context,
+            stream_id,
+            status_code::OK,
+            ResponseHeaders::new(),
+            false,
+        )
+        .await
+        .expect("a failed HEADERS write is handled as a stream abort");
+        assert_eq!(response_closes.as_slice(), &[(
+            ResponseClose::Abort,
+            stream_id
+        )]);
+
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let mut writer = WriterState::new_test(FailingWriter {
+            fail_writes: Arc::clone(&fail_writes),
+        });
+        writer
+            .process_command(WriterCommand::SendHeaders {
+                stream_id,
+                status: status_code::OK,
+                headers: ResponseHeaders::new(),
+                end_stream: false,
+            })
+            .await
+            .expect("headers enter the buffered writer");
+        writer
+            .flush()
+            .await
+            .expect("headers reach the peer before data fails");
+        fail_writes.store(true, Ordering::Relaxed);
+        writer
+            .process_command(WriterCommand::SendData {
+                stream_id,
+                data: PayloadBytes::from(bytes::Bytes::from_static(b"body")),
+                credit: None,
+                end_stream: true,
+            })
+            .await
+            .expect("data enters the stream queue");
+        writer.flush_pending_output().await.unwrap_err();
+        assert_eq!(writer.take_response_closes().as_slice(), &[(
+            ResponseClose::Abort,
+            stream_id
+        )]);
     }
 
     #[tokio::test]

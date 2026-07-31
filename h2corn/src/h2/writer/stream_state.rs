@@ -3,7 +3,7 @@ use std::mem;
 
 use tokio::time::Instant;
 
-use super::{ResponseCloseBatch, WebSocketData};
+use super::{ResponseClose, ResponseCloseBatch, WebSocketData};
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
 use crate::h2::StreamMap;
@@ -290,7 +290,13 @@ impl StreamWriteState {
     pub(super) fn finish(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
         self.response = ResponseWriteState::Closed;
         self.pending_body_since = None;
-        notify_response_close(response_closes, stream_id);
+        notify_response_complete(response_closes, stream_id);
+    }
+
+    pub(super) fn abort(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
+        self.response = ResponseWriteState::Closed;
+        self.pending_body_since = None;
+        notify_response_abort(response_closes, stream_id);
     }
 }
 
@@ -367,8 +373,15 @@ pub(super) fn writer_stream(
         .or_insert_with(|| StreamWriteState::new(initial_stream_send_window))
 }
 
-pub(super) fn notify_response_close(response_closes: &mut ResponseCloseBatch, stream_id: StreamId) {
-    response_closes.push(stream_id);
+pub(super) fn notify_response_complete(
+    response_closes: &mut ResponseCloseBatch,
+    stream_id: StreamId,
+) {
+    response_closes.push((ResponseClose::Clean, stream_id));
+}
+
+pub(super) fn notify_response_abort(response_closes: &mut ResponseCloseBatch, stream_id: StreamId) {
+    response_closes.push((ResponseClose::Abort, stream_id));
 }
 
 #[cfg(test)]

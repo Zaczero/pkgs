@@ -28,7 +28,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout_at};
-use writer::{GrantSendWindowError, H2WriterHandle, WindowTarget, WriterState, init_writer};
+use writer::{
+    GrantSendWindowError, H2WriterHandle, ResponseClose, WindowTarget, WriterState, init_writer,
+};
 
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
 use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
@@ -1697,7 +1699,6 @@ where
         stream.delivery.stop_with(StreamInput::Reset(error_code));
     }
     state.request_tasks.cancel(stream_id).await;
-    state.writer.drop_ingress_stream(stream_id).await;
     state.writer.peer_reset(stream_id).await
 }
 
@@ -1970,9 +1971,14 @@ async fn apply_writer_response_closes<R, W>(state: &mut H2ConnectionState<R, W>)
 where
     W: WriteTarget,
 {
-    for response_close in state.writer.take_response_closes() {
-        state.writer.drop_ingress_stream(response_close).await;
-        state.apply_response_close(response_close);
+    for (kind, stream_id) in state.writer.take_response_closes() {
+        match kind {
+            ResponseClose::Clean => {},
+            ResponseClose::Abort => {
+                state.writer.drop_ingress_stream(stream_id).await;
+            },
+        }
+        state.apply_response_close(stream_id);
     }
 }
 

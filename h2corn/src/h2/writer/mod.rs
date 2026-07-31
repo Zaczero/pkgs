@@ -27,9 +27,20 @@ const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 /// bytes are written or the response is dropped.
 const H2_OUTBOUND_RESPONSE_BYTE_CAPACITY: u32 = 2 * 1024 * 1024;
 
-type ResponseCloseBatch = SmallVec<[StreamId; 8]>;
+type ResponseCloseBatch = SmallVec<[(ResponseClose, StreamId); 8]>;
 type ResponseDeadlineUpdateBatch = SmallVec<[StreamId; 8]>;
 pub(super) type WriterCommandBatch = InlineFifo<WriterCommand, 3>;
+
+/// A response lifecycle transition observed by the connection owner.
+///
+/// A clean completion has already consumed the drained command batch. An
+/// abort may leave an undrained batch behind, so it still needs ingress
+/// cleanup before the read side finalizes the stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ResponseClose {
+    Clean,
+    Abort,
+}
 
 /// One WebSocket frame carried as a single H2 DATA payload: frame header plus
 /// application bytes. `END_STREAM` is never set for this shape.
