@@ -4,7 +4,7 @@ use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
 use crate::access_log::{ResponseLogState, WebSocketAccessLogState};
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
-use crate::error::{ErrorExt, H2CornError, WebSocketError};
+use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::header::ResponseHeaderControl;
 use crate::http::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,

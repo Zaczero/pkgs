@@ -1,7 +1,15 @@
 absolute-paths-allowed-crates = ["std", "core", "alloc", "pyo3"]
 absolute-paths-max-segments = 3
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
 avoid-breaking-exported-api = false
 check-inconsistent-struct-field-initializers = true
+future-size-threshold = 4096
+large-error-threshold = 56
 module-items-ordered-within-groupings = "none"
+pass-by-value-size-limit = 64
 source-item-ordering = ["module"]
+too-large-for-stack = 128
 too-many-arguments-threshold = 10
+trivial-copy-size-limit = 16

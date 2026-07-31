@@ -1,4 +1,4 @@
-use std::simd::{Simd, ToBytes};
+use std::simd::{Simd, ToBytes as _};
 
 const WS_MASK_LANES: usize = 32;
 

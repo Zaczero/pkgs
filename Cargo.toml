@@ -6,6 +6,7 @@ members = [
   "lrucache-rs",
   "osm-shortlink",
   "polyline-rs",
+  "gometry",
   "totp-rs",
   "zid",
 ]
@@ -31,6 +32,12 @@ doc_link_with_quotes = "allow"
 # Same reason: the `///` first paragraph IS the numpydoc summary, whose length is
 # governed by the docs site, not rustdoc's paragraph heuristic.
 too_long_first_doc_paragraph = "allow"
+# This crate trades binary size for speed deliberately (fat LTO, one codegen
+# unit, generated lookup tables). The lint's real concern is a `const` being
+# copied at each use site, and that does not happen here: the 16 KiB HPACK
+# decode table appears exactly once in the shipped `.so`. What is left is a
+# size argument we do not accept.
+large_const_arrays = "allow"
 future_not_send = "allow"
 imprecise_flops = "allow"
 missing_errors_doc = "allow"
@@ -47,36 +54,56 @@ suboptimal_flops = "allow"
 unused_self = "allow"
 wildcard_imports = "allow"
 
+# New in clippy 2026: fires on sync impls of async trait methods, but its
+# Until the lint family is coherent, keep idiomatic `async fn` impls.
+# suggested rewrites then trip manual_async_fn / impl-trait-signature-match.
 absolute_paths = "warn"
 allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 arbitrary_source_item_ordering = "warn"
 assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
 decimal_literal_representation = "warn"
 empty_drop = "warn"
 empty_enum_variants_with_brackets = "warn"
 empty_structs_with_brackets = "warn"
+error_impl_error = "warn"
 exit = "warn"
 float_cmp_const = "warn"
 fn_to_numeric_cast_any = "warn"
 get_unwrap = "warn"
 if_then_some_else_none = "warn"
+impl_trait_in_params = "warn"
+infinite_loop = "warn"
+iter_over_hash_type = "warn"
 lossy_float_literal = "warn"
 map_with_unused_argument_over_ranges = "warn"
 mem_forget = "warn"
 mutex_atomic = "warn"
 mutex_integer = "warn"
 non_zero_suggestions = "warn"
+panic = "warn"
+panic_in_result_fn = "warn"
 pathbuf_init_then_push = "warn"
 precedence_bits = "warn"
 rc_buffer = "warn"
 rc_mutex = "warn"
+redundant_type_annotations = "warn"
+ref_patterns = "warn"
 rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
 self_named_module_files = "warn"
+semicolon_inside_block = "warn"
 str_to_string = "warn"
 string_add = "warn"
 string_lit_chars_any = "warn"
+string_slice = "warn"
 suspicious_xor_used_as_pow = "warn"
+todo = "warn"
+try_err = "warn"
 undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
 unnecessary_self_imports = "warn"
@@ -87,6 +114,9 @@ unseparated_literal_suffix = "warn"
 # Until the lint family is coherent, keep idiomatic `async fn` impls.
 unused_async_trait_impl = "allow"
 unused_result_ok = "warn"
+unused_trait_names = "warn"
+unwrap_used = "warn"
+used_underscore_items = "warn"
 verbose_file_reads = "warn"
 
 [workspace.lints.rust]

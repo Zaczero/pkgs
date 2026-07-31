@@ -3,12 +3,12 @@ use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::ops::{BitOr, BitOrAssign};
 
-use bytes::{Buf, Bytes, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use bytes::{Buf as _, Bytes, BytesMut};
+use tokio::io::{AsyncRead, AsyncReadExt as _};
 use zerocopy::byteorder::network_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::error::{ErrorExt, H2CornError, H2Error};
+use crate::error::{ErrorExt as _, H2CornError, H2Error};
 
 pub(crate) const DEFAULT_HEADER_TABLE_SIZE: usize = 4096;
 pub(crate) const DEFAULT_WINDOW_SIZE: u32 = 0xFFFF;
@@ -929,7 +929,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_control_length_fails_without_waiting_for_its_payload() {
-        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::io::{AsyncWriteExt as _, duplex};
         use tokio::time::{Duration, timeout};
 
         let (mut client, server) = duplex(FRAME_HEADER_LEN);
@@ -964,7 +964,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_control_length_discards_its_payload_before_the_next_header() {
-        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::io::{AsyncWriteExt as _, duplex};
 
         let (mut client, server) = duplex(64);
         client
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_frame_payload_is_discarded_in_capped_fragments() {
-        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::io::{AsyncWriteExt as _, duplex};
 
         const UNKNOWN_FRAME: FrameType = FrameType::new(0xF0);
         const PAYLOAD_LEN: usize = READ_BUFFER_INITIAL_CAPACITY * 4;
@@ -1113,7 +1113,7 @@ mod tests {
 
     #[tokio::test]
     async fn eof_while_discarding_unknown_frame_payload_is_reported() {
-        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::io::{AsyncWriteExt as _, duplex};
 
         let (mut client, server) = duplex(64);
         client

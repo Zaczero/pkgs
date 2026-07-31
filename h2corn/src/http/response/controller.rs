@@ -5,7 +5,7 @@ use pyo3::exceptions::PyValueError;
 use super::actions;
 #[cfg(test)]
 use crate::bridge;
-use crate::error::{self, ErrorExt};
+use crate::error::{self, ErrorExt as _};
 use crate::http;
 
 #[derive(Debug)]

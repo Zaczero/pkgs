@@ -7,7 +7,6 @@ use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::PyDictMethods;
 
 use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::app_call::AppCallArgs;

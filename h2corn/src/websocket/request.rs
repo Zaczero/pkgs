@@ -1,4 +1,4 @@
-use crate::error::{ErrorExt, H2CornError, WebSocketError};
+use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::header_meta::ParsedWebSocketVersion;
 use crate::http::planner::RejectedResponse;
 use crate::http::types::{BytesStr, RequestHead};

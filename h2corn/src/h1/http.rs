@@ -3,7 +3,7 @@ use std::io;
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 
 use super::ConnectionPersistence;
 use crate::async_util::write_all_vectored;

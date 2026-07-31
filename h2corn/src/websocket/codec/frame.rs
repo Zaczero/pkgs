@@ -5,7 +5,7 @@ use super::wire::opcode;
 use super::{
     DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode, wire,
 };
-use crate::error::{ErrorExt, H2CornError, WebSocketError, WebSocketProtocolError};
+use crate::error::{ErrorExt as _, H2CornError, WebSocketError, WebSocketProtocolError};
 use crate::http::types::BytesStr;
 
 pub(super) struct ParsedFrameHeader {

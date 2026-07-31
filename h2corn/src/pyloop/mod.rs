@@ -21,7 +21,7 @@ mod slot;
 
 use std::collections::VecDeque;
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, OnceLock};
@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyDictMethods};
+use pyo3::types::{PyBool, PyDict};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
 pub(crate) use slot::{SlotFuture, TaskSlot};

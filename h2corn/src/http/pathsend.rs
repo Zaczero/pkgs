@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read as _};
 use std::mem;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -283,7 +283,7 @@ fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), Pat
 mod tests {
     use std::env::temp_dir;
     use std::fs::{File, create_dir, remove_dir, remove_file, write};
-    use std::io::Read;
+    use std::io::Read as _;
     use std::mem::size_of;
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;

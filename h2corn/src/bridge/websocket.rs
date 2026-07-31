@@ -13,7 +13,7 @@ use super::{
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
 };
 use crate::buffered_events::BufferedState;
-use crate::error::{AsgiError, IntoPyResult, WebSocketFrameKind, into_pyerr};
+use crate::error::{AsgiError, IntoPyResult as _, WebSocketFrameKind, into_pyerr};
 use crate::http::types::BytesStr;
 use crate::pyloop::Shard;
 use crate::websocket::{WebSocketCloseCode, close_code};

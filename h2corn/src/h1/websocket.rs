@@ -46,7 +46,7 @@ use std::{io, mem};
 
 use bytes::BytesMut;
 use smallvec::SmallVec;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter};
 
 use super::http::{H1ResponseState, append_header_lines, write_empty_response};
 use crate::base64;

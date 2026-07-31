@@ -2,13 +2,13 @@ use std::future::Future;
 use std::io::{self, IoSlice};
 use std::time::Duration;
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 
-use crate::error::{ErrorExt, H2CornError};
+use crate::error::{ErrorExt as _, H2CornError};
 
 pub(crate) enum TryPush<T> {
     Sent,

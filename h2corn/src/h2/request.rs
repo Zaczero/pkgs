@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use bytes::{Bytes, BytesMut};
 use http::Method;
 
-use crate::error::{ErrorExt, H2CornError, H2Error};
+use crate::error::{ErrorExt as _, H2CornError, H2Error};
 use crate::h2_frame::{self, ErrorCode, RawFrame, StreamId};
 use crate::hpack::{DecodeBlockError, Decoder, DecoderError, HpackField};
 use crate::http::header::{

@@ -15,7 +15,7 @@ use std::{
 use bytes::Bytes;
 use bytes::BytesMut;
 use smallvec::SmallVec;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::time::Instant;
 
 #[cfg(test)]

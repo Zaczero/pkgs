@@ -11,7 +11,7 @@ use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::config::ProxyConfig;
-use crate::error::{ConfigError, ErrorExt, H2CornError, ProxyError};
+use crate::error::{ConfigError, ErrorExt as _, H2CornError, ProxyError};
 use crate::h2_frame::{BufferedConnectionReader, CONNECTION_PREFACE};
 
 const PROXY_V1_MAX_LEN: usize = 107;
@@ -577,7 +577,7 @@ const fn prefix_to_mask_v6(prefix: u8) -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncWriteExt, duplex};
+    use tokio::io::{AsyncWriteExt as _, duplex};
 
     use super::*;
     use crate::config::ProxyConfig;

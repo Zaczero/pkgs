@@ -417,7 +417,7 @@ fn schedule_done_callback(
 mod tests {
     use pyo3::Python;
     use pyo3::ffi::c_str;
-    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+    use pyo3::types::{PyAnyMethods as _, PyDict, PyDictMethods as _};
 
     use super::{FutureState, new_rust_future};
     use crate::pyloop::ShardHandle;

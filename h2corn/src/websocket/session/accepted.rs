@@ -18,7 +18,7 @@ use crate::bridge::{
     WebSocketInboundSender, WebSocketInboundTrySendError, WebSocketOutboundEvent,
 };
 use crate::config::WebSocketKeepAlive;
-use crate::error::{ErrorExt, FailureDomain, H2CornError, WebSocketError, WebSocketFrameKind};
+use crate::error::{ErrorExt as _, FailureDomain, H2CornError, WebSocketError, WebSocketFrameKind};
 use crate::http::types::BytesStr;
 use crate::runtime::{ShutdownKind, ShutdownState};
 use crate::websocket::codec::{DecodedFrame, DecodedPeerClose, WebSocketCodec, encode_frame_into};

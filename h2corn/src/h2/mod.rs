@@ -33,7 +33,7 @@ use writer::{
 };
 
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
-use crate::error::{ErrorExt, ErrorKind, H2CornError, H2Error};
+use crate::error::{ErrorExt as _, ErrorKind, H2CornError, H2Error};
 use crate::h2_frame::{
     self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType, PeerSettings,
     RawFrame, StreamId, WindowIncrement,

@@ -7,11 +7,11 @@ use rustls::crypto::aws_lc_rs::default_provider;
 use rustls::server::WebPkiClientVerifier;
 use rustls::version::{TLS12, TLS13};
 use rustls::{RootCertStore, ServerConfig as RustlsServerConfig, ServerConnection};
-use rustls_pki_types::pem::{Error as PemError, PemObject};
+use rustls_pki_types::pem::{Error as PemError, PemObject as _};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::TlsAcceptor;
 use x509_cert::Certificate;
-use x509_cert::der::Decode;
+use x509_cert::der::Decode as _;
 use x509_cert::der::pem::{LineEnding, encode_string};
 
 use crate::config::{ClientCertMode, TlsConfig};
