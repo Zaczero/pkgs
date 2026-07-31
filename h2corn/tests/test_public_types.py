@@ -4,10 +4,12 @@ from collections.abc import Iterable
 from typing import assert_type, get_origin, get_type_hints
 
 import h2corn
+import pytest
 from fastapi import FastAPI
 from h2corn import (
     Application,
     ASGIApp,
+    Config,
     ExtensionParameters,
     FrameworkASGIApp,
     Headers,
@@ -31,6 +33,13 @@ from h2corn import (
     WebSocketReceiveBytes,
     WebSocketReceiveText,
     WebSocketScope,
+)
+
+from tests._support import (
+    h2_request,
+    http1_request,
+    running_server,
+    server_port,
 )
 
 
@@ -89,9 +98,13 @@ def _extension_types_expose_supported_capabilities() -> None:
     assert_type(websocket['websocket.http.response'], ExtensionParameters)
 
 
-def _header_types_follow_the_direction_of_data_flow() -> None:
-    scope_headers: ScopeHeaders = [(b'host', b'example.test')]
-    outbound_headers: Headers = ((b'x-demo', b'1'),)
+def _header_types_follow_the_direction_of_data_flow(
+    scope_headers: ScopeHeaders,
+    outbound_headers: Headers,
+) -> None:
+    # Taken as parameters rather than locals: an assignment narrows the
+    # declared type to whatever was assigned, so a local would assert on the
+    # literal's own type instead of the published alias.
     assert_type(scope_headers, ScopeHeaders)
     assert_type(outbound_headers, Headers)
 
@@ -163,7 +176,65 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
     assert framework_server.app is framework_app
 
 
-def test_typeddict_runtime_required_keys_match_static_contract() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+@pytest.mark.parametrize('root_path', ['', '/mounted'])
+@pytest.mark.parametrize('lifespan', ['on', 'off'])
+async def test_http_scope_matches_its_published_contract(
+    protocol: str, root_path: str, lifespan: str
+) -> None:
+    """
+    The scope the Rust side builds must stay inside `HTTPScope`.
+
+    Reading `__required_keys__` back off the declaration and asserting on it
+    proves nothing -- both sides of that comparison come from the same
+    `NotRequired` annotations. What is worth checking is the FFI boundary:
+    `root_path` is emitted only when non-empty, `client` only when present and
+    `state` only when lifespan ran, and those three conditionals are exactly
+    what makes the optional keys correct.
+    """
+    seen: dict[str, object] = {}
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            while True:
+                message = await receive()
+                if message['type'] == 'lifespan.startup':
+                    await send({'type': 'lifespan.startup.complete'})
+                elif message['type'] == 'lifespan.shutdown':
+                    await send({'type': 'lifespan.shutdown.complete'})
+                    return
+        seen.update(scope)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(port=0, root_path=root_path, lifespan=lifespan)
+    async with running_server(app, config) as server:
+        if protocol == 'h1':
+            await http1_request(
+                port=server_port(server),
+                request=b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+            )
+        else:
+            await h2_request(port=server_port(server))
+
+    keys = set(seen)
+    required = set(HTTPScope.__required_keys__)
+    optional = set(HTTPScope.__optional_keys__)
+    assert required <= keys, f'scope is missing required keys: {required - keys}'
+    assert keys <= required | optional, (
+        f'scope carries keys the published contract does not declare: '
+        f'{keys - required - optional}'
+    )
+    assert ('root_path' in keys) == bool(root_path)
+    assert ('state' in keys) == (lifespan == 'on')
+
+
+def test_published_typeddicts_have_the_declared_shape() -> None:
+    # Hand-written expectations, deliberately: these are an oracle independent
+    # of the declarations, so a `NotRequired` added or removed by accident is
+    # caught here even though the live scope test above cannot see it (a key
+    # moving between required and optional stays inside the same union).
     assert HTTPRequest.__required_keys__ == frozenset({'type'})
     assert HTTPRequest.__optional_keys__ == frozenset({'body', 'more_body'})
     assert WebSocketScope.__required_keys__ >= {
@@ -177,12 +248,12 @@ def test_typeddict_runtime_required_keys_match_static_contract() -> None:
     assert HTTPExtensions.__optional_keys__ == {'http.response.trailers', 'tls'}
     assert WebSocketDisconnect.__required_keys__ == {'type', 'code'}
     assert WebSocketDisconnect.__optional_keys__ == {'reason'}
+    assert WebSocketExtensions.__required_keys__ == {'websocket.http.response'}
     assert get_type_hints(WebSocketDisconnect)['reason'] is str
     assert get_origin(ScopeHeaders) is list
     assert get_origin(Headers) is Iterable
-    assert WebSocketExtensions.__required_keys__ == {'websocket.http.response'}
     # `tls` is optional on both because the extension requires it to be absent
-    # from a connection that is not TLS — h2corn sets every one of its keys.
+    # from a connection that is not TLS -- h2corn sets every one of its keys.
     assert TLSExtension.__required_keys__ == {
         'server_cert',
         'client_cert_chain',

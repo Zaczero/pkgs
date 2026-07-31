@@ -6,7 +6,7 @@ import os
 import sys
 from dataclasses import MISSING, dataclass
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import NoReturn, TypeAlias, cast
 
 from ._config import (
     CONFIG_PATH_ENV_VAR,
@@ -184,6 +184,12 @@ def _toml_literal(value: _TomlLiteralValue) -> str:
             return str(value)
         case tuple() | list():
             return f'[{", ".join(_toml_literal(item) for item in value)}]'
+
+
+def _fail(message: str) -> NoReturn:
+    """Report an operator error the way `parse_cli` does: one line, exit 2."""
+    print(f'h2corn: error: {message}', file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _print_config(config: Config) -> None:
@@ -433,12 +439,25 @@ def run_cli(
         from ._lib import prepare_tls
         from ._server import load_tls_material
 
-        # Same native path as serving: PEM bytes → prepare_tls → server_config.
-        prepare_tls(config, load_tls_material(config))
+        # `parse_cli` routes every configuration failure through
+        # `parser.error`: one line, exit 2. Validation reached only from here
+        # failed differently, escaping as a traceback wrapped around the one
+        # line that mattered. The catch stays around validation alone -- a
+        # fault raised while *serving* is not a usage error and keeps its
+        # traceback.
+        try:
+            # Same native path as serving: PEM bytes → prepare_tls → server_config.
+            prepare_tls(config, load_tls_material(config))
+        except (OSError, TypeError, ValueError) as error:
+            _fail(str(error))
         return
     if cli_settings.reload:
         from ._reload import serve_with_reload
 
+        if sys.platform not in {'linux', 'darwin'}:
+            # Checked here so an unsupported platform reads as the operator
+            # error it is, rather than a traceback out of the watcher factory.
+            _fail('reload is currently supported only on Linux and macOS')
         serve_with_reload(
             import_settings,
             config,

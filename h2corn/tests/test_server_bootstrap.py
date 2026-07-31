@@ -422,7 +422,7 @@ def test_worker_entry_imports_after_privilege_drop(
         def shutdown(self):
             return None
 
-        def request_restart(self):
+        def _request_restart(self):
             return None
 
     monkeypatch.setattr(_server, 'Server', FakeServer)
@@ -487,7 +487,7 @@ def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
         def shutdown(self):
             return None
 
-        def request_restart(self):
+        def _request_restart(self):
             return None
 
     control_read_fd, control_write_fd = os.pipe()
@@ -753,6 +753,7 @@ async def app(scope, receive, send):
         os.write(cleanup_write, b'x')
         wait_for_marker(lifespan_read, 'lifespan shutdown')
         exit_code = process.wait(timeout=5)
+        assert process.stderr is not None
         assert exit_code == 0, process.stderr.read().decode()
     finally:
         if request is not None:
@@ -831,12 +832,24 @@ def _supervisor_state(config: Config):
 
 
 class _FakeWorkerProcess:
+    """Stands in for a worker process.
+
+    Structural against `_supervisor._WorkerProcess`, so the members the
+    supervisor actually uses are checked rather than assumed -- this double
+    was missing `start` entirely and took no timeout on `join`.
+    """
+
     def __init__(self, sentinel: int, *, alive: bool = False) -> None:
         self.sentinel = sentinel
-        self.pid = sentinel + 1000
-        self.exitcode = 0
+        self.pid: int | None = sentinel + 1000
+        self.exitcode: int | None = 0
         self._alive = alive
         self.closed = False
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+        self._alive = True
 
     def is_alive(self) -> bool:
         return self._alive
@@ -847,8 +860,8 @@ class _FakeWorkerProcess:
     def kill(self) -> None:
         self._alive = False
 
-    def join(self) -> None:
-        return None
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
 
     def close(self) -> None:
         self.closed = True
@@ -877,8 +890,6 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
     real_close = os.close
     real_pipe = _supervisor.nonblocking_pipe
     pipe_pairs: list[tuple[int, int]] = []
-    processes: list[object] = []
-
     class FakeProcess:
         def __init__(self) -> None:
             self.pid = 5000
@@ -916,6 +927,8 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
                     real_close(fd)
                 except OSError:
                     pass
+    processes: list[FakeProcess] = []
+
 
     class Context:
         def Process(self, **_kwargs):  # noqa: N802
@@ -997,15 +1010,28 @@ def test_supervisor_reap_closes_each_owned_fd_once(
     real_close = os.close
 
     class Process:
-        pid = 9876
-        exitcode = 0
+        pid: int | None = 9876
+        exitcode: int | None = 0
+        _alive = False
 
         @property
         def sentinel(self) -> int:
             return sentinel
 
-        def join(self) -> None:
-            pass
+        def start(self) -> None:
+            self._alive = True
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            self._alive = False
+
+        def kill(self) -> None:
+            self._alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
 
         def close(self) -> None:
             real_close(sentinel)

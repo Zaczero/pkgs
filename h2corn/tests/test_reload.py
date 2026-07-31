@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 import h2corn._reload as reload_module
 import pytest
@@ -110,7 +111,8 @@ def test_reload_overflow_rebuilds_every_watch_and_refreshes_the_full_snapshot(
         def rebuild(self) -> None:
             self.rebuilds += 1
 
-        def rescan(self, _directories: set[Path]) -> None:
+        def rescan(self, directories: set[Path]) -> None:
+            del directories
             self.rescans += 1
 
     notifier = Notifier()
@@ -452,7 +454,8 @@ def test_darwin_kqueue_rebuilds_directory_watch(
         fd for fd, path in notifier._paths.items() if path == watched / 'initial.py'
     )
     initial_dir_fd = next(fd for fd, path in notifier._paths.items() if path == watched)
-    notifier._kqueue.queued.append([Event(initial_file_fd), Event(initial_dir_fd)])
+    installed = cast('Kqueue', notifier._kqueue)
+    installed.queued.append([Event(initial_file_fd), Event(initial_dir_fd)])
     events = notifier.consume()
     assert events.paths == {watched / 'initial.py'}
     assert events.rescan_directories == {watched}

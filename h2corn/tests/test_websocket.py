@@ -2917,7 +2917,7 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
                 path='/ws',
             )
         if restarting:
-            server.request_restart()
+            server._request_restart()
         else:
             server.shutdown()
         await asyncio.wait_for(disconnect_event.wait(), timeout=5)

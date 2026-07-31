@@ -27,7 +27,28 @@ from ._socket import (
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from multiprocessing.process import BaseProcess
+    from typing import Protocol
+
+    class _WorkerProcess(Protocol):
+        """What the supervisor needs of a worker process.
+
+        Narrower than `BaseProcess` on purpose: it names the dependency
+        exactly, and it lets a test double stand in structurally instead of
+        subclassing a process implementation it would have to keep in step.
+        """
+
+        @property
+        def pid(self) -> int | None: ...
+        @property
+        def exitcode(self) -> int | None: ...
+        @property
+        def sentinel(self) -> int: ...
+        def start(self) -> None: ...
+        def is_alive(self) -> bool: ...
+        def join(self, timeout: float | None = None) -> None: ...
+        def terminate(self) -> None: ...
+        def kill(self) -> None: ...
+        def close(self) -> None: ...
 
     from ._config import Config
     from ._lib import _PreparedTls
@@ -72,7 +93,7 @@ class _Worker:
     lifecycle for the same sentinel.
     """
 
-    process: BaseProcess
+    process: _WorkerProcess
     control_read_fd: int
     quiesce_write_fd: int | None
     ready: bool = False
@@ -88,7 +109,7 @@ def _log_line(message: str):
     sys.stderr.flush()
 
 
-def _restart_worker(worker: BaseProcess):
+def _restart_worker(worker: _WorkerProcess):
     if not worker.is_alive() or worker.pid is None:
         return
     try:
@@ -231,7 +252,10 @@ def _worker_entry(
         if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
             loop.add_signal_handler(
                 _RESTART_SIGNAL,
-                server.request_restart,
+                # Deliberately private on `Server`: an embedder driving its own
+                # process has no supervisor to request a restart from. This is
+                # the one caller, and it is the supervisor that owns the signal.
+                server._request_restart,  # pyright: ignore[reportPrivateUsage]
             )
         heartbeat_task = (
             asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
@@ -266,7 +290,7 @@ def _posix_worker_selector() -> selectors.BaseSelector:
     return selectors.PollSelector()
 
 
-def _worker_process_fds(worker: BaseProcess) -> tuple[int, ...]:
+def _worker_process_fds(worker: _WorkerProcess) -> tuple[int, ...]:
     """Parent-side process-management fds for one worker (sentinel pair).
 
     `Process.sentinel` is only the wait end. The fork Popen keeps a matching
@@ -417,7 +441,7 @@ class _Supervisor:
             control_read_fd=control_read_fd,
             quiesce_write_fd=quiesce_write_fd,
         )
-        process: BaseProcess | None = None
+        process: _WorkerProcess | None = None
         try:
             process = multiprocessing.get_context('fork').Process(
                 target=_worker_entry,

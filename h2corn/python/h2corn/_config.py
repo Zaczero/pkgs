@@ -5,7 +5,7 @@ import ipaddress
 import math
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import MISSING, InitVar, dataclass, field, fields
 from functools import cache
 from pathlib import Path
@@ -49,7 +49,11 @@ _H2_MIN_WINDOW_SIZE = 65_535
 _H2_MAX_WINDOW_SIZE = 2_147_483_647
 _U32_MAX = (1 << 32) - 1
 DEFAULT_BIND = ('127.0.0.1:8000',)
-CONVENIENCE_KEYS = frozenset({'host', 'port'})
+# `host` and `port` are not options in their own right -- they compose into
+# `bind` -- so both ingresses have to convert them by hand. One table, so the
+# environment and a parsed mapping cannot disagree about what `port` accepts.
+CONVENIENCE_PARSERS: Mapping[str, Callable[[str], object]] = {'host': str, 'port': int}
+CONVENIENCE_KEYS = frozenset(CONVENIENCE_PARSERS)
 _Normalize = Callable[[Any], Any]
 _Parse = Callable[[str], Any]
 _T = TypeVar('_T')
@@ -648,7 +652,7 @@ def env_values(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     if 'bind' not in values:
         values |= {
             key: parse(raw)
-            for key, parse in (('host', str), ('port', int))
+            for key, parse in CONVENIENCE_PARSERS.items()
             if (raw := env.get(f'H2CORN_{key.upper()}')) is not None
         }
     return values
@@ -1190,7 +1194,12 @@ class Config:
             for key, value in data.items()
             if (option := option_map.get(key)) is not None
         }
-        values |= {key: data[key] for key in CONVENIENCE_KEYS & data.keys()}
+        values |= {
+            key: CONVENIENCE_PARSERS[key](data[key])
+            if isinstance(data[key], str)
+            else data[key]
+            for key in CONVENIENCE_KEYS & data.keys()
+        }
         return cls(**values)
 
     @classmethod

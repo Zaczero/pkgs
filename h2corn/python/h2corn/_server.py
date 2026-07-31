@@ -440,7 +440,7 @@ class Server:
         """
         self._request_shutdown(_ShutdownKind.STOP)
 
-    def request_restart(self) -> None:
+    def _request_restart(self) -> None:
         """Ask a supervisor-owned worker to finish this generation for restart."""
         self._request_shutdown(_ShutdownKind.RESTART)
 

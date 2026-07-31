@@ -27,11 +27,21 @@ from ._socket import (
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from typing import Protocol, Self
 
     from ._cli import ImportSettings
     from ._config import Config
+
+    class _KEvent(Protocol):
+        """What this module reads off a `select.kevent`.
+
+        `select.kqueue` exists only on the BSDs, so a checker configured for
+        every platform cannot see the real type. Declaring the one attribute
+        used here keeps the watcher typed without pretending to model it.
+        """
+
+        ident: int
 
     class _Kqueue(Protocol):
         def fileno(self) -> int: ...
@@ -40,7 +50,7 @@ if TYPE_CHECKING:
             changelist: Sequence[object] | None,
             max_events: int,
             timeout: float | None,
-        ) -> list[object]: ...
+        ) -> list[_KEvent]: ...
         def close(self) -> None: ...
 
     class _KqueueModule(Protocol):
@@ -58,11 +68,15 @@ if TYPE_CHECKING:
         def kqueue(self) -> _Kqueue: ...
         def kevent(self, ident: int, **kwargs: int) -> object: ...
 
-    class _Notifier(Protocol):
-        def fileno(self) -> int: ...
-        def consume(self) -> _ReloadEvents: ...
+    class _WatchSync(Protocol):
+        """The two operations snapshot reconciliation drives."""
+
         def rescan(self, directories: set[Path]) -> None: ...
         def rebuild(self) -> None: ...
+
+    class _Notifier(_WatchSync, Protocol):
+        def fileno(self) -> int: ...
+        def consume(self) -> _ReloadEvents: ...
         def close(self) -> None: ...
 
     class _QuietPeriodSelector(Protocol):
@@ -271,16 +285,12 @@ def _prune_walk_dirs(
     ]
 
 
-def _walk_watch_dirs(roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
-    for root in roots:
-        yield from _walk_watch_dirs_from(root, root, exclude_patterns)
-
 
 def _walk_watch_dirs_from(
     root: Path,
     start: Path,
     exclude_patterns: tuple[str, ...],
-):
+) -> Iterator[Path]:
     if not start.is_dir() or (
         start != root and _is_excluded_dir(start, root, exclude_patterns)
     ):
@@ -295,7 +305,7 @@ def _walk_watch_files(
     roots: tuple[Path, ...],
     include_patterns: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
-):
+) -> Iterator[Path]:
     for root in roots:
         yield from _walk_watch_files_from(
             root,
@@ -310,7 +320,7 @@ def _walk_watch_files_from(
     start: Path,
     include_patterns: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
-):
+) -> Iterator[Path]:
     if start.is_file():
         if _should_watch_file(start, root.parent, include_patterns, exclude_patterns):
             yield start
@@ -403,7 +413,7 @@ def _refresh_direct_paths(snapshot: dict[Path, int], paths: set[Path]) -> None:
 
 
 def _apply_reload_events(
-    notifier: _Notifier,
+    notifier: _WatchSync,
     events: _ReloadEvents,
     snapshot: dict[Path, int],
     roots: tuple[Path, ...],
@@ -679,7 +689,7 @@ class _KqueueNotifier:
         events = _ReloadEvents()
         while received := self._kqueue.control(None, 128, 0):
             for event in received:
-                fd = getattr(event, 'ident', None)
+                fd = event.ident
                 path = self._paths.get(fd)
                 if path is None:
                     events.full_resync = True
