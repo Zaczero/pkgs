@@ -771,6 +771,47 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
             )
 
 
+async def test_untrusted_proxy_protocol_configuration_fault_is_reported(capfd) -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    config = Config(
+        port=0,
+        forwarded_allow_ips=('10.0.0.0/8',),
+        proxy_protocol='v1',
+    )
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(
+                proxy_v1_prefix(
+                    client_host='203.0.113.10',
+                    server_host='198.51.100.20',
+                    client_port=41234,
+                    server_port=8080,
+                )
+            )
+            await writer.drain()
+            try:
+                await asyncio.wait_for(reader.read(), timeout=5)
+            except ConnectionResetError:
+                pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                pass
+
+    stderr = capfd.readouterr().err
+    assert stderr
+    assert (
+        'connection failed: PROXY protocol requires the connection peer to be trusted'
+        in stderr
+    )
+
+
 async def test_proxy_v2_maximum_payload_followed_by_http() -> None:
     """A maximum-length PROXY prelude consumes every TLV byte before HTTP."""
     payload = _proxy_v2_ipv4_payload() + (b'x' * 65_523)
@@ -819,7 +860,9 @@ async def test_proxy_v2_maximum_payload_truncated() -> None:
         proxy_protocol='v2',
     )
     async with running_server(app, config) as server:
-        _reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        _reader, writer = await asyncio.open_connection(
+            '127.0.0.1', server_port(server)
+        )
         writer.write(prefix[:-1])
         await writer.drain()
         writer.close()

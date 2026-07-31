@@ -6,15 +6,17 @@ mod mask;
 pub(crate) mod close_code {
     use super::WebSocketCloseCode;
 
-    pub(crate) const NORMAL: WebSocketCloseCode = 1000;
-    pub(crate) const GOING_AWAY: WebSocketCloseCode = 1001;
-    pub(crate) const PROTOCOL_ERROR: WebSocketCloseCode = 1002;
-    pub(crate) const NO_STATUS_RECEIVED: WebSocketCloseCode = 1005;
-    pub(crate) const ABNORMAL_CLOSURE: WebSocketCloseCode = 1006;
-    pub(crate) const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode = 1007;
-    pub(crate) const MESSAGE_TOO_BIG: WebSocketCloseCode = 1009;
-    pub(crate) const INTERNAL_ERROR: WebSocketCloseCode = 1011;
-    pub(crate) const SERVICE_RESTART: WebSocketCloseCode = 1012;
+    pub(crate) const NORMAL: WebSocketCloseCode = WebSocketCloseCode::new(1000).unwrap();
+    pub(crate) const GOING_AWAY: WebSocketCloseCode = WebSocketCloseCode::new(1001).unwrap();
+    pub(crate) const PROTOCOL_ERROR: WebSocketCloseCode = WebSocketCloseCode::new(1002).unwrap();
+    pub(crate) const NO_STATUS_RECEIVED: WebSocketCloseCode =
+        WebSocketCloseCode::new(1005).unwrap();
+    pub(crate) const ABNORMAL_CLOSURE: WebSocketCloseCode = WebSocketCloseCode::new(1006).unwrap();
+    pub(crate) const INVALID_FRAME_PAYLOAD_DATA: WebSocketCloseCode =
+        WebSocketCloseCode::new(1007).unwrap();
+    pub(crate) const MESSAGE_TOO_BIG: WebSocketCloseCode = WebSocketCloseCode::new(1009).unwrap();
+    pub(crate) const INTERNAL_ERROR: WebSocketCloseCode = WebSocketCloseCode::new(1011).unwrap();
+    pub(crate) const SERVICE_RESTART: WebSocketCloseCode = WebSocketCloseCode::new(1012).unwrap();
 }
 
 mod wire {
@@ -44,7 +46,6 @@ mod wire {
     pub(super) const CONTROL_FRAME_PAYLOAD_MAX_LEN: usize = INLINE_PAYLOAD_LEN_MAX;
 }
 
-use std::fmt;
 use std::num::NonZeroU16;
 
 use bytes::Bytes;
@@ -52,12 +53,26 @@ pub(crate) use decode::WebSocketCodec;
 pub(crate) use frame::{EncodedFrameHeader, encode_frame_header};
 pub(super) use frame::{encode_close_frame_into, encode_frame_into};
 
-use crate::error::WebSocketProtocolError;
 use crate::http::types::BytesStr;
 
 pub(super) const MAX_CLOSE_REASON_LEN: usize = 123;
 
-pub(crate) type WebSocketCloseCode = u16;
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WebSocketCloseCode(NonZeroU16);
+
+impl WebSocketCloseCode {
+    pub(crate) const fn new(code: u16) -> Option<Self> {
+        match NonZeroU16::new(code) {
+            Some(code) => Some(Self(code)),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
 
 /// A close status which RFC 6455 permits on the wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +80,7 @@ pub(crate) struct ValidCloseCode(NonZeroU16);
 
 impl ValidCloseCode {
     pub(crate) const fn get(self) -> WebSocketCloseCode {
-        self.0.get()
+        WebSocketCloseCode(self.0)
     }
 }
 
@@ -74,9 +89,7 @@ impl TryFrom<WebSocketCloseCode> for ValidCloseCode {
 
     fn try_from(code: WebSocketCloseCode) -> Result<Self, Self::Error> {
         frame::validate_close_code(code)?;
-        Ok(Self(
-            NonZeroU16::new(code).expect("valid websocket close codes are non-zero"),
-        ))
+        Ok(Self(code.0))
     }
 }
 
@@ -96,39 +109,4 @@ pub(crate) enum DecodedFrame {
     Ping(Bytes),
     Pong,
     Close(DecodedPeerClose),
-}
-
-#[derive(Debug)]
-pub(crate) struct WebSocketDecodeError {
-    pub(crate) close_code: WebSocketCloseCode,
-    pub(crate) error: WebSocketProtocolError,
-}
-
-impl WebSocketDecodeError {
-    pub(crate) const fn protocol(error: WebSocketProtocolError) -> Self {
-        Self {
-            close_code: close_code::PROTOCOL_ERROR,
-            error,
-        }
-    }
-
-    pub(crate) fn invalid_utf8(detail: impl Into<Box<str>>) -> Self {
-        Self {
-            close_code: close_code::INVALID_FRAME_PAYLOAD_DATA,
-            error: WebSocketProtocolError::invalid_utf8(detail),
-        }
-    }
-
-    pub(crate) const fn message_too_large() -> Self {
-        Self {
-            close_code: close_code::MESSAGE_TOO_BIG,
-            error: WebSocketProtocolError::MessageTooLarge,
-        }
-    }
-}
-
-impl fmt::Display for WebSocketDecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error.fmt(f)
-    }
 }

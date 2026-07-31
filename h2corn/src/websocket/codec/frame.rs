@@ -3,8 +3,7 @@ use bytes::{Bytes, BytesMut};
 use super::super::deflate::PerMessageDeflateMode;
 use super::wire::opcode;
 use super::{
-    DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode,
-    WebSocketDecodeError, close_code, wire,
+    DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode, wire,
 };
 use crate::error::{ErrorExt, H2CornError, WebSocketError, WebSocketProtocolError};
 use crate::http::types::BytesStr;
@@ -31,7 +30,7 @@ impl EncodedFrameHeader {
 
 pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
     buffer: &[u8],
-) -> Result<Option<ParsedFrameHeader>, WebSocketDecodeError> {
+) -> Result<Option<ParsedFrameHeader>, WebSocketProtocolError> {
     if buffer.len() < 2 {
         return Ok(None);
     }
@@ -41,19 +40,13 @@ pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
     let fin = first & wire::FIN != 0;
     let compressed = first & wire::RSV1 != 0;
     if first & wire::RSV23 != 0 {
-        return Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::ExtensionsNotNegotiated,
-        ));
+        return Err(WebSocketProtocolError::ExtensionsNotNegotiated);
     }
     if compressed && !M::ENABLED {
-        return Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::ExtensionsNotNegotiated,
-        ));
+        return Err(WebSocketProtocolError::ExtensionsNotNegotiated);
     }
     if second & wire::MASK == 0 {
-        return Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::ClientFramesMustBeMasked,
-        ));
+        return Err(WebSocketProtocolError::ClientFramesMustBeMasked);
     }
 
     let Some((header_len, payload_len)) = parse_frame_len(buffer, second)? else {
@@ -67,9 +60,7 @@ pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
     // a peer declaring a 64 MiB PING would otherwise be handed that much
     // memory before the frame was ever ruled out.
     if opcode >= opcode::CLOSE && (!fin || payload_len > wire::CONTROL_FRAME_PAYLOAD_MAX_LEN) {
-        return Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::InvalidControlFrame,
-        ));
+        return Err(WebSocketProtocolError::InvalidControlFrame);
     }
 
     Ok(Some(ParsedFrameHeader {
@@ -84,7 +75,7 @@ pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
 fn parse_frame_len(
     buffer: &[u8],
     second: u8,
-) -> Result<Option<(usize, usize)>, WebSocketDecodeError> {
+) -> Result<Option<(usize, usize)>, WebSocketProtocolError> {
     match second & wire::PAYLOAD_LEN_MASK {
         encoded_len @ 0..=125 => Ok(Some((2, usize::from(encoded_len)))),
         wire::PAYLOAD_LEN_U16_MARKER => {
@@ -97,9 +88,7 @@ fn parse_frame_len(
                     .expect("extended payload length is buffered"),
             ));
             if payload_len <= wire::INLINE_PAYLOAD_LEN_MAX {
-                return Err(WebSocketDecodeError::protocol(
-                    WebSocketProtocolError::NonCanonical16BitLengthEncoding,
-                ));
+                return Err(WebSocketProtocolError::NonCanonical16BitLengthEncoding);
             }
             Ok(Some((4, payload_len)))
         },
@@ -115,17 +104,12 @@ fn parse_frame_len(
                     .expect("extended payload length is buffered"),
             );
             if raw >> 63 != 0 {
-                return Err(WebSocketDecodeError::protocol(
-                    WebSocketProtocolError::ReservedHighBitIn64BitLengthEncoding,
-                ));
+                return Err(WebSocketProtocolError::ReservedHighBitIn64BitLengthEncoding);
             }
-            let payload_len = usize::try_from(raw).map_err(|_| {
-                WebSocketDecodeError::protocol(WebSocketProtocolError::FrameTooLarge)
-            })?;
+            let payload_len =
+                usize::try_from(raw).map_err(|_| WebSocketProtocolError::FrameTooLarge)?;
             if payload_len < 0x0001_0000 {
-                return Err(WebSocketDecodeError::protocol(
-                    WebSocketProtocolError::NonCanonical64BitLengthEncoding,
-                ));
+                return Err(WebSocketProtocolError::NonCanonical64BitLengthEncoding);
             }
             Ok(Some((10, payload_len)))
         },
@@ -140,14 +124,12 @@ fn parse_frame_len(
 pub(super) fn decode_control_frame(
     opcode: u8,
     payload: Bytes,
-) -> Result<DecodedFrame, WebSocketDecodeError> {
+) -> Result<DecodedFrame, WebSocketProtocolError> {
     debug_assert!(payload.len() <= wire::CONTROL_FRAME_PAYLOAD_MAX_LEN);
     match opcode {
         opcode::CLOSE => {
             if payload.len() == 1 {
-                return Err(WebSocketDecodeError::protocol(
-                    WebSocketProtocolError::CloseFramePayloadTruncated,
-                ));
+                return Err(WebSocketProtocolError::CloseFramePayloadTruncated);
             }
             let close = if payload.len() >= 2 {
                 let code = u16::from_be_bytes(
@@ -155,13 +137,13 @@ pub(super) fn decode_control_frame(
                         .first_chunk::<2>()
                         .expect("close frame code is buffered"),
                 );
-                let code = ValidCloseCode::try_from(code).map_err(|_| {
-                    WebSocketDecodeError::protocol(WebSocketProtocolError::CloseFrameInvalidCode)
-                })?;
+                let code = WebSocketCloseCode::new(code)
+                    .and_then(|code| ValidCloseCode::try_from(code).ok())
+                    .ok_or(WebSocketProtocolError::CloseFrameInvalidCode)?;
                 let reason = (payload.len() > 2)
                     .then(|| BytesStr::try_from(payload.slice(2..)))
                     .transpose()
-                    .map_err(|err| WebSocketDecodeError::invalid_utf8(err.to_string()))?;
+                    .map_err(|err| WebSocketProtocolError::invalid_utf8(err.to_string()))?;
                 DecodedPeerClose::Coded { code, reason }
             } else {
                 DecodedPeerClose::Empty
@@ -170,9 +152,7 @@ pub(super) fn decode_control_frame(
         },
         opcode::PING => Ok(DecodedFrame::Ping(payload)),
         opcode::PONG => Ok(DecodedFrame::Pong),
-        _ => Err(WebSocketDecodeError::protocol(
-            WebSocketProtocolError::UnsupportedControlOpcode,
-        )),
+        _ => Err(WebSocketProtocolError::UnsupportedControlOpcode),
     }
 }
 
@@ -237,16 +217,14 @@ pub(crate) fn encode_close_frame_into(
     out.clear();
     out.reserve(wire::CLOSE_FRAME_HEADER_LEN + payload_len);
     out.extend_from_slice(&[wire::FIN | opcode::CLOSE, payload_len as u8]);
-    out.extend_from_slice(&code.to_be_bytes());
+    out.extend_from_slice(&code.get().to_be_bytes());
     out.extend_from_slice(reason.as_bytes());
     Ok(())
 }
 
 pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2CornError> {
-    match code {
-        close_code::NORMAL..=1003 | close_code::INVALID_FRAME_PAYLOAD_DATA..=1014 | 3000..=4999 => {
-            Ok(())
-        },
+    match code.get() {
+        1000..=1003 | 1007..=1014 | 3000..=4999 => Ok(()),
         _ => WebSocketError::CloseCodeInvalid.err(),
     }
 }
@@ -258,9 +236,10 @@ mod tests {
     use bytes::{Bytes, BytesMut};
 
     use super::{
-        DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, close_code, decode_control_frame,
+        DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, decode_control_frame,
         encode_close_frame_into, encode_frame_header, opcode, wire,
     };
+    use crate::websocket::close_code;
 
     #[test]
     fn segmented_frame_header_covers_all_wire_lengths_compactly() {
@@ -289,7 +268,7 @@ mod tests {
         assert_eq!(frame.len(), 4 + MAX_CLOSE_REASON_LEN);
         assert_eq!(frame[0], wire::FIN | opcode::CLOSE);
         assert_eq!(frame[1], (2 + MAX_CLOSE_REASON_LEN) as u8);
-        assert_eq!(&frame[2..4], &close_code::NORMAL.to_be_bytes());
+        assert_eq!(&frame[2..4], &close_code::NORMAL.get().to_be_bytes());
         assert_eq!(&frame[4..], reason.as_bytes());
     }
 

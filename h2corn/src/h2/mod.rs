@@ -596,7 +596,8 @@ where
             .await?;
             return Ok(());
         },
-        Err(RequestHeadError::Stream { error_code }) => {
+        Err(RequestHeadError::Stream { error_code, error }) => {
+            crate::server::report_request_failure(Err(error.into()));
             apply_peer_failure(
                 ctx.writer,
                 ctx.last_client_stream_id,
@@ -808,6 +809,7 @@ where
                     block,
                     header_limits,
                     state.context.security.is_tls(),
+                    state.context.info.proxy_headers_trusted,
                 ),
             )
             .await?;
@@ -839,7 +841,8 @@ where
                         .peer_failure(H2PeerFailure::connection(error_code, error))
                         .await?;
                 },
-                Err(RequestHeadError::Stream { error_code }) => {
+                Err(RequestHeadError::Stream { error_code, error }) => {
+                    crate::server::report_request_failure(Err(error.into()));
                     state
                         .peer_failure(H2PeerFailure::stream(stream_id, error_code))
                         .await?;
@@ -876,13 +879,7 @@ where
 }
 
 fn discarded_block_compression_failure(err: DecoderError) -> H2PeerFailure {
-    let error = match err {
-        DecoderError::NeedMore(_) => H2Error::IncompleteHpackHeaderBlock,
-        other => H2Error::HpackDecode {
-            detail: format!("{other:?}").into_boxed_str(),
-        },
-    };
-    H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, error)
+    H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, H2Error::from(err))
 }
 
 async fn handle_headers_frame<R, W>(
@@ -1315,7 +1312,7 @@ where
 /// RFC 9113 §4.3 puts the compression context at connection scope for this
 /// reason.
 fn header_block_too_large() -> H2PeerFailure {
-    H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, H2Error::HeaderBlockTooLarge)
+    H2PeerFailure::connection(ErrorCode::COMPRESSION_ERROR, H2Error::FieldBlockTooLarge)
 }
 
 async fn handle_request_input_timeout<R, W>(
@@ -1788,7 +1785,7 @@ where
 {
     if state.pending_headers.is_some() && header.frame_type != FrameType::CONTINUATION {
         state
-            .peer_failure(H2PeerFailure::protocol(H2Error::HeaderBlockInterrupted))
+            .peer_failure(H2PeerFailure::protocol(H2Error::FieldBlockInterrupted))
             .await?;
         return Ok(false);
     }

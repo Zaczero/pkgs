@@ -1,53 +1,28 @@
-use bytes::Bytes;
-
 use crate::error::{ErrorExt, H2CornError, WebSocketError};
 use crate::http::header_meta::ParsedWebSocketVersion;
-use crate::http::types::{BytesStr, HttpStatusCode, RequestHead, ResponseHeaders, status_code};
-use crate::websocket::{WEBSOCKET_VERSION, WebSocketRequestMeta};
-
-pub(crate) struct HandshakeRejection {
-    pub status: HttpStatusCode,
-    pub headers: ResponseHeaders,
-}
-
-impl HandshakeRejection {
-    pub(crate) fn unsupported_version() -> Self {
-        Self {
-            status: status_code::UPGRADE_REQUIRED,
-            headers: ResponseHeaders::from([(
-                Bytes::from_static(b"sec-websocket-version").into(),
-                Bytes::from_static(WEBSOCKET_VERSION).into(),
-            )]),
-        }
-    }
-
-    pub(crate) const fn bad_request() -> Self {
-        Self {
-            status: status_code::BAD_REQUEST,
-            headers: ResponseHeaders::new(),
-        }
-    }
-}
+use crate::http::planner::RejectedResponse;
+use crate::http::types::{BytesStr, RequestHead};
+use crate::websocket::WebSocketRequestMeta;
 
 pub(crate) fn validate_websocket_request(
     request: &RequestHead,
-) -> Result<WebSocketRequestMeta, HandshakeRejection> {
+) -> Result<WebSocketRequestMeta, RejectedResponse> {
     let websocket = request
         .header_meta
         .websocket()
-        .ok_or_else(HandshakeRejection::unsupported_version)?;
+        .ok_or_else(RejectedResponse::unsupported_websocket_version)?;
     match websocket.version {
         ParsedWebSocketVersion::Supported => {},
         ParsedWebSocketVersion::Missing | ParsedWebSocketVersion::Unsupported => {
-            return Err(HandshakeRejection::unsupported_version());
+            return Err(RejectedResponse::unsupported_websocket_version());
         },
-        ParsedWebSocketVersion::Duplicate => return Err(HandshakeRejection::bad_request()),
+        ParsedWebSocketVersion::Duplicate => return Err(RejectedResponse::bad_request()),
     }
     websocket
         .request
         .clone()
         .into_valid()
-        .ok_or_else(HandshakeRejection::bad_request)
+        .ok_or_else(RejectedResponse::bad_request)
 }
 
 pub(super) fn validate_accepted_subprotocol(

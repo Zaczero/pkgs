@@ -1,4 +1,3 @@
-use std::num::NonZeroU64;
 use std::task::Poll;
 
 use bytes::Bytes;
@@ -19,7 +18,7 @@ use crate::http::app::{
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
 use crate::http::header::observe_response_header_strips;
-use crate::http::planner::{RequestRejection, plan_request};
+use crate::http::planner::{RejectedResponse, plan_request};
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
 };
@@ -107,7 +106,7 @@ pub(super) async fn spawn_request_stream(
     connection: &H2WriterHandle,
     context: RequestSpawnContext<'_>,
 ) -> Result<(), H2CornError> {
-    if let Some(RequestRejection { status, headers }) =
+    if let Some(RejectedResponse { status, headers }) =
         prepare_and_spawn_request(stream_id, request, end_stream, connection, context)
     {
         connection
@@ -126,15 +125,12 @@ fn prepare_and_spawn_request(
     end_stream: bool,
     connection: &H2WriterHandle,
     mut context: RequestSpawnContext<'_>,
-) -> Option<RequestRejection> {
+) -> Option<RejectedResponse> {
     let config = &context.connection.config;
     let content_length = request.content_length();
-    let websocket = request.protocol_is_websocket().then(|| {
-        validate_websocket_request(&request).map_err(|rejection| RequestRejection {
-            status: rejection.status,
-            headers: rejection.headers,
-        })
-    });
+    let websocket = request
+        .protocol_is_websocket()
+        .then(|| validate_websocket_request(&request));
     let plan = match plan_request(
         &request,
         websocket,
@@ -146,7 +142,7 @@ fn prepare_and_spawn_request(
         Err(rejection) => return Some(rejection),
     };
     let Some(prepared) = prepare_request_execution(&context.connection.app, plan) else {
-        return Some(RequestRejection {
+        return Some(RejectedResponse {
             status: status_code::SERVICE_UNAVAILABLE,
             headers: ResponseHeaders::new(),
         });
@@ -172,7 +168,7 @@ fn prepare_and_spawn_request(
                     end_stream,
                     content_length,
                     app_input.body_bytes_read(),
-                    config.max_request_body_size.map(NonZeroU64::get),
+                    config.max_request_body_size,
                     config.http2.initial_stream_window_size.get(),
                 ),
             );
@@ -203,7 +199,7 @@ fn prepare_and_spawn_request(
                     end_stream,
                     content_length,
                     None,
-                    config.max_request_body_size.map(NonZeroU64::get),
+                    config.max_request_body_size,
                     config.http2.initial_stream_window_size.get(),
                 ),
             );

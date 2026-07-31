@@ -13,9 +13,10 @@ use super::{
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
 };
 use crate::buffered_events::BufferedState;
-use crate::error::{AsgiError, IntoPyResult, into_pyerr};
+use crate::error::{AsgiError, IntoPyResult, WebSocketFrameKind, into_pyerr};
 use crate::http::types::BytesStr;
 use crate::pyloop::Shard;
+use crate::websocket::{WebSocketCloseCode, close_code};
 
 /// Ordinary application-visible WebSocket data. Terminal disconnect is a
 /// separate plane so a full message queue cannot block peer Close, ping
@@ -27,6 +28,13 @@ pub(crate) enum WebSocketInboundMessage {
 }
 
 impl WebSocketInboundMessage {
+    pub(crate) const fn frame_kind(&self) -> WebSocketFrameKind {
+        match self {
+            Self::Bytes(_) => WebSocketFrameKind::Binary,
+            Self::Text(_) => WebSocketFrameKind::Text,
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
@@ -51,7 +59,7 @@ pub(crate) enum WebSocketInboundTrySendError {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WebSocketDisconnect {
-    pub code: u16,
+    pub code: WebSocketCloseCode,
     pub reason: BytesStr,
 }
 
@@ -285,7 +293,7 @@ impl WebSocketReceiveState {
     const fn terminal_disconnect(&mut self) -> WebSocketInboundEvent {
         self.phase = WebSocketReceivePhase::Disconnected;
         WebSocketInboundEvent::Disconnect {
-            code: 1005,
+            code: close_code::NO_STATUS_RECEIVED,
             reason: None,
         }
     }
@@ -472,7 +480,24 @@ mod tests {
         WebSocketDisconnect, WebSocketInboundMessage, WebSocketSendState, websocket_inbound_channel,
     };
     use crate::bridge::{PayloadBytes, WebSocketOutboundEvent};
+    use crate::error::WebSocketFrameKind;
     use crate::http::types::BytesStr;
+    use crate::websocket::close_code;
+
+    #[test]
+    fn dropped_text_message_is_reported_as_text() {
+        let message = WebSocketInboundMessage::Text(BytesStr::from("text"));
+        let error = crate::error::WebSocketError::receive_channel_closed(message.frame_kind());
+
+        assert_eq!(
+            error.to_string(),
+            "application stopped receiving before the connection closed; a text frame was dropped"
+        );
+        assert_eq!(
+            WebSocketInboundMessage::Bytes(Bytes::from_static(b"binary")).frame_kind(),
+            WebSocketFrameKind::Binary
+        );
+    }
 
     #[test]
     fn one_inline_handshake_event_then_forwarding() {
@@ -498,7 +523,7 @@ mod tests {
         assert!(send_buffer.take_ready().is_none());
         assert!(matches!(
             send_state.push_or_forward(WebSocketOutboundEvent::Close {
-                code: 1000,
+                code: close_code::NORMAL,
                 reason: None,
             }),
             super::WebSocketSendDisposition::Forward(WebSocketOutboundEvent::Close { .. })
@@ -519,7 +544,7 @@ mod tests {
 
         assert!(matches!(
             send_state.push_or_forward(WebSocketOutboundEvent::Close {
-                code: 1000,
+                code: close_code::NORMAL,
                 reason: None,
             }),
             super::WebSocketSendDisposition::Forward(WebSocketOutboundEvent::Close { .. })
@@ -539,7 +564,7 @@ mod tests {
         // A full data plane must not stall terminal publication.
         timeout(Duration::from_millis(50), async {
             tx.disconnect(WebSocketDisconnect {
-                code: 1000,
+                code: close_code::NORMAL,
                 reason: BytesStr::from("done"),
             });
         })
@@ -549,7 +574,7 @@ mod tests {
         rx.try_next_message().expect("first full-queue message");
         rx.try_next_message().expect("second full-queue message");
         let disconnect = rx.take_terminal().expect("terminal after drained messages");
-        assert_eq!(disconnect.code, 1000);
+        assert_eq!(disconnect.code, close_code::NORMAL);
         assert_eq!(disconnect.reason.as_str(), "done");
     }
 
@@ -557,15 +582,15 @@ mod tests {
     async fn disconnect_is_first_value_wins() {
         let (tx, mut rx) = websocket_inbound_channel(1);
         tx.disconnect(WebSocketDisconnect {
-            code: 1000,
+            code: close_code::NORMAL,
             reason: BytesStr::from("first"),
         });
         tx.disconnect(WebSocketDisconnect {
-            code: 1001,
+            code: close_code::GOING_AWAY,
             reason: BytesStr::from("second"),
         });
         let disconnect = rx.take_terminal().expect("terminal");
-        assert_eq!(disconnect.code, 1000);
+        assert_eq!(disconnect.code, close_code::NORMAL);
         assert_eq!(disconnect.reason.as_str(), "first");
         assert!(rx.take_terminal().is_none());
     }

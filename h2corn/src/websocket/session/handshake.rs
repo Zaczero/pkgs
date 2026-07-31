@@ -176,9 +176,9 @@ mod tests {
     use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, status_code};
     use crate::pyloop::TaskSlot;
     use crate::runtime::{AppRuntimeHandle, test_fixtures};
-    use crate::websocket::RequestedSubprotocols;
     use crate::websocket::app::{RunningWebSocketApp, WebSocketAppTask};
     use crate::websocket::session::WebSocketHandshakeTransport;
+    use crate::websocket::{RequestedSubprotocols, close_code};
 
     #[derive(Default)]
     struct RecordingHandshakeTransport {
@@ -301,7 +301,7 @@ mod tests {
         let app = test_app();
         let mut running_app = running_app_with_buffered_event(
             WebSocketOutboundEvent::Close {
-                code: 1000,
+                code: close_code::NORMAL,
                 reason: None,
             },
             pending_app_task(&app),

@@ -17,13 +17,14 @@ pub(crate) enum RequestLaunchPlan<WebSocketMeta> {
     WebSocket { meta: WebSocketMeta },
 }
 
+/// An HTTP response generated before the request reaches an application.
 #[derive(Debug)]
-pub(crate) struct RequestRejection {
+pub(crate) struct RejectedResponse {
     pub(crate) status: HttpStatusCode,
     pub(crate) headers: ResponseHeaders,
 }
 
-impl RequestRejection {
+impl RejectedResponse {
     pub(crate) const fn payload_too_large() -> Self {
         Self {
             status: status_code::PAYLOAD_TOO_LARGE,
@@ -37,6 +38,23 @@ impl RequestRejection {
             headers: ResponseHeaders::new(),
         }
     }
+
+    pub(crate) fn unsupported_websocket_version() -> Self {
+        Self {
+            status: status_code::UPGRADE_REQUIRED,
+            headers: ResponseHeaders::from([(
+                bytes::Bytes::from_static(b"sec-websocket-version").into(),
+                bytes::Bytes::from_static(crate::websocket::WEBSOCKET_VERSION).into(),
+            )]),
+        }
+    }
+
+    pub(crate) const fn bad_request() -> Self {
+        Self {
+            status: status_code::BAD_REQUEST,
+            headers: ResponseHeaders::new(),
+        }
+    }
 }
 
 /// Every reason a request is refused before an application can see it, for a
@@ -47,7 +65,7 @@ impl RequestRejection {
 pub(crate) fn reject_before_launch(
     request: &RequestHead,
     max_request_body_size: Option<NonZeroU64>,
-) -> Result<(), RequestRejection> {
+) -> Result<(), RejectedResponse> {
     reject_oversized_request(request, max_request_body_size)?;
     reject_tunnel(request)
 }
@@ -57,9 +75,9 @@ pub(crate) fn reject_before_launch(
 /// Kept apart from the size check because a WebSocket handshake over HTTP/2 is
 /// itself an extended `CONNECT`: only a request already known not to be one may
 /// be turned away here.
-const fn reject_tunnel(request: &RequestHead) -> Result<(), RequestRejection> {
+const fn reject_tunnel(request: &RequestHead) -> Result<(), RejectedResponse> {
     if request.is_connect() {
-        return Err(RequestRejection::not_implemented());
+        return Err(RejectedResponse::not_implemented());
     }
     Ok(())
 }
@@ -67,13 +85,13 @@ const fn reject_tunnel(request: &RequestHead) -> Result<(), RequestRejection> {
 fn reject_oversized_request(
     request: &RequestHead,
     max_request_body_size: Option<NonZeroU64>,
-) -> Result<(), RequestRejection> {
+) -> Result<(), RejectedResponse> {
     if max_request_body_size.is_some_and(|limit| {
         request
             .content_length()
             .is_some_and(|len| len > limit.get())
     }) {
-        Err(RequestRejection::payload_too_large())
+        Err(RejectedResponse::payload_too_large())
     } else {
         Ok(())
     }
@@ -91,11 +109,11 @@ pub(crate) const fn plan_http_input(input_finished: bool, access_log: bool) -> R
 
 pub(crate) fn plan_request<WebSocketMeta>(
     request: &RequestHead,
-    websocket: Option<Result<WebSocketMeta, RequestRejection>>,
+    websocket: Option<Result<WebSocketMeta, RejectedResponse>>,
     input_finished: bool,
     access_log: bool,
     max_request_body_size: Option<NonZeroU64>,
-) -> Result<RequestLaunchPlan<WebSocketMeta>, RequestRejection> {
+) -> Result<RequestLaunchPlan<WebSocketMeta>, RejectedResponse> {
     reject_oversized_request(request, max_request_body_size)?;
 
     match websocket {
@@ -177,6 +195,14 @@ mod tests {
 
         assert_eq!(rejection.status, status_code::PAYLOAD_TOO_LARGE);
         assert!(rejection.headers.is_empty());
+    }
+
+    #[test]
+    fn websocket_version_rejection_is_a_regular_http_response() {
+        let rejection = super::RejectedResponse::unsupported_websocket_version();
+
+        assert_eq!(rejection.status, status_code::UPGRADE_REQUIRED);
+        assert_eq!(rejection.headers.len(), 1);
     }
 
     #[test]

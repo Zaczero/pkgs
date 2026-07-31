@@ -2,7 +2,7 @@ mod accepted;
 mod handshake;
 
 use std::mem;
-use std::num::{NonZeroU16, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -40,11 +40,11 @@ enum CloseLifecycle {
     Open,
     Queued {
         frame: PendingClose,
-        reported_code: NonZeroU16,
+        reported_code: WebSocketCloseCode,
     },
-    Sent(NonZeroU16),
-    PeerGone(NonZeroU16),
-    PeerReset(NonZeroU16),
+    Sent(WebSocketCloseCode),
+    PeerGone(WebSocketCloseCode),
+    PeerReset(WebSocketCloseCode),
 }
 
 #[derive(Debug)]
@@ -72,10 +72,10 @@ impl AcceptedWebSocketState {
     pub(crate) const fn close_code_or(&self, fallback: WebSocketCloseCode) -> WebSocketCloseCode {
         match &self.close {
             CloseLifecycle::Open => fallback,
-            CloseLifecycle::Queued { reported_code, .. } => reported_code.get(),
+            CloseLifecycle::Queued { reported_code, .. } => *reported_code,
             CloseLifecycle::Sent(code)
             | CloseLifecycle::PeerGone(code)
-            | CloseLifecycle::PeerReset(code) => code.get(),
+            | CloseLifecycle::PeerReset(code) => *code,
         }
     }
 
@@ -89,7 +89,7 @@ impl AcceptedWebSocketState {
             CloseLifecycle::Queued { .. } | CloseLifecycle::Sent(_)
         ) {
             let _: ValidCloseCode = code.try_into()?;
-            let reported_code = NonZeroU16::new(code).expect("validated close codes are non-zero");
+            let reported_code = code;
             match &mut self.close {
                 CloseLifecycle::Queued {
                     reported_code: current,
@@ -105,7 +105,7 @@ impl AcceptedWebSocketState {
         // `PendingClose::new` validates both the code and the reason.
         let frame = PendingClose::new(code, reason)?;
         self.close = CloseLifecycle::Queued {
-            reported_code: NonZeroU16::new(code).expect("validated close codes are non-zero"),
+            reported_code: code,
             frame,
         };
         Ok(())
@@ -131,8 +131,7 @@ impl AcceptedWebSocketState {
         if matches!(self.close, CloseLifecycle::Open) {
             self.close = CloseLifecycle::Queued {
                 frame: PendingClose::Empty,
-                reported_code: NonZeroU16::new(close_code::NO_STATUS_RECEIVED)
-                    .expect("the synthetic no-status code is non-zero"),
+                reported_code: close_code::NO_STATUS_RECEIVED,
             };
         }
     }
@@ -160,15 +159,11 @@ impl AcceptedWebSocketState {
     }
 
     pub(super) fn mark_peer_gone(&mut self, code: WebSocketCloseCode) {
-        self.close = CloseLifecycle::PeerGone(
-            NonZeroU16::new(code).expect("terminal websocket close codes are non-zero"),
-        );
+        self.close = CloseLifecycle::PeerGone(code);
     }
 
     pub(super) fn mark_peer_reset(&mut self, code: WebSocketCloseCode) {
-        self.close = CloseLifecycle::PeerReset(
-            NonZeroU16::new(code).expect("terminal websocket close codes are non-zero"),
-        );
+        self.close = CloseLifecycle::PeerReset(code);
     }
 }
 
@@ -440,8 +435,9 @@ mod tests {
 
     use super::{
         AcceptedWebSocketState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE, PendingClose,
-        append_ws_accept_headers, take_pending_close_frame,
+        WebSocketCloseCode, append_ws_accept_headers, take_pending_close_frame,
     };
+    use crate::websocket::close_code;
 
     #[test]
     fn encoded_frame_owner_stays_within_inline_queue_budget() {
@@ -472,7 +468,7 @@ mod tests {
         let mut frame_buf = BytesMut::new();
 
         state
-            .queue_close_if_open(1000, "bye")
+            .queue_close_if_open(close_code::NORMAL, "bye")
             .expect("close is queued");
 
         let frame = take_pending_close_frame(&mut state, &mut frame_buf)
@@ -489,41 +485,51 @@ mod tests {
         let mut state = AcceptedWebSocketState::default();
 
         state
-            .queue_close_if_open(1000, "bye")
+            .queue_close_if_open(close_code::NORMAL, "bye")
             .expect("close is queued");
 
-        assert!(state.queue_close_if_open(0, "").is_err());
-        assert_eq!(state.close_code_or(1001), 1000);
+        assert!(
+            state
+                .queue_close_if_open(WebSocketCloseCode::new(1004).unwrap(), "")
+                .is_err()
+        );
+        assert_eq!(
+            state.close_code_or(close_code::GOING_AWAY),
+            close_code::NORMAL
+        );
     }
 
     #[test]
     fn queued_close_keeps_first_frame_and_latest_reported_code() {
         let mut state = AcceptedWebSocketState::default();
         state
-            .queue_close_if_open(1000, "first")
+            .queue_close_if_open(close_code::NORMAL, "first")
             .expect("first close is queued");
         state
-            .queue_close_if_open(1001, "second")
+            .queue_close_if_open(close_code::GOING_AWAY, "second")
             .expect("a later valid close is harmless");
 
         let close = state.take_pending_close().expect("close remains queued");
         assert!(matches!(
             close,
-            PendingClose::Coded { code, reason } if code.get() == 1000 && reason.as_ref() == "first"
+            PendingClose::Coded { code, reason } if code.get() == close_code::NORMAL && reason.as_ref() == "first"
         ));
-        assert_eq!(state.close_code_or(1002), 1001);
+        assert_eq!(
+            state.close_code_or(close_code::PROTOCOL_ERROR),
+            close_code::GOING_AWAY
+        );
         assert!(state.take_pending_close().is_none());
     }
 
     #[test]
     fn peer_terminal_states_cannot_contain_a_queued_close() {
         let mut gone = AcceptedWebSocketState::default();
-        gone.mark_peer_gone(1005);
+        gone.mark_peer_gone(close_code::NO_STATUS_RECEIVED);
         assert!(!gone.has_queued_close());
         assert!(gone.should_reset_h2_stream());
 
         let mut reset = AcceptedWebSocketState::default();
-        reset.mark_peer_reset(1006);
+        reset.mark_peer_reset(close_code::ABNORMAL_CLOSURE);
         assert!(!reset.has_queued_close());
         assert!(!reset.should_reset_h2_stream());
         assert!(reset.is_peer_reset());

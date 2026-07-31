@@ -8,7 +8,7 @@ use super::cursor::SegmentCursor;
 use super::frame::{decode_control_frame, parse_frame_header};
 use super::mask::MaskKey;
 use super::wire::opcode;
-use super::{DecodedFrame, WebSocketDecodeError, wire};
+use super::{DecodedFrame, wire};
 use crate::error::WebSocketProtocolError;
 use crate::http::types::BytesStr;
 
@@ -61,7 +61,7 @@ impl WebSocketCodec {
     pub(crate) fn decode_next_with_inflater<M: PerMessageDeflateMode>(
         &mut self,
         inflater: &mut M::Inflater,
-    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+    ) -> Result<Option<DecodedFrame>, WebSocketProtocolError> {
         let max_message_size = self.max_message_size.map(NonZeroUsize::get);
         self.start_current_frame::<M>(inflater, max_message_size)?;
         let Some(mut current) = self.current.take() else {
@@ -77,8 +77,7 @@ impl WebSocketCodec {
             current.remaining -= chunk.len();
 
             if self.current_frame_is_compressed(&current) {
-                M::push_decompress(inflater, chunk.as_ref(), max_message_size)
-                    .map_err(Self::decode_deflate_error)?;
+                M::push_decompress(inflater, chunk.as_ref(), max_message_size)?;
             } else {
                 current.payload.unsplit(chunk);
             }
@@ -95,7 +94,7 @@ impl WebSocketCodec {
         &mut self,
         inflater: &mut M::Inflater,
         max_message_size: Option<usize>,
-    ) -> Result<(), WebSocketDecodeError> {
+    ) -> Result<(), WebSocketProtocolError> {
         if self.current.is_some() || self.segmented.len() < 2 {
             return Ok(());
         }
@@ -146,13 +145,11 @@ impl WebSocketCodec {
         &self,
         header: &super::frame::ParsedFrameHeader,
         max_message_size: Option<usize>,
-    ) -> Result<(), WebSocketDecodeError> {
+    ) -> Result<(), WebSocketProtocolError> {
         match header.opcode {
             opcode::TEXT | opcode::BINARY => {
                 if self.fragmented != FragmentState::Idle {
-                    return Err(WebSocketDecodeError::protocol(
-                        WebSocketProtocolError::DataBeforeFragmentCompletion,
-                    ));
+                    return Err(WebSocketProtocolError::DataBeforeFragmentCompletion);
                 }
                 if !header.compressed {
                     Self::ensure_message_size(header.payload_len, max_message_size)?;
@@ -160,17 +157,13 @@ impl WebSocketCodec {
             },
             opcode::CONTINUATION => {
                 if header.compressed {
-                    return Err(WebSocketDecodeError::protocol(
-                        WebSocketProtocolError::CompressedContinuationFrame,
-                    ));
+                    return Err(WebSocketProtocolError::CompressedContinuationFrame);
                 }
                 let FragmentState::Message {
                     data, compressed, ..
                 } = &self.fragmented
                 else {
-                    return Err(WebSocketDecodeError::protocol(
-                        WebSocketProtocolError::UnexpectedContinuationFrame,
-                    ));
+                    return Err(WebSocketProtocolError::UnexpectedContinuationFrame);
                 };
                 if !compressed {
                     Self::ensure_message_size(
@@ -181,15 +174,11 @@ impl WebSocketCodec {
             },
             opcode::CLOSE | opcode::PING | opcode::PONG => {
                 if header.compressed {
-                    return Err(WebSocketDecodeError::protocol(
-                        WebSocketProtocolError::CompressedControlFrame,
-                    ));
+                    return Err(WebSocketProtocolError::CompressedControlFrame);
                 }
             },
             _ => {
-                return Err(WebSocketDecodeError::protocol(
-                    WebSocketProtocolError::UnsupportedOpcode,
-                ));
+                return Err(WebSocketProtocolError::UnsupportedOpcode);
             },
         }
         Ok(())
@@ -214,15 +203,14 @@ impl WebSocketCodec {
         inflater: &mut M::Inflater,
         frame: CurrentFrame,
         max_message_size: Option<usize>,
-    ) -> Result<Option<DecodedFrame>, WebSocketDecodeError> {
+    ) -> Result<Option<DecodedFrame>, WebSocketProtocolError> {
         match frame.opcode {
             opcode::CLOSE | opcode::PING | opcode::PONG => {
                 decode_control_frame(frame.opcode, frame.payload.freeze()).map(Some)
             },
             opcode::TEXT | opcode::BINARY if frame.fin => {
                 let payload = if frame.compressed {
-                    M::finish_decompress(inflater, max_message_size)
-                        .map_err(Self::decode_deflate_error)?
+                    M::finish_decompress(inflater, max_message_size)?
                 } else {
                     frame.payload.freeze()
                 };
@@ -260,8 +248,7 @@ impl WebSocketCodec {
                 let compressed = *compressed;
                 let data = mem::take(&mut self.fragmented);
                 let payload = if compressed {
-                    M::finish_decompress(inflater, max_message_size)
-                        .map_err(Self::decode_deflate_error)?
+                    M::finish_decompress(inflater, max_message_size)?
                 } else {
                     let FragmentState::Message { data, .. } = data else {
                         unreachable!("fragment state is retained until its final continuation")
@@ -274,29 +261,22 @@ impl WebSocketCodec {
         }
     }
 
-    fn decode_message(opcode: u8, payload: Bytes) -> Result<DecodedFrame, WebSocketDecodeError> {
+    fn decode_message(opcode: u8, payload: Bytes) -> Result<DecodedFrame, WebSocketProtocolError> {
         if opcode == opcode::TEXT {
             let text = BytesStr::try_from(payload)
-                .map_err(|err| WebSocketDecodeError::invalid_utf8(err.to_string()))?;
+                .map_err(|err| WebSocketProtocolError::invalid_utf8(err.to_string()))?;
             Ok(DecodedFrame::Text(text))
         } else {
             Ok(DecodedFrame::Binary(payload))
         }
     }
 
-    fn decode_deflate_error(error: WebSocketProtocolError) -> WebSocketDecodeError {
-        match error {
-            WebSocketProtocolError::MessageTooLarge => WebSocketDecodeError::message_too_large(),
-            other => WebSocketDecodeError::protocol(other),
-        }
-    }
-
     fn ensure_message_size(
         len: usize,
         max_message_size: Option<usize>,
-    ) -> Result<(), WebSocketDecodeError> {
+    ) -> Result<(), WebSocketProtocolError> {
         if max_message_size.is_some_and(|limit| len > limit) {
-            return Err(WebSocketDecodeError::message_too_large());
+            return Err(WebSocketProtocolError::MessageTooLarge);
         }
         Ok(())
     }
@@ -352,7 +332,7 @@ mod tests {
 
     fn decode(
         codec: &mut WebSocketCodec,
-    ) -> Result<Option<DecodedFrame>, super::WebSocketDecodeError> {
+    ) -> Result<Option<DecodedFrame>, crate::error::WebSocketProtocolError> {
         codec.decode_next_with_inflater::<PerMessageDeflateDisabled>(&mut ())
     }
 
@@ -396,7 +376,7 @@ mod tests {
 
         let err = decode(&mut codec).expect_err("invalid utf-8 should fail");
 
-        assert_eq!(err.close_code, close_code::INVALID_FRAME_PAYLOAD_DATA);
+        assert_eq!(err.close_code(), close_code::INVALID_FRAME_PAYLOAD_DATA);
     }
 
     #[test]
@@ -414,7 +394,7 @@ mod tests {
 
         let err = decode(&mut codec).expect_err("non-canonical 16-bit length should fail");
 
-        assert_eq!(err.close_code, close_code::PROTOCOL_ERROR);
+        assert_eq!(err.close_code(), close_code::PROTOCOL_ERROR);
     }
 
     #[test]
@@ -431,7 +411,7 @@ mod tests {
 
         let err = decode(&mut codec).expect_err("reserved high bit should fail");
 
-        assert_eq!(err.close_code, close_code::PROTOCOL_ERROR);
+        assert_eq!(err.close_code(), close_code::PROTOCOL_ERROR);
     }
 
     #[test]
@@ -572,7 +552,7 @@ mod tests {
                                 "reserved opcode {opcode} with payload length {payload_len} must fail once its header is available"
                             )
                         };
-                        assert_eq!(err.close_code, close_code::PROTOCOL_ERROR);
+                        assert_eq!(err.close_code(), close_code::PROTOCOL_ERROR);
                     } else {
                         assert!(decode(&mut codec).unwrap().is_none());
                     }
@@ -594,7 +574,7 @@ mod tests {
         assert_eq!(
             decode(&mut codec)
                 .expect_err("new data during a fragment is a header error")
-                .close_code,
+                .close_code(),
             close_code::PROTOCOL_ERROR
         );
 
@@ -607,7 +587,7 @@ mod tests {
         assert_eq!(
             decode(&mut codec)
                 .expect_err("an idle continuation is a header error")
-                .close_code,
+                .close_code(),
             close_code::PROTOCOL_ERROR
         );
 
@@ -632,7 +612,7 @@ mod tests {
             codec
                 .decode_next_with_inflater::<PerMessageDeflateEnabled>(&mut inflater)
                 .expect_err("RSV1 continuation is a header error")
-                .close_code,
+                .close_code(),
             close_code::PROTOCOL_ERROR
         );
 
@@ -641,7 +621,7 @@ mod tests {
         assert_eq!(
             decode(&mut codec)
                 .expect_err("fragmented controls are a header error")
-                .close_code,
+                .close_code(),
             close_code::PROTOCOL_ERROR
         );
     }
@@ -672,7 +652,7 @@ mod tests {
             over_limit
                 .decode_next_with_inflater::<PerMessageDeflateEnabled>(&mut inflater)
                 .expect_err("decoded size one over the limit closes 1009")
-                .close_code,
+                .close_code(),
             close_code::MESSAGE_TOO_BIG
         );
     }
@@ -732,7 +712,7 @@ mod tests {
         let err =
             decode(&mut codec).expect_err("oversized frame should fail before payload buffering");
 
-        assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+        assert_eq!(err.close_code(), close_code::MESSAGE_TOO_BIG);
     }
 
     #[test]
@@ -754,7 +734,7 @@ mod tests {
         match codec.decode_next_with_inflater::<PerMessageDeflateEnabled>(&mut inflater) {
             Ok(None) => {},
             Err(err) => {
-                assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+                assert_eq!(err.close_code(), close_code::MESSAGE_TOO_BIG);
                 return;
             },
             Ok(Some(_)) => panic!("a non-final compressed fragment cannot complete a message"),
@@ -769,7 +749,7 @@ mod tests {
             .decode_next_with_inflater::<PerMessageDeflateEnabled>(&mut inflater)
             .expect_err("compressed fragments beyond the limit should fail");
 
-        assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+        assert_eq!(err.close_code(), close_code::MESSAGE_TOO_BIG);
     }
 
     #[test]
@@ -791,7 +771,7 @@ mod tests {
         let err =
             decode(&mut codec).expect_err("uncompressed fragments beyond the limit should fail");
 
-        assert_eq!(err.close_code, close_code::MESSAGE_TOO_BIG);
+        assert_eq!(err.close_code(), close_code::MESSAGE_TOO_BIG);
         match &codec.fragmented {
             FragmentState::Message { data, .. } => assert_eq!(data.len(), 4),
             FragmentState::Idle => panic!("expected fragmented text state to remain unchanged"),

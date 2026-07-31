@@ -6,12 +6,17 @@ use pyo3::{PyErr, PyResult};
 use thiserror::Error;
 use tokio::task::JoinError;
 
+use crate::hpack::DecoderError;
+use crate::websocket::{WebSocketCloseCode, close_code};
+
 /// Crate-wide error: a single pointer wide so every `Result<T, H2CornError>`
 /// on the request path (and every future holding one) stays small; the
 /// payload is boxed because errors are cold.
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub(crate) struct H2CornError(Box<ErrorKind>);
+
+const _: () = assert!(std::mem::size_of::<H2CornError>() == std::mem::size_of::<usize>());
 
 #[derive(Debug, Error)]
 pub(crate) enum ErrorKind {
@@ -74,10 +79,10 @@ impl H2CornError {
             ErrorKind::Python(_) | ErrorKind::Asgi(_) | ErrorKind::HttpResponse(_) => {
                 FailureDomain::AppContract
             },
-            ErrorKind::Http1(_) | ErrorKind::H2(_) | ErrorKind::Proxy(_) => {
-                FailureDomain::PeerProtocol
-            },
+            ErrorKind::Http1(err) => err.failure_domain(),
+            ErrorKind::H2(err) => err.failure_domain(),
             ErrorKind::Pathsend(err) => err.failure_domain(),
+            ErrorKind::Proxy(err) => err.failure_domain(),
             ErrorKind::WebSocket(err) => err.failure_domain(),
         }
     }
@@ -123,12 +128,19 @@ pub(crate) enum AsgiChannel {
 impl fmt::Display for AsgiChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Http => "HTTP",
+            Self::Http => "http",
             Self::WebSocket => "websocket",
         })
     }
 }
 
+// Error text names the offending field, never a peer-supplied value. Local
+// configuration errors may include their values because an operator supplied
+// them and needs to correct them; HTTP/1, HTTP/2, and PROXY errors must not
+// echo untrusted request data. `FrameLengthExceedsPeerMax` and
+// `InvalidPeerSettings` deliberately expose bounded protocol diagnostics in
+// HTTP/2 GOAWAY debug data. `HpackDecode` was the third exception before this
+// pass; fixed HPACK variants now replace it without echoing peer text.
 #[derive(Debug, Error)]
 pub(crate) enum ConfigError {
     #[error("invalid trusted proxy entry: {value:?}")]
@@ -294,9 +306,9 @@ impl AsgiError {
 pub(crate) enum Http1Error {
     #[error("HTTP/1.1 request head did not arrive within timeout_request_header")]
     RequestHeadTimedOut,
-    #[error("keep-alive connection idled out before the next request")]
+    #[error("keep-alive connection did not receive the next request within timeout_keep_alive")]
     KeepAliveTimedOut,
-    #[error("HTTP/1.1 request body timed out")]
+    #[error("HTTP/1.1 request body did not receive data within timeout_request_body_idle")]
     RequestBodyTimedOut,
     #[error("connection closed while reading the HTTP/1.1 request head")]
     RequestHeadClosed,
@@ -312,9 +324,9 @@ pub(crate) enum Http1Error {
     ConflictingAbsoluteFormAuthority,
     #[error("invalid Content-Length header")]
     InvalidContentLength,
-    #[error("HTTP/1.1 request body was too large")]
+    #[error("HTTP/1.1 request body exceeds max_request_body_size")]
     RequestBodyTooLarge,
-    #[error("HTTP/1.1 request body exceeded the configured limit")]
+    #[error("HTTP/1.1 request body exceeded max_request_body_size")]
     RequestBodyLimitExceeded,
     #[error("connection closed while reading the HTTP/1.1 request body")]
     RequestBodyClosed,
@@ -326,9 +338,9 @@ pub(crate) enum Http1Error {
     ChunkClosed,
     #[error("chunked request chunk was missing CRLF")]
     ChunkMissingCrlf,
-    #[error("trailer field exceeds the configured maximum size")]
+    #[error("trailer field exceeds limit_request_field_size")]
     TrailerFieldTooLarge,
-    #[error("more trailer fields than the configured maximum")]
+    #[error("trailer field count exceeds limit_request_fields")]
     TooManyTrailerFields,
     #[error("invalid HTTP/1.1 request line")]
     InvalidRequestLine,
@@ -348,6 +360,41 @@ pub(crate) enum Http1Error {
     InvalidHttp2SettingsPayloadLength,
     #[error("invalid HTTP2-Settings base64url payload")]
     InvalidHttp2SettingsBase64UrlPayload,
+}
+
+impl Http1Error {
+    const fn failure_domain(self) -> FailureDomain {
+        match self {
+            Self::RequestHeadClosed
+            | Self::RequestBodyClosed
+            | Self::ChunkedBodyClosed
+            | Self::ChunkedTrailersClosed
+            | Self::ChunkClosed => FailureDomain::TransportIo,
+            Self::RequestHeadTimedOut
+            | Self::KeepAliveTimedOut
+            | Self::RequestBodyTimedOut
+            | Self::EmptyRequestHead
+            | Self::MalformedHeaderLine
+            | Self::InvalidHeaderName
+            | Self::InvalidHeaderValue
+            | Self::ConflictingAbsoluteFormAuthority
+            | Self::InvalidContentLength
+            | Self::RequestBodyTooLarge
+            | Self::RequestBodyLimitExceeded
+            | Self::ChunkMissingCrlf
+            | Self::TrailerFieldTooLarge
+            | Self::TooManyTrailerFields
+            | Self::InvalidRequestLine
+            | Self::InvalidRequestMethod
+            | Self::RequestTargetNotUtf8
+            | Self::InvalidAbsoluteFormTarget
+            | Self::InvalidRequestTargetForm
+            | Self::InvalidAbsoluteFormAuthority
+            | Self::InvalidChunkSize
+            | Self::InvalidHttp2SettingsPayloadLength
+            | Self::InvalidHttp2SettingsBase64UrlPayload => FailureDomain::PeerProtocol,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -381,8 +428,12 @@ pub(crate) enum HttpResponseError {
     #[error("{container} status must be a three-digit code, got {status}")]
     StatusMustBeThreeDigitCode {
         container: AsgiContainer,
-        status: Box<str>,
+        status: i64,
     },
+    #[error(
+        "{container} status must be a three-digit code, got an integer outside the signed 64-bit range"
+    )]
+    StatusOutsideSigned64BitRange { container: AsgiContainer },
     #[error(
         "{container} status must be a final response code; ASGI has no way to send an informational {status}"
     )]
@@ -423,7 +474,7 @@ pub(crate) enum H2Error {
     FramePayloadClosed,
     #[error("SETTINGS frame must use stream 0")]
     SettingsMustUseStreamZero,
-    #[error("SETTINGS ack frame must have an empty payload")]
+    #[error("SETTINGS ACK frame must have an empty payload")]
     SettingsAckPayloadNotEmpty,
     #[error("SETTINGS payload length must be a multiple of 6")]
     SettingsPayloadLengthInvalid,
@@ -441,7 +492,7 @@ pub(crate) enum H2Error {
     HeadersOnClosedStream,
     #[error("unexpected CONTINUATION frame")]
     UnexpectedContinuationFrame,
-    #[error("CONTINUATION stream id did not match the open header block")]
+    #[error("CONTINUATION stream id did not match the open field block")]
     ContinuationStreamIdMismatch,
     #[error("DATA frames must not use stream 0")]
     DataMustNotUseStreamZero,
@@ -453,10 +504,10 @@ pub(crate) enum H2Error {
     SendFlowControlWindowOverflow,
     #[error("received a frame larger than the advertised max frame size")]
     FrameExceedsAdvertisedMaxSize,
-    #[error("received a non-CONTINUATION frame while a header block was open")]
-    HeaderBlockInterrupted,
-    #[error("field block exceeds the configured maximum size")]
-    HeaderBlockTooLarge,
+    #[error("received a non-CONTINUATION frame while a field block was open")]
+    FieldBlockInterrupted,
+    #[error("field block exceeds h2_max_header_block_size")]
+    FieldBlockTooLarge,
     #[error("first client frame after the preface must be SETTINGS")]
     FirstClientFrameMustBeSettings,
     #[error("first client SETTINGS frame must not be an ACK")]
@@ -511,15 +562,155 @@ pub(crate) enum H2Error {
     ConnectionWriterClosed,
     #[error("stream channel was closed")]
     StreamChannelClosed,
-    #[error("incomplete HPACK header block")]
-    IncompleteHpackHeaderBlock,
-    #[error("HPACK decode error: {detail}")]
-    HpackDecode { detail: Box<str> },
+    #[error("incomplete HPACK field block")]
+    IncompleteHpackFieldBlock,
+    #[error("HPACK table index was invalid")]
+    InvalidHpackTableIndex,
+    #[error("HPACK Huffman code was invalid")]
+    InvalidHpackHuffmanCode,
+    #[error("HPACK dynamic table size was invalid")]
+    InvalidHpackDynamicTableSize,
+    #[error("HPACK integer overflow")]
+    HpackIntegerOverflow,
+    #[error("invalid HTTP/2 request pseudo-field")]
+    InvalidRequestPseudoField,
+    #[error("HTTP/2 request pseudo-field appeared after a regular field")]
+    RequestPseudoFieldAfterRegularField,
+    #[error("duplicate HTTP/2 request pseudo-field")]
+    DuplicateRequestPseudoField,
+    #[error("invalid HTTP/2 :method")]
+    InvalidRequestMethod,
+    #[error("invalid HTTP/2 :scheme")]
+    InvalidRequestScheme,
+    #[error("invalid HTTP/2 :authority")]
+    InvalidRequestAuthority,
+    #[error("invalid HTTP/2 :path")]
+    InvalidRequestPath,
     #[error("invalid HTTP/2 request field")]
     InvalidRequestField,
+    #[error("invalid HTTP/2 Host field")]
+    InvalidRequestHost,
+    #[error("invalid HTTP/2 content-length field")]
+    InvalidRequestContentLength,
+    #[error("conflicting HTTP/2 content-length fields")]
+    ConflictingRequestContentLength,
+    #[error("duplicate HTTP/2 Host field")]
+    DuplicateRequestHost,
+    #[error("HTTP/2 Host field disagreed with :authority")]
+    ConflictingRequestAuthority,
+    #[error("HTTP/2 request is missing :method")]
+    MissingRequestMethod,
+    #[error("HTTP/2 request is missing :scheme")]
+    MissingRequestScheme,
+    #[error("HTTP/2 request is missing :path")]
+    MissingRequestPath,
+    #[error("HTTP/2 :protocol is only valid with CONNECT")]
+    ProtocolOnNonConnect,
+    #[error("HTTP/2 CONNECT request must not include :scheme or :path")]
+    ConnectWithSchemeOrPath,
+    #[error("HTTP/2 CONNECT request is missing :authority")]
+    MissingConnectAuthority,
+    #[error("invalid HTTP/2 CONNECT :authority")]
+    InvalidConnectAuthority,
+    #[error("HTTP/2 request content-length did not match END_STREAM")]
+    RequestContentLengthMismatch,
+    #[error("HTTP/2 trailers must not contain pseudo-fields")]
+    PseudoFieldInTrailers,
+    #[error("HTTP/2 trailers contain a forbidden field")]
+    ForbiddenTrailerField,
 }
 
 impl H2Error {
+    const fn failure_domain(&self) -> FailureDomain {
+        match self {
+            Self::FrameHeaderClosed | Self::FramePayloadClosed => FailureDomain::TransportIo,
+            Self::ResponseHeadersAlreadySent
+            | Self::ResponseTrailersOnClosedOrUnopenedStream
+            | Self::ResponseTrailersAlreadySent
+            | Self::DataBeforeResponseHeaders
+            | Self::DataOnClosedStream
+            | Self::PathDataBeforeResponseHeaders
+            | Self::PathDataOnClosedStream => FailureDomain::AppContract,
+            Self::ConnectionWriterClosed | Self::StreamChannelClosed => {
+                FailureDomain::InternalInvariant
+            },
+            Self::PlaintextHandshakeTimedOut
+            | Self::TlsHandshakeTimedOut
+            | Self::Http2HandshakeTimedOut
+            | Self::SettingsEnablePushInvalid
+            | Self::SettingsMaxFrameSizeInvalid
+            | Self::SettingsEnableConnectProtocolInvalid
+            | Self::SettingsInitialWindowSizeExceededLimit
+            | Self::SettingsInitialWindowAdjustmentOverflow
+            | Self::SettingsMaxFrameSizeOutOfRange
+            | Self::FrameLengthExceedsPeerMax { .. }
+            | Self::SettingsMustUseStreamZero
+            | Self::SettingsAckPayloadNotEmpty
+            | Self::SettingsPayloadLengthInvalid
+            | Self::HeadersPaddedMissingPadLength
+            | Self::HeadersPriorityTooShort
+            | Self::HeadersPaddingExceedsPayload
+            | Self::InvalidRequestStreamId
+            | Self::ClientStreamIdsNotIncreasing
+            | Self::HeadersOnClosedStream
+            | Self::UnexpectedContinuationFrame
+            | Self::ContinuationStreamIdMismatch
+            | Self::DataMustNotUseStreamZero
+            | Self::DataOnIdleStream
+            | Self::ReceiveFlowControlWindowUnderflow
+            | Self::SendFlowControlWindowOverflow
+            | Self::FrameExceedsAdvertisedMaxSize
+            | Self::FieldBlockInterrupted
+            | Self::FieldBlockTooLarge
+            | Self::FirstClientFrameMustBeSettings
+            | Self::FirstClientSettingsMustNotAck
+            | Self::InvalidPeerSettings { .. }
+            | Self::PingMustUseStreamZero
+            | Self::PingPayloadInvalidLength
+            | Self::WindowUpdatePayloadInvalidLength
+            | Self::WindowUpdateIncrementZero
+            | Self::WindowUpdateOnIdleStream
+            | Self::RstStreamMustNotUseStreamZero
+            | Self::RstStreamPayloadInvalidLength
+            | Self::RstStreamOnIdleStream
+            | Self::PeerResetFlood
+            | Self::InvalidGoawayFrame
+            | Self::PriorityMustNotUseStreamZero
+            | Self::PriorityPayloadInvalidLength
+            | Self::UnexpectedPushPromise
+            | Self::DataPaddedMissingPadding
+            | Self::DataPaddingExceedsPayload
+            | Self::IncompleteHpackFieldBlock
+            | Self::InvalidHpackTableIndex
+            | Self::InvalidHpackHuffmanCode
+            | Self::InvalidHpackDynamicTableSize
+            | Self::HpackIntegerOverflow
+            | Self::InvalidRequestPseudoField
+            | Self::RequestPseudoFieldAfterRegularField
+            | Self::DuplicateRequestPseudoField
+            | Self::InvalidRequestMethod
+            | Self::InvalidRequestScheme
+            | Self::InvalidRequestAuthority
+            | Self::InvalidRequestPath
+            | Self::InvalidRequestField
+            | Self::InvalidRequestHost
+            | Self::InvalidRequestContentLength
+            | Self::ConflictingRequestContentLength
+            | Self::DuplicateRequestHost
+            | Self::ConflictingRequestAuthority
+            | Self::MissingRequestMethod
+            | Self::MissingRequestScheme
+            | Self::MissingRequestPath
+            | Self::ProtocolOnNonConnect
+            | Self::ConnectWithSchemeOrPath
+            | Self::MissingConnectAuthority
+            | Self::InvalidConnectAuthority
+            | Self::RequestContentLengthMismatch
+            | Self::PseudoFieldInTrailers
+            | Self::ForbiddenTrailerField => FailureDomain::PeerProtocol,
+        }
+    }
+
     pub(crate) const fn frame_length_exceeds_peer_max(
         payload_len: usize,
         max_frame_size: usize,
@@ -533,6 +724,18 @@ impl H2Error {
     pub(crate) fn invalid_peer_settings(detail: impl fmt::Display) -> Self {
         Self::InvalidPeerSettings {
             detail: detail.to_string().into_boxed_str(),
+        }
+    }
+}
+
+impl From<DecoderError> for H2Error {
+    fn from(error: DecoderError) -> Self {
+        match error {
+            DecoderError::NeedMore(_) => Self::IncompleteHpackFieldBlock,
+            DecoderError::InvalidTableIndex => Self::InvalidHpackTableIndex,
+            DecoderError::InvalidHuffmanCode => Self::InvalidHpackHuffmanCode,
+            DecoderError::InvalidMaxDynamicSize => Self::InvalidHpackDynamicTableSize,
+            DecoderError::IntegerOverflow => Self::HpackIntegerOverflow,
         }
     }
 }
@@ -620,11 +823,44 @@ pub(crate) enum ProxyError {
     UnsupportedProxyV2AddressFamily,
 }
 
+impl ProxyError {
+    const fn failure_domain(&self) -> FailureDomain {
+        match self {
+            Self::ProtocolRequiresTrustedPeer => FailureDomain::Configuration,
+            Self::ClosedBeforeProxyOrHttp2Preface
+            | Self::ClosedWhileReadingProxyV2Header
+            | Self::ClosedWhileReadingProxyV1Header
+            | Self::ClosedBeforeHttp2Preface
+            | Self::ClosedBeforeAnyRequestBytes
+            | Self::ClosedBeforeProtocolDetection => FailureDomain::TransportIo,
+            Self::InvalidProxyV2Header
+            | Self::ProxyV1HeaderTooLong
+            | Self::ExpectedProxyV1HeaderBeforeHttp2Preface
+            | Self::ExpectedProxyV2HeaderBeforeHttp2Preface
+            | Self::InvalidHttp2Preface
+            | Self::InvalidProxyV1Header
+            | Self::ProxyV1HeaderMissingCrlf
+            | Self::UnsupportedProxyV1Transport
+            | Self::InvalidProxyV1SourceAddress
+            | Self::InvalidProxyV1DestinationAddress
+            | Self::ProxyV1AddressFamilyMismatch
+            | Self::InvalidProxyPort
+            | Self::UnsupportedProxyV2Version
+            | Self::TruncatedProxyV2Header
+            | Self::UnsupportedProxyV2Command
+            | Self::UnsupportedProxyV2Transport
+            | Self::InvalidProxyV2Ipv4Payload
+            | Self::InvalidProxyV2Ipv6Payload
+            | Self::UnsupportedProxyV2AddressFamily => FailureDomain::PeerProtocol,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum WebSocketError {
     #[error(transparent)]
     Protocol(#[from] WebSocketProtocolError),
-    #[error("websocket handshake timed out")]
+    #[error("websocket handshake did not complete within timeout_handshake")]
     HandshakeTimedOut,
     #[error("websocket permessage-deflate compression failed")]
     CompressionFailed,
@@ -747,7 +983,7 @@ pub(crate) enum WebSocketProtocolError {
     ReservedHighBitIn64BitLengthEncoding,
     #[error("websocket frame was too large")]
     FrameTooLarge,
-    #[error("websocket message exceeded the configured limit")]
+    #[error("websocket message exceeded websocket_max_message_size")]
     MessageTooLarge,
     #[error("websocket frame used non-canonical 64-bit length encoding")]
     NonCanonical64BitLengthEncoding,
@@ -785,6 +1021,14 @@ impl WebSocketProtocolError {
             detail: detail.into(),
         }
     }
+
+    pub(crate) const fn close_code(&self) -> WebSocketCloseCode {
+        match self {
+            Self::InvalidUtf8 { .. } => close_code::INVALID_FRAME_PAYLOAD_DATA,
+            Self::MessageTooLarge => close_code::MESSAGE_TOO_BIG,
+            _ => close_code::PROTOCOL_ERROR,
+        }
+    }
 }
 
 pub(crate) trait ErrorExt: Into<H2CornError> + Sized {
@@ -815,6 +1059,8 @@ where
 {
     match err.into().into_kind() {
         ErrorKind::Python(err) => err,
+        ErrorKind::Io(err) => err.into(),
+        ErrorKind::Join(err) => PyRuntimeError::new_err(format!("background task failed: {err}")),
         ErrorKind::Config(err) => PyValueError::new_err(err.to_string()),
         ErrorKind::Asgi(AsgiError::SendAfterClose) => {
             PyOSError::new_err(AsgiError::SendAfterClose.to_string())
@@ -831,6 +1077,7 @@ where
             | HttpResponseError::InvalidResponseHeaderValue
             | HttpResponseError::InvalidResponseTrailerField
             | HttpResponseError::StatusMustBeThreeDigitCode { .. }
+            | HttpResponseError::StatusOutsideSigned64BitRange { .. }
             | HttpResponseError::InformationalStatusUnsupported { .. }),
         ) => PyValueError::new_err(err.to_string()),
         ErrorKind::WebSocket(
@@ -838,6 +1085,13 @@ where
             | WebSocketError::CloseCodeInvalid
             | WebSocketError::AcceptSubprotocolEmpty),
         ) => PyValueError::new_err(err.to_string()),
+        ErrorKind::Pathsend(PathsendError::OpenFailed { path, source }) => {
+            let error = PyRuntimeError::new_err(format!(
+                "http.response.pathsend failed for file {path:?}: {source}"
+            ));
+            pyo3::Python::attach(|py| error.set_cause(py, Some(source.into())));
+            error
+        },
         other => PyRuntimeError::new_err(other.to_string()),
     }
 }
@@ -847,12 +1101,204 @@ mod tests {
     use std::io;
 
     use pyo3::Python;
-    use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+    use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 
     use super::{
-        AsgiContainer, AsgiError, FailureDomain, H2CornError, HttpResponseError, PathsendError,
-        WebSocketError, WebSocketEventContext, WebSocketFrameKind, into_pyerr,
+        AsgiChannel, AsgiContainer, AsgiError, ConfigError, FailureDomain, H2CornError, H2Error,
+        Http1Error, HttpResponseError, PathsendError, ProxyError, WebSocketError,
+        WebSocketEventContext, WebSocketFrameKind, WebSocketProtocolError, into_pyerr,
     };
+
+    macro_rules! rendered {
+        ($messages:expr; $($error:expr),+ $(,)?) => {
+            $(
+                $messages.push(($error).to_string());
+            )+
+        };
+    }
+
+    const ERROR_MESSAGE_GROUPS: &[fn(&mut Vec<String>)] = &[
+        config_error_messages,
+        asgi_error_messages,
+        http1_error_messages,
+        response_error_messages,
+        h2_error_messages,
+        pathsend_and_proxy_error_messages,
+        websocket_error_messages,
+    ];
+
+    fn config_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            ConfigError::InvalidTrustedProxyEntry { value: "value".into() },
+            ConfigError::InvalidTrustedProxyCidrPrefix { value: "value".into() },
+            ConfigError::InvalidDuration { name: "timeout_handshake" },
+            ConfigError::InvalidProxyProtocolMode { value: "value".into() },
+            ConfigError::InvalidServerHeaderMode { value: "value".into() },
+            ConfigError::InvalidClientCertMode { value: "value".into() },
+            ConfigError::InvalidResponseHeaderFormat { value: "value".into() },
+            ConfigError::InvalidResponseHeaderName { value: "value".into() },
+            ConfigError::InvalidResponseHeaderValue { name: "name".into() },
+            ConfigError::InvalidBindTarget { kind: "TCP", value: "value".into(), detail: "detail" },
+            ConfigError::RuntimeThreadsAlreadyInitialized { initialized_threads: 1, worker_threads: 2 },
+        );
+    }
+
+    fn asgi_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            AsgiError::SendAfterClose,
+            AsgiError::MissingField { container: AsgiContainer::Message, field: "field" },
+            AsgiError::InvalidFieldType { container: AsgiContainer::Message, field: "field", expected: "a str", actual: "int".into() },
+            AsgiError::UnsupportedOutboundMessage { channel: AsgiChannel::Http, message_type: "message".into() },
+            AsgiError::UnsupportedOutboundMessage { channel: AsgiChannel::WebSocket, message_type: "message".into() },
+            AsgiError::WebSocketSendRequiresExactlyOnePayload,
+        );
+    }
+
+    fn http1_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            Http1Error::RequestHeadTimedOut, Http1Error::KeepAliveTimedOut, Http1Error::RequestBodyTimedOut,
+            Http1Error::RequestHeadClosed, Http1Error::EmptyRequestHead, Http1Error::MalformedHeaderLine,
+            Http1Error::InvalidHeaderName, Http1Error::InvalidHeaderValue, Http1Error::ConflictingAbsoluteFormAuthority,
+            Http1Error::InvalidContentLength, Http1Error::RequestBodyTooLarge, Http1Error::RequestBodyLimitExceeded,
+            Http1Error::RequestBodyClosed, Http1Error::ChunkedBodyClosed, Http1Error::ChunkedTrailersClosed,
+            Http1Error::ChunkClosed, Http1Error::ChunkMissingCrlf, Http1Error::TrailerFieldTooLarge,
+            Http1Error::TooManyTrailerFields, Http1Error::InvalidRequestLine, Http1Error::InvalidRequestMethod,
+            Http1Error::RequestTargetNotUtf8, Http1Error::InvalidAbsoluteFormTarget,
+            Http1Error::InvalidRequestTargetForm, Http1Error::InvalidAbsoluteFormAuthority,
+            Http1Error::InvalidChunkSize, Http1Error::InvalidHttp2SettingsPayloadLength,
+            Http1Error::InvalidHttp2SettingsBase64UrlPayload,
+        );
+    }
+
+    fn response_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            HttpResponseError::StartAlreadyReceived, HttpResponseError::TrailersNotAdvertised,
+            HttpResponseError::BodyBeforeStart, HttpResponseError::PathsendBeforeStart,
+            HttpResponseError::PathsendMixedWithBody, HttpResponseError::TrailersBeforeBodyCompleted,
+            HttpResponseError::AppReturnedWithoutStartingResponse, HttpResponseError::AppReturnedWithoutCompletingResponse,
+            HttpResponseError::InvalidResponseHeaderName, HttpResponseError::InvalidResponseHeaderValue,
+            HttpResponseError::InvalidResponseTrailerField,
+            HttpResponseError::StatusMustBeThreeDigitCode { container: AsgiContainer::HttpResponseStart, status: 99 },
+            HttpResponseError::StatusOutsideSigned64BitRange { container: AsgiContainer::HttpResponseStart },
+            HttpResponseError::InformationalStatusUnsupported { container: AsgiContainer::HttpResponseStart, status: 100 },
+        );
+    }
+
+    fn h2_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            H2Error::PlaintextHandshakeTimedOut, H2Error::TlsHandshakeTimedOut, H2Error::Http2HandshakeTimedOut,
+            H2Error::SettingsEnablePushInvalid, H2Error::SettingsMaxFrameSizeInvalid, H2Error::SettingsEnableConnectProtocolInvalid,
+            H2Error::SettingsInitialWindowSizeExceededLimit, H2Error::SettingsInitialWindowAdjustmentOverflow,
+            H2Error::SettingsMaxFrameSizeOutOfRange, H2Error::FrameHeaderClosed,
+            H2Error::FrameLengthExceedsPeerMax { payload_len: 1, max_frame_size: 0 }, H2Error::FramePayloadClosed,
+            H2Error::SettingsMustUseStreamZero, H2Error::SettingsAckPayloadNotEmpty, H2Error::SettingsPayloadLengthInvalid,
+            H2Error::HeadersPaddedMissingPadLength, H2Error::HeadersPriorityTooShort, H2Error::HeadersPaddingExceedsPayload,
+            H2Error::InvalidRequestStreamId, H2Error::ClientStreamIdsNotIncreasing, H2Error::HeadersOnClosedStream,
+            H2Error::UnexpectedContinuationFrame, H2Error::ContinuationStreamIdMismatch, H2Error::DataMustNotUseStreamZero,
+            H2Error::DataOnIdleStream, H2Error::ReceiveFlowControlWindowUnderflow, H2Error::SendFlowControlWindowOverflow,
+            H2Error::FrameExceedsAdvertisedMaxSize, H2Error::FieldBlockInterrupted, H2Error::FieldBlockTooLarge,
+            H2Error::FirstClientFrameMustBeSettings, H2Error::FirstClientSettingsMustNotAck,
+            H2Error::InvalidPeerSettings { detail: "detail".into() }, H2Error::PingMustUseStreamZero,
+            H2Error::PingPayloadInvalidLength, H2Error::WindowUpdatePayloadInvalidLength,
+            H2Error::WindowUpdateIncrementZero, H2Error::WindowUpdateOnIdleStream,
+            H2Error::RstStreamMustNotUseStreamZero, H2Error::RstStreamPayloadInvalidLength,
+            H2Error::RstStreamOnIdleStream, H2Error::PeerResetFlood, H2Error::InvalidGoawayFrame,
+            H2Error::PriorityMustNotUseStreamZero, H2Error::PriorityPayloadInvalidLength,
+            H2Error::UnexpectedPushPromise, H2Error::DataPaddedMissingPadding, H2Error::DataPaddingExceedsPayload,
+            H2Error::ResponseHeadersAlreadySent, H2Error::ResponseTrailersOnClosedOrUnopenedStream,
+            H2Error::ResponseTrailersAlreadySent, H2Error::DataBeforeResponseHeaders, H2Error::DataOnClosedStream,
+            H2Error::PathDataBeforeResponseHeaders, H2Error::PathDataOnClosedStream, H2Error::ConnectionWriterClosed,
+            H2Error::StreamChannelClosed, H2Error::IncompleteHpackFieldBlock, H2Error::InvalidHpackTableIndex,
+            H2Error::InvalidHpackHuffmanCode, H2Error::InvalidHpackDynamicTableSize, H2Error::HpackIntegerOverflow,
+            H2Error::InvalidRequestPseudoField, H2Error::RequestPseudoFieldAfterRegularField,
+            H2Error::DuplicateRequestPseudoField, H2Error::InvalidRequestMethod, H2Error::InvalidRequestScheme,
+            H2Error::InvalidRequestAuthority, H2Error::InvalidRequestPath, H2Error::InvalidRequestField,
+            H2Error::InvalidRequestHost, H2Error::InvalidRequestContentLength, H2Error::ConflictingRequestContentLength,
+            H2Error::DuplicateRequestHost, H2Error::ConflictingRequestAuthority, H2Error::MissingRequestMethod,
+            H2Error::MissingRequestScheme, H2Error::MissingRequestPath, H2Error::ProtocolOnNonConnect,
+            H2Error::ConnectWithSchemeOrPath, H2Error::MissingConnectAuthority, H2Error::InvalidConnectAuthority,
+            H2Error::RequestContentLengthMismatch, H2Error::PseudoFieldInTrailers, H2Error::ForbiddenTrailerField,
+        );
+    }
+
+    fn pathsend_and_proxy_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            PathsendError::OpenFailed { path: "path".into(), source: io::Error::other("source") },
+            PathsendError::NotRegularFile { path: "path".into() },
+            ProxyError::ProtocolRequiresTrustedPeer, ProxyError::ClosedBeforeProxyOrHttp2Preface,
+            ProxyError::InvalidProxyV2Header, ProxyError::ClosedWhileReadingProxyV2Header,
+            ProxyError::ProxyV1HeaderTooLong, ProxyError::ClosedWhileReadingProxyV1Header,
+            ProxyError::ExpectedProxyV1HeaderBeforeHttp2Preface, ProxyError::ExpectedProxyV2HeaderBeforeHttp2Preface,
+            ProxyError::ClosedBeforeHttp2Preface, ProxyError::InvalidHttp2Preface,
+            ProxyError::ClosedBeforeAnyRequestBytes, ProxyError::ClosedBeforeProtocolDetection,
+            ProxyError::InvalidProxyV1Header, ProxyError::ProxyV1HeaderMissingCrlf,
+            ProxyError::UnsupportedProxyV1Transport, ProxyError::InvalidProxyV1SourceAddress,
+            ProxyError::InvalidProxyV1DestinationAddress, ProxyError::ProxyV1AddressFamilyMismatch,
+            ProxyError::InvalidProxyPort, ProxyError::UnsupportedProxyV2Version, ProxyError::TruncatedProxyV2Header,
+            ProxyError::UnsupportedProxyV2Command, ProxyError::UnsupportedProxyV2Transport,
+            ProxyError::InvalidProxyV2Ipv4Payload, ProxyError::InvalidProxyV2Ipv6Payload,
+            ProxyError::UnsupportedProxyV2AddressFamily,
+        );
+    }
+
+    fn websocket_error_messages(messages: &mut Vec<String>) {
+        rendered!(messages;
+            WebSocketError::Protocol(WebSocketProtocolError::NonCanonical16BitLengthEncoding),
+            WebSocketError::HandshakeTimedOut, WebSocketError::CompressionFailed,
+            WebSocketError::CloseReasonTooLong, WebSocketError::CloseCodeInvalid,
+            WebSocketError::AcceptHeadersForbidden, WebSocketError::AcceptSubprotocolEmpty,
+            WebSocketError::AcceptSubprotocolNotRequested,
+            WebSocketError::ReceiveChannelClosed { frame_kind: WebSocketFrameKind::Text },
+            WebSocketError::ReceiveChannelClosed { frame_kind: WebSocketFrameKind::Binary },
+            WebSocketError::AppEndedBeforeHandshake,
+            WebSocketError::UnexpectedEvent { context: WebSocketEventContext::BeforeHandshake, message_type: "message".into() },
+            WebSocketProtocolError::NonCanonical16BitLengthEncoding,
+            WebSocketProtocolError::ReservedHighBitIn64BitLengthEncoding, WebSocketProtocolError::FrameTooLarge,
+            WebSocketProtocolError::MessageTooLarge, WebSocketProtocolError::NonCanonical64BitLengthEncoding,
+            WebSocketProtocolError::ExtensionsNotNegotiated, WebSocketProtocolError::InvalidCompressedPayload,
+            WebSocketProtocolError::CompressedContinuationFrame, WebSocketProtocolError::CompressedControlFrame,
+            WebSocketProtocolError::ClientFramesMustBeMasked, WebSocketProtocolError::UnsupportedOpcode,
+            WebSocketProtocolError::DataBeforeFragmentCompletion, WebSocketProtocolError::UnexpectedContinuationFrame,
+            WebSocketProtocolError::InvalidControlFrame, WebSocketProtocolError::CloseFramePayloadTruncated,
+            WebSocketProtocolError::CloseFrameInvalidCode, WebSocketProtocolError::UnsupportedControlOpcode,
+            WebSocketProtocolError::InvalidUtf8 { detail: "detail".into() },
+        );
+    }
+
+    #[test]
+    fn rendered_error_messages_follow_style_policy() {
+        const PROTOCOL_NOUNS: &[&str] = &[
+            "HTTP/1.1",
+            "HTTP/2",
+            "SETTINGS",
+            "PROXY",
+            "ASGI",
+            "TLS",
+            "DATA",
+            "PING",
+            "HEADERS",
+            "CONTINUATION",
+            "RST_STREAM",
+            "WINDOW_UPDATE",
+            "PRIORITY",
+            "HPACK",
+        ];
+
+        let mut messages = Vec::new();
+        for group in ERROR_MESSAGE_GROUPS {
+            group(&mut messages);
+        }
+
+        for message in messages {
+            assert!(!message.ends_with('.'), "{message}");
+            assert!(
+                message.chars().next().is_some_and(char::is_lowercase)
+                    || PROTOCOL_NOUNS.iter().any(|noun| message.starts_with(noun)),
+                "{message}"
+            );
+            assert!(!message.contains('{'), "{message}");
+        }
+    }
 
     #[test]
     fn unexpected_websocket_events_name_the_asgi_type_without_payload() {
@@ -887,6 +1333,108 @@ mod tests {
     }
 
     #[test]
+    fn http_and_proxy_errors_have_precise_failure_domains() {
+        let cases = [
+            (
+                H2CornError::from(Http1Error::RequestHeadClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(Http1Error::RequestBodyClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(Http1Error::ChunkedBodyClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(Http1Error::ChunkedTrailersClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(Http1Error::ChunkClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(H2Error::FrameHeaderClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(H2Error::FramePayloadClosed),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(H2Error::ResponseHeadersAlreadySent),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::ResponseTrailersOnClosedOrUnopenedStream),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::ResponseTrailersAlreadySent),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::DataBeforeResponseHeaders),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::DataOnClosedStream),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::PathDataBeforeResponseHeaders),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::PathDataOnClosedStream),
+                FailureDomain::AppContract,
+            ),
+            (
+                H2CornError::from(H2Error::ConnectionWriterClosed),
+                FailureDomain::InternalInvariant,
+            ),
+            (
+                H2CornError::from(H2Error::StreamChannelClosed),
+                FailureDomain::InternalInvariant,
+            ),
+            (
+                H2CornError::from(ProxyError::ProtocolRequiresTrustedPeer),
+                FailureDomain::Configuration,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedBeforeProxyOrHttp2Preface),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedWhileReadingProxyV2Header),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedWhileReadingProxyV1Header),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedBeforeHttp2Preface),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedBeforeAnyRequestBytes),
+                FailureDomain::TransportIo,
+            ),
+            (
+                H2CornError::from(ProxyError::ClosedBeforeProtocolDetection),
+                FailureDomain::TransportIo,
+            ),
+        ];
+
+        for (error, domain) in cases {
+            assert_eq!(error.failure_domain(), domain, "{error}");
+        }
+    }
+
+    #[test]
     fn asgi_value_and_sequence_errors_have_stable_python_types() {
         Python::initialize();
         Python::attach(|py| {
@@ -910,7 +1458,7 @@ mod tests {
 
             let invalid_status = into_pyerr(HttpResponseError::StatusMustBeThreeDigitCode {
                 container: AsgiContainer::HttpResponseStart,
-                status: "99".into(),
+                status: 99,
             });
             assert!(invalid_status.is_instance_of::<PyValueError>(py));
             assert_eq!(
@@ -923,6 +1471,26 @@ mod tests {
 
             let unexpected = into_pyerr(WebSocketError::unexpected_initial_event("websocket.send"));
             assert!(unexpected.is_instance_of::<PyRuntimeError>(py));
+        });
+    }
+
+    #[test]
+    fn python_errors_keep_io_types_and_pathsend_causes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let io_error = into_pyerr(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+            assert!(io_error.is_instance_of::<PyOSError>(py));
+
+            let pathsend = into_pyerr(PathsendError::open_failed(
+                std::path::Path::new("/tmp/secret"),
+                io::Error::new(io::ErrorKind::NotFound, "missing"),
+            ));
+            assert!(pathsend.is_instance_of::<PyRuntimeError>(py));
+            let cause = pathsend
+                .cause(py)
+                .expect("pathsend preserves its I/O cause");
+            assert!(cause.is_instance_of::<PyOSError>(py));
+            assert!(cause.to_string().contains("missing"));
         });
     }
 }

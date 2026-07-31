@@ -274,10 +274,11 @@ where
             },
             permit = pending_capacity, if pending_inbound_len.is_some() => {
                 let message = self.pending_inbound.take().expect("capacity wait requires a pending message");
+                let frame_kind = message.frame_kind();
                 self.recv_tx.send_reserved(message, permit.map_err(|()| {
-                    WebSocketError::receive_channel_closed(WebSocketFrameKind::Binary).into_error()
+                    WebSocketError::receive_channel_closed(frame_kind).into_error()
                 })?).map_err(|_| {
-                    WebSocketError::receive_channel_closed(WebSocketFrameKind::Binary).into_error()
+                    WebSocketError::receive_channel_closed(frame_kind).into_error()
                 })?;
                 Ok(ControlFlow::Continue(()))
             }
@@ -526,14 +527,12 @@ where
             {
                 Ok(Some(frame)) => frame,
                 Ok(None) => return Ok(ControlFlow::Continue(())),
-                Err(err) => {
-                    self.terminate_session(err.close_code, None, |state, code| {
+                Err(error) => {
+                    self.terminate_session(error.close_code(), None, |state, code| {
                         state.queue_close_if_open(code, "")
                     })?;
                     self.running_app.task.abort();
-                    return Ok(ControlFlow::Break(
-                        WebSocketError::Protocol(err.error).err(),
-                    ));
+                    return Ok(ControlFlow::Break(WebSocketError::Protocol(error).err()));
                 },
             };
 
