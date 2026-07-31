@@ -1,8 +1,8 @@
 use std::fmt;
 use std::mem::size_of;
 use std::num::NonZeroU32;
-use std::ops::{BitOr, BitOrAssign};
 
+use bitflags::bitflags;
 use bytes::{Buf as _, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 use zerocopy::byteorder::network_endian::{U16, U32};
@@ -216,44 +216,30 @@ const _: () = assert!(size_of::<Option<StreamId>>() == size_of::<u32>());
 const _: () = assert!(size_of::<WindowIncrement>() == size_of::<u32>());
 const _: () = assert!(size_of::<Option<WindowIncrement>>() == size_of::<u32>());
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub(crate) struct FrameFlags(u8);
+bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[repr(transparent)]
+    pub(crate) struct FrameFlags: u8 {
+        // RFC 9113 reuses bit 0: ACK on SETTINGS/PING, END_STREAM on
+        // HEADERS/DATA. Two names for one bit is the protocol's shape.
+        const ACK = 0x01;
+        const END_STREAM = 0x01;
+        const END_HEADERS = 0x04;
+        const PADDED = 0x08;
+        const PRIORITY = 0x20;
+    }
+}
 
 impl FrameFlags {
-    pub(crate) const ACK: Self = Self(0x01);
-    pub(crate) const EMPTY: Self = Self(0);
-    pub(crate) const END_HEADERS: Self = Self(0x04);
-    pub(crate) const END_STREAM: Self = Self(0x01);
-    pub(crate) const PADDED: Self = Self(0x08);
-    pub(crate) const PRIORITY: Self = Self(0x20);
+    pub(crate) const EMPTY: Self = Self::empty();
 
+    /// Unknown flag bits are retained, not rejected: RFC 9113 §4.1 requires a
+    /// receiver to ignore flags it does not define.
     pub(crate) const fn new(bits: u8) -> Self {
-        Self(bits)
-    }
-
-    pub(crate) const fn bits(self) -> u8 {
-        self.0
-    }
-
-    pub(crate) const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
+        Self::from_bits_retain(bits)
     }
 }
 
-impl BitOr for FrameFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl BitOrAssign for FrameFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]

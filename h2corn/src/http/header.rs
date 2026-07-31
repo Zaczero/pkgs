@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ops::BitOrAssign;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
 
 use atoi_simd::parse_pos;
+use bitflags::bitflags;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
@@ -25,8 +25,6 @@ const MONTHS: [[u8; 3]; 12] = [
     *b"Jan", *b"Feb", *b"Mar", *b"Apr", *b"May", *b"Jun", *b"Jul", *b"Aug", *b"Sep", *b"Oct",
     *b"Nov", *b"Dec",
 ];
-const RESPONSE_HAS_SERVER: u8 = 1 << 0;
-const RESPONSE_HAS_DATE: u8 = 1 << 1;
 
 /// `server`, `date`, and `content-length` are the only built-in response
 /// fields that default preparation can append. The exact Python-list ingress
@@ -65,31 +63,33 @@ pub(crate) enum ApplicationResponseField {
     Other,
 }
 
-/// Fixed application fields stripped at ASGI ingress. `transfer-encoding` is
-/// intentionally absent: ASGI requires that field to be ignored silently.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ResponseHeaderStrips(u8);
+bitflags! {
+    /// Fixed application fields stripped at ASGI ingress.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct ResponseHeaderStrips: u8 {
+        const CONNECTION = 1 << 0;
+        const KEEP_ALIVE = 1 << 1;
+        const PROXY_CONNECTION = 1 << 2;
+        const TE = 1 << 3;
+        const UPGRADE = 1 << 4;
+    }
+}
 
 impl ResponseHeaderStrips {
-    const CONNECTION: u8 = 1 << 0;
-    const KEEP_ALIVE: u8 = 1 << 1;
-    const PROXY_CONNECTION: u8 = 1 << 2;
-    const TE: u8 = 1 << 3;
-    const UPGRADE: u8 = 1 << 4;
-
-    pub(crate) const fn insert(&mut self, field: ApplicationResponseField) {
-        self.0 |= match field {
+    /// `transfer-encoding` is deliberately absent: ASGI requires it be ignored
+    /// silently rather than reported as stripped.
+    pub(crate) const fn record(&mut self, field: ApplicationResponseField) {
+        let bit = match field {
             ApplicationResponseField::Connection => Self::CONNECTION,
             ApplicationResponseField::KeepAlive => Self::KEEP_ALIVE,
             ApplicationResponseField::ProxyConnection => Self::PROXY_CONNECTION,
             ApplicationResponseField::Te => Self::TE,
             ApplicationResponseField::Upgrade => Self::UPGRADE,
-            ApplicationResponseField::TransferEncoding | ApplicationResponseField::Other => 0,
+            ApplicationResponseField::TransferEncoding | ApplicationResponseField::Other => {
+                Self::empty()
+            },
         };
-    }
-
-    pub(crate) const fn is_empty(self) -> bool {
-        self.0 == 0
+        *self = self.union(bit);
     }
 }
 
@@ -110,43 +110,32 @@ pub(crate) struct ResponseHeaderControl {
     pub(crate) strips: ResponseHeaderStrips,
 }
 
-/// The `Connection` tokens h2corn acts on.
-///
-/// A request may repeat the header, so these accumulate across occurrences:
-/// `Connection: close` followed by `Connection: upgrade` means both.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ConnectionHeaderTokens {
-    flags: u8,
+bitflags! {
+    /// The `Connection` tokens h2corn acts on.
+    ///
+    /// A request may repeat the header, so these accumulate across occurrences:
+    /// `Connection: close` followed by `Connection: upgrade` means both.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct ConnectionHeaderTokens: u8 {
+        const CLOSE = 1 << 0;
+        const UPGRADE = 1 << 1;
+        const HTTP2_SETTINGS = 1 << 2;
+    }
 }
 
 const _: () = assert!(size_of::<ConnectionHeaderTokens>() == 1);
 
 impl ConnectionHeaderTokens {
-    const CLOSE: u8 = 1 << 0;
-    const HTTP2_SETTINGS: u8 = 1 << 2;
-    const UPGRADE: u8 = 1 << 1;
-
     pub(crate) const fn close(self) -> bool {
-        self.flags & Self::CLOSE != 0
+        self.contains(Self::CLOSE)
     }
 
     pub(crate) const fn upgrade(self) -> bool {
-        self.flags & Self::UPGRADE != 0
+        self.contains(Self::UPGRADE)
     }
 
     pub(crate) const fn http2_settings(self) -> bool {
-        self.flags & Self::HTTP2_SETTINGS != 0
-    }
-
-    /// Every token seen, so scanning the rest of the field cannot add anything.
-    const fn is_complete(self) -> bool {
-        self.flags == Self::CLOSE | Self::UPGRADE | Self::HTTP2_SETTINGS
-    }
-}
-
-impl BitOrAssign for ConnectionHeaderTokens {
-    fn bitor_assign(&mut self, other: Self) {
-        self.flags |= other.flags;
+        self.contains(Self::HTTP2_SETTINGS)
     }
 }
 
@@ -157,10 +146,18 @@ enum ResponseContentLength {
     NeedsRewrite,
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct ResponseScanFlags: u8 {
+        const HAS_SERVER = 1 << 0;
+        const HAS_DATE = 1 << 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResponseHeaderScan {
     content_length: ResponseContentLength,
-    flags: u8,
+    flags: ResponseScanFlags,
 }
 
 #[derive(Debug)]
@@ -174,16 +171,16 @@ impl ResponseHeaderScan {
     const fn new() -> Self {
         Self {
             content_length: ResponseContentLength::Missing,
-            flags: 0,
+            flags: ResponseScanFlags::empty(),
         }
     }
 
     const fn has_server(self) -> bool {
-        self.flags & RESPONSE_HAS_SERVER != 0
+        self.flags.contains(ResponseScanFlags::HAS_SERVER)
     }
 
     const fn has_date(self) -> bool {
-        self.flags & RESPONSE_HAS_DATE != 0
+        self.flags.contains(ResponseScanFlags::HAS_DATE)
     }
 
     const fn content_length_state(self) -> ResponseContentLength {
@@ -245,10 +242,10 @@ pub(crate) fn observe_response_header_strips(http2: bool, strips: ResponseHeader
         (ResponseHeaderStrips::TE, "te"),
         (ResponseHeaderStrips::UPGRADE, "upgrade"),
     ] {
-        if strips.0 & bit == 0 {
+        if !strips.contains(bit) {
             continue;
         }
-        let index = bit.trailing_zeros() as usize;
+        let index = bit.bits().trailing_zeros() as usize;
         if RESPONSE_HEADER_STRIP_COUNTS[protocol][index].fetch_add(1, Ordering::Relaxed) == 0 {
             let protocol = if http2 { "HTTP/2" } else { "HTTP/1.1" };
             eprintln!(
@@ -321,15 +318,15 @@ pub(crate) fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTo
 
     for current in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
         if current.eq_ignore_ascii_case(b"close") {
-            tokens.flags |= ConnectionHeaderTokens::CLOSE;
+            tokens |= ConnectionHeaderTokens::CLOSE;
         }
         if current.eq_ignore_ascii_case(b"upgrade") {
-            tokens.flags |= ConnectionHeaderTokens::UPGRADE;
+            tokens |= ConnectionHeaderTokens::UPGRADE;
         }
         if current.eq_ignore_ascii_case(b"http2-settings") {
-            tokens.flags |= ConnectionHeaderTokens::HTTP2_SETTINGS;
+            tokens |= ConnectionHeaderTokens::HTTP2_SETTINGS;
         }
-        if tokens.is_complete() {
+        if tokens.is_all() {
             return tokens;
         }
     }
@@ -529,8 +526,8 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
 
     for (name, _) in headers {
         match name.kind() {
-            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
-            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
+            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
+            ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
             _ => {},
         }
     }
@@ -543,8 +540,8 @@ pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHea
 
     for (name, value) in headers {
         match name.kind() {
-            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
-            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
+            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
+            ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
             ResponseHeaderKind::ContentLength => scan.observe_content_length(value.as_bytes()),
             _ => {},
         }
@@ -697,8 +694,8 @@ fn append_default_response_headers(
             continue;
         }
         match header.kind {
-            ResponseHeaderKind::Server => scan.flags |= RESPONSE_HAS_SERVER,
-            ResponseHeaderKind::Date => scan.flags |= RESPONSE_HAS_DATE,
+            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
+            ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
             ResponseHeaderKind::ContentLength => scan.observe_content_length(header.value.as_ref()),
             _ => {},
         }
@@ -714,14 +711,14 @@ fn append_default_response_headers(
             Bytes::from_static(b"server").into(),
             Bytes::clone(server).into(),
         ));
-        scan.flags |= RESPONSE_HAS_SERVER;
+        scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER);
     }
     if defaults.date_header && !scan.has_date() {
         headers.push((
             Bytes::from_static(b"date").into(),
             cached_date_value().into(),
         ));
-        scan.flags |= RESPONSE_HAS_DATE;
+        scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE);
     }
 }
 

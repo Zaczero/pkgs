@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use std::num::NonZeroU32;
 
 use bytes::Bytes;
@@ -68,10 +69,18 @@ pub(crate) struct WebSocketHandshakeMeta {
     pub(crate) version: ParsedWebSocketVersion,
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct RequestHeaderFlags: u8 {
+        const HAS_CONTENT_LENGTH = 1 << 0;
+        const ACCEPTS_TRAILERS = 1 << 1;
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RequestHeaderMeta {
     content_length: u64,
-    flags: u8,
+    flags: RequestHeaderFlags,
     rare: Option<Box<RequestHeaderSidecar>>,
 }
 
@@ -82,19 +91,16 @@ struct RequestHeaderSidecar {
 }
 
 impl RequestHeaderMeta {
-    const HAS_CONTENT_LENGTH: u8 = 1 << 0;
-    const ACCEPTS_TRAILERS: u8 = 1 << 1;
-
     pub(crate) const fn accepts_trailers(&self) -> bool {
-        self.flags & Self::ACCEPTS_TRAILERS != 0
+        self.flags.contains(RequestHeaderFlags::ACCEPTS_TRAILERS)
     }
 
     pub(crate) const fn set_accepts_trailers(&mut self) {
-        self.flags |= Self::ACCEPTS_TRAILERS;
+        self.flags = self.flags.union(RequestHeaderFlags::ACCEPTS_TRAILERS);
     }
 
     pub(crate) const fn content_length(&self) -> Option<u64> {
-        if self.flags & Self::HAS_CONTENT_LENGTH != 0 {
+        if self.flags.contains(RequestHeaderFlags::HAS_CONTENT_LENGTH) {
             Some(self.content_length)
         } else {
             None
@@ -104,10 +110,10 @@ impl RequestHeaderMeta {
     pub(crate) const fn set_content_length(&mut self, content_length: Option<u64>) {
         if let Some(content_length) = content_length {
             self.content_length = content_length;
-            self.flags |= Self::HAS_CONTENT_LENGTH;
+            self.flags = self.flags.union(RequestHeaderFlags::HAS_CONTENT_LENGTH);
         } else {
             self.content_length = 0;
-            self.flags &= !Self::HAS_CONTENT_LENGTH;
+            self.flags = self.flags.difference(RequestHeaderFlags::HAS_CONTENT_LENGTH);
         }
     }
 

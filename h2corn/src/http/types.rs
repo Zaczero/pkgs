@@ -57,6 +57,7 @@ use std::ops::{self, Range};
 use std::str::Utf8Error;
 use std::{fmt, str};
 
+use bitflags::bitflags;
 use bytes::Bytes;
 pub(crate) use common_status_codes;
 use http::Method;
@@ -706,12 +707,17 @@ struct H1RequestHeader {
     value_start: u32,
     value_end: u32,
     known_name: Option<KnownRequestHeaderName>,
-    sources: u8,
+    sources: H1FieldSources,
 }
 
-impl H1RequestHeader {
-    const NAME_AUXILIARY: u8 = 1 << 0;
-    const VALUE_AUXILIARY: u8 = 1 << 1;
+bitflags! {
+    /// Which halves of a field were rewritten into the auxiliary buffer rather
+    /// than pointing into the original head.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct H1FieldSources: u8 {
+        const NAME_AUXILIARY = 1 << 0;
+        const VALUE_AUXILIARY = 1 << 1;
+    }
 }
 
 impl Default for RequestHeaders {
@@ -812,7 +818,11 @@ impl H1RequestHeaders {
             value_start,
             value_end,
             known_name,
-            sources: u8::from(name_auxiliary) * H1RequestHeader::NAME_AUXILIARY,
+            sources: if name_auxiliary {
+                H1FieldSources::NAME_AUXILIARY
+            } else {
+                H1FieldSources::empty()
+            },
         });
         Ok(known_name)
     }
@@ -834,7 +844,7 @@ impl H1RequestHeaders {
             value_start,
             value_end,
             known_name: Some(name),
-            sources: H1RequestHeader::VALUE_AUXILIARY,
+            sources: H1FieldSources::VALUE_AUXILIARY,
         });
         true
     }
@@ -846,7 +856,7 @@ impl H1RequestHeaders {
     fn view(&self, field: H1RequestHeader) -> RequestHeaderRef<'_> {
         let name = field.known_name.map_or_else(
             || {
-                let source = if field.sources & H1RequestHeader::NAME_AUXILIARY != 0 {
+                let source = if field.sources.contains(H1FieldSources::NAME_AUXILIARY) {
                     self.auxiliary.as_slice()
                 } else {
                     self.head.as_ref()
@@ -858,7 +868,7 @@ impl H1RequestHeaders {
             },
             RequestHeaderNameRef::Known,
         );
-        let value_source = if field.sources & H1RequestHeader::VALUE_AUXILIARY != 0 {
+        let value_source = if field.sources.contains(H1FieldSources::VALUE_AUXILIARY) {
             self.auxiliary.as_slice()
         } else {
             self.head.as_ref()

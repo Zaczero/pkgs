@@ -261,7 +261,7 @@ impl ResponseStart {
         if self.control.directive == ResponseConnectionDirective::Upgrade {
             self.control
                 .strips
-                .insert(ApplicationResponseField::Upgrade);
+                .record(ApplicationResponseField::Upgrade);
             self.control.directive = ResponseConnectionDirective::None;
         }
         self.headers

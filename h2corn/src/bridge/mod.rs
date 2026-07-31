@@ -1018,11 +1018,11 @@ fn validate_application_response_headers(
             | ApplicationResponseField::ProxyConnection => {
                 control
                     .strips
-                    .insert(application_response_field(name.as_bytes()));
+                    .record(application_response_field(name.as_bytes()));
                 false
             },
             ApplicationResponseField::Connection => {
-                control.strips.insert(ApplicationResponseField::Connection);
+                control.strips.record(ApplicationResponseField::Connection);
                 for token in split_commas_bytes(value.as_bytes()).map(<[u8]>::trim_ascii) {
                     match token {
                         b"close" if control.directive != ResponseConnectionDirective::Upgrade => {
