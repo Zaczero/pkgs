@@ -31,7 +31,7 @@ use crate::error::{
 use crate::http::app::HttpSendWaiter;
 use crate::http::header::{
     ApplicationResponseField, RESPONSE_DEFAULT_BUILTIN_SLOTS, ResponseConnectionDirective,
-    ResponseHeaderControl, application_response_field, protocol_token_is_valid, split_commas_bytes,
+    application_response_field, protocol_token_is_valid, split_commas_bytes,
 };
 use crate::http::types::{
     BytesStr, FinalResponseStatus, HttpStatusCode, ResponseHeaderName, ResponseHeaderValue,
@@ -44,6 +44,66 @@ use crate::websocket::{
     SEC_WEBSOCKET_EXTENSIONS_HEADER_BYTES, SEC_WEBSOCKET_PROTOCOL_HEADER_BYTES, WebSocketCloseCode,
     close_code,
 };
+
+/// One declaration per outbound message type, per ASGI channel.
+///
+/// The enum, the interned-pointer fast path and the string fallback are all
+/// generated from this list. Written out by hand they repeated every message
+/// type three times, and omitting one from the pointer chain silently demoted
+/// a canonical interned message to a string comparison on the hot path — a
+/// slowdown with no wrong answer, so nothing would have caught it.
+macro_rules! asgi_outbound_types {
+    (
+        $name:ident, $channel:expr, $interned:ident, $resolve:ident {
+            $($variant:ident => $wire:literal),+ $(,)?
+        }
+    ) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum $name {
+            $($variant),+
+        }
+
+        #[cfg(test)]
+        impl $name {
+            const WIRE_NAMES: &'static [(Self, &'static str)] =
+                &[$((Self::$variant, $wire)),+];
+        }
+
+        impl AsgiMessage<'_> {
+            fn $interned(&self) -> Option<$name> {
+                let py = self.message_type.py();
+                let message_type = self.message_type.as_ptr();
+                $(
+                    {
+                        static CELL: crate::python::PyOnceLock<Py<PyString>> =
+                            crate::python::PyOnceLock::new();
+                        if ptr::eq(
+                            message_type,
+                            CELL.get_or_init(py, || PyString::intern(py, $wire).unbind())
+                                .bind(py)
+                                .as_ptr(),
+                        ) {
+                            return Some($name::$variant);
+                        }
+                    }
+                )+
+                None
+            }
+
+            fn $resolve(&self) -> Result<$name, H2CornError> {
+                self.$interned().map_or_else(
+                    || match self.message_type()? {
+                        $($wire => Ok($name::$variant),)+
+                        message_type => {
+                            AsgiError::unsupported_outbound_message($channel, message_type).err()
+                        },
+                    },
+                    Ok,
+                )
+            }
+        }
+    };
+}
 
 macro_rules! asgi_item {
     ($fn:ident, $name:literal) => {
@@ -62,6 +122,28 @@ macro_rules! asgi_item {
 pub(crate) const HTTP_ASGI_QUEUE_CAPACITY: usize = 32;
 pub(crate) const WEBSOCKET_OUTBOUND_QUEUE_CAPACITY: usize = 32;
 pub(crate) const WEBSOCKET_INBOUND_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
+
+asgi_outbound_types! {
+    HttpOutboundType, AsgiChannel::Http, interned_http_outbound_type, http_outbound_type {
+        Start => "http.response.start",
+        Body => "http.response.body",
+        Pathsend => "http.response.pathsend",
+        Trailers => "http.response.trailers",
+    }
+}
+
+asgi_outbound_types! {
+    WebSocketOutboundType,
+    AsgiChannel::WebSocket,
+    interned_websocket_outbound_type,
+    websocket_outbound_type {
+        Accept => "websocket.accept",
+        Send => "websocket.send",
+        Close => "websocket.close",
+        HttpResponseStart => "websocket.http.response.start",
+        HttpResponseBody => "websocket.http.response.body",
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum HttpInboundEvent {
@@ -213,23 +295,6 @@ enum WebSocketSendPayload {
     Bytes(PayloadBytes),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HttpOutboundType {
-    Start,
-    Body,
-    Pathsend,
-    Trailers,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WebSocketOutboundType {
-    Accept,
-    Send,
-    Close,
-    HttpResponseStart,
-    HttpResponseBody,
-}
-
 impl<'py> AsgiMessage<'py> {
     asgi_item!(headers_item, "headers");
     asgi_item!(trailers_item, "trailers");
@@ -275,149 +340,9 @@ impl<'py> AsgiMessage<'py> {
         self.message_type.to_str().map_err(H2CornError::from)
     }
 
-    fn interned_http_outbound_type(&self) -> Option<HttpOutboundType> {
-        static RESPONSE_START: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
-        static RESPONSE_BODY: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
-        static RESPONSE_PATHSEND: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
-        static RESPONSE_TRAILERS: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
 
-        let py = self.message_type.py();
-        let message_type = self.message_type.as_ptr();
-        if ptr::eq(
-            message_type,
-            RESPONSE_START
-                .get_or_init(py, || PyString::intern(py, "http.response.start").unbind())
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(HttpOutboundType::Start)
-        } else if ptr::eq(
-            message_type,
-            RESPONSE_BODY
-                .get_or_init(py, || PyString::intern(py, "http.response.body").unbind())
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(HttpOutboundType::Body)
-        } else if ptr::eq(
-            message_type,
-            RESPONSE_PATHSEND
-                .get_or_init(py, || {
-                    PyString::intern(py, "http.response.pathsend").unbind()
-                })
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(HttpOutboundType::Pathsend)
-        } else if ptr::eq(
-            message_type,
-            RESPONSE_TRAILERS
-                .get_or_init(py, || {
-                    PyString::intern(py, "http.response.trailers").unbind()
-                })
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(HttpOutboundType::Trailers)
-        } else {
-            None
-        }
-    }
 
-    fn http_outbound_type(&self) -> Result<HttpOutboundType, H2CornError> {
-        self.interned_http_outbound_type().map_or_else(
-            || match self.message_type()? {
-                "http.response.start" => Ok(HttpOutboundType::Start),
-                "http.response.body" => Ok(HttpOutboundType::Body),
-                "http.response.pathsend" => Ok(HttpOutboundType::Pathsend),
-                "http.response.trailers" => Ok(HttpOutboundType::Trailers),
-                message_type => {
-                    AsgiError::unsupported_outbound_message(AsgiChannel::Http, message_type).err()
-                },
-            },
-            Ok,
-        )
-    }
 
-    fn interned_websocket_outbound_type(&self) -> Option<WebSocketOutboundType> {
-        static ACCEPT: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
-        static SEND: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
-        static CLOSE: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
-        static HTTP_RESPONSE_START: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
-        static HTTP_RESPONSE_BODY: crate::python::PyOnceLock<Py<PyString>> =
-            crate::python::PyOnceLock::new();
-
-        let py = self.message_type.py();
-        let message_type = self.message_type.as_ptr();
-        if ptr::eq(
-            message_type,
-            ACCEPT
-                .get_or_init(py, || PyString::intern(py, "websocket.accept").unbind())
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(WebSocketOutboundType::Accept)
-        } else if ptr::eq(
-            message_type,
-            SEND.get_or_init(py, || PyString::intern(py, "websocket.send").unbind())
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(WebSocketOutboundType::Send)
-        } else if ptr::eq(
-            message_type,
-            CLOSE
-                .get_or_init(py, || PyString::intern(py, "websocket.close").unbind())
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(WebSocketOutboundType::Close)
-        } else if ptr::eq(
-            message_type,
-            HTTP_RESPONSE_START
-                .get_or_init(py, || {
-                    PyString::intern(py, "websocket.http.response.start").unbind()
-                })
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(WebSocketOutboundType::HttpResponseStart)
-        } else if ptr::eq(
-            message_type,
-            HTTP_RESPONSE_BODY
-                .get_or_init(py, || {
-                    PyString::intern(py, "websocket.http.response.body").unbind()
-                })
-                .bind(py)
-                .as_ptr(),
-        ) {
-            Some(WebSocketOutboundType::HttpResponseBody)
-        } else {
-            None
-        }
-    }
-
-    fn websocket_outbound_type(&self) -> Result<WebSocketOutboundType, H2CornError> {
-        self.interned_websocket_outbound_type().map_or_else(
-            || match self.message_type()? {
-                "websocket.accept" => Ok(WebSocketOutboundType::Accept),
-                "websocket.send" => Ok(WebSocketOutboundType::Send),
-                "websocket.close" => Ok(WebSocketOutboundType::Close),
-                "websocket.http.response.start" => Ok(WebSocketOutboundType::HttpResponseStart),
-                "websocket.http.response.body" => Ok(WebSocketOutboundType::HttpResponseBody),
-                message_type => {
-                    AsgiError::unsupported_outbound_message(AsgiChannel::WebSocket, message_type)
-                        .err()
-                },
-            },
-            Ok,
-        )
-    }
 
     fn require(
         container: AsgiContainer,
@@ -1236,14 +1161,14 @@ pub(crate) fn parse_http_outbound_event(
                     status: status.get(),
                 }
             })?;
-            let (headers, control) =
+            let (headers, directive) =
                 message.application_response_headers(AsgiContainer::HttpResponseStart)?;
             let trailers = message.trailers_flag(AsgiContainer::HttpResponseStart)?;
             Ok(HttpOutboundEvent::Start {
                 status,
                 headers,
                 trailers,
-                control,
+                directive,
             })
         },
         HttpOutboundType::Body => {
@@ -1313,12 +1238,12 @@ pub(crate) fn parse_websocket_outbound_event(
                     status: status.get(),
                 }
             })?;
-            let (headers, control) =
+            let (headers, directive) =
                 message.application_response_headers(AsgiContainer::WebSocketHttpResponseStart)?;
             Ok(WebSocketOutboundEvent::HttpResponseStart {
                 status,
                 headers,
-                control,
+                directive,
             })
         },
         WebSocketOutboundType::HttpResponseBody => {
@@ -1497,37 +1422,25 @@ mod tests {
     fn asgi_outbound_type_dispatches_interned_values_and_falls_back_to_strings() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            for (text, expected) in [
-                ("http.response.start", HttpOutboundType::Start),
-                ("http.response.body", HttpOutboundType::Body),
-                ("http.response.pathsend", HttpOutboundType::Pathsend),
-                ("http.response.trailers", HttpOutboundType::Trailers),
-            ] {
+            // Driven from the same table the dispatch is generated from, so
+            // a new message type is covered the moment it is declared. The
+            // property that matters is that every one of them takes the
+            // interned pointer path: a miss there is only slower, never wrong,
+            // so nothing else would report it.
+            for (expected, text) in HttpOutboundType::WIRE_NAMES {
                 let message = PyDict::new(py);
                 message.set_item("type", PyString::intern(py, text))?;
                 let message = AsgiMessage::parse(&message).unwrap();
-                assert_eq!(message.interned_http_outbound_type(), Some(expected));
-                assert_eq!(message.http_outbound_type().unwrap(), expected);
+                assert_eq!(message.interned_http_outbound_type(), Some(*expected));
+                assert_eq!(message.http_outbound_type().unwrap(), *expected);
             }
 
-            for (text, expected) in [
-                ("websocket.accept", WebSocketOutboundType::Accept),
-                ("websocket.send", WebSocketOutboundType::Send),
-                ("websocket.close", WebSocketOutboundType::Close),
-                (
-                    "websocket.http.response.start",
-                    WebSocketOutboundType::HttpResponseStart,
-                ),
-                (
-                    "websocket.http.response.body",
-                    WebSocketOutboundType::HttpResponseBody,
-                ),
-            ] {
+            for (expected, text) in WebSocketOutboundType::WIRE_NAMES {
                 let message = PyDict::new(py);
                 message.set_item("type", PyString::intern(py, text))?;
                 let message = AsgiMessage::parse(&message).unwrap();
-                assert_eq!(message.interned_websocket_outbound_type(), Some(expected));
-                assert_eq!(message.websocket_outbound_type().unwrap(), expected);
+                assert_eq!(message.interned_websocket_outbound_type(), Some(*expected));
+                assert_eq!(message.websocket_outbound_type().unwrap(), *expected);
             }
 
             let dynamic = PyString::new(py, "http.response.body");

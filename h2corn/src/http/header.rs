@@ -439,13 +439,26 @@ fn percent_escapes_are_valid(value: &[u8]) -> bool {
     true
 }
 
-pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+/// One scan of the application's response headers.
+///
+/// `CONTENT_LENGTH` is const rather than a runtime flag so the caller that has
+/// no use for the declared length — default-header preparation, which only
+/// asks whether `server` and `date` are present — does not pay to parse one.
+/// The two spellings were previously the same loop written twice.
+fn inspect_response_headers_with<const CONTENT_LENGTH: bool>(
+    headers: &ResponseHeaders,
+) -> ResponseHeaderScan {
     let mut scan = ResponseHeaderScan::new();
 
-    for (name, _) in headers {
+    for (name, value) in headers {
         match name.kind() {
-            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
+            ResponseHeaderKind::Server => {
+                scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER);
+            },
             ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
+            ResponseHeaderKind::ContentLength if CONTENT_LENGTH => {
+                scan.observe_content_length(value.as_bytes());
+            },
             _ => {},
         }
     }
@@ -453,18 +466,12 @@ pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> Res
     scan
 }
 
-pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
-    let mut scan = ResponseHeaderScan::new();
+pub(crate) fn inspect_response_default_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+    inspect_response_headers_with::<false>(headers)
+}
 
-    for (name, value) in headers {
-        match name.kind() {
-            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
-            ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
-            ResponseHeaderKind::ContentLength => scan.observe_content_length(value.as_bytes()),
-            _ => {},
-        }
-    }
-    scan
+pub(crate) fn inspect_response_headers(headers: &ResponseHeaders) -> ResponseHeaderScan {
+    inspect_response_headers_with::<true>(headers)
 }
 
 pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(

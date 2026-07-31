@@ -1,6 +1,4 @@
-use std::hash::Hash;
 
-use nohash_hasher::IsEnabled;
 use tokio::time::Instant;
 
 /// A lazily allocated, generation-stamped deadline index.
@@ -32,7 +30,7 @@ impl<K> Default for DeadlineQueue<K> {
 
 impl<K> DeadlineQueue<K>
 where
-    K: Copy + Eq + Hash + IsEnabled + Ord,
+    K: Copy + Eq + Ord,
 {
     pub(super) fn schedule(&mut self, key: K, at: Instant) {
         self.next_generation = self.next_generation.wrapping_add(1);

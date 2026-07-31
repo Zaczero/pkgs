@@ -142,7 +142,11 @@ impl RequestHeaderMeta {
     ) {
         self.observe_known_header_value(known_name, value.as_ref(), index, collect_proxy_headers);
         if known_name == KnownRequestHeaderName::SecWebSocketProtocol {
-            push_requested_subprotocols(value, &mut self.rare_mut().websocket.request);
+            push_requested_subprotocols(
+                value.as_ref(),
+                |item| value.slice_ref(item),
+                &mut self.rare_mut().websocket.request,
+            );
         }
     }
 
@@ -155,7 +159,11 @@ impl RequestHeaderMeta {
     ) {
         self.observe_known_header_value(known_name, value, index, collect_proxy_headers);
         if known_name == KnownRequestHeaderName::SecWebSocketProtocol {
-            push_copied_requested_subprotocols(value, &mut self.rare_mut().websocket.request);
+            push_requested_subprotocols(
+                value,
+                Bytes::copy_from_slice,
+                &mut self.rare_mut().websocket.request,
+            );
         }
     }
 
@@ -243,54 +251,38 @@ fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
             .all(|byte| ascii::is_base64(*byte))
 }
 
-fn push_requested_subprotocols(value: &Bytes, out: &mut ParsedWebSocketRequestMeta) {
-    if matches!(
-        out.requested_subprotocols,
-        ParsedRequestedSubprotocols::Invalid
-    ) {
+/// Parse one `Sec-WebSocket-Protocol` field value into `out`.
+///
+/// `own` is the only thing that differed between the HTTP/1 and HTTP/2 copies
+/// of this loop: HTTP/2 slices the connection buffer the field already lives
+/// in, while HTTP/1 copies because its parse buffer is reused for the next
+/// request. Everything else — splitting, trimming, skipping empty items,
+/// token validation, and poisoning the whole field on a bad token — was
+/// duplicated, so a change to the token rules had to be made twice.
+fn push_requested_subprotocols(
+    value: &[u8],
+    own: impl Fn(&[u8]) -> Bytes,
+    out: &mut ParsedWebSocketRequestMeta,
+) {
+    let tokens = || {
+        value
+            .split(|&byte| byte == b',')
+            .map(<[u8]>::trim_ascii)
+            .filter(|item| !item.is_empty())
+    };
+    // Validated before the list is borrowed, so one bad token poisons the
+    // field without leaving a half-appended list behind.
+    if !tokens().all(protocol_token_is_valid) {
+        out.requested_subprotocols = ParsedRequestedSubprotocols::Invalid;
         return;
     }
-    for item in value
-        .as_ref()
-        .split(|&byte| byte == b',')
-        .map(<[u8]>::trim_ascii)
-    {
-        if item.is_empty() {
-            continue;
-        }
-        if !protocol_token_is_valid(item) {
-            out.requested_subprotocols = ParsedRequestedSubprotocols::Invalid;
-            return;
-        }
-        let bytes = value.slice_ref(item);
-        let ParsedRequestedSubprotocols::Valid(requested) = &mut out.requested_subprotocols else {
-            unreachable!("invalid subprotocols returned before appending")
-        };
-        // SAFETY: an HTTP token is ASCII and therefore valid UTF-8.
-        requested.push(unsafe { BytesStr::from_validated_ascii(bytes) });
-    }
-}
-
-fn push_copied_requested_subprotocols(value: &[u8], out: &mut ParsedWebSocketRequestMeta) {
-    if matches!(
-        out.requested_subprotocols,
-        ParsedRequestedSubprotocols::Invalid
-    ) {
+    let ParsedRequestedSubprotocols::Valid(requested) = &mut out.requested_subprotocols else {
+        // An earlier field already poisoned this one.
         return;
-    }
-    for item in value.split(|&byte| byte == b',').map(<[u8]>::trim_ascii) {
-        if item.is_empty() {
-            continue;
-        }
-        if !protocol_token_is_valid(item) {
-            out.requested_subprotocols = ParsedRequestedSubprotocols::Invalid;
-            return;
-        }
-        let ParsedRequestedSubprotocols::Valid(requested) = &mut out.requested_subprotocols else {
-            unreachable!("invalid subprotocols returned before appending")
-        };
+    };
+    for item in tokens() {
         // SAFETY: an HTTP token is ASCII and therefore valid UTF-8.
-        requested.push(unsafe { BytesStr::from_validated_ascii(Bytes::copy_from_slice(item)) });
+        requested.push(unsafe { BytesStr::from_validated_ascii(own(item)) });
     }
 }
 

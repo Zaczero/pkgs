@@ -32,7 +32,6 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12"
 ] }
-rustls-pki-types = { version = "1.14", features = ["std"] }
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
 thiserror = "2.0"
 tokio = { version = "1.48", features = [
