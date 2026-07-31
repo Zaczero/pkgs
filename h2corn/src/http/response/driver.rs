@@ -37,14 +37,8 @@ pub(crate) async fn apply_http_event<T>(
 where
     T: transport::HttpResponseTransport,
 {
-    apply_admitted_http_event(
-        controller,
-        transport,
-        actions,
-        response_log,
-        AdmittedHttpOutboundEvent::unbounded(event),
-    )
-    .await
+    let admitted = transport.admit_outbound_event(event).await?;
+    apply_admitted_http_event(controller, transport, actions, response_log, admitted).await
 }
 
 pub(crate) async fn apply_admitted_http_event<T>(
@@ -128,9 +122,9 @@ fn handle_http_event_sync(
             status,
             headers,
             trailers,
-            control,
+            directive,
         } => controller
-            .handle_start(status, headers, trailers, control)
+            .handle_start(status, headers, trailers, directive)
             .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::Body { body, more_body } => controller
             .handle_body_with_credit(
@@ -157,7 +151,7 @@ mod tests {
     use crate::access_log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
-    use crate::http::header::ResponseHeaderControl;
+    use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::{
         FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions,
         ResponseController,
@@ -218,7 +212,7 @@ mod tests {
                 status: final_status(status_code::OK),
                 headers: ResponseHeaders::new(),
                 trailers: false,
-                control: ResponseHeaderControl::default(),
+                directive: ResponseConnectionDirective::default(),
             },
         )
         .await
@@ -257,7 +251,7 @@ mod tests {
                 status: final_status(status_code::OK),
                 headers: ResponseHeaders::new(),
                 trailers: false,
-                control: ResponseHeaderControl::default(),
+                directive: ResponseConnectionDirective::default(),
             },
         )
         .await

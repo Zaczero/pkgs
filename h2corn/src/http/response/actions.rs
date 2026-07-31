@@ -8,8 +8,8 @@ use tokio::sync::{AcquireError, Semaphore, TryAcquireError};
 use crate::bridge::PayloadBytes;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::http::header::{
-    ApplicationResponseField, ResponseConnectionDirective, ResponseHeaderControl,
-    ResponseHeaderScan, apply_default_response_headers_with_scan, inspect_response_headers,
+    ResponseConnectionDirective, ResponseHeaderScan, apply_default_response_headers_with_scan,
+    inspect_response_headers,
     prepare_fixed_length_response_headers_with_scan,
     prepare_response_headers_without_content_length, prepare_streaming_response_headers_with_scan,
 };
@@ -175,7 +175,7 @@ pub(crate) struct ResponseStart {
     status: FinalResponseStatus,
     headers: ResponseHeaders,
     scan: ResponseHeaderScan,
-    control: ResponseHeaderControl,
+    directive: ResponseConnectionDirective,
 }
 
 impl ResponseStart {
@@ -185,21 +185,21 @@ impl ResponseStart {
             FinalResponseStatus::new(status)
                 .expect("response actions cannot be constructed from informational statuses"),
             headers,
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
         )
     }
 
     pub(crate) fn from_final(
         status: FinalResponseStatus,
         headers: ResponseHeaders,
-        control: ResponseHeaderControl,
+        directive: ResponseConnectionDirective,
     ) -> Self {
         let scan = inspect_response_headers(&headers);
         Self {
             status,
             headers,
             scan,
-            control,
+            directive,
         }
     }
 
@@ -207,8 +207,8 @@ impl ResponseStart {
         self.status.get()
     }
 
-    pub(crate) const fn control(&self) -> ResponseHeaderControl {
-        self.control
+    pub(crate) const fn directive(&self) -> ResponseConnectionDirective {
+        self.directive
     }
 
     pub(crate) const fn declared_content_length(&self) -> Option<usize> {
@@ -258,11 +258,8 @@ impl ResponseStart {
     }
 
     pub(crate) fn strip_http2_only_fields(&mut self) {
-        if self.control.directive == ResponseConnectionDirective::Upgrade {
-            self.control
-                .strips
-                .record(ApplicationResponseField::Upgrade);
-            self.control.directive = ResponseConnectionDirective::None;
+        if self.directive == ResponseConnectionDirective::Upgrade {
+            self.directive = ResponseConnectionDirective::None;
         }
         self.headers
             .retain(|(name, _)| name.as_bytes() != b"upgrade");
@@ -273,7 +270,7 @@ impl ResponseStart {
             status: self.status,
             headers: mem::take(&mut self.headers),
             scan: self.scan,
-            control: self.control,
+            directive: self.directive,
         }
     }
 

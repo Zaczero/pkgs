@@ -97,7 +97,7 @@ pub(crate) enum HttpOutboundEvent {
         status: FinalResponseStatus,
         headers: ResponseHeaders,
         trailers: bool,
-        control: ResponseHeaderControl,
+        directive: ResponseConnectionDirective,
     },
     Body {
         body: PayloadBytes,
@@ -127,7 +127,7 @@ pub(crate) enum WebSocketOutboundEvent {
     HttpResponseStart {
         status: FinalResponseStatus,
         headers: ResponseHeaders,
-        control: ResponseHeaderControl,
+        directive: ResponseConnectionDirective,
     },
     HttpResponseBody {
         body: PayloadBytes,
@@ -461,7 +461,7 @@ impl<'py> AsgiMessage<'py> {
     fn application_response_headers(
         &self,
         container: AsgiContainer,
-    ) -> Result<(ResponseHeaders, ResponseHeaderControl), H2CornError> {
+    ) -> Result<(ResponseHeaders, ResponseConnectionDirective), H2CornError> {
         let mut headers = self.response_headers(container)?;
         let control = validate_application_response_headers(&mut headers)?;
         Ok((headers, control))
@@ -1003,34 +1003,30 @@ fn parse_response_header(
 
 fn validate_application_response_headers(
     headers: &mut ResponseHeaders,
-) -> Result<ResponseHeaderControl, H2CornError> {
-    let mut control = ResponseHeaderControl::default();
+) -> Result<ResponseConnectionDirective, H2CornError> {
+    let mut directive = ResponseConnectionDirective::default();
     let mut has_upgrade = false;
     let mut invalid = false;
 
     headers.retain(|(name, value)| {
         match application_response_field(name.as_bytes()) {
-            // ASGI explicitly assigns this field to the server. It is the one
-            // deliberately silent strip: applications are allowed to send it.
-            ApplicationResponseField::TransferEncoding => false,
-            ApplicationResponseField::Te
+            // Transport-owned fields. ASGI explicitly assigns
+            // `transfer-encoding` to the server, and the rest are hop-by-hop:
+            // an application may send any of them and the server removes them
+            // without comment.
+            ApplicationResponseField::TransferEncoding
+            | ApplicationResponseField::Te
             | ApplicationResponseField::KeepAlive
-            | ApplicationResponseField::ProxyConnection => {
-                control
-                    .strips
-                    .record(application_response_field(name.as_bytes()));
-                false
-            },
+            | ApplicationResponseField::ProxyConnection => false,
             ApplicationResponseField::Connection => {
-                control.strips.record(ApplicationResponseField::Connection);
                 for token in split_commas_bytes(value.as_bytes()).map(<[u8]>::trim_ascii) {
                     match token {
-                        b"close" if control.directive != ResponseConnectionDirective::Upgrade => {
-                            control.directive = ResponseConnectionDirective::Close;
+                        b"close" if directive != ResponseConnectionDirective::Upgrade => {
+                            directive = ResponseConnectionDirective::Close;
                         },
                         b"keep-alive" => {},
-                        b"upgrade" if control.directive != ResponseConnectionDirective::Close => {
-                            control.directive = ResponseConnectionDirective::Upgrade;
+                        b"upgrade" if directive != ResponseConnectionDirective::Close => {
+                            directive = ResponseConnectionDirective::Upgrade;
                         },
                         _ => {
                             invalid = true;
@@ -1069,10 +1065,10 @@ fn validate_application_response_headers(
     // `retain` cannot carry an error. Recheck the observable facts after the
     // one-pass transformation so invalid Connection/Upgrade syntax raises out
     // of send(), rather than turning into an accidental strip.
-    if invalid || (control.directive == ResponseConnectionDirective::Upgrade) != has_upgrade {
+    if invalid || (directive == ResponseConnectionDirective::Upgrade) != has_upgrade {
         return Err(HttpResponseError::InvalidResponseHeaderValue.into());
     }
-    Ok(control)
+    Ok(directive)
 }
 
 fn extract_payload_bytes(
@@ -2058,7 +2054,7 @@ headers = (Headers(0), Headers(1), Headers(2))
     fn response_connection_directive_has_exactly_one_meaning() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            for (connection, upgrade, directive) in [
+            for (connection, upgrade, expected) in [
                 (
                     b"close".as_slice(),
                     false,
@@ -2089,8 +2085,8 @@ headers = (Headers(0), Headers(1), Headers(2))
                     .expect("valid response connection directive");
                 assert!(matches!(
                     event,
-                    super::HttpOutboundEvent::Start { control, .. }
-                        if control.directive == directive
+                    super::HttpOutboundEvent::Start { directive, .. }
+                        if directive == expected
                 ));
             }
 

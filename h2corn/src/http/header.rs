@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
 
@@ -31,23 +30,6 @@ const MONTHS: [[u8; 3]; 12] = [
 /// reserves these slots before it has selected a response framing path.
 pub(crate) const RESPONSE_DEFAULT_BUILTIN_SLOTS: usize = 3;
 
-static RESPONSE_HEADER_STRIP_COUNTS: [[AtomicU64; 5]; 2] = [
-    [
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-    ],
-    [
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-    ],
-];
-
 /// Application response fields whose transport semantics h2corn owns.
 /// Names reach this classifier only after grammar validation and ASCII
 /// normalisation, making this the one owner for both configuration and ASGI
@@ -63,51 +45,15 @@ pub(crate) enum ApplicationResponseField {
     Other,
 }
 
-bitflags! {
-    /// Fixed application fields stripped at ASGI ingress.
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    pub(crate) struct ResponseHeaderStrips: u8 {
-        const CONNECTION = 1 << 0;
-        const KEEP_ALIVE = 1 << 1;
-        const PROXY_CONNECTION = 1 << 2;
-        const TE = 1 << 3;
-        const UPGRADE = 1 << 4;
-    }
-}
-
-impl ResponseHeaderStrips {
-    /// `transfer-encoding` is deliberately absent: ASGI requires it be ignored
-    /// silently rather than reported as stripped.
-    pub(crate) const fn record(&mut self, field: ApplicationResponseField) {
-        let bit = match field {
-            ApplicationResponseField::Connection => Self::CONNECTION,
-            ApplicationResponseField::KeepAlive => Self::KEEP_ALIVE,
-            ApplicationResponseField::ProxyConnection => Self::PROXY_CONNECTION,
-            ApplicationResponseField::Te => Self::TE,
-            ApplicationResponseField::Upgrade => Self::UPGRADE,
-            ApplicationResponseField::TransferEncoding | ApplicationResponseField::Other => {
-                Self::empty()
-            },
-        };
-        *self = self.union(bit);
-    }
-}
-
-/// Response-start facts retained after transport-owned fields are removed.
-/// `Connection` never travels as an application header: HTTP/1 consumes these
-/// facts to choose connection lifetime/Upgrade syntax and HTTP/2 ignores them.
+/// Response-start fact retained after transport-owned fields are removed.
+/// `Connection` never travels as an application header: HTTP/1 consumes this
+/// to choose connection lifetime/Upgrade syntax and HTTP/2 ignores it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ResponseConnectionDirective {
     #[default]
     None,
     Close,
     Upgrade,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ResponseHeaderControl {
-    pub(crate) directive: ResponseConnectionDirective,
-    pub(crate) strips: ResponseHeaderStrips,
 }
 
 bitflags! {
@@ -224,34 +170,6 @@ pub(crate) const fn application_response_field(name: &[u8]) -> ApplicationRespon
         b"transfer-encoding" => ApplicationResponseField::TransferEncoding,
         b"upgrade" => ApplicationResponseField::Upgrade,
         _ => ApplicationResponseField::Other,
-    }
-}
-
-/// Bounded per-protocol/per-fixed-field observability for policy stripping.
-/// The first event is diagnostic; subsequent events only increment one of ten
-/// atomics. Values and application-controlled names never reach the log.
-pub(crate) fn observe_response_header_strips(http2: bool, strips: ResponseHeaderStrips) {
-    if strips.is_empty() {
-        return;
-    }
-    let protocol = usize::from(http2);
-    for (bit, name) in [
-        (ResponseHeaderStrips::CONNECTION, "connection"),
-        (ResponseHeaderStrips::KEEP_ALIVE, "keep-alive"),
-        (ResponseHeaderStrips::PROXY_CONNECTION, "proxy-connection"),
-        (ResponseHeaderStrips::TE, "te"),
-        (ResponseHeaderStrips::UPGRADE, "upgrade"),
-    ] {
-        if !strips.contains(bit) {
-            continue;
-        }
-        let index = bit.bits().trailing_zeros() as usize;
-        if RESPONSE_HEADER_STRIP_COUNTS[protocol][index].fetch_add(1, Ordering::Relaxed) == 0 {
-            let protocol = if http2 { "HTTP/2" } else { "HTTP/1.1" };
-            eprintln!(
-                "stripped the application's {name} response header: hop-by-hop fields are owned by the {protocol} transport (reported once)"
-            );
-        }
     }
 }
 
