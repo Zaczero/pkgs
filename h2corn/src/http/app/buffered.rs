@@ -40,6 +40,13 @@ impl AdmittedHttpOutboundEvent {
         }
     }
 
+    pub(crate) const fn with_credit(
+        event: HttpOutboundEvent,
+        credit: Option<ResponseBytePermit>,
+    ) -> Self {
+        Self { event, credit }
+    }
+
     fn into_event(self) -> HttpOutboundEvent {
         self.event
     }
@@ -52,6 +59,24 @@ pub(crate) enum HttpSendDisposition {
     Buffered,
     Sent,
     Backpressured(HttpSendWaiter),
+    Closed,
+}
+
+/// How an admitted event entered the shared state, decided under one lock.
+enum Admission {
+    /// Held in the inline FIFO; the consumer has been notified.
+    Buffered,
+    /// The first value of a channel this admission installed; notified.
+    Started,
+    /// Pushed into a channel that was already streaming.
+    Sent,
+    /// Streaming, but the channel was full. Only this case clones the sender:
+    /// an uncontended send finishes under the lock, so the common path pays no
+    /// refcount traffic. The caller decides whether to back-pressure or await.
+    Full(
+        mpsc::Sender<AdmittedHttpOutboundEvent>,
+        AdmittedHttpOutboundEvent,
+    ),
     Closed,
 }
 
@@ -77,34 +102,35 @@ pub(crate) struct HttpSendBuffer {
 impl HttpSendState {
     #[cfg(test)]
     pub(crate) fn new() -> (Self, HttpSendBuffer) {
-        let state = Self::unbounded();
-        let buffer = state.buffer();
-        (state, buffer)
+        Self::unbounded()
     }
 
-    pub(crate) fn unbounded() -> Self {
+    pub(crate) fn unbounded() -> (Self, HttpSendBuffer) {
         Self::with_optional_response_budget(None)
     }
 
-    pub(crate) fn with_response_budget(budget: ResponseByteBudget) -> Self {
+    pub(crate) fn with_response_budget(
+        budget: ResponseByteBudget,
+    ) -> (Self, HttpSendBuffer) {
         Self::with_optional_response_budget(Some(budget))
     }
 
-    fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> Self {
-        Self {
-            shared: Arc::new(BufferedState::new(HttpSendControl {
-                mode: HttpSendMode::Inline { accepted: 0 },
-                close_signal: None,
-            })),
-            budget,
-        }
-    }
-
-    pub(crate) fn buffer(&self) -> HttpSendBuffer {
-        HttpSendBuffer {
-            shared: Arc::clone(&self.shared),
+    /// The state and its buffer are minted together and the buffer cannot be
+    /// minted again: they share one inline queue and one streaming receiver,
+    /// and a second buffer would both compete for those and close the outbound
+    /// side out from under the first when it dropped.
+    fn with_optional_response_budget(
+        budget: Option<ResponseByteBudget>,
+    ) -> (Self, HttpSendBuffer) {
+        let shared = Arc::new(BufferedState::new(HttpSendControl {
+            mode: HttpSendMode::Inline { accepted: 0 },
+            close_signal: None,
+        }));
+        let buffer = HttpSendBuffer {
+            shared: Arc::clone(&shared),
             stream_rx: None,
-        }
+        };
+        (Self { shared, budget }, buffer)
     }
 
     pub(crate) fn push_or_forward(&self, event: HttpOutboundEvent) -> HttpSendDisposition {
@@ -136,23 +162,33 @@ impl HttpSendState {
         Ok(AdmittedHttpOutboundEvent { event, credit })
     }
 
-    fn try_forward(&self, event: AdmittedHttpOutboundEvent) -> HttpSendDisposition {
+    /// Admit an event into the shared state under one lock.
+    ///
+    /// The inline-to-streaming transition lives only here. Installing the
+    /// channel and publishing the wakeup that hands its receiver to the
+    /// consumer are one step, so no caller can perform one without the other —
+    /// a blocking send that installed the channel silently and never notified
+    /// left the consumer parked in `wait_ready` with the response half-written.
+    fn admit(&self, event: AdmittedHttpOutboundEvent) -> Admission {
         let mut inner = self.shared.lock();
-        let should_buffer = matches!(
-            &inner.state.mode,
-            HttpSendMode::Inline { accepted } if *accepted < 2
-        );
-        if should_buffer {
+        let accepted = match &inner.state.mode {
+            HttpSendMode::Inline { accepted } => *accepted,
+            HttpSendMode::Streaming { tx, .. } => {
+                return match try_push(tx, event) {
+                    TryPush::Sent => Admission::Sent,
+                    TryPush::Full(event) => Admission::Full(tx.clone(), event),
+                    TryPush::Closed(_) => Admission::Closed,
+                };
+            },
+            HttpSendMode::Closed => return Admission::Closed,
+        };
+        let admission = if accepted < 2 {
             inner.queue.push_back(event);
-            let HttpSendMode::Inline { accepted } = &mut inner.state.mode else {
-                unreachable!("inline admission cannot change state while locked")
+            inner.state.mode = HttpSendMode::Inline {
+                accepted: accepted + 1,
             };
-            *accepted += 1;
-            drop(inner);
-            self.shared.notify_ready();
-            return HttpSendDisposition::Buffered;
-        }
-        if matches!(&inner.state.mode, HttpSendMode::Inline { .. }) {
+            Admission::Buffered
+        } else {
             let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
             // A fresh bounded channel cannot be full. Keeping the first two
             // values in the inline FIFO preserves its cheap fast path; this
@@ -160,21 +196,22 @@ impl HttpSendState {
             tx.try_send(event)
                 .expect("a newly created outbound channel has capacity");
             inner.state.mode = HttpSendMode::Streaming { tx, rx: Some(rx) };
-            drop(inner);
-            self.shared.notify_ready();
-            return HttpSendDisposition::Sent;
-        }
-        match &inner.state.mode {
-            HttpSendMode::Streaming { tx, .. } => match try_push(tx, event) {
-                TryPush::Sent => HttpSendDisposition::Sent,
-                TryPush::Full(event) => HttpSendDisposition::Backpressured(HttpSendWaiter {
-                    state: self.clone(),
-                    event: event.into_event(),
-                }),
-                TryPush::Closed(_) => HttpSendDisposition::Closed,
-            },
-            HttpSendMode::Inline { .. } => unreachable!("inline mode returned above"),
-            HttpSendMode::Closed => HttpSendDisposition::Closed,
+            Admission::Started
+        };
+        drop(inner);
+        self.shared.notify_ready();
+        admission
+    }
+
+    fn try_forward(&self, event: AdmittedHttpOutboundEvent) -> HttpSendDisposition {
+        match self.admit(event) {
+            Admission::Buffered => HttpSendDisposition::Buffered,
+            Admission::Started | Admission::Sent => HttpSendDisposition::Sent,
+            Admission::Full(_, event) => HttpSendDisposition::Backpressured(HttpSendWaiter {
+                state: self.clone(),
+                event: event.into_event(),
+            }),
+            Admission::Closed => HttpSendDisposition::Closed,
         }
     }
 
@@ -213,35 +250,11 @@ impl HttpSendState {
     }
 
     async fn forward_after_admission(&self, event: AdmittedHttpOutboundEvent) -> bool {
-        let tx = {
-            let mut inner = self.shared.lock();
-            let should_buffer = matches!(
-                &inner.state.mode,
-                HttpSendMode::Inline { accepted } if *accepted < 2
-            );
-            if should_buffer {
-                inner.queue.push_back(event);
-                let HttpSendMode::Inline { accepted } = &mut inner.state.mode else {
-                    unreachable!("inline admission cannot change state while locked")
-                };
-                *accepted += 1;
-                drop(inner);
-                self.shared.notify_ready();
-                return true;
-            }
-            if matches!(&inner.state.mode, HttpSendMode::Inline { .. }) {
-                let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
-                inner.state.mode = HttpSendMode::Streaming { tx, rx: Some(rx) };
-            }
-            match &inner.state.mode {
-                HttpSendMode::Streaming { tx, .. } => tx.clone(),
-                HttpSendMode::Closed => return false,
-                HttpSendMode::Inline { .. } => {
-                    unreachable!("streaming sender is installed before waiting")
-                },
-            }
-        };
-        tx.send(event).await.is_ok()
+        match self.admit(event) {
+            Admission::Buffered | Admission::Started | Admission::Sent => true,
+            Admission::Full(tx, event) => tx.send(event).await.is_ok(),
+            Admission::Closed => false,
+        }
     }
 }
 
@@ -419,8 +432,15 @@ mod tests {
         );
     }
 
+    /// No send retains a sender clone — not an uncontended one, and not a
+    /// backpressure waiter.
+    ///
+    /// This counts what is *held*, which a clone made and dropped inside one
+    /// call would not show. That the uncontended path makes no clone at all is
+    /// structural instead: `admit` pushes under the lock it already holds and
+    /// clones only on the `Full` arm.
     #[test]
-    fn streaming_sender_clones_only_after_the_channel_is_full() {
+    fn no_send_retains_a_streaming_sender_clone() {
         let (send_state, mut send_buffer) = HttpSendState::new();
         assert!(matches!(
             send_state.push_or_forward(body_event(b"one")),
@@ -462,7 +482,7 @@ mod tests {
                 send_state.push_or_forward(body_event(b"queued")),
                 HttpSendDisposition::Sent
             ));
-            assert_eq!(internal_count(), 1, "uncontended sends must not clone");
+            assert_eq!(internal_count(), 1, "an uncontended send retains no clone");
         }
 
         let HttpSendDisposition::Backpressured(waiter) =
@@ -473,6 +493,49 @@ mod tests {
         assert_eq!(internal_count(), 1, "the waiter owns no sender clone");
         drop(waiter);
         assert_eq!(internal_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_byte_blocked_send_wakes_the_consumer_when_it_starts_streaming() {
+        // The inline FIFO holds two events, so the third installs the
+        // streaming channel. Reaching that transition from the byte-budget
+        // waiter — rather than from an uncontended send — is the case that
+        // used to install the channel without publishing a wakeup, parking
+        // the consumer in `wait_ready` forever while the app stayed alive.
+        let budget = ResponseByteBudget::new(4);
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
+        for body in [b"aa", b"bb"] {
+            assert!(matches!(
+                send_state.push_or_forward(body_event(body)),
+                HttpSendDisposition::Buffered
+            ));
+        }
+
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(body_event(b"cc"))
+        else {
+            panic!("the third body waits for the exhausted byte budget")
+        };
+        let blocked = tokio::spawn(waiter.send());
+
+        // Draining returns the credit the waiter needs, so it proceeds into
+        // the inline-to-streaming transition.
+        let first = send_buffer.take_ready().expect("the first inline event");
+        drop(first);
+        let second = send_buffer.take_ready().expect("the second inline event");
+        drop(second);
+
+        let delivered = timeout(Duration::from_secs(5), send_buffer.wait_ready())
+            .await
+            .expect("installing the streaming channel wakes the waiting consumer");
+        assert!(delivered.is_some(), "the third event reaches the consumer");
+        assert!(
+            timeout(Duration::from_secs(5), blocked)
+                .await
+                .expect("the byte waiter completes")
+                .expect("the byte waiter task does not panic"),
+            "the send succeeds once credit is available"
+        );
     }
 
     #[test]
@@ -487,8 +550,7 @@ mod tests {
     #[tokio::test]
     async fn closing_before_a_byte_waiter_arms_observes_closed() {
         let budget = ResponseByteBudget::new(1);
-        let send_state = HttpSendState::with_response_budget(budget);
-        let mut send_buffer = send_state.buffer();
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
         assert!(matches!(
             send_state.push_or_forward(body_event(b"a")),
             HttpSendDisposition::Buffered
@@ -518,8 +580,7 @@ mod tests {
     #[tokio::test]
     async fn closing_after_arming_wakes_all_byte_waiters() {
         let budget = ResponseByteBudget::new(1);
-        let send_state = HttpSendState::with_response_budget(budget);
-        let mut send_buffer = send_state.buffer();
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
         assert!(matches!(
             send_state.push_or_forward(body_event(b"a")),
             HttpSendDisposition::Buffered
@@ -616,8 +677,7 @@ mod tests {
     #[tokio::test]
     async fn response_byte_credit_blocks_until_written_bytes_are_released() {
         let budget = ResponseByteBudget::new(64 * 1024);
-        let send_state = HttpSendState::with_response_budget(budget);
-        let mut send_buffer = send_state.buffer();
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
 
         assert!(matches!(
             send_state.push_or_forward(HttpOutboundEvent::Body {
@@ -663,8 +723,7 @@ mod tests {
     #[tokio::test]
     async fn one_oversized_body_occupies_the_full_response_budget() {
         let budget = ResponseByteBudget::new(64 * 1024);
-        let send_state = HttpSendState::with_response_budget(budget);
-        let mut send_buffer = send_state.buffer();
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
 
         assert!(matches!(
             send_state.push_or_forward(HttpOutboundEvent::Body {
@@ -694,8 +753,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_request_buffer_wakes_a_byte_blocked_send() {
         let budget = ResponseByteBudget::new(64);
-        let send_state = HttpSendState::with_response_budget(budget);
-        let mut send_buffer = send_state.buffer();
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
         assert!(matches!(
             send_state.push_or_forward(HttpOutboundEvent::Body {
                 body: PayloadBytes::from(Bytes::from(vec![b'a'; 64])),

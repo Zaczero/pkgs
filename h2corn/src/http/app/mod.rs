@@ -6,13 +6,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 pub(crate) use buffered::{
-    AdmittedHttpOutboundEvent, HttpSendDisposition, HttpSendState, HttpSendWaiter,
+    AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendDisposition, HttpSendState, HttpSendWaiter,
 };
 use bytes::Bytes;
 use http::Method;
 use tokio::sync::mpsc;
 
-use self::buffered::HttpSendBuffer;
 use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
     finalize_response,
@@ -60,11 +59,11 @@ pub(crate) fn start_asgi_http_request(
     ctx: Box<RequestContext>,
     request_body: HttpRequestBody,
     admission: RequestAdmission,
-    send_state: HttpSendState,
+    send: (HttpSendState, HttpSendBuffer),
 ) -> RunningHttpRequest<impl Future<Output = Result<(), H2CornError>> + Send> {
+    let (send_state, send_buffer) = send;
     let head_only = ctx.request.method == Method::HEAD;
     let supports_response_trailers = ctx.request.accepts_trailers();
-    let send_buffer = send_state.buffer();
     // The guard keeps the connection alive, which keeps the app runtime and
     // the teardown tracker alive with it.
     let connection = Arc::clone(&ctx.connection);
@@ -262,7 +261,7 @@ mod tests {
     use crate::access_log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
-    use crate::http::header::ResponseHeaderControl;
+    use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::{
         HttpResponseTransport, ResponseAction, ResponseActions, ResponseController,
     };
@@ -305,7 +304,7 @@ mod tests {
                 FinalResponseStatus::new(status_code::OK).expect("test status is final"),
                 ResponseHeaders::new(),
                 false,
-                ResponseHeaderControl::default(),
+                ResponseConnectionDirective::default(),
             )
             .expect("response starts");
         response

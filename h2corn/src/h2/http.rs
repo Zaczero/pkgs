@@ -8,16 +8,16 @@ use super::websocket::handle_request as handle_websocket_request;
 use super::writer::{WriterCommand, WriterCommandBatch};
 use super::{H2WriterHandle, InboundStream, RequestSpawnContext};
 use crate::access_log::{HttpAccessLogState, ResponseLogState};
-use crate::bridge::RequestBodyCounter;
+use crate::bridge::{HttpOutboundEvent, RequestBodyCounter};
 use crate::config::{ResponseHeaderConfig, ServerConfig};
-use crate::error::H2CornError;
+use crate::error::{H2CornError, H2Error};
 use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::{
-    HttpRequestBody, HttpSendState, RunningHttpRequest, drive_pinned_http_request,
+    AdmittedHttpOutboundEvent,
+    HttpRequestBody, HttpSendBuffer, HttpSendState, RunningHttpRequest, drive_pinned_http_request,
     poll_app_task_once, start_asgi_http_request, try_complete_http_request,
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
-use crate::http::header::observe_response_header_strips;
 use crate::http::planner::{RejectedResponse, plan_request};
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
@@ -49,8 +49,24 @@ struct H2HttpRequestContext {
 }
 
 impl HttpResponseTransport for H2HttpTransport<'_> {
-    fn new_http_send_state(&self) -> HttpSendState {
+    fn new_http_send_state(&self) -> (HttpSendState, HttpSendBuffer) {
         HttpSendState::with_response_budget(self.connection.response_byte_budget())
+    }
+
+    async fn admit_outbound_event(
+        &self,
+        event: HttpOutboundEvent,
+    ) -> Result<AdmittedHttpOutboundEvent, H2CornError> {
+        let HttpOutboundEvent::Body { body, .. } = &event else {
+            return Ok(AdmittedHttpOutboundEvent::unbounded(event));
+        };
+        let credit = self
+            .connection
+            .response_byte_budget()
+            .acquire(body.len())
+            .await
+            .map_err(|_| H2CornError::from(H2Error::StreamChannelClosed))?;
+        Ok(AdmittedHttpOutboundEvent::with_credit(event, credit))
     }
 
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
@@ -378,7 +394,6 @@ fn append_response_action(
                 )));
             }
             start.strip_http2_only_fields();
-            observe_response_header_strips(true, start.control().strips);
             push_final_response_commands(
                 stream_id,
                 commands,
@@ -395,7 +410,6 @@ fn append_response_action(
             }
             let _declared_length = start.prepare_streaming(&config.response_headers);
             start.strip_http2_only_fields();
-            observe_response_header_strips(true, start.control().strips);
             let (status, headers) = start.into_status_headers();
             commands.push_back(WriterCommand::SendHeaders {
                 stream_id,
