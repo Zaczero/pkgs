@@ -1453,7 +1453,7 @@ where
         () = &mut outbound_notified => Ok(IngestEvent::Continue),
         () = &mut input_notified => Ok(IngestEvent::Continue),
         () = yield_now(), if continue_writing => Ok(IngestEvent::Continue),
-        frame = state.reader.read_frame(state.local_max_frame_size, is_handled_frame) => map_frame_ingest_result(frame),
+        frame = state.reader.read_frame(state.local_max_frame_size.as_usize(), is_handled_frame) => map_frame_ingest_result(frame),
     }
 }
 
@@ -1741,7 +1741,7 @@ async fn reject_oversized_frame<R, W>(
 where
     W: WriteTarget,
 {
-    if frame.payload.len() <= state.local_max_frame_size {
+    if frame.payload.len() <= state.local_max_frame_size.as_usize() {
         return Ok(false);
     }
     let error_code = ErrorCode::FRAME_SIZE_ERROR;

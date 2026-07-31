@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use crate::bridge::RequestBodyCounter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,7 +20,7 @@ pub(crate) struct RequestBodyState {
     expected_length: Option<u64>,
     received_length: u64,
     access_log_bytes: Option<RequestBodyCounter>,
-    max_body_size: Option<u64>,
+    max_body_size: Option<NonZeroU64>,
     deliver_to_app: bool,
 }
 
@@ -26,7 +28,7 @@ impl RequestBodyState {
     pub(crate) const fn new(
         expected_length: Option<u64>,
         access_log_bytes: Option<RequestBodyCounter>,
-        max_body_size: Option<u64>,
+        max_body_size: Option<NonZeroU64>,
     ) -> Self {
         Self {
             expected_length,
@@ -71,7 +73,7 @@ impl RequestBodyState {
     fn classify_received_length(&self, received_length: u64) -> RequestBodyProgress {
         if self
             .max_body_size
-            .is_some_and(|max_body_size| received_length > max_body_size)
+            .is_some_and(|max_body_size| received_length > max_body_size.get())
         {
             return RequestBodyProgress::SizeLimitExceeded;
         }
@@ -87,6 +89,8 @@ impl RequestBodyState {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use super::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
     use crate::bridge::RequestBodyCounter;
 
@@ -97,7 +101,8 @@ mod tests {
     #[test]
     fn body_state_tracks_access_log_bytes_and_size_limit() {
         let access_log_bytes = body_counter();
-        let mut state = RequestBodyState::new(None, Some(access_log_bytes.clone()), Some(5));
+        let mut state =
+            RequestBodyState::new(None, Some(access_log_bytes.clone()), NonZeroU64::new(5));
 
         assert_eq!(state.record_chunk(3), RequestBodyProgress::Continue);
         assert_eq!(
@@ -134,7 +139,7 @@ mod tests {
 
     #[test]
     fn preview_chunk_checks_limits_without_mutating_state() {
-        let mut state = RequestBodyState::new(Some(5), None, Some(6));
+        let mut state = RequestBodyState::new(Some(5), None, NonZeroU64::new(6));
 
         assert_eq!(state.record_chunk(3), RequestBodyProgress::Continue);
         assert_eq!(state.preview_chunk(2), RequestBodyProgress::Continue);

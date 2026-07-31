@@ -325,7 +325,7 @@ where
     }
     let Some(limit) = send_limit(
         *context.connection_send_window,
-        stream.send_window,
+        i64::from(stream.send_window),
         context.data_frame_size,
     ) else {
         return Ok(SendfileProgress::Done(FlushBodyProgress::Continue));
@@ -428,7 +428,7 @@ fn collect_data_frames<'a, W>(
             }
             let Some(limit) = send_limit(
                 *context.connection_send_window - batch.total as i64,
-                stream.send_window - batch.total as i64,
+                i64::from(stream.send_window) - batch.total as i64,
                 context.data_frame_size,
             ) else {
                 batch.tail_consumed = pos;
@@ -508,7 +508,7 @@ fn collect_chunk_data_frames<'a, W>(
             }
             let Some(limit) = send_limit(
                 *context.connection_send_window - batch.total as i64,
-                stream.send_window - batch.total as i64,
+                i64::from(stream.send_window) - batch.total as i64,
                 context.data_frame_size,
             ) else {
                 batch.tail_consumed = pos;
@@ -1229,7 +1229,7 @@ mod tests {
 
         // Window grant -> the remaining 4 KiB flushes with END_STREAM.
         let stream = streams.get_mut(&stream_id).unwrap();
-        stream.send_window += window;
+        stream.send_window += i32::try_from(window).expect("test window fits i32");
         ready_streams.schedule(stream, stream_id, false);
 
         flush_pending_data(

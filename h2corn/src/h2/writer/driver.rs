@@ -65,6 +65,8 @@ pub(crate) struct WriterState<W> {
     ready_streams: ReadyStreamQueue,
     drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
     response_closes: ResponseCloseBatch,
+    // These values model aggregate SETTINGS deltas and signed debt across
+    // streams, so they deliberately stay wider than a per-stream window.
     connection_send_window: i64,
     initial_stream_send_window: i64,
     peer_max_frame_size: FramePayloadLen,
@@ -463,7 +465,7 @@ where
             && self
                 .streams
                 .values()
-                .any(|stream| stream.send_window > max_window - delta)
+                .any(|stream| i64::from(stream.send_window) > max_window - delta)
         {
             return Err(InitialWindowAdjustmentOverflow);
         }
@@ -472,7 +474,8 @@ where
         // SETTINGS frame leaves every stream and every peer-owned knob alone.
         if delta != 0 {
             for stream in self.streams.values_mut() {
-                stream.send_window += delta;
+                stream.send_window = i32::try_from(i64::from(stream.send_window) + delta)
+                    .expect("peer SETTINGS preserve the signed 31-bit stream window");
             }
             self.initial_stream_send_window = next_initial_window;
         }
@@ -511,10 +514,11 @@ where
                     .streams
                     .entry(stream_id)
                     .or_insert_with(|| StreamWriteState::new(self.initial_stream_send_window));
-                if stream.send_window > max_window - increment {
+                if i64::from(stream.send_window) > max_window - increment {
                     return Err(GrantSendWindowError::Stream(stream_id));
                 }
-                stream.send_window += increment;
+                stream.send_window = i32::try_from(i64::from(stream.send_window) + increment)
+                    .expect("a checked window update preserves the signed 31-bit stream window");
                 if stream.has_pending_output() && !stream.is_closed() {
                     self.ready_streams.schedule(stream, stream_id, false);
                 }
@@ -1579,6 +1583,8 @@ mod tests {
         let second = StreamId::new(3).expect("stream id is non-zero");
         let default = i64::from(h2_frame::DEFAULT_WINDOW_SIZE);
         let max = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
+        let default_stream = i32::try_from(default).expect("HTTP/2 window fits i32");
+        let max_stream = i32::try_from(max).expect("HTTP/2 window fits i32");
         writer.streams = new_stream_map();
         writer
             .streams
@@ -1595,15 +1601,15 @@ mod tests {
         };
         assert!(writer.update_peer_settings(overflow).is_err());
         assert_eq!(writer.initial_stream_send_window, default);
-        assert_eq!(writer.streams[&first].send_window, default + 1);
-        assert_eq!(writer.streams[&second].send_window, default);
+        assert_eq!(writer.streams[&first].send_window, default_stream + 1);
+        assert_eq!(writer.streams[&second].send_window, default_stream);
         assert_eq!(writer.peer_max_frame_size, unchanged_frame_size);
 
         writer
             .streams
             .get_mut(&first)
             .expect("first stream exists")
-            .send_window = default;
+            .send_window = default_stream;
         writer
             .update_peer_settings(PeerSettings {
                 header_table_size: None,
@@ -1612,8 +1618,8 @@ mod tests {
             })
             .expect("the exact maximum is legal");
         assert_eq!(writer.initial_stream_send_window, max);
-        assert_eq!(writer.streams[&first].send_window, max);
-        assert_eq!(writer.streams[&second].send_window, max);
+        assert_eq!(writer.streams[&first].send_window, max_stream);
+        assert_eq!(writer.streams[&second].send_window, max_stream);
 
         writer
             .update_peer_settings(PeerSettings {
@@ -1625,5 +1631,38 @@ mod tests {
         assert_eq!(writer.initial_stream_send_window, 0);
         assert_eq!(writer.streams[&first].send_window, 0);
         assert_eq!(writer.streams[&second].send_window, 0);
+    }
+
+    #[test]
+    fn settings_changes_preserve_signed_stream_window_debt() {
+        let stream_id = StreamId::new(1).expect("stream id is non-zero");
+        let max = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
+        let max_stream = i32::try_from(max).expect("HTTP/2 window fits i32");
+        let mut writer = WriterState::new_test(TestWriter);
+        writer.initial_stream_send_window = max;
+        writer.streams.insert(stream_id, StreamWriteState::new(max));
+        writer
+            .streams
+            .get_mut(&stream_id)
+            .expect("stream exists")
+            .send_window = 0;
+
+        writer
+            .update_peer_settings(PeerSettings {
+                header_table_size: None,
+                initial_window_size: Some(0),
+                max_frame_size: None,
+            })
+            .expect("lowering SETTINGS_INITIAL_WINDOW_SIZE is valid");
+        assert_eq!(writer.streams[&stream_id].send_window, -max_stream);
+
+        writer
+            .update_peer_settings(PeerSettings {
+                header_table_size: None,
+                initial_window_size: Some(h2_frame::MAX_FLOW_CONTROL_WINDOW),
+                max_frame_size: None,
+            })
+            .expect("restoring SETTINGS_INITIAL_WINDOW_SIZE is valid");
+        assert_eq!(writer.streams[&stream_id].send_window, 0);
     }
 }

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::mem::{replace, size_of};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use super::writer::{H2WriterHandle, WriterState};
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{RequestBodyCounter, RequestInputShared};
 use crate::h2::new_stream_map;
-use crate::h2_frame::{self, StreamId, WindowIncrement};
+use crate::h2_frame::{self, FramePayloadLen, StreamId, WindowIncrement};
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
 use crate::runtime::{
@@ -238,8 +238,40 @@ impl QueuedInput {
 
 #[derive(Debug)]
 pub(super) struct ReceiveWindowState {
-    recv_window: i64,
+    recv_window: ReceiveWindow,
     pending_update: Option<WindowIncrement>,
+}
+
+/// An HTTP/2 receive window is a non-negative 31-bit domain between updates.
+#[derive(Clone, Copy, Debug)]
+struct ReceiveWindow(i32);
+
+impl ReceiveWindow {
+    fn new(initial_window: u32) -> Self {
+        Self(
+            i32::try_from(initial_window)
+                .expect("HTTP/2 receive windows fit the signed 31-bit domain"),
+        )
+    }
+
+    fn receive(&mut self, len: u32) -> Result<(), ()> {
+        let len = i32::try_from(len).map_err(|_| ())?;
+        let remaining = self.0.checked_sub(len).ok_or(())?;
+        if remaining < 0 {
+            return Err(());
+        }
+        self.0 = remaining;
+        Ok(())
+    }
+
+    fn release(&mut self, increment: WindowIncrement) {
+        let increment = i32::try_from(increment.get())
+            .expect("HTTP/2 window increments fit the signed 31-bit domain");
+        self.0 = self
+            .0
+            .checked_add(increment)
+            .expect("released credit cannot exceed the HTTP/2 receive-window maximum");
+    }
 }
 
 /// State of a stream that is present in the connection's stream map.
@@ -537,7 +569,7 @@ pub(super) struct H2ConnectionState<R, W> {
     pub(super) pending_headers: Option<PendingHeaderBlock>,
     pub(super) last_client_stream_id: Option<StreamId>,
     pub(super) connection_window: ReceiveWindowState,
-    pub(super) local_max_frame_size: usize,
+    pub(super) local_max_frame_size: FramePayloadLen,
     pub(super) client_preface: ClientPrefaceState,
     pub(super) drain_state: ConnectionDrainState,
     pub(super) reset_guard: RapidResetGuard,
@@ -555,17 +587,13 @@ pub(super) enum RequestInputClose {
 impl ReceiveWindowState {
     pub(super) fn new(initial_window: u32) -> Self {
         Self {
-            recv_window: i64::from(initial_window),
+            recv_window: ReceiveWindow::new(initial_window),
             pending_update: None,
         }
     }
 
     pub(super) fn receive(&mut self, len: u32) -> Result<(), ()> {
-        self.recv_window -= i64::from(len);
-        if self.recv_window < 0 {
-            return Err(());
-        }
-        Ok(())
+        self.recv_window.receive(len)
     }
 
     pub(super) const fn release(&mut self, len: u32) {
@@ -590,12 +618,12 @@ impl ReceiveWindowState {
             .pending_update
             .filter(|increment| increment.get() >= threshold)?;
         self.pending_update = None;
-        self.recv_window += i64::from(increment.get());
+        self.recv_window.release(increment);
         Some(increment)
     }
 }
 
-const _: () = assert!(size_of::<ReceiveWindowState>() == 16);
+const _: () = assert!(size_of::<ReceiveWindowState>() == 8);
 
 impl InboundStream {
     fn closed_disposition(&self, was_closed: bool) -> ClosedStreamDisposition {
@@ -616,7 +644,7 @@ impl InboundStream {
         end_stream: bool,
         expected_content_length: Option<u64>,
         body_bytes: Option<RequestBodyCounter>,
-        max_request_body_size: Option<u64>,
+        max_request_body_size: Option<NonZeroU64>,
         initial_window: u32,
     ) -> Self {
         let mut delivery = InputDelivery::new(input);
@@ -689,7 +717,11 @@ impl<R, W> H2ConnectionState<R, W> {
         drain_state: ConnectionDrainState,
     ) -> Self {
         let stream_capacity = context.config.http2.max_concurrent_streams.get() as usize;
-        let local_max_frame_size = context.config.http2.max_inbound_frame_size.get() as usize;
+        let local_max_frame_size =
+            FramePayloadLen::new(context.config.http2.max_inbound_frame_size.get() as usize)
+                .expect(
+                    "Python configuration bounds the inbound frame size to the HTTP/2 wire limit",
+                );
         let initial_connection_window = context.config.http2.initial_connection_window_size.get();
         Self {
             reader,
@@ -1441,6 +1473,58 @@ mod tests {
         window.release(1);
         assert_eq!(window.take_update(50).map(WindowIncrement::get), Some(50));
         assert!(window.receive(91).is_err());
+    }
+
+    #[test]
+    fn receive_window_covers_zero_exhaustion_and_rejected_overdraw() {
+        let mut zero = ReceiveWindowState::new(0);
+        zero.receive(0)
+            .expect("zero-length frame fits a zero window");
+        assert!(zero.receive(1).is_err());
+
+        let mut exact = ReceiveWindowState::new(100);
+        exact.receive(100).expect("the exact window fits");
+        assert_eq!(exact.recv_window.0, 0);
+        assert!(exact.receive(1).is_err());
+        assert_eq!(
+            exact.recv_window.0, 0,
+            "an overdraw leaves the window exhausted"
+        );
+
+        let mut overdraw = ReceiveWindowState::new(100);
+        assert!(overdraw.receive(101).is_err());
+        assert_eq!(
+            overdraw.recv_window.0, 100,
+            "an overdraw preserves usable credit"
+        );
+    }
+
+    #[test]
+    fn receive_window_releases_back_to_the_31_bit_maximum() {
+        let max = crate::h2_frame::MAX_FLOW_CONTROL_WINDOW;
+        let mut window = ReceiveWindowState::new(max);
+        window
+            .receive(max)
+            .expect("the maximum window fits exactly");
+        window.release(max);
+        assert_eq!(window.take_update(max).map(WindowIncrement::get), Some(max));
+        assert_eq!(window.recv_window.0, i32::MAX);
+    }
+
+    #[test]
+    fn connection_and_stream_receive_windows_account_independently() {
+        let mut connection = ReceiveWindowState::new(10);
+        let mut stream = ReceiveWindowState::new(6);
+
+        connection.receive(6).expect("connection admits the frame");
+        stream.receive(6).expect("stream admits the frame");
+        connection.release(6);
+        stream.release(6);
+
+        assert_eq!(connection.take_update(6).map(WindowIncrement::get), Some(6));
+        assert_eq!(stream.take_update(6).map(WindowIncrement::get), Some(6));
+        assert_eq!(connection.recv_window.0, 10);
+        assert_eq!(stream.recv_window.0, 6);
     }
 
     #[test]

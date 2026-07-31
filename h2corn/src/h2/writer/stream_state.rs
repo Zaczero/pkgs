@@ -112,16 +112,17 @@ pub(super) enum ResponseWriteState {
 
 #[derive(Debug)]
 pub(super) struct StreamWriteState {
-    pub(super) send_window: i64,
+    pub(super) send_window: i32,
     pub(super) scheduled: bool,
     pending_body_since: Option<Instant>,
     response: ResponseWriteState,
 }
 
 impl StreamWriteState {
-    pub(super) const fn new(initial_window: i64) -> Self {
+    pub(super) fn new(initial_window: i64) -> Self {
         Self {
-            send_window: initial_window,
+            send_window: i32::try_from(initial_window)
+                .expect("HTTP/2 stream send windows fit the signed 31-bit domain"),
             scheduled: false,
             pending_body_since: None,
             response: ResponseWriteState::AwaitingHeaders,
