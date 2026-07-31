@@ -1,63 +1,30 @@
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
-use nohash_hasher::{BuildNoHashHasher, IsEnabled};
+use nohash_hasher::IsEnabled;
 use tokio::time::Instant;
 
 /// A lazily allocated, generation-stamped deadline index.
 ///
-/// `current` is authoritative. Heap entries are immutable scheduling hints;
-/// update and cancel leave stale hints behind and `peek` discards them. The
-/// occasional rebuild bounds memory under adversarial update/cancel churn.
+/// HTTP/2 has at most `max_concurrent_streams` live deadlines (256 by
+/// default), so one compact vector is both smaller and simpler than a heap
+/// plus a second authoritative map. Updates replace their unique entry and
+/// cancellation removes it, leaving no stale state to reconcile.
 pub(super) struct DeadlineQueue<K> {
-    heap: BinaryHeap<DeadlineEntry<K>>,
-    current: HashMap<K, CurrentDeadline, BuildNoHashHasher<K>>,
-    next_generation: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CurrentDeadline {
-    at: Instant,
-    generation: u64,
+    entries: Vec<DeadlineEntry<K>>,
+    next_generation: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DeadlineEntry<K> {
     key: K,
     at: Instant,
-    generation: u64,
-}
-
-impl<K> Ord for DeadlineEntry<K>
-where
-    K: Ord,
-{
-    fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap is a max-heap; reverse the time/generation ordering so
-        // the earliest deadline is at the top.
-        other
-            .at
-            .cmp(&self.at)
-            .then_with(|| other.generation.cmp(&self.generation))
-            .then_with(|| other.key.cmp(&self.key))
-    }
-}
-
-impl<K> PartialOrd for DeadlineEntry<K>
-where
-    K: Ord,
-{
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    generation: u32,
 }
 
 impl<K> Default for DeadlineQueue<K> {
     fn default() -> Self {
         Self {
-            heap: BinaryHeap::new(),
-            current: HashMap::with_hasher(BuildNoHashHasher::default()),
+            entries: Vec::new(),
             next_generation: 0,
         }
     }
@@ -69,86 +36,66 @@ where
 {
     pub(super) fn schedule(&mut self, key: K, at: Instant) {
         self.next_generation = self.next_generation.wrapping_add(1);
-        // Generation zero is reserved for the wrap boundary. Rebuilding
-        // makes all live entries unambiguous before numbering restarts.
         if self.next_generation == 0 {
-            self.rebuild_with_fresh_generations();
-            self.next_generation = self.current.len() as u64 + 1;
+            let mut generation = 0;
+            for entry in &mut self.entries {
+                generation += 1;
+                entry.generation = generation;
+            }
+            self.next_generation = generation + 1;
         }
         let generation = self.next_generation;
-        self.current.insert(key, CurrentDeadline { at, generation });
-        self.heap.push(DeadlineEntry {
-            key,
-            at,
-            generation,
-        });
-        self.compact_if_needed();
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
+            *entry = DeadlineEntry {
+                key,
+                at,
+                generation,
+            };
+        } else {
+            self.entries.push(DeadlineEntry {
+                key,
+                at,
+                generation,
+            });
+        }
     }
 
     pub(super) fn cancel(&mut self, key: K) {
-        self.current.remove(&key);
-        self.compact_if_needed();
+        if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+            self.entries.swap_remove(index);
+        }
     }
 
-    pub(super) fn next(&mut self) -> Option<(K, Instant)> {
-        self.discard_stale();
-        self.heap.peek().map(|entry| (entry.key, entry.at))
+    pub(super) fn next(&self) -> Option<(K, Instant)> {
+        self.entries
+            .iter()
+            .min_by_key(|entry| (entry.at, entry.generation, entry.key))
+            .map(|entry| (entry.key, entry.at))
     }
 
     pub(super) fn pop_expired(&mut self, now: Instant) -> Option<(K, Instant)> {
-        self.discard_stale();
-        let entry = self.heap.peek().copied()?;
+        let index = self
+            .entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| (entry.at, entry.generation, entry.key))
+            .map(|(index, _)| index)?;
+        let entry = self.entries[index];
         if entry.at > now {
             return None;
         }
-        self.heap.pop();
-        self.current.remove(&entry.key);
+        self.entries.swap_remove(index);
         Some((entry.key, entry.at))
     }
 
-    fn discard_stale(&mut self) {
-        while self.heap.peek().is_some_and(|entry| {
-            self.current.get(&entry.key).is_none_or(|current| {
-                current.generation != entry.generation || current.at != entry.at
-            })
-        }) {
-            self.heap.pop();
-        }
-    }
-
-    fn compact_if_needed(&mut self) {
-        // Avoid rebuilding for normal short bursts, but cap stale storage at
-        // roughly 2x the live set plus a small fixed allowance.
-        if self.heap.len() > self.current.len().saturating_mul(2).saturating_add(32) {
-            self.rebuild();
-        }
-    }
-
-    fn rebuild(&mut self) {
-        self.heap = self
-            .current
-            .iter()
-            .map(|(&key, current)| DeadlineEntry {
-                key,
-                at: current.at,
-                generation: current.generation,
-            })
-            .collect();
-    }
-
-    fn rebuild_with_fresh_generations(&mut self) {
-        let mut generation = 0_u64;
-        for current in self.current.values_mut() {
-            generation += 1;
-            current.generation = generation;
-        }
-        self.next_generation = generation;
-        self.rebuild();
+    #[cfg(test)]
+    pub(super) const fn storage_len(&self) -> usize {
+        self.entries.len()
     }
 
     #[cfg(test)]
-    pub(super) fn storage_len(&self) -> usize {
-        self.heap.len()
+    pub(super) const fn set_next_generation(&mut self, generation: u32) {
+        self.next_generation = generation;
     }
 }
 
@@ -190,5 +137,17 @@ mod tests {
             deadlines.next(),
             Some((0x7FFF_FFFD, now + Duration::from_micros(10))),
         );
+    }
+
+    #[test]
+    fn generation_wrap_keeps_live_deadline_order_distinct() {
+        let now = Instant::now();
+        let mut deadlines = DeadlineQueue::default();
+        deadlines.set_next_generation(u32::MAX - 1);
+        deadlines.schedule(2_u32, now);
+        deadlines.schedule(1, now);
+
+        assert_eq!(deadlines.pop_expired(now), Some((2, now)));
+        assert_eq!(deadlines.pop_expired(now), Some((1, now)));
     }
 }

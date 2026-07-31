@@ -749,7 +749,7 @@ impl<R, W> H2ConnectionState<R, W> {
             .is_some_and(|limit| len > limit.get())
     }
 
-    pub(super) fn next_request_input_deadline(&mut self) -> Option<RequestInputDeadline> {
+    pub(super) fn next_request_input_deadline(&self) -> Option<RequestInputDeadline> {
         self.request_deadlines
             .next()
             .map(|(key, instant)| key.with_instant(instant))

@@ -392,7 +392,7 @@ where
         self.ingress.notify.notified()
     }
 
-    pub(crate) fn next_response_stall_deadline(&mut self) -> Option<(StreamId, TokioInstant)> {
+    pub(crate) fn next_response_stall_deadline(&self) -> Option<(StreamId, TokioInstant)> {
         self.response_deadlines.next()
     }
 
