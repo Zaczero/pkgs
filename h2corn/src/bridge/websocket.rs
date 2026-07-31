@@ -16,7 +16,8 @@ use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, IntoPyResult as _, WebSocketFrameKind, into_pyerr};
 use crate::http::types::BytesStr;
 use crate::pyloop::Shard;
-use crate::websocket::{WebSocketCloseCode, close_code};
+use crate::websocket::validate_accepted_subprotocol;
+use crate::websocket::{RequestedSubprotocols, WebSocketCloseCode, close_code};
 
 /// Ordinary application-visible WebSocket data. Terminal disconnect is a
 /// separate plane so a full message queue cannot block peer Close, ping
@@ -243,6 +244,16 @@ impl WebSocketSendState {
         }
     }
 
+    /// Whether the transport has already closed this stream's outbound side.
+    ///
+    /// Only covers a close published through the send state; the outbound
+    /// channel closing is the other half, and both are consulted before an
+    /// accepted value is judged. A `send()` that races either still reaches
+    /// `push_or_forward` and gets the same answer.
+    pub(crate) fn is_closed(&self) -> bool {
+        matches!(self.shared.lock().state, WebSocketSendMode::Closed)
+    }
+
     pub(crate) fn close(&self) {
         let mut inner = self.shared.lock();
         inner.state = WebSocketSendMode::Closed;
@@ -418,6 +429,9 @@ pub struct PyWebSocketSend {
     shard: Shard,
     state: WebSocketSendState,
     tx: mpsc::Sender<WebSocketOutboundEvent>,
+    /// Held here so `websocket.accept` can be checked against what the client
+    /// offered while the application is still inside `await send(...)`.
+    requested_subprotocols: RequestedSubprotocols,
 }
 
 impl PyWebSocketSend {
@@ -425,8 +439,14 @@ impl PyWebSocketSend {
         shard: Shard,
         state: WebSocketSendState,
         tx: mpsc::Sender<WebSocketOutboundEvent>,
+        requested_subprotocols: RequestedSubprotocols,
     ) -> Self {
-        Self { shard, state, tx }
+        Self {
+            shard,
+            state,
+            tx,
+            requested_subprotocols,
+        }
     }
 }
 
@@ -438,6 +458,27 @@ impl PyWebSocketSend {
         message: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let event = parse_websocket_outbound_event(message).into_pyresult()?;
+        // Validate the accepted subprotocol here rather than in the session.
+        // Deferring it let `await send(...)` return successfully and the
+        // request fail afterwards, so the application could neither catch the
+        // error nor choose a different subprotocol.
+        //
+        // Both checks sit inside this arm deliberately: an accept happens once
+        // per connection, while `websocket.send` is the hot path and must not
+        // pay for a lock the disposition below takes anyway. A closed stream
+        // outranks a bad value — reporting `ValueError` for a subprotocol on a
+        // connection that had already gone away would name the wrong problem,
+        // when every other `send()` on that stream reports `OSError`.
+        if let WebSocketOutboundEvent::Accept { subprotocol, .. } = &event {
+            if self.state.is_closed() || self.tx.is_closed() {
+                return Err(into_pyerr(AsgiError::SendAfterClose));
+            }
+            validate_accepted_subprotocol(
+                &self.requested_subprotocols,
+                subprotocol.as_ref().map(AsRef::as_ref),
+            )
+            .into_pyresult()?;
+        }
         match self.state.push_or_forward(event) {
             WebSocketSendDisposition::Buffered => Ok(ready_none(py, &self.shard)),
             WebSocketSendDisposition::Forward(event) => {

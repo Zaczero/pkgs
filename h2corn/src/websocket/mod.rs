@@ -6,7 +6,7 @@ pub(crate) mod session;
 
 pub(crate) use codec::{EncodedFrameHeader, WebSocketCloseCode, WebSocketCodec, close_code};
 pub(crate) use deflate::{PERMESSAGE_DEFLATE_RESPONSE, offers_compatible_permessage_deflate};
-pub(crate) use request::validate_websocket_request;
+pub(crate) use request::{validate_accepted_subprotocol, validate_websocket_request};
 pub(crate) use session::WebSocketContext;
 
 use crate::http::types::BytesStr;

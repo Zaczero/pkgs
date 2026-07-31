@@ -18,7 +18,6 @@ use super::codec::{
     EncodedFrameHeader, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCodec,
     encode_close_frame_into, encode_frame_header,
 };
-use super::request::validate_accepted_subprotocol;
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
 use crate::access_log::WebSocketAccessLogState;
 use crate::async_util::with_optional_timeout;
@@ -382,13 +381,8 @@ where
             subprotocol,
             headers,
         } => {
+            // Already validated against the client's offer at `send()`.
             let subprotocol = subprotocol.as_ref().map(AsRef::as_ref);
-            if let Err(err) =
-                validate_accepted_subprotocol(&running_app.requested_subprotocols, subprotocol)
-            {
-                return fail_handshake(transport, &mut running_app, &access_log, err).await;
-            }
-
             transport
                 .send_accept(subprotocol, headers, per_message_deflate)
                 .await?;
@@ -403,10 +397,10 @@ where
         HandshakeEvent::DenialStart {
             status,
             headers,
-            control,
+            directive,
         } => {
             let (tx_bytes, _) =
-                drive_denial_response(transport, status, headers, control, &mut running_app)
+                drive_denial_response(transport, status, headers, directive, &mut running_app)
                     .await?;
             access_log.emit_http_response(status.get(), tx_bytes);
             running_app.task.settle(timeout_graceful_shutdown).await?;

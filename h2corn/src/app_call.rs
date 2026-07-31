@@ -145,7 +145,10 @@ impl WebSocketAppCall {
         )?
         .into_bound(py)
         .into_any();
-        let send = Py::new(py, PyWebSocketSend::new(shard, self.send_state, self.send))?
+        let send = Py::new(
+            py,
+            PyWebSocketSend::new(shard, self.send_state, self.send, self.subprotocols),
+        )?
             .into_bound(py)
             .into_any();
         Ok(BuiltAppCall {

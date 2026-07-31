@@ -5,7 +5,6 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use super::RequestedSubprotocols;
 use super::session::WebSocketContext;
 use crate::app_call::AppCallArgs;
 use crate::bridge::{
@@ -115,7 +114,6 @@ pub(super) enum AppStep {
 
 pub(super) struct RunningWebSocketApp {
     pub(super) recv_tx: WebSocketInboundSender,
-    pub(super) requested_subprotocols: RequestedSubprotocols,
     pub(super) send_state: WebSocketSendState,
     pub(super) send_buffer: WebSocketSendBuffer,
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
@@ -184,20 +182,23 @@ pub(super) fn start_websocket_app(
     let (recv_tx, recv_rx) = websocket_inbound_channel(inbound_byte_capacity);
     let (send_tx, send_rx) = mpsc::channel(WEBSOCKET_OUTBOUND_QUEUE_CAPACITY);
     let (send_state, send_buffer) = WebSocketSendState::new();
-    let requested_subprotocols = meta.requested_subprotocols;
-    let scope_subprotocols = requested_subprotocols.clone();
     let connection = Arc::clone(&ctx.connection);
     let task_send_state = send_state.clone();
 
     let app_task = start_app_call(
         connection,
-        AppCallArgs::websocket(ctx, scope_subprotocols, recv_rx, task_send_state, send_tx),
+        AppCallArgs::websocket(
+            ctx,
+            meta.requested_subprotocols,
+            recv_rx,
+            task_send_state,
+            send_tx,
+        ),
         admission,
     );
 
     RunningWebSocketApp {
         recv_tx,
-        requested_subprotocols,
         send_state,
         send_buffer,
         send_rx,

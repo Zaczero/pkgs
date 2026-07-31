@@ -508,6 +508,8 @@ pub(crate) enum H2Error {
     FieldBlockInterrupted,
     #[error("field block exceeds h2_max_header_block_size")]
     FieldBlockTooLarge,
+    #[error("field block was still incomplete at timeout_request_header")]
+    FieldBlockAbandoned,
     #[error("first client frame after the preface must be SETTINGS")]
     FirstClientFrameMustBeSettings,
     #[error("first client SETTINGS frame must not be an ACK")]
@@ -662,6 +664,7 @@ impl H2Error {
             | Self::FrameExceedsAdvertisedMaxSize
             | Self::FieldBlockInterrupted
             | Self::FieldBlockTooLarge
+            | Self::FieldBlockAbandoned
             | Self::FirstClientFrameMustBeSettings
             | Self::FirstClientSettingsMustNotAck
             | Self::InvalidPeerSettings { .. }
@@ -1062,16 +1065,21 @@ where
         ErrorKind::Io(err) => err.into(),
         ErrorKind::Join(err) => PyRuntimeError::new_err(format!("background task failed: {err}")),
         ErrorKind::Config(err) => PyValueError::new_err(err.to_string()),
-        ErrorKind::Asgi(AsgiError::SendAfterClose) => {
-            PyOSError::new_err(AsgiError::SendAfterClose.to_string())
-        },
+        // A wrong Python type in an outbound message.
         ErrorKind::Asgi(err @ AsgiError::InvalidFieldType { .. }) => {
             PyTypeError::new_err(err.to_string())
+        },
+        // Use of a stream the transport has already closed.
+        ErrorKind::Asgi(AsgiError::SendAfterClose) => {
+            PyOSError::new_err(AsgiError::SendAfterClose.to_string())
         },
         ErrorKind::Asgi(
             err @ (AsgiError::MissingField { .. }
             | AsgiError::WebSocketSendRequiresExactlyOnePayload),
         ) => PyValueError::new_err(err.to_string()),
+        ErrorKind::Asgi(err @ AsgiError::UnsupportedOutboundMessage { .. }) => {
+            PyRuntimeError::new_err(err.to_string())
+        },
         ErrorKind::HttpResponse(
             err @ (HttpResponseError::InvalidResponseHeaderName
             | HttpResponseError::InvalidResponseHeaderValue
@@ -1080,11 +1088,35 @@ where
             | HttpResponseError::StatusOutsideSigned64BitRange { .. }
             | HttpResponseError::InformationalStatusUnsupported { .. }),
         ) => PyValueError::new_err(err.to_string()),
+        // Messages that are individually well formed but arrive in an order
+        // the response state machine does not allow.
+        ErrorKind::HttpResponse(
+            err @ (HttpResponseError::StartAlreadyReceived
+            | HttpResponseError::TrailersNotAdvertised
+            | HttpResponseError::BodyBeforeStart
+            | HttpResponseError::PathsendBeforeStart
+            | HttpResponseError::PathsendMixedWithBody
+            | HttpResponseError::TrailersBeforeBodyCompleted
+            | HttpResponseError::AppReturnedWithoutStartingResponse
+            | HttpResponseError::AppReturnedWithoutCompletingResponse),
+        ) => PyRuntimeError::new_err(err.to_string()),
         ErrorKind::WebSocket(
             err @ (WebSocketError::CloseReasonTooLong
             | WebSocketError::CloseCodeInvalid
-            | WebSocketError::AcceptSubprotocolEmpty),
+            | WebSocketError::AcceptSubprotocolEmpty
+            | WebSocketError::AcceptHeadersForbidden
+            | WebSocketError::AcceptSubprotocolNotRequested),
         ) => PyValueError::new_err(err.to_string()),
+        // Peer, transport and sequencing conditions. None of these describe a
+        // value the application supplied, so none of them are `ValueError`.
+        ErrorKind::WebSocket(
+            err @ (WebSocketError::Protocol(_)
+            | WebSocketError::HandshakeTimedOut
+            | WebSocketError::CompressionFailed
+            | WebSocketError::ReceiveChannelClosed { .. }
+            | WebSocketError::AppEndedBeforeHandshake
+            | WebSocketError::UnexpectedEvent { .. }),
+        ) => PyRuntimeError::new_err(err.to_string()),
         ErrorKind::Pathsend(PathsendError::OpenFailed { path, source }) => {
             let error = PyRuntimeError::new_err(format!(
                 "http.response.pathsend failed for file {path:?}: {source}"
@@ -1092,7 +1124,17 @@ where
             pyo3::Python::attach(|py| error.set_cause(py, Some(source.into())));
             error
         },
-        other => PyRuntimeError::new_err(other.to_string()),
+        // The application named a path that cannot be sent.
+        ErrorKind::Pathsend(err @ PathsendError::NotRegularFile { .. }) => {
+            PyValueError::new_err(err.to_string())
+        },
+        // Wire-level failures of the peer's own making. They reach an
+        // application only as the reason its stream ended, never as a verdict
+        // on something it passed to `send()`, so they stay `RuntimeError` as a
+        // group rather than being classified variant by variant.
+        ErrorKind::Http1(err) => PyRuntimeError::new_err(err.to_string()),
+        ErrorKind::H2(err) => PyRuntimeError::new_err(err.to_string()),
+        ErrorKind::Proxy(err) => PyRuntimeError::new_err(err.to_string()),
     }
 }
 
@@ -1471,6 +1513,61 @@ mod tests {
 
             let unexpected = into_pyerr(WebSocketError::unexpected_initial_event("websocket.send"));
             assert!(unexpected.is_instance_of::<PyRuntimeError>(py));
+        });
+    }
+
+    /// The Python type an application catches is public API, so every variant
+    /// earns one by decision. `into_pyerr` has no catch-all arm: adding a
+    /// variant to any of these enums fails the build until it is classified,
+    /// which is how `failure_domain` already works.
+    ///
+    /// The WebSocket accept values below are the ones a wildcard used to
+    /// swallow — an application saw `send()` fail with `RuntimeError` for a
+    /// malformed value it had supplied.
+    #[test]
+    fn every_application_facing_error_has_a_decided_python_type() {
+        Python::initialize();
+        Python::attach(|py| {
+            let value_errors: [H2CornError; 8] = [
+                WebSocketError::AcceptHeadersForbidden.into(),
+                WebSocketError::AcceptSubprotocolNotRequested.into(),
+                WebSocketError::AcceptSubprotocolEmpty.into(),
+                WebSocketError::CloseCodeInvalid.into(),
+                WebSocketError::CloseReasonTooLong.into(),
+                HttpResponseError::InvalidResponseHeaderName.into(),
+                AsgiError::WebSocketSendRequiresExactlyOnePayload.into(),
+                PathsendError::NotRegularFile {
+                    path: "/dev/null".into(),
+                }
+                .into(),
+            ];
+            for error in value_errors {
+                let rendered = error.to_string();
+                assert!(
+                    into_pyerr(error).is_instance_of::<PyValueError>(py),
+                    "{rendered} must reach the application as ValueError"
+                );
+            }
+
+            let runtime_errors: [H2CornError; 5] = [
+                WebSocketError::HandshakeTimedOut.into(),
+                WebSocketError::CompressionFailed.into(),
+                WebSocketError::AppEndedBeforeHandshake.into(),
+                HttpResponseError::StartAlreadyReceived.into(),
+                HttpResponseError::TrailersNotAdvertised.into(),
+            ];
+            for error in runtime_errors {
+                let rendered = error.to_string();
+                assert!(
+                    into_pyerr(error).is_instance_of::<PyRuntimeError>(py),
+                    "{rendered} must reach the application as RuntimeError"
+                );
+            }
+
+            assert!(
+                into_pyerr(AsgiError::SendAfterClose).is_instance_of::<PyOSError>(py),
+                "a closed stream is an OS-level condition, not a bad value"
+            );
         });
     }
 

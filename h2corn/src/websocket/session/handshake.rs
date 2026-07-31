@@ -5,7 +5,7 @@ use super::WebSocketHandshakeTransport;
 use crate::access_log::{ResponseLogState, WebSocketAccessLogState};
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
-use crate::http::header::ResponseHeaderControl;
+use crate::http::header::ResponseConnectionDirective;
 use crate::http::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
@@ -20,7 +20,7 @@ pub(super) enum HandshakeEvent {
     DenialStart {
         status: FinalResponseStatus,
         headers: ResponseHeaders,
-        control: ResponseHeaderControl,
+        directive: ResponseConnectionDirective,
     },
 }
 
@@ -37,11 +37,11 @@ fn parse_handshake_event(event: WebSocketOutboundEvent) -> Result<HandshakeEvent
         WebSocketOutboundEvent::HttpResponseStart {
             status,
             headers,
-            control,
+            directive,
         } => Ok(HandshakeEvent::DenialStart {
             status,
             headers,
-            control,
+            directive,
         }),
         other => WebSocketError::unexpected_initial_event(other.message_type()).err(),
     }
@@ -72,7 +72,7 @@ pub(super) async fn drive_denial_response<T>(
     transport: &mut T,
     status: FinalResponseStatus,
     headers: ResponseHeaders,
-    control: ResponseHeaderControl,
+    directive: ResponseConnectionDirective,
     running_app: &mut RunningWebSocketApp,
 ) -> Result<(u64, bool), H2CornError>
 where
@@ -90,7 +90,7 @@ where
             status,
             headers,
             trailers: false,
-            control,
+            directive,
         },
     )
     .await?;
@@ -171,14 +171,14 @@ mod tests {
         websocket_inbound_channel,
     };
     use crate::error::{ErrorKind, H2CornError, HttpResponseError};
-    use crate::http::header::ResponseHeaderControl;
+    use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
     use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, status_code};
     use crate::pyloop::TaskSlot;
     use crate::runtime::{AppRuntimeHandle, test_fixtures};
     use crate::websocket::app::{RunningWebSocketApp, WebSocketAppTask};
     use crate::websocket::session::WebSocketHandshakeTransport;
-    use crate::websocket::{RequestedSubprotocols, close_code};
+    use crate::websocket::close_code;
 
     #[derive(Default)]
     struct RecordingHandshakeTransport {
@@ -288,7 +288,6 @@ mod tests {
 
         RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -331,7 +330,6 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -343,7 +341,7 @@ mod tests {
             &mut transport,
             final_status(status_code::FORBIDDEN),
             Vec::new(),
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
             &mut running_app,
         )
         .await
@@ -366,7 +364,7 @@ mod tests {
             send_state.push_or_forward(WebSocketOutboundEvent::HttpResponseStart {
                 status,
                 headers: ResponseHeaders::new(),
-                control: ResponseHeaderControl::default(),
+                directive: ResponseConnectionDirective::default(),
             }),
             WebSocketSendDisposition::Buffered
         ));
@@ -387,7 +385,6 @@ mod tests {
             .expect("the forwarded denial body fits the empty bounded channel");
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -399,7 +396,7 @@ mod tests {
             &mut transport,
             status,
             ResponseHeaders::new(),
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
             &mut running_app,
         )
         .await
@@ -419,7 +416,6 @@ mod tests {
         let (send_state, send_buffer) = WebSocketSendState::new();
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -431,7 +427,7 @@ mod tests {
             &mut transport,
             final_status(status_code::FORBIDDEN),
             Vec::new(),
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
             &mut running_app,
         )
         .await
@@ -458,7 +454,6 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -470,7 +465,7 @@ mod tests {
             &mut transport,
             final_status(status_code::FORBIDDEN),
             Vec::new(),
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
             &mut running_app,
         )
         .await
@@ -509,7 +504,6 @@ mod tests {
         ));
         let mut running_app = RunningWebSocketApp {
             recv_tx,
-            requested_subprotocols: RequestedSubprotocols::default(),
             send_state,
             send_buffer,
             send_rx,
@@ -521,7 +515,7 @@ mod tests {
             &mut transport,
             final_status(status_code::FORBIDDEN),
             Vec::new(),
-            ResponseHeaderControl::default(),
+            ResponseConnectionDirective::default(),
             &mut running_app,
         );
 

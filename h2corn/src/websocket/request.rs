@@ -25,7 +25,7 @@ pub(crate) fn validate_websocket_request(
         .ok_or_else(RejectedResponse::bad_request)
 }
 
-pub(super) fn validate_accepted_subprotocol(
+pub(crate) fn validate_accepted_subprotocol(
     requested_subprotocols: &[BytesStr],
     subprotocol: Option<&str>,
 ) -> Result<(), H2CornError> {
