@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use parse::read_request;
-use tokio::io::{AsyncRead, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncWriteExt as _, BufWriter};
 use tokio::sync::{mpsc, watch};
 
 use self::http::{
@@ -183,7 +183,7 @@ where
         match route {
             RequestRoute::Http(body_kind) => {
                 match handle_http_request(
-                    RequestContext::new(connection.clone(), request),
+                    RequestContext::new(Arc::clone(&connection), request),
                     body_kind,
                     persistence,
                     H1Io {

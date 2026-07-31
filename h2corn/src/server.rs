@@ -8,7 +8,7 @@ use std::io;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::num::NonZeroU16;
 #[cfg(unix)]
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{FromRawFd as _, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
 #[cfg(windows)]
@@ -17,14 +17,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf as _, BytesMut};
 use pyo3::prelude::*;
 #[cfg(target_os = "linux")]
 use rustix::net::sockopt::set_tcp_quickack;
 #[cfg(unix)]
 use rustix::net::{AddressFamily, getsockname};
 use tokio::io::{
-    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf, split,
+    AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, ReadHalf, WriteHalf, split,
 };
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
@@ -36,7 +36,7 @@ use tokio_rustls::server::TlsStream;
 
 use crate::async_util::with_optional_timeout;
 use crate::config::{BindTarget, ServerConfig};
-use crate::error::{ErrorExt, ErrorKind, FailureDomain, H2CornError, H2Error, ProxyError};
+use crate::error::{ErrorExt as _, ErrorKind, FailureDomain, H2CornError, H2Error, ProxyError};
 use crate::h2_frame::{self, BufferedConnectionReader, ErrorCode};
 use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,

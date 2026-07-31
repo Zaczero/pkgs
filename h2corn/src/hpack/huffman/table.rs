@@ -264,6 +264,9 @@ pub(super) const ENCODE_TABLE: [u64; 257] = pack_encode_table(&[
 ]);
 
 // next-state | byte << 8 | flags << 16
+//
+// A row is 64 bytes — one cache line — so a nibble step is a shift and a single
+// 32-bit load.
 pub(super) const DECODE_TABLE: [[u32; 16]; 256] = [
     // 0
     [

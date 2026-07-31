@@ -24,7 +24,7 @@ use crate::access_log::WebSocketAccessLogState;
 use crate::async_util::with_optional_timeout;
 use crate::bridge::{PayloadBytes, WEBSOCKET_INBOUND_BYTE_CAPACITY};
 use crate::config::WebSocketKeepAlive;
-use crate::error::{ErrorExt, H2CornError, WebSocketError};
+use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::response::HttpResponseTransport;
 use crate::http::types::{BytesStr, HttpStatusCode, ResponseHeaders, status_code};
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
@@ -320,7 +320,22 @@ pub(crate) const fn shutdown_close_code(kind: ShutdownKind) -> WebSocketCloseCod
     }
 }
 
-pub(crate) async fn run_websocket<T>(
+/// Store the whole session state machine once per WebSocket, mirroring the
+/// treatment `h2::serve_connection` gives the HTTP/2 driver: `Pin<Box<F>>`
+/// retains static dispatch while keeping a multi-kilobyte future off the stack
+/// of every generic caller and Tokio task. One allocation per session, not per
+/// message.
+pub(crate) fn run_websocket<T>(
+    transport: &mut T,
+    context: WebSocketContext,
+) -> impl Future<Output = Result<(), H2CornError>>
+where
+    T: WebSocketHandshakeTransport + AcceptedWebSocketTransport,
+{
+    Box::pin(drive_websocket(transport, context))
+}
+
+async fn drive_websocket<T>(
     transport: &mut T,
     context: WebSocketContext,
 ) -> Result<(), H2CornError>

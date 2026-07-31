@@ -9,7 +9,7 @@ use bytes::Bytes;
 use pyo3::conversion::FromPyObjectOwned;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+use pyo3::types::PyDict;
 use smallvec::SmallVec;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::oneshot;
@@ -21,7 +21,7 @@ use crate::config::{
     BindTarget, ClientCertMode, ConfiguredResponseHeader, Http1Config, Http2Config, ProxyConfig,
     ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
 };
-use crate::error::{ConfigError, H2CornError, IntoPyResult, into_pyerr};
+use crate::error::{ConfigError, H2CornError, IntoPyResult as _, into_pyerr};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
@@ -603,7 +603,7 @@ async fn start_secondary_lifespans(
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
                 let index = secondary_loop_index(&task_indices, &err);
-                outcomes.push((index, shards[index + 1].clone(), None, Err(err.into())));
+                outcomes.push((index, Arc::clone(&shards[index + 1]), None, Err(err.into())));
             },
         }
     }

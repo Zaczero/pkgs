@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::{num::NonZeroU32, time::Duration};
 
 use bytes::BytesMut;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::sync::futures::Notified;
 use tokio::time::Instant as TokioInstant;
 
@@ -473,6 +473,11 @@ where
         // The preflight makes this single state transition atomic: a rejected
         // SETTINGS frame leaves every stream and every peer-owned knob alone.
         if delta != 0 {
+            #[expect(
+                clippy::iter_over_hash_type,
+                reason = "order-independent: a uniform delta is applied to every stream, and the \
+                          preflight above makes partial application impossible"
+            )]
             for stream in self.streams.values_mut() {
                 stream.send_window = i32::try_from(i64::from(stream.send_window) + delta)
                     .expect("peer SETTINGS preserve the signed 31-bit stream window");

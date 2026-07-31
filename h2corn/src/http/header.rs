@@ -116,16 +116,37 @@ pub(crate) struct ResponseHeaderControl {
 /// `Connection: close` followed by `Connection: upgrade` means both.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConnectionHeaderTokens {
-    pub(crate) close: bool,
-    pub(crate) upgrade: bool,
-    pub(crate) http2_settings: bool,
+    flags: u8,
+}
+
+const _: () = assert!(size_of::<ConnectionHeaderTokens>() == 1);
+
+impl ConnectionHeaderTokens {
+    const CLOSE: u8 = 1 << 0;
+    const HTTP2_SETTINGS: u8 = 1 << 2;
+    const UPGRADE: u8 = 1 << 1;
+
+    pub(crate) const fn close(self) -> bool {
+        self.flags & Self::CLOSE != 0
+    }
+
+    pub(crate) const fn upgrade(self) -> bool {
+        self.flags & Self::UPGRADE != 0
+    }
+
+    pub(crate) const fn http2_settings(self) -> bool {
+        self.flags & Self::HTTP2_SETTINGS != 0
+    }
+
+    /// Every token seen, so scanning the rest of the field cannot add anything.
+    const fn is_complete(self) -> bool {
+        self.flags == Self::CLOSE | Self::UPGRADE | Self::HTTP2_SETTINGS
+    }
 }
 
 impl BitOrAssign for ConnectionHeaderTokens {
     fn bitor_assign(&mut self, other: Self) {
-        self.close |= other.close;
-        self.upgrade |= other.upgrade;
-        self.http2_settings |= other.http2_settings;
+        self.flags |= other.flags;
     }
 }
 
@@ -263,10 +284,13 @@ pub(crate) fn last_csv_token(value: &str) -> &str {
         index = current + 1;
     }
 
-    last_delimiter.map_or_else(
-        || value.trim_ascii(),
-        |index| value[index + 1..].trim_ascii(),
-    )
+    // The delimiter is ASCII, so `index + 1` is always a char boundary and
+    // `get` always returns `Some`; taking the fallible form keeps the panic out
+    // of the type rather than arguing it away in a comment.
+    last_delimiter
+        .and_then(|index| value.get(index + 1..))
+        .unwrap_or(value)
+        .trim_ascii()
 }
 
 pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -297,15 +321,15 @@ pub(crate) fn parse_connection_header_tokens(value: &[u8]) -> ConnectionHeaderTo
 
     for current in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
         if current.eq_ignore_ascii_case(b"close") {
-            tokens.close = true;
+            tokens.flags |= ConnectionHeaderTokens::CLOSE;
         }
         if current.eq_ignore_ascii_case(b"upgrade") {
-            tokens.upgrade = true;
+            tokens.flags |= ConnectionHeaderTokens::UPGRADE;
         }
         if current.eq_ignore_ascii_case(b"http2-settings") {
-            tokens.http2_settings = true;
+            tokens.flags |= ConnectionHeaderTokens::HTTP2_SETTINGS;
         }
-        if tokens.close && tokens.upgrade && tokens.http2_settings {
+        if tokens.is_complete() {
             return tokens;
         }
     }

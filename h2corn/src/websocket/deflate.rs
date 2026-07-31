@@ -471,7 +471,7 @@ fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        PerMessageDeflateEnabled, PerMessageDeflateMode, offers_compatible_permessage_deflate,
+        PerMessageDeflateEnabled, PerMessageDeflateMode as _, offers_compatible_permessage_deflate,
     };
 
     #[test]

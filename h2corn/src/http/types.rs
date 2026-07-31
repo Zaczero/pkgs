@@ -199,6 +199,11 @@ impl HttpStatusCode {
         }
     }
 
+    #[expect(
+        clippy::panic,
+        reason = "const-evaluated only: every caller passes a literal, so a bad status is a \
+                  compile error rather than a runtime panic"
+    )]
     const fn constant(value: u16) -> Self {
         match Self::new(value) {
             Some(value) => value,

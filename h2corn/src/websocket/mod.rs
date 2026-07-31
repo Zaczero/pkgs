@@ -25,6 +25,11 @@ pub(crate) struct WebSocketRequestMeta {
     pub(crate) per_message_deflate: bool,
 }
 
+// Reached only through the boxed rare sidecar of `RequestHeaderMeta`, so
+// the large `Valid` payload costs nothing on a request without WebSocket
+// headers. Pinned rather than boxed again.
+const _: () = assert!(size_of::<ParsedRequestedSubprotocols>() == 144);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ParsedRequestedSubprotocols {
     Valid(RequestedSubprotocols),

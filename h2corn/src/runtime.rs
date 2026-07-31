@@ -845,7 +845,7 @@ pub(crate) fn try_acquire_request_admission(app: &AppRuntime) -> Option<RequestA
         });
     };
     let permit = if let Some(semaphore) = limits.concurrency.as_ref() {
-        Some(semaphore.clone().try_acquire_owned().ok()?)
+        Some(Arc::clone(semaphore).try_acquire_owned().ok()?)
     } else {
         None
     };
@@ -1051,7 +1051,7 @@ mod tests {
         }
     }
 
-    use std::future::Future;
+    use std::future::Future as _;
     use std::num::{NonZeroU32, NonZeroU64};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
@@ -1227,7 +1227,7 @@ mod tests {
         let connection = super::test_fixtures::connection_context_for(Arc::clone(&app));
         // A hard-aborted H2 request child owns only a context clone — it dies
         // between admission and guard construction, so no guard exists.
-        let orphaned_child_context = connection.clone();
+        let orphaned_child_context = Arc::clone(&connection);
         drop(connection);
         assert_eq!(active_owners(&app.scoped_owners), 1);
 

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
-use crate::error::{ErrorExt, H2CornError, H2Error};
+use crate::error::{ErrorExt as _, H2CornError, H2Error};
 use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::StreamId;
 use crate::inline_fifo::InlineFifo;
@@ -226,6 +226,8 @@ impl WriterIngress {
 mod tests {
     use tokio::task::yield_now;
 
+    use std::sync::Arc;
+
     use super::{WRITER_CHANNEL_CAPACITY, WriterIngress};
     use crate::h2::writer::WriterCommand;
     use crate::h2_frame::StreamId;
@@ -261,7 +263,7 @@ mod tests {
         }
         assert_eq!(ingress.permits.available_permits(), 0);
 
-        let blocked_ingress = ingress.clone();
+        let blocked_ingress = Arc::clone(&ingress);
         let blocked = tokio::spawn(async move {
             blocked_ingress
                 .enqueue(stream_id, WriterCommand::FlushBufferedOutput)

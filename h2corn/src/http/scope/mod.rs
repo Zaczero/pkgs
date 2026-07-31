@@ -342,7 +342,7 @@ mod tests {
 
     use bytes::Bytes;
     use http::Method;
-    use pyo3::types::{PyAnyMethods, PyBytesMethods, PyDict, PyDictMethods};
+    use pyo3::types::{PyAnyMethods as _, PyBytesMethods as _, PyDict, PyDictMethods as _};
     use pyo3::{PyResult, Python};
 
     use super::{build_http_scope, build_websocket_scope, decode_path};
@@ -386,11 +386,11 @@ mod tests {
             let connection = test_fixtures::connection_context_with(py, Arc::new(config));
 
             let scope_one = {
-                let request = RequestContext::new(connection.clone(), test_request());
+                let request = RequestContext::new(Arc::clone(&connection), test_request());
                 build_http_scope(py, &request)?
             };
             let scope_two = {
-                let request = RequestContext::new(connection.clone(), test_request());
+                let request = RequestContext::new(Arc::clone(&connection), test_request());
                 build_http_scope(py, &request)?
             };
             drop(connection);
@@ -441,7 +441,7 @@ mod tests {
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
             let scope_one = build_http_scope(py, &request_one)?;
-            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_two = build_http_scope(py, &request_two)?;
             drop(request_one);
             drop(request_two);
@@ -504,7 +504,7 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
-            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_one = build_http_scope(py, &request_one)?;
             let scope_two = build_http_scope(py, &request_two)?;
             drop(request_one);
@@ -564,7 +564,7 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
-            let request_two = RequestContext::new(request_one.connection.clone(), test_request());
+            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_one = build_websocket_scope(py, &request_one, &[])?;
             let scope_two = build_websocket_scope(py, &request_two, &[])?;
             drop(request_one);

@@ -12,7 +12,7 @@ use super::{
     EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
-use crate::error::{AsgiError, IntoPyResult, into_pyerr};
+use crate::error::{AsgiError, IntoPyResult as _, into_pyerr};
 use crate::http::app::{HttpSendDisposition, HttpSendState};
 use crate::pyloop::Shard;
 use crate::runtime::StreamInput;
@@ -243,7 +243,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        EventSource, HttpInboundEvent, HttpReceiveInput, HttpReceiveState, RequestInputShared,
+        EventSource as _, HttpInboundEvent, HttpReceiveInput, HttpReceiveState, RequestInputShared,
     };
     use crate::h2_frame::{ErrorCode, StreamId};
     use crate::runtime::{H2InputCreditQueue, StreamInput};

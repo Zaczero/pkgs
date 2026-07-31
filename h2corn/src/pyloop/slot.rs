@@ -159,7 +159,20 @@ impl<T, Guard> Future for SlotFuture<T, Guard> {
                     };
                     Poll::Ready(value)
                 },
+                // Both are `Future::poll` contract violations, reachable only
+                // from a bug in this crate: a slot is taken exactly once and an
+                // abandoned slot is never polled again. Panicking is the
+                // contract's own remedy — returning `Pending` would hang the
+                // task and `Ready` would hand out a moved value.
+                #[expect(
+                    clippy::panic,
+                    reason = "polling a completed or abandoned slot violates the Future contract"
+                )]
                 SlotState::Taken => panic!("slot future polled after completion"),
+                #[expect(
+                    clippy::panic,
+                    reason = "polling a completed or abandoned slot violates the Future contract"
+                )]
                 SlotState::Abandoned => panic!("abandoned slot future polled"),
             }
         };

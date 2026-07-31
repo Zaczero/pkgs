@@ -147,7 +147,7 @@ fn prepare_and_spawn_request(
             headers: ResponseHeaders::new(),
         });
     };
-    let request = RequestContext::new(context.connection.clone(), request);
+    let request = RequestContext::new(std::sync::Arc::clone(context.connection), request);
     match prepared {
         RequestExecution::Http {
             mut admission,

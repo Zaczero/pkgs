@@ -25,7 +25,7 @@
 //! regular file does not, and there batching removes the entire logging
 //! penalty.
 
-use std::io::{self, Write};
+use std::io::{self, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
@@ -160,7 +160,7 @@ fn stderr_is_regular_file() -> bool {
     }
 }
 
-fn drain_forever(sink: &'static LogSink) {
+fn drain_forever(sink: &'static LogSink) -> ! {
     let mut stderr = io::stderr();
     loop {
         // The two buffers swap roles every round: producers fill one while the

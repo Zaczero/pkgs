@@ -2,10 +2,10 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str;
 use std::sync::LazyLock;
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf as _, Bytes, BytesMut};
 use http::{Method, Uri};
 use memchr::{memchr, memchr2, memmem};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
@@ -14,7 +14,7 @@ use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute,
 use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
-use crate::error::{ErrorExt, H2CornError, Http1Error};
+use crate::error::{ErrorExt as _, H2CornError, Http1Error};
 use crate::h2_frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 use crate::http::header::{
@@ -541,7 +541,7 @@ fn parsed_request_from_head(
         headers: RequestHeaders::from_h1(headers),
         header_meta,
     };
-    let route = if upgrade.websocket && connection.upgrade {
+    let route = if upgrade.websocket && connection.upgrade() {
         if body_kind != RequestBodyKind::None {
             return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
         }
@@ -563,8 +563,8 @@ fn parsed_request_from_head(
         }
     } else if let Some(settings) = http2_settings
         && upgrade.h2c
-        && connection.upgrade
-        && connection.http2_settings
+        && connection.upgrade()
+        && connection.http2_settings()
     {
         if body_kind == RequestBodyKind::None {
             RequestRoute::Upgrade(UpgradeRequest::H2c { settings })
@@ -579,7 +579,7 @@ fn parsed_request_from_head(
         request: ParsedRequest {
             request,
             route,
-            persistence: if connection.close {
+            persistence: if connection.close() {
                 ConnectionPersistence::Close
             } else {
                 ConnectionPersistence::KeepAlive
@@ -1286,7 +1286,7 @@ mod tests {
 
     use bytes::BytesMut;
     use http::Method;
-    use tokio::io::{AsyncWriteExt, BufWriter, duplex, sink};
+    use tokio::io::{AsyncWriteExt as _, BufWriter, duplex, sink};
     use tokio::spawn;
     use tokio::sync::mpsc;
 

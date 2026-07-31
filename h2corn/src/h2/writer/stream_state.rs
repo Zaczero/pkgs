@@ -5,7 +5,7 @@ use tokio::time::Instant;
 
 use super::{ResponseClose, ResponseCloseBatch, WebSocketData};
 use crate::bridge::PayloadBytes;
-use crate::error::{ErrorExt, H2CornError, H2Error, HttpResponseError};
+use crate::error::{ErrorExt as _, H2CornError, H2Error, HttpResponseError};
 use crate::h2::StreamMap;
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::PathStreamer;
@@ -99,6 +99,13 @@ pub(super) enum StreamBodyState {
     // allocation without growing `StreamWriteState`.
     Path(PathStreamer),
 }
+
+// `Open` carries everything and the other two variants carry nothing, so
+// `clippy::large_enum_variant` would flag this — but its only remedy is to box
+// `body`, which puts the inline chunk queue above behind a pointer and adds a
+// malloc per response. The size is pinned here instead: exact, and it fails in
+// both directions.
+const _: () = assert!(size_of::<ResponseWriteState>() == 192);
 
 #[derive(Debug)]
 pub(super) enum ResponseWriteState {

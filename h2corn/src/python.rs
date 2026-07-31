@@ -155,7 +155,7 @@ use std::slice::from_raw_parts;
 use pyo3::prelude::*;
 pub(crate) use pyo3::sync::PyOnceLock;
 pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
-use pyo3::{IntoPyObject, IntoPyObjectExt};
+use pyo3::{IntoPyObject, IntoPyObjectExt as _};
 pub(crate) use pyo3::{Py, PyResult};
 
 // Re-export crate-root macros at the module path used by their recursive expansions.
@@ -326,10 +326,12 @@ macro_rules! py_match_cached_bytes {
                     > = $crate::python::PyOnceLock::new();
                     CACHED
                         .get_or_init($py, || {
-                            // A str literal is matched but bytes are cached;
-                            // the suggested byte-literal form cannot be
-                            // spelled generically in a macro.
-                            #[expect(clippy::string_lit_as_bytes)]
+                            #[expect(
+                                clippy::string_lit_as_bytes,
+                                reason = "a str literal is matched but bytes are cached; the \
+                                          suggested byte-literal form cannot be spelled \
+                                          generically in a macro"
+                            )]
                             $crate::python::PyBytes::new($py, $value_text.as_bytes()).unbind()
                         })
                         .bind($py)
@@ -450,7 +452,7 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
     {
         let value = value.into_bound_py_any(self.py)?;
         // SAFETY: forwarded from this function's contract.
-        unsafe { self.push_bound_at::<I>(key, value) };
+        unsafe { self.push_bound_at::<I>(key, value); }
         Ok(())
     }
 
@@ -490,7 +492,7 @@ impl<const N: usize> Drop for PyDictScratch<'_, N> {
             // SAFETY: `0..len` is exactly the initialized prefix. Decrementing
             // first ensures a panicking item destructor cannot be visited a
             // second time if cleanup resumes.
-            unsafe { self.items.get_unchecked_mut(self.len).assume_init_drop() };
+            unsafe { self.items.get_unchecked_mut(self.len).assume_init_drop(); }
         }
     }
 }
@@ -538,8 +540,8 @@ mod tests {
 
     #[cfg(Py_GIL_DISABLED)]
     use pyo3::types::PyDict;
-    use pyo3::types::{PyAnyMethods, PyBool, PyBytes, PyBytesMethods, PyDictMethods};
-    use pyo3::{IntoPyObjectExt, PyResult, Python, ffi};
+    use pyo3::types::{PyAnyMethods as _, PyBool, PyBytes, PyBytesMethods as _, PyDictMethods as _};
+    use pyo3::{IntoPyObjectExt as _, PyResult, Python, ffi};
 
     #[cfg(not(Py_GIL_DISABLED))]
     use super::PyDictScratch;

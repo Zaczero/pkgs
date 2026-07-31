@@ -547,6 +547,10 @@ impl Drop for RequestTasks {
         // running with nothing left to wait on it. This only runs when the
         // connection itself is going away, so anything still here is
         // abandoned; a task that finished on its own was reaped long before.
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "order-independent: every task is aborted, and nothing observes which went first"
+        )]
         for (_, mut task) in self.active.drain() {
             if let Some(task) = task.task.take() {
                 task.abort();

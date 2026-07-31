@@ -289,7 +289,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::super::super::deflate::{
-        PerMessageDeflateDisabled, PerMessageDeflateEnabled, PerMessageDeflateMode,
+        PerMessageDeflateDisabled, PerMessageDeflateEnabled, PerMessageDeflateMode as _,
     };
     use super::super::wire::opcode;
     use super::super::{close_code, wire};

@@ -73,7 +73,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 
     // SAFETY: `decoded_len` never exceeds the `MIN_CODE_BITS` reserve bound,
     // and every counted byte was written into the corresponding spare slot.
-    unsafe { buf.set_len(initial_len + decoded_len) };
+    unsafe { buf.set_len(initial_len + decoded_len); }
     result?;
 
     Ok(buf.split())

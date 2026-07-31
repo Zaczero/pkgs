@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anstream::{AutoStream, ColorChoice};
 use http::Method;
 use itoa::{Buffer as ItoaBuffer, Integer};
-use owo_colors::{OwoColorize, Style};
+use owo_colors::{OwoColorize as _, Style};
 use smallvec::SmallVec;
 
 use crate::config::{BindTarget, ServerConfig};
@@ -923,7 +923,7 @@ mod tests {
                 header_meta,
             };
 
-            let context = RequestContext::new(connection.clone(), request);
+            let context = RequestContext::new(Arc::clone(&connection), request);
             drop(connection);
             let label = super::ClientLabel::build(&context);
             assert_eq!(label.as_str().trim_end(), "127.0.0.1:54321");

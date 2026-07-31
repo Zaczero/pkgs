@@ -11,7 +11,7 @@ use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{
-    PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString, PyTypeMethods,
+    PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString,
 };
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
@@ -25,7 +25,7 @@ pub(crate) use websocket::{
 
 use crate::async_util::{TryPush, try_push};
 use crate::error::{
-    AsgiChannel, AsgiContainer, AsgiError, ErrorExt, H2CornError, HttpResponseError,
+    AsgiChannel, AsgiContainer, AsgiError, ErrorExt as _, H2CornError, HttpResponseError,
     WebSocketError, into_pyerr,
 };
 use crate::http::app::HttpSendWaiter;
@@ -1342,7 +1342,7 @@ mod tests {
 
     use bytes::Bytes;
     use pyo3::ffi::c_str;
-    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyString, PyTuple};
+    use pyo3::types::{PyAnyMethods as _, PyBytes, PyDict, PyDictMethods as _, PyList, PyString, PyTuple};
     use pyo3::{PyResult, Python};
     use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -1812,7 +1812,7 @@ mod tests {
             let event = parse_http_outbound_event(&message).unwrap();
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { status, trailers: false, ref headers, .. }
+                super::HttpOutboundEvent::Start { status, trailers: false, headers, .. }
                     if status.get() == status_code::OK && headers.len() == 1
                         && headers[0].0.as_ref() == b"x-demo"
                         && headers[0].1.as_ref() == b"1"
@@ -1988,7 +1988,7 @@ headers = (Headers(0), Headers(1), Headers(2))
             let event = parse_http_outbound_event(&message).expect("fixed fields are stripped");
             assert!(matches!(
                 event,
-                super::HttpOutboundEvent::Start { ref headers, .. }
+                super::HttpOutboundEvent::Start { headers, .. }
                     if headers.len() == 1
                         && headers[0].0.as_ref() == b"content-type"
             ));
@@ -2263,7 +2263,7 @@ headers = (Headers(0), Headers(1), Headers(2))
         resolution.requeue();
         let first_again = second.await.expect("concurrent receive completes");
         assert_eq!(pulls.load(Ordering::Relaxed), 1);
-        let HttpInboundEvent::Request { ref body, .. } = first_again else {
+        let HttpInboundEvent::Request { body, .. } = &first_again else {
             panic!("the first request event is preserved")
         };
         assert_eq!(body.as_ref(), b"first");
