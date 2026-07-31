@@ -93,6 +93,7 @@ local listener with several workers, looking something like this:
 h2corn hello:app \
   --bind 127.0.0.1:8000 \
   --workers 4 \
+  --proxy-headers \
   --forwarded-allow-ips 127.0.0.1,::1,unix \
   --no-http1
 ```

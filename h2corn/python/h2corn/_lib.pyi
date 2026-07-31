@@ -59,6 +59,11 @@ def serve_fds(
 ) -> Awaitable[None]:
     """Adopt listener file descriptors and run one worker until shutdown.
 
+    Takes ownership of every descriptor in `fds` and of `quiesce_fd`: they are
+    closed when serving ends, and also when startup fails. Callers pass a
+    descriptor they have already detached, never one they still hold — see
+    `_socket._CreatedListener.transfer`.
+
     `prepared_tls` is required: PEM is converted once in `prepare_tls` and
     reused here. There is no path that reopens certificate files in a worker.
     """

@@ -794,6 +794,11 @@ async fn run_serve_task(task: ServeTask) {
 #[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None, *, prepared_tls))]
 /// Adopt listener file descriptors and run one worker until shutdown.
 ///
+/// Takes ownership of every descriptor in `fds` and of `quiesce_fd`: they are
+/// closed when serving ends, and also when startup fails. Callers pass a
+/// descriptor they have already detached, never one they still hold — see
+/// `_socket._CreatedListener.transfer`.
+///
 /// `prepared_tls` is required: PEM is converted once in `prepare_tls` and
 /// reused here. There is no path that reopens certificate files in a worker.
 #[expect(

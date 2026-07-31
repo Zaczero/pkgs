@@ -62,11 +62,22 @@ response header or trailer field, a non-final or non-three-digit response
 status, an invalid WebSocket close value, an empty accepted subprotocol, or a
 `websocket.send` message that sets neither or both payload fields.
 
+`ValueError` also covers a `websocket.accept` that names a subprotocol the
+client did not offer, or that carries a header the handshake owns — both are
+raised from the `send()` call that supplied them, so an application can catch
+one and accept a subprotocol the client did offer instead.
+
 `RuntimeError` reports an invalid message sequence, such as sending a response
 body before `http.response.start`, mixing `http.response.pathsend` with a
 response body, sending trailers at the wrong point, or sending an unexpected
-WebSocket event. Calling `send()` after the stream has closed raises `OSError`.
-An exception raised by the application itself propagates unchanged.
+WebSocket event. It also covers conditions that are nobody's message in
+particular: a handshake that timed out, a compression failure, an application
+that ended before completing its response. Calling `send()` after the stream
+has closed raises `OSError`. An exception raised by the application itself
+propagates unchanged.
+
+Every error variant is mapped to one of these four types explicitly; there is
+no fall-through, so a type here is a decision rather than a default.
 
 This differs from Uvicorn: it reports several malformed values as
 `RuntimeError`. Catch `ValueError` around `send()` when an application intends

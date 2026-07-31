@@ -19,6 +19,7 @@ the top-level [`serve()`][h2corn.serve] function and a
 | [`LifespanMode`][h2corn.LifespanMode] | Literal type for the `lifespan` option.                               |
 | [`CertReqsMode`][h2corn.CertReqsMode] | Literal type for the `cert_reqs` option.                              |
 | [`LoopImpl`][h2corn.LoopImpl]   | Literal type for the `loop` option.                                          |
+| [`ServerHeaderMode`][h2corn.ServerHeaderMode] | Literal type for the `server_header` option.                   |
 | [`ASGIApp`][h2corn.ASGIApp]     | Precisely typed callable alias for an ASGI 3 application.                    |
 | [`FrameworkASGIApp`][h2corn.FrameworkASGIApp] | Compatibility alias for broadly typed framework applications. |
 | [`Scope`][h2corn.Scope]         | Discriminated union of h2corn's HTTP, WebSocket, and lifespan scopes.        |

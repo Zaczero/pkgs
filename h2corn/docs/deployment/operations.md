@@ -146,10 +146,13 @@ Set `--timeout-worker-healthcheck 0` to disable.
 
 ## Crash backoff
 
-Workers that crash on startup are restarted with exponential backoff.
-A sustained crash loop will eventually stop the supervisor instead of
-respawning forever, so a misconfigured deployment fails loudly rather
-than burning resources.
+Crashed workers are restarted with exponential backoff. A sustained crash
+loop stops the supervisor instead of respawning forever, so a misconfigured
+deployment fails loudly rather than burning resources.
+
+The gate is whether anything is serving *now*, not whether the fleet ever
+started: a deployment that came up cleanly and then broke stops just the same
+as one that never served a request.
 
 ## TOML config files
 

@@ -52,6 +52,7 @@ descriptions, defaults, and CLI flags live in the
 
 ```python
 from fastapi import FastAPI, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 app = FastAPI()
 
@@ -63,9 +64,17 @@ async def echo(ws: WebSocket):
         while True:
             message = await ws.receive_text()
             await ws.send_text(f'echo: {message}')
-    except Exception:
-        await ws.close()
+    except WebSocketDisconnect:
+        pass
 ```
+
+Catch `WebSocketDisconnect` and do not close again. A client that goes away
+makes `receive_text()` raise it, and the stream is already gone by then —
+closing from the handler sends on a closed stream, which raises `OSError` from
+`send()` (see the [FAQ](faq.md#what-can-an-asgi-send-call-raise)). Starlette
+turns that into another `WebSocketDisconnect`, so the broader
+`except Exception: await ws.close()` shape raises out of its own handler on
+every normal disconnect.
 
 ```bash
 h2corn ws:app --no-http1
