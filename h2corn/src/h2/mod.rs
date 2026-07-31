@@ -1428,8 +1428,7 @@ where
     );
     let outbound_notified = state.writer.outbound_notified();
     tokio::pin!(outbound_notified);
-    let input_flow = Arc::clone(&state.input_flow);
-    let input_notified = input_flow.notified();
+    let input_notified = state.input_flow.notified();
     tokio::pin!(input_notified);
     let has_request_tasks = state.request_tasks.active_count() != 0;
     let connection_timeout = async {

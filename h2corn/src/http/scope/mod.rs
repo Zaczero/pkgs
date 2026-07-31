@@ -2,7 +2,7 @@ mod forwarded;
 
 use std::borrow::Cow;
 
-pub(crate) use forwarded::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+pub(crate) use forwarded::{ScopeHost, default_scope_view, resolve_scope_view};
 use http::Method;
 use memchr::memchr;
 use pyo3::intern;
@@ -89,11 +89,11 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     websocket_subprotocols: &[BytesStr],
 ) -> PyResult<Bound<'py, PyDict>> {
     let request = &ctx.request;
-    let view = scope_view_from_parts(
-        request.scheme().map_or("", BytesStr::as_str),
+    let view = resolve_scope_view(request, &ctx.connection.config, &ctx.connection.info);
+    let defaults = default_scope_view(
+        request.scheme_str(),
         &ctx.connection.config,
         &ctx.connection.info,
-        ctx.scope_overrides.as_deref(),
     );
     let path_and_query = request.path_and_query().map_or("", BytesStr::as_str);
     let (raw_path, query) = path_and_query
@@ -121,7 +121,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         if !view.root_path.is_empty() => {
             "root_path" => root_path_to_python(py, &ctx.connection.config, view.root_path.as_ref()),
         },
-        "server" => server_scope_value(py, ctx, view.server)?,
+        "server" => server_scope_value(py, ctx, view.server, view.server != defaults.server)?,
         "headers" => headers_to_python(py, &request.headers)?,
         "extensions" => extensions,
         if !IS_HTTP => {
@@ -133,7 +133,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         if IS_HTTP => {
             "method" => method_to_python(py, &request.method),
         },
-        if let Some(client) = client_scope_value(py, ctx, view.client)? => {
+        if let Some(client) = client_scope_value(py, ctx, view.client, view.client != defaults.client)? => {
             "client" => client,
         },
     }))
@@ -274,45 +274,14 @@ fn header_name_to_python<'py>(
 }
 
 fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> Bound<'_, PyBytes> {
-    py_match_cached_bytes!(
-        py,
-        name,
-        {
-            KnownRequestHeaderName::Accept => b"accept",
-            KnownRequestHeaderName::AcceptEncoding => b"accept-encoding",
-            KnownRequestHeaderName::AcceptLanguage => b"accept-language",
-            KnownRequestHeaderName::Authorization => b"authorization",
-            KnownRequestHeaderName::CacheControl => b"cache-control",
-            KnownRequestHeaderName::Host => b"host",
-            KnownRequestHeaderName::Connection => b"connection",
-            KnownRequestHeaderName::ContentType => b"content-type",
-            KnownRequestHeaderName::Cookie => b"cookie",
-            KnownRequestHeaderName::ProxyConnection => b"proxy-connection",
-            KnownRequestHeaderName::KeepAlive => b"keep-alive",
-            KnownRequestHeaderName::Upgrade => b"upgrade",
-            KnownRequestHeaderName::UserAgent => b"user-agent",
-            KnownRequestHeaderName::Te => b"te",
-            KnownRequestHeaderName::ContentLength => b"content-length",
-            KnownRequestHeaderName::TransferEncoding => b"transfer-encoding",
-            KnownRequestHeaderName::Expect => b"expect",
-            KnownRequestHeaderName::Http2Settings => b"http2-settings",
-            KnownRequestHeaderName::IfModifiedSince => b"if-modified-since",
-            KnownRequestHeaderName::IfNoneMatch => b"if-none-match",
-            KnownRequestHeaderName::Origin => b"origin",
-            KnownRequestHeaderName::Pragma => b"pragma",
-            KnownRequestHeaderName::Referer => b"referer",
-            KnownRequestHeaderName::Forwarded => b"forwarded",
-            KnownRequestHeaderName::XForwardedFor => b"x-forwarded-for",
-            KnownRequestHeaderName::XForwardedProto => b"x-forwarded-proto",
-            KnownRequestHeaderName::XForwardedHost => b"x-forwarded-host",
-            KnownRequestHeaderName::XForwardedPort => b"x-forwarded-port",
-            KnownRequestHeaderName::XForwardedPrefix => b"x-forwarded-prefix",
-            KnownRequestHeaderName::SecWebSocketVersion => b"sec-websocket-version",
-            KnownRequestHeaderName::SecWebSocketKey => b"sec-websocket-key",
-            KnownRequestHeaderName::SecWebSocketProtocol => b"sec-websocket-protocol",
-            KnownRequestHeaderName::SecWebSocketExtensions => b"sec-websocket-extensions",
-        }
-    )
+    static CACHED: PyOnceLock<[Py<PyBytes>; KnownRequestHeaderName::COUNT]> = PyOnceLock::new();
+    CACHED.get_or_init(py, || {
+        std::array::from_fn(|index| {
+            PyBytes::new(py, KnownRequestHeaderName::ALL[index].as_bytes()).unbind()
+        })
+    })[name as usize]
+        .bind(py)
+        .clone()
 }
 
 fn scheme_to_python<'py>(py: Python<'py>, scheme: &str) -> Bound<'py, PyString> {
@@ -322,14 +291,13 @@ fn scheme_to_python<'py>(py: Python<'py>, scheme: &str) -> Bound<'py, PyString> 
 fn server_scope_value<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
-    server: (&str, Option<u16>),
+    server: (ScopeHost<'_>, Option<u16>),
+    overridden: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    if ctx
-        .scope_overrides
-        .as_deref()
-        .is_some_and(|overrides| overrides.server.is_some())
-    {
-        Ok(server.into_pyobject(py)?.into_any())
+    if overridden {
+        server
+            .0
+            .with_text(|host| Ok((host, server.1).into_pyobject(py)?.into_any()))
     } else {
         Ok(ctx.connection.default_server_scope_value(py))
     }
@@ -338,19 +306,12 @@ fn server_scope_value<'py>(
 fn client_scope_value<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
-    client: Option<(&str, u16)>,
+    client: Option<(ScopeHost<'_>, u16)>,
+    overridden: bool,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
-    if ctx
-        .scope_overrides
-        .as_deref()
-        .is_some_and(|overrides| overrides.client.is_some())
-    {
-        Ok(Some(
-            client
-                .expect("client overrides should resolve to a client")
-                .into_pyobject(py)?
-                .into_any(),
-        ))
+    if overridden {
+        let (host, port) = client.expect("a changed client endpoint must exist");
+        host.with_text(|host| Ok(Some((host, port).into_pyobject(py)?.into_any())))
     } else {
         Ok(ctx.connection.default_client_scope_value(py))
     }
@@ -379,15 +340,18 @@ mod tests {
     use std::borrow::Cow;
     use std::sync::Arc;
 
+    use bytes::Bytes;
     use http::Method;
-    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+    use pyo3::types::{PyAnyMethods, PyBytesMethods, PyDict, PyDictMethods};
     use pyo3::{PyResult, Python};
 
     use super::{build_http_scope, build_websocket_scope, decode_path};
     use crate::config::ServerConfig;
     use crate::http::header_meta::RequestHeaderMeta;
-    use crate::http::types::{BytesStr, HttpVersion, RequestHead, RequestHeaders, RequestTarget};
-    use crate::proxy_protocol::{ClientAddr, ServerAddr};
+    use crate::http::types::{
+        BytesStr, H1RequestHeaders, HttpVersion, KnownRequestHeaderName, RequestHead,
+        RequestHeaders, RequestTarget,
+    };
     use crate::runtime::{ConnectionContext, RequestContext, test_fixtures};
 
     fn init_python() {
@@ -412,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_root_path_is_built_once_and_a_forwarded_prefix_is_not() {
+    fn configured_root_path_is_built_once() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let config = ServerConfig {
@@ -429,31 +393,43 @@ mod tests {
                 let request = RequestContext::new(connection.clone(), test_request());
                 build_http_scope(py, &request)?
             };
-            // A forwarded prefix is a different value per request and must not
-            // come from the cache.
-            let scope_three = {
-                let mut overridden = RequestContext::new(connection.clone(), test_request());
-                overridden
-                    .scope_overrides
-                    .get_or_insert_with(Box::default)
-                    .root_path = Some(Box::from("/api/edge"));
-                build_http_scope(py, &overridden)?
-            };
             drop(connection);
 
             let root_one = scope_one.get_item("root_path")?.expect("root_path exists");
             let root_two = scope_two.get_item("root_path")?.expect("root_path exists");
-            let root_three = scope_three
-                .get_item("root_path")?
-                .expect("root_path exists");
 
             assert_eq!(root_one.extract::<String>()?, "/api");
             assert!(
                 root_one.is(&root_two),
                 "the configured root path is the same string every request"
             );
-            assert_eq!(root_three.extract::<String>()?, "/api/edge");
-            assert!(!root_three.is(&root_one));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn known_header_names_share_one_exhaustive_python_bytes_cache() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            assert_eq!(
+                KnownRequestHeaderName::ALL.len(),
+                KnownRequestHeaderName::COUNT,
+                "the generated vocabulary fixes the cache length"
+            );
+            for (index, name) in KnownRequestHeaderName::ALL.iter().enumerate() {
+                assert_eq!(
+                    *name as usize, index,
+                    "the generated enum remains densely indexable"
+                );
+                let first = super::known_header_name_to_python(py, *name);
+                let second = super::known_header_name_to_python(py, *name);
+                assert_eq!(first.as_bytes(), name.as_bytes());
+                assert!(
+                    first.is(&second),
+                    "every known name reuses its one cached Python bytes object"
+                );
+            }
             Ok(())
         })
         .unwrap();
@@ -464,7 +440,6 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
-            assert!(request_one.scope_overrides.is_none());
             let scope_one = build_http_scope(py, &request_one)?;
             let request_two = RequestContext::new(request_one.connection.clone(), test_request());
             let scope_two = build_http_scope(py, &request_two)?;
@@ -493,42 +468,32 @@ mod tests {
     }
 
     #[test]
-    fn http_scope_uses_overridden_endpoints_instead_of_cached_defaults() {
+    fn scope_keeps_untrusted_proxy_headers_in_the_asgi_header_list() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            let default_request = RequestContext::new(test_connection(py), test_request());
-            let default_scope = build_http_scope(py, &default_request)?;
+            let raw = Bytes::from_static(b"198.51.100.9");
+            let mut headers = H1RequestHeaders::new(raw.clone());
+            headers
+                .push(b"x-forwarded-for", raw.as_ref())
+                .expect("header is valid");
+            let request = RequestHead {
+                http_version: HttpVersion::Http1_1,
+                method: Method::GET,
+                target: RequestTarget::normal(
+                    BytesStr::from_static("http"),
+                    BytesStr::from_static("/"),
+                ),
+                headers: RequestHeaders::from_h1(headers),
+                header_meta: RequestHeaderMeta::default(),
+            };
+            let request = RequestContext::new(test_connection(py), request);
+            let scope = build_http_scope(py, &request)?;
+            let headers = scope
+                .get_item("headers")?
+                .expect("ASGI headers are present")
+                .extract::<Vec<(Vec<u8>, Vec<u8>)>>()?;
 
-            let mut overridden =
-                RequestContext::new(default_request.connection.clone(), test_request());
-            drop(default_request);
-            let overrides = overridden.scope_overrides.get_or_insert_with(Box::default);
-            overrides.client = Some(ClientAddr {
-                host: "10.0.0.9".into(),
-                port: 9001,
-            });
-            overrides.server = Some(ServerAddr {
-                host: "edge.internal".into(),
-                port: Some(8443),
-            });
-
-            let overridden_scope = build_http_scope(py, &overridden)?;
-            drop(overridden);
-            let default_server = default_scope.get_item("server")?.expect("server exists");
-            let default_client = default_scope.get_item("client")?.expect("client exists");
-            let overridden_server = overridden_scope.get_item("server")?.expect("server exists");
-            let overridden_client = overridden_scope.get_item("client")?.expect("client exists");
-
-            assert!(!default_server.is(&overridden_server));
-            assert!(!default_client.is(&overridden_client));
-            assert_eq!(
-                overridden_server.extract::<(String, Option<u16>)>()?,
-                ("edge.internal".to_owned(), Some(8443)),
-            );
-            assert_eq!(
-                overridden_client.extract::<(String, u16)>()?,
-                ("10.0.0.9".to_owned(), 9001),
-            );
+            assert!(headers.contains(&(b"x-forwarded-for".to_vec(), b"198.51.100.9".to_vec())));
             Ok(())
         })
         .unwrap();

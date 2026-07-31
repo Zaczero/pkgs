@@ -3,7 +3,7 @@ mod websocket;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fmt, future};
+use std::{fmt, future, ptr};
 
 use bytes::Bytes;
 pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared};
@@ -42,6 +42,7 @@ use crate::python::{StaticPyKey, py_dict};
 use crate::runtime::H2InputCredit;
 use crate::websocket::{
     SEC_WEBSOCKET_EXTENSIONS_HEADER_BYTES, SEC_WEBSOCKET_PROTOCOL_HEADER_BYTES, WebSocketCloseCode,
+    close_code,
 };
 
 macro_rules! asgi_item {
@@ -212,6 +213,23 @@ enum WebSocketSendPayload {
     Bytes(PayloadBytes),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HttpOutboundType {
+    Start,
+    Body,
+    Pathsend,
+    Trailers,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WebSocketOutboundType {
+    Accept,
+    Send,
+    Close,
+    HttpResponseStart,
+    HttpResponseBody,
+}
+
 impl<'py> AsgiMessage<'py> {
     asgi_item!(headers_item, "headers");
     asgi_item!(trailers_item, "trailers");
@@ -232,16 +250,173 @@ impl<'py> AsgiMessage<'py> {
             KEY.get_item(dict.py(), dict).map_err(H2CornError::from)?
         }
         .ok_or_else(|| AsgiError::missing_field(AsgiContainer::Message, "type").into_error())?;
-        Ok(Self {
-            dict,
-            message_type: cast_exact_first::<PyString>(&value)
-                .map_err(|_| field_type_error(AsgiContainer::Message, "type", "a str", &value))?
-                .to_owned(),
-        })
+        let message_type = match value.cast_into_exact::<PyString>() {
+            Ok(value) => value,
+            Err(error) => {
+                let value = error.into_inner();
+                match value.cast_into::<PyString>() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let value = error.into_inner();
+                        return Err(field_type_error(
+                            AsgiContainer::Message,
+                            "type",
+                            "a str",
+                            &value,
+                        ));
+                    },
+                }
+            },
+        };
+        Ok(Self { dict, message_type })
     }
 
     fn message_type(&self) -> Result<&str, H2CornError> {
         self.message_type.to_str().map_err(H2CornError::from)
+    }
+
+    fn interned_http_outbound_type(&self) -> Option<HttpOutboundType> {
+        static RESPONSE_START: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+        static RESPONSE_BODY: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+        static RESPONSE_PATHSEND: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+        static RESPONSE_TRAILERS: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+
+        let py = self.message_type.py();
+        let message_type = self.message_type.as_ptr();
+        if ptr::eq(
+            message_type,
+            RESPONSE_START
+                .get_or_init(py, || PyString::intern(py, "http.response.start").unbind())
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(HttpOutboundType::Start)
+        } else if ptr::eq(
+            message_type,
+            RESPONSE_BODY
+                .get_or_init(py, || PyString::intern(py, "http.response.body").unbind())
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(HttpOutboundType::Body)
+        } else if ptr::eq(
+            message_type,
+            RESPONSE_PATHSEND
+                .get_or_init(py, || {
+                    PyString::intern(py, "http.response.pathsend").unbind()
+                })
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(HttpOutboundType::Pathsend)
+        } else if ptr::eq(
+            message_type,
+            RESPONSE_TRAILERS
+                .get_or_init(py, || {
+                    PyString::intern(py, "http.response.trailers").unbind()
+                })
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(HttpOutboundType::Trailers)
+        } else {
+            None
+        }
+    }
+
+    fn http_outbound_type(&self) -> Result<HttpOutboundType, H2CornError> {
+        self.interned_http_outbound_type().map_or_else(
+            || match self.message_type()? {
+                "http.response.start" => Ok(HttpOutboundType::Start),
+                "http.response.body" => Ok(HttpOutboundType::Body),
+                "http.response.pathsend" => Ok(HttpOutboundType::Pathsend),
+                "http.response.trailers" => Ok(HttpOutboundType::Trailers),
+                message_type => {
+                    AsgiError::unsupported_outbound_message(AsgiChannel::Http, message_type).err()
+                },
+            },
+            Ok,
+        )
+    }
+
+    fn interned_websocket_outbound_type(&self) -> Option<WebSocketOutboundType> {
+        static ACCEPT: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
+        static SEND: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
+        static CLOSE: crate::python::PyOnceLock<Py<PyString>> = crate::python::PyOnceLock::new();
+        static HTTP_RESPONSE_START: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+        static HTTP_RESPONSE_BODY: crate::python::PyOnceLock<Py<PyString>> =
+            crate::python::PyOnceLock::new();
+
+        let py = self.message_type.py();
+        let message_type = self.message_type.as_ptr();
+        if ptr::eq(
+            message_type,
+            ACCEPT
+                .get_or_init(py, || PyString::intern(py, "websocket.accept").unbind())
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(WebSocketOutboundType::Accept)
+        } else if ptr::eq(
+            message_type,
+            SEND.get_or_init(py, || PyString::intern(py, "websocket.send").unbind())
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(WebSocketOutboundType::Send)
+        } else if ptr::eq(
+            message_type,
+            CLOSE
+                .get_or_init(py, || PyString::intern(py, "websocket.close").unbind())
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(WebSocketOutboundType::Close)
+        } else if ptr::eq(
+            message_type,
+            HTTP_RESPONSE_START
+                .get_or_init(py, || {
+                    PyString::intern(py, "websocket.http.response.start").unbind()
+                })
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(WebSocketOutboundType::HttpResponseStart)
+        } else if ptr::eq(
+            message_type,
+            HTTP_RESPONSE_BODY
+                .get_or_init(py, || {
+                    PyString::intern(py, "websocket.http.response.body").unbind()
+                })
+                .bind(py)
+                .as_ptr(),
+        ) {
+            Some(WebSocketOutboundType::HttpResponseBody)
+        } else {
+            None
+        }
+    }
+
+    fn websocket_outbound_type(&self) -> Result<WebSocketOutboundType, H2CornError> {
+        self.interned_websocket_outbound_type().map_or_else(
+            || match self.message_type()? {
+                "websocket.accept" => Ok(WebSocketOutboundType::Accept),
+                "websocket.send" => Ok(WebSocketOutboundType::Send),
+                "websocket.close" => Ok(WebSocketOutboundType::Close),
+                "websocket.http.response.start" => Ok(WebSocketOutboundType::HttpResponseStart),
+                "websocket.http.response.body" => Ok(WebSocketOutboundType::HttpResponseBody),
+                message_type => {
+                    AsgiError::unsupported_outbound_message(AsgiChannel::WebSocket, message_type)
+                        .err()
+                },
+            },
+            Ok,
+        )
     }
 
     fn require(
@@ -301,20 +476,13 @@ impl<'py> AsgiMessage<'py> {
         let status = cast_exact_first::<PyInt>(&value)
             .map_err(|_| field_type_error(container, "status", "an int", &value))?
             .extract::<i64>()
-            .map_err(|_| HttpResponseError::StatusMustBeThreeDigitCode {
-                container,
-                status: "an integer outside the signed 64-bit range".into(),
-            })?;
-        let display_status = status.to_string().into_boxed_str();
-        let status =
-            u16::try_from(status).map_err(|_| HttpResponseError::StatusMustBeThreeDigitCode {
-                container,
-                status: display_status.clone(),
-            })?;
+            .map_err(|_| HttpResponseError::StatusOutsideSigned64BitRange { container })?;
+        let status = u16::try_from(status)
+            .map_err(|_| HttpResponseError::StatusMustBeThreeDigitCode { container, status })?;
         HttpStatusCode::new(status).ok_or_else(|| {
             HttpResponseError::StatusMustBeThreeDigitCode {
                 container,
-                status: display_status,
+                status: i64::from(status),
             }
             .into_error()
         })
@@ -357,12 +525,17 @@ impl<'py> AsgiMessage<'py> {
         Self::optional_backed_str(container, "subprotocol", self.subprotocol_item()?)
     }
 
-    fn close_code_or_default(&self, container: AsgiContainer) -> Result<u16, H2CornError> {
-        Self::optional_item(self.code_item()?).map_or(Ok(1000_u16), |value| {
-            cast_exact_first::<PyInt>(&value)
+    fn close_code_or_default(
+        &self,
+        container: AsgiContainer,
+    ) -> Result<WebSocketCloseCode, H2CornError> {
+        Self::optional_item(self.code_item()?).map_or(Ok(close_code::NORMAL), |value| {
+            let code = cast_exact_first::<PyInt>(&value)
                 .map_err(|_| field_type_error(container, "code", "an int", &value))?
                 .extract::<u16>()
-                .map_err(|_| WebSocketError::CloseCodeInvalid.into_error())
+                .map_err(|_| WebSocketError::CloseCodeInvalid.into_error())?;
+            WebSocketCloseCode::new(code)
+                .ok_or_else(|| WebSocketError::CloseCodeInvalid.into_error())
         })
     }
 
@@ -710,7 +883,7 @@ pub(crate) fn build_websocket_inbound_event(
         }),
         WebSocketInboundEvent::Disconnect { code, reason } => py_dict!(py, {
             "type" => "websocket.disconnect",
-            "code" => code,
+            "code" => code.get(),
             if let Some(reason) = reason.filter(|reason| !reason.is_empty()) => {
                 "reason" => reason.as_str(),
             },
@@ -1058,9 +1231,8 @@ pub(crate) fn parse_http_outbound_event(
 ) -> Result<HttpOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
 
-    let message_type = message.message_type()?;
-    match message_type {
-        "http.response.start" => {
+    match message.http_outbound_type()? {
+        HttpOutboundType::Start => {
             let status = message.status(AsgiContainer::HttpResponseStart)?;
             let status = FinalResponseStatus::new(status).ok_or_else(|| {
                 HttpResponseError::InformationalStatusUnsupported {
@@ -1078,15 +1250,15 @@ pub(crate) fn parse_http_outbound_event(
                 control,
             })
         },
-        "http.response.body" => {
+        HttpOutboundType::Body => {
             let body = message.body_or_empty(AsgiContainer::HttpResponseBody)?;
             let more_body = message.more_body_flag(AsgiContainer::HttpResponseBody)?;
             Ok(HttpOutboundEvent::Body { body, more_body })
         },
-        "http.response.pathsend" => Ok(HttpOutboundEvent::PathSend {
+        HttpOutboundType::Pathsend => Ok(HttpOutboundEvent::PathSend {
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),
-        "http.response.trailers" => {
+        HttpOutboundType::Trailers => {
             let headers = message.response_trailers(AsgiContainer::HttpResponseTrailers)?;
             let more_trailers = message.more_trailers_flag(AsgiContainer::HttpResponseTrailers)?;
             Ok(HttpOutboundEvent::Trailers {
@@ -1094,7 +1266,6 @@ pub(crate) fn parse_http_outbound_event(
                 more_trailers,
             })
         },
-        _ => AsgiError::unsupported_outbound_message(AsgiChannel::Http, message_type).err(),
     }
 }
 
@@ -1103,9 +1274,8 @@ pub(crate) fn parse_websocket_outbound_event(
 ) -> Result<WebSocketOutboundEvent, H2CornError> {
     let message = AsgiMessage::parse(message)?;
 
-    let message_type = message.message_type()?;
-    match message_type {
-        "websocket.accept" => {
+    match message.websocket_outbound_type()? {
+        WebSocketOutboundType::Accept => {
             let subprotocol = message.subprotocol(AsgiContainer::WebSocketAccept)?;
             let (mut headers, _) =
                 message.application_response_headers(AsgiContainer::WebSocketAccept)?;
@@ -1130,16 +1300,16 @@ pub(crate) fn parse_websocket_outbound_event(
                 headers,
             })
         },
-        "websocket.send" => match message.websocket_send_payload()? {
+        WebSocketOutboundType::Send => match message.websocket_send_payload()? {
             WebSocketSendPayload::Text(text) => Ok(WebSocketOutboundEvent::SendText(text)),
             WebSocketSendPayload::Bytes(data) => Ok(WebSocketOutboundEvent::SendBytes(data)),
         },
-        "websocket.close" => {
+        WebSocketOutboundType::Close => {
             let code = message.close_code_or_default(AsgiContainer::WebSocketClose)?;
             let reason = message.reason(AsgiContainer::WebSocketClose)?;
             Ok(WebSocketOutboundEvent::Close { code, reason })
         },
-        "websocket.http.response.start" => {
+        WebSocketOutboundType::HttpResponseStart => {
             let status = message.status(AsgiContainer::WebSocketHttpResponseStart)?;
             let status = FinalResponseStatus::new(status).ok_or_else(|| {
                 HttpResponseError::InformationalStatusUnsupported {
@@ -1155,12 +1325,11 @@ pub(crate) fn parse_websocket_outbound_event(
                 control,
             })
         },
-        "websocket.http.response.body" => {
+        WebSocketOutboundType::HttpResponseBody => {
             let body = message.body_or_empty(AsgiContainer::WebSocketHttpResponseBody)?;
             let more_body = message.more_body_flag(AsgiContainer::WebSocketHttpResponseBody)?;
             Ok(WebSocketOutboundEvent::HttpResponseBody { body, more_body })
         },
-        _ => AsgiError::unsupported_outbound_message(AsgiChannel::WebSocket, message_type).err(),
     }
 }
 
@@ -1173,14 +1342,14 @@ mod tests {
 
     use bytes::Bytes;
     use pyo3::ffi::c_str;
-    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyTuple};
+    use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyString, PyTuple};
     use pyo3::{PyResult, Python};
     use tokio::sync::{Mutex, mpsc, oneshot};
 
     use super::{
-        EventSource, HttpInboundEvent, ReceiveResolve, Requeueable, ResolveOp,
-        WebSocketOutboundEvent, build_http_inbound_event, parse_http_outbound_event,
-        parse_websocket_outbound_event,
+        AsgiMessage, EventSource, HttpInboundEvent, HttpOutboundType, ReceiveResolve, Requeueable,
+        ResolveOp, WebSocketOutboundEvent, WebSocketOutboundType, build_http_inbound_event,
+        parse_http_outbound_event, parse_websocket_outbound_event,
     };
     use crate::config::{ConfiguredResponseHeader, ResponseHeaderConfig};
     use crate::error::{AsgiContainer, AsgiError, ErrorKind, HttpResponseError, WebSocketError};
@@ -1311,6 +1480,90 @@ mod tests {
                     .unwrap_err()
                     .to_string(),
                 "websocket.close code must be an int, got str"
+            );
+
+            let message = py_dict!(py, {
+                "type" => "websocket.close",
+                "code" => 0,
+            });
+            assert_eq!(
+                parse_websocket_outbound_event(&message)
+                    .unwrap_err()
+                    .to_string(),
+                "websocket close code is invalid"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn asgi_outbound_type_dispatches_interned_values_and_falls_back_to_strings() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            for (text, expected) in [
+                ("http.response.start", HttpOutboundType::Start),
+                ("http.response.body", HttpOutboundType::Body),
+                ("http.response.pathsend", HttpOutboundType::Pathsend),
+                ("http.response.trailers", HttpOutboundType::Trailers),
+            ] {
+                let message = PyDict::new(py);
+                message.set_item("type", PyString::intern(py, text))?;
+                let message = AsgiMessage::parse(&message).unwrap();
+                assert_eq!(message.interned_http_outbound_type(), Some(expected));
+                assert_eq!(message.http_outbound_type().unwrap(), expected);
+            }
+
+            for (text, expected) in [
+                ("websocket.accept", WebSocketOutboundType::Accept),
+                ("websocket.send", WebSocketOutboundType::Send),
+                ("websocket.close", WebSocketOutboundType::Close),
+                (
+                    "websocket.http.response.start",
+                    WebSocketOutboundType::HttpResponseStart,
+                ),
+                (
+                    "websocket.http.response.body",
+                    WebSocketOutboundType::HttpResponseBody,
+                ),
+            ] {
+                let message = PyDict::new(py);
+                message.set_item("type", PyString::intern(py, text))?;
+                let message = AsgiMessage::parse(&message).unwrap();
+                assert_eq!(message.interned_websocket_outbound_type(), Some(expected));
+                assert_eq!(message.websocket_outbound_type().unwrap(), expected);
+            }
+
+            let dynamic = PyString::new(py, "http.response.body");
+            assert!(!dynamic.is(PyString::intern(py, "http.response.body")));
+            let message = PyDict::new(py);
+            message.set_item("type", dynamic)?;
+            let message = AsgiMessage::parse(&message).unwrap();
+            assert_eq!(message.interned_http_outbound_type(), None);
+            assert_eq!(
+                message.http_outbound_type().unwrap(),
+                HttpOutboundType::Body
+            );
+
+            let subclass = py.eval(
+                c_str!("type('MessageType', (str,), {} )('websocket.send')"),
+                None,
+                None,
+            )?;
+            let message = PyDict::new(py);
+            message.set_item("type", subclass)?;
+            let message = AsgiMessage::parse(&message).unwrap();
+            assert_eq!(message.interned_websocket_outbound_type(), None);
+            assert_eq!(
+                message.websocket_outbound_type().unwrap(),
+                WebSocketOutboundType::Send
+            );
+
+            let message = PyDict::new(py);
+            message.set_item("type", PyString::new(py, "http.response.unknown"))?;
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "unsupported http ASGI outbound message: http.response.unknown"
             );
             Ok(())
         })
@@ -1465,10 +1718,10 @@ mod tests {
     }
 
     #[test]
-    fn response_status_is_validated_once_at_the_python_boundary() {
+    fn response_status_validation_handles_python_integer_boundaries() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
-            for status in [99_u16, 1000] {
+            for status in [-1_i64, 0, 99] {
                 let message = py_dict!(py, {
                     "type" => "http.response.start",
                     "status" => status,
@@ -1478,13 +1731,67 @@ mod tests {
                     err.kind(),
                     ErrorKind::HttpResponse(HttpResponseError::StatusMustBeThreeDigitCode { .. })
                 ));
-                if status == 99 {
-                    assert_eq!(
-                        err.to_string(),
-                        "http.response.start status must be a three-digit code, got 99"
-                    );
-                }
+                assert_eq!(
+                    err.to_string(),
+                    format!("http.response.start status must be a three-digit code, got {status}")
+                );
             }
+
+            let too_large = py.eval(c_str!("2**63"), None, None)?;
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => too_large,
+            });
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.start status must be a three-digit code, got an integer outside the signed 64-bit range"
+            );
+
+            for status in [100_u16, 199] {
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => status,
+                });
+                assert!(matches!(
+                    parse_http_outbound_event(&message).unwrap_err().kind(),
+                    ErrorKind::HttpResponse(HttpResponseError::InformationalStatusUnsupported {
+                        status: actual,
+                        ..
+                    }) if *actual == status
+                ));
+            }
+
+            {
+                let status = 600_u16;
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => status,
+                });
+                assert!(matches!(
+                    parse_http_outbound_event(&message),
+                    Ok(super::HttpOutboundEvent::Start { status: actual, .. })
+                        if actual.get().get() == status
+                ));
+            }
+
+            let bool_message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => true,
+            });
+            assert_eq!(
+                parse_http_outbound_event(&bool_message).unwrap_err().to_string(),
+                "http.response.start status must be a three-digit code, got 1"
+            );
+
+            let subclass = py.eval(c_str!("type('Status', (int,), {})(201)"), None, None)?;
+            let subclass_message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => subclass,
+            });
+            assert!(matches!(
+                parse_http_outbound_event(&subclass_message),
+                Ok(super::HttpOutboundEvent::Start { status, .. }) if status.get().get() == 201
+            ));
             Ok(())
         })
         .unwrap();

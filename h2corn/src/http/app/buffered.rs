@@ -18,6 +18,11 @@ enum HttpSendMode {
     Closed,
 }
 
+struct HttpSendControl {
+    mode: HttpSendMode,
+    close_signal: Option<watch::Sender<()>>,
+}
+
 /// An ASGI event that has already paid its connection-wide body credit. The
 /// credit stays attached to the event through response lowering and into the
 /// writer's pending DATA chunk.
@@ -60,15 +65,12 @@ pub(crate) struct HttpSendWaiter {
 
 #[derive(Clone)]
 pub(crate) struct HttpSendState {
-    shared: Arc<BufferedState<HttpSendMode, AdmittedHttpOutboundEvent, 2>>,
+    shared: Arc<BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>>,
     budget: Option<ResponseByteBudget>,
-    closed: watch::Receiver<bool>,
-    close_signal: watch::Sender<bool>,
 }
 
 pub(crate) struct HttpSendBuffer {
-    shared: Arc<BufferedState<HttpSendMode, AdmittedHttpOutboundEvent, 2>>,
-    closed: watch::Sender<bool>,
+    shared: Arc<BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>>,
     stream_rx: Option<mpsc::Receiver<AdmittedHttpOutboundEvent>>,
 }
 
@@ -89,19 +91,18 @@ impl HttpSendState {
     }
 
     fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> Self {
-        let (close_signal, closed) = watch::channel(false);
         Self {
-            shared: Arc::new(BufferedState::new(HttpSendMode::Inline { accepted: 0 })),
+            shared: Arc::new(BufferedState::new(HttpSendControl {
+                mode: HttpSendMode::Inline { accepted: 0 },
+                close_signal: None,
+            })),
             budget,
-            closed,
-            close_signal,
         }
     }
 
     pub(crate) fn buffer(&self) -> HttpSendBuffer {
         HttpSendBuffer {
             shared: Arc::clone(&self.shared),
-            closed: self.close_signal.clone(),
             stream_rx: None,
         }
     }
@@ -138,12 +139,12 @@ impl HttpSendState {
     fn try_forward(&self, event: AdmittedHttpOutboundEvent) -> HttpSendDisposition {
         let mut inner = self.shared.lock();
         let should_buffer = matches!(
-            &inner.state,
+            &inner.state.mode,
             HttpSendMode::Inline { accepted } if *accepted < 2
         );
         if should_buffer {
             inner.queue.push_back(event);
-            let HttpSendMode::Inline { accepted } = &mut inner.state else {
+            let HttpSendMode::Inline { accepted } = &mut inner.state.mode else {
                 unreachable!("inline admission cannot change state while locked")
             };
             *accepted += 1;
@@ -151,19 +152,19 @@ impl HttpSendState {
             self.shared.notify_ready();
             return HttpSendDisposition::Buffered;
         }
-        if matches!(&inner.state, HttpSendMode::Inline { .. }) {
+        if matches!(&inner.state.mode, HttpSendMode::Inline { .. }) {
             let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
             // A fresh bounded channel cannot be full. Keeping the first two
             // values in the inline FIFO preserves its cheap fast path; this
             // third accepted event is the first queue admission.
             tx.try_send(event)
                 .expect("a newly created outbound channel has capacity");
-            inner.state = HttpSendMode::Streaming { tx, rx: Some(rx) };
+            inner.state.mode = HttpSendMode::Streaming { tx, rx: Some(rx) };
             drop(inner);
             self.shared.notify_ready();
             return HttpSendDisposition::Sent;
         }
-        match &inner.state {
+        match &inner.state.mode {
             HttpSendMode::Streaming { tx, .. } => match try_push(tx, event) {
                 TryPush::Sent => HttpSendDisposition::Sent,
                 TryPush::Full(event) => HttpSendDisposition::Backpressured(HttpSendWaiter {
@@ -183,15 +184,26 @@ impl HttpSendState {
     ) -> Option<AdmittedHttpOutboundEvent> {
         let credit = match (&event, &self.budget) {
             (HttpOutboundEvent::Body { body, .. }, Some(budget)) => {
-                let mut closed = self.closed.clone();
-                if *closed.borrow() {
-                    return None;
-                }
-                tokio::select! {
-                    credit = budget.acquire(body.len()) => credit.ok()?,
-                    changed = closed.changed() => {
-                        let _ = changed;
-                        return None;
+                if let Ok(credit) = budget.try_acquire(body.len()) {
+                    credit
+                } else {
+                    let mut closed = {
+                        let mut inner = self.shared.lock();
+                        if matches!(&inner.state.mode, HttpSendMode::Closed) {
+                            return None;
+                        }
+                        inner
+                            .state
+                            .close_signal
+                            .get_or_insert_with(|| watch::channel(()).0)
+                            .subscribe()
+                    };
+                    tokio::select! {
+                        credit = budget.acquire(body.len()) => credit.ok()?,
+                        changed = closed.changed() => {
+                            let _ = changed;
+                            return None;
+                        }
                     }
                 }
             },
@@ -204,12 +216,12 @@ impl HttpSendState {
         let tx = {
             let mut inner = self.shared.lock();
             let should_buffer = matches!(
-                &inner.state,
+                &inner.state.mode,
                 HttpSendMode::Inline { accepted } if *accepted < 2
             );
             if should_buffer {
                 inner.queue.push_back(event);
-                let HttpSendMode::Inline { accepted } = &mut inner.state else {
+                let HttpSendMode::Inline { accepted } = &mut inner.state.mode else {
                     unreachable!("inline admission cannot change state while locked")
                 };
                 *accepted += 1;
@@ -217,11 +229,11 @@ impl HttpSendState {
                 self.shared.notify_ready();
                 return true;
             }
-            if matches!(&inner.state, HttpSendMode::Inline { .. }) {
+            if matches!(&inner.state.mode, HttpSendMode::Inline { .. }) {
                 let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);
-                inner.state = HttpSendMode::Streaming { tx, rx: Some(rx) };
+                inner.state.mode = HttpSendMode::Streaming { tx, rx: Some(rx) };
             }
-            match &inner.state {
+            match &inner.state.mode {
                 HttpSendMode::Streaming { tx, .. } => tx.clone(),
                 HttpSendMode::Closed => return false,
                 HttpSendMode::Inline { .. } => {
@@ -248,7 +260,8 @@ impl HttpSendBuffer {
     /// the response driver can report their original ASGI contract error.
     pub(super) fn close_outbound(&mut self) {
         let mut inner = self.shared.lock();
-        let state = std::mem::replace(&mut inner.state, HttpSendMode::Closed);
+        let state = std::mem::replace(&mut inner.state.mode, HttpSendMode::Closed);
+        let close_signal = inner.state.close_signal.take();
         if let HttpSendMode::Streaming { rx, .. } = state
             && self.stream_rx.is_none()
         {
@@ -258,7 +271,9 @@ impl HttpSendBuffer {
         if let Some(rx) = &mut self.stream_rx {
             rx.close();
         }
-        self.closed.send_replace(true);
+        if let Some(close_signal) = close_signal {
+            close_signal.send_replace(());
+        }
         self.shared.notify_ready();
     }
 
@@ -269,7 +284,7 @@ impl HttpSendBuffer {
         }
 
         if self.stream_rx.is_none()
-            && let HttpSendMode::Streaming { rx, .. } = &mut inner.state
+            && let HttpSendMode::Streaming { rx, .. } = &mut inner.state.mode
         {
             self.stream_rx = rx.take();
         }
@@ -434,7 +449,7 @@ mod tests {
 
         let internal_count = || {
             let inner = send_state.shared.lock();
-            match &inner.state {
+            match &inner.state.mode {
                 super::HttpSendMode::Streaming { tx, .. } => tx.strong_count(),
                 super::HttpSendMode::Inline { .. } | super::HttpSendMode::Closed => {
                     panic!("streaming mode was enabled")
@@ -458,6 +473,86 @@ mod tests {
         assert_eq!(internal_count(), 1, "the waiter owns no sender clone");
         drop(waiter);
         assert_eq!(internal_count(), 1);
+    }
+
+    #[test]
+    fn unbounded_sends_never_arm_a_close_signal() {
+        let (send_state, _send_buffer) = HttpSendState::new();
+        assert!(
+            send_state.shared.lock().state.close_signal.is_none(),
+            "unbounded HTTP/1 sends have no byte waiter to wake"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_before_a_byte_waiter_arms_observes_closed() {
+        let budget = ResponseByteBudget::new(1);
+        let send_state = HttpSendState::with_response_budget(budget);
+        let mut send_buffer = send_state.buffer();
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"a")),
+            HttpSendDisposition::Buffered
+        ));
+        let _retained = send_buffer
+            .take_ready()
+            .expect("the budget-filling body is admitted");
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(body_event(b"b"))
+        else {
+            panic!("the second body waits for byte credit")
+        };
+
+        send_buffer.close_outbound();
+        assert!(
+            send_state.shared.lock().state.close_signal.is_none(),
+            "closing before the wait leaves no signal to allocate"
+        );
+        assert!(
+            !timeout(Duration::from_secs(1), waiter.send())
+                .await
+                .expect("a waiter started after close returns immediately"),
+            "a closed request does not acquire a byte permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_after_arming_wakes_all_byte_waiters() {
+        let budget = ResponseByteBudget::new(1);
+        let send_state = HttpSendState::with_response_budget(budget);
+        let mut send_buffer = send_state.buffer();
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"a")),
+            HttpSendDisposition::Buffered
+        ));
+        let _retained = send_buffer
+            .take_ready()
+            .expect("the budget-filling body is admitted");
+
+        let mut blocked = Vec::new();
+        for body in [b"b", b"c", b"d"] {
+            let HttpSendDisposition::Backpressured(waiter) =
+                send_state.push_or_forward(body_event(body))
+            else {
+                panic!("every body waits for the exhausted byte budget")
+            };
+            blocked.push(tokio::spawn(waiter.send()));
+        }
+        tokio::task::yield_now().await;
+        assert!(
+            send_state.shared.lock().state.close_signal.is_some(),
+            "the first blocked byte acquisition arms the shared close signal"
+        );
+
+        send_buffer.close_outbound();
+        for waiter in blocked {
+            assert!(
+                !timeout(Duration::from_secs(1), waiter)
+                    .await
+                    .expect("closure wakes every byte waiter")
+                    .expect("waiter task joins"),
+                "a byte waiter cannot send after close"
+            );
+        }
     }
 
     #[tokio::test]
@@ -496,7 +591,10 @@ mod tests {
 
         send_buffer.close_outbound();
         assert!(
-            !blocked.await.expect("blocked send task completes"),
+            !timeout(Duration::from_secs(1), blocked)
+                .await
+                .expect("closing a full streaming output wakes the blocked sender")
+                .expect("blocked send task completes"),
             "receiver closure wakes the blocked send with SendAfterClose"
         );
         assert!(matches!(
@@ -543,6 +641,10 @@ mod tests {
         let blocked = tokio::spawn(waiter.send());
         tokio::task::yield_now().await;
         assert!(!blocked.is_finished(), "no byte credit is available yet");
+        assert!(
+            send_state.shared.lock().state.close_signal.is_some(),
+            "a blocked byte acquisition arms the close signal"
+        );
 
         first
             .credit
@@ -615,6 +717,7 @@ mod tests {
         let blocked = tokio::spawn(waiter.send());
         tokio::task::yield_now().await;
         assert!(!blocked.is_finished());
+        assert!(send_state.shared.lock().state.close_signal.is_some());
 
         drop(send_buffer);
         assert!(

@@ -25,7 +25,7 @@ use crate::h2_frame::PeerSettings;
 use crate::http::app::{HttpRequestBody, poll_app_task_once};
 use crate::http::body::RequestBodyState;
 use crate::http::execution::StreamRequestInput;
-use crate::http::planner::reject_before_launch;
+use crate::http::planner::{RejectedResponse, reject_before_launch};
 use crate::http::run_request::run_http_request;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::runtime::{
@@ -33,7 +33,7 @@ use crate::runtime::{
     try_acquire_request_admission,
 };
 use crate::sendfile::WriteTarget;
-use crate::websocket::{HandshakeRejection, WebSocketContext, WebSocketKey, WebSocketRequestMeta};
+use crate::websocket::{WebSocketContext, WebSocketKey, WebSocketRequestMeta};
 
 const H1_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 
@@ -169,6 +169,7 @@ where
                 connection.security.h1_scheme(),
                 request_head_timeout(&connection.config, first_request),
                 first_request,
+                connection.info.proxy_headers_trusted,
             ) => parsed,
         }?;
 
@@ -281,7 +282,7 @@ where
             }
         },
         UpgradeRequest::WebSocketUnsupportedVersion => {
-            let response = HandshakeRejection::unsupported_version();
+            let response = RejectedResponse::unsupported_websocket_version();
             write_simple_response(
                 &mut writer,
                 &context.connection.config,
@@ -384,11 +385,8 @@ where
         .await?;
         return Ok(ConnectionPersistence::Close);
     };
-    let mut transport = H1HttpTransport::new(
-        writer,
-        Arc::clone(&ctx.connection.config),
-        persistence == ConnectionPersistence::Close,
-    );
+    let mut transport =
+        H1HttpTransport::new(writer, &config, persistence == ConnectionPersistence::Close);
 
     let body_kind = match body_kind {
         RequestBodyKind::None => {
@@ -480,7 +478,7 @@ where
                     StreamedBodyKind::Chunked => None,
                 },
                 body_bytes_read,
-                config.max_request_body_size.map(NonZeroU64::get),
+                config.max_request_body_size,
             ),
             config.timeout_request_body_idle,
             parse::FieldLimits {

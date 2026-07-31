@@ -14,7 +14,7 @@ use crate::app_call::AppCallArgs;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::h2_frame::{ErrorCode, StreamId};
-use crate::http::scope::{ScopeOverrides, resolve_scope_overrides, scope_view_from_parts};
+use crate::http::scope::{ScopeHost, default_scope_view};
 use crate::http::types::RequestHead;
 use crate::proxy_protocol::ConnectionInfo;
 use crate::pyloop::{PumpEvent, Shard, ShardHandle, SlotFuture, TaskSlot};
@@ -458,11 +458,13 @@ impl ConnectionShared {
     pub(crate) fn default_server_scope_value<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
         let value = self.scope_cache.default_server.get_or_init(py, || {
             self.with_default_scope_endpoints(|_, server| {
-                server
-                    .into_pyobject(py)
-                    .expect("server scope tuple should be constructible")
-                    .into_any()
-                    .unbind()
+                server.0.with_text(|host| {
+                    (host, server.1)
+                        .into_pyobject(py)
+                        .expect("server scope tuple should be constructible")
+                        .into_any()
+                        .unbind()
+                })
             })
         });
         value.clone_ref(py).into_bound(py)
@@ -474,12 +476,14 @@ impl ConnectionShared {
     ) -> Option<Bound<'py, PyAny>> {
         let value = self.scope_cache.default_client.get_or_init(py, || {
             self.with_default_scope_endpoints(|client, _| {
-                client.map(|client| {
-                    client
-                        .into_pyobject(py)
-                        .expect("client scope tuple should be constructible")
-                        .into_any()
-                        .unbind()
+                client.map(|(host, port)| {
+                    host.with_text(|host| {
+                        (host, port)
+                            .into_pyobject(py)
+                            .expect("client scope tuple should be constructible")
+                            .into_any()
+                            .unbind()
+                    })
                 })
             })
         });
@@ -490,9 +494,9 @@ impl ConnectionShared {
 
     fn with_default_scope_endpoints<T>(
         &self,
-        f: impl FnOnce(Option<(&str, u16)>, (&str, Option<u16>)) -> T,
+        f: impl FnOnce(Option<(ScopeHost<'_>, u16)>, (ScopeHost<'_>, Option<u16>)) -> T,
     ) -> T {
-        let view = scope_view_from_parts("", &self.config, &self.info, None);
+        let view = default_scope_view("", &self.config, &self.info);
         f(view.client, view.server)
     }
 }
@@ -500,7 +504,6 @@ impl ConnectionShared {
 pub(crate) struct RequestContext {
     pub connection: ConnectionContext,
     pub request: RequestHead,
-    pub(crate) scope_overrides: Option<Box<ScopeOverrides>>,
 }
 
 impl RequestContext {
@@ -508,12 +511,9 @@ impl RequestContext {
     /// per-request future chain would otherwise replicate it in every
     /// suspended layer of the spawned task.
     pub(crate) fn new(connection: ConnectionContext, request: RequestHead) -> Box<Self> {
-        let scope_overrides =
-            resolve_scope_overrides(&request, &connection.config, &connection.info);
         Box::new(Self {
             connection,
             request,
-            scope_overrides,
         })
     }
 }
@@ -892,7 +892,9 @@ pub(crate) mod test_fixtures {
         WebSocketConfig,
     };
     use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
-    use crate::proxy_protocol::{ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr};
+    use crate::proxy_protocol::{
+        ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr, ServerEndpoint,
+    };
     use crate::pyloop::ShardHandle;
 
     pub(crate) fn server_config() -> Arc<ServerConfig> {
@@ -976,10 +978,10 @@ pub(crate) mod test_fixtures {
         let config = server_config();
         ConnectionInfo::from_peer(
             ConnectionPeer::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321)),
-            Some(ServerAddr {
-                host: "127.0.0.1".into(),
-                port: Some(8000),
-            }),
+            Some(ServerEndpoint::Tcp(ServerAddr {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: Some(std::num::NonZeroU16::new(8000).expect("8000 is non-zero")),
+            })),
             &config.proxy,
         )
     }

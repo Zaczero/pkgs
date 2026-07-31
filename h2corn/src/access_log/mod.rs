@@ -14,13 +14,14 @@ use smallvec::SmallVec;
 
 use crate::config::{BindTarget, ServerConfig};
 use crate::http::response::{FinalResponseBody, ResponseAction};
-use crate::http::scope::scope_view_from_parts;
+use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
-use crate::proxy_protocol::{ConnectionInfo, ConnectionPeer};
+use crate::proxy_protocol::ConnectionInfo;
 use crate::runtime::RequestContext;
 use crate::websocket::{WebSocketCloseCode, close_code};
 
 const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
+const MAX_IPV6_CLIENT: &str = "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535";
 const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
 const DECIMAL_FACTORS: [u128; 3] = power_table(10);
@@ -113,7 +114,7 @@ impl fmt::Display for IoSummaryDisplay {
 }
 
 type AccessLogBuf = SmallVec<[u8; ACCESS_LOG_LINE_CAPACITY]>;
-type ClientLabelBuf = SmallVec<[u8; MAX_IPV4_CLIENT.len()]>;
+type ClientLabelBuf = SmallVec<[u8; MAX_IPV6_CLIENT.len()]>;
 
 struct BytesWriter<'a, const N: usize>(&'a mut SmallVec<[u8; N]>);
 
@@ -182,7 +183,7 @@ struct ClientLabel(ClientLabelBuf);
 impl ClientLabel {
     fn build(ctx: &RequestContext) -> Self {
         let mut label = ClientLabelBuf::new();
-        let _ = append_log_client(&mut BytesWriter(&mut label), ctx);
+        append_log_client(&mut label, ctx);
         if label.first() != Some(&b'[') {
             label.resize(IPV4_CLIENT_WIDTH.max(label.len()), b' ');
         }
@@ -486,7 +487,7 @@ pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
         entry.client_label,
         entry.request,
         RequestSummaryKind::WebSocket,
-        entry.close_code,
+        entry.close_code.get(),
         websocket_close_style(entry.close_code),
         AccessLogIoSummary {
             duration: entry.duration,
@@ -569,38 +570,56 @@ fn write_access_log_line(
     );
 }
 
-fn append_client(out: &mut impl fmt::Write, info: &ConnectionInfo) -> fmt::Result {
-    if let Some(client) = &info.client {
-        return write!(
-            out,
-            "{}:{}",
-            HostDisplay(Escaped(client.host.as_ref())),
-            client.port
-        );
-    }
+fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
 
-    match &info.actual_peer {
-        ConnectionPeer::Tcp(peer) => write!(out, "{peer}"),
-        ConnectionPeer::Unix => out.write_str("unix"),
+    let mut rest = host.as_bytes();
+    while let Some(index) = rest.iter().position(u8::is_ascii_control) {
+        out.extend_from_slice(&rest[..index]);
+        let control = rest[index];
+        out.extend_from_slice(&[
+            b'\\',
+            b'x',
+            HEX[usize::from(control >> 4)],
+            HEX[usize::from(control & 15)],
+        ]);
+        rest = &rest[index + 1..];
+    }
+    out.extend_from_slice(rest);
+}
+
+fn append_client_label(out: &mut ClientLabelBuf, host: &str, port: u16) {
+    let bracketed = host.as_bytes().contains(&b':') && !host.starts_with('[');
+    if bracketed {
+        out.push(b'[');
+    }
+    append_escaped_client_host(out, host);
+    if bracketed {
+        out.push(b']');
+    }
+    if port != 0 {
+        out.push(b':');
+        let mut port_buffer = ItoaBuffer::new();
+        out.extend_from_slice(port_buffer.format(port).as_bytes());
     }
 }
 
-fn append_log_client(out: &mut impl fmt::Write, ctx: &RequestContext) -> fmt::Result {
+fn append_connection_client_label(out: &mut ClientLabelBuf, info: &ConnectionInfo) {
+    match info.client.as_ref() {
+        Some(client) => {
+            ScopeHost::Ip(&client.ip).with_text(|host| append_client_label(out, host, client.port));
+        },
+        None => out.extend_from_slice(b"unix"),
+    }
+}
+
+fn append_log_client(out: &mut ClientLabelBuf, ctx: &RequestContext) {
     let connection = &ctx.connection;
-    let view = scope_view_from_parts(
-        ctx.request.scheme_str(),
-        &connection.config,
-        &connection.info,
-        ctx.scope_overrides.as_deref(),
-    );
+    let view = resolve_scope_view(&ctx.request, &connection.config, &connection.info);
     if let Some((host, port)) = view.client {
-        if port == 0 {
-            write!(out, "{}", HostDisplay(Escaped(host)))
-        } else {
-            write!(out, "{}:{port}", HostDisplay(Escaped(host)))
-        }
+        host.with_text(|host| append_client_label(out, host, port));
     } else {
-        append_client(out, &connection.info)
+        append_connection_client_label(out, &connection.info);
     }
 }
 
@@ -764,10 +783,10 @@ const fn status_style(status: HttpStatusCode) -> Style {
 
 const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
     let style = Style::new();
-    match close_code {
-        close_code::NORMAL => style.green(),
+    match close_code.get() {
+        code if code == close_code::NORMAL.get() => style.green(),
         1001 => style.cyan(),
-        close_code::PROTOCOL_ERROR..=2999 => style.yellow(),
+        1002..=2999 => style.yellow(),
         3000..=3999 => style.blue(),
         4000..=4999 => style.red(),
         _ => style.magenta(),
@@ -776,7 +795,7 @@ const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -785,8 +804,9 @@ mod tests {
     use pyo3::Python;
 
     use super::{
-        AccessLogRequest, Escaped, RequestSummaryDisplay, RequestSummaryKind, append_client,
-        write_bytes_to, write_duration_to, write_io_summary_to,
+        AccessLogRequest, ClientLabelBuf, Escaped, RequestSummaryDisplay, RequestSummaryKind,
+        append_client_label, append_connection_client_label, write_bytes_to, write_duration_to,
+        write_io_summary_to,
     };
     use crate::config::{ProxyConfig, ServerConfig};
     use crate::http::header_meta::RequestHeaderMeta;
@@ -794,8 +814,7 @@ mod tests {
         BytesStr, H1RequestHeaders, HttpVersion, RequestHead, RequestHeaders, RequestTarget,
     };
     use crate::proxy_protocol::{
-        ClientAddr, ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr,
-        parse_trusted_peer,
+        ConnectionInfo, ConnectionPeer, ProxyProtocolMode, parse_trusted_peer,
     };
     use crate::runtime::{ConnectionShared, RequestContext, test_fixtures};
     use crate::tls::ConnectionSecurity;
@@ -806,10 +825,16 @@ mod tests {
         out
     }
 
-    fn format_client(info: &ConnectionInfo) -> String {
-        let mut client = String::new();
-        let _ = append_client(&mut client, info);
-        client
+    fn format_client(host: &str, port: u16) -> String {
+        let mut client = ClientLabelBuf::new();
+        append_client_label(&mut client, host, port);
+        String::from_utf8(client.into_vec()).expect("client labels are UTF-8")
+    }
+
+    fn format_connection_client(info: &ConnectionInfo) -> String {
+        let mut client = ClientLabelBuf::new();
+        append_connection_client_label(&mut client, info);
+        String::from_utf8(client.into_vec()).expect("client labels are UTF-8")
     }
 
     fn append_duration_to(out: &mut String, duration: Duration) {
@@ -838,24 +863,18 @@ mod tests {
 
     #[test]
     fn client_format_brackets_ipv6() {
-        let info = ConnectionInfo {
-            actual_peer: ConnectionPeer::Tcp(SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::LOCALHOST),
-                9000,
-            )),
-            actual_server: Some(ServerAddr {
-                host: "::1".into(),
-                port: Some(8000),
-            }),
+        assert_eq!(format_client("2001:db8::1", 443), "[2001:db8::1]:443");
+        assert_eq!(format_client("192.0.2.1", 8080), "192.0.2.1:8080");
+        assert_eq!(format_client("192.0.2.1", 0), "192.0.2.1");
+        assert_eq!(format_client("client\u{1b}name", 9), "client\\x1bname:9");
+
+        let unix = ConnectionInfo {
+            actual_server: None,
             proxy_headers_trusted: false,
-            client: Some(ClientAddr {
-                host: "2001:db8::1".into(),
-                port: 443,
-            }),
+            client: None,
             server: None,
         };
-
-        assert_eq!(format_client(&info), "[2001:db8::1]:443");
+        assert_eq!(format_connection_client(&unix), "unix");
     }
 
     #[test]
@@ -892,7 +911,7 @@ mod tests {
                 .unwrap()
                 .expect("X-Forwarded-For is a known header");
             let mut header_meta = RequestHeaderMeta::default();
-            header_meta.observe_known_header_slice(known_header, value, 0);
+            header_meta.observe_known_header_slice(known_header, value, 0, true);
             let request = RequestHead {
                 http_version: HttpVersion::Http1_1,
                 method: Method::GET,

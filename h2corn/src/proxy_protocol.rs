@@ -1,6 +1,8 @@
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::num::NonZeroU16;
 use std::str;
+use std::sync::Arc;
 
 use atoi_simd::parse_pos;
 use memchr::memchr;
@@ -108,14 +110,20 @@ pub(crate) enum DetectedProtocol {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClientAddr {
-    pub host: Box<str>,
+    pub ip: IpAddr,
     pub port: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ServerAddr {
-    pub host: Box<str>,
-    pub port: Option<u16>,
+    pub ip: IpAddr,
+    pub port: Option<NonZeroU16>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ServerEndpoint {
+    Tcp(ServerAddr),
+    Unix(Arc<str>),
 }
 
 #[derive(Clone, Debug)]
@@ -126,13 +134,12 @@ pub(crate) struct ConnectionStart {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProxyInfo {
-    pub client: Option<ClientAddr>,
+    pub client: ClientAddr,
     pub server: Option<ServerAddr>,
 }
 
 pub(crate) struct ConnectionInfo {
-    pub actual_peer: ConnectionPeer,
-    pub actual_server: Option<ServerAddr>,
+    pub actual_server: Option<ServerEndpoint>,
     pub proxy_headers_trusted: bool,
     pub client: Option<ClientAddr>,
     pub server: Option<ServerAddr>,
@@ -141,20 +148,19 @@ pub(crate) struct ConnectionInfo {
 impl ConnectionInfo {
     pub(crate) fn from_peer(
         actual_peer: ConnectionPeer,
-        actual_server: Option<ServerAddr>,
+        actual_server: Option<ServerEndpoint>,
         proxy: &ProxyConfig,
     ) -> Self {
         let proxy_headers_trusted =
             proxy.trust_headers && peer_is_trusted(&proxy.trusted_peers, &actual_peer);
-        let client = match &actual_peer {
+        let client = match actual_peer {
             ConnectionPeer::Tcp(peer) => Some(ClientAddr {
-                host: peer.ip().to_string().into(),
+                ip: peer.ip(),
                 port: peer.port(),
             }),
             ConnectionPeer::Unix => None,
         };
         Self {
-            actual_peer,
             actual_server,
             proxy_headers_trusted,
             client,
@@ -162,13 +168,9 @@ impl ConnectionInfo {
         }
     }
 
-    pub(crate) fn apply_proxy_info(&mut self, proxy: ProxyInfo) {
-        if let Some(client) = proxy.client {
-            self.client = Some(client);
-        }
-        if let Some(server) = proxy.server {
-            self.server = Some(server);
-        }
+    pub(crate) const fn apply_proxy_info(&mut self, proxy: ProxyInfo) {
+        self.client = Some(proxy.client);
+        self.server = proxy.server;
     }
 }
 
@@ -444,21 +446,22 @@ fn parse_proxy_v1(line: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
             _ => ProxyError::ProxyV1AddressFamilyMismatch.err(),
         }
     };
-    Ok(Some(ProxyInfo {
-        client: Some(ClientAddr {
-            host: parse_ip(client_host, || ProxyError::InvalidProxyV1SourceAddress)?
-                .to_string()
-                .into(),
-            port: parse_pos::<u16, false>(client_port).map_err(|_| ProxyError::InvalidProxyPort)?,
-        }),
-        server: Some(ServerAddr {
-            host: parse_ip(server_host, || ProxyError::InvalidProxyV1DestinationAddress)?
-                .to_string()
-                .into(),
-            port: Some(
+    let client = ClientAddr {
+        ip: parse_ip(client_host, || ProxyError::InvalidProxyV1SourceAddress)?,
+        port: parse_pos::<u16, false>(client_port).map_err(|_| ProxyError::InvalidProxyPort)?,
+    };
+    let server = ServerAddr {
+        ip: parse_ip(server_host, || ProxyError::InvalidProxyV1DestinationAddress)?,
+        port: Some(
+            NonZeroU16::new(
                 parse_pos::<u16, false>(server_port).map_err(|_| ProxyError::InvalidProxyPort)?,
-            ),
-        }),
+            )
+            .ok_or(ProxyError::InvalidProxyPort)?,
+        ),
+    };
+    Ok(Some(ProxyInfo {
+        client,
+        server: Some(server),
     }))
 }
 
@@ -518,7 +521,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
                 addrs.client_port.get(),
                 IpAddr::V4(Ipv4Addr::from(addrs.server_ip)),
                 addrs.server_port.get(),
-            )))
+            )?))
         },
         0x2 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv6Addrs>::from_prefix(payload)
@@ -528,27 +531,32 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
                 addrs.client_port.get(),
                 IpAddr::V6(Ipv6Addr::from(addrs.server_ip)),
                 addrs.server_port.get(),
-            )))
+            )?))
         },
         _ => ProxyError::UnsupportedProxyV2AddressFamily.err(),
     }
 }
 
-fn proxy_v2_info(client: IpAddr, client_port: u16, server: IpAddr, server_port: u16) -> ProxyInfo {
-    ProxyInfo {
-        client: Some(ClientAddr {
-            host: client.to_string().into(),
+fn proxy_v2_info(
+    client: IpAddr,
+    client_port: u16,
+    server: IpAddr,
+    server_port: u16,
+) -> Result<ProxyInfo, H2CornError> {
+    Ok(ProxyInfo {
+        client: ClientAddr {
+            ip: client,
             port: client_port,
-        }),
+        },
         server: if server.is_unspecified() && server_port == 0 {
             None
         } else {
             Some(ServerAddr {
-                host: server.to_string().into(),
-                port: Some(server_port),
+                ip: server,
+                port: Some(NonZeroU16::new(server_port).ok_or(ProxyError::InvalidProxyPort)?),
             })
         },
-    }
+    })
 }
 
 const fn prefix_to_mask_v4(prefix: u8) -> u32 {
@@ -640,18 +648,15 @@ mod tests {
 
         let proxy = parse_proxy_v2(&frame).unwrap().unwrap();
 
-        assert_eq!(
-            proxy.client,
-            Some(ClientAddr {
-                host: "192.0.2.1".into(),
-                port: 8080,
-            })
-        );
+        assert_eq!(proxy.client, ClientAddr {
+            ip: IpAddr::from([192, 0, 2, 1]),
+            port: 8080,
+        });
         assert_eq!(
             proxy.server,
             Some(ServerAddr {
-                host: "198.51.100.7".into(),
-                port: Some(80),
+                ip: IpAddr::from([198, 51, 100, 7]),
+                port: Some(NonZeroU16::new(80).expect("80 is non-zero")),
             })
         );
     }
@@ -666,20 +671,32 @@ mod tests {
 
         let proxy = parse_proxy_v2(&frame).unwrap().unwrap();
 
-        assert_eq!(
-            proxy.client,
-            Some(ClientAddr {
-                host: "2001:db8::1".into(),
-                port: 8080,
-            })
-        );
+        assert_eq!(proxy.client, ClientAddr {
+            ip: "2001:db8::1".parse().unwrap(),
+            port: 8080,
+        });
         assert_eq!(
             proxy.server,
             Some(ServerAddr {
-                host: "2001:db8::2".into(),
-                port: Some(80),
+                ip: "2001:db8::2".parse().unwrap(),
+                port: Some(NonZeroU16::new(80).expect("80 is non-zero")),
             })
         );
+    }
+
+    #[test]
+    fn parse_proxy_v2_rejects_a_zero_destination_port() {
+        let mut frame = Vec::from(PROXY_V2_SIG);
+        frame.extend_from_slice(&[
+            0x21, 0x11, 0x00, 0x0C, 192, 0, 2, 1, 198, 51, 100, 7, 0x1F, 0x90, 0x00, 0x00,
+        ]);
+
+        let error = parse_proxy_v2(&frame).expect_err("port zero is not a peer port");
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Proxy(ProxyError::InvalidProxyPort)
+        ));
     }
 
     #[tokio::test]

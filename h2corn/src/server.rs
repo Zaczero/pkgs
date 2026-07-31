@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::future::{Future, pending, poll_fn};
 use std::io;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::num::NonZeroU16;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
@@ -39,8 +40,8 @@ use crate::error::{ErrorExt, ErrorKind, FailureDomain, H2CornError, H2Error, Pro
 use crate::h2_frame::{self, BufferedConnectionReader, ErrorCode};
 use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
-    ProxyProtocolMode, ServerAddr, TrustedPeer, read_h2_preface, read_preamble_protocol,
-    read_proxy_v1, read_proxy_v2,
+    ProxyProtocolMode, ServerAddr, ServerEndpoint, TrustedPeer, read_h2_preface,
+    read_preamble_protocol, read_proxy_v1, read_proxy_v2,
 };
 use crate::pyloop::{PumpEvent, Shard, TaskSlot};
 use crate::runtime::{
@@ -78,7 +79,7 @@ struct ConnectionArgs {
     app: AppRuntimeHandle,
     config: Arc<ServerConfig>,
     actual_peer: ConnectionPeer,
-    actual_server: Option<ServerAddr>,
+    actual_server: Option<ServerEndpoint>,
     shutdown: watch::Receiver<ShutdownState>,
 }
 
@@ -373,9 +374,13 @@ fn spawn_connection(
     match accepted {
         AcceptedConnection::Tcp(stream, peer) => {
             configure_tcp_stream(&stream);
-            let actual_server = stream.local_addr().ok().map(|addr| ServerAddr {
-                host: addr.ip().to_string().into(),
-                port: Some(addr.port()),
+            let actual_server = stream.local_addr().ok().and_then(|addr| {
+                NonZeroU16::new(addr.port()).map(|port| {
+                    ServerEndpoint::Tcp(ServerAddr {
+                        ip: addr.ip(),
+                        port: Some(port),
+                    })
+                })
             });
             if let Some(tls) = config
                 .tls
@@ -412,10 +417,7 @@ fn spawn_connection(
         },
         #[cfg(unix)]
         AcceptedConnection::Unix { stream, path } => {
-            let actual_server = path.map(|path| ServerAddr {
-                host: Box::from(path.as_ref()),
-                port: None,
-            });
+            let actual_server = path.map(ServerEndpoint::Unix);
             let (reader, writer) = stream.into_split();
             tasks.spawn(async move {
                 report_connection_failure(

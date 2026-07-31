@@ -1,5 +1,4 @@
 use std::io;
-use std::sync::Arc;
 
 use http::StatusCode as StandardStatusCode;
 use itoa::Buffer as ItoaBuffer;
@@ -18,9 +17,20 @@ use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
 use crate::http::types::{
     HttpStatusCode, ResponseField, ResponseHeaderKind, ResponseHeaders, ResponseTrailers,
-    status_code,
+    common_status_codes, status_code,
 };
 use crate::sendfile::WriteTarget;
+
+macro_rules! common_status_line_match {
+    ($(($constant:ident, $line:expr, $hpack:expr)),+ $(,)?) => {
+        const fn common_status_line(status: HttpStatusCode) -> Option<&'static [u8]> {
+            match status {
+                $(status_code::$constant => Some($line),)+
+                _ => None,
+            }
+        }
+    };
+}
 
 const RESPONSE_BUF_CAPACITY: usize = 512;
 
@@ -108,7 +118,7 @@ impl H1ResponseState {
 
 pub(super) struct H1HttpTransport<'a, W> {
     writer: &'a mut BufWriter<W>,
-    config: Arc<ServerConfig>,
+    config: &'a ServerConfig,
     state: H1ResponseState,
 }
 
@@ -118,7 +128,7 @@ where
 {
     pub(super) const fn new(
         writer: &'a mut BufWriter<W>,
-        config: Arc<ServerConfig>,
+        config: &'a ServerConfig,
         close_after: bool,
     ) -> Self {
         Self {
@@ -147,7 +157,7 @@ where
         close_after: bool,
     ) -> Result<(), H2CornError> {
         self.state
-            .write_empty_response(self.writer, &self.config, status, close_after)
+            .write_empty_response(self.writer, self.config, status, close_after)
             .await
     }
 }
@@ -306,7 +316,7 @@ where
 {
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
         self.state
-            .apply_response_action(self.writer, &self.config, action)
+            .apply_response_action(self.writer, self.config, action)
             .await
     }
 
@@ -317,6 +327,8 @@ where
         self.state.flush_buffered(self.writer).await
     }
 }
+
+common_status_codes!(common_status_line_match);
 
 pub(super) async fn write_simple_response<W>(
     writer: &mut BufWriter<W>,
@@ -581,29 +593,6 @@ fn append_status_line(dst: &mut ResponseBuf, status: HttpStatusCode) {
     dst.extend_from_slice(b"\r\n");
 }
 
-const fn common_status_line(status: HttpStatusCode) -> Option<&'static [u8]> {
-    match status {
-        status_code::SWITCHING_PROTOCOLS => Some(b"HTTP/1.1 101 Switching Protocols\r\n"),
-        status_code::OK => Some(b"HTTP/1.1 200 OK\r\n"),
-        status_code::NO_CONTENT => Some(b"HTTP/1.1 204 No Content\r\n"),
-        status_code::PARTIAL_CONTENT => Some(b"HTTP/1.1 206 Partial Content\r\n"),
-        status_code::NOT_MODIFIED => Some(b"HTTP/1.1 304 Not Modified\r\n"),
-        status_code::BAD_REQUEST => Some(b"HTTP/1.1 400 Bad Request\r\n"),
-        status_code::FORBIDDEN => Some(b"HTTP/1.1 403 Forbidden\r\n"),
-        status_code::NOT_FOUND => Some(b"HTTP/1.1 404 Not Found\r\n"),
-        status_code::PAYLOAD_TOO_LARGE => Some(b"HTTP/1.1 413 Payload Too Large\r\n"),
-        status_code::URI_TOO_LONG => Some(b"HTTP/1.1 414 URI Too Long\r\n"),
-        status_code::UPGRADE_REQUIRED => Some(b"HTTP/1.1 426 Upgrade Required\r\n"),
-        status_code::REQUEST_HEADER_FIELDS_TOO_LARGE => {
-            Some(b"HTTP/1.1 431 Request Header Fields Too Large\r\n")
-        },
-        status_code::INTERNAL_SERVER_ERROR => Some(b"HTTP/1.1 500 Internal Server Error\r\n"),
-        status_code::NOT_IMPLEMENTED => Some(b"HTTP/1.1 501 Not Implemented\r\n"),
-        status_code::SERVICE_UNAVAILABLE => Some(b"HTTP/1.1 503 Service Unavailable\r\n"),
-        _ => None,
-    }
-}
-
 fn append_status_code(dst: &mut ResponseBuf, status: HttpStatusCode) {
     dst.extend_from_slice(&digits::three_digit_bytes(status.get()));
 }
@@ -690,7 +679,7 @@ mod tests {
     use tokio::net::tcp::OwnedWriteHalf;
 
     use super::{FileTransferMode, PATHSEND_SENDFILE_MIN, ResponseBuf, append_status_line};
-    use crate::http::types::{HttpStatusCode, status_code};
+    use crate::http::types::{HttpStatusCode, common_status_codes, status_code};
     use crate::sendfile::WriteTarget;
 
     struct BufferedOnly;
@@ -724,6 +713,21 @@ mod tests {
         ) -> io::Result<()> {
             unreachable!("a buffered-only target cannot select sendfile")
         }
+    }
+
+    #[test]
+    fn every_common_status_has_its_declared_http1_line() {
+        let mut out = ResponseBuf::new();
+        macro_rules! assert_common_status_lines {
+            ($(($constant:ident, $line:expr, $hpack:expr)),+ $(,)?) => {
+                $(
+                    out.clear();
+                    append_status_line(&mut out, status_code::$constant);
+                    assert_eq!(out.as_slice(), $line, stringify!($constant));
+                )+
+            };
+        }
+        common_status_codes!(assert_common_status_lines);
     }
 
     #[test]

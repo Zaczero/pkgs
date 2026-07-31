@@ -1,5 +1,7 @@
 use std::borrow::Cow;
-use std::num::NonZeroU32;
+use std::fmt::{self, Write};
+use std::net::IpAddr;
+use std::num::{NonZeroU16, NonZeroU32};
 
 use atoi_simd::parse_pos;
 
@@ -10,31 +12,60 @@ use crate::http::header::{
 };
 use crate::http::header_meta::ProxyHeaderSlots;
 use crate::http::types::{RequestHead, RequestHeaders};
-use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ServerAddr};
+use crate::proxy_protocol::{ConnectionInfo, ServerEndpoint};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ScopeHost<'a> {
+    Text(&'a str),
+    Ip(&'a IpAddr),
+}
+
+impl ScopeHost<'_> {
+    pub(crate) fn with_text<T>(self, f: impl FnOnce(&str) -> T) -> T {
+        match self {
+            Self::Text(text) => f(text),
+            Self::Ip(ip) => {
+                let mut text = IpText::default();
+                write!(text, "{ip}").expect("an IP address fits in its fixed display buffer");
+                // SAFETY: `fmt::Write` appended only UTF-8 input from `IpAddr::fmt`.
+                f(unsafe { std::str::from_utf8_unchecked(&text.bytes[..text.len]) })
+            },
+        }
+    }
+}
+
+struct IpText {
+    bytes: [u8; 45],
+    len: usize,
+}
+
+impl Default for IpText {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 45],
+            len: 0,
+        }
+    }
+}
+
+impl Write for IpText {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let end = self.len + value.len();
+        if end > self.bytes.len() {
+            return Err(fmt::Error);
+        }
+        self.bytes[self.len..end].copy_from_slice(value.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScopeView<'a> {
     pub scheme: Cow<'a, str>,
-    pub client: Option<(&'a str, u16)>,
-    pub server: (&'a str, Option<u16>),
+    pub client: Option<(ScopeHost<'a>, u16)>,
+    pub server: (ScopeHost<'a>, Option<u16>),
     pub root_path: Cow<'a, str>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ScopeOverrides {
-    pub(crate) scheme: Option<Box<str>>,
-    pub(crate) client: Option<ClientAddr>,
-    pub(crate) server: Option<ServerAddr>,
-    pub(crate) root_path: Option<Box<str>>,
-}
-
-impl ScopeOverrides {
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.scheme.is_none()
-            && self.client.is_none()
-            && self.server.is_none()
-            && self.root_path.is_none()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,41 +81,50 @@ struct ProxyHeaderView<'a> {
 fn default_server<'a>(
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
-) -> (&'a str, Option<u16>) {
-    info.server.as_ref().map_or_else(
-        || {
-            info.actual_server.as_ref().map_or_else(
-                || match config.binds.first() {
-                    Some(BindTarget::Tcp { host, port }) => (host.as_ref(), Some(*port)),
-                    Some(BindTarget::Unix { path }) => (path.as_ref(), None),
-                    Some(BindTarget::Fd { .. }) | None => ("", None),
-                },
-                |server| (server.host.as_ref(), server.port),
-            )
-        },
-        |server| (server.host.as_ref(), server.port),
-    )
+) -> (ScopeHost<'a>, Option<u16>) {
+    if let Some(server) = &info.server {
+        return (ScopeHost::Ip(&server.ip), server.port.map(NonZeroU16::get));
+    }
+    if let Some(server) = &info.actual_server {
+        return match server {
+            ServerEndpoint::Tcp(server) => {
+                (ScopeHost::Ip(&server.ip), server.port.map(NonZeroU16::get))
+            },
+            ServerEndpoint::Unix(path) => (ScopeHost::Text(path), None),
+        };
+    }
+    match config.binds.first() {
+        Some(BindTarget::Tcp { host, port }) => (ScopeHost::Text(host), Some(*port)),
+        Some(BindTarget::Unix { path }) => (ScopeHost::Text(path), None),
+        Some(BindTarget::Fd { .. }) | None => (ScopeHost::Text(""), None),
+    }
 }
 
-fn default_client(info: &ConnectionInfo) -> Option<(&str, u16)> {
+fn default_client(info: &ConnectionInfo) -> Option<(ScopeHost<'_>, u16)> {
     info.client
         .as_ref()
-        .map(|client| (client.host.as_ref(), client.port))
+        .map(|client| (ScopeHost::Ip(&client.ip), client.port))
 }
 
-pub(super) fn resolve_scope_view<'a>(
+pub(crate) fn default_scope_view<'a>(
+    scheme: &'a str,
+    config: &'a ServerConfig,
+    info: &'a ConnectionInfo,
+) -> ScopeView<'a> {
+    ScopeView {
+        scheme: Cow::Borrowed(scheme),
+        client: default_client(info),
+        server: default_server(config, info),
+        root_path: Cow::Borrowed(config.root_path.as_ref()),
+    }
+}
+
+pub(crate) fn resolve_scope_view<'a>(
     request: &'a RequestHead,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
 ) -> ScopeView<'a> {
-    let default_server = default_server(config, info);
-
-    let mut view = ScopeView {
-        scheme: Cow::Borrowed(request.scheme_str()),
-        client: default_client(info),
-        server: default_server,
-        root_path: Cow::Borrowed(config.root_path.as_ref()),
-    };
+    let mut view = default_scope_view(request.scheme_str(), config, info);
 
     if !info.proxy_headers_trusted {
         return view;
@@ -95,14 +135,14 @@ pub(super) fn resolve_scope_view<'a>(
         if let Some(forwarded) = proxy_headers.forwarded.and_then(parse_forwarded_value) {
             if let Some(host) = forwarded.client_host {
                 let port = view.client.as_ref().map_or(0, |(_, port)| *port);
-                view.client = Some((host, port));
+                view.client = Some((ScopeHost::Text(host), port));
             }
             if let Some(proto) = forwarded.proto {
                 view.scheme = normalize_scheme(proto);
             }
             if let Some((host, port)) = forwarded.host {
                 view.server = (
-                    host,
+                    ScopeHost::Text(host),
                     port.or_else(|| default_port_for_scheme(&view.scheme))
                         .or(view.server.1),
                 );
@@ -118,7 +158,7 @@ pub(super) fn resolve_scope_view<'a>(
             .and_then(|value| parse_x_forwarded_for_value(value, config))
         {
             let port = view.client.as_ref().map_or(0, |(_, port)| *port);
-            view.client = Some((host, port));
+            view.client = Some((ScopeHost::Text(host), port));
         }
         if let Some(proto) = proxy_headers
             .x_forwarded_proto
@@ -134,7 +174,7 @@ pub(super) fn resolve_scope_view<'a>(
             && let Some((host, port)) = parse_host_port(host)
         {
             view.server = (
-                host,
+                ScopeHost::Text(host),
                 port.or_else(|| default_port_for_scheme(&view.scheme))
                     .or(view.server.1),
             );
@@ -159,44 +199,6 @@ pub(super) fn resolve_scope_view<'a>(
     view
 }
 
-pub(crate) fn resolve_scope_overrides(
-    request: &RequestHead,
-    config: &ServerConfig,
-    info: &ConnectionInfo,
-) -> Option<Box<ScopeOverrides>> {
-    if !info.proxy_headers_trusted || request.header_meta.proxy_headers().is_none() {
-        return None;
-    }
-
-    let default_server = default_server(config, info);
-    let default_client = default_client(info);
-    let view = resolve_scope_view(request, config, info);
-    let mut overrides = ScopeOverrides::default();
-
-    if view.scheme != request.scheme_str() {
-        overrides.scheme = Some(view.scheme.into_owned().into_boxed_str());
-    }
-    if view.client != default_client
-        && let Some((host, port)) = view.client
-    {
-        overrides.client = Some(ClientAddr {
-            host: host.into(),
-            port,
-        });
-    }
-    if view.server != default_server {
-        overrides.server = Some(ServerAddr {
-            host: view.server.0.into(),
-            port: view.server.1,
-        });
-    }
-    if view.root_path.as_ref() != config.root_path.as_ref() {
-        overrides.root_path = Some(view.root_path.into_owned().into_boxed_str());
-    }
-
-    (!overrides.is_empty()).then(|| Box::new(overrides))
-}
-
 fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     let headers = &request.headers;
     let Some(slots) = request.header_meta.proxy_headers() else {
@@ -217,32 +219,6 @@ fn proxy_header_value(headers: &RequestHeaders, index: Option<NonZeroU32>) -> Op
     ProxyHeaderSlots::index(index)
         .and_then(|index| headers.get(index))
         .and_then(|header| header_value_text(header.value()))
-}
-
-pub(crate) fn scope_view_from_parts<'a>(
-    scheme: &'a str,
-    config: &'a ServerConfig,
-    info: &'a ConnectionInfo,
-    overrides: Option<&'a ScopeOverrides>,
-) -> ScopeView<'a> {
-    ScopeView {
-        scheme: overrides
-            .and_then(|overrides| overrides.scheme.as_deref())
-            .map_or(Cow::Borrowed(scheme), Cow::Borrowed),
-        client: overrides
-            .and_then(|overrides| overrides.client.as_ref())
-            .map(|client| (client.host.as_ref(), client.port))
-            .or_else(|| default_client(info)),
-        server: overrides
-            .and_then(|overrides| overrides.server.as_ref())
-            .map_or_else(
-                || default_server(config, info),
-                |server| (server.host.as_ref(), server.port),
-            ),
-        root_path: overrides
-            .and_then(|overrides| overrides.root_path.as_deref())
-            .map_or_else(|| Cow::Borrowed(config.root_path.as_ref()), Cow::Borrowed),
-    }
 }
 
 fn default_port_for_scheme(scheme: &str) -> Option<u16> {
@@ -278,5 +254,76 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
             joined.push_str(root_path);
             Cow::Owned(joined)
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use http::Method;
+
+    use super::resolve_scope_view;
+    use crate::config::ServerConfig;
+    use crate::http::header_meta::RequestHeaderMeta;
+    use crate::http::types::{
+        BytesStr, H1RequestHeaders, HttpVersion, RequestHead, RequestHeaders, RequestTarget,
+    };
+    use crate::proxy_protocol::{ConnectionInfo, ServerEndpoint};
+    use crate::runtime::test_fixtures;
+
+    #[test]
+    fn forwarded_prefix_borrows_the_request_header_until_scope_construction() {
+        let raw = Bytes::from_static(b"/edge");
+        let mut headers = H1RequestHeaders::new(raw.clone());
+        let known = headers
+            .push(b"x-forwarded-prefix", raw.as_ref())
+            .expect("field is valid")
+            .expect("field is known");
+        let mut header_meta = RequestHeaderMeta::default();
+        header_meta.observe_known_header(known, &raw, 0, true);
+        let request = RequestHead {
+            http_version: HttpVersion::Http1_1,
+            method: Method::GET,
+            target: RequestTarget::normal(
+                BytesStr::from_static("http"),
+                BytesStr::from_static("/"),
+            ),
+            headers: RequestHeaders::from_h1(headers),
+            header_meta,
+        };
+        let info = ConnectionInfo {
+            actual_server: None,
+            proxy_headers_trusted: true,
+            client: None,
+            server: None,
+        };
+        let config = ServerConfig {
+            root_path: Box::from(""),
+            ..test_fixtures::server_config_parts()
+        };
+
+        let view = resolve_scope_view(&request, &config, &info);
+        assert!(matches!(view.root_path, Cow::Borrowed("/edge")));
+    }
+
+    #[test]
+    fn unix_listener_path_overrides_an_unrelated_first_configured_bind() {
+        let info = ConnectionInfo {
+            actual_server: Some(ServerEndpoint::Unix(Arc::from("/run/h2corn.sock"))),
+            proxy_headers_trusted: false,
+            client: None,
+            server: None,
+        };
+        let config = test_fixtures::server_config_parts();
+
+        let view = super::default_scope_view("http", &config, &info);
+
+        assert_eq!(view.server.1, None);
+        view.server
+            .0
+            .with_text(|host| assert_eq!(host, "/run/h2corn.sock"));
     }
 }
