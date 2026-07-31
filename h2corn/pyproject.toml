@@ -92,7 +92,7 @@ python-source = "python"
 
 [tool.pyright]
 extraPaths = ["python"]
-include = ["python/h2corn", "tests"]
+include = ["bench", "python/h2corn", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"
 strict = ["python/h2corn"]

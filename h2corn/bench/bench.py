@@ -29,9 +29,10 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import matplotlib as mpl
+from matplotlib import colors
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -202,6 +203,19 @@ class NetworkProfile:
     target_rtt_ms: float | None = None
 
 
+class RTT50Netem(TypedDict):
+    """Verified shape of the isolated netem profile written to each run."""
+
+    name: str
+    description: str
+    status: str
+    target_rtt_ms: float
+    measured_rtt_ms: float
+    one_way_delay_ms: float
+    rate: str
+    qdisc: str
+
+
 LOOPBACK_PROFILE = NetworkProfile('loopback', 'loopback')
 RTT50_PROFILE = NetworkProfile(
     'rtt50', f'{NETEM_RTT_MS:.0f} ms RTT, {NETEM_RATE} netem', NETEM_RTT_MS
@@ -347,7 +361,7 @@ def loopback_rtt_ms() -> float:
     return statistics.median(samples)
 
 
-def configure_rtt50_profile() -> dict[str, object]:
+def configure_rtt50_profile() -> RTT50Netem:
     """Install and prove the isolated 50 ms RTT profile before any cell runs."""
     for tool in ('ip', 'tc'):
         if shutil.which(tool) is None:
@@ -760,7 +774,7 @@ def alt_text(title: str, results: dict[str, Any], unit: str) -> str:
 
 def relative_luminance(color: str) -> float:
     """Return the WCAG relative luminance for an sRGB colour."""
-    red, green, blue, _ = mpl.colors.to_rgba(color)
+    red, green, blue, _ = colors.to_rgba(color)
 
     def linear(value: float) -> float:
         return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
@@ -950,7 +964,7 @@ def profile_record(
     *,
     reason: str | None = None,
     measured_rtt_ms: float | None = None,
-    netem: dict[str, object] | None = None,
+    netem: RTT50Netem | None = None,
 ) -> dict[str, Any]:
     record = {
         'profile': profile.name,
@@ -1095,7 +1109,7 @@ def run_suite(
     run_directory: Path,
     profile: NetworkProfile,
     measured_rtt_ms: float | None = None,
-    netem: dict[str, object] | None = None,
+    netem: RTT50Netem | None = None,
 ) -> Path:
     ensure_static_file_payload()
     if any(scenario.type == 'h2_upload' for scenario in scenarios):
@@ -1368,7 +1382,7 @@ def main() -> int:
                     return 0
                 try:
                     netem = configure_rtt50_profile()
-                    measured_rtt_ms = float(netem['measured_rtt_ms'])
+                    measured_rtt_ms = netem['measured_rtt_ms']
                 except BenchmarkError as error:
                     print(f'  SKIPPED {RTT50_PROFILE.description}: {error}', flush=True)
                     record_skipped_profile(

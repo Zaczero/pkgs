@@ -8,7 +8,9 @@ here are what you use when deciding whether a *code change* helped.
 | ---- | ------- |
 | `bench.py` | Cross-server scenarios → raw JSON and the published SVGs |
 | `compare.py` | Paired A/B of two h2corn builds or configurations |
+| `instr.py` | Paired `perf stat` instructions/request for server-side changes |
 | `_core.py` | Shared scenarios, server lifetime, load drivers, statistics |
+| `../tools/type_sizes.py` | Zero-noise capture/diff of Rust type and future layouts |
 
 Raw runs land under `results/runs/` and are gitignored. Canonical SVGs are
 checked in; `bench.py` replaces them only with an explicit `--publish` run.
@@ -149,11 +151,151 @@ RPS variance on a shared host cannot resolve sub-percent changes. For those,
 measure the mechanism directly:
 
 ```bash
-perf stat -p "$(pgrep -f 'h2corn bench.bench_app' | head -1)" -e instructions,cycles
-strace -c -f -p <worker-pid>          # syscalls per request
-cargo rustc --release --lib -- -Zprint-type-sizes
-cargo asm --lib <path::to::function>  # confirm what the compiler emitted
+uv run --no-sync python bench/instr.py \
+  --control 'main=/path/to/main/.venv/bin/h2corn' \
+  --candidate 'head=.venv/bin/h2corn'
 ```
+
+### Instructions per request
+
+`instr.py` is the counter-backed sibling of `compare.py`. It always serves
+`bench/raw_app.py`, not Starlette, and attaches `perf stat` to the actual worker
+PIDs after the common readiness check. Every measured sample is exactly
+`--requests` successful responses from `oha -n`; warmup is also fixed-count and
+does not enter the counters. The report divides worker-only user-space
+instructions, cycles, branch misses, and cache misses by that exact denominator,
+and derives IPC from the two totals.
+
+```bash
+uv run --no-sync python bench/instr.py \
+  --control 'main=/path/to/main/.venv/bin/h2corn' \
+  --candidate 'head=.venv/bin/h2corn' \
+  --workers 4 --requests 200000
+```
+
+It uses the same cold-start A/B/A/B rotation and paired trimmed-mean bootstrap
+interval as `compare.py`. Sampling stops only at scheduled checks after at least
+four rounds, once the instructions/request interval reaches a ±0.3 percentage
+point half-width; otherwise the time or round budget produces **INCONCLUSIVE
+within the budget**. Lower instructions, cycles, branch misses, and cache misses
+are better; higher IPC is better. The default `h1` scenario is the raw plaintext
+GET. `h1_uds` and `h2` are available when the change belongs to those paths.
+
+For a fast mechanical smoke that avoids TCP-port contention, use
+`--scenario h1_uds --requests 100 --warmup-requests 10 --max-rounds 4`; it is
+not evidence for a performance claim.
+
+### Allocation counts
+
+The extension statically links mimalloc without its statistics API exported, so
+there is no outside process that can reset and read its counters. On this host,
+however, `ltrace` can trace the local allocator symbols directly. Launch the
+server under it (the console-script needs its interpreter), warm it first, then
+drive a large exact-count raw-app run and count `mi_malloc_aligned` records from
+that interval. `mi_free` is included to make ownership imbalance visible too.
+
+```bash
+ltrace -f -L -ttt -o /tmp/h2corn-alloc.trace \
+  -x mi_malloc_aligned -x mi_free \
+  .venv/bin/python .venv/bin/h2corn bench.raw_app:app -b 127.0.0.1:8000 -w 1
+
+env -u NO_COLOR oha -n 100000 -c 100 --output-format json \
+  --http-version 1.1 http://127.0.0.1:8000/
+```
+
+The trace is intentionally an allocation oracle, not a throughput benchmark:
+the tracing overhead is large. Keep the trace timestamps around the fixed `oha`
+run, count the matching call entries in that interval, and divide by 100,000.
+Run the control and candidate independently with the same request count; an
+integer allocation removed from a request path is not subject to host-load
+noise.
+
+### Type-size oracle
+
+`-Zprint-type-sizes` is likewise independent of host load. Capture each checkout
+with the helper, then diff the captures:
+
+```bash
+.venv/bin/python tools/type_sizes.py capture /tmp/main.type-sizes
+.venv/bin/python tools/type_sizes.py capture /tmp/head.type-sizes
+.venv/bin/python tools/type_sizes.py diff /tmp/main.type-sizes /tmp/head.type-sizes
+```
+
+The capture command runs `RUSTFLAGS="-Zprint-type-sizes" cargo build --release
+--lib` with `CARGO_TARGET_DIR=target/type-sizes`, separate from the normal build
+cache. It prints every changed type layout and always lists async state machines
+and futures as well, so a smaller struct cannot hide a larger owning future.
+
+### Assembly
+
+Use the package name `h2corn` and the library crate name `_lib` when inspecting
+a named function. This is the x86-64 invocation:
+
+```bash
+env -u RUSTC_WRAPPER cargo asm -p h2corn --lib \
+  _lib::runtime::start_app_call
+```
+
+### ARM assembly
+
+h2corn ships Apple Silicon and ARM Linux wheels, and x86 hides two things that
+matter: its cache line is 64 bytes where Apple Silicon's is 128, and its memory
+model is strong enough to mask an under-ordered atomic that aarch64 exposes.
+Read the ARM code before concluding anything about cache-line packing or
+memory ordering.
+
+**The whole crate does not cross-compile on this host**, and the blocker is not
+Rust: `aws-lc-sys` (rustls's crypto backend) hands ARM `.S` files to the host
+x86 `gcc`, which needs a cross C toolchain we do not have. Adding
+`--target aarch64-unknown-linux-gnu` to the invocation above therefore fails.
+
+It is also unnecessary. Every kernel where ARM codegen is in question —
+`websocket::codec::mask`, `http::header_value`, `hpack::huffman` — is pure
+`std`, with no C and no PyO3. Build just those, out of tree:
+
+```bash
+D=/tmp/h2corn-armkernel H=$PWD/..
+mkdir -p "$D/src"
+printf '[toolchain]\nchannel = "nightly"\n' > "$D/rust-toolchain.toml"
+cat > "$D/Cargo.toml" <<'EOF'
+[package]
+name = "armkernel"
+version = "0.0.0"
+edition = "2024"
+[profile.release]
+lto = false          # fat LTO leaves an rlib holding only bitcode
+codegen-units = 1
+EOF
+cat > "$D/src/lib.rs" <<EOF
+#![feature(portable_simd)]
+#![allow(dead_code, unused)]
+pub mod codec {
+    #[path = "$H/src/websocket/codec/mask.rs"]
+    pub mod mask;
+}
+#[path = "$H/src/http/header_value.rs"]
+pub mod header_value;
+
+// A codegen anchor per kernel: without \`no_mangle\` + \`extern "C"\` an unused
+// pub fn is never emitted and \`cargo asm\` reports no functions.
+#[unsafe(no_mangle)]
+pub extern "C" fn anchor_header_value_is_valid(p: *const u8, n: usize) -> bool {
+    header_value::header_value_is_valid(unsafe { core::slice::from_raw_parts(p, n) })
+}
+EOF
+cd "$D" && env -u RUSTC_WRAPPER CARGO_TARGET_DIR="$D/target" \
+  cargo asm --lib --target aarch64-unknown-linux-gnu --simplify \
+  anchor_header_value_is_valid
+```
+
+Three details are load-bearing and each one silently produces an empty or
+failed result if missed: the toolchain file (the *default* toolchain has no
+aarch64 `std`, only the pinned nightly does), `lto = false`, and the anchor.
+
+Read the vector width off the result. `ldp q5, q4, [x0], #32` means the
+`u8x32` was split into two 128-bit NEON registers — the same paired-128-bit
+shape it takes under `x86-64-v2`, which is worth knowing before retuning a lane
+count for one architecture.
 
 ## Kernel microbenchmarks
 
