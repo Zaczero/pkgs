@@ -238,10 +238,12 @@ async def test_app_timer_and_sleep_interleave_with_pump() -> None:
 @pytest.mark.parametrize(
     ('status', 'expected_length'),
     [
-        # RFC 9110 forbids Content-Length on 204.  205 cannot carry content;
-        # 304 describes a representation it deliberately does not send.
+        # RFC 9110 forbids Content-Length on 204 and on 204 only.  205 cannot
+        # carry content but must still be framed, or a keep-alive connection
+        # desynchronizes.  304 describes a representation it deliberately does
+        # not send.
         (204, None),
-        (205, None),
+        (205, b'0'),
         (304, b'9'),
     ],
 )

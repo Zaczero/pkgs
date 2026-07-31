@@ -275,9 +275,13 @@ async def test_application_transfer_encoding_is_absent_and_server_frames_respons
     'content_lengths',
     [[b'0'], [b'1'], [b'1048576'], [b'0', b'1']],
 )
-async def test_205_strips_every_application_content_length(
+async def test_205_replaces_every_application_content_length_with_zero(
     protocol: str, content_lengths: list[bytes]
 ) -> None:
+    # 205 carries no content, but RFC 9112 section 6.3 does not make it
+    # bodyless by status alone: without a length field the message is
+    # delimited by connection close, which desynchronizes a keep-alive
+    # connection. The transport owns the value and it is always zero.
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
@@ -290,7 +294,40 @@ async def test_205_strips_every_application_content_length(
         status, headers, body = await _response(protocol, server_port(server))
 
     assert (status, body) == (205, b'')
-    assert b'content-length' not in headers
+    assert headers[b'content-length'] == b'0'
+
+
+async def test_205_does_not_desynchronize_a_pipelined_keep_alive_connection() -> None:
+    async def app(scope, receive, send):
+        status = 205 if scope['path'] == '/reset' else 200
+        body = b'' if status == 205 else b'SECOND-MARKER'
+        await send({
+            'type': 'http.response.start',
+            'status': status,
+            'headers': [],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+
+    async with running_server(app, Config(port=0)) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        writer.write(
+            b'GET /reset HTTP/1.1\r\nhost: localhost\r\n\r\n'
+            b'GET /second HTTP/1.1\r\nhost: localhost\r\n\r\n'
+        )
+        await writer.drain()
+        try:
+            raw = await asyncio.wait_for(reader.readuntil(b'SECOND-MARKER'), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    first, _, second = raw.partition(b'\r\n\r\n')
+    assert first.startswith(b'HTTP/1.1 205 ')
+    assert b'content-length: 0' in first.lower()
+    # Without framing on the 205, a client reads this entire response as the
+    # 205's body and every later response on the connection is misparsed.
+    assert second.startswith(b'HTTP/1.1 200 ')
+    assert second.endswith(b'SECOND-MARKER')
 
 
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])

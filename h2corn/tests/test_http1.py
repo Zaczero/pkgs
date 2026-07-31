@@ -1729,11 +1729,22 @@ async def test_rolling_pathsend_eof_closes_http1_connection(tmp_path: Path) -> N
 
 @pytest.mark.parametrize(
     ('status', 'content_length'),
-    [(204, None), (304, b'0')],
+    [
+        # 204 is the only status that forbids the field outright.  A 304 names
+        # the representation a 200 would have carried, so an application that
+        # declared that length keeps it -- the transmitted length is zero and
+        # is not the value being described (RFC 9110 section 8.6).  205 carries
+        # nothing to describe and is framed as zero.
+        (204, None),
+        (304, b'7'),
+        (205, b'0'),
+    ],
 )
+@pytest.mark.parametrize('send_body', [True, False], ids=['body', 'start-only'])
 async def test_http1_content_length_is_omitted_only_for_statuses_that_forbid_it(
     status: int,
     content_length: bytes | None,
+    send_body: bool,
 ) -> None:
     async def app(_scope, _receive, send):
         await send({
@@ -1741,7 +1752,8 @@ async def test_http1_content_length_is_omitted_only_for_statuses_that_forbid_it(
             'status': status,
             'headers': [(b'content-length', b'7')],
         })
-        await send({'type': 'http.response.body', 'body': b''})
+        if send_body:
+            await send({'type': 'http.response.body', 'body': b''})
 
     async with running_server(app, Config(port=0)) as server:
         response_status, headers, body, trailers = await http1_request(

@@ -11,7 +11,7 @@ use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::digits;
 use crate::http::header::{
-    ResponseConnectionDirective, apply_default_response_headers, observe_response_header_strips,
+    ResponseConnectionDirective, apply_default_response_headers,
 };
 use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
@@ -243,9 +243,8 @@ impl H1ResponseState {
         match action {
             ResponseAction::Final { mut start, body } => {
                 self.response_started = true;
-                let control = start.control();
-                observe_response_header_strips(false, control.strips);
-                self.close_after |= control.directive == ResponseConnectionDirective::Close;
+                let directive = start.directive();
+                self.close_after |= directive == ResponseConnectionDirective::Close;
                 start.apply_default_headers(config);
                 let (status, headers) = start.into_status_headers();
                 write_final_response(writer, status, headers, body, self.close_after).await?;
@@ -256,9 +255,8 @@ impl H1ResponseState {
             },
             ResponseAction::Start { mut start } => {
                 self.response_started = true;
-                let control = start.control();
-                observe_response_header_strips(false, control.strips);
-                self.close_after |= control.directive == ResponseConnectionDirective::Close;
+                let directive = start.directive();
+                self.close_after |= directive == ResponseConnectionDirective::Close;
                 let length = start.prepare_streaming(&config.response_headers);
                 let (status, headers) = start.into_status_headers();
                 self.streaming_framing = if length.is_some() {

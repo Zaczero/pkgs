@@ -9,7 +9,6 @@ pub(crate) mod status_code {
     pub(crate) const SWITCHING_PROTOCOLS: HttpStatusCode = HttpStatusCode::constant(101);
     pub(crate) const OK: HttpStatusCode = HttpStatusCode::constant(200);
     pub(crate) const NO_CONTENT: HttpStatusCode = HttpStatusCode::constant(204);
-    pub(crate) const RESET_CONTENT: HttpStatusCode = HttpStatusCode::constant(205);
     pub(crate) const PARTIAL_CONTENT: HttpStatusCode = HttpStatusCode::constant(206);
     pub(crate) const NOT_MODIFIED: HttpStatusCode = HttpStatusCode::constant(304);
     pub(crate) const BAD_REQUEST: HttpStatusCode = HttpStatusCode::constant(400);
@@ -220,11 +219,19 @@ impl HttpStatusCode {
         matches!(self.get(), 100..=199)
     }
 
-    /// RFC 9110 §8.6 forbids this field for informational, 204, and 205 responses.
+    /// RFC 9110 §8.6 forbids this field for informational and 204 responses,
+    /// and for those only.
+    ///
+    /// 205 is deliberately absent. It carries no content, but RFC 9112 §6.3
+    /// makes only HEAD, 1xx, 204 and 304 bodyless *by status alone*; an
+    /// unframed 205 is therefore delimited by connection close, and on a
+    /// keep-alive connection the client reads the next response as its body.
+    /// It is framed with `Content-Length: 0` instead.
+    ///
     /// Other bodyless statuses deliberately retain their representation
     /// metadata: notably, a 304 may carry the length a 200 would have sent.
-    pub(crate) fn forbids_content_length(self) -> bool {
-        matches!(self.get(), 100..=199 | 204) || self == status_code::RESET_CONTENT
+    pub(crate) const fn forbids_content_length(self) -> bool {
+        matches!(self.get(), 100..=199 | 204)
     }
 }
 

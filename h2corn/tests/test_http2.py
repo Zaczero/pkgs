@@ -123,7 +123,7 @@ async def test_http2_response_defaults_apply_to_normal_app_responses() -> None:
 
 @pytest.mark.parametrize(
     ('status', 'content_length'),
-    [(204, None), (304, b'0')],
+    [(204, None), (304, b'7'), (205, b'0')],
 )
 async def test_http2_content_length_is_omitted_only_for_statuses_that_forbid_it(
     status: int,

@@ -18,6 +18,7 @@ async def open_h2_connection(
     uds: Path | None = None,
     prefix: bytes = b'',
     max_header_list_size: int | None = None,
+    initial_window_size: int | None = None,
 ) -> tuple[
     asyncio.StreamReader,
     asyncio.StreamWriter,
@@ -44,6 +45,13 @@ async def open_h2_connection(
         # A peer may answer the opening request in the same read as that ACK,
         # so accept the advertised limit from the first response frame too.
         conn.decoder.max_header_list_size = max_header_list_size
+    if initial_window_size is not None:
+        # Advertised in the opening SETTINGS, so the server never has stream
+        # credit to write DATA into. Only the connection's own outbound byte
+        # budget can bound what it queues.
+        conn.local_settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = (
+            initial_window_size
+        )
     conn.initiate_connection()
     writer.write(prefix + conn.data_to_send())
     await writer.drain()
@@ -269,7 +277,11 @@ async def read_http1_response(
 
     body = bytearray()
     trailers: list[tuple[bytes, bytes]] = []
-    if head_only:
+    # RFC 9112 section 6.3: a response to HEAD and any 1xx, 204 or 304 is
+    # terminated by the blank line whatever length fields it carries, so a
+    # `Content-Length` describing the representation a GET would have returned
+    # must not be read as a body. 205 is deliberately absent from that list.
+    if head_only or status < 200 or status in {204, 304}:
         return status, headers, bytes(body), trailers
     if headers.get(b'transfer-encoding') == b'chunked':
         while True:

@@ -124,8 +124,12 @@ pub(crate) enum ResponsePayload {
     /// been — a `HEAD` response, or 304, which names a representation it is
     /// deliberately not sending.
     Described,
-    /// Suppressed with no content framing at all: 204 and 205 cannot carry a
-    /// body, and RFC 9110 §8.6 forbids `Content-Length` on 204.
+    /// Suppressed with nothing to describe: 204 and 205 cannot carry a body.
+    ///
+    /// They differ in how that reaches the wire. 204 omits `Content-Length`
+    /// entirely (RFC 9110 §8.6). 205 is framed as zero-length — it is
+    /// deliberately *not* in `forbids_content_length`, so it takes the normal
+    /// `Suppressed { len: 0 }` path and emits `content-length: 0`.
     Absent,
 }
 
@@ -143,12 +147,19 @@ impl ResponsePayload {
         !matches!(self, Self::Send)
     }
 
-    /// What `Content-Length` should report for a suppressed body: the length
-    /// the application would have sent, or nothing at all when the status
-    /// cannot describe content.
-    const fn described_len(self, len: usize) -> usize {
+    /// What `Content-Length` should report for a suppressed body.
+    ///
+    /// A `HEAD` or 304 response names the representation a `GET` or a 200
+    /// would have carried, so an application that declared that length keeps
+    /// it: the transmitted length is necessarily zero and is not the value
+    /// being described. Without a declaration the suppressed body's own length
+    /// is the best description available.
+    const fn described_len(self, declared: Option<usize>, len: usize) -> usize {
         match self {
-            Self::Described => len,
+            Self::Described => match declared {
+                Some(declared) => declared,
+                None => len,
+            },
             Self::Send | Self::Absent => 0,
         }
     }
@@ -180,7 +191,7 @@ impl ResponseController {
         status: http::types::FinalResponseStatus,
         headers: http::types::ResponseHeaders,
         trailers: bool,
-        control: http::header::ResponseHeaderControl,
+        control: http::header::ResponseConnectionDirective,
     ) -> Result<(), error::H2CornError> {
         if !matches!(self.state, ResponseState::WaitingForStart) {
             return error::HttpResponseError::StartAlreadyReceived.err();
@@ -244,11 +255,12 @@ impl ResponseController {
                 // — see `DiscardingTrailers` — so the application's own
                 // `send()` does not fail against a closed stream.
                 let expects = expects_trailers;
+                let described = started.start.declared_content_length();
                 let state = complete_response(
                     actions,
                     &mut started,
                     actions::FinalResponseBody::Suppressed {
-                        len: self.payload.described_len(len),
+                        len: self.payload.described_len(described, len),
                     },
                 );
                 if expects {
@@ -318,7 +330,7 @@ impl ResponseController {
             http::types::FinalResponseStatus::new(status)
                 .expect("pathsend substitutions are final response statuses"),
             http::types::ResponseHeaders::new(),
-            http::header::ResponseHeaderControl::default(),
+            http::header::ResponseConnectionDirective::default(),
         );
         self.state = if started.expects_trailers() {
             actions.push(actions::ResponseAction::Start { start });
@@ -347,11 +359,12 @@ impl ResponseController {
 
         if self.payload.suppresses_body() {
             let expects_trailers = started.expects_trailers();
+            let described = started.start.declared_content_length();
             let state = complete_response(
                 actions,
                 &mut started,
                 actions::FinalResponseBody::Suppressed {
-                    len: self.payload.described_len(len),
+                    len: self.payload.described_len(described, len),
                 },
             );
             self.state = if expects_trailers {
@@ -457,7 +470,19 @@ impl ResponseController {
                     expects_trailers: false
                 }) =>
             {
-                actions.push(started.into_final_action(actions::FinalResponseBody::Empty));
+                // An application that sends only `http.response.start` and
+                // returns still described a representation if its status can
+                // carry one: a HEAD or 304 declaring `Content-Length: 7` keeps
+                // it here, exactly as it would had a body event followed.
+                let action = if self.payload.suppresses_body() {
+                    let described = started.start.declared_content_length();
+                    actions::FinalResponseBody::Suppressed {
+                        len: self.payload.described_len(described, 0),
+                    }
+                } else {
+                    actions::FinalResponseBody::Empty
+                };
+                actions.push(started.into_final_action(action));
                 Ok(())
             },
             (ResponseState::Started(started), Ok(()))
@@ -469,9 +494,10 @@ impl ResponseController {
                 let StartedBody::SuppressingHead { len, .. } = started.body else {
                     unreachable!()
                 };
+                let described = started.start.declared_content_length();
                 actions.push(
                     started.into_final_action(actions::FinalResponseBody::Suppressed {
-                        len: self.payload.described_len(len),
+                        len: self.payload.described_len(described, len),
                     }),
                 );
                 Ok(())
@@ -540,9 +566,9 @@ mod tests {
                 status,
                 headers,
                 trailers,
-                control,
+                directive,
             } => controller
-                .handle_start(status, headers, trailers, control)
+                .handle_start(status, headers, trailers, directive)
                 .map(|()| false),
             bridge::HttpOutboundEvent::Body { body, more_body } => controller
                 .handle_body(actions, body, more_body)
@@ -573,7 +599,7 @@ mod tests {
                         Bytes::from_static(b"1").into(),
                     )],
                     trailers: false,
-                    control: http::header::ResponseHeaderControl::default(),
+                    directive: http::header::ResponseConnectionDirective::default(),
                 },
             )
             .expect("response start is accepted")
@@ -627,7 +653,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: true,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
@@ -692,7 +718,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: true,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
@@ -748,7 +774,7 @@ mod tests {
                     final_status(status),
                     Vec::new(),
                     true,
-                    http::header::ResponseHeaderControl::default(),
+                    http::header::ResponseConnectionDirective::default(),
                 )
                 .expect("response start is accepted");
             controller
@@ -786,7 +812,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
@@ -825,7 +851,7 @@ mod tests {
                         Bytes::from_static(b"3").into(),
                     )],
                     false,
-                    http::header::ResponseHeaderControl::default(),
+                    http::header::ResponseConnectionDirective::default(),
                 )
                 .expect("start accepts a syntactically valid length");
             controller
@@ -898,7 +924,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
@@ -956,7 +982,7 @@ mod tests {
                 Bytes::from_static(b"image/png").into(),
             )],
             trailers: false,
-            control: http::header::ResponseHeaderControl::default(),
+            directive: http::header::ResponseConnectionDirective::default(),
         })
         .expect("response start is accepted");
         assert!(actions.is_empty());
@@ -1034,7 +1060,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
@@ -1099,7 +1125,7 @@ mod tests {
                 status: final_status(http::types::status_code::OK),
                 headers: Vec::new(),
                 trailers: false,
-                control: http::header::ResponseHeaderControl::default(),
+                directive: http::header::ResponseConnectionDirective::default(),
             },
         )
         .expect("response start is accepted");
