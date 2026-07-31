@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from h2corn import Config, Server
 from h2corn._config import LifespanMode
-from h2corn._lifespan import LifespanRunner, await_with_timeout
+from h2corn._lifespan import LifespanRunner, await_with_timeout, cancel_task
 
 from tests._support import wait_for_server
 
@@ -299,9 +299,7 @@ async def test_lifespan_app_timeout_error_is_not_rewritten_as_server_timeout() -
         return None
 
     with pytest.raises(RuntimeError, match='does not support it') as raised:
-        await _run_lifespan(
-            app, mode='on', after_startup=after, startup_timeout=1.0
-        )
+        await _run_lifespan(app, mode='on', after_startup=after, startup_timeout=1.0)
     assert isinstance(raised.value.__cause__, TimeoutError)
     assert str(raised.value.__cause__) == 'custom-timeout'
 
@@ -364,6 +362,73 @@ async def test_discard_task_retains_task_until_it_settles() -> None:
     await asyncio.wait_for(asyncio.shield(runner._task), timeout=1)
     assert await runner.discard_task() is True
     assert runner._task is None
+
+
+async def test_cancel_task_zero_timeout_still_waits_for_cooperative_cleanup() -> None:
+    cancelling = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cooperative() -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelling.set()
+            await release.wait()
+            raise
+
+    task = asyncio.create_task(cooperative())
+    await asyncio.sleep(0)
+    cleanup = asyncio.create_task(cancel_task(task, timeout=0))
+    await asyncio.wait_for(cancelling.wait(), timeout=1)
+    assert not cleanup.done()
+    release.set()
+    await asyncio.wait_for(cleanup, timeout=1)
+    assert task.cancelled()
+
+
+async def test_cancel_task_waits_once_for_the_actual_remaining_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout is one deadline wait, not 5 ms polling slices."""
+    from h2corn import _lifespan
+
+    class Clock:
+        now = 100.0
+
+        def time(self) -> float:
+            return self.now
+
+    clock = Clock()
+    observed_timeouts: list[float] = []
+    release = asyncio.Event()
+
+    async def resistant() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                assert task is not None
+                task.uncancel()
+
+    async def fake_wait(_tasks, timeout: float):
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0)
+        clock.now += timeout
+        return set(), set()
+
+    task = asyncio.create_task(resistant())
+    await asyncio.sleep(0)
+    monkeypatch.setattr(_lifespan.asyncio, 'get_running_loop', lambda: clock)
+    monkeypatch.setattr(_lifespan.asyncio, 'wait', fake_wait)
+    try:
+        await cancel_task(task, timeout=7.0)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+
+    assert observed_timeouts == [7.0]
 
 
 async def test_server_shutdown_during_blocked_startup_never_serves() -> None:

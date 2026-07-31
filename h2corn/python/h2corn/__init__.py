@@ -30,6 +30,7 @@ from ._config import (
 if _TYPE_CHECKING:
     from ._server import Server, serve
     from ._types import (
+        Application,
         ASGIApp,
         ASGIVersions,
         ExtensionParameters,
@@ -57,6 +58,7 @@ if _TYPE_CHECKING:
         Receive,
         ReceiveMessage,
         Scope,
+        ScopeHeaders,
         Send,
         SendMessage,
         State,
@@ -78,6 +80,7 @@ if _TYPE_CHECKING:
 __all__ = (
     'ASGIApp',
     'ASGIVersions',
+    'Application',
     'CertReqsMode',
     'Config',
     'ExtensionParameters',
@@ -108,6 +111,7 @@ __all__ = (
     'Receive',
     'ReceiveMessage',
     'Scope',
+    'ScopeHeaders',
     'Send',
     'SendMessage',
     'Server',

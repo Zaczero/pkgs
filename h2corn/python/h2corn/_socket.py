@@ -175,8 +175,8 @@ class _BorrowedListener:
             os.close(sock.detach())
 
 
-# Spec writes `type _ListenerLease = ...` (PEP 695 / 3.12+); floor is 3.11.
-_ListenerLease = _CreatedListener | _BorrowedListener
+# Spec writes `type ListenerLease = ...` (PEP 695 / 3.12+); floor is 3.11.
+ListenerLease = _CreatedListener | _BorrowedListener
 
 
 def _build_unix_listener(
@@ -197,7 +197,9 @@ def _build_unix_listener(
             existing = None
         if existing is not None:
             if not stat.S_ISSOCK(existing.st_mode):
-                raise OSError(f'unix socket path exists and is not a socket: {uds_path}')
+                raise OSError(
+                    f'unix socket path exists and is not a socket: {uds_path}'
+                )
             os.unlink(uds_path)
 
         listener.socket = socket.socket(
@@ -318,7 +320,7 @@ def _build_tcp_listener(host: str, port: int, config: Config) -> _CreatedListene
     raise OSError(f'could not bind {host}:{port}: {last_error}') from last_error
 
 
-def _lease_owned_fds(fds: Sequence[int]) -> tuple[_CreatedListener, ...]:  # pyright: ignore[reportUnusedFunction]
+def lease_owned_fds(fds: Sequence[int]) -> tuple[_CreatedListener, ...]:
     """Lease fds a supervisor already transferred to this worker.
 
     These descriptors are this process's responsibility from entry, unlike
@@ -344,9 +346,9 @@ def _build_sockets(
     config: Config,
     *,
     socket_owner: tuple[int | None, int | None] = (None, None),
-) -> tuple[_ListenerLease, ...]:
-    leases: list[_ListenerLease] = []
-    pending: _ListenerLease | None = None
+) -> tuple[ListenerLease, ...]:
+    leases: list[ListenerLease] = []
+    pending: ListenerLease | None = None
     shared_tcp_port: int | None = None
     owner_uid, owner_gid = socket_owner
     try:

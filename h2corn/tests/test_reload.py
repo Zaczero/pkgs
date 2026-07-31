@@ -12,7 +12,6 @@ import pytest
 from h2corn import Config
 from h2corn._cli import ImportSettings
 from h2corn._reload import (
-    _INOTIFY_DIR_REBUILD_MASK,
     _INOTIFY_EVENT,
     _INOTIFY_ISDIR,
     _changed_paths,
@@ -92,6 +91,71 @@ def test_reload_snapshot_ignores_dunder_pypackages_dir_by_default(
     )
 
     assert generated not in snapshot
+
+
+def test_reload_overflow_rebuilds_every_watch_and_refreshes_the_full_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Queue overflow discards event identity, so only full resync is sound."""
+    app = tmp_path / 'app.py'
+    app.write_text('first')
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ())
+    added = tmp_path / 'added.py'
+    added.write_text('second')
+
+    class Notifier:
+        rebuilds = 0
+        rescans = 0
+
+        def rebuild(self) -> None:
+            self.rebuilds += 1
+
+        def rescan(self, _directories: set[Path]) -> None:
+            self.rescans += 1
+
+    notifier = Notifier()
+
+    changed = reload_module._apply_reload_events(
+        notifier,
+        reload_module._ReloadEvents(full_resync=True),
+        snapshot,
+        (tmp_path,),
+        ('*.py',),
+        (),
+    )
+
+    assert changed == (added,)
+    assert snapshot == _watch_file_snapshot((tmp_path,), ('*.py',), ())
+    assert (notifier.rebuilds, notifier.rescans) == (1, 0)
+
+
+def test_reload_direct_event_restarts_even_when_the_snapshot_timestamp_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / 'app.py'
+    app.write_text('before')
+    snapshot = _watch_file_snapshot((tmp_path,), ('*.py',), ())
+    original_mtime = app.stat().st_mtime_ns
+    app.write_text('after!')
+    os.utime(app, ns=(original_mtime, original_mtime))
+
+    class Notifier:
+        def rebuild(self) -> None:
+            raise AssertionError('direct file event must not rebuild watches')
+
+        def rescan(self, directories: set[Path]) -> None:
+            assert not directories
+
+    changed = reload_module._apply_reload_events(
+        Notifier(),
+        reload_module._ReloadEvents(paths={app}),
+        snapshot,
+        (tmp_path,),
+        ('*.py',),
+        (),
+    )
+
+    assert changed == (app,)
 
 
 def test_reload_dirs_override_default_watch_root(tmp_path: Path) -> None:
@@ -261,10 +325,13 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
 
     class Notifier:
         def __init__(self) -> None:
-            self.rebuilds = iter((True, False))
+            self.events = iter((
+                reload_module._ReloadEvents(paths={Path('one.py')}),
+                reload_module._ReloadEvents(rescan_directories={Path('package')}),
+            ))
 
-        def consume(self) -> bool:
-            return next(self.rebuilds)
+        def consume(self):
+            return next(self.events)
 
     notifier = Notifier()
     notifier_key = selectors.SelectorKey(9, 9, selectors.EVENT_READ, None)
@@ -289,10 +356,12 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
             return result
 
     monkeypatch.setattr(reload_module.time, 'monotonic', lambda: now)
-    stop, rebuild = reload_module._wait_for_reload_quiet_period(
+    stop, events = reload_module._wait_for_reload_quiet_period(
         Selector(), notifier, wakeup_fd=7
     )
-    assert (stop, rebuild) == (False, True)
+    assert stop is False
+    assert events.paths == {Path('one.py')}
+    assert events.rescan_directories == {Path('package')}
     assert timeouts == pytest.approx([0.2, 0.2, 0.2])
 
     drained: list[int] = []
@@ -303,10 +372,15 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
         def select(self, timeout: float):
             return [(wakeup_key, selectors.EVENT_READ)]
 
-    stop, rebuild = reload_module._wait_for_reload_quiet_period(
+    stop, events = reload_module._wait_for_reload_quiet_period(
         WakeupSelector(), notifier, wakeup_fd=7
     )
-    assert (stop, rebuild, drained) == (True, False, [7])
+    assert (stop, events.paths, events.rescan_directories, drained) == (
+        True,
+        set(),
+        set(),
+        [7],
+    )
 
 
 def test_darwin_kqueue_rebuilds_directory_watch(
@@ -323,13 +397,17 @@ def test_darwin_kqueue_rebuilds_directory_watch(
     next_fd = 100
 
     class Kqueue:
+        def __init__(self) -> None:
+            self.queued: list[list[object]] = []
+
         def fileno(self) -> int:
             return 42
 
         def control(self, changelist, _max_events, _timeout):
             if changelist is not None:
                 registered.append(list(changelist))
-            return []
+                return []
+            return self.queued.pop(0) if self.queued else []
 
         def close(self) -> None:
             pass
@@ -365,6 +443,20 @@ def test_darwin_kqueue_rebuilds_directory_watch(
     monkeypatch.setattr(reload_module.os, 'O_EVTONLY', 0, raising=False)
     notifier = reload_module._KqueueNotifier((watched,), ('*.py',), ())
     first_fds = tuple(notifier._fds)
+
+    class Event:
+        def __init__(self, ident: int) -> None:
+            self.ident = ident
+
+    initial_file_fd = next(
+        fd for fd, path in notifier._paths.items() if path == watched / 'initial.py'
+    )
+    initial_dir_fd = next(fd for fd, path in notifier._paths.items() if path == watched)
+    notifier._kqueue.queued.append([Event(initial_file_fd), Event(initial_dir_fd)])
+    events = notifier.consume()
+    assert events.paths == {watched / 'initial.py'}
+    assert events.rescan_directories == {watched}
+
     (watched / 'new-directory').mkdir()
     (watched / 'new-directory' / 'new.py').write_text('new')
     notifier.rebuild()
@@ -378,12 +470,43 @@ def test_darwin_kqueue_rebuilds_directory_watch(
     assert len(registered) == 2
 
 
-def test_inotify_consume_skips_rebuild_for_file_events(monkeypatch) -> None:
+def _inotify_notifier(root: Path, *, exclude_patterns: tuple[str, ...] = ()):
     notifier = object.__new__(_InotifyNotifier)
     notifier._fd = 1
+    notifier._roots = (root,)
+    notifier._include_patterns = ('*.py',)
+    notifier._exclude_patterns = exclude_patterns
+    notifier._watches = {1: root}
+    notifier._ignored_watches = set()
+    return notifier
+
+
+def _packed_inotify_event(wd: int, mask: int, cookie: int, name: str = '') -> bytes:
+    encoded_name = name.encode() + (b'\0' if name else b'')
+    return _INOTIFY_EVENT.pack(wd, mask, cookie, len(encoded_name)) + encoded_name
+
+
+def test_inotify_preserves_packed_file_events_even_when_mtime_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / 'first.py'
+    second = tmp_path / 'second.py'
+    ignored = tmp_path / 'notes.txt'
+    first.write_text('before')
+    second.write_text('before')
+    ignored.write_text('before')
+    unchanged_mtime = first.stat().st_mtime_ns
+    first.write_text('after!')
+    os.utime(first, ns=(unchanged_mtime, unchanged_mtime))
+    notifier = _inotify_notifier(tmp_path)
 
     chunks = iter([
-        _INOTIFY_EVENT.pack(1, 0x0000_0008, 0, 0),
+        b''.join((
+            _packed_inotify_event(1, 0x0000_0008, 0, 'first.py'),
+            _packed_inotify_event(1, 0x0000_0008, 0, 'second.py'),
+            _packed_inotify_event(1, 0x0000_0008, 0, 'notes.txt'),
+        )),
         BlockingIOError(),
     ])
 
@@ -395,12 +518,15 @@ def test_inotify_consume_skips_rebuild_for_file_events(monkeypatch) -> None:
 
     monkeypatch.setattr(reload_module.os, 'read', fake_read)
 
-    assert notifier.consume() is False
+    events = notifier.consume()
+    assert events.paths == {first, second}
+    assert events.rescan_directories == set()
+    assert events.full_resync is False
 
 
 @_linux_only
 def test_inotify_rebuild_preserves_fileno(tmp_path: Path) -> None:
-    notifier = _InotifyNotifier((tmp_path,), ())
+    notifier = _InotifyNotifier((tmp_path,), ('*.py',), ())
     try:
         original_fd = notifier.fileno()
         (tmp_path / 'sub').mkdir()
@@ -414,7 +540,7 @@ def test_inotify_rebuild_preserves_fileno(tmp_path: Path) -> None:
 def test_inotify_rebuild_keeps_events_on_originally_registered_fd(
     tmp_path: Path,
 ) -> None:
-    notifier = _InotifyNotifier((tmp_path,), ())
+    notifier = _InotifyNotifier((tmp_path,), ('*.py',), ())
     try:
         registered_fd = notifier.fileno()
         sel = selectors.DefaultSelector()
@@ -434,12 +560,31 @@ def test_inotify_rebuild_keeps_events_on_originally_registered_fd(
         notifier.close()
 
 
-def test_inotify_consume_rebuilds_for_directory_topology_events(monkeypatch) -> None:
-    notifier = object.__new__(_InotifyNotifier)
-    notifier._fd = 1
+def test_inotify_rename_cookie_and_directory_events_rescan_only_the_subtree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    nested = tmp_path / 'nested'
+    nested.mkdir()
+    old = tmp_path / 'old.py'
+    old.write_text('old')
+    renamed = tmp_path / 'renamed.py'
+    old.rename(renamed)
+    created = nested / 'created.py'
+    created.write_text('created')
+    notifier = _inotify_notifier(tmp_path)
 
     chunks = iter([
-        _INOTIFY_EVENT.pack(1, _INOTIFY_ISDIR | _INOTIFY_DIR_REBUILD_MASK, 0, 0),
+        b''.join((
+            _packed_inotify_event(1, 0x0000_0040, 73, 'old.py'),
+            _packed_inotify_event(1, 0x0000_0080, 73, 'renamed.py'),
+            _packed_inotify_event(
+                1,
+                _INOTIFY_ISDIR | 0x0000_0100,
+                0,
+                'nested',
+            ),
+        )),
         BlockingIOError(),
     ])
 
@@ -451,7 +596,49 @@ def test_inotify_consume_rebuilds_for_directory_topology_events(monkeypatch) -> 
 
     monkeypatch.setattr(reload_module.os, 'read', fake_read)
 
-    assert notifier.consume() is True
+    events = notifier.consume()
+    assert events.paths == {tmp_path / 'old.py', renamed}
+    assert events.rescan_directories == {nested}
+    snapshot: dict[Path, int] = {}
+    assert reload_module._rescan_file_snapshot(
+        snapshot,
+        events.rescan_directories,
+        (tmp_path,),
+        ('*.py',),
+        (),
+    ) == (created,)
+
+
+def test_inotify_ignores_excluded_topology_and_forces_full_resync_on_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    notifier = _inotify_notifier(tmp_path, exclude_patterns=('generated',))
+    chunks = iter([
+        b''.join((
+            _packed_inotify_event(
+                1,
+                _INOTIFY_ISDIR | 0x0000_0100,
+                0,
+                'generated',
+            ),
+            _packed_inotify_event(-1, 0x0000_4000, 0),
+        )),
+        BlockingIOError(),
+    ])
+
+    def fake_read(_fd: int, _size: int):
+        chunk = next(chunks)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
+
+    monkeypatch.setattr(reload_module.os, 'read', fake_read)
+
+    events = notifier.consume()
+    assert events.paths == set()
+    assert events.rescan_directories == set()
+    assert events.full_resync is True
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process groups')
@@ -603,7 +790,7 @@ def test_inotify_init_failure_after_fd_open_closes_fd(
     )
     before = set(os.listdir('/proc/self/fd'))
     with pytest.raises(OSError, match='permission denied'):
-        _InotifyNotifier((tmp_path,), ())
+        _InotifyNotifier((tmp_path,), ('*.py',), ())
     after = set(os.listdir('/proc/self/fd'))
     assert before == after
 
@@ -695,6 +882,7 @@ def test_reload_with_fd_bind_serves_across_generations(
         _wait_http(port, b'reload1')
         first_children = _proc_children(watcher.pid)
         assert first_children, 'reload watcher must have spawned a child'
+        original_mtime = app.stat().st_mtime_ns
         app.write_text(
             'async def app(scope, receive, send):\n'
             "    if scope['type'] == 'http':\n"
@@ -702,8 +890,9 @@ def test_reload_with_fd_bind_serves_across_generations(
             "'headers': [(b'content-length', b'7')]})\n"
             "        await send({'type': 'http.response.body', 'body': b'reload2'})\n"
         )
-        # Touch mtime explicitly so the snapshot always sees a change.
-        os.utime(app, None)
+        # This is still a real write event, but its timestamp is restored to
+        # prove reload does not need an O(tree) snapshot comparison to notice it.
+        os.utime(app, ns=(original_mtime, original_mtime))
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             try:

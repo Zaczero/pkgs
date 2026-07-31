@@ -16,10 +16,10 @@ from ._cli import ImportSettings, run_cli
 from ._config import Config
 from ._lifespan import LifespanRunner, await_with_timeout, cancel_task
 from ._socket import (
-    _lease_owned_fds,  # pyright: ignore[reportPrivateUsage]
-    _ListenerLease,  # pyright: ignore[reportPrivateUsage]
+    ListenerLease,
     bound_addresses,
     bound_sockets,
+    lease_owned_fds,
     nonblocking_pipe,
 )
 
@@ -440,6 +440,10 @@ class Server:
         """
         self._request_shutdown(_ShutdownKind.STOP)
 
+    def request_restart(self) -> None:
+        """Ask a supervisor-owned worker to finish this generation for restart."""
+        self._request_shutdown(_ShutdownKind.RESTART)
+
     def _request_shutdown(self, kind: _ShutdownKind) -> None:
         """Request stop or restart on the active generation, if any.
 
@@ -614,7 +618,7 @@ class Server:
         generation = self._claim_generation(self._serve_embedded)
         await self._await_generation(generation)
 
-    async def _serve_worker_fds(
+    async def serve_worker_fds(
         self,
         fds: list[int],
         *,
@@ -631,7 +635,7 @@ class Server:
         """
 
         async def _body(generation: _ServeGeneration) -> None:
-            listeners = _lease_owned_fds(fds)
+            listeners = lease_owned_fds(fds)
             try:
                 await self._serve_with_primary_lifespan(
                     generation,
@@ -716,10 +720,8 @@ class Server:
                 # the listeners are bound before it: its directory is often
                 # writable only by the starting user.
                 with _pidfile(self.config):
-                    # replace() must clear the synced host/port convenience pair:
-                    # bind plus host/port together fail validation.
                     emit_banner(
-                        replace(self.config, bind=self.addresses, host=None, port=None),
+                        replace(self.config, bind=self.addresses),
                         prepared_tls,
                     )
                     drop_process_privileges(identity)
@@ -735,7 +737,7 @@ class Server:
     async def _serve_with_primary_lifespan(
         self,
         generation: _ServeGeneration,
-        listeners: Sequence[_ListenerLease],
+        listeners: Sequence[ListenerLease],
         *,
         retire_trigger: Callable[[], None] | None = None,
         ready_trigger: Callable[[], None] | None = None,
@@ -903,7 +905,7 @@ class Server:
     async def _native_serve(
         self,
         generation: _ServeGeneration,
-        listeners: Sequence[_ListenerLease],
+        listeners: Sequence[ListenerLease],
         *,
         lifespan_handoff: _LifespanHandoff | None,
         retire_trigger: Callable[[], None] | None,

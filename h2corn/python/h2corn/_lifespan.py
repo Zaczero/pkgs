@@ -56,7 +56,10 @@ async def cancel_task(
             if expires_at is None:
                 await asyncio.shield(task)
             else:
-                await asyncio.wait([task], timeout=0.005)
+                await asyncio.wait(
+                    [task],
+                    timeout=expires_at - asyncio.get_running_loop().time(),
+                )
         except asyncio.CancelledError as exc:
             if task.done():
                 break

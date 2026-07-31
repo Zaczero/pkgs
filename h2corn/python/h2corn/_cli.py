@@ -18,6 +18,7 @@ from ._config import (
     bind_from_convenience,
     config_options,
     env_values,
+    tcp_bind_convenience,
 )
 
 TYPE_CHECKING = False
@@ -321,10 +322,12 @@ def _apply_tcp_bind_sugar(
         return
     if host is MISSING and port is MISSING:
         return
-    if base.host is None or base.port is None:
+    convenience = tcp_bind_convenience(base.bind)
+    if convenience is None:
         parser.error('--host/--port require a single TCP listener base configuration')
-    host_value = base.host if host is MISSING else cast('str', host)
-    port_value = base.port if port is MISSING else cast('int', port)
+    base_host, base_port = convenience
+    host_value = base_host if host is MISSING else cast('str', host)
+    port_value = base_port if port is MISSING else cast('int', port)
     bind = bind_from_convenience(host_value, port_value)
     assert bind is not None
     values['bind'] = bind
@@ -343,10 +346,10 @@ def parse_cli(
     config_path = pre_args.config
     if config_path is None and (raw := env.get(CONFIG_PATH_ENV_VAR)):
         config_path = Path(raw)
-    parser = build_parser(Config(), config_path)
     try:
         base = Config.from_toml(config_path) if config_path is not None else Config()
     except (ValueError, TypeError, OSError) as exc:
+        parser = build_parser(Config(), config_path)
         if config_path is None:
             parser.error(str(exc))
         parser.error(f'could not load configuration file {config_path}: {exc}')
@@ -360,7 +363,7 @@ def parse_cli(
                 for option in config_options()
             }
             if CONVENIENCE_KEYS & environment_values.keys():
-                if base.host is None or base.port is None:
+                if tcp_bind_convenience(base.bind) is None:
                     raise ValueError(
                         'host/port environment overrides require a single configured TCP listener'
                     )
@@ -371,6 +374,7 @@ def parse_cli(
                 }
             base = Config(**values)
     except (ValueError, TypeError, OSError) as exc:
+        parser = build_parser(base, config_path)
         parser.error(str(exc))
     parser = build_parser(base, config_path)
     args = parser.parse_args(argv)

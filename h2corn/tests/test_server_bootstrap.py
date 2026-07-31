@@ -416,13 +416,13 @@ def test_worker_entry_imports_after_privilege_drop(
             self.config = config
             self.releasing = False
 
-        async def _serve_worker_fds(self, *_args, **_kwargs):
+        async def serve_worker_fds(self, *_args, **_kwargs):
             return None
 
         def shutdown(self):
             return None
 
-        def _request_shutdown(self, _kind):
+        def request_restart(self):
             return None
 
     monkeypatch.setattr(_server, 'Server', FakeServer)
@@ -477,7 +477,7 @@ def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
             self.config = config
             self.releasing = False
 
-        async def _serve_worker_fds(self, *_args, **kwargs):
+        async def serve_worker_fds(self, *_args, **kwargs):
             assert _supervisor._CONTROL_READY not in messages
             assert kwargs['quiesce_fd'] == quiesce_read_fd
             os.close(quiesce_read_fd)
@@ -487,7 +487,7 @@ def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
         def shutdown(self):
             return None
 
-        def _request_shutdown(self, _kind):
+        def request_restart(self):
             return None
 
     control_read_fd, control_write_fd = os.pipe()
@@ -532,14 +532,25 @@ def test_disabled_worker_healthcheck_never_creates_a_deadline(
 ) -> None:
     from h2corn import _supervisor
 
-    deadlines: dict[int, float] = {}
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
     monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: 10.0)
+    disabled = _supervisor_state(Config(timeout_worker_healthcheck=0))
+    enabled = _supervisor_state(Config(timeout_worker_healthcheck=3.5))
+    process = _FakeWorkerProcess(7)
+    disabled.workers[7] = _supervisor._Worker(process, read_fd, None)
+    enabled.workers[7] = _supervisor._Worker(process, read_fd, None)
+    try:
+        os.write(write_fd, _supervisor._CONTROL_HEARTBEAT)
+        disabled.drain_control_messages(7)
+        assert disabled.workers[7].health_deadline is None
 
-    _supervisor._renew_worker_healthcheck(deadlines, 7, 0)
-    assert deadlines == {}
-
-    _supervisor._renew_worker_healthcheck(deadlines, 7, 3.5)
-    assert deadlines == {7: 13.5}
+        os.write(write_fd, _supervisor._CONTROL_HEARTBEAT)
+        enabled.drain_control_messages(7)
+        assert enabled.workers[7].health_deadline == 13.5
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def test_worker_retirement_gives_request_cleanup_and_lifespan_separate_deadlines(
@@ -549,29 +560,36 @@ def test_worker_retirement_gives_request_cleanup_and_lifespan_separate_deadlines
 
     now = 10.0
     monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: now)
-    retirements = _supervisor._WorkerRetirements(
-        graceful_timeout=3.0,
-        lifespan_timeout=5.0,
+    supervisor = _supervisor_state(
+        Config(timeout_graceful_shutdown=3.0, timeout_lifespan_shutdown=5.0)
     )
-
-    retirements.begin(7)
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    supervisor.workers[7] = _supervisor._Worker(_FakeWorkerProcess(7), read_fd, None)
+    supervisor.begin_worker_retirement(7, restart=False)
     now = 11.0
-    retirements.begin(7)
+    assert not supervisor.begin_worker_retirement(7, restart=False)
     # The native request wait consumes one grace interval; cancellation and
     # ASGI cleanup receive the second. Repeated retirement reasons cannot
     # silently move either boundary.
-    assert retirements.next_timeout(now) == 5.0
-    assert retirements.pop_expired(15.99) == ()
+    assert supervisor.wait_timeout() == 5.0
+    supervisor.kill_expired_retirements()
+    assert supervisor.workers[7].retirement is not None
 
     now = 16.0
-    assert retirements.begin_lifespan_shutdown(7)
-    assert not retirements.begin_lifespan_shutdown(7)
+    os.write(write_fd, _supervisor._CONTROL_LIFESPAN)
+    supervisor.drain_control_messages(7)
     # This acknowledgement, not the original retirement clock, starts the
     # primary lifespan deadline.
-    assert retirements.next_timeout(now) == 5.0
-    assert retirements.pop_expired(20.99) == ()
-    assert retirements.pop_expired(21.0) == ((7, 'lifespan shutdown'),)
-    assert retirements.next_timeout(21.0) is None
+    assert supervisor.wait_timeout() == 5.0
+    now = 20.99
+    supervisor.kill_expired_retirements()
+    assert supervisor.workers[7].retirement is not None
+    now = 21.0
+    supervisor.kill_expired_retirements()
+    assert supervisor.workers[7].retirement is None
+    os.close(read_fd)
+    os.close(write_fd)
 
 
 def test_worker_retirement_capacity_evicts_the_oldest_deadline(
@@ -581,18 +599,28 @@ def test_worker_retirement_capacity_evicts_the_oldest_deadline(
 
     now = 10.0
     monkeypatch.setattr(_supervisor.time, 'monotonic', lambda: now)
-    retirements = _supervisor._WorkerRetirements(
-        graceful_timeout=30.0,
-        lifespan_timeout=30.0,
+    supervisor = _supervisor_state(Config(workers=1))
+    supervisor.workers[7] = _supervisor._Worker(
+        _FakeWorkerProcess(7),
+        -1,
+        None,
+        expected_exit=True,
+        retirement=_supervisor._WorkerRetirement('request cleanup', 70.0),
+    )
+    now = 11.0
+    supervisor.workers[8] = _supervisor._Worker(
+        _FakeWorkerProcess(8),
+        -1,
+        None,
+        expected_exit=True,
+        retirement=_supervisor._WorkerRetirement('request cleanup', 71.0),
     )
 
-    retirements.begin(7)
-    now = 11.0
-    retirements.begin(8)
+    supervisor.reconcile()
 
-    assert retirements.pop_oldest() == 7
-    assert retirements.pop_oldest() == 8
-    assert retirements.pop_oldest() is None
+    assert supervisor.workers[7].forced_retirement_reap
+    assert supervisor.workers[7].retirement is None
+    assert supervisor.workers[8].retirement is not None
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='the supervisor is POSIX-only')
@@ -724,7 +752,8 @@ async def app(scope, receive, send):
         wait_for_marker(cancelled_read, 'request cancellation')
         os.write(cleanup_write, b'x')
         wait_for_marker(lifespan_read, 'lifespan shutdown')
-        assert process.wait(timeout=5) == 0
+        exit_code = process.wait(timeout=5)
+        assert exit_code == 0, process.stderr.read().decode()
     finally:
         if request is not None:
             request.close()
@@ -801,6 +830,209 @@ def _supervisor_state(config: Config):
     )
 
 
+class _FakeWorkerProcess:
+    def __init__(self, sentinel: int, *, alive: bool = False) -> None:
+        self.sentinel = sentinel
+        self.pid = sentinel + 1000
+        self.exitcode = 0
+        self._alive = alive
+        self.closed = False
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def terminate(self) -> None:
+        self._alive = False
+
+    def kill(self) -> None:
+        self._alive = False
+
+    def join(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    'failure',
+    [
+        'second-pipe',
+        'process-construction',
+        'process-start',
+        'process-start-after-child',
+        'parent-close',
+        'sentinel-registration',
+        'control-registration',
+        'startup-log',
+    ],
+)
+def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """No failed spawn leaves a child or a supervisor-owned descriptor behind."""
+    from h2corn import _supervisor
+
+    real_close = os.close
+    real_pipe = _supervisor.nonblocking_pipe
+    pipe_pairs: list[tuple[int, int]] = []
+    processes: list[object] = []
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 5000
+            self._sentinel, self._sentinel_write = os.pipe()
+            self.started = False
+            self.closed = False
+
+        @property
+        def sentinel(self) -> int:
+            return self._sentinel
+
+        def start(self) -> None:
+            if failure == 'process-start':
+                raise OSError('planned failure')
+            self.started = True
+            if failure == 'process-start-after-child':
+                raise OSError('planned failure')
+
+        def is_alive(self) -> bool:
+            return self.started
+
+        def terminate(self) -> None:
+            self.started = False
+
+        def kill(self) -> None:
+            self.started = False
+
+        def join(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+            for fd in (self._sentinel, self._sentinel_write):
+                try:
+                    real_close(fd)
+                except OSError:
+                    pass
+
+    class Context:
+        def Process(self, **_kwargs):  # noqa: N802
+            if failure == 'process-construction':
+                raise OSError('planned failure')
+            process = FakeProcess()
+            processes.append(process)
+            return process
+
+    pipe_calls = 0
+
+    def make_pipe() -> tuple[int, int]:
+        nonlocal pipe_calls
+        pipe_calls += 1
+        if failure == 'second-pipe' and pipe_calls == 2:
+            raise OSError('planned failure')
+        pair = real_pipe()
+        pipe_pairs.append(pair)
+        return pair
+
+    monkeypatch.setattr(_supervisor, 'nonblocking_pipe', make_pipe)
+    monkeypatch.setattr(
+        _supervisor.multiprocessing,
+        'get_context',
+        lambda _name: Context(),
+    )
+    supervisor = _supervisor_state(Config())
+    before = set(os.listdir('/proc/self/fd'))
+    if failure == 'parent-close':
+        failed_close = False
+
+        def close_once(fd: int) -> None:
+            nonlocal failed_close
+            if not failed_close and fd == pipe_pairs[0][1]:
+                failed_close = True
+                raise OSError('planned failure')
+            real_close(fd)
+
+        monkeypatch.setattr(_supervisor.os, 'close', close_once)
+    if failure in {'sentinel-registration', 'control-registration'}:
+        real_register = supervisor.selector.register
+        registrations = 0
+
+        def register(*args, **kwargs):
+            nonlocal registrations
+            registrations += 1
+            if failure == 'sentinel-registration' or registrations == 2:
+                raise OSError('planned failure')
+            return real_register(*args, **kwargs)
+
+        monkeypatch.setattr(supervisor.selector, 'register', register)
+    if failure == 'startup-log':
+        monkeypatch.setattr(
+            _supervisor,
+            '_log_line',
+            lambda _message: (_ for _ in ()).throw(OSError('planned failure')),
+        )
+    try:
+        with pytest.raises(OSError, match='planned failure'):
+            supervisor.spawn_worker()
+        assert supervisor.workers == {}
+        assert all(process.closed for process in processes)
+        assert set(os.listdir('/proc/self/fd')) == before
+    finally:
+        supervisor.selector.close()
+
+
+def test_supervisor_reap_closes_each_owned_fd_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A duplicate readiness from one dead child cannot close a reused fd."""
+    from h2corn import _supervisor
+
+    supervisor = _supervisor_state(Config())
+    control_read, control_write = os.pipe()
+    quiesce_read, quiesce_write = os.pipe()
+    sentinel, sentinel_write = os.pipe()
+    closed: list[int] = []
+    real_close = os.close
+
+    class Process:
+        pid = 9876
+        exitcode = 0
+
+        @property
+        def sentinel(self) -> int:
+            return sentinel
+
+        def join(self) -> None:
+            pass
+
+        def close(self) -> None:
+            real_close(sentinel)
+            real_close(sentinel_write)
+
+    def record_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    supervisor.workers[sentinel] = _supervisor._Worker(
+        Process(),
+        control_read,
+        quiesce_write,
+        expected_exit=True,
+    )
+    monkeypatch.setattr(_supervisor.os, 'close', record_close)
+    try:
+        supervisor.handle_worker_event('worker-exit', sentinel)
+        supervisor.handle_worker_event('worker-exit', sentinel)
+        assert closed.count(control_read) == 1
+        assert closed.count(quiesce_write) == 1
+    finally:
+        real_close(control_write)
+        real_close(quiesce_read)
+        supervisor.selector.close()
+
+
 def test_supervisor_wait_never_exceeds_what_the_selector_accepts() -> None:
     """A far-off deadline must not become an `OverflowError` in the loop.
 
@@ -813,7 +1045,9 @@ def test_supervisor_wait_never_exceeds_what_the_selector_accepts() -> None:
     from h2corn import _supervisor
 
     supervisor = _supervisor_state(Config(workers=1))
-    supervisor.heartbeat_deadlines = {3: time.monotonic() + 1e12}
+    supervisor.workers[3] = _supervisor._Worker(
+        _FakeWorkerProcess(3), -1, None, health_deadline=time.monotonic() + 1e12
+    )
 
     timeout = supervisor.wait_timeout()
 
@@ -833,11 +1067,20 @@ def test_supervisor_wait_never_exceeds_what_the_selector_accepts() -> None:
 
 
 def test_worker_replacement_capacity_allows_one_bounded_retiring_generation() -> None:
+    from h2corn import _supervisor
+
     supervisor = _supervisor_state(Config(workers=4))
 
     def can_spawn(*, process_count: int, active_workers: int) -> bool:
-        supervisor.workers = cast('Any', dict.fromkeys(range(process_count), object()))
-        supervisor.expected_exits = set(range(process_count - active_workers))
+        supervisor.workers = {
+            sentinel: _supervisor._Worker(
+                _FakeWorkerProcess(sentinel),
+                -1,
+                None,
+                expected_exit=sentinel < process_count - active_workers,
+            )
+            for sentinel in range(process_count)
+        }
         return supervisor.can_spawn_worker()
 
     target = 4
@@ -854,7 +1097,10 @@ def test_scale_down_during_reload_preserves_the_unready_replacement() -> None:
     from h2corn import _supervisor
 
     supervisor = _supervisor_state(Config())
-    supervisor.workers = cast('Any', dict.fromkeys((11, 12, 13), object()))
+    supervisor.workers = {
+        sentinel: _supervisor._Worker(_FakeWorkerProcess(sentinel), -1, None)
+        for sentinel in (11, 12, 13)
+    }
     supervisor.reload_cycle = _supervisor._ReloadCycle(target=11, replacement=13)
 
     assert supervisor.active_worker_capacity() == 2
@@ -865,12 +1111,16 @@ def test_health_retired_reload_replacement_cannot_retire_healthy_target() -> Non
     from h2corn import _supervisor
 
     supervisor = _supervisor_state(Config())
+    supervisor.workers = {
+        sentinel: _supervisor._Worker(_FakeWorkerProcess(sentinel), -1, None)
+        for sentinel in (11, 13)
+    }
     supervisor.reload_cycle = _supervisor._ReloadCycle(target=11, replacement=13)
 
     assert supervisor.is_viable_reload_replacement(13)
-    supervisor.expected_exits.add(13)
+    supervisor.workers[13].expected_exit = True
     assert not supervisor.is_viable_reload_replacement(13)
-    supervisor.expected_exits.clear()
+    supervisor.workers[13].expected_exit = False
     assert not supervisor.is_viable_reload_replacement(12)
 
 
@@ -881,7 +1131,7 @@ def test_failed_reload_replacement_spawn_leaves_no_cycle(
     from h2corn import _supervisor
 
     supervisor = _supervisor_state(Config())
-    supervisor.workers = cast('Any', {11: object()})
+    supervisor.workers = {11: _supervisor._Worker(_FakeWorkerProcess(11), -1, None)}
     supervisor.schedule_worker_retire(11)
 
     def fail_spawn(_self: object) -> int:
@@ -895,17 +1145,14 @@ def test_failed_reload_replacement_spawn_leaves_no_cycle(
 
 
 def test_expected_retirement_does_not_count_as_a_worker_failure() -> None:
-    class Worker:
-        sentinel = 11
-        pid = 123
-        exitcode = 0
+    from h2corn import _supervisor
 
-        def close(self) -> None:
-            pass
-
+    read_fd, write_fd = os.pipe()
     supervisor = _supervisor_state(Config())
-    supervisor.expected_exits.add(11)
-    supervisor.retire_worker(cast('Any', Worker()))
+    worker = _supervisor._Worker(
+        _FakeWorkerProcess(11), read_fd, write_fd, expected_exit=True
+    )
+    supervisor.retire_worker(11, worker)
 
     assert not supervisor.failure_times
 
@@ -1412,7 +1659,7 @@ access_log = false
 
     _server.main()
 
-    assert captured['config'].port == 9030
+    assert captured['config'].bind == ('127.0.0.1:9030',)
     assert captured['config'].http1 is True
     assert captured['config'].access_log is True
 
@@ -1443,7 +1690,7 @@ def test_cli_legacy_env_port_overrides_toml_listener(
 
     _server.main()
 
-    assert captured['config'].port == 9020
+    assert captured['config'].bind == ('127.0.0.1:9020',)
 
 
 def test_cli_factory_flag_is_forwarded_to_import_target(
@@ -2296,10 +2543,14 @@ def test_crash_loop_is_detected_after_a_worker_was_once_healthy() -> None:
     crash-loop termination for good, so a deployment that came up and later
     broke respawned forever in silence.
     """
+    from h2corn import _supervisor
+
     supervisor = _supervisor_state(Config(workers=1))
     # A worker reached READY, then went away.
-    supervisor.ready_workers.add(11)
-    supervisor.ready_workers.discard(11)
+    supervisor.workers[11] = _supervisor._Worker(
+        _FakeWorkerProcess(11), -1, None, ready=True
+    )
+    supervisor.workers.pop(11)
 
     for _ in range(3):
         supervisor.record_worker_failure()
@@ -2314,7 +2565,11 @@ def test_crash_loop_is_detected_after_a_worker_was_once_healthy() -> None:
 def test_crash_loop_spares_a_fleet_that_still_has_a_healthy_worker() -> None:
     """One flapping worker must not take down workers that are serving."""
     supervisor = _supervisor_state(Config(workers=4))
-    supervisor.ready_workers.add(21)
+    from h2corn import _supervisor
+
+    supervisor.workers[21] = _supervisor._Worker(
+        _FakeWorkerProcess(21), -1, None, ready=True
+    )
 
     for _ in range(24):
         supervisor.record_worker_failure()
@@ -2762,9 +3017,7 @@ def test_child_discard_fds_lists_explicit_provenance_set() -> None:
             self.sentinel = 100
             self._popen = _FakePopen()
 
-    supervisor.workers[100] = cast('Any', _FakeWorker())
-    supervisor.worker_controls[100] = 10
-    supervisor.worker_quiesce_writes[100] = 11
+    supervisor.workers[100] = _supervisor._Worker(cast('Any', _FakeWorker()), 10, 11)
     supervisor.signal_wakeup = _SignalWakeupPipe(read_fd=20, write_fd=21)
 
     discard = supervisor._child_discard_fds(control_read_fd=30, quiesce_write_fd=31)
@@ -2828,14 +3081,14 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
         'from pathlib import Path\n'
         'async def app(scope, receive, send):\n'
         "    if scope['type'] == 'lifespan':\n"
-        "        message = await receive()\n"
+        '        message = await receive()\n'
         "        if message['type'] == 'lifespan.startup':\n"
-        f"            Path({str(worker_ready_dir)!r}, str(os.getpid())).touch()\n"
+        f'            Path({str(worker_ready_dir)!r}, str(os.getpid())).touch()\n'
         "            await send({'type': 'lifespan.startup.complete'})\n"
-        "            message = await receive()\n"
+        '            message = await receive()\n'
         "        if message['type'] == 'lifespan.shutdown':\n"
         "            await send({'type': 'lifespan.shutdown.complete'})\n"
-        "        return\n"
+        '        return\n'
         "    if scope['type'] == 'http':\n"
         "        await send({'type': 'http.response.start', 'status': 204, "
         "'headers': []})\n"
@@ -2888,10 +3141,12 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
             except OSError:
                 raw = ''
             workers = [int(item) for item in raw.split()]
-            worker_ready_pids = {
-                int(path.name) for path in worker_ready_dir.iterdir()
-            }
-            if len(workers) == 4 and set(workers) == worker_ready_pids and pidfile.exists():
+            worker_ready_pids = {int(path.name) for path in worker_ready_dir.iterdir()}
+            if (
+                len(workers) == 4
+                and set(workers) == worker_ready_pids
+                and pidfile.exists()
+            ):
                 break
             time.sleep(0.05)
         assert len(workers) == 4, f'expected 4 workers, got {workers}'

@@ -6,7 +6,7 @@ import math
 import os
 import socket
 from collections.abc import Callable
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import MISSING, InitVar, dataclass, field, fields
 from functools import cache
 from pathlib import Path
 from typing import (
@@ -159,9 +159,7 @@ def _optional_principal(name: str):
                 raise ValueError(f'{name} must be non-negative')
             return value
         if type(value) is not str:
-            raise TypeError(
-                f'{name} must be a str or int, got {type(value).__name__}'
-            )
+            raise TypeError(f'{name} must be a str or int, got {type(value).__name__}')
         if not value:
             raise ValueError(f'{name} must not be empty')
         return int(value) if value.isdecimal() else value
@@ -262,15 +260,14 @@ def bind_from_convenience(
     return (format_tcp_bind(host or '127.0.0.1', 8000 if port is None else port),)
 
 
-def sync_bind_convenience_fields(config: Config) -> None:
-    host = port = None
-    if len(config.bind) == 1 and isinstance(
-        spec := parse_bind_spec(config.bind[0]),
-        TcpBindSpec,
-    ):
-        host, port = spec.host, spec.port
-    object.__setattr__(config, 'host', host)
-    object.__setattr__(config, 'port', port)
+def tcp_bind_convenience(bind: tuple[str, ...]) -> tuple[str, int] | None:
+    """Return the one TCP listener's host/port, when this has exactly one."""
+    if len(bind) != 1:
+        return None
+    spec = parse_bind_spec(bind[0])
+    if isinstance(spec, TcpBindSpec):
+        return spec.host, spec.port
+    return None
 
 
 def _normalize_proxy_protocol(value: str) -> ProxyProtocolMode:
@@ -866,9 +863,7 @@ class Config:
         default=256,
         doc='Maximum active HTTP/2 streams per connection. At least 1.',
         env_parse=int,
-        converter=_bounded_int(
-            'max_concurrent_streams', minimum=1, maximum=_U32_MAX
-        ),
+        converter=_bounded_int('max_concurrent_streams', minimum=1, maximum=_U32_MAX),
         cli_type=int,
     )
     limit_request_head_size: int = _option(
@@ -903,9 +898,7 @@ class Config:
         default=1_048_576,
         doc='Maximum decoded HTTP/2 header list size in bytes. Use 0 for no limit.',
         env_parse=int,
-        converter=_bounded_int(
-            'h2_max_header_list_size', minimum=0, maximum=_U32_MAX
-        ),
+        converter=_bounded_int('h2_max_header_list_size', minimum=0, maximum=_U32_MAX),
         cli_type=int,
     )
     h2_max_header_block_size: int = _option(
@@ -1096,27 +1089,21 @@ class Config:
         cli_type=str,
         cli_metavar='HEADER',
     )
-    host: str | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    port: int | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
+    # Constructor-only sugar for the overwhelmingly common one-TCP-listener
+    # case. `bind` is the one stored endpoint representation, so replace()
+    # keeps it without callers having to clear synchronized shadow fields.
+    host: InitVar[str | None] = None
+    port: InitVar[int | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, host: str | None, port: int | None) -> None:
         for option in config_options():
             normalized = option.metadata.normalize(getattr(self, option.name))
             object.__setattr__(self, option.name, normalized)
-        convenience_bind = bind_from_convenience(self.host, self.port)
+        convenience_bind = bind_from_convenience(host, port)
         if convenience_bind is not None:
             if self.bind != DEFAULT_BIND:
                 raise ValueError('bind cannot be combined with host or port')
             object.__setattr__(self, 'bind', convenience_bind)
-        sync_bind_convenience_fields(self)
         # Port 0 is no exception: listeners that ask for it share the one port
         # the kernel assigns, so a repeated `host:0` is the same listener twice
         # and the second bind fails with EADDRINUSE.

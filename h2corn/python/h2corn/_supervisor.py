@@ -10,7 +10,6 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
-from multiprocessing.process import BaseProcess
 from typing import Any, cast
 
 from ._cli import ImportSettings
@@ -28,6 +27,8 @@ from ._socket import (
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
+    from multiprocessing.process import BaseProcess
+
     from ._config import Config
     from ._lib import _PreparedTls
     from ._server import ProcessIdentity
@@ -62,76 +63,24 @@ class _WorkerRetirement:
 
 
 @dataclass(slots=True)
-class _WorkerRetirements:
-    """Hard-stop deadlines advanced by the worker's lifecycle acknowledgement.
+class _Worker:
+    """Everything the supervisor owns for one child process.
 
-    The native server owns the first graceful request wait, then Python task
-    cancellation/cleanup gets the same configured interval.  Only once native
-    ownership has drained can primary lifespan shutdown start, and the worker
-    tells the supervisor exactly when that happened.  Lifespan therefore gets
-    its own configured deadline rather than sharing a wall-clock guess started
-    before request cancellation even began.
+    A worker exists in this map from the instant the child starts until every
+    selector registration, owned pipe end, health deadline, and retirement
+    phase has been released. No second registry can describe a different
+    lifecycle for the same sentinel.
     """
 
-    graceful_timeout: float
-    lifespan_timeout: float
-    retirements: dict[int, _WorkerRetirement] = field(
-        default_factory=dict[int, _WorkerRetirement]
-    )
-
-    def begin(self, sentinel: int) -> None:
-        # A repeated reason to retire the same worker must not extend its hard
-        # ownership deadline or rewind an already acknowledged lifecycle.
-        self.retirements.setdefault(
-            sentinel,
-            _WorkerRetirement(
-                'request cleanup',
-                time.monotonic() + 2 * self.graceful_timeout,
-            ),
-        )
-
-    def begin_lifespan_shutdown(self, sentinel: int) -> bool:
-        """Advance a retiring worker only after native request ownership drains."""
-        retirement = self.retirements.get(sentinel)
-        if retirement is None or retirement.phase == 'lifespan shutdown':
-            return False
-        retirement.phase = 'lifespan shutdown'
-        retirement.deadline = (
-            None
-            if self.lifespan_timeout <= 0
-            else time.monotonic() + self.lifespan_timeout
-        )
-        return True
-
-    def finish(self, sentinel: int) -> None:
-        self.retirements.pop(sentinel, None)
-
-    def pop_oldest(self) -> int | None:
-        if not self.retirements:
-            return None
-        sentinel = next(iter(self.retirements))
-        del self.retirements[sentinel]
-        return sentinel
-
-    def pop_expired(self, now: float) -> tuple[tuple[int, str], ...]:
-        expired = tuple(
-            (sentinel, retirement.phase)
-            for sentinel, retirement in self.retirements.items()
-            if retirement.deadline is not None and retirement.deadline <= now
-        )
-        for sentinel, _phase in expired:
-            del self.retirements[sentinel]
-        return expired
-
-    def next_timeout(self, now: float) -> float | None:
-        deadlines = [
-            retirement.deadline
-            for retirement in self.retirements.values()
-            if retirement.deadline is not None
-        ]
-        if not deadlines:
-            return None
-        return max(0.0, min(deadlines) - now)
+    process: BaseProcess
+    control_read_fd: int
+    quiesce_write_fd: int | None
+    ready: bool = False
+    health_deadline: float | None = None
+    expected_exit: bool = False
+    reload_scheduled: bool = False
+    retirement: _WorkerRetirement | None = None
+    forced_retirement_reap: bool = False
 
 
 def _log_line(message: str):
@@ -168,17 +117,8 @@ def _send_worker_quiesce(fd: int, *, restart: bool) -> OSError | None:
     return None
 
 
-def _renew_worker_healthcheck(
-    deadlines: dict[int, float],
-    sentinel: int,
-    timeout_seconds: float,
-) -> None:
-    if timeout_seconds > 0:
-        deadlines[sentinel] = time.monotonic() + timeout_seconds
-
-
 def _clone_config(config: Config, /, **overrides: Any) -> Config:
-    return replace(config, host=None, port=None, **overrides)
+    return replace(config, **overrides)
 
 
 def _install_parent_death_signal(expected_supervisor_pid: int) -> None:
@@ -219,10 +159,6 @@ def _worker_entry(
     control_write_fd: int | None = None,
     quiesce_read_fd: int | None = None,
 ):
-    from typing import cast
-
-    import h2corn._server as _server_mod
-
     from ._server import (
         Server,
         drop_process_privileges,
@@ -295,10 +231,7 @@ def _worker_entry(
         if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
             loop.add_signal_handler(
                 _RESTART_SIGNAL,
-                # Package-private: supervisor is the sole restart signal owner.
-                lambda: server._request_shutdown(  # pyright: ignore[reportPrivateUsage]
-                    cast('Any', _server_mod)._ShutdownKind.RESTART
-                ),
+                server.request_restart,
             )
         heartbeat_task = (
             asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
@@ -306,8 +239,7 @@ def _worker_entry(
             else None
         )
         try:
-            # Package-private worker entry: Server owns the generation lifecycle.
-            await server._serve_worker_fds(  # pyright: ignore[reportPrivateUsage]
+            await server.serve_worker_fds(
                 list(fds),
                 retire_trigger=(
                     (lambda: _send_control(_CONTROL_RETIRE))
@@ -362,11 +294,9 @@ def _worker_process_fds(worker: BaseProcess) -> tuple[int, ...]:
 class _Supervisor:
     """Single owner of the supervisor's mutable worker-lifecycle state.
 
-    The invariants live here by name: `expected_exits` and `reload_scheduled`
-    are always subsets of `workers`' sentinels, every spawned worker has
-    exactly one entry in `worker_controls`/`worker_quiesce_writes` (fd
-    ownership transfers at most once, by `pop`), and `reload_cycle` tracks at
-    most one in-flight rolling replacement.
+    Each `workers[sentinel]` record owns the process, control/readiness state,
+    deadline, retirement phase, and its one-shot quiesce writer. `reload_cycle`
+    tracks at most one in-flight rolling replacement.
     """
 
     app: Application | ImportSettings
@@ -381,33 +311,20 @@ class _Supervisor:
     # Tagged as the pair from signal_wakeup_pipe(); typed loosely so the
     # private dataclass need not be re-exported across the package.
     signal_wakeup: Any | None = None
-    workers: dict[int, BaseProcess] = field(default_factory=dict[int, BaseProcess])
-    worker_controls: dict[int, int] = field(default_factory=dict[int, int])
-    worker_quiesce_writes: dict[int, int] = field(default_factory=dict[int, int])
-    control_workers: dict[int, int] = field(default_factory=dict[int, int])
-    heartbeat_deadlines: dict[int, float] = field(default_factory=dict[int, float])
-    expected_exits: set[int] = field(default_factory=set[int])
-    reload_scheduled: set[int] = field(default_factory=set[int])
+    workers: dict[int, _Worker] = field(default_factory=dict[int, _Worker])
     reload_queue: deque[int] = field(default_factory=deque[int])
     reload_cycle: _ReloadCycle | None = None
-    forced_retirement_reaps: set[int] = field(default_factory=set[int])
     failure_times: deque[float] = field(default_factory=deque[float])
     failure_backoff: float = _WORKER_FAILURE_BACKOFF_INITIAL
     respawn_at: float | None = None
-    ready_workers: set[int] = field(default_factory=set[int])
     stopping: bool = False
     reload_requested: bool = False
     fatal_error: str | None = None
     last_failure_exit_code: int | None = None
     target_workers: int = field(init=False)
-    retirements: _WorkerRetirements = field(init=False)
 
     def __post_init__(self) -> None:
         self.target_workers = self.config.workers
-        self.retirements = _WorkerRetirements(
-            self.config.timeout_graceful_shutdown,
-            self.config.timeout_lifespan_shutdown,
-        )
 
     def _child_discard_fds(
         self,
@@ -420,10 +337,14 @@ class _Supervisor:
             *(
                 fd
                 for worker in self.workers.values()
-                for fd in _worker_process_fds(worker)
+                for fd in _worker_process_fds(worker.process)
             ),
-            *self.worker_controls.values(),
-            *self.worker_quiesce_writes.values(),
+            *(worker.control_read_fd for worker in self.workers.values()),
+            *(
+                worker.quiesce_write_fd
+                for worker in self.workers.values()
+                if worker.quiesce_write_fd is not None
+            ),
             control_read_fd,
             quiesce_write_fd,
         ]
@@ -437,7 +358,7 @@ class _Supervisor:
         return tuple(discard)
 
     def active_workers(self) -> int:
-        return len(self.workers) - len(self.expected_exits)
+        return sum(not worker.expected_exit for worker in self.workers.values())
 
     def active_worker_capacity(self) -> int:
         replacement = (
@@ -446,7 +367,7 @@ class _Supervisor:
         replacement_is_starting = (
             replacement is not None
             and replacement in self.workers
-            and replacement not in self.expected_exits
+            and not self.workers[replacement].expected_exit
         )
         return self.target_workers + int(replacement_is_starting)
 
@@ -465,7 +386,8 @@ class _Supervisor:
             None if self.reload_cycle is None else self.reload_cycle.replacement
         )
         for sentinel in reversed(self.workers):
-            if sentinel not in self.expected_exits and sentinel != replacement:
+            worker = self.workers[sentinel]
+            if not worker.expected_exit and sentinel != replacement:
                 return sentinel
         return None
 
@@ -473,7 +395,7 @@ class _Supervisor:
         return (
             self.reload_cycle is not None
             and sentinel == self.reload_cycle.replacement
-            and sentinel not in self.expected_exits
+            and not self.workers[sentinel].expected_exit
         )
 
     def spawn_worker(self) -> int:
@@ -495,9 +417,9 @@ class _Supervisor:
             control_read_fd=control_read_fd,
             quiesce_write_fd=quiesce_write_fd,
         )
-        worker: BaseProcess | None = None
+        process: BaseProcess | None = None
         try:
-            worker = multiprocessing.get_context('fork').Process(
+            process = multiprocessing.get_context('fork').Process(
                 target=_worker_entry,
                 args=(self.app,),
                 kwargs={
@@ -511,37 +433,78 @@ class _Supervisor:
                     'quiesce_read_fd': quiesce_read_fd,
                 },
             )
-            worker.start()
+            process.start()
         except BaseException:
-            os.close(control_read_fd)
-            os.close(control_write_fd)
-            os.close(quiesce_read_fd)
-            os.close(quiesce_write_fd)
-            if worker is not None:
-                worker.close()
+            for fd in (
+                control_read_fd,
+                control_write_fd,
+                quiesce_read_fd,
+                quiesce_write_fd,
+            ):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if process is not None:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+                process.close()
             raise
-        assert worker.pid is not None
-        os.close(control_write_fd)
-        os.close(quiesce_read_fd)
-        sentinel = worker.sentinel
+        assert process.pid is not None
+        sentinel = process.sentinel
         assert isinstance(sentinel, int)
-        # Take ownership of the started process before anything that can
-        # fail: a worker this supervisor does not know about is one it can
-        # neither quiesce nor reap, and it goes on serving after the
-        # supervisor gives up. Logging in particular is fallible — a stderr
-        # sink can be closed or full — and used to run first.
+        worker = _Worker(process, control_read_fd, quiesce_write_fd)
         self.workers[sentinel] = worker
-        self.worker_controls[sentinel] = control_read_fd
-        self.worker_quiesce_writes[sentinel] = quiesce_write_fd
-        self.control_workers[control_read_fd] = sentinel
-        self.selector.register(sentinel, selectors.EVENT_READ)
-        self.selector.register(control_read_fd, selectors.EVENT_READ)
-        _log_line(f'Started worker [{worker.pid}]')
-        _renew_worker_healthcheck(
-            self.heartbeat_deadlines,
-            sentinel,
-            self.config.timeout_worker_healthcheck,
-        )
+        parent_fds = {
+            control_read_fd,
+            control_write_fd,
+            quiesce_read_fd,
+            quiesce_write_fd,
+        }
+        try:
+            os.close(control_write_fd)
+            parent_fds.remove(control_write_fd)
+            os.close(quiesce_read_fd)
+            parent_fds.remove(quiesce_read_fd)
+            self.selector.register(
+                sentinel,
+                selectors.EVENT_READ,
+                ('worker-exit', sentinel),
+            )
+            self.selector.register(
+                control_read_fd,
+                selectors.EVENT_READ,
+                ('worker-control', sentinel),
+            )
+            _log_line(f'Started worker [{process.pid}]')
+        except BaseException:
+            self.workers.pop(sentinel, None)
+            for fd in (sentinel, control_read_fd):
+                try:
+                    self.selector.unregister(fd)
+                except KeyError:
+                    pass
+            for fd in parent_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if process.is_alive():
+                process.terminate()
+            process.join()
+            if process.is_alive():
+                process.kill()
+                process.join()
+            process.close()
+            raise
+        if self.config.timeout_worker_healthcheck > 0:
+            worker.health_deadline = (
+                time.monotonic() + self.config.timeout_worker_healthcheck
+            )
         return sentinel
 
     def record_worker_failure(self, exit_code: int | None = None) -> None:
@@ -566,9 +529,8 @@ class _Supervisor:
         # later broke — a bad config push, a dependency outage — respawned
         # forever in silence. A fleet with one flapping worker still has
         # healthy ones here and is left alone.
-        if (
-            len(self.failure_times) >= 3
-            and not self.ready_workers
+        if len(self.failure_times) >= 3 and not any(
+            worker.ready for worker in self.workers.values()
         ):
             last_exit_code = (
                 'unknown'
@@ -581,52 +543,46 @@ class _Supervisor:
             )
             self.stopping = True
 
-    def retire_worker(self, worker: BaseProcess) -> None:
-        sentinel = worker.sentinel
-        expected = sentinel in self.expected_exits or sentinel in self.reload_scheduled
-        self.ready_workers.discard(sentinel)
-        self.expected_exits.discard(sentinel)
-        self.retirements.finish(sentinel)
-        self.forced_retirement_reaps.discard(sentinel)
-        self.reload_scheduled.discard(sentinel)
-        self.heartbeat_deadlines.pop(sentinel, None)
+    def retire_worker(self, sentinel: int, worker: _Worker) -> None:
+        expected = worker.expected_exit or worker.reload_scheduled
         try:
             self.selector.unregister(sentinel)
         except KeyError:
             pass
-        control_fd = self.worker_controls.pop(sentinel, None)
-        if control_fd is not None:
-            self.control_workers.pop(control_fd, None)
-            try:
-                self.selector.unregister(control_fd)
-            except KeyError:
-                pass
-            os.close(control_fd)
-        quiesce_write_fd = self.worker_quiesce_writes.pop(sentinel, None)
-        if quiesce_write_fd is not None:
-            os.close(quiesce_write_fd)
+        try:
+            self.selector.unregister(worker.control_read_fd)
+        except KeyError:
+            pass
+        os.close(worker.control_read_fd)
+        if worker.quiesce_write_fd is not None:
+            os.close(worker.quiesce_write_fd)
+            worker.quiesce_write_fd = None
         if expected:
-            _log_line(f'Stopped worker [{worker.pid}]')
+            _log_line(f'Stopped worker [{worker.process.pid}]')
         else:
             _log_line(
-                f'Worker [{worker.pid}] exited unexpectedly with code {worker.exitcode}'
+                f'Worker [{worker.process.pid}] exited unexpectedly with code '
+                f'{worker.process.exitcode}'
             )
-            self.record_worker_failure(worker.exitcode)
-        worker.close()
+            self.record_worker_failure(worker.process.exitcode)
+        worker.process.close()
 
     def schedule_worker_retire(self, sentinel: int) -> None:
-        if sentinel in self.expected_exits or sentinel in self.reload_scheduled:
+        worker = self.workers.get(sentinel)
+        if worker is None or worker.expected_exit or worker.reload_scheduled:
             return
-        self.reload_scheduled.add(sentinel)
+        worker.reload_scheduled = True
         self.reload_queue.append(sentinel)
 
     def next_reload_target(self) -> int | None:
         while self.reload_queue:
             sentinel = self.reload_queue[0]
-            if sentinel in self.workers and sentinel not in self.expected_exits:
+            worker = self.workers.get(sentinel)
+            if worker is not None and not worker.expected_exit:
                 return sentinel
             self.reload_queue.popleft()
-            self.reload_scheduled.discard(sentinel)
+            if worker is not None:
+                worker.reload_scheduled = False
         return None
 
     def request_reload_retire(self, sentinel: int) -> None:
@@ -637,16 +593,21 @@ class _Supervisor:
                 self.reload_queue.remove(sentinel)
             except ValueError:
                 pass
-        self.reload_scheduled.discard(sentinel)
+        worker = self.workers.get(sentinel)
+        if worker is not None:
+            worker.reload_scheduled = False
         self.begin_worker_retirement(sentinel, restart=True)
 
     def quiesce_worker(self, sentinel: int, *, restart: bool) -> None:
-        quiesce_write_fd = self.worker_quiesce_writes.pop(sentinel, None)
+        worker = self.workers.get(sentinel)
+        if worker is None:
+            return
+        quiesce_write_fd = worker.quiesce_write_fd
+        worker.quiesce_write_fd = None
         if quiesce_write_fd is None:
             return
         if exc := _send_worker_quiesce(quiesce_write_fd, restart=restart):
-            worker = self.workers.get(sentinel)
-            worker_pid = worker.pid if worker is not None else 'unknown'
+            worker_pid = worker.process.pid
             # Closing the write end is itself a fail-closed stop request:
             # native retirement treats EOF as ordinary stop.
             _log_line(
@@ -654,85 +615,102 @@ class _Supervisor:
             )
 
     def begin_worker_retirement(self, sentinel: int, *, restart: bool) -> bool:
-        if sentinel in self.expected_exits:
-            return False
         worker = self.workers.get(sentinel)
-        if worker is None:
+        if worker is None or worker.expected_exit:
             return False
-        self.expected_exits.add(sentinel)
-        self.heartbeat_deadlines.pop(sentinel, None)
-        self.retirements.begin(sentinel)
+        worker.expected_exit = True
+        worker.health_deadline = None
+        if worker.retirement is None:
+            worker.retirement = _WorkerRetirement(
+                'request cleanup',
+                time.monotonic() + 2 * self.config.timeout_graceful_shutdown,
+            )
         self.quiesce_worker(sentinel, restart=restart)
         if restart:
-            _restart_worker(worker)
-        elif worker.is_alive():
-            worker.terminate()
+            _restart_worker(worker.process)
+        elif worker.process.is_alive():
+            worker.process.terminate()
         return True
 
     def force_kill_retirement(self, sentinel: int, message: str) -> None:
         worker = self.workers.get(sentinel)
         if worker is None:
             return
-        self.forced_retirement_reaps.add(sentinel)
-        if worker.is_alive():
+        worker.forced_retirement_reap = True
+        if worker.process.is_alive():
             _log_line(message)
-            worker.kill()
+            worker.process.kill()
 
     def kill_expired_retirements(self) -> None:
-        for sentinel, phase in self.retirements.pop_expired(time.monotonic()):
-            worker = self.workers.get(sentinel)
-            if worker is None:
+        now = time.monotonic()
+        for sentinel, worker in tuple(self.workers.items()):
+            retirement = worker.retirement
+            if (
+                retirement is None
+                or retirement.deadline is None
+                or retirement.deadline > now
+            ):
                 continue
+            worker.retirement = None
             self.force_kill_retirement(
                 sentinel,
-                f'Worker [{worker.pid}] exceeded {phase} timeout; killing',
+                f'Worker [{worker.process.pid}] exceeded {retirement.phase} timeout; killing',
             )
 
-    def drain_control_messages(self, control_fd: int) -> None:
-        sentinel = self.control_workers.get(control_fd)
-        if sentinel is None:
+    def drain_control_messages(self, sentinel: int) -> None:
+        worker = self.workers.get(sentinel)
+        if worker is None:
             return
         while True:
             try:
-                data = os.read(control_fd, 1024)
+                data = os.read(worker.control_read_fd, 1024)
             except BlockingIOError:
                 return
             if not data:
                 return
-            if _CONTROL_HEARTBEAT[0] in data or _CONTROL_READY[0] in data:
-                _renew_worker_healthcheck(
-                    self.heartbeat_deadlines,
-                    sentinel,
-                    self.config.timeout_worker_healthcheck,
+            if (
+                _CONTROL_HEARTBEAT[0] in data or _CONTROL_READY[0] in data
+            ) and self.config.timeout_worker_healthcheck > 0:
+                worker.health_deadline = (
+                    time.monotonic() + self.config.timeout_worker_healthcheck
                 )
             if _CONTROL_READY[0] in data:
-                self.ready_workers.add(sentinel)
+                worker.ready = True
                 reload_cycle = self.reload_cycle
-                if reload_cycle is not None and self.is_viable_reload_replacement(sentinel):
+                if reload_cycle is not None and self.is_viable_reload_replacement(
+                    sentinel
+                ):
                     target = reload_cycle.target
                     self.reload_cycle = None
                     self.request_reload_retire(target)
             if _CONTROL_RETIRE[0] in data:
                 self.schedule_worker_retire(sentinel)
             if _CONTROL_LIFESPAN[0] in data:
-                self.retirements.begin_lifespan_shutdown(sentinel)
+                retirement = worker.retirement
+                if retirement is not None and retirement.phase != 'lifespan shutdown':
+                    retirement.phase = 'lifespan shutdown'
+                    retirement.deadline = (
+                        None
+                        if self.config.timeout_lifespan_shutdown <= 0
+                        else time.monotonic() + self.config.timeout_lifespan_shutdown
+                    )
 
-    def handle_worker_event(self, fileobj: int) -> None:
+    def handle_worker_event(self, kind: str, sentinel: int) -> None:
         """Consume a control or sentinel event for a worker we own."""
-        if fileobj in self.control_workers:
-            self.drain_control_messages(fileobj)
+        if kind == 'worker-control':
+            self.drain_control_messages(sentinel)
             return
-        worker = self.workers.pop(fileobj, None)
+        worker = self.workers.pop(sentinel, None)
         if worker is None:
             try:
-                self.selector.unregister(fileobj)
+                self.selector.unregister(sentinel)
             except KeyError:
                 pass
             return
-        if self.reload_cycle is not None and fileobj == self.reload_cycle.replacement:
+        if self.reload_cycle is not None and sentinel == self.reload_cycle.replacement:
             self.reload_cycle = None
-        worker.join()
-        self.retire_worker(worker)
+        worker.process.join()
+        self.retire_worker(sentinel, worker)
 
     def wait_for_retired_workers(self, wakeup_fd: int) -> None:
         """Reap final retirements without giving their phase budgets to startup.
@@ -751,23 +729,23 @@ class _Supervisor:
                     continue
                 if fileobj == wakeup_fd:
                     drain_fd(wakeup_fd)
-                else:
-                    self.handle_worker_event(fileobj)
+                elif key.data is not None:
+                    kind, sentinel = cast('tuple[str, int]', key.data)
+                    self.handle_worker_event(kind, sentinel)
             self.kill_expired_retirements()
 
     def check_worker_healthchecks(self) -> None:
         if self.config.timeout_worker_healthcheck <= 0:
             return
         now = time.monotonic()
-        for sentinel, deadline in tuple(self.heartbeat_deadlines.items()):
-            if deadline > now:
+        for sentinel, worker in tuple(self.workers.items()):
+            deadline = worker.health_deadline
+            if deadline is None or deadline > now:
                 continue
-            worker = self.workers.get(sentinel)
-            if worker is None:
-                self.heartbeat_deadlines.pop(sentinel, None)
-                continue
-            _log_line(f'Worker [{worker.pid}] failed healthcheck and will be replaced')
-            self.heartbeat_deadlines.pop(sentinel, None)
+            _log_line(
+                f'Worker [{worker.process.pid}] failed healthcheck and will be replaced'
+            )
+            worker.health_deadline = None
             if self.begin_worker_retirement(sentinel, restart=False):
                 # A watchdog replacement is intentional teardown after an
                 # actual worker failure. Count the failure here because
@@ -800,7 +778,7 @@ class _Supervisor:
         if (
             target is not None
             and self.reload_cycle is None
-            and not self.expected_exits
+            and not any(worker.expected_exit for worker in self.workers.values())
             and self.active_workers() <= self.target_workers
         ):
             replacement = self.spawn_worker()
@@ -814,15 +792,22 @@ class _Supervisor:
             # oldest retirement, then wait for its selector event before
             # admitting another replacement attempt. This bounds overlap
             # without allowing a wedged old generation to block recovery.
-            if not self.forced_retirement_reaps:
-                oldest = self.retirements.pop_oldest()
-                if oldest is not None:
-                    worker = self.workers.get(oldest)
-                    if worker is not None:
-                        self.force_kill_retirement(
-                            oldest,
-                            f'Worker [{worker.pid}] blocked replacement capacity; killing',
-                        )
+            oldest = next(
+                (
+                    (sentinel, worker)
+                    for sentinel, worker in self.workers.items()
+                    if worker.retirement is not None
+                    and not worker.forced_retirement_reap
+                ),
+                None,
+            )
+            if oldest is not None:
+                sentinel, worker = oldest
+                worker.retirement = None
+                self.force_kill_retirement(
+                    sentinel,
+                    f'Worker [{worker.process.pid}] blocked replacement capacity; killing',
+                )
             return
         while self.can_spawn_worker():
             self.spawn_worker()
@@ -831,7 +816,7 @@ class _Supervisor:
         if (
             self.reload_queue
             and self.reload_cycle is None
-            and not self.expected_exits
+            and not any(worker.expected_exit for worker in self.workers.values())
             and self.active_workers() <= self.target_workers
         ):
             return 0.0
@@ -842,13 +827,18 @@ class _Supervisor:
             and self.active_workers() < self.target_workers
         ):
             timeout_seconds.append(max(0.0, self.respawn_at - time.monotonic()))
-        if self.heartbeat_deadlines:
-            timeout_seconds.append(
-                max(0.0, min(self.heartbeat_deadlines.values()) - time.monotonic())
+        now = time.monotonic()
+        deadlines = [
+            deadline
+            for worker in self.workers.values()
+            for deadline in (
+                worker.health_deadline,
+                None if worker.retirement is None else worker.retirement.deadline,
             )
-        retirement_timeout = self.retirements.next_timeout(time.monotonic())
-        if retirement_timeout is not None:
-            timeout_seconds.append(retirement_timeout)
+            if deadline is not None
+        ]
+        if deadlines:
+            timeout_seconds.append(max(0.0, min(deadlines) - now))
         timeout = min(timeout_seconds, default=None)
         if timeout is None:
             return None
@@ -909,7 +899,8 @@ class _Supervisor:
                             if not data:
                                 self.stopping = True
                             continue
-                        self.handle_worker_event(fileobj)
+                        kind, sentinel = cast('tuple[str, int]', key.data)
+                        self.handle_worker_event(kind, sentinel)
                     self.check_worker_healthchecks()
                     self.kill_expired_retirements()
                     self.reconcile()
@@ -931,7 +922,6 @@ class _Supervisor:
                         pass
                 self.selector.close()
 
-                self.expected_exits.clear()
                 self.signal_wakeup = None
 
 
@@ -970,7 +960,7 @@ def serve_with_supervisor(
             raise RuntimeError('listener already transferred before serve')
         # Banner shows the RESOLVED addresses (meaningful when binding port 0).
         emit_banner(
-            replace(config, bind=bound_addresses(sockets), host=None, port=None),
+            replace(config, bind=bound_addresses(sockets)),
             prepared_tls,
         )
         listener_fds = tuple(sock.fileno() for sock in sockets)

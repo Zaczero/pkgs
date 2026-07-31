@@ -124,7 +124,9 @@ async def test_shutdown_during_lifespan_startup_is_not_lost() -> None:
     assert server.addresses == ()
 
 
-async def test_cancelled_startup_releases_public_caller_before_lifespan_cleanup() -> None:
+async def test_cancelled_startup_releases_public_caller_before_lifespan_cleanup() -> (
+    None
+):
     startup_entered = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
@@ -1232,9 +1234,9 @@ async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutd
             await wait_for_port(port, timeout=10)
             # Concurrent burst so the sink writer is still busy when later
             # lines arrive and coalesce into additional batches.
-            results = await asyncio.gather(
-                *[h2_request(port=port, path=marker) for _ in range(request_count)]
-            )
+            results = await asyncio.gather(*[
+                h2_request(port=port, path=marker) for _ in range(request_count)
+            ])
             assert all(status == 204 and body == b'' for status, body in results)
             # Let every completed request emit into the sink before SIGTERM.
             await asyncio.sleep(0.1)
@@ -1593,7 +1595,9 @@ async def test_max_requests_jitter_applied_once(
             captured_configs.append(kwargs['config'])
             return FakeWorker()
 
-    monkeypatch.setattr(_supervisor.multiprocessing, 'get_context', lambda _name: FakeContext())
+    monkeypatch.setattr(
+        _supervisor.multiprocessing, 'get_context', lambda _name: FakeContext()
+    )
     monkeypatch.setattr(_supervisor, '_log_line', lambda _message: None)
 
     async def app(*_args: object) -> None:
@@ -1611,38 +1615,41 @@ async def test_max_requests_jitter_applied_once(
         try:
             return supervisor.spawn_worker()
         finally:
-            for fd in supervisor.worker_controls.values():
-                with suppress(OSError):
-                    os.close(fd)
-            for fd in supervisor.worker_quiesce_writes.values():
-                with suppress(OSError):
-                    os.close(fd)
             for worker in supervisor.workers.values():
-                worker.close()
+                with suppress(OSError):
+                    os.close(worker.control_read_fd)
+                if worker.quiesce_write_fd is not None:
+                    with suppress(OSError):
+                        os.close(worker.quiesce_write_fd)
+                worker.process.close()
             supervisor.selector.close()
 
     draws: list[tuple[int, int]] = []
-    assert spawn_with(
-        Config(workers=1, max_requests=11, max_requests_jitter=7),
-        lambda low, high: draws.append((low, high)) or 7,
-    ) != -1
+    assert (
+        spawn_with(
+            Config(workers=1, max_requests=11, max_requests_jitter=7),
+            lambda low, high: draws.append((low, high)) or 7,
+        )
+        != -1
+    )
     assert captured_configs[-1].max_requests == 18
     assert draws == [(0, 7)]
 
     def rng_must_not_run(*_args: object) -> int:
         raise AssertionError('zero budget or zero jitter must not draw randomness')
 
-    assert spawn_with(
-        Config(workers=1, max_requests=0), rng_must_not_run
-    ) != -1
+    assert spawn_with(Config(workers=1, max_requests=0), rng_must_not_run) != -1
     assert captured_configs[-1].max_requests == 0
     # A nonzero jitter without a budget is rejected at configuration ingress,
     # so no worker path can draw randomness for that illegal state.
     with pytest.raises(ValueError, match='jitter requires max_requests'):
         Config(workers=1, max_requests=0, max_requests_jitter=7)
-    assert spawn_with(
-        Config(workers=1, max_requests=11, max_requests_jitter=0), rng_must_not_run
-    ) != -1
+    assert (
+        spawn_with(
+            Config(workers=1, max_requests=11, max_requests_jitter=0), rng_must_not_run
+        )
+        != -1
+    )
     assert captured_configs[-1].max_requests == 11
 
 
@@ -2019,8 +2026,7 @@ async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_d
 
     stderr = b''.join(stderr_lines).decode()
     assert (
-        f'Worker [{body.decode()}] exceeded request cleanup timeout; killing'
-        in stderr
+        f'Worker [{body.decode()}] exceeded request cleanup timeout; killing' in stderr
     )
     assert f'Stopped worker [{body.decode()}]' in stderr
     assert 'exited unexpectedly' not in stderr

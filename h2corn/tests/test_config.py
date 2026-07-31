@@ -8,20 +8,18 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2corn import Config
 from h2corn._cli import CliSettings, ImportSettings, build_parser, parse_cli
-from h2corn._config import config_options
+from h2corn._config import config_options, tcp_bind_convenience
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
 def test_config_fields_are_exactly_the_documented_options() -> None:
-    # Every Config field is either a documented option or the host/port
-    # convenience pair — worker/listener bootstrap metadata (control fds,
-    # inherited-socket flags, ...) must never reappear as dataclass fields.
+    # Constructor-only host/port sugar is an InitVar pair, not stored state.
     field_names = {config_field.name for config_field in dataclasses.fields(Config)}
     option_names = {option.name for option in config_options()}
 
-    assert field_names == option_names | {'host', 'port'}
+    assert field_names == option_names
 
 
 @pytest.mark.parametrize(
@@ -254,7 +252,9 @@ def test_config_float_fields_reject_bool_str_and_nonfinite(
     construct_config = cast('Callable[..., Config]', Config)
     # Non-finite values are ValueError; wrong types are TypeError.
     expected = ValueError if isinstance(bad_value, float) else TypeError
-    with pytest.raises(expected, match=field_name if expected is TypeError else 'finite'):
+    with pytest.raises(
+        expected, match=field_name if expected is TypeError else 'finite'
+    ):
         construct_config(**{field_name: bad_value})
 
 
@@ -303,8 +303,8 @@ def test_config_principal_rejects_bool(field_name: str, bad_value: bool) -> None
 
 
 def test_config_convenience_port_requires_exact_int_in_range() -> None:
-    assert Config(port=0).port == 0
-    assert Config(port=65_535).port == 65_535
+    assert Config(port=0).bind == ('127.0.0.1:0',)
+    assert Config(port=65_535).bind == ('127.0.0.1:65535',)
     with pytest.raises(TypeError, match='port'):
         Config(port=True)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match='port'):
@@ -319,6 +319,18 @@ def test_config_convenience_port_requires_exact_int_in_range() -> None:
         Config.from_mapping({'port': 1.0})
     with pytest.raises(ValueError, match='port'):
         Config.from_mapping({'port': 65_536})
+
+
+def test_config_convenience_inputs_normalize_once_into_bind() -> None:
+    config = Config(host='[::1]', port=0)
+
+    assert config.bind == ('[::1]:0',)
+    assert dataclasses.replace(config, workers=2).bind == config.bind
+    assert dataclasses.replace(config, bind=('127.0.0.1:9010',)).bind == (
+        '127.0.0.1:9010',
+    )
+    with pytest.raises(ValueError, match='bind cannot be combined'):
+        Config(bind=('127.0.0.1:9010',), port=9020)
 
 
 def test_config_from_toml_reads_flat_top_level_keys(tmp_path: Path) -> None:
@@ -362,7 +374,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
 
     config = Config.from_toml(config_path)
 
-    assert config.port == 9010
+    assert config.bind == ('127.0.0.1:9010',)
     assert config.workers == 2
     assert config.max_requests == 11
     assert config.max_requests_jitter == 3
@@ -448,7 +460,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
 
     config = Config.from_env(os.environ)
 
-    assert config.port == 9000
+    assert config.bind == ('127.0.0.1:9000',)
     assert config.workers == 3
     assert config.max_requests == 8
     assert config.max_requests_jitter == 2
@@ -603,8 +615,7 @@ def test_config_normalizes_multiple_bind_entries() -> None:
         '[::1]:8000',
         'unix:/tmp/h2corn.sock',
     )
-    assert config.host is None
-    assert config.port is None
+    assert tcp_bind_convenience(config.bind) is None
 
 
 def test_config_allows_ping_timeout_with_disabled_interval() -> None:
@@ -723,7 +734,7 @@ def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) ->
 
     assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
-    assert config.port == 9020
+    assert config.bind == ('127.0.0.1:9020',)
 
 
 def test_parse_cli_rejects_websocket_message_size_inherit() -> None:
@@ -845,6 +856,26 @@ def test_parse_cli_accepts_check_config_without_target() -> None:
     assert cli_settings == CliSettings(check_config=True)
     assert import_settings == ImportSettings(target='')
     assert isinstance(config, Config)
+
+
+def test_parse_cli_builds_one_parser_after_configuration_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal startup pays for argparse once; error presentation stays lazy."""
+    from h2corn import _cli
+
+    real_build_parser = _cli.build_parser
+    bases: list[Config] = []
+
+    def build_once(base: Config, config_path: Path | None):
+        bases.append(base)
+        return real_build_parser(base, config_path)
+
+    monkeypatch.setattr(_cli, 'build_parser', build_once)
+
+    _, _, config = _cli.parse_cli(['--check-config'], {})
+
+    assert bases == [config]
 
 
 def test_parse_cli_version_exits_without_target(

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
@@ -60,7 +60,8 @@ if TYPE_CHECKING:
 
     class _Notifier(Protocol):
         def fileno(self) -> int: ...
-        def consume(self) -> bool: ...
+        def consume(self) -> _ReloadEvents: ...
+        def rescan(self, directories: set[Path]) -> None: ...
         def rebuild(self) -> None: ...
         def close(self) -> None: ...
 
@@ -72,7 +73,7 @@ if TYPE_CHECKING:
     class _QuietPeriodNotifier(Protocol):
         """The one notifier action the coalescing loop can perform."""
 
-        def consume(self) -> bool: ...
+        def consume(self) -> _ReloadEvents: ...
 
     class _ReloadProcess(Protocol):
         """A child process group leader; its stdio representation is irrelevant."""
@@ -110,6 +111,8 @@ _INOTIFY_SELF_REBUILD_MASK = (
     | 0x0000_0800  # IN_MOVE_SELF
     | 0x0000_8000  # IN_IGNORED
 )
+_INOTIFY_Q_OVERFLOW = 0x0000_4000
+_INOTIFY_IGNORED = 0x0000_8000
 _INOTIFY_ISDIR = 0x4000_0000
 _INOTIFY_MASK = (
     0x0000_0002  # IN_MODIFY
@@ -122,6 +125,26 @@ _INOTIFY_MASK = (
     | 0x0000_0400  # IN_DELETE_SELF
     | 0x0000_0800  # IN_MOVE_SELF
 )
+
+
+@dataclass(slots=True)
+class _ReloadEvents:
+    """Filesystem facts preserved from one or more notifier reads.
+
+    Paths are enough to restart for ordinary file changes. A directory change
+    is deliberately different: only that subtree needs a snapshot refresh and
+    watch synchronisation. Queue overflow loses provenance, so it is the one
+    condition that rebuilds every watch and conservatively restarts.
+    """
+
+    paths: set[Path] = field(default_factory=set[Path])
+    rescan_directories: set[Path] = field(default_factory=set[Path])
+    full_resync: bool = False
+
+    def merge(self, other: _ReloadEvents) -> None:
+        self.paths.update(other.paths)
+        self.rescan_directories.update(other.rescan_directories)
+        self.full_resync |= other.full_resync
 
 
 def _inotify_bindings() -> tuple[
@@ -177,6 +200,10 @@ def _reload_change_message(changed_paths: tuple[Path, ...]):
     return (
         f'Reload changes detected: {path} (+{len(changed_paths) - 1} more); restarting'
     )
+
+
+def _reload_overflow_message():
+    return 'Reload event queue overflowed; resynchronizing and restarting'
 
 
 def _watch_dirs(
@@ -246,12 +273,22 @@ def _prune_walk_dirs(
 
 def _walk_watch_dirs(roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
     for root in roots:
-        if not root.is_dir():
-            continue
-        for current_root, dirnames, _ in os.walk(root):
-            current_path = Path(current_root)
-            _prune_walk_dirs(dirnames, current_path, root, exclude_patterns)
-            yield current_path
+        yield from _walk_watch_dirs_from(root, root, exclude_patterns)
+
+
+def _walk_watch_dirs_from(
+    root: Path,
+    start: Path,
+    exclude_patterns: tuple[str, ...],
+):
+    if not start.is_dir() or (
+        start != root and _is_excluded_dir(start, root, exclude_patterns)
+    ):
+        return
+    for current_root, dirnames, _ in os.walk(start):
+        current_path = Path(current_root)
+        _prune_walk_dirs(dirnames, current_path, root, exclude_patterns)
+        yield current_path
 
 
 def _walk_watch_files(
@@ -260,21 +297,35 @@ def _walk_watch_files(
     exclude_patterns: tuple[str, ...],
 ):
     for root in roots:
-        if root.is_file():
-            if _should_watch_file(
-                root, root.parent, include_patterns, exclude_patterns
-            ):
-                yield root
-            continue
-        if not root.is_dir():
-            continue
-        for current_root, dirnames, filenames in os.walk(root):
-            current_path = Path(current_root)
-            _prune_walk_dirs(dirnames, current_path, root, exclude_patterns)
-            for filename in filenames:
-                path = current_path / filename
-                if _should_watch_file(path, root, include_patterns, exclude_patterns):
-                    yield path
+        yield from _walk_watch_files_from(
+            root,
+            root,
+            include_patterns,
+            exclude_patterns,
+        )
+
+
+def _walk_watch_files_from(
+    root: Path,
+    start: Path,
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+):
+    if start.is_file():
+        if _should_watch_file(start, root.parent, include_patterns, exclude_patterns):
+            yield start
+        return
+    if not start.is_dir() or (
+        start != root and _is_excluded_dir(start, root, exclude_patterns)
+    ):
+        return
+    for current_root, dirnames, filenames in os.walk(start):
+        current_path = Path(current_root)
+        _prune_walk_dirs(dirnames, current_path, root, exclude_patterns)
+        for filename in filenames:
+            path = current_path / filename
+            if _should_watch_file(path, root, include_patterns, exclude_patterns):
+                yield path
 
 
 def _watch_file_snapshot(
@@ -291,6 +342,99 @@ def _watch_file_snapshot(
     return snapshot
 
 
+def _watch_root_for_path(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    for root in roots:
+        if path == root or path.is_relative_to(root):
+            return root
+    return None
+
+
+def _minimal_subtrees(paths: set[Path]) -> tuple[Path, ...]:
+    """Drop nested paths: their ancestor's rescan already covers them."""
+    selected: list[Path] = []
+    for path in sorted(paths, key=lambda item: (len(item.parts), os.fspath(item))):
+        if not any(path.is_relative_to(ancestor) for ancestor in selected):
+            selected.append(path)
+    return tuple(selected)
+
+
+def _rescan_file_snapshot(
+    snapshot: dict[Path, int],
+    directories: set[Path],
+    roots: tuple[Path, ...],
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> tuple[Path, ...]:
+    """Refresh only changed subtrees and return their semantic delta."""
+    changed: set[Path] = set()
+    for directory in _minimal_subtrees(directories):
+        root = _watch_root_for_path(directory, roots)
+        if root is None:
+            continue
+        previous = {
+            path: mtime
+            for path, mtime in snapshot.items()
+            if path == directory or path.is_relative_to(directory)
+        }
+        for path in previous:
+            del snapshot[path]
+        current: dict[Path, int] = {}
+        for path in _walk_watch_files_from(
+            root,
+            directory,
+            include_patterns,
+            exclude_patterns,
+        ):
+            try:
+                current[path] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+        snapshot.update(current)
+        changed.update(_changed_paths(previous, current))
+    return tuple(sorted(changed))
+
+
+def _refresh_direct_paths(snapshot: dict[Path, int], paths: set[Path]) -> None:
+    for path in paths:
+        try:
+            snapshot[path] = path.stat().st_mtime_ns
+        except OSError:
+            snapshot.pop(path, None)
+
+
+def _apply_reload_events(
+    notifier: _Notifier,
+    events: _ReloadEvents,
+    snapshot: dict[Path, int],
+    roots: tuple[Path, ...],
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> tuple[Path, ...]:
+    """Synchronize watcher and snapshot state, walking only lost identity."""
+    if events.full_resync:
+        notifier.rebuild()
+        next_snapshot = _watch_file_snapshot(
+            roots,
+            include_patterns,
+            exclude_patterns,
+        )
+        changed_paths = _changed_paths(snapshot, next_snapshot)
+        snapshot.clear()
+        snapshot.update(next_snapshot)
+        return changed_paths
+
+    notifier.rescan(events.rescan_directories)
+    rescanned_paths = _rescan_file_snapshot(
+        snapshot,
+        events.rescan_directories,
+        roots,
+        include_patterns,
+        exclude_patterns,
+    )
+    _refresh_direct_paths(snapshot, events.paths)
+    return tuple(sorted(set(rescanned_paths) | events.paths))
+
+
 def _inotify_needs_rebuild(mask: int):
     return bool(
         mask & _INOTIFY_SELF_REBUILD_MASK
@@ -299,8 +443,14 @@ def _inotify_needs_rebuild(mask: int):
 
 
 class _InotifyNotifier:
-    def __init__(self, roots: tuple[Path, ...], exclude_patterns: tuple[str, ...]):
+    def __init__(
+        self,
+        roots: tuple[Path, ...],
+        include_patterns: tuple[str, ...],
+        exclude_patterns: tuple[str, ...],
+    ):
         self._roots = roots
+        self._include_patterns = include_patterns
         self._exclude_patterns = exclude_patterns
         inotify_init1, self._inotify_add_watch, self._inotify_rm_watch = (
             _inotify_bindings()
@@ -311,6 +461,7 @@ class _InotifyNotifier:
             raise OSError(error, os.strerror(error))
         self._fd = fd
         self._watches: dict[int, Path] = {}
+        self._ignored_watches: set[int] = set()
         try:
             self._sync_watches()
         except BaseException:
@@ -319,8 +470,21 @@ class _InotifyNotifier:
             raise
 
     def _sync_watches(self):
-        active: dict[int, Path] = {}
-        for path in _walk_watch_dirs(self._roots, self._exclude_patterns):
+        self._remove_watches(set(self._watches))
+        for root in self._roots:
+            self._add_subtree(root, root)
+
+    def _remove_watches(self, watch_descriptors: set[int]) -> None:
+        for wd in watch_descriptors:
+            self._watches.pop(wd, None)
+            self._ignored_watches.add(wd)
+            try:
+                self._inotify_rm_watch(self._fd, wd)
+            except OSError:
+                pass
+
+    def _add_subtree(self, root: Path, directory: Path) -> None:
+        for path in _walk_watch_dirs_from(root, directory, self._exclude_patterns):
             wd = self._inotify_add_watch(
                 self._fd,
                 os.fsencode(path),
@@ -331,40 +495,93 @@ class _InotifyNotifier:
                 if error in {errno.ENOENT, errno.ENOTDIR}:
                     continue
                 raise OSError(error, os.strerror(error), os.fspath(path))
-            active[wd] = path
-        for stale_wd in self._watches.keys() - active.keys():
-            self._inotify_rm_watch(self._fd, stale_wd)
-        self._watches = active
+            self._watches[wd] = path
 
     def fileno(self) -> int:
         return self._fd
 
-    def consume(self):
+    def consume(self) -> _ReloadEvents:
         event_size = _INOTIFY_EVENT.size
         unpack_event = _INOTIFY_EVENT.unpack_from
-        needs_rebuild = False
+        events = _ReloadEvents()
         while True:
             try:
                 chunk = os.read(self._fd, 64 * 1024)
             except BlockingIOError:
-                return needs_rebuild
+                return events
             if not chunk:
-                return needs_rebuild
+                return events
             offset = 0
             chunk_len = len(chunk)
             while offset + event_size <= chunk_len:
-                _, mask, _, name_len = unpack_event(chunk, offset)
-                needs_rebuild |= _inotify_needs_rebuild(mask)
+                wd, mask, _cookie, name_len = unpack_event(chunk, offset)
+                name_start = offset + event_size
+                raw_name = chunk[name_start : name_start + name_len].rstrip(b'\0')
                 offset += event_size + name_len
+                if mask & _INOTIFY_Q_OVERFLOW:
+                    events.full_resync = True
+                    continue
+                directory = self._watches.get(wd)
+                if directory is None:
+                    if mask & _INOTIFY_IGNORED and wd in self._ignored_watches:
+                        self._ignored_watches.discard(wd)
+                        continue
+                    # An unknown descriptor means a deleted/reused watch raced
+                    # this read. Its identity is no longer trustworthy.
+                    events.full_resync = True
+                    continue
+                path = directory / os.fsdecode(raw_name) if raw_name else directory
+                if mask & _INOTIFY_ISDIR:
+                    root = _watch_root_for_path(path, self._roots)
+                    if (
+                        _inotify_needs_rebuild(mask)
+                        and root is not None
+                        and not _is_excluded_dir(path, root, self._exclude_patterns)
+                    ):
+                        events.rescan_directories.add(
+                            directory.parent
+                            if mask & _INOTIFY_SELF_REBUILD_MASK
+                            else path
+                        )
+                    if mask & _INOTIFY_IGNORED:
+                        self._watches.pop(wd, None)
+                    continue
+                root = _watch_root_for_path(path, self._roots)
+                if root is not None and _should_watch_file(
+                    path,
+                    root,
+                    self._include_patterns,
+                    self._exclude_patterns,
+                ):
+                    events.paths.add(path)
+                if mask & _INOTIFY_SELF_REBUILD_MASK:
+                    events.rescan_directories.add(directory.parent)
+                    if mask & _INOTIFY_IGNORED:
+                        self._watches.pop(wd, None)
 
     def rebuild(self):
         self._sync_watches()
+
+    def rescan(self, directories: set[Path]) -> None:
+        for directory in _minimal_subtrees(directories):
+            root = _watch_root_for_path(directory, self._roots)
+            if root is None:
+                self.rebuild()
+                return
+            stale = {
+                wd
+                for wd, watched in self._watches.items()
+                if watched == directory or watched.is_relative_to(directory)
+            }
+            self._remove_watches(stale)
+            self._add_subtree(root, directory)
 
     def close(self):
         if self._fd != -1:
             os.close(self._fd)
             self._fd = -1
             self._watches.clear()
+            self._ignored_watches.clear()
 
 
 class _KqueueNotifier:
@@ -382,84 +599,107 @@ class _KqueueNotifier:
         self._select = cast('_KqueueModule', select)
         self._kqueue: _Kqueue = self._select.kqueue()
         self._fds: list[int] = []
+        self._paths: dict[int, Path] = {}
+        self._directory_fds: set[int] = set()
         self._rebuild()
 
     def _close_fds(self):
         for fd in self._fds:
             os.close(fd)
         self._fds.clear()
+        self._paths.clear()
+        self._directory_fds.clear()
 
-    def _rebuild(self):
-        self._close_fds()
-        changelist: list[object] = []
-        for path in _walk_watch_dirs(self._roots, self._exclude_patterns):
-            try:
-                fd = os.open(path, os.O_EVTONLY)
-            except OSError:
-                continue
-            self._fds.append(fd)
-            changelist.append(
-                self._select.kevent(
-                    fd,
-                    filter=self._select.KQ_FILTER_VNODE,
-                    flags=(
-                        self._select.KQ_EV_ADD
-                        | self._select.KQ_EV_ENABLE
-                        | self._select.KQ_EV_CLEAR
-                    ),
-                    fflags=(
-                        self._select.KQ_NOTE_WRITE
-                        | self._select.KQ_NOTE_EXTEND
-                        | self._select.KQ_NOTE_ATTRIB
-                        | self._select.KQ_NOTE_LINK
-                        | self._select.KQ_NOTE_RENAME
-                        | self._select.KQ_NOTE_DELETE
-                    ),
-                )
+    def _remove_subtree(self, directory: Path) -> None:
+        stale = [
+            fd
+            for fd, path in self._paths.items()
+            if path == directory or path.is_relative_to(directory)
+        ]
+        for fd in stale:
+            os.close(fd)
+            self._fds.remove(fd)
+            self._paths.pop(fd, None)
+            self._directory_fds.discard(fd)
+
+    def _add_watch(
+        self, path: Path, *, directory: bool, changelist: list[object]
+    ) -> None:
+        try:
+            fd = os.open(path, os.O_EVTONLY)
+        except OSError:
+            return
+        self._fds.append(fd)
+        self._paths[fd] = path
+        if directory:
+            self._directory_fds.add(fd)
+        changelist.append(
+            self._select.kevent(
+                fd,
+                filter=self._select.KQ_FILTER_VNODE,
+                flags=(
+                    self._select.KQ_EV_ADD
+                    | self._select.KQ_EV_ENABLE
+                    | self._select.KQ_EV_CLEAR
+                ),
+                fflags=(
+                    self._select.KQ_NOTE_WRITE
+                    | self._select.KQ_NOTE_EXTEND
+                    | self._select.KQ_NOTE_ATTRIB
+                    | self._select.KQ_NOTE_LINK
+                    | self._select.KQ_NOTE_RENAME
+                    | self._select.KQ_NOTE_DELETE
+                ),
             )
-        for path in _walk_watch_files(
-            self._roots,
+        )
+
+    def _add_subtree(self, root: Path, directory: Path) -> None:
+        changelist: list[object] = []
+        for path in _walk_watch_dirs_from(root, directory, self._exclude_patterns):
+            self._add_watch(path, directory=True, changelist=changelist)
+        for path in _walk_watch_files_from(
+            root,
+            directory,
             self._include_patterns,
             self._exclude_patterns,
         ):
-            try:
-                fd = os.open(path, os.O_EVTONLY)
-            except OSError:
-                continue
-            self._fds.append(fd)
-            changelist.append(
-                self._select.kevent(
-                    fd,
-                    filter=self._select.KQ_FILTER_VNODE,
-                    flags=(
-                        self._select.KQ_EV_ADD
-                        | self._select.KQ_EV_ENABLE
-                        | self._select.KQ_EV_CLEAR
-                    ),
-                    fflags=(
-                        self._select.KQ_NOTE_WRITE
-                        | self._select.KQ_NOTE_EXTEND
-                        | self._select.KQ_NOTE_ATTRIB
-                        | self._select.KQ_NOTE_LINK
-                        | self._select.KQ_NOTE_RENAME
-                        | self._select.KQ_NOTE_DELETE
-                    ),
-                )
-            )
+            self._add_watch(path, directory=False, changelist=changelist)
         if changelist:
             self._kqueue.control(changelist, 0, 0)
+
+    def _rebuild(self):
+        self._close_fds()
+        for root in self._roots:
+            self._add_subtree(root, root)
 
     def fileno(self) -> int:
         return self._kqueue.fileno()
 
-    def consume(self):
-        needs_rebuild = False
-        while self._kqueue.control(None, 128, 0):
-            needs_rebuild = True
-        return needs_rebuild
+    def consume(self) -> _ReloadEvents:
+        events = _ReloadEvents()
+        while received := self._kqueue.control(None, 128, 0):
+            for event in received:
+                fd = getattr(event, 'ident', None)
+                path = self._paths.get(fd)
+                if path is None:
+                    events.full_resync = True
+                elif fd in self._directory_fds:
+                    events.rescan_directories.add(path)
+                else:
+                    events.paths.add(path)
+        return events
 
     def rebuild(self):
         self._rebuild()
+
+    def rescan(self, directories: set[Path]) -> None:
+        for directory in _minimal_subtrees(directories):
+            root = _watch_root_for_path(directory, self._roots)
+            if root is None:
+                self.rebuild()
+                return
+            self._remove_subtree(directory)
+            self._add_subtree(root, directory)
 
     def close(self):
         self._close_fds()
@@ -472,7 +712,7 @@ def _create_notifier(
     exclude_patterns: tuple[str, ...],
 ) -> _Notifier:
     if sys.platform == 'linux':
-        return _InotifyNotifier(watch_dirs, exclude_patterns)
+        return _InotifyNotifier(watch_dirs, include_patterns, exclude_patterns)
     if sys.platform == 'darwin':
         return _KqueueNotifier(watch_dirs, include_patterns, exclude_patterns)
     raise NotImplementedError('reload is currently supported only on Linux and macOS')
@@ -497,24 +737,24 @@ def _wait_for_reload_quiet_period(
     selector: _QuietPeriodSelector,
     notifier: _QuietPeriodNotifier,
     wakeup_fd: int,
-) -> tuple[bool, bool]:
-    needs_rebuild = False
+) -> tuple[bool, _ReloadEvents]:
+    events = _ReloadEvents()
     deadline = time.monotonic() + _RELOAD_COALESCE_DELAY
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return False, needs_rebuild
+            return False, events
         ready = selector.select(remaining)
         if not ready:
-            return False, needs_rebuild
+            return False, events
         for key, _ in ready:
             fileobj = key.fileobj
             if not isinstance(fileobj, int):
                 continue
             if fileobj == wakeup_fd:
                 drain_fd(wakeup_fd)
-                return True, needs_rebuild
-            needs_rebuild |= notifier.consume()
+                return True, events
+            events.merge(notifier.consume())
             deadline = time.monotonic() + _RELOAD_COALESCE_DELAY
 
 
@@ -633,6 +873,7 @@ class _ReloadChild:
                         signal_tree(signal.SIGKILL)
                         self.process.wait()
             else:
+
                 def group_exists() -> bool:
                     try:
                         os.killpg(self.process.pid, 0)
@@ -728,29 +969,32 @@ def serve_with_reload(
                     if fileobj == wakeup.read_fd:
                         drain_fd(wakeup.read_fd)
                         continue
-                    needs_rebuild = notifier.consume()
-                    stop_requested, pending_rebuild = _wait_for_reload_quiet_period(
+                    events = notifier.consume()
+                    stop_requested, pending_events = _wait_for_reload_quiet_period(
                         selector,
                         notifier,
                         wakeup.read_fd,
                     )
-                    needs_rebuild |= pending_rebuild
+                    events.merge(pending_events)
                     if stop_requested:
                         stopping = True
                         break
-                    if needs_rebuild:
-                        notifier.rebuild()
-                    next_snapshot = _watch_file_snapshot(
+                    changed_paths = _apply_reload_events(
+                        notifier,
+                        events,
+                        snapshot,
                         watch_dirs,
                         reload_includes,
                         reload_excludes,
                     )
-                    changed_paths = _changed_paths(snapshot, next_snapshot)
-                    if not changed_paths:
+                    if not changed_paths and not events.full_resync:
                         continue
-                    snapshot = next_snapshot
                     try:
-                        _log_line(_reload_change_message(changed_paths))
+                        _log_line(
+                            _reload_overflow_message()
+                            if events.full_resync and not changed_paths
+                            else _reload_change_message(changed_paths)
+                        )
                     except OSError:
                         pass
                     child.stop(config.timeout_graceful_shutdown)

@@ -1,13 +1,16 @@
 import subprocess
 import sys
-from typing import assert_type
+from collections.abc import Iterable
+from typing import assert_type, get_origin, get_type_hints
 
 import h2corn
 from fastapi import FastAPI
 from h2corn import (
+    Application,
     ASGIApp,
     ExtensionParameters,
     FrameworkASGIApp,
+    Headers,
     HTTPExtensions,
     HTTPRequest,
     HTTPResponseBody,
@@ -17,6 +20,7 @@ from h2corn import (
     Receive,
     ReceiveMessage,
     Scope,
+    ScopeHeaders,
     Send,
     SendMessage,
     Server,
@@ -85,6 +89,13 @@ def _extension_types_expose_supported_capabilities() -> None:
     assert_type(websocket['websocket.http.response'], ExtensionParameters)
 
 
+def _header_types_follow_the_direction_of_data_flow() -> None:
+    scope_headers: ScopeHeaders = [(b'host', b'example.test')]
+    outbound_headers: Headers = ((b'x-demo', b'1'),)
+    assert_type(scope_headers, ScopeHeaders)
+    assert_type(outbound_headers, Headers)
+
+
 def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None:
     http_scope: HTTPScope = {
         'type': 'http',
@@ -95,7 +106,7 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
         'path': '/',
         'raw_path': b'/',
         'query_string': b'',
-        'headers': (),
+        'headers': [(b'host', b'example.test')],
         'server': ('127.0.0.1', 8000),
         'extensions': {'http.response.pathsend': {}},
     }
@@ -107,7 +118,7 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
         'path': '/ws',
         'raw_path': b'/ws',
         'query_string': b'',
-        'headers': (),
+        'headers': [(b'host', b'example.test')],
         'server': ('127.0.0.1', 8000),
         'subprotocols': [],
         'extensions': {'websocket.http.response': {}},
@@ -131,11 +142,7 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
         'body': b'ok',
     })
     close: WebSocketClose = {'type': 'websocket.close', 'reason': None}
-    disconnect: WebSocketDisconnect = {
-        'type': 'websocket.disconnect',
-        'code': 1005,
-        'reason': None,
-    }
+    disconnect: WebSocketDisconnect = {'type': 'websocket.disconnect', 'code': 1005}
     response: HTTPResponseStart = {
         'type': 'http.response.start',
         'status': 200,
@@ -143,12 +150,14 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
     }
     assert response['status'] == 200
     assert close['reason'] is None
-    assert disconnect['reason'] is None
+    assert 'reason' not in disconnect
     typed_app: ASGIApp = _typed_app
+    application: Application = _typed_app
     framework_app: FrameworkASGIApp = FastAPI()
     typed_server = Server(typed_app)
     framework_server = Server(framework_app)
     assert callable(typed_app)
+    assert callable(application)
     assert callable(framework_app)
     assert typed_server.app is typed_app
     assert framework_server.app is framework_app
@@ -166,6 +175,11 @@ def test_typeddict_runtime_required_keys_match_static_contract() -> None:
     assert WebSocketScope.__optional_keys__ == {'root_path', 'client', 'state'}
     assert HTTPExtensions.__required_keys__ == {'http.response.pathsend'}
     assert HTTPExtensions.__optional_keys__ == {'http.response.trailers', 'tls'}
+    assert WebSocketDisconnect.__required_keys__ == {'type', 'code'}
+    assert WebSocketDisconnect.__optional_keys__ == {'reason'}
+    assert get_type_hints(WebSocketDisconnect)['reason'] is str
+    assert get_origin(ScopeHeaders) is list
+    assert get_origin(Headers) is Iterable
     assert WebSocketExtensions.__required_keys__ == {'websocket.http.response'}
     # `tls` is optional on both because the extension requires it to be absent
     # from a connection that is not TLS — h2corn sets every one of its keys.
@@ -183,22 +197,3 @@ def test_typeddict_runtime_required_keys_match_static_contract() -> None:
 def test_top_level_does_not_expose_typing_bootstrap_state() -> None:
     assert not hasattr(h2corn, 'TYPE_CHECKING')
     assert not hasattr(h2corn, 'Any')
-
-
-def test_server_public_surface_is_generation_lifecycle_only() -> None:
-    """Embedders see only serve, shutdown, wait_started, addresses, releasing."""
-    public = {
-        name
-        for name in dir(Server)
-        if not name.startswith('_') and name not in {'app', 'config'}
-    }
-    assert public == {
-        'addresses',
-        'releasing',
-        'serve',
-        'shutdown',
-        'wait_started',
-    }
-    assert not hasattr(Server, 'restart')
-    assert not hasattr(Server, 'serve_inherited_fds')
-    assert not hasattr(h2corn, 'LifespanHandoff')

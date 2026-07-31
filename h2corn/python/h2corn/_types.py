@@ -3,8 +3,10 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 HeaderPair = tuple[bytes, bytes]
 Headers = Iterable[HeaderPair]
+ScopeHeaders = list[HeaderPair]
 State = dict[str, Any]
 ExtensionParameters = dict[str, Any]
+
 
 class TLSExtension(TypedDict):
     """
@@ -71,7 +73,7 @@ class HTTPScope(TypedDict):
     raw_path: bytes
     query_string: bytes
     root_path: NotRequired[str]
-    headers: Headers
+    headers: ScopeHeaders
     client: NotRequired[tuple[str, int]]
     server: tuple[str, int | None]
     state: NotRequired[State]
@@ -87,7 +89,7 @@ class WebSocketScope(TypedDict):
     raw_path: bytes
     query_string: bytes
     root_path: NotRequired[str]
-    headers: Headers
+    headers: ScopeHeaders
     client: NotRequired[tuple[str, int]]
     server: tuple[str, int | None]
     subprotocols: list[str]
@@ -133,7 +135,7 @@ class WebSocketReceiveText(TypedDict):
 class WebSocketDisconnect(TypedDict):
     type: Literal['websocket.disconnect']
     code: int
-    reason: NotRequired[str | None]
+    reason: NotRequired[str]
 
 
 class LifespanStartup(TypedDict):
