@@ -1,3 +1,4 @@
+mod event;
 mod sink;
 
 use std::fmt::{self, Write as _};
@@ -7,12 +8,13 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
+pub(crate) use event::{Event, set_format};
 use http::Method;
 use itoa::{Buffer as ItoaBuffer, Integer};
 use owo_colors::{OwoColorize as _, Style};
 use smallvec::SmallVec;
 
-use crate::config::{BindTarget, ServerConfig};
+use crate::config::{BindTarget, LogFormat, ServerConfig};
 use crate::http::response::{FinalResponseBody, ResponseAction};
 use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
@@ -71,6 +73,7 @@ impl AccessLogRequest {
 pub(crate) struct HttpAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
+    pub format: LogFormat,
     pub status: HttpStatusCode,
     pub duration: Duration,
     pub rx_bytes: u64,
@@ -81,6 +84,7 @@ pub(crate) struct HttpAccessLogEntry<'a> {
 pub(crate) struct WebSocketAccessLogEntry<'a> {
     pub request: &'a AccessLogRequest,
     pub client_label: &'a str,
+    pub format: LogFormat,
     pub close_code: WebSocketCloseCode,
     pub duration: Duration,
     pub rx_bytes: u64,
@@ -199,7 +203,11 @@ impl ClientLabel {
     fn format(ctx: &RequestContext) -> ClientLabelBuf {
         let mut label = ClientLabelBuf::new();
         append_log_client(&mut label, ctx);
-        if label.first() != Some(&b'[') {
+        // Column alignment is a property of the human-readable line. JSON must
+        // carry the label verbatim: a forwarded host can legitimately end in a
+        // space, so padding here and trimming there would silently rewrite
+        // peer-supplied content.
+        if ctx.connection.config.log_format != LogFormat::Json && label.first() != Some(&b'[') {
             label.resize(IPV4_CLIENT_WIDTH.max(label.len()), b' ');
         }
         label
@@ -222,6 +230,7 @@ struct ActiveAccessLog {
     request: AccessLogRequest,
     client_label: ClientLabel,
     started_at: Instant,
+    format: LogFormat,
 }
 
 impl ActiveAccessLog {
@@ -230,6 +239,7 @@ impl ActiveAccessLog {
             request: AccessLogRequest::from_request(&ctx.request),
             client_label: ClientLabel::build(ctx),
             started_at: Instant::now(),
+            format: ctx.connection.config.log_format,
         }
     }
 }
@@ -256,6 +266,7 @@ impl HttpAccessLogState {
             emit_http_access_log(&HttpAccessLogEntry {
                 request: &state.request,
                 client_label: state.client_label.as_str(),
+                format: state.format,
                 status,
                 duration: state.started_at.elapsed(),
                 rx_bytes: read_body_bytes(),
@@ -283,6 +294,7 @@ impl WebSocketAccessLogState {
             emit_http_access_log(&HttpAccessLogEntry {
                 request: &state.request,
                 client_label: state.client_label.as_str(),
+                format: state.format,
                 status,
                 duration: state.started_at.elapsed(),
                 rx_bytes: 0,
@@ -302,6 +314,7 @@ impl WebSocketAccessLogState {
             emit_websocket_access_log(&WebSocketAccessLogEntry {
                 request: &state.request,
                 client_label: state.client_label.as_str(),
+                format: state.format,
                 close_code,
                 duration,
                 rx_bytes,
@@ -457,6 +470,25 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     const LISTENING_PREFIX: &str = "Listening on ";
     const LISTENING_INDENT: &str = "             ";
 
+    // The banner is the first thing anything writes, and an embedding host can
+    // emit it without going through `serve`. Publish here too so the encoding
+    // is established before the first line rather than after it.
+    set_format(config.log_format);
+
+    if config.log_format == LogFormat::Json {
+        // The aligned, styled banner is a human artifact; a machine stream
+        // gets the same facts as events instead.
+        Event::Starting.emit_json(|f| f.str("version", env!("CARGO_PKG_VERSION")));
+        for bind in &config.binds {
+            let url = format_listen_target(bind, tls);
+            Event::Listening.emit_json(|f| f.str("url", &url));
+        }
+        if config.http1.enabled {
+            Event::Http1Enabled.emit_json(|_| {});
+        }
+        return;
+    }
+
     let mut stderr = anstream::stderr().lock();
     let _ = writeln!(
         stderr,
@@ -492,6 +524,7 @@ fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
 
 pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
     emit_access_log(
+        entry.format,
         entry.client_label,
         entry.request,
         RequestSummaryKind::Http,
@@ -507,6 +540,7 @@ pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
 
 pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
     emit_access_log(
+        entry.format,
         entry.client_label,
         entry.request,
         RequestSummaryKind::WebSocket,
@@ -521,6 +555,7 @@ pub(crate) fn emit_websocket_access_log(entry: &WebSocketAccessLogEntry<'_>) {
 }
 
 fn emit_access_log<T>(
+    format: LogFormat,
     client_label: &str,
     request: &AccessLogRequest,
     summary_kind: RequestSummaryKind,
@@ -531,6 +566,27 @@ fn emit_access_log<T>(
     T: fmt::Display + Copy,
 {
     let mut line = AccessLogBuf::new();
+    if format == LogFormat::Json {
+        // Never styled: this stream is parsed, not read. ANSI escapes in a
+        // field would have to be escaped again by every consumer.
+        Event::Request.emit_json(|f| {
+            f.str("client", client_label);
+            f.str("method", match summary_kind {
+                RequestSummaryKind::Http => request.method.as_str(),
+                RequestSummaryKind::WebSocket => "WEBSOCKET",
+            });
+            f.str("target", request.path_and_query.as_str());
+            f.str("protocol", request.http_version.log_label());
+            f.num("status", code);
+            f.num(
+                "duration_ms",
+                format_args!("{:.3}", io_summary.duration.as_secs_f64() * 1000.0),
+            );
+            f.num("rx_bytes", io_summary.rx_bytes);
+            f.num("tx_bytes", io_summary.tx_bytes);
+        });
+        return;
+    }
     let summary = RequestSummaryDisplay {
         request,
         summary_kind,
@@ -1019,7 +1075,10 @@ mod tests {
                     header_meta,
                 };
                 let context = RequestContext::new(Arc::clone(&connection), request);
-                super::ClientLabel::build(&context).as_str().trim_end().to_owned()
+                super::ClientLabel::build(&context)
+                    .as_str()
+                    .trim_end()
+                    .to_owned()
             };
 
             let first = label_for("198.51.100.9");

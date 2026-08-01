@@ -888,11 +888,12 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
     failure: str,
 ) -> None:
     """No failed spawn leaves a child or a supervisor-owned descriptor behind."""
-    from h2corn import _supervisor
+    from h2corn import _log, _supervisor
 
     real_close = os.close
     real_pipe = _supervisor.nonblocking_pipe
     pipe_pairs: list[tuple[int, int]] = []
+
     class FakeProcess:
         def __init__(self) -> None:
             self.pid = 5000
@@ -985,9 +986,9 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
         monkeypatch.setattr(supervisor.selector, 'register', register)
     if failure == 'startup-log':
         monkeypatch.setattr(
-            _supervisor,
-            '_log_line',
-            lambda _message: (_ for _ in ()).throw(OSError('planned failure')),
+            _log.Event,
+            'log',
+            lambda *_args, **_fields: (_ for _ in ()).throw(OSError('planned failure')),
         )
     try:
         with pytest.raises(OSError, match='planned failure'):

@@ -16,7 +16,7 @@ use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
     finalize_response,
 };
-use crate::access_log::ResponseLogState;
+use crate::log::ResponseLogState;
 use crate::app_call::AppCallArgs;
 use crate::bridge::RequestInputShared;
 use crate::error::H2CornError;
@@ -258,7 +258,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{HttpSendDisposition, HttpSendState, drive_response};
-    use crate::access_log::ResponseLogState;
+    use crate::log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
     use crate::http::header::ResponseConnectionDirective;

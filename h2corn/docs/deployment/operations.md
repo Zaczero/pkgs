@@ -198,8 +198,30 @@ instead of surfacing later as a failed handshake.
 
 ## Observability
 
-`h2corn` does not bundle a metrics endpoint, structured-log emitter,
-or trace exporter. ASGI is the right place to add those — anything you
+## Structured logs
+
+`--log-format json` encodes everything h2corn writes to stderr — the startup
+banner, worker lifecycle, errors and access records — as one JSON object per
+line, so the stream can be shipped without parsing prose out of it:
+
+```json
+{"level":"info","event":"listening","url":"http://127.0.0.1:8000"}
+{"level":"info","event":"worker_started","pid":1234}
+{"level":"info","event":"request","client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.42,"rx_bytes":0,"tx_bytes":218}
+```
+
+Numbers stay numbers, so a collector does not have to recover `0.42` from
+`0.42ms` or a byte count from `218b`. There is no timestamp field: journald,
+Docker and Kubernetes all stamp arrival time already, and two clocks in one
+pipeline is a debugging problem rather than a feature.
+
+`--access-log` and `--log-format` are independent — `--no-access-log
+--log-format json` keeps the diagnostics machine-readable while dropping the
+per-request records.
+
+## Metrics and tracing
+
+`h2corn` does not bundle a metrics endpoint or trace exporter. ASGI is the right place to add those — anything you
 plug in works the same regardless of which ASGI server is in front,
 and server upgrades stay independent from instrumentation changes.
 
@@ -209,7 +231,7 @@ Common drop-in middleware:
 | -------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Prometheus `/metrics`      | [`prometheus-fastapi-instrumentator`](https://github.com/trallnag/prometheus-fastapi-instrumentator) (FastAPI) or [`starlette-prometheus`](https://github.com/perdy/starlette-prometheus) (any Starlette/ASGI app) |
 | OpenTelemetry traces       | [`opentelemetry-instrumentation-asgi`](https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/asgi/asgi.html) |
-| Structured / JSON access logs | [`asgi-correlation-id`](https://github.com/snok/asgi-correlation-id) + [`structlog`](https://www.structlog.org/) wired into your app's logging config |
+| Request correlation IDs    | [`asgi-correlation-id`](https://github.com/snok/asgi-correlation-id), which threads an ID through your application's own logging |
 | Liveness / readiness       | A plain ASGI route — e.g. FastAPI `@app.get('/healthz')` — exposed to the orchestrator              |
 
 Sketch with FastAPI + Prometheus:

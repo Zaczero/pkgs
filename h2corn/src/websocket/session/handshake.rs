@@ -2,7 +2,7 @@ use pyo3::pybacked::PyBackedStr;
 
 use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
-use crate::access_log::{ResponseLogState, WebSocketAccessLogState};
+use crate::log::{ResponseLogState, WebSocketAccessLogState};
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::header::ResponseConnectionDirective;

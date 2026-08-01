@@ -7,6 +7,8 @@ import random
 import selectors
 import signal
 import sys
+
+from h2corn._log import Event
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -104,9 +106,6 @@ class _Worker:
     forced_retirement_reap: bool = False
 
 
-def _log_line(message: str):
-    sys.stderr.write(f'{message}\n')
-    sys.stderr.flush()
 
 
 def _restart_worker(worker: _WorkerProcess):
@@ -504,7 +503,7 @@ class _Supervisor:
                 selectors.EVENT_READ,
                 ('worker-control', sentinel),
             )
-            _log_line(f'Started worker [{process.pid}]')
+            Event.WORKER_STARTED.log('Started worker [{pid}]', pid=process.pid)
         except BaseException:
             self.workers.pop(sentinel, None)
             for fd in (sentinel, control_read_fd):
@@ -582,11 +581,12 @@ class _Supervisor:
             os.close(worker.quiesce_write_fd)
             worker.quiesce_write_fd = None
         if expected:
-            _log_line(f'Stopped worker [{worker.process.pid}]')
+            Event.WORKER_STOPPED.log('Stopped worker [{pid}]', pid=worker.process.pid)
         else:
-            _log_line(
-                f'Worker [{worker.process.pid}] exited unexpectedly with code '
-                f'{worker.process.exitcode}'
+            Event.WORKER_EXITED_UNEXPECTEDLY.log(
+                'Worker [{pid}] exited unexpectedly with code {exit_code}',
+                pid=worker.process.pid,
+                exit_code=worker.process.exitcode,
             )
             self.record_worker_failure(worker.process.exitcode)
         worker.process.close()
@@ -634,8 +634,10 @@ class _Supervisor:
             worker_pid = worker.process.pid
             # Closing the write end is itself a fail-closed stop request:
             # native retirement treats EOF as ordinary stop.
-            _log_line(
-                f'Worker [{worker_pid}] quiesce signal failed ({exc}); closing channel'
+            Event.QUIESCE_SIGNAL_FAILED.log(
+                'Worker [{pid}] quiesce signal failed ({detail}); closing channel',
+                pid=worker_pid,
+                detail=str(exc),
             )
 
     def begin_worker_retirement(self, sentinel: int, *, restart: bool) -> bool:
@@ -662,7 +664,7 @@ class _Supervisor:
             return
         worker.forced_retirement_reap = True
         if worker.process.is_alive():
-            _log_line(message)
+            Event.WORKER_KILLED.log('{message}', message=message, pid=worker.process.pid)
             worker.process.kill()
 
     def kill_expired_retirements(self) -> None:
@@ -766,8 +768,9 @@ class _Supervisor:
             deadline = worker.health_deadline
             if deadline is None or deadline > now:
                 continue
-            _log_line(
-                f'Worker [{worker.process.pid}] failed healthcheck and will be replaced'
+            Event.WORKER_HEALTHCHECK_FAILED.log(
+                'Worker [{pid}] failed healthcheck and will be replaced',
+                pid=worker.process.pid,
             )
             worker.health_deadline = None
             if self.begin_worker_retirement(sentinel, restart=False):
@@ -931,7 +934,7 @@ class _Supervisor:
             finally:
                 self.stopping = True
                 try:
-                    _log_line('Shutting down supervisor')
+                    Event.SUPERVISOR_STOPPING.log('Shutting down supervisor')
                 except OSError:
                     pass
                 self.wait_for_retired_workers(wakeup.read_fd)
@@ -1007,5 +1010,5 @@ def serve_with_supervisor(
                     pass
 
         if supervisor.fatal_error is not None:
-            _log_line(supervisor.fatal_error)
+            Event.SUPERVISOR_FAILED.log('{detail}', detail=supervisor.fatal_error)
             raise SystemExit(1)

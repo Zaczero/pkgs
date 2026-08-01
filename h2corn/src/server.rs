@@ -24,7 +24,8 @@ use rustix::net::sockopt::set_tcp_quickack;
 #[cfg(unix)]
 use rustix::net::{AddressFamily, getsockname};
 use tokio::io::{
-    AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, ReadHalf, WriteHalf, split,
+    AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, ReadHalf, WriteHalf,
+    split,
 };
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
@@ -49,7 +50,7 @@ use crate::runtime::{
 };
 use crate::sendfile::WriteTarget;
 use crate::tls::{ConnectionSecurity, TlsSessionInfo};
-use crate::{access_log, h1, h2, tls};
+use crate::{h1, h2, log, tls};
 
 pub(crate) type ListenerFd = OwnedFd;
 #[cfg(windows)]
@@ -276,11 +277,12 @@ pub(crate) async fn serve_from_fds(
     let quiesce = quiesce_fd.map(QuiesceReceiver::from_owned_fd).transpose()?;
     #[cfg(not(unix))]
     let quiesce = quiesce_fd;
+    log::set_format(config.log_format);
     if config.access_log {
         // Started here, not lazily on the first request: this runs in the
         // worker process, after any supervisor fork, so the buffer and the
         // thread that drains it always belong to the same process.
-        access_log::start_log_sink();
+        log::start_log_sink();
     }
     if let Some(trigger) = ready_trigger {
         // Through the pump, not `Python::attach`: this runs on a tokio thread,
@@ -289,7 +291,7 @@ pub(crate) async fn serve_from_fds(
         app.main_shard().push(PumpEvent::CallTrigger { trigger });
     }
     let served = serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await;
-    access_log::flush_log_sink();
+    log::flush_log_sink();
     served
 }
 
@@ -350,7 +352,11 @@ fn report_failure(subject: &str, result: Result<(), H2CornError>) {
         FailureDomain::AppContract
         | FailureDomain::InternalInvariant
         | FailureDomain::Configuration => {
-            eprintln!("{subject} failed: {}", format_failure(&error));
+            let detail = format_failure(&error);
+            log::Event::Failed.emit(format_args!("{subject} failed: {detail}"), |f| {
+                f.str("subject", subject);
+                f.str("detail", &detail);
+            });
         },
     }
 }
@@ -507,7 +513,10 @@ async fn serve_listeners(
                     if let Some(Err(join_error)) = joined
                         && !join_error.is_cancelled()
                     {
-                        eprintln!("connection task panicked: {join_error}");
+                        log::Event::ConnectionPanicked.emit(
+                            format_args!("connection task panicked: {join_error}"),
+                            |f| f.text("detail", &join_error),
+                        );
                     }
                     continue;
                 }

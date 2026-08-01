@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from typing import Self
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
+LogFormat = Literal['text', 'json']
 LifespanMode = Literal['auto', 'on', 'off']
 ServerHeaderMode = Literal['off', 'on', 'full']
 CertReqsMode = Literal['none', 'optional', 'required']
@@ -37,6 +38,7 @@ _PathValue = str | os.PathLike[str] | Path | None
 _PrincipalValue = str | int | None
 _BindValue = str | _StringCollection | None
 _PROXY_PROTOCOL_MODES = get_args(ProxyProtocolMode)
+_LOG_FORMATS = get_args(LogFormat)
 _LIFESPAN_MODES = get_args(LifespanMode)
 _SERVER_HEADER_MODES = get_args(ServerHeaderMode)
 _CERT_REQS_MODES = get_args(CertReqsMode)
@@ -284,6 +286,12 @@ def _normalize_server_header(value: str) -> ServerHeaderMode:
     if value not in _SERVER_HEADER_MODES:
         raise ValueError(f'invalid server_header mode: {value!r}')
     return cast('ServerHeaderMode', value)
+
+
+def _normalize_log_format(value: str) -> LogFormat:
+    if value not in _LOG_FORMATS:
+        raise ValueError(f'invalid log format: {value!r}')
+    return cast('LogFormat', value)
 
 
 def _normalize_lifespan(value: str) -> LifespanMode:
@@ -584,6 +592,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
         (
             'http1',
             'access_log',
+            'log_format',
             'max_concurrent_streams',
             'limit_request_head_size',
             'limit_request_line',
@@ -862,6 +871,18 @@ class Config:
         env_parse=_parse_bool,
         converter=_exact_bool('access_log'),
         cli_action='bool',
+    )
+    log_format: LogFormat = _option(
+        default='text',
+        doc=(
+            'Encoding for everything h2corn writes to stderr: the startup '
+            "banner, worker lifecycle, errors and access records. 'json' "
+            'emits one object per line so the stream can be shipped without '
+            'parsing prose.'
+        ),
+        env_parse=_normalize_log_format,
+        converter=_normalize_log_format,
+        cli_choices=_LOG_FORMATS,
     )
     max_concurrent_streams: int = _option(
         default=256,

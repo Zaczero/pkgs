@@ -15,7 +15,6 @@ use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
-use crate::access_log::emit_banner as emit_access_banner;
 use crate::config;
 use crate::config::{
     BindTarget, ClientCertMode, ConfiguredResponseHeader, Http1Config, Http2Config, ProxyConfig,
@@ -24,6 +23,7 @@ use crate::config::{
 use crate::error::{ConfigError, H2CornError, IntoPyResult as _, into_pyerr};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
+use crate::log::emit_banner as emit_access_banner;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use crate::pyloop::{
     PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
@@ -299,6 +299,7 @@ impl<'py> PyConfig<'py> {
         Ok(ServerConfig {
             binds,
             access_log: self.get("access_log")?,
+            log_format: self.get("log_format")?,
             root_path: self.boxed_str("root_path")?,
             root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: self.nonzero_usize("limit_request_fields")?,
@@ -916,6 +917,7 @@ mod tests {
     use pyo3::types::{PyAny, PyDict, PyModule, PyTuple};
 
     use super::*;
+    use crate::config::LogFormat;
     use crate::proxy_protocol::{Cidr, TrustedPeer};
 
     fn config_stub(py: Python<'_>) -> Bound<'_, PyAny> {
@@ -1001,6 +1003,7 @@ mod tests {
         config.setattr("max_requests_jitter", 7).unwrap();
         config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
         config.setattr("access_log", false).unwrap();
+        config.setattr("log_format", "json").unwrap();
         config.setattr("root_path", "/api").unwrap();
         config.setattr("max_request_body_size", 987_654).unwrap();
         config.setattr("runtime_threads", 7).unwrap();
@@ -1074,6 +1077,7 @@ mod tests {
             _ => panic!("expected one TCP bind"),
         }
         assert!(!extracted.access_log);
+        assert_eq!(extracted.log_format, LogFormat::Json);
         assert_eq!(extracted.root_path.as_ref(), "/api");
         assert_eq!(
             extracted.max_request_body_size.map(NonZeroU64::get),

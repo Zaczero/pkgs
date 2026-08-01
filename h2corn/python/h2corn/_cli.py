@@ -4,6 +4,8 @@ import argparse
 import importlib.metadata
 import os
 import sys
+
+from h2corn._log import Event, set_format
 from dataclasses import MISSING, dataclass
 from pathlib import Path
 from typing import NoReturn, TypeAlias, cast
@@ -188,7 +190,7 @@ def _toml_literal(value: _TomlLiteralValue) -> str:
 
 def _fail(message: str) -> NoReturn:
     """Report an operator error the way `parse_cli` does: one line, exit 2."""
-    print(f'h2corn: error: {message}', file=sys.stderr)
+    Event.CLI_ERROR.log('h2corn: error: {detail}', detail=message)
     raise SystemExit(2)
 
 
@@ -432,6 +434,9 @@ def run_cli(
     env: Mapping[str, str] | None = None,
 ) -> None:
     cli_settings, import_settings, config = parse_cli(argv, env)
+    # Publish before anything else can log: the supervisor and reloader emit
+    # from callbacks that hold no configuration.
+    set_format(config.log_format)
     if cli_settings.print_config:
         _print_config(config)
         return

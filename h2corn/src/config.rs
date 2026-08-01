@@ -129,9 +129,38 @@ impl ConfiguredResponseHeader {
     }
 }
 
+/// How everything h2corn writes to stderr is encoded.
+///
+/// One encoding for the whole stream -- banner, worker lifecycle, errors and
+/// access records alike. A consumer that has opted into JSON must not have to
+/// parse prose out of the same file, which is the reason this is a property of
+/// the stream rather than of the access log.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogFormat {
+    Text,
+    Json,
+}
+
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for LogFormat {
+    type Error = pyo3::PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> Result<Self, Self::Error> {
+        // `Config` already rejects anything else, so this is a total mapping
+        // over the vocabulary rather than a second validation layer.
+        match obj.extract::<std::borrow::Cow<'_, str>>()?.as_ref() {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid log format: {other:?}"
+            ))),
+        }
+    }
+}
+
 pub(crate) struct ServerConfig {
     pub binds: Box<[BindTarget]>,
     pub access_log: bool,
+    pub log_format: LogFormat,
     pub root_path: Box<str>,
     /// `root_path` as the scope sees it, built once per configuration.
     ///

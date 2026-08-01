@@ -4,7 +4,6 @@
 // `websocket::codec::mask`.
 #![feature(portable_simd)]
 
-mod access_log;
 mod app_call;
 mod ascii;
 mod async_util;
@@ -19,6 +18,7 @@ mod h2_frame;
 mod hpack;
 mod http;
 mod inline_fifo;
+mod log;
 mod proxy_protocol;
 mod pyapi;
 mod pyloop;

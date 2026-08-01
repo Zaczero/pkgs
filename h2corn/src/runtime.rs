@@ -908,10 +908,7 @@ pub(crate) mod test_fixtures {
         AppRuntime, AppRuntimeHandle, ConnectionContext, ConnectionShared, RequestTaskGuard,
         try_acquire_request_admission,
     };
-    use crate::config::{
-        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
-        WebSocketConfig,
-    };
+    use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, ServerConfig, WebSocketConfig};
     use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
     use crate::proxy_protocol::{
         ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr, ServerEndpoint,
@@ -930,6 +927,7 @@ pub(crate) mod test_fixtures {
                 port: 8000,
             }]),
             access_log: false,
+            log_format: LogFormat::Text,
             root_path: Box::from(""),
             root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: None,

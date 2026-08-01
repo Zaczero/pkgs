@@ -9,6 +9,8 @@ import signal
 import struct
 import subprocess
 import sys
+
+from h2corn._log import Event
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -182,11 +184,6 @@ def _inotify_bindings() -> tuple[
     rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
     rm_watch.restype = ctypes.c_int
     return init1, add_watch, rm_watch
-
-
-def _log_line(message: str):
-    sys.stderr.write(f'{message}\n')
-    sys.stderr.flush()
 
 
 def _display_reload_path(path: Path):
@@ -980,7 +977,7 @@ def serve_with_reload(
             )
             child = _ReloadChild.spawn(child_args, env, pass_fds=pass_fds)
             try:
-                _log_line('Reload enabled')
+                Event.RELOAD_ENABLED.log('Reload enabled')
             except OSError:
                 pass
             while not stopping:
@@ -1012,10 +1009,13 @@ def serve_with_reload(
                     if not changed_paths and not events.full_resync:
                         continue
                     try:
-                        _log_line(
-                            _reload_overflow_message()
+                        Event.RELOAD_TRIGGERED.log(
+                            '{message}',
+                            message=_reload_overflow_message()
                             if events.full_resync and not changed_paths
-                            else _reload_change_message(changed_paths)
+                            else _reload_change_message(changed_paths),
+                            paths=[str(path) for path in changed_paths],
+                            full_resync=events.full_resync,
                         )
                     except OSError:
                         pass

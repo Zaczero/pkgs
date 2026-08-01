@@ -1308,10 +1308,7 @@ mod tests {
         MAX_TRAILER_SECTION_BYTES, drain_chunked_trailers, parse_chunk_size, parse_http2_settings,
         read_chunk_size_line, read_chunked_body, read_request, read_request_head,
     };
-    use crate::config::{
-        BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig,
-        WebSocketConfig,
-    };
+    use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, ServerConfig, WebSocketConfig};
     use crate::error::{ErrorKind, H2CornError, Http1Error};
     use crate::h1::{ConnectionPersistence, RequestBodyKind, RequestRoute, UpgradeRequest};
     use crate::h2_frame;
@@ -1327,6 +1324,7 @@ mod tests {
                 port: 8000,
             }]),
             access_log: false,
+            log_format: LogFormat::Text,
             root_path: Box::from(""),
             root_path_scope: crate::python::PyOnceLock::new(),
             limit_request_fields: None,

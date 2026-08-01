@@ -2,7 +2,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use super::{actions, controller, transport};
-use crate::access_log::ResponseLogState;
+use crate::log::ResponseLogState;
 use crate::http::app::AdmittedHttpOutboundEvent;
 use crate::http::types::{HttpStatusCode, status_code};
 use crate::{bridge, error, http};
@@ -148,7 +148,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::{apply_http_event, finalize_response};
-    use crate::access_log::ResponseLogState;
+    use crate::log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
     use crate::http::header::ResponseConnectionDirective;

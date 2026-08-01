@@ -1616,7 +1616,9 @@ async def test_max_requests_jitter_applied_once(
     monkeypatch.setattr(
         _supervisor.multiprocessing, 'get_context', lambda _name: FakeContext()
     )
-    monkeypatch.setattr(_supervisor, '_log_line', lambda _message: None)
+    from h2corn import _log
+
+    monkeypatch.setattr(_log.Event, 'log', lambda *_args, **_fields: None)
 
     async def app(*_args: object) -> None:
         pass

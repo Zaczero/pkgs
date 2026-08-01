@@ -7,7 +7,7 @@ use super::state::RequestTaskCancellation;
 use super::websocket::handle_request as handle_websocket_request;
 use super::writer::{WriterCommand, WriterCommandBatch};
 use super::{H2WriterHandle, InboundStream, RequestSpawnContext};
-use crate::access_log::{HttpAccessLogState, ResponseLogState};
+use crate::log::{HttpAccessLogState, ResponseLogState};
 use crate::bridge::{HttpOutboundEvent, RequestBodyCounter};
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::{H2CornError, H2Error};

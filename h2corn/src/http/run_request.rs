@@ -1,7 +1,7 @@
-use crate::access_log::{HttpAccessLogState, ResponseLogState};
 use crate::error::H2CornError;
 use crate::http::app::{HttpRequestBody, run_asgi_http_request};
 use crate::http::response::HttpResponseTransport;
+use crate::log::{HttpAccessLogState, ResponseLogState};
 use crate::runtime::{RequestAdmission, RequestContext};
 
 pub(crate) async fn run_http_request<T, F>(

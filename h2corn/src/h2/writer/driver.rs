@@ -30,9 +30,7 @@ use super::{
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 #[cfg(test)]
-use crate::config::{
-    BindTarget, Http1Config, Http2Config, ProxyConfig, ResponseHeaderConfig, WebSocketConfig,
-};
+use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, WebSocketConfig};
 use crate::error::H2CornError;
 use crate::h2::deadline::DeadlineQueue;
 use crate::h2::{StreamMap, new_stream_map};
@@ -236,6 +234,7 @@ where
                     port: 8000,
                 }]),
                 access_log: false,
+            log_format: LogFormat::Text,
                 root_path: Box::from(""),
                 root_path_scope: crate::python::PyOnceLock::new(),
                 limit_request_fields: None,

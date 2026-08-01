@@ -19,13 +19,13 @@ use super::codec::{
     encode_close_frame_into, encode_frame_header,
 };
 use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
-use crate::access_log::WebSocketAccessLogState;
 use crate::async_util::with_optional_timeout;
 use crate::bridge::{PayloadBytes, WEBSOCKET_INBOUND_BYTE_CAPACITY};
 use crate::config::WebSocketKeepAlive;
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::response::HttpResponseTransport;
 use crate::http::types::{BytesStr, HttpStatusCode, ResponseHeaders, status_code};
+use crate::log::WebSocketAccessLogState;
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
 
 #[derive(Debug, Default)]
@@ -334,10 +334,7 @@ where
     Box::pin(drive_websocket(transport, context))
 }
 
-async fn drive_websocket<T>(
-    transport: &mut T,
-    context: WebSocketContext,
-) -> Result<(), H2CornError>
+async fn drive_websocket<T>(transport: &mut T, context: WebSocketContext) -> Result<(), H2CornError>
 where
     T: WebSocketHandshakeTransport + AcceptedWebSocketTransport,
 {
