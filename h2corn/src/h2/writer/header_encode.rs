@@ -11,8 +11,8 @@ use crate::h2_frame::{
 use crate::hpack::Encoder;
 use crate::http::digits;
 use crate::http::types::{
-    HttpStatusCode, ResponseField, ResponseHeaders, ResponseTrailers, common_status_codes,
-    status_code,
+    EarlyHintLinks, HttpStatusCode, ResponseField, ResponseHeaders, ResponseTrailers,
+    common_status_codes, status_code,
 };
 
 macro_rules! common_status_hpack_index_match {
@@ -49,6 +49,21 @@ impl HeaderEncodeState {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
         encode_header_block(&mut self.encoder, &mut self.block, Some(status), headers);
+        self.block.as_ref()
+    }
+
+    /// One interim 103 block: the fixed status and one `link` field per value.
+    ///
+    /// No Date, Server, Content-Length or any other final-response default --
+    /// those belong to the response this hint precedes, not to the hint.
+    pub(super) fn encode_early_hint(&mut self, links: &EarlyHintLinks) -> &[u8] {
+        self.block.clear();
+        self.encoder.begin_block(&mut self.block);
+        encode_status_header(&self.encoder, &mut self.block, status_code::EARLY_HINTS);
+        for link in links.values() {
+            self.encoder
+                .encode_field_bytes(b"link", link.as_bytes(), &mut self.block);
+        }
         self.block.as_ref()
     }
 

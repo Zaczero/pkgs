@@ -30,7 +30,10 @@ use super::{
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 #[cfg(test)]
-use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, WebSocketConfig};
+use crate::config::{
+    BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig,
+    WebSocketConfig,
+};
 use crate::error::H2CornError;
 use crate::h2::deadline::DeadlineQueue;
 use crate::h2::{StreamMap, new_stream_map};
@@ -41,7 +44,7 @@ use crate::h2_frame::{
 use crate::http::header::apply_default_response_headers;
 use crate::http::pathsend::PathStreamer;
 use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
-use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers};
+use crate::http::types::{EarlyHintLinks, HttpStatusCode, ResponseHeaders, ResponseTrailers};
 #[cfg(test)]
 use crate::proxy_protocol::ProxyProtocolMode;
 use crate::sendfile::WriteTarget;
@@ -619,6 +622,35 @@ where
     write_frame_buf(writer, frame_buf).await
 }
 
+/// Write one interim 103 block.
+///
+/// `end_stream` is hard-coded false because RFC 9113 8.1 forbids END_STREAM on
+/// an informational HEADERS block, and the response state is deliberately left
+/// as it was: a hint commits nothing, schedules no body, and completes nothing.
+async fn handle_send_early_hint<W>(
+    context: &mut WriterSendParts<'_, W>,
+    stream_id: StreamId,
+    links: &EarlyHintLinks,
+) -> Result<(), H2CornError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let block = context.header_state.encode_early_hint(links);
+    if write_header_block(
+        context.writer,
+        stream_id,
+        false,
+        block,
+        context.peer_max_frame_size,
+    )
+    .await
+    .is_err()
+    {
+        notify_response_abort(context.response_closes, stream_id);
+    }
+    Ok(())
+}
+
 async fn handle_send_headers<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
@@ -946,6 +978,10 @@ where
         WriterCommand::SendSettingsAck => {
             h2_frame::append_settings_ack(context.frame_buf);
             write_frame_buf(context.writer, context.frame_buf).await?;
+        },
+        WriterCommand::SendEarlyHint { stream_id, links } => {
+            let mut send = context.send_context();
+            handle_send_early_hint(&mut send, stream_id, &links).await?;
         },
         WriterCommand::SendHeaders {
             stream_id,

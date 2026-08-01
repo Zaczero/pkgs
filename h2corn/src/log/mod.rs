@@ -360,7 +360,10 @@ impl ResponseLogState {
             ResponseAction::Body(body) => self.sent_body(body.len()),
             ResponseAction::File { len, .. } => self.sent_body(*len),
             ResponseAction::InternalError => self.internal_error(),
-            ResponseAction::Finish
+            // An interim block carries no status and no body, so like the
+            // terminators it settles nothing the access log records.
+            ResponseAction::EarlyHint(_)
+            | ResponseAction::Finish
             | ResponseAction::FinishWithTrailers(_)
             | ResponseAction::AbortIncomplete => {},
         }

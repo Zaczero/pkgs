@@ -241,6 +241,12 @@ impl H1ResponseState {
         W: WriteTarget,
     {
         match action {
+            // 103 is deliberately unadvertised on HTTP/1: RFC 8297 names
+            // interoperability and security risks with clients that mishandle
+            // an interim response, and a pipelined peer that ignores it
+            // desynchronizes. The scope never offers the extension here, so
+            // reaching this arm means the application invented the message.
+            ResponseAction::EarlyHint(_) => Ok(()),
             ResponseAction::Final { mut start, body } => {
                 self.response_started = true;
                 let directive = start.directive();

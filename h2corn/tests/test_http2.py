@@ -303,7 +303,10 @@ async def test_http_scope_advertises_pathsend_extension() -> None:
             h2_request(port=server_port(server)), timeout=5
         )
 
-    assert extensions == {'http.response.pathsend': {}}
+    assert extensions == {
+        'http.response.pathsend': {},
+        'http.response.early_hint': {},
+    }
     assert client is not None
     assert status == 204
     assert body == b''
@@ -333,6 +336,7 @@ async def test_http_scope_advertises_trailer_extension_when_request_accepts_it()
     assert extensions == {
         'http.response.pathsend': {},
         'http.response.trailers': {},
+        'http.response.early_hint': {},
     }
     assert status == 204
     assert body == b''
@@ -1087,6 +1091,7 @@ async def test_response_trailers_are_sent_when_request_accepts_them() -> None:
     assert extensions == {
         'http.response.pathsend': {},
         'http.response.trailers': {},
+        'http.response.early_hint': {},
     }
     assert status == 200
     assert body == b'payload'
@@ -1112,7 +1117,10 @@ async def test_response_trailers_require_request_te_trailers() -> None:
             h2_request(port=server_port(server)), timeout=5
         )
 
-    assert extensions == {'http.response.pathsend': {}}
+    assert extensions == {
+        'http.response.pathsend': {},
+        'http.response.early_hint': {},
+    }
     assert status == 500
     assert body == b''
 
@@ -1511,6 +1519,7 @@ async def test_http_response_pathsend_can_be_followed_by_trailers(
     assert extensions == {
         'http.response.pathsend': {},
         'http.response.trailers': {},
+        'http.response.early_hint': {},
     }
     assert status == 200
     assert body == payload

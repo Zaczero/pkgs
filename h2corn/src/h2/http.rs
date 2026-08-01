@@ -387,6 +387,9 @@ fn append_response_action(
     config: &ServerConfig,
 ) -> Result<(), H2CornError> {
     match action {
+        ResponseAction::EarlyHint(links) => {
+            commands.push_back(WriterCommand::SendEarlyHint { stream_id, links });
+        },
         ResponseAction::Final { mut start, body } => {
             if start.status() == status_code::UPGRADE_REQUIRED {
                 return Err(H2CornError::from(pyo3::exceptions::PyValueError::new_err(

@@ -34,8 +34,8 @@ use crate::http::header::{
     application_response_field, protocol_token_is_valid, split_commas_bytes,
 };
 use crate::http::types::{
-    BytesStr, FinalResponseStatus, HttpStatusCode, ResponseHeaderName, ResponseHeaderValue,
-    ResponseHeaders, ResponseTrailers,
+    BytesStr, EarlyHintLinks, FinalResponseStatus, HttpStatusCode, ResponseHeaderName,
+    ResponseHeaderValue, ResponseHeaders, ResponseTrailers,
 };
 use crate::pyloop::{PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, runtime};
 use crate::python::{StaticPyKey, py_dict};
@@ -129,6 +129,7 @@ asgi_outbound_types! {
         Body => "http.response.body",
         Pathsend => "http.response.pathsend",
         Trailers => "http.response.trailers",
+        EarlyHint => "http.response.early_hint",
     }
 }
 
@@ -192,6 +193,8 @@ pub(crate) enum HttpOutboundEvent {
         headers: ResponseTrailers,
         more_trailers: bool,
     },
+    /// RFC 8297 103. Carries only its `link` values -- see `EarlyHintLinks`.
+    EarlyHint(EarlyHintLinks),
 }
 
 #[derive(Debug)]
@@ -301,6 +304,7 @@ impl<'py> AsgiMessage<'py> {
     asgi_item!(body_item, "body");
     asgi_item!(more_body_item, "more_body");
     asgi_item!(path_item, "path");
+    asgi_item!(links_item, "links");
     asgi_item!(more_trailers_item, "more_trailers");
     asgi_item!(subprotocol_item, "subprotocol");
     asgi_item!(text_item, "text");
@@ -423,6 +427,36 @@ impl<'py> AsgiMessage<'py> {
 
     fn more_body_flag(&self, container: AsgiContainer) -> Result<bool, H2CornError> {
         Self::bool_or_false(container, "more_body", self.more_body_item()?)
+    }
+
+    /// The `link` values of an `http.response.early_hint`.
+    ///
+    /// Any iterable of `bytes` is accepted, including a generator, and order
+    /// and duplicates are preserved: RFC 8288 grammar is not parsed here
+    /// because a Link value is inert application data to this server. An
+    /// empty iterable is valid and produces a bare 103.
+    fn early_hint_links(&self, container: AsgiContainer) -> Result<EarlyHintLinks, H2CornError> {
+        let value = Self::require(container, "links", self.links_item()?)?;
+        // A failure inside `__iter__`/`__next__` belongs to the application's
+        // producer, not to the type of `links` -- propagate it rather than
+        // reporting a `TypeError` the caller cannot act on.
+        let iterator = value.try_iter().map_err(H2CornError::from)?;
+        let mut links = Vec::new();
+        for item in iterator {
+            let item = item.map_err(H2CornError::from)?;
+            let bytes = PyBackedBytes::from(
+                cast_exact_first::<PyBytes>(&item)
+                    .map_err(|_| field_type_error(container, "links", "bytes", &item))?
+                    .to_owned(),
+            );
+            // The type is right and the value is not: CR/LF or a control byte
+            // in a field value is a `ValueError`, exactly as it is for an
+            // ordinary response header.
+            let link = ResponseHeaderValue::from_python(bytes)
+                .ok_or_else(|| H2CornError::from(HttpResponseError::InvalidResponseHeaderValue))?;
+            links.push(link);
+        }
+        Ok(EarlyHintLinks::new(links))
     }
 
     fn path(&self, container: AsgiContainer) -> Result<PathBuf, H2CornError> {
@@ -1166,6 +1200,9 @@ pub(crate) fn parse_http_outbound_event(
             let more_body = message.more_body_flag(AsgiContainer::HttpResponseBody)?;
             Ok(HttpOutboundEvent::Body { body, more_body })
         },
+        HttpOutboundType::EarlyHint => Ok(HttpOutboundEvent::EarlyHint(
+            message.early_hint_links(AsgiContainer::HttpResponseEarlyHint)?,
+        )),
         HttpOutboundType::Pathsend => Ok(HttpOutboundEvent::PathSend {
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),

@@ -258,7 +258,6 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{HttpSendDisposition, HttpSendState, drive_response};
-    use crate::log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
     use crate::http::header::ResponseConnectionDirective;
@@ -266,6 +265,7 @@ mod tests {
         HttpResponseTransport, ResponseAction, ResponseActions, ResponseController,
     };
     use crate::http::types::{FinalResponseStatus, ResponseHeaders, status_code};
+    use crate::log::ResponseLogState;
 
     #[derive(Default)]
     struct RecordingTransport {
@@ -278,6 +278,7 @@ mod tests {
             action: ResponseAction,
         ) -> Result<(), H2CornError> {
             self.calls.push(match action {
+                ResponseAction::EarlyHint(_) => "early_hint",
                 ResponseAction::Final { .. } => "final",
                 ResponseAction::Start { .. } => "start",
                 ResponseAction::Body(_) => "body",

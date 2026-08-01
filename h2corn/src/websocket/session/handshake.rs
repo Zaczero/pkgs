@@ -193,6 +193,9 @@ mod tests {
             action: ResponseAction,
         ) -> Result<(), H2CornError> {
             match action {
+                // A WebSocket scope never advertises the extension, so a hint
+                // cannot reach the handshake-denial transport.
+                ResponseAction::EarlyHint(_) => {},
                 ResponseAction::Final { body, .. } => {
                     self.calls.push("send_final_denial_response");
                     self.final_bodies.push(match body {

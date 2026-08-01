@@ -37,6 +37,8 @@ HTTPExtensions = TypedDict(
     {
         'http.response.pathsend': ExtensionParameters,
         'http.response.trailers': NotRequired[ExtensionParameters],
+        # HTTP/2 only -- RFC 8297 interim responses are not offered on HTTP/1.
+        'http.response.early_hint': NotRequired[ExtensionParameters],
         'tls': NotRequired[TLSExtension],
     },
 )
@@ -182,6 +184,18 @@ class HTTPResponsePathsend(TypedDict):
     path: str
 
 
+class HTTPResponseEarlyHint(TypedDict):
+    """An RFC 8297 `103 Early Hints` interim response.
+
+    Sent after `http.response.start` and before the final body, as many times
+    as wanted. Each value becomes one `link` field; ordering and duplicates are
+    preserved. Offered only on HTTP/2 -- check `scope["extensions"]`.
+    """
+
+    type: Literal['http.response.early_hint']
+    links: Iterable[bytes]
+
+
 class WebSocketAccept(TypedDict):
     type: Literal['websocket.accept']
     subprotocol: NotRequired[str | None]
@@ -241,6 +255,7 @@ SendMessage = (
     | HTTPResponseBody
     | HTTPResponseTrailers
     | HTTPResponsePathsend
+    | HTTPResponseEarlyHint
     | WebSocketAccept
     | WebSocketSendBytes
     | WebSocketSendText

@@ -95,6 +95,7 @@ pub(crate) enum AsgiContainer {
     HttpResponseBody,
     HttpResponsePathsend,
     HttpResponseTrailers,
+    HttpResponseEarlyHint,
     WebSocketAccept,
     WebSocketSend,
     WebSocketClose,
@@ -110,6 +111,7 @@ impl fmt::Display for AsgiContainer {
             Self::HttpResponseBody => "http.response.body",
             Self::HttpResponsePathsend => "http.response.pathsend",
             Self::HttpResponseTrailers => "http.response.trailers",
+            Self::HttpResponseEarlyHint => "http.response.early_hint",
             Self::WebSocketAccept => "websocket.accept",
             Self::WebSocketSend => "websocket.send",
             Self::WebSocketClose => "websocket.close",
@@ -444,6 +446,10 @@ pub(crate) enum HttpResponseError {
         container: AsgiContainer,
         status: u16,
     },
+    #[error(
+        "http.response.early_hint must follow http.response.start; an early hint precedes the final response but not the response itself"
+    )]
+    EarlyHintBeforeStart,
 }
 
 #[derive(Debug, Error)]
@@ -1096,7 +1102,8 @@ where
             | HttpResponseError::InvalidResponseTrailerField
             | HttpResponseError::StatusMustBeThreeDigitCode { .. }
             | HttpResponseError::StatusOutsideSigned64BitRange { .. }
-            | HttpResponseError::InformationalStatusUnsupported { .. }),
+            | HttpResponseError::InformationalStatusUnsupported { .. }
+            | HttpResponseError::EarlyHintBeforeStart),
         ) => PyValueError::new_err(err.to_string()),
         // Messages that are individually well formed but arrive in an order
         // the response state machine does not allow.

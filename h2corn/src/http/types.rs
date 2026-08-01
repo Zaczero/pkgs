@@ -7,6 +7,9 @@ pub(crate) mod status_code {
     use super::HttpStatusCode;
 
     pub(crate) const SWITCHING_PROTOCOLS: HttpStatusCode = HttpStatusCode::constant(101);
+    /// Deliberately outside `common_status_codes!`: 103 is never a final
+    /// status and never an HTTP/1 response line, so it has no entry there.
+    pub(crate) const EARLY_HINTS: HttpStatusCode = HttpStatusCode::constant(103);
     pub(crate) const OK: HttpStatusCode = HttpStatusCode::constant(200);
     pub(crate) const NO_CONTENT: HttpStatusCode = HttpStatusCode::constant(204);
     pub(crate) const PARTIAL_CONTENT: HttpStatusCode = HttpStatusCode::constant(206);
@@ -231,6 +234,25 @@ impl HttpStatusCode {
     /// metadata: notably, a 304 may carry the length a 200 would have sent.
     pub(crate) const fn forbids_content_length(self) -> bool {
         matches!(self.get(), 100..=199 | 204)
+    }
+}
+
+/// The `link` values of one `http.response.early_hint` message.
+///
+/// Carries no status and no `end_stream`: it can represent 103 and nothing
+/// else, so an early hint cannot terminate a stream or be mistaken for a final
+/// response anywhere it travels. Each value becomes one lowercase `link`
+/// field, which also makes arbitrary response headers unrepresentable here.
+#[derive(Debug, Default)]
+pub(crate) struct EarlyHintLinks(Vec<ResponseHeaderValue>);
+
+impl EarlyHintLinks {
+    pub(crate) const fn new(links: Vec<ResponseHeaderValue>) -> Self {
+        Self(links)
+    }
+
+    pub(crate) fn values(&self) -> &[ResponseHeaderValue] {
+        &self.0
     }
 }
 

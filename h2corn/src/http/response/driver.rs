@@ -133,6 +133,9 @@ fn handle_http_event_sync(
                 more_body,
             )
             .map(|()| HttpEventEffect::None),
+        bridge::HttpOutboundEvent::EarlyHint(links) => controller
+            .handle_early_hint(actions, links)
+            .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::PathSend { path } => Ok(HttpEventEffect::PathSend(path)),
         bridge::HttpOutboundEvent::Trailers {
             headers,
@@ -148,7 +151,6 @@ mod tests {
     use bytes::Bytes;
 
     use super::{apply_http_event, finalize_response};
-    use crate::log::ResponseLogState;
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
     use crate::error::H2CornError;
     use crate::http::header::ResponseConnectionDirective;
@@ -157,6 +159,7 @@ mod tests {
         ResponseController,
     };
     use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, status_code};
+    use crate::log::ResponseLogState;
 
     #[derive(Default)]
     struct RecordingTransport {
@@ -169,6 +172,7 @@ mod tests {
             action: ResponseAction,
         ) -> Result<(), H2CornError> {
             self.actions.push(match action {
+                ResponseAction::EarlyHint(_) => "early_hint",
                 ResponseAction::Final { body, .. } => match body {
                     FinalResponseBody::Empty => "final_empty",
                     FinalResponseBody::Bytes(_) => "final_bytes",

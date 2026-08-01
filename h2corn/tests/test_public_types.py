@@ -245,7 +245,11 @@ def test_published_typeddicts_have_the_declared_shape() -> None:
     }
     assert WebSocketScope.__optional_keys__ == {'root_path', 'client', 'state'}
     assert HTTPExtensions.__required_keys__ == {'http.response.pathsend'}
-    assert HTTPExtensions.__optional_keys__ == {'http.response.trailers', 'tls'}
+    assert HTTPExtensions.__optional_keys__ == {
+        'http.response.trailers',
+        'http.response.early_hint',
+        'tls',
+    }
     assert WebSocketDisconnect.__required_keys__ == {'type', 'code'}
     assert WebSocketDisconnect.__optional_keys__ == {'reason'}
     assert WebSocketExtensions.__required_keys__ == {'websocket.http.response'}

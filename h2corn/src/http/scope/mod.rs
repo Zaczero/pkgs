@@ -165,15 +165,29 @@ fn http_scope_extensions<'py>(
     // namespaced key here (`scope["extensions"]["application.private"]`), and a
     // shared dict would carry that write into every later request. Worth the
     // measured 525 instructions.
-    let extensions = if ctx.request.accepts_trailers() {
-        py_dict!(py, {
+    // Early hints are HTTP/2 only. RFC 8297 names interoperability and
+    // security risks with HTTP/1 clients that mishandle an interim response,
+    // and a pipelined peer that ignores one desynchronizes -- so the extension
+    // is not offered where it cannot be delivered safely. Each arm is spelled
+    // out so the dict is still sized once, as the note above requires.
+    let early_hints = ctx.request.http_version == HttpVersion::Http2;
+    let extensions = match (ctx.request.accepts_trailers(), early_hints) {
+        (true, true) => py_dict!(py, {
             "http.response.pathsend" => py_dict!(py, {}),
             "http.response.trailers" => py_dict!(py, {}),
-        })
-    } else {
-        py_dict!(py, {
+            "http.response.early_hint" => py_dict!(py, {}),
+        }),
+        (true, false) => py_dict!(py, {
             "http.response.pathsend" => py_dict!(py, {}),
-        })
+            "http.response.trailers" => py_dict!(py, {}),
+        }),
+        (false, true) => py_dict!(py, {
+            "http.response.pathsend" => py_dict!(py, {}),
+            "http.response.early_hint" => py_dict!(py, {}),
+        }),
+        (false, false) => py_dict!(py, {
+            "http.response.pathsend" => py_dict!(py, {}),
+        }),
     };
     add_tls_extension(py, ctx, &extensions)?;
     Ok(extensions)

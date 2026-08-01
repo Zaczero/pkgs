@@ -13,7 +13,7 @@ pub(super) use self::driver::{H2WriterHandle, WindowOverflow, WriterState, init_
 use crate::bridge::PayloadBytes;
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
 use crate::http::response::ResponseBytePermit;
-use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers};
+use crate::http::types::{EarlyHintLinks, HttpStatusCode, ResponseHeaders, ResponseTrailers};
 use crate::inline_fifo::InlineFifo;
 use crate::websocket::EncodedFrameHeader;
 
@@ -94,6 +94,12 @@ pub(super) enum WriterCommand {
         stream_id: StreamId,
         headers: ResponseTrailers,
     },
+    /// One interim 103 HEADERS block. No status and no `end_stream` field:
+    /// the status is fixed and an informational block may never end a stream.
+    SendEarlyHint {
+        stream_id: StreamId,
+        links: EarlyHintLinks,
+    },
     SendData {
         stream_id: StreamId,
         data: PayloadBytes,
@@ -139,6 +145,7 @@ impl WriterCommand {
             Self::SendHeaders { stream_id, .. }
             | Self::SendFinal { stream_id, .. }
             | Self::SendTrailers { stream_id, .. }
+            | Self::SendEarlyHint { stream_id, .. }
             | Self::SendData { stream_id, .. }
             | Self::SendWebSocketData { stream_id, .. }
             | Self::SendPath { stream_id, .. }

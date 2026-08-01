@@ -9,11 +9,12 @@ use crate::bridge::PayloadBytes;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::http::header::{
     ResponseConnectionDirective, ResponseHeaderScan, apply_default_response_headers_with_scan,
-    inspect_response_headers,
-    prepare_fixed_length_response_headers_with_scan,
+    inspect_response_headers, prepare_fixed_length_response_headers_with_scan,
     prepare_response_headers_without_content_length, prepare_streaming_response_headers_with_scan,
 };
-use crate::http::types::{FinalResponseStatus, HttpStatusCode, ResponseHeaders, ResponseTrailers};
+use crate::http::types::{
+    EarlyHintLinks, FinalResponseStatus, HttpStatusCode, ResponseHeaders, ResponseTrailers,
+};
 
 /// Connection-wide outbound-body capacity. A body keeps this credit from ASGI
 /// admission until its bytes leave the writer or its owning response is
@@ -339,6 +340,9 @@ pub(crate) enum ResponseAction {
     },
     Finish,
     FinishWithTrailers(ResponseTrailers),
+    /// An interim 103 block. Deliberately carries no status and no
+    /// `end_stream`: it cannot terminate a stream or become a final response.
+    EarlyHint(EarlyHintLinks),
     InternalError,
     AbortIncomplete,
 }
