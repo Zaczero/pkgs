@@ -175,8 +175,37 @@ class _BorrowedListener:
             os.close(sock.detach())
 
 
+@dataclass(slots=True)
+class _InheritedListener:
+    """A descriptor a supervisor already transferred to this worker.
+
+    Deliberately *not* wrapped in a `socket.socket`. `O_NONBLOCK` lives on the
+    open file description, which every forked worker shares, and PyPy's
+    `socket.socket(fileno=fd)` clears it -- so a worker still in lifespan
+    startup would silently make `accept` blocking for its siblings that are
+    already serving, parking their runtime threads in `accept(2)`. Holding the
+    bare descriptor keeps that state unreachable rather than repairing it after
+    the fact, and saves a socket object per listener per worker start.
+    """
+
+    fd: int | None
+
+    def transfer(self) -> int:
+        fd = self.fd
+        if fd is None:
+            raise RuntimeError('listener already transferred')
+        self.fd = None
+        return fd
+
+    def release(self) -> None:
+        fd = self.fd
+        self.fd = None
+        if fd is not None:
+            os.close(fd)
+
+
 # Spec writes `type ListenerLease = ...` (PEP 695 / 3.12+); floor is 3.11.
-ListenerLease = _CreatedListener | _BorrowedListener
+ListenerLease = _CreatedListener | _BorrowedListener | _InheritedListener
 
 
 def _build_unix_listener(
@@ -242,6 +271,11 @@ def _adopt_listener(fd: int) -> _BorrowedListener:
         os.close(duplicated_fd)
         raise
     listener = _BorrowedListener(socket=sock)
+    # `os.dup` shares the open file description with the caller's descriptor,
+    # and wrapping it can clear `O_NONBLOCK` on that shared description. Restore
+    # it before anything can fail: a validation error below must not leave the
+    # embedding caller's own listener blocking.
+    sock.setblocking(False)
     try:
         if sock.type != socket.SOCK_STREAM:
             raise ValueError(f'fd://{fd} is not a stream socket')
@@ -253,7 +287,6 @@ def _adopt_listener(fd: int) -> _BorrowedListener:
     except BaseException:
         listener.release()
         raise
-    sock.setblocking(False)
     return listener
 
 
@@ -320,26 +353,13 @@ def _build_tcp_listener(host: str, port: int, config: Config) -> _CreatedListene
     raise OSError(f'could not bind {host}:{port}: {last_error}') from last_error
 
 
-def lease_owned_fds(fds: Sequence[int]) -> tuple[_CreatedListener, ...]:
+def lease_owned_fds(fds: Sequence[int]) -> tuple[_InheritedListener, ...]:
     """Lease fds a supervisor already transferred to this worker.
 
     These descriptors are this process's responsibility from entry, unlike
     ``fd://`` descriptors supplied by an embedding caller.
     """
-    leases: list[_CreatedListener] = []
-    pending: _CreatedListener | None = None
-    try:
-        for fd in fds:
-            pending = _CreatedListener(socket=socket.socket(fileno=fd), path=None)
-            leases.append(pending)
-            pending = None
-    except BaseException:
-        if pending is not None:
-            pending.release()
-        for lease in reversed(leases):
-            lease.release()
-        raise
-    return tuple(leases)
+    return tuple(_InheritedListener(fd=fd) for fd in fds)
 
 
 def _build_sockets(

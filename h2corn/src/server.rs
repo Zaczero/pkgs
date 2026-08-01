@@ -296,18 +296,35 @@ pub(crate) async fn serve_from_fds(
 #[cfg(unix)]
 fn adopt_unix_listener(fd: ListenerFd) -> io::Result<UnixListener> {
     let listener = StdUnixListener::from(fd);
+    // Tokio requires a non-blocking listener, and `serve_fds` accepts
+    // descriptors from an embedding host, so establish that here rather than
+    // trusting what we were handed. A blocking listener parks the runtime
+    // thread in `accept`, and shutdown, quiesce and request cancellation all
+    // stop being polled.
+    //
+    // This is a backstop, not the guarantee: `O_NONBLOCK` belongs to the open
+    // file description, which every process holding a copy shares, so a sibling
+    // can still clear it after we adopt. Keeping it unbroken is `_socket.py`'s
+    // job -- see `_InheritedListener`. One fcntl at startup, nothing per request.
+    listener.set_nonblocking(true)?;
     UnixListener::from_std(listener)
 }
 
 #[cfg(windows)]
 fn adopt_tcp_listener(fd: ListenerFd) -> io::Result<TcpListener> {
     let listener = StdTcpListener::from(fd);
+    // See `adopt_unix_listener`: a backstop for a requirement that is ours to
+    // establish, not the caller's to have satisfied.
+    listener.set_nonblocking(true)?;
     TcpListener::from_std(listener)
 }
 
 #[cfg(unix)]
 fn adopt_tcp_listener(fd: ListenerFd) -> io::Result<TcpListener> {
     let listener = StdTcpListener::from(fd);
+    // See `adopt_unix_listener`: a backstop for a requirement that is ours to
+    // establish, not the caller's to have satisfied.
+    listener.set_nonblocking(true)?;
     TcpListener::from_std(listener)
 }
 
