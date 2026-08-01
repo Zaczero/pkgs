@@ -407,3 +407,56 @@ async def test_receive_after_body_eof_waits_for_a_real_disconnect(
         'a receive() after body EOF reported '
         f'{second["type"]} while the peer was still connected'
     )
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+async def test_split_cookie_lines_reach_the_application_as_one_field(
+    protocol: str,
+) -> None:
+    """
+    RFC 9113 section 8.2.3 requires multiple HTTP/2 ``cookie`` field lines to be
+    rejoined with ``"; "`` before the request reaches a generic HTTP
+    application.
+
+    Browsers split ``cookie`` per pair over HTTP/2 to get HPACK reuse, so
+    without the rejoin an application that resolves a header by first match --
+    ``Request.cookies`` in Starlette does -- saw one cookie over HTTP/2 and all
+    of them over HTTP/1.1, from the same browser.  This asserts the two
+    protocols agree, which is the property the rejoin exists for.
+    """
+    seen: list[bytes] = []
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        seen.extend(value for name, value in scope['headers'] if name == b'cookie')
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, _config()) as server:
+        if protocol == 'h1':
+            # HTTP/1.1 has no reason to split, and this is the reference the
+            # HTTP/2 case has to match.
+            request = (
+                b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
+                b'Cookie: a=1; b=2; c=3\r\n\r\n'
+            )
+            await asyncio.wait_for(
+                http1_request(port=server_port(server), request=request), timeout=10
+            )
+        else:
+            await asyncio.wait_for(
+                h2_request(
+                    port=server_port(server),
+                    extra_headers=[
+                        (b'cookie', b'a=1'),
+                        (b'cookie', b'b=2'),
+                        (b'cookie', b'c=3'),
+                    ],
+                ),
+                timeout=10,
+            )
+
+    assert seen == [b'a=1; b=2; c=3'], (
+        f'{protocol} delivered {seen!r}; every protocol must deliver one joined cookie'
+    )

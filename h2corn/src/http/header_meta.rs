@@ -107,6 +107,21 @@ impl RequestHeaderMeta {
         }
     }
 
+    /// Record a declared body length, rejecting a second, different one.
+    ///
+    /// RFC 9112 6.3 rule 5 and RFC 9113 8.1.1 state the same rule for both
+    /// protocols, so it lives on the type that owns the field; each protocol
+    /// maps the unit error to its own wire error.
+    pub(crate) const fn try_set_content_length(&mut self, content_length: u64) -> Result<(), ()> {
+        if let Some(existing) = self.content_length()
+            && existing != content_length
+        {
+            return Err(());
+        }
+        self.set_content_length(Some(content_length));
+        Ok(())
+    }
+
     pub(crate) const fn set_content_length(&mut self, content_length: Option<u64>) {
         if let Some(content_length) = content_length {
             self.content_length = content_length;

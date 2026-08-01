@@ -19,6 +19,9 @@ use crate::http::types::{
     RequestTarget, parse_request_method, status_code,
 };
 
+/// The two octets RFC 9113 8.2.3 names for rejoining split `cookie` lines.
+const COOKIE_LINE_SEPARATOR: &[u8] = b"; ";
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HeaderLimits {
     pub(super) max_list_size: Option<NonZeroUsize>,
@@ -160,11 +163,26 @@ struct RequestHeadBuilder {
     regular_headers: Vec<(RequestHeaderName, RequestHeaderValue)>,
     section: HeaderSection,
     host_header_index: Option<usize>,
+    cookie: Option<CookieMerge>,
     budget: HeaderBudget,
     header_meta: RequestHeaderMeta,
     /// When true (TLS), force `:scheme` to `https`; plaintext keeps the peer value.
     force_https: bool,
     collect_proxy_headers: bool,
+}
+
+/// Where the request's `cookie` value is being assembled.
+///
+/// A client may split `cookie` across field lines for HPACK efficiency, and
+/// RFC 9113 8.2.3 requires the pieces to be rejoined before the request
+/// reaches a generic HTTP application. Rejoining in place keeps every
+/// recorded header index valid, which removing the extra lines would not.
+struct CookieMerge {
+    /// The slot holding the first `cookie` line, and the joined value's home.
+    index: usize,
+    /// Stays `None` until a second line arrives, so the overwhelmingly common
+    /// single-`cookie` request allocates nothing and copies nothing.
+    joined: Option<BytesMut>,
 }
 
 /// A regular HTTP/2 field after the syntax shared by request heads and
@@ -195,6 +213,7 @@ impl RequestHeadBuilder {
             regular_headers: Vec::with_capacity(16),
             section: HeaderSection::default(),
             host_header_index: None,
+            cookie: None,
             budget: HeaderBudget::new(limits),
             header_meta: RequestHeaderMeta::default(),
             force_https,
@@ -311,14 +330,38 @@ impl RequestHeadBuilder {
             Some(KnownRequestHeaderName::ContentLength) => {
                 let parsed = parse_content_length_header(value_bytes)
                     .ok_or(H2Error::InvalidRequestContentLength)?;
-                if self
-                    .header_meta
-                    .content_length()
-                    .is_some_and(|existing| existing != parsed)
-                {
-                    return Err(H2Error::ConflictingRequestContentLength);
+                self.header_meta
+                    .try_set_content_length(parsed)
+                    .map_err(|()| H2Error::ConflictingRequestContentLength)?;
+            },
+            // RFC 9113 8.2.3: multiple `cookie` field lines MUST reach the
+            // application as one `"; "`-joined value. Without this, anything
+            // that resolves a header by first match — Starlette's
+            // `Request.cookies` does — sees a single cookie over HTTP/2 and
+            // every cookie over HTTP/1.1, from the same browser.
+            //
+            // Appending to an accumulator rather than re-joining the pair each
+            // time keeps this linear: `limit_request_fields` documents 0 as
+            // "no limit", so the number of lines is peer-controlled.
+            Some(KnownRequestHeaderName::Cookie) => {
+                if let Some(merge) = self.cookie.take() {
+                    let index = merge.index;
+                    let mut joined = match merge.joined {
+                        Some(joined) => joined,
+                        None => BytesMut::from(self.regular_headers[index].1.as_bytes()),
+                    };
+                    joined.extend_from_slice(COOKIE_LINE_SEPARATOR);
+                    joined.extend_from_slice(value_bytes);
+                    self.cookie = Some(CookieMerge {
+                        index,
+                        joined: Some(joined),
+                    });
+                    return Ok(());
                 }
-                self.header_meta.set_content_length(Some(parsed));
+                self.cookie = Some(CookieMerge {
+                    index: self.regular_headers.len(),
+                    joined: None,
+                });
             },
             _ => {},
         }
@@ -342,8 +385,21 @@ impl RequestHeadBuilder {
         Ok(())
     }
 
+    /// Write the joined `cookie` value back into the slot its first line took.
+    fn settle_cookie(&mut self) {
+        if let Some(CookieMerge {
+            index,
+            joined: Some(joined),
+        }) = self.cookie.take()
+        {
+            self.regular_headers[index].1 = RequestHeaderValue::from_h2_validated(joined.freeze());
+        }
+    }
+
     fn finish(mut self) -> Result<RequestHead, H2Error> {
         let method = self.method.take().ok_or(H2Error::MissingRequestMethod)?;
+
+        self.settle_cookie();
 
         // RFC 9113 8.3.1: a Host header that disagrees with :authority makes
         // the request malformed. This runs before the target below takes the
@@ -652,6 +708,7 @@ mod tests {
     use crate::error::H2Error;
     use crate::h2_frame::ErrorCode;
     use crate::hpack::{DecodeBlockError, Decoder, DecoderError, Encoder, HpackField};
+    use crate::http::header_meta::ProxyHeaderSlots;
     use crate::http::types::{KnownRequestHeaderName, RequestHeaderNameRef, status_code};
 
     fn encode_request_block(headers: &[(&[u8], &[u8])]) -> Bytes {
@@ -730,6 +787,92 @@ mod tests {
             RequestHeaderNameRef::Known(KnownRequestHeaderName::Host)
         );
         assert_eq!(host.value(), b"example.com");
+    }
+
+    #[test]
+    fn split_cookie_lines_are_rejoined_into_one_field() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"cookie", b"a=1"),
+            (b"cookie", b"b=2"),
+            (b"cookie", b"c=3"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, false)
+            .expect("valid HTTP/2 request should decode");
+
+        let cookies: Vec<&[u8]> = request
+            .headers
+            .iter()
+            .filter(|header| {
+                header.name() == RequestHeaderNameRef::Known(KnownRequestHeaderName::Cookie)
+            })
+            .map(crate::http::types::RequestHeaderRef::value)
+            .collect();
+        assert_eq!(cookies, vec![b"a=1; b=2; c=3".as_slice()]);
+    }
+
+    #[test]
+    fn a_single_cookie_line_is_untouched() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"cookie", b"a=1; b=2"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, false)
+            .expect("valid HTTP/2 request should decode");
+
+        let cookie = request
+            .headers
+            .iter()
+            .find(|header| {
+                header.name() == RequestHeaderNameRef::Known(KnownRequestHeaderName::Cookie)
+            })
+            .expect("the cookie header survives");
+        assert_eq!(cookie.value(), b"a=1; b=2");
+    }
+
+    /// Rejoining happens in the first `cookie` slot precisely so that the
+    /// one-based indices recorded for proxy headers keep pointing at the field
+    /// they were recorded for. Removing the extra lines would shift them.
+    #[test]
+    fn rejoining_cookies_leaves_later_recorded_header_indices_valid() {
+        let block = encode_request_block(&[
+            (b":method", b"GET"),
+            (b":scheme", b"http"),
+            (b":authority", b"example.com"),
+            (b":path", b"/"),
+            (b"cookie", b"a=1"),
+            (b"cookie", b"b=2"),
+            (b"x-forwarded-for", b"198.51.100.9"),
+        ]);
+
+        let mut decoder = Decoder::new(4096);
+        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, true)
+            .expect("valid HTTP/2 request should decode");
+
+        let slots = request
+            .header_meta
+            .proxy_headers()
+            .expect("the forwarded slot was recorded");
+        let index = ProxyHeaderSlots::index(slots.x_forwarded_for)
+            .expect("x-forwarded-for was recorded");
+        assert_eq!(
+            request
+                .headers
+                .get(index)
+                .expect("the recorded index resolves")
+                .value(),
+            b"198.51.100.9"
+        );
     }
 
     #[test]
