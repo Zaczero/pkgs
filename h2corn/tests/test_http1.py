@@ -1,6 +1,7 @@
 import asyncio
 import importlib.metadata
 import os
+import socket
 from contextlib import suppress
 from pathlib import Path
 
@@ -1499,9 +1500,11 @@ async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_repa
     None
 ):
     seen = []
+    app_started = asyncio.Event()
 
     async def app(scope, receive, send):
         seen.append((scope['method'], scope['path']))
+        app_started.set()
         await read_http_request_body(receive)
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': scope['path'].encode()})
@@ -1514,6 +1517,16 @@ async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_repa
                 (
                     f'POST /first HTTP/1.1\r\nHost: 127.0.0.1:{server_port(server)}\r\n'
                     'Transfer-Encoding: chunked\r\n\r\n'
+                ).encode()
+            )
+            await writer.drain()
+            # Wait for the application to own the request before the oversized
+            # chunk arrives. Without this the rejection races the app task's
+            # first step, which only wins on interpreters that start tasks
+            # eagerly (CPython >= 3.12) -- see `eager` in src/pyloop/mod.rs.
+            await asyncio.wait_for(app_started.wait(), timeout=5)
+            writer.write(
+                (
                     '2a\r\n'
                     f'GET /smuggled HTTP/1.1\r\nHost: 127.0.0.1:{server_port(server)}\r\n\r\n'
                     '0\r\n\r\n'
@@ -1708,27 +1721,55 @@ async def test_rolling_pathsend_eof_closes_http1_connection(tmp_path: Path) -> N
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.pathsend', 'path': str(file_path)})
 
-    async with running_server(app, Config(port=0, lifespan='off')) as server:
-        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
-        try:
-            writer.write(b'GET / HTTP/1.1\r\nHost: x\r\n\r\n')
-            await writer.drain()
-            head = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), timeout=5)
-            assert b'content-length: 921600\r\n' in head.lower()
+    loop = asyncio.get_running_loop()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    with listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Accepted sockets inherit this. Without it the server can push the
+        # whole 900 KiB into its own send buffer before the truncation lands,
+        # and then the connection is legitimately reused -- the test would be
+        # racing h2corn's I/O threads rather than testing short-file teardown.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(16)
+        config = Config(bind=(f'fd://{listener.fileno()}',), lifespan='off')
+        port = listener.getsockname()[1]
 
-            # The response has been admitted with the old length.  Truncate
-            # only after its headers prove that admission happened.
-            os.truncate(file_path, 0)
-            writer.write(
-                b'GET /second HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'
-            )
-            await writer.drain()
+        async with running_server(app, config):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setblocking(False)
             try:
-                remainder = await asyncio.wait_for(reader.read(), timeout=5)
-            except ConnectionResetError:
+                await loop.sock_connect(sock, ('127.0.0.1', port))
+                await loop.sock_sendall(sock, b'GET / HTTP/1.1\r\nHost: x\r\n\r\n')
+                # Read the head one byte at a time on a raw socket. A stream
+                # transport would keep draining the body in the background
+                # whenever the loop turns, which is the other half of the race.
+                head = b''
+                while not head.endswith(b'\r\n\r\n'):
+                    chunk = await asyncio.wait_for(loop.sock_recv(sock, 1), timeout=5)
+                    assert chunk, 'server closed before the response head'
+                    head += chunk
+                assert b'content-length: 921600\r\n' in head.lower()
+
+                # The response has been admitted with the old length.  Truncate
+                # only after its headers prove that admission happened.
+                os.truncate(file_path, 0)
+                await loop.sock_sendall(
+                    sock, b'GET /second HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'
+                )
                 remainder = b''
-        finally:
-            writer.close()
+                try:
+                    while True:
+                        chunk = await asyncio.wait_for(
+                            loop.sock_recv(sock, 65536), timeout=5
+                        )
+                        if not chunk:
+                            break
+                        remainder += chunk
+                except ConnectionResetError:
+                    pass
+            finally:
+                sock.close()
 
     assert b'HTTP/1.1 200 OK' not in remainder
     assert b'SECOND-MARKER' not in remainder
