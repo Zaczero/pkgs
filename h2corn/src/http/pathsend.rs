@@ -137,6 +137,17 @@ struct PathReadResult {
     read: io::Result<usize>,
 }
 
+/// Read at an explicit offset without disturbing the handle's position.
+#[cfg(unix)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+}
+
 impl PathStreamer {
     pub(crate) const fn new(file: File, len: usize, end_stream: bool) -> Self {
         Self {
@@ -149,12 +160,18 @@ impl PathStreamer {
 
     pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
         debug_assert!(self.cursor.buffered.is_empty());
-        if let Some((mut file, buffer)) = self.read.take_ready() {
+        if let Some((file, buffer)) = self.read.take_ready() {
             let mut buffer =
                 buffer.unwrap_or_else(|| vec![0; PATHSEND_READ_BUFFER_SIZE].into_boxed_slice());
             let read_len = buffer.len().min(self.cursor.unread_file_len);
+            // Positional, like the sendfile path beside it, which already
+            // takes an explicit offset. The cursor is the single source of
+            // truth for where the transfer is, so the handle's own position is
+            // never read and never moved -- the two paths cannot disagree, and
+            // neither depends on holding an exclusive handle.
+            let offset = self.cursor.file_offset;
             self.read = PathReadState::Reading(spawn_blocking(move || {
-                let read = file.read(&mut buffer[..read_len]);
+                let read = read_at(&file, &mut buffer[..read_len], offset);
                 PathReadResult { file, buffer, read }
             }));
         }
