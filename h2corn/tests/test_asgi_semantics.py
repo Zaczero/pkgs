@@ -460,3 +460,59 @@ async def test_split_cookie_lines_reach_the_application_as_one_field(
     assert seen == [b'a=1; b=2; c=3'], (
         f'{protocol} delivered {seen!r}; every protocol must deliver one joined cookie'
     )
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+@pytest.mark.parametrize('body', [b'', b'payload'], ids=['no-body', 'single-body'])
+async def test_receive_reports_disconnect_once_the_response_is_complete(
+    protocol: str, body: bytes
+) -> None:
+    """
+    The other half of the disconnect contract.
+
+    Its sibling above pins that `http.disconnect` is *not* delivered at request
+    body EOF.  Nothing pinned that it is delivered at all, so a waiter that was
+    registered and never run would have looked exactly like correct behaviour:
+    the pending assertion stays true forever.
+    """
+    seen: dict[str, str] = {}
+
+    async def app(scope, receive, send):
+        if scope['type'] != 'http':
+            return
+        while True:
+            message = await receive()
+            if not message.get('more_body', False):
+                break
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+        try:
+            event = await asyncio.wait_for(receive(), timeout=5)
+            seen['type'] = event['type']
+        except TimeoutError:
+            seen['type'] = 'never-arrived'
+
+    async with running_server(app, _config()) as server:
+        if protocol == 'h1':
+            request = (
+                b'POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
+                b'Content-Length: %d\r\n\r\n%s' % (len(body), body)
+                if body
+                else b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'
+            )
+            await asyncio.wait_for(
+                http1_request(port=server_port(server), request=request), timeout=10
+            )
+        else:
+            await asyncio.wait_for(
+                h2_request(port=server_port(server), body=body), timeout=10
+            )
+        # The app resolves its second receive() after the response completes.
+        for _ in range(100):
+            if seen:
+                break
+            await asyncio.sleep(0.05)
+
+    assert seen.get('type') == 'http.disconnect', (
+        f'the completed response reported {seen.get("type")!r}'
+    )

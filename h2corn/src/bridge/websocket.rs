@@ -417,7 +417,7 @@ impl PyWebSocketReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         receive_or_await(
             py,
-            Arc::clone(&self.shard),
+            &self.shard,
             &self.state,
             build_websocket_inbound_event,
         )
@@ -482,7 +482,7 @@ impl PyWebSocketSend {
         match self.state.push_or_forward(event) {
             WebSocketSendDisposition::Buffered => Ok(ready_none(py, &self.shard)),
             WebSocketSendDisposition::Forward(event) => {
-                super::try_send_or_await(py, Arc::clone(&self.shard), &self.tx, event)
+                super::try_send_or_await(py, &self.shard, &self.tx, event)
             },
             WebSocketSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }

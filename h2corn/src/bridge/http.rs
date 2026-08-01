@@ -14,7 +14,7 @@ use super::{
 };
 use crate::error::{AsgiError, IntoPyResult as _, into_pyerr};
 use crate::http::app::{HttpSendDisposition, HttpSendState};
-use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future, runtime};
+use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future};
 use crate::runtime::StreamInput;
 
 #[derive(Debug)]
@@ -391,7 +391,7 @@ impl PyHttpReceive {
             HttpReceiveKind::Stream(state) => {
                 return receive_or_await(
                     py,
-                    Arc::clone(&self.shard),
+                    &self.shard,
                     state,
                     build_http_inbound_event,
                 );
@@ -450,9 +450,13 @@ fn disconnect_when_finished<'py>(
     let fut = new_rust_future(py, Arc::clone(shard))?;
     let waiter_fut = fut.clone_ref(py);
     let waiter_shard = Arc::clone(shard);
-    let finished = finished.clone();
-    let join = runtime().spawn(async move {
-        finished.wait_request_finished().await;
+    // Registered rather than awaited in a spawned task: the response driver
+    // already knows when the request finished, so watching for it cost a tokio
+    // task, a boxed future and a state clone per request -- on every request,
+    // because frameworks that expose disconnection call `receive()` a second
+    // time as a matter of course. A cancelled awaitable needs no abort handle
+    // here; `RustFuture::resolve` requeues and returns for a cancelled state.
+    finished.on_request_finished(move || {
         waiter_shard.push(PumpEvent::Resolve {
             fut: waiter_fut,
             payload: ResolvePayload::Simple(Box::new(|py| {
@@ -460,6 +464,5 @@ fn disconnect_when_finished<'py>(
             })),
         });
     });
-    fut.get().set_abort(join.abort_handle());
     Ok(fut.into_bound(py).into_any())
 }

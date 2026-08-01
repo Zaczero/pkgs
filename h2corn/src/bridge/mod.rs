@@ -676,7 +676,7 @@ pub(crate) fn ready_none<'py>(py: Python<'py>, shard: &Shard) -> Bound<'py, PyAn
 )]
 pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
-    shard: Shard,
+    shard: &Shard,
     state: &Arc<Mutex<Requeueable<S>>>,
     build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>>
@@ -703,9 +703,9 @@ where
     // Two references are intentional: Python owns the returned awaitable
     // while the pump owns its resolver until completion. Neither can be
     // dropped after the clone, so Clippy's merge suggestion is invalid here.
-    let fut = new_rust_future(py, Arc::clone(&shard))?;
+    let fut = new_rust_future(py, Arc::clone(shard))?;
     let waiter_fut = fut.clone_ref(py);
-    let waiter_shard = shard;
+    let waiter_shard = Arc::clone(shard);
     let state = Arc::clone(state);
     let join = runtime().spawn(async move {
         let mut guard = state.lock_owned().await;
@@ -1065,86 +1065,76 @@ where
 
 pub(crate) fn try_send_or_await<'py, T: Send + 'static>(
     py: Python<'py>,
-    shard: Shard,
+    shard: &Shard,
     tx: &mpsc::Sender<T>,
     event: T,
 ) -> PyResult<Bound<'py, PyAny>> {
     match try_push(tx, event) {
-        TryPush::Sent => Ok(ready_none(py, &shard)),
-        TryPush::Full(event) => send_after_full(py, shard, tx.clone(), event),
+        // The uncontended send never needs an owned handle; only the
+        // backpressure arm, which spawns, does.
+        TryPush::Sent => Ok(ready_none(py, shard)),
+        TryPush::Full(event) => send_after_full(py, Arc::clone(shard), tx.clone(), event),
         TryPush::Closed(_) => Err(into_pyerr(AsgiError::SendAfterClose)),
     }
+}
+
+/// Resolve a Python awaitable from an asynchronous send that reports whether
+/// the event was enqueued.
+///
+/// Cancellation aborts the waiter; an aborted send never enqueues, so the
+/// message is consistently "not sent". The two `Py` references are
+/// intentional: Python owns the returned awaitable while the pump owns its
+/// resolver until completion, and neither can be dropped after the clone --
+/// which is why Clippy's merge suggestion does not apply.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the returned awaitable and pump resolver require independent Py references"
+)]
+fn await_send_result<F>(py: Python<'_>, shard: Shard, deliver: F) -> PyResult<Bound<'_, PyAny>>
+where
+    F: Future<Output = bool> + Send + 'static,
+{
+    let fut = new_rust_future(py, Arc::clone(&shard))?;
+    let waiter_fut = fut.clone_ref(py);
+    let waiter_shard = shard;
+    let join = runtime().spawn(async move {
+        let sent = deliver.await;
+        let payload = ResolvePayload::Simple(Box::new(move |py| {
+            if sent {
+                Ok(py.None())
+            } else {
+                Err(into_pyerr(AsgiError::SendAfterClose))
+            }
+        }));
+        waiter_shard.push(PumpEvent::Resolve {
+            fut: waiter_fut,
+            payload,
+        });
+    });
+    fut.get().set_abort(join.abort_handle());
+    Ok(fut.into_bound(py).into_any())
 }
 
 /// Install a waiter after a bounded channel has already reported full.
 /// Taking the sender by value makes the refcount transition explicit and
 /// keeps clones out of the uncontended path.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the returned awaitable and pump resolver require independent Py references"
-)]
 pub(crate) fn send_after_full<T: Send + 'static>(
     py: Python<'_>,
     shard: Shard,
     tx: mpsc::Sender<T>,
     event: T,
 ) -> PyResult<Bound<'_, PyAny>> {
-    // Cancellation aborts the waiter; an aborted `send` never enqueues, so the
-    // message is consistently "not sent".
-    // Two references are intentional: Python owns the returned awaitable
-    // while the pump owns its resolver until completion. Neither can be
-    // dropped after the clone, so Clippy's merge suggestion is invalid here.
-    let fut = new_rust_future(py, Arc::clone(&shard))?;
-    let waiter_fut = fut.clone_ref(py);
-    let waiter_shard = shard;
-    let join = runtime().spawn(async move {
-        let sent = tx.send(event).await.is_ok();
-        let payload = ResolvePayload::Simple(Box::new(move |py| {
-            if sent {
-                Ok(py.None())
-            } else {
-                Err(into_pyerr(AsgiError::SendAfterClose))
-            }
-        }));
-        waiter_shard.push(PumpEvent::Resolve {
-            fut: waiter_fut,
-            payload,
-        });
-    });
-    fut.get().set_abort(join.abort_handle());
-    Ok(fut.into_bound(py).into_any())
+    await_send_result(py, shard, async move { tx.send(event).await.is_ok() })
 }
 
 /// Resolve an HTTP ASGI send after its connection-wide byte credit and event
 /// queue slot are both admitted. Cancellation drops any acquired credit.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the returned awaitable and pump resolver require independent Py references"
-)]
 pub(crate) fn await_http_send(
     py: Python<'_>,
     shard: Shard,
     waiter: HttpSendWaiter,
 ) -> PyResult<Bound<'_, PyAny>> {
-    let fut = new_rust_future(py, Arc::clone(&shard))?;
-    let waiter_fut = fut.clone_ref(py);
-    let waiter_shard = shard;
-    let join = runtime().spawn(async move {
-        let sent = waiter.send().await;
-        let payload = ResolvePayload::Simple(Box::new(move |py| {
-            if sent {
-                Ok(py.None())
-            } else {
-                Err(into_pyerr(AsgiError::SendAfterClose))
-            }
-        }));
-        waiter_shard.push(PumpEvent::Resolve {
-            fut: waiter_fut,
-            payload,
-        });
-    });
-    fut.get().set_abort(join.abort_handle());
-    Ok(fut.into_bound(py).into_any())
+    await_send_result(py, shard, async move { waiter.send().await })
 }
 
 pub(crate) fn parse_http_outbound_event(

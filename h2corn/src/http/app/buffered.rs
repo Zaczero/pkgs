@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 use crate::async_util::{TryPush, try_push};
+use smallvec::SmallVec;
+
 use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent};
 use crate::buffered_events::BufferedState;
 use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
@@ -18,9 +20,14 @@ enum HttpSendMode {
     Closed,
 }
 
+/// Run once when the request finishes. Opaque so this layer stays free of
+/// Python types; the bridge registers one that resolves an awaitable.
+type FinishedWaiter = Box<dyn FnOnce() + Send>;
+
 struct HttpSendControl {
     mode: HttpSendMode,
     close_signal: Option<watch::Sender<()>>,
+    finished_waiters: SmallVec<[FinishedWaiter; 1]>,
 }
 
 /// An ASGI event that has already paid its connection-wide body credit. The
@@ -125,6 +132,7 @@ impl HttpSendState {
         let shared = Arc::new(BufferedState::new(HttpSendControl {
             mode: HttpSendMode::Inline { accepted: 0 },
             close_signal: None,
+            finished_waiters: SmallVec::new(),
         }));
         let buffer = HttpSendBuffer {
             shared: Arc::clone(&shared),
@@ -154,19 +162,14 @@ impl HttpSendState {
     /// body* is a different event and does not belong here: a bodyless GET
     /// whose application calls `receive()` a second time is watching for the
     /// peer to leave, and answering immediately told it the peer had.
-    pub(crate) async fn wait_request_finished(&self) {
-        let mut closed = {
-            let mut inner = self.shared.lock();
-            if matches!(inner.state.mode, HttpSendMode::Closed) {
-                return;
-            }
-            inner
-                .state
-                .close_signal
-                .get_or_insert_with(|| watch::channel(()).0)
-                .subscribe()
-        };
-        let _ = closed.changed().await;
+    pub(crate) fn on_request_finished(&self, waiter: impl FnOnce() + Send + 'static) {
+        let mut inner = self.shared.lock();
+        if matches!(inner.state.mode, HttpSendMode::Closed) {
+            drop(inner);
+            waiter();
+            return;
+        }
+        inner.state.finished_waiters.push(Box::new(waiter));
     }
 
     fn try_admit(
@@ -298,6 +301,7 @@ impl HttpSendBuffer {
         let mut inner = self.shared.lock();
         let state = std::mem::replace(&mut inner.state.mode, HttpSendMode::Closed);
         let close_signal = inner.state.close_signal.take();
+        let finished_waiters = std::mem::take(&mut inner.state.finished_waiters);
         if let HttpSendMode::Streaming { rx, .. } = state
             && self.stream_rx.is_none()
         {
@@ -309,6 +313,9 @@ impl HttpSendBuffer {
         }
         if let Some(close_signal) = close_signal {
             close_signal.send_replace(());
+        }
+        for waiter in finished_waiters {
+            waiter();
         }
         self.shared.notify_ready();
     }
