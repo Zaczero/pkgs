@@ -140,7 +140,7 @@ async fn drive_connection<R, W>(
     mut buffer: BytesMut,
     writer: W,
     connection: ConnectionContext,
-    mut shutdown: watch::Receiver<ShutdownState>,
+    shutdown: watch::Receiver<ShutdownState>,
 ) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -148,6 +148,16 @@ where
 {
     let mut writer = BufWriter::with_capacity(H1_WRITER_BUFFER_CAPACITY, writer);
     let mut first_request = true;
+    // Armed once per connection rather than once per request. Constructing
+    // `changed()` inside the select registers a waiter on one of tokio's
+    // sharded watch `Notify`s and deregisters it on drop -- two acquisitions
+    // of a process-wide lock per keep-alive request, whose cost grows with
+    // core count. The future is only re-armed after it actually fires.
+    // A second handle, because holding the future borrows its receiver for the
+    // future's whole life. Cloning preserves the seen-version, so the two
+    // observe exactly the same edges.
+    let mut shutdown_signal = shutdown.clone();
+    let mut shutdown_changed = Box::pin(shutdown_signal.changed());
 
     loop {
         if shutdown.borrow().kind().is_some() {
@@ -155,10 +165,14 @@ where
         }
 
         let parsed = tokio::select! {
-            changed = shutdown.changed() => {
+            changed = &mut shutdown_changed => {
                 if changed.is_ok() && shutdown.borrow().kind().is_some() {
                     break;
                 }
+                // Dropping first ends the receiver borrow the old future
+                // held, so the replacement can take a fresh one.
+                drop(shutdown_changed);
+                shutdown_changed = Box::pin(shutdown_signal.changed());
                 continue;
             }
             parsed = read_request(
@@ -184,6 +198,7 @@ where
             RequestRoute::Http(body_kind) => {
                 match handle_http_request(
                     RequestContext::new(Arc::clone(&connection), request),
+                    &connection.config,
                     body_kind,
                     persistence,
                     H1Io {
@@ -348,6 +363,11 @@ where
 
 async fn handle_http_request<R, W>(
     ctx: Box<RequestContext>,
+    // Borrowed from the connection task's own handle, which outlives every
+    // request on the connection. `ctx` is moved onward while the transport
+    // still needs the config, and cloning the `Arc` was the shortcut around
+    // that -- two atomics per request for a value that cannot go away.
+    config: &ServerConfig,
     body_kind: RequestBodyKind,
     persistence: ConnectionPersistence,
     io: H1Io<'_, R, W>,
@@ -361,11 +381,10 @@ where
         buffer,
         writer,
     } = io;
-    let config = Arc::clone(&ctx.connection.config);
     if let Err(rejection) = reject_before_launch(&ctx.request, config.max_request_body_size) {
         write_simple_response(
             writer,
-            &config,
+            config,
             rejection.status,
             rejection.headers,
             &[],
@@ -386,7 +405,7 @@ where
         return Ok(ConnectionPersistence::Close);
     };
     let mut transport =
-        H1HttpTransport::new(writer, &config, persistence == ConnectionPersistence::Close);
+        H1HttpTransport::new(writer, config, persistence == ConnectionPersistence::Close);
 
     let body_kind = match body_kind {
         RequestBodyKind::None => {
@@ -405,6 +424,7 @@ where
     };
     handle_streaming_http_request(
         ctx,
+        config,
         body_kind,
         persistence,
         config.access_log,
@@ -417,6 +437,7 @@ where
 
 async fn handle_streaming_http_request<R, W>(
     ctx: Box<RequestContext>,
+    config: &ServerConfig,
     body_kind: StreamedBodyKind,
     persistence: ConnectionPersistence,
     count_body_bytes: bool,
@@ -428,7 +449,6 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: WriteTarget,
 {
-    let config = Arc::clone(&ctx.connection.config);
     let H1BodyReadParts { reader, buffer } = read_parts;
     if let Some(body) = take_buffered_request_body(body_kind, buffer)? {
         let read_body_bytes = body.len() as u64;

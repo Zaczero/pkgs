@@ -2,7 +2,9 @@ mod forwarded;
 
 use std::borrow::Cow;
 
-pub(crate) use forwarded::{ScopeHost, default_scope_view, resolve_scope_view};
+pub(crate) use forwarded::{
+    ScopeHost, default_scope_view, resolve_scope_view, scope_view_with_defaults,
+};
 use http::Method;
 use memchr::memchr;
 use pyo3::intern;
@@ -89,12 +91,8 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     websocket_subprotocols: &[BytesStr],
 ) -> PyResult<Bound<'py, PyDict>> {
     let request = &ctx.request;
-    let view = resolve_scope_view(request, &ctx.connection.config, &ctx.connection.info);
-    let defaults = default_scope_view(
-        request.scheme_str(),
-        &ctx.connection.config,
-        &ctx.connection.info,
-    );
+    let (view, defaults) =
+        scope_view_with_defaults(request, &ctx.connection.config, &ctx.connection.info);
     let path_and_query = request.path_and_query().map_or("", BytesStr::as_str);
     let (raw_path, query) = path_and_query
         .split_once('?')

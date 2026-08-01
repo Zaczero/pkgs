@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+#[cfg(not(target_os = "linux"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
 
@@ -8,6 +9,8 @@ use bitflags::bitflags;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
+#[cfg(target_os = "linux")]
+use rustix::time::{ClockId, clock_gettime};
 
 use crate::ascii;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
@@ -562,6 +565,27 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
     scan.set_content_length(len);
 }
 
+/// Wall-clock seconds since the Unix epoch.
+///
+/// The date header distinguishes whole seconds and nothing finer, so on Linux
+/// this reads the coarse clock instead: `CLOCK_REALTIME_COARSE`
+/// is a plain load of the kernel's cached wall clock, where `CLOCK_REALTIME`
+/// additionally reads and scales a timestamp counter. The tick granularity is
+/// still finer than the value it feeds. Every response takes this reading.
+#[cfg(target_os = "linux")]
+fn unix_seconds() -> u64 {
+    let seconds = clock_gettime(ClockId::RealtimeCoarse).tv_sec;
+    u64::try_from(seconds).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn cached_date_value() -> Bytes {
     // Per-thread cache: each worker thread keeps its own `(unix_seconds, value)` so
     // every response is a refcount bump on a thread-owned `Bytes`. The previous
@@ -570,10 +594,7 @@ fn cached_date_value() -> Bytes {
     thread_local! {
         static CACHE: RefCell<(u64, Bytes)> = const { RefCell::new((0, Bytes::new())) };
     }
-    let unix_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let unix_seconds = unix_seconds();
     CACHE.with_borrow_mut(|(cached_seconds, cached_value)| {
         if *cached_seconds != unix_seconds || cached_value.is_empty() {
             *cached_value = format_http_date(unix_seconds);

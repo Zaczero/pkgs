@@ -229,10 +229,13 @@ where
             .pending_inbound
             .as_ref()
             .map(WebSocketInboundMessage::len);
-        let pending_tx = self.recv_tx.clone();
+        // Only the backpressure case needs the sender, so only it pays the
+        // refcount traffic; cloning unconditionally cost an atomic pair per
+        // message for a branch that is normally not taken.
+        let pending_waiter = pending_inbound_len.map(|len| (self.recv_tx.clone(), len));
         let pending_capacity = async move {
-            match pending_inbound_len {
-                Some(len) => pending_tx.acquire_bytes(len).await,
+            match pending_waiter {
+                Some((tx, len)) => tx.acquire_bytes(len).await,
                 None => pending::<Result<_, ()>>().await,
             }
         };

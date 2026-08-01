@@ -119,16 +119,23 @@ pub(crate) fn default_scope_view<'a>(
     }
 }
 
-pub(crate) fn resolve_scope_view<'a>(
+/// The request's scope view, and the connection defaults it started from.
+///
+/// Callers that need to know *whether* a field was overridden need both, and
+/// building the defaults separately meant constructing the same value twice
+/// per request -- for nothing on the common path, where no proxy is trusted
+/// and the two are equal by construction.
+pub(crate) fn scope_view_with_defaults<'a>(
     request: &'a RequestHead,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
-) -> ScopeView<'a> {
-    let mut view = default_scope_view(request.scheme_str(), config, info);
+) -> (ScopeView<'a>, ScopeView<'a>) {
+    let defaults = default_scope_view(request.scheme_str(), config, info);
 
     if !info.proxy_headers_trusted {
-        return view;
+        return (defaults.clone(), defaults);
     }
+    let mut view = defaults.clone();
 
     let proxy_headers = request_proxy_headers(request);
     let used_forwarded =
@@ -196,7 +203,16 @@ pub(crate) fn resolve_scope_view<'a>(
         view.root_path = join_root_path(prefix, config.root_path.as_ref());
     }
 
-    view
+    (view, defaults)
+}
+
+/// The request's scope view alone, for callers with no use for the defaults.
+pub(crate) fn resolve_scope_view<'a>(
+    request: &'a RequestHead,
+    config: &'a ServerConfig,
+    info: &'a ConnectionInfo,
+) -> ScopeView<'a> {
+    scope_view_with_defaults(request, config, info).0
 }
 
 fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {

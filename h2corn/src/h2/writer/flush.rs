@@ -59,6 +59,10 @@ struct FlushBodyParts<'a, W> {
     data_frame_size: FramePayloadLen,
     stream_budget: usize,
     response_closes: &'a mut ResponseCloseBatch,
+    /// One clock reading for the whole flush pass. The stall deadline it feeds
+    /// is measured in seconds, so resolving each stream's progress to its own
+    /// nanosecond bought nothing and cost a `clock_gettime` per DATA frame.
+    now: Instant,
 }
 
 pub(super) struct FlushTracking<'a> {
@@ -219,7 +223,7 @@ where
         {
             front.consume(tail_consumed);
         }
-        stream.note_body_progress(Instant::now());
+        stream.note_body_progress(context.now);
     }
 
     if ended_stream {
@@ -303,7 +307,7 @@ where
             stream.send_window -= i32::try_from(total)
                 .expect("one fair-write batch fits the signed 31-bit stream-window domain");
             streamer.consume(total);
-            stream.note_body_progress(Instant::now());
+            stream.note_body_progress(context.now);
         }
 
         if ended_stream {
@@ -376,7 +380,7 @@ where
     *context.connection_send_window -= chunk_len;
     stream.send_window -= i32::try_from(chunk_len)
         .expect("one sendfile frame fits the signed 31-bit stream-window domain");
-    stream.note_body_progress(Instant::now());
+    stream.note_body_progress(context.now);
 
     if end_stream {
         stream.finish(stream_id, context.response_closes);
@@ -610,6 +614,7 @@ where
     let data_frame_size = outbound_data_frame_size(peer_max_frame_size);
 
     let mut ready_turns = ready_streams.len();
+    let now = Instant::now();
 
     while ready_turns > 0 {
         ready_turns -= 1;
@@ -634,6 +639,7 @@ where
             data_frame_size,
             stream_budget: fair_write_quantum(data_frame_size),
             response_closes: tracking.response_closes,
+            now,
         };
         let mut body = stream.take_body();
         let progress = match &mut body {

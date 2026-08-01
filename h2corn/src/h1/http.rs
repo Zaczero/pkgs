@@ -382,14 +382,22 @@ where
             Ok(())
         },
         FinalResponseBody::Bytes(body) => {
-            write_response_head(
-                writer,
-                status,
-                &headers,
-                close_after,
-                BodyFraming::KnownLength(body.len()),
-            )
-            .await?;
+            let framing = BodyFraming::KnownLength(body.len());
+            // A body at or over the buffer capacity bypasses the `BufWriter`
+            // anyway, so buffering the head would cost a flush syscall and then
+            // a direct body write. One `writev` sends both, the same treatment
+            // `write_chunk` already gives large streaming chunks.
+            if body.len() >= super::H1_WRITER_BUFFER_CAPACITY {
+                let head = build_response_head(status, &headers, close_after, framing);
+                writer.flush().await?;
+                let mut slices = [
+                    io::IoSlice::new(head.as_slice()),
+                    io::IoSlice::new(body.as_ref()),
+                ];
+                write_all_vectored(writer.get_mut(), &mut slices).await?;
+                return Ok(());
+            }
+            write_response_head(writer, status, &headers, close_after, framing).await?;
             if !body.is_empty() {
                 writer.write_all(body.as_ref()).await?;
             }
@@ -471,6 +479,17 @@ pub(super) async fn write_response_head<W>(
 where
     W: AsyncWrite + Unpin,
 {
+    writer.write_all(build_response_head(status, headers, close_after, framing).as_slice())
+        .await?;
+    Ok(())
+}
+
+fn build_response_head(
+    status: HttpStatusCode,
+    headers: &ResponseHeaders,
+    close_after: bool,
+    framing: BodyFraming,
+) -> ResponseBuf {
     let framing = if status.forbids_content_length() {
         BodyFraming::None
     } else {
@@ -479,8 +498,7 @@ where
     let mut out = ResponseBuf::new();
     append_status_line(&mut out, status);
     append_response_headers(&mut out, headers, close_after, framing);
-    writer.write_all(out.as_slice()).await?;
-    Ok(())
+    out
 }
 
 pub(super) async fn write_chunk<W>(

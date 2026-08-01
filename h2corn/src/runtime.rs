@@ -1,7 +1,7 @@
 use std::mem::{size_of, swap, take};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::{Bytes, BytesMut};
 use parking_lot::Mutex;
@@ -389,6 +389,10 @@ pub(crate) struct ConnectionShared {
     /// extension; TLS carries the session identity used for scheme and scope.
     pub security: ConnectionSecurity,
     scope_cache: ConnectionScopeCache,
+    /// The access-log client label for this connection's socket peer, built on
+    /// first use. Only requests that do not override the client with trusted
+    /// proxy headers may read it -- see `ConnectionShared::client_label`.
+    default_client_label: OnceLock<Box<str>>,
     /// Last field: settles the tracker only after `app` above has released,
     /// covering every context clone — including request children hard-aborted
     /// before they construct a [`RequestTaskGuard`].
@@ -415,8 +419,25 @@ impl ConnectionShared {
             info,
             security,
             scope_cache: ConnectionScopeCache::default(),
+            default_client_label: OnceLock::new(),
             owner_token,
         })
+    }
+
+    /// The access-log client label for this connection's socket peer.
+    ///
+    /// The peer address is fixed for the life of the connection, but
+    /// `Forwarded` / `X-Forwarded-For` name a different client per *request*
+    /// when they are trusted -- a proxy multiplexes many end clients over one
+    /// upstream keep-alive connection. Caching across that would stamp one
+    /// request's log line with another client's address, so callers must only
+    /// reach this when no per-request override is possible.
+    pub(crate) fn client_label(&self, build: impl FnOnce() -> Box<str>) -> &str {
+        debug_assert!(
+            !self.info.proxy_headers_trusted,
+            "a trusted proxy names the client per request, so its label cannot be cached"
+        );
+        self.default_client_label.get_or_init(build)
     }
 
     /// The ASGI TLS extension for this connection, or `None` on plaintext.

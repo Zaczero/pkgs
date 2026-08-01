@@ -22,11 +22,10 @@ memchr = "2.8"
 mimalloc = { version = "0.1.52", default-features = false, features = [
   "local_dynamic_tls"
 ] }
-nohash-hasher = "0.2"
 owo-colors = "4.2"
 parking_lot = "0.12"
 pyo3 = "0.29.0"
-rustix = { version = "1.1", features = ["event", "fs", "net", "pipe"] }
+rustix = { version = "1.1", features = ["event", "fs", "net", "pipe", "time"] }
 rustls = { version = "0.23", default-features = false, features = [
   "aws_lc_rs",
   "std",

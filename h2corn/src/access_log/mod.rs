@@ -24,8 +24,8 @@ const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
 const MAX_IPV6_CLIENT: &str = "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535";
 const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
-const DECIMAL_FACTORS: [u128; 3] = power_table(10);
-const BYTE_SCALES: [u128; 5] = power_table(1024);
+const DECIMAL_FACTORS: [u64; 3] = power_table(10);
+const BYTE_SCALES: [u64; 5] = power_table(1024);
 const BYTE_UNITS: [&str; 5] = ["b", "kib", "mib", "gib", "tib"];
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
     if AutoStream::choice(&io::stderr()) == ColorChoice::Never {
@@ -182,12 +182,33 @@ struct ClientLabel(ClientLabelBuf);
 
 impl ClientLabel {
     fn build(ctx: &RequestContext) -> Self {
+        // Formatting this costs a scope-view resolution and a `core::fmt` pass
+        // over `IpAddr::Display`, per request. The socket peer does not change
+        // for the life of the connection, so the label is built once -- but
+        // only when trusted proxy headers cannot name a different client per
+        // request, which is both the default and the benchmarked shape.
+        if ctx.connection.info.proxy_headers_trusted {
+            return Self(Self::format(ctx));
+        }
+        let cached = ctx
+            .connection
+            .client_label(|| Box::from(Self::format_str(ctx)));
+        Self(ClientLabelBuf::from_slice(cached.as_bytes()))
+    }
+
+    fn format(ctx: &RequestContext) -> ClientLabelBuf {
         let mut label = ClientLabelBuf::new();
         append_log_client(&mut label, ctx);
         if label.first() != Some(&b'[') {
             label.resize(IPV4_CLIENT_WIDTH.max(label.len()), b' ');
         }
-        Self(label)
+        label
+    }
+
+    fn format_str(ctx: &RequestContext) -> String {
+        let label = Self::format(ctx);
+        // SAFETY: `format` writes only valid UTF-8 plus ASCII padding.
+        unsafe { str::from_utf8_unchecked(label.as_slice()) }.to_owned()
     }
 
     fn as_str(&self) -> &str {
@@ -694,13 +715,18 @@ fn write_duration_to(out: &mut impl fmt::Write, duration: Duration) -> fmt::Resu
         write_two_digits(out, seconds as u8)?;
         return out.write_char('s');
     }
+    // Sub-second durations are the overwhelmingly common case, and `u64`
+    // microseconds span 584,000 years; the saturation is a type boundary, not
+    // a limit anyone can reach.
     if duration < Duration::from_secs(1) {
-        return write_scaled_to(out, duration.as_micros(), 1_000, "ms");
+        let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        return write_scaled_to(out, micros, 1_000, "ms");
     }
-    write_scaled_to(out, duration.as_millis(), 1_000, "s")
+    let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    write_scaled_to(out, millis, 1_000, "s")
 }
 
-const fn power_table<const N: usize>(base: u128) -> [u128; N] {
+const fn power_table<const N: usize>(base: u64) -> [u64; N] {
     let mut table = [1; N];
     let mut index = 1;
     while index < table.len() {
@@ -717,13 +743,21 @@ fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
     }
 
     let mut unit = 0;
-    while unit + 1 < BYTE_SCALES.len() && u128::from(bytes) >= BYTE_SCALES[unit + 1] {
+    while unit + 1 < BYTE_SCALES.len() && bytes >= BYTE_SCALES[unit + 1] {
         unit += 1;
     }
-    write_scaled_to(out, u128::from(bytes), BYTE_SCALES[unit], BYTE_UNITS[unit])
+    write_scaled_to(out, bytes, BYTE_SCALES[unit], BYTE_UNITS[unit])
 }
 
-fn write_scaled_to(out: &mut impl fmt::Write, value: u128, scale: u128, unit: &str) -> fmt::Result {
+/// Write `value / scale` with two, one or no decimal places.
+///
+/// Deliberately `u64` rather than `u128`: dividing a 128-bit value by a runtime
+/// divisor compiles to a `__udivti3`/`__umodti3` *libcall*, tens of cycles
+/// each, and this runs two or three times for every logged request. Nothing
+/// here needs the range. `precision` is derived from `value / scale`, so
+/// `value * factor` is bounded by `1000 * scale`, and the largest scale in use
+/// is one tebibyte -- about 1.1e15, comfortably inside `u64`.
+fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str) -> fmt::Result {
     let whole = value / scale;
     let precision: usize = if whole >= 100 {
         0
@@ -930,6 +964,72 @@ mod tests {
             let label = super::ClientLabel::build(&context);
             assert_eq!(label.as_str().trim_end(), "127.0.0.1:54321");
             assert!(!label.as_str().trim_end().contains([' ', '"']));
+        });
+    }
+
+    /// A trusted proxy multiplexes many end clients over one upstream
+    /// keep-alive connection, naming each in `X-Forwarded-For`. The client is
+    /// therefore a per-*request* fact there, and caching the formatted label on
+    /// the connection would stamp one request's log line with another client's
+    /// address -- mis-attributing security-relevant evidence to save an
+    /// `IpAddr::Display`.
+    #[test]
+    fn a_trusted_proxy_gets_a_fresh_client_label_for_every_request() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = Arc::new(ServerConfig {
+                proxy: ProxyConfig {
+                    trust_headers: true,
+                    trusted_peers: Box::new([parse_trusted_peer("127.0.0.1").unwrap()]),
+                    protocol: ProxyProtocolMode::Off,
+                },
+                ..test_fixtures::server_config_parts()
+            });
+            let info = ConnectionInfo::from_peer(
+                ConnectionPeer::Tcp(SocketAddr::from(([127, 0, 0, 1], 54321))),
+                None,
+                &config.proxy,
+            );
+            assert!(info.proxy_headers_trusted);
+            let connection = ConnectionShared::new(
+                test_fixtures::app_runtime(py),
+                config,
+                info,
+                ConnectionSecurity::Plaintext,
+            );
+
+            let label_for = |client: &str| {
+                let head = Bytes::from(format!("X-Forwarded-For: {client}\r\n"));
+                let mut headers = H1RequestHeaders::new(head.clone());
+                let value = &head[b"X-Forwarded-For: ".len()..head.len() - 2];
+                let known_header = headers
+                    .push(b"X-Forwarded-For", value)
+                    .unwrap()
+                    .expect("X-Forwarded-For is a known header");
+                let mut header_meta = RequestHeaderMeta::default();
+                header_meta.observe_known_header_slice(known_header, value, 0, true);
+                let request = RequestHead {
+                    http_version: HttpVersion::Http1_1,
+                    method: Method::GET,
+                    target: RequestTarget::normal(
+                        BytesStr::from_static("http"),
+                        BytesStr::from_static("/"),
+                    ),
+                    headers: RequestHeaders::from_h1(headers),
+                    header_meta,
+                };
+                let context = RequestContext::new(Arc::clone(&connection), request);
+                super::ClientLabel::build(&context).as_str().trim_end().to_owned()
+            };
+
+            let first = label_for("198.51.100.9");
+            let second = label_for("203.0.113.7");
+            assert!(first.starts_with("198.51.100.9"), "got {first}");
+            assert!(
+                second.starts_with("203.0.113.7"),
+                "the second request on this connection reported {second}, \
+                 which is the first request's client"
+            );
         });
     }
 
