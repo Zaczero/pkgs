@@ -2657,6 +2657,28 @@ if __name__ == '__main__':
                 raise
             return reader, writer, conn
 
+        # The reproduced writer resurrection retained about 0.49 KiB per
+        # stream -- roughly 2.5 MiB here -- so this separates the defect by 2x
+        # while staying a practical release gate.
+        growth_budget_kib = 1280
+        warmup_writers = []
+        if sys.implementation.name != 'CPython':
+            # The first structurally new passes compile JIT traces and grow
+            # allocator arenas, and collection does not return them. Charging
+            # that one-off cost to whichever pass runs first makes the
+            # control/attack comparison meaningless -- successive no-update
+            # passes measured roughly 25 MiB, then 9 MiB, then 1 MiB, none of
+            # which is the defect. Warm until a no-update pass costs less than
+            # the budget the attack itself must fit in, so the measurement
+            # starts from a steady allocator. Hold every connection open, as
+            # the control and attack ones are.
+            for _ in range(4):
+                warmup_before = _resident_kib(server_pid)
+                _reader, warmup_writer, _conn = await exercise(False)
+                warmup_writers.append(warmup_writer)
+                if _resident_kib(server_pid) - warmup_before <= growth_budget_kib:
+                    break
+
         before = _resident_kib(server_pid)
         control_reader, control_writer, control_conn = await exercise(False)
         after_control = _resident_kib(server_pid)
@@ -2671,6 +2693,9 @@ if __name__ == '__main__':
             if attack_writer is not None:
                 attack_writer.close()
                 await attack_writer.wait_closed()
+            for warmup_writer in warmup_writers:
+                warmup_writer.close()
+                await warmup_writer.wait_closed()
             # Keep both h2 clients alive through the measurement. Their equal
             # closed-stream bookkeeping is part of the matched control.
             del control_reader, control_conn, attack_reader, attack_conn
@@ -2687,11 +2712,8 @@ if __name__ == '__main__':
     # Keep the identical no-update connection alive while exercising the
     # attack. That prevents allocator arenas from being returned between the
     # two runs, so `attack_growth` is the incremental cost of the late updates
-    # rather than a noisy process-wide RSS movement. The reproduced writer
-    # resurrection retained about 0.49 KiB per stream — roughly 2.5 MiB
-    # here. Scale the cap with the stream count so this remains a practical
-    # release gate while still separating the reproduced defect by 2x.
-    assert attack_growth <= 1280, (
+    # rather than a noisy process-wide RSS movement.
+    assert attack_growth <= growth_budget_kib, (
         f'half-closed updates added {attack_growth} KiB over {streams} streams '
         f'after a {control_growth} KiB matched control'
     )

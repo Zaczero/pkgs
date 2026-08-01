@@ -66,6 +66,18 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
     gc.collect()
     assert warm_ref() is None
 
+    if sys.implementation.name != 'CPython':
+        # A completed serve's `_RustFuture` transitively owns the shard
+        # doorbell's eventfd. Without reference counting it survives until the
+        # next tracing collection, so a warm-up descriptor can still be open
+        # when the baseline is taken and be closed during the measured batch --
+        # which reads as a *negative* leak. Burn a full batch first so both
+        # sides of the comparison measure the same steady state.
+        for _ in range(6):
+            await run_once()
+        await asyncio.sleep(0)
+        gc.collect()
+
     fd_baseline = len(os.listdir('/proc/self/fd')) if sys.platform == 'linux' else None
     refs = [await run_once() for _ in range(6)]
     await asyncio.sleep(0)
@@ -73,7 +85,13 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
 
     assert all(ref() is None for ref in refs)
     if fd_baseline is not None:
-        assert len(os.listdir('/proc/self/fd')) == fd_baseline
+        fd_count = len(os.listdir('/proc/self/fd'))
+        if sys.implementation.name == 'CPython':
+            assert fd_count == fd_baseline
+        else:
+            # Batch-to-batch growth still catches a real leak: one leaked
+            # descriptor per serve grows the measured batch by six.
+            assert fd_count <= fd_baseline
 
 
 async def test_same_server_can_serve_twice_with_fresh_shutdown_state() -> None:
