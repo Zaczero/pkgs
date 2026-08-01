@@ -40,7 +40,9 @@ async def open_h2_connection(
         config=h2.config.H2Configuration(client_side=True, header_encoding=None)
     )
     if max_header_list_size is not None:
-        conn.local_settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = max_header_list_size
+        conn.local_settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = (
+            max_header_list_size
+        )
         # h2 applies an advertised setting to its decoder on the peer's ACK.
         # A peer may answer the opening request in the same read as that ACK,
         # so accept the advertised limit from the first response frame too.

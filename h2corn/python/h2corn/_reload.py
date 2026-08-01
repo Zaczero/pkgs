@@ -282,7 +282,6 @@ def _prune_walk_dirs(
     ]
 
 
-
 def _walk_watch_dirs_from(
     root: Path,
     start: Path,

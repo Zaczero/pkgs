@@ -686,7 +686,9 @@ fn append_default_response_headers(
             continue;
         }
         match header.kind {
-            ResponseHeaderKind::Server => scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER),
+            ResponseHeaderKind::Server => {
+                scan.flags = scan.flags.union(ResponseScanFlags::HAS_SERVER)
+            },
             ResponseHeaderKind::Date => scan.flags = scan.flags.union(ResponseScanFlags::HAS_DATE),
             ResponseHeaderKind::ContentLength => scan.observe_content_length(header.value.as_ref()),
             _ => {},

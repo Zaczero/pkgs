@@ -25,7 +25,9 @@ def _json_records(err: str) -> list[dict]:
     return [json.loads(line) for line in err.splitlines() if line.strip()]
 
 
-async def _serve_once(log_format: str, target: bytes, *, access_log: bool = True) -> None:
+async def _serve_once(
+    log_format: str, target: bytes, *, access_log: bool = True
+) -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'hello'})
@@ -36,7 +38,9 @@ async def _serve_once(log_format: str, target: bytes, *, access_log: bool = True
     ) as server:
         await http1_request(
             port=server_port(server),
-            request=b'GET ' + target + b' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+            request=b'GET '
+            + target
+            + b' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
         )
     # The sink batches; give its writer a turn before reading the capture.
     await asyncio.sleep(0.1)
@@ -79,7 +83,9 @@ async def test_json_access_log_escapes_a_hostile_target(
     # ends the JSON string early and the record stops parsing.
     await _serve_once('json', rb'/a"b\c')
 
-    requests = [r for r in _json_records(capfd.readouterr().err) if r['event'] == 'request']
+    requests = [
+        r for r in _json_records(capfd.readouterr().err) if r['event'] == 'request'
+    ]
     assert len(requests) == 1, requests
     assert requests[0]['target'] == '/a"b\\c'
 

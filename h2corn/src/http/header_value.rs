@@ -1,5 +1,5 @@
-use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::Simd;
+use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 
 /// Field-value grammar from RFC 9110 5.5: HTAB, or a visible/obs-text octet.
 fn lanes_are_valid<const N: usize>(value: Simd<u8, N>) -> bool {

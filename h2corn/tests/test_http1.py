@@ -1755,7 +1755,8 @@ async def test_rolling_pathsend_eof_closes_http1_connection(tmp_path: Path) -> N
                 # only after its headers prove that admission happened.
                 os.truncate(file_path, 0)
                 await loop.sock_sendall(
-                    sock, b'GET /second HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'
+                    sock,
+                    b'GET /second HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
                 )
                 remainder = b''
                 try:
@@ -1877,7 +1878,9 @@ async def test_head_trailers_sent_after_the_response_completed_do_not_fail() -> 
     assert get_trailers == [(b'x-finished', b'yes')]
 
 
-async def test_http1_trailers_with_a_declared_length_do_not_desync_the_connection() -> None:
+async def test_http1_trailers_with_a_declared_length_do_not_desync_the_connection() -> (
+    None
+):
     """
     RFC 9110 section 6.5.1 allows a trailer section only under a framing that
     supports one; in HTTP/1.1 that is chunked.
@@ -1941,6 +1944,7 @@ async def test_http1_unsupported_minor_version_is_a_bad_request(version: str) ->
     supports major version 1.  It does not serve HTTP/1.0 -- that needs a
     second framing regime -- but refusing with 505 misstated the reason.
     """
+
     async def app(scope, receive, send):  # pragma: no cover - never reached
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
@@ -1965,6 +1969,7 @@ async def test_http1_ignores_one_empty_line_before_the_request_line() -> None:
     CRLF after a request body; dropping the connection over it was the least
     robust answer available.
     """
+
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'ok'})

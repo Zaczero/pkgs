@@ -290,10 +290,10 @@ async def test_h2_scheme_and_edge_ows_are_rejected(
     async def app(scope, receive, send):
         raise AssertionError(f'invalid request reached app: {scope!r}')
 
-    async with running_server(app, Config(port=0, access_log=False, lifespan='off')) as server:
-        frames = await _raw_h2_request_frames(
-            port=server_port(server), headers=headers
-        )
+    async with running_server(
+        app, Config(port=0, access_log=False, lifespan='off')
+    ) as server:
+        frames = await _raw_h2_request_frames(port=server_port(server), headers=headers)
 
     _h2_stream_protocol_error(frames)
 
@@ -314,7 +314,9 @@ async def test_h2_connection_and_te_field_policy(
     async def app(scope, receive, send):
         raise AssertionError(f'forbidden H2 field reached app: {scope!r}')
 
-    async with running_server(app, Config(port=0, access_log=False, lifespan='off')) as server:
+    async with running_server(
+        app, Config(port=0, access_log=False, lifespan='off')
+    ) as server:
         frames = await _raw_h2_request_frames(
             port=server_port(server),
             headers=[
@@ -347,7 +349,9 @@ async def test_h2_request_trailers_obey_the_field_policy(
         # completion the application can consume.
         await receive()
 
-    async with running_server(app, Config(port=0, access_log=False, lifespan='off')) as server:
+    async with running_server(
+        app, Config(port=0, access_log=False, lifespan='off')
+    ) as server:
         frames = await _raw_h2_request_frames(
             port=server_port(server),
             headers=[
@@ -360,6 +364,8 @@ async def test_h2_request_trailers_obey_the_field_policy(
         )
 
     _h2_stream_protocol_error(frames)
+
+
 async def _start_blocked_request_server(
     *,
     status: int,
@@ -806,7 +812,9 @@ async def test_rolling_pathsend_eof_resets_only_that_stream(tmp_path: Path) -> N
                             event.flow_controlled_length, event.stream_id
                         )
                     elif isinstance(event, h2.events.ConnectionTerminated):
-                        pytest.fail('rolling pathsend EOF terminated the HTTP/2 connection')
+                        pytest.fail(
+                            'rolling pathsend EOF terminated the HTTP/2 connection'
+                        )
                 pending = conn.data_to_send()
                 if pending:
                     writer.write(pending)
@@ -924,7 +932,9 @@ async def test_refused_field_block_ends_the_connection_not_just_the_stream() -> 
                 length = int.from_bytes(header[:3], 'big')
                 payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
                 if header[3] == 0x03:
-                    reset_streams.append(int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF)
+                    reset_streams.append(
+                        int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
+                    )
                 if header[3] == 0x07:
                     goaway_error = int.from_bytes(payload[4:8], 'big')
                     break
@@ -1009,7 +1019,8 @@ async def test_generic_connect_without_port_resets_stream_before_app_dispatch() 
     assert any(
         frame_type == 0x03
         and stream_id == 1
-        and int.from_bytes(payload[:4], 'big') == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+        and int.from_bytes(payload[:4], 'big')
+        == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
         for frame_type, _flags, stream_id, payload in frames
     ), 'a bare CONNECT authority must receive RST_STREAM(PROTOCOL_ERROR)'
     assert not any(
@@ -1788,6 +1799,7 @@ async def test_h2_single_frame_header_block_size_limit_ends_the_connection() -> 
     Resetting the stream and carrying on leaves HPACK's connection-wide table
     behind the peer's encoder, so a later valid request fails instead.
     """
+
     async def app(scope, receive, send):
         raise AssertionError('single-frame header block limit should reject early')
 
@@ -2359,6 +2371,7 @@ async def test_h2_malformed_priority_on_an_idle_stream_ends_the_connection() -> 
     even-numbered one -- h2corn used to emit RST_STREAM for a stream it had
     never seen, which a conforming client must tear the connection down over.
     """
+
     async def app(scope, receive, send):  # pragma: no cover - never reached
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
@@ -2433,8 +2446,7 @@ async def test_h2_fixed_length_violation_on_a_live_stream_ends_the_connection(
                 end_stream=True,
             )
             writer.write(
-                conn.data_to_send()
-                + _encode_h2_frame(frame_type, payload, stream_id=1)
+                conn.data_to_send() + _encode_h2_frame(frame_type, payload, stream_id=1)
             )
             await writer.drain()
             frames = await read_raw_h2_frames(reader, timeout=2.0, stop_at_goaway=False)
@@ -2473,10 +2485,7 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
     """
     # One request on a high id retires every lower one at a stroke.
     highest = 20_001
-    updates = [
-        (stream_id).to_bytes(4, 'big')
-        for stream_id in range(1, highest, 2)
-    ]
+    updates = [(stream_id).to_bytes(4, 'big') for stream_id in range(1, highest, 2)]
 
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -2586,7 +2595,9 @@ if __name__ == '__main__':
         server_pid = int(server_pid_path.read_text())
         while True:
             try:
-                probe_reader, probe_writer = await asyncio.open_connection('127.0.0.1', port)
+                probe_reader, probe_writer = await asyncio.open_connection(
+                    '127.0.0.1', port
+                )
             except OSError:
                 if loop.time() >= deadline:
                     raise AssertionError('measurement server did not listen') from None
@@ -2840,9 +2851,7 @@ async def test_a_rejected_header_block_keeps_the_hpack_table_in_step() -> None:
             while len(statuses) < 2 and not terminated:
                 for event in conn.receive_data(await reader.read(65536)):
                     if isinstance(event, h2.events.ResponseReceived):
-                        statuses[event.stream_id] = int(
-                            dict(event.headers)[b':status']
-                        )
+                        statuses[event.stream_id] = int(dict(event.headers)[b':status'])
                     elif isinstance(event, h2.events.ConnectionTerminated):
                         terminated = True
         finally:
@@ -3013,7 +3022,9 @@ async def test_hpack_static_dynamic_and_never_indexed_match_python_reference() -
                         headers = dict(response_decoder.decode(payload, raw=True))
                         statuses[stream_id] = int(headers[b':status'])
                     elif frame_type == 0x07:
-                        raise AssertionError('unexpected GOAWAY during differential test')
+                        raise AssertionError(
+                            'unexpected GOAWAY during differential test'
+                        )
         finally:
             writer.close()
             await writer.wait_closed()
@@ -3524,10 +3535,17 @@ async def test_tracked_rejected_stream_insertion_then_successful_request() -> No
 
 
 @pytest.mark.parametrize(
-    ('interrupting_type', 'interrupting_payload', 'interrupting_flags', 'interrupting_stream_id'),
+    (
+        'interrupting_type',
+        'interrupting_payload',
+        'interrupting_flags',
+        'interrupting_stream_id',
+    ),
     [
         pytest.param(0x00, b'x', 0x01, 1, id='data'),
-        pytest.param(0xF0, b'x' * SERVER_MAX_FRAME_SIZE, 0x00, 0, id='unknown-extension'),
+        pytest.param(
+            0xF0, b'x' * SERVER_MAX_FRAME_SIZE, 0x00, 0, id='unknown-extension'
+        ),
     ],
 )
 async def test_non_continuation_interrupts_header_block(
@@ -3678,9 +3696,7 @@ async def test_header_timeout_on_tracked_trailers_ends_the_connection() -> None:
             await writer.drain()
             await asyncio.wait_for(first_body_seen.wait(), timeout=5)
             # Partial trailers keep the block open; timeout must finalize the app.
-            writer.write(
-                _encode_h2_frame(0x01, trailers[:1], flags=0x01, stream_id=1)
-            )
+            writer.write(_encode_h2_frame(0x01, trailers[:1], flags=0x01, stream_id=1))
             await writer.drain()
 
             goaway_error = None

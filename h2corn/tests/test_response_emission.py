@@ -68,7 +68,9 @@ async def _response(
                 if isinstance(event, h2.events.ResponseReceived):
                     status = int(dict(event.headers)[b':status'])
                     headers = {
-                        name: value for name, value in event.headers if name != b':status'
+                        name: value
+                        for name, value in event.headers
+                        if name != b':status'
                     }
                 elif isinstance(event, h2.events.DataReceived):
                     body.extend(event.data)
@@ -193,9 +195,17 @@ async def test_informational_start_does_not_desynchronise_http1_pipeline() -> No
         seen.append(scope['path'])
         if scope['path'] == '/first':
             try:
-                await send({'type': 'http.response.start', 'status': 103, 'headers': []})
+                await send({
+                    'type': 'http.response.start',
+                    'status': 103,
+                    'headers': [],
+                })
             except ValueError:
-                await send({'type': 'http.response.start', 'status': 418, 'headers': []})
+                await send({
+                    'type': 'http.response.start',
+                    'status': 418,
+                    'headers': [],
+                })
                 await send({'type': 'http.response.body', 'body': b'first'})
             return
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -265,7 +275,10 @@ async def test_application_transfer_encoding_is_absent_and_server_frames_respons
         status, headers, body = await _response(protocol, server_port(server))
 
     assert (status, body) == (200, b'abc')
-    assert b'transfer-encoding' not in headers or headers[b'transfer-encoding'] == b'chunked'
+    assert (
+        b'transfer-encoding' not in headers
+        or headers[b'transfer-encoding'] == b'chunked'
+    )
     if protocol == 'h1':
         assert headers[b'transfer-encoding'] == b'chunked'
 
@@ -667,7 +680,9 @@ async def test_delayed_pathsend_is_not_lost(protocol: str, tmp_path) -> None:
 
 
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])
-async def test_invalid_response_header_can_be_caught_and_replaced(protocol: str) -> None:
+async def test_invalid_response_header_can_be_caught_and_replaced(
+    protocol: str,
+) -> None:
     caught = []
 
     async def app(scope, receive, send):
@@ -689,7 +704,9 @@ async def test_invalid_response_header_can_be_caught_and_replaced(protocol: str)
     assert (status, body) == (418, b'replaced')
 
 
-async def test_uncaught_invalid_response_header_is_complete_http1_500_and_closes() -> None:
+async def test_uncaught_invalid_response_header_is_complete_http1_500_and_closes() -> (
+    None
+):
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
@@ -711,7 +728,9 @@ async def test_uncaught_invalid_response_header_is_complete_http1_500_and_closes
     assert (status, body, trailers) == (500, b'', [])
 
 
-async def test_uncaught_invalid_response_header_is_500_without_h2_sibling_reset() -> None:
+async def test_uncaught_invalid_response_header_is_500_without_h2_sibling_reset() -> (
+    None
+):
     async def app(scope, receive, send):
         if scope['path'] == '/sibling':
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -733,7 +752,9 @@ async def test_uncaught_invalid_response_header_is_500_without_h2_sibling_reset(
     assert resets == set()
 
 
-async def test_post_completion_event_is_ignored(capfd: pytest.CaptureFixture[str]) -> None:
+async def test_post_completion_event_is_ignored(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
     async def app(scope, receive, send):
         if scope['path'] == '/sibling':
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -822,7 +843,9 @@ async def test_streaming_content_length_mismatch_resets_only_h2_stream(
     assert resets == {1}
 
 
-async def test_connection_close_finishes_first_http1_response_then_closes_pipeline() -> None:
+async def test_connection_close_finishes_first_http1_response_then_closes_pipeline() -> (
+    None
+):
     seen = []
 
     async def app(scope, receive, send):
@@ -853,7 +876,9 @@ async def test_connection_close_finishes_first_http1_response_then_closes_pipeli
     assert seen == ['/first']
 
 
-async def test_h2_dynamic_connection_option_rejects_before_csp_can_be_nominated() -> None:
+async def test_h2_dynamic_connection_option_rejects_before_csp_can_be_nominated() -> (
+    None
+):
     caught = []
 
     async def app(scope, receive, send):
@@ -879,16 +904,26 @@ async def test_h2_dynamic_connection_option_rejects_before_csp_can_be_nominated(
     assert b'content-security-policy' not in headers
 
 
-async def test_http1_426_emits_paired_upgrade_advertisement_and_101_is_rejected() -> None:
+async def test_http1_426_emits_paired_upgrade_advertisement_and_101_is_rejected() -> (
+    None
+):
     starts = []
 
     async def app(scope, receive, send):
         if scope['path'] == '/101':
             try:
-                await send({'type': 'http.response.start', 'status': 101, 'headers': []})
+                await send({
+                    'type': 'http.response.start',
+                    'status': 101,
+                    'headers': [],
+                })
             except ValueError:
                 starts.append(101)
-                await send({'type': 'http.response.start', 'status': 418, 'headers': []})
+                await send({
+                    'type': 'http.response.start',
+                    'status': 418,
+                    'headers': [],
+                })
                 await send({'type': 'http.response.body', 'body': b'no switch'})
             return
         await send({
@@ -902,7 +937,9 @@ async def test_http1_426_emits_paired_upgrade_advertisement_and_101_is_rejected(
         status_426, headers_426, body_426 = await _response(
             'h1', server_port(server), h1_close=False
         )
-        status_101, _headers_101, body_101 = await _response('h1', server_port(server), '/101')
+        status_101, _headers_101, body_101 = await _response(
+            'h1', server_port(server), '/101'
+        )
 
     assert (status_426, body_426) == (426, b'use h2c')
     assert headers_426[b'connection'] == b'upgrade'

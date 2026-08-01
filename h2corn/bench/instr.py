@@ -202,14 +202,18 @@ def perf_totals(process: subprocess.Popen[str]) -> dict[str, float]:
         try:
             count = float(value)
         except ValueError as error:
-            raise BenchmarkError(f'perf returned an invalid {event} count: {value!r}') from error
+            raise BenchmarkError(
+                f'perf returned an invalid {event} count: {value!r}'
+            ) from error
         if not math.isfinite(count) or count < 0:
             raise BenchmarkError(f'perf returned an invalid {event} count: {value!r}')
         if len(fields) > 4 and fields[4].strip():
             try:
                 running_percent = float(fields[4])
             except ValueError as error:
-                raise BenchmarkError(f'perf returned invalid {event} runtime: {fields[4]!r}') from error
+                raise BenchmarkError(
+                    f'perf returned invalid {event} runtime: {fields[4]!r}'
+                ) from error
             if running_percent < 100.0:
                 raise BenchmarkError(
                     f'perf multiplexed {event} ({running_percent:.2f}% running); retry later'
@@ -217,11 +221,15 @@ def perf_totals(process: subprocess.Popen[str]) -> dict[str, float]:
         totals[event] = count
     missing = set(COUNTERS) - totals.keys()
     if missing:
-        raise BenchmarkError(f'perf returned no counts for: {", ".join(sorted(missing))}')
+        raise BenchmarkError(
+            f'perf returned no counts for: {", ".join(sorted(missing))}'
+        )
     return totals
 
 
-def measure(variant: Variant, scenario: Scenario, requests: int, warmup_requests: int) -> dict[str, float]:
+def measure(
+    variant: Variant, scenario: Scenario, requests: int, warmup_requests: int
+) -> dict[str, float]:
     """Return the worker-only counters per successful raw-ASGI request."""
     with running_server(
         variant.command(scenario, APP),
@@ -247,7 +255,9 @@ def measure(variant: Variant, scenario: Scenario, requests: int, warmup_requests
     return per_request
 
 
-def metric_comparison(control: Sequence[float], candidate: Sequence[float]) -> dict[str, float | bool | list[float]]:
+def metric_comparison(
+    control: Sequence[float], candidate: Sequence[float]
+) -> dict[str, float | bool | list[float]]:
     """Use the shared paired estimator for one per-request counter metric."""
     paired = paired_comparison(control, candidate, SEED)
     deltas = [
@@ -296,7 +306,9 @@ def compare(
         rounds = round_index
 
         instructions = paired_comparison(
-            samples[control.name]['instructions'], samples[candidate.name]['instructions'], SEED
+            samples[control.name]['instructions'],
+            samples[candidate.name]['instructions'],
+            SEED,
         )
         low, high = instructions.ci_percent
         print(f'  round {round_index}: {instructions.describe("instructions/request")}')
@@ -309,7 +321,9 @@ def compare(
             break
 
     comparisons = {
-        metric: metric_comparison(samples[control.name][metric], samples[candidate.name][metric])
+        metric: metric_comparison(
+            samples[control.name][metric], samples[candidate.name][metric]
+        )
         for metric in (*COUNTERS, 'ipc')
     }
     return {
@@ -417,7 +431,9 @@ def main() -> int:
     elif instructions['significant']:
         print('SIGNIFICANT: the instructions/request interval excludes zero.')
     else:
-        print('No significant difference: the instructions/request interval spans zero.')
+        print(
+            'No significant difference: the instructions/request interval spans zero.'
+        )
     print('Lower instructions, cycles, branch misses, and cache misses are better.')
     print(f'Record written to {output}')
     return 0

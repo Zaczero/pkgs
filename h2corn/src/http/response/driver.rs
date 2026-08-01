@@ -2,9 +2,9 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use super::{actions, controller, transport};
-use crate::log::ResponseLogState;
 use crate::http::app::AdmittedHttpOutboundEvent;
 use crate::http::types::{HttpStatusCode, status_code};
+use crate::log::ResponseLogState;
 use crate::{bridge, error, http};
 
 enum HttpEventEffect {

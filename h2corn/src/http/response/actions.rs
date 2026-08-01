@@ -410,7 +410,11 @@ mod tests {
         );
 
         credit.release_written(576);
-        assert_eq!(budget.available(), 0, "still not while the body is in flight");
+        assert_eq!(
+            budget.available(),
+            0,
+            "still not while the body is in flight"
+        );
 
         drop(credit);
         assert_eq!(

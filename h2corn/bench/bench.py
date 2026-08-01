@@ -404,8 +404,7 @@ def configure_rtt50_profile() -> RTT50Netem:
             f'{NETEM_RTT_MS:.0f}±{NETEM_RTT_TOLERANCE_MS:.0f} ms'
         )
     print(
-        f'  verified {measured_rtt:.1f} ms loopback RTT '
-        f'(target {NETEM_RTT_MS:.0f} ms)',
+        f'  verified {measured_rtt:.1f} ms loopback RTT (target {NETEM_RTT_MS:.0f} ms)',
         flush=True,
     )
     return {
@@ -565,7 +564,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                 no_equivalent(
                     'h2_initial_stream_window_size',
                     8_388_608,
-                    "Hypercorn exposes no HTTP/2 flow-control window; it uses "
+                    'Hypercorn exposes no HTTP/2 flow-control window; it uses '
                     "h2's 65,535-byte default.",
                 ),
                 no_equivalent(
@@ -805,8 +804,9 @@ def contrast_ratio(first: str, second: str) -> float:
     """Return the WCAG contrast ratio between two opaque sRGB colours."""
     first_luminance = relative_luminance(first)
     second_luminance = relative_luminance(second)
-    light, dark = max(first_luminance, second_luminance), min(
-        first_luminance, second_luminance
+    light, dark = (
+        max(first_luminance, second_luminance),
+        min(first_luminance, second_luminance),
     )
     return (light + 0.05) / (dark + 0.05)
 
@@ -1334,7 +1334,9 @@ def main() -> int:
                 )
                 if result not in (0, None) and status != 'skipped':
                     detail = f': {namespace_reason}' if namespace_reason else ''
-                    raise BenchmarkError(f'50 ms RTT profile exited with {result}{detail}')
+                    raise BenchmarkError(
+                        f'50 ms RTT profile exited with {result}{detail}'
+                    )
                 if status == 'completed':
                     complete.append(shaped_directory)
                 elif status == 'skipped':

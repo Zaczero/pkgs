@@ -16,10 +16,10 @@ use super::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
     finalize_response,
 };
-use crate::log::ResponseLogState;
 use crate::app_call::AppCallArgs;
 use crate::bridge::RequestInputShared;
 use crate::error::H2CornError;
+use crate::log::ResponseLogState;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 
 pub(crate) enum HttpRequestBody {

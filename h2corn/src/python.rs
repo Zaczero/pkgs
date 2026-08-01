@@ -452,7 +452,9 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
     {
         let value = value.into_bound_py_any(self.py)?;
         // SAFETY: forwarded from this function's contract.
-        unsafe { self.push_bound_at::<I>(key, value); }
+        unsafe {
+            self.push_bound_at::<I>(key, value);
+        }
         Ok(())
     }
 
@@ -492,7 +494,9 @@ impl<const N: usize> Drop for PyDictScratch<'_, N> {
             // SAFETY: `0..len` is exactly the initialized prefix. Decrementing
             // first ensures a panicking item destructor cannot be visited a
             // second time if cleanup resumes.
-            unsafe { self.items.get_unchecked_mut(self.len).assume_init_drop(); }
+            unsafe {
+                self.items.get_unchecked_mut(self.len).assume_init_drop();
+            }
         }
     }
 }
@@ -540,7 +544,9 @@ mod tests {
 
     #[cfg(Py_GIL_DISABLED)]
     use pyo3::types::PyDict;
-    use pyo3::types::{PyAnyMethods as _, PyBool, PyBytes, PyBytesMethods as _, PyDictMethods as _};
+    use pyo3::types::{
+        PyAnyMethods as _, PyBool, PyBytes, PyBytesMethods as _, PyDictMethods as _,
+    };
     use pyo3::{IntoPyObjectExt as _, PyResult, Python, ffi};
 
     #[cfg(not(Py_GIL_DISABLED))]

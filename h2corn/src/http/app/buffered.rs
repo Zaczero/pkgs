@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
+use smallvec::SmallVec;
 use tokio::sync::{mpsc, watch};
 
 use crate::async_util::{TryPush, try_push};
-use smallvec::SmallVec;
-
 use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent};
 use crate::buffered_events::BufferedState;
 use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
@@ -116,9 +115,7 @@ impl HttpSendState {
         Self::with_optional_response_budget(None)
     }
 
-    pub(crate) fn with_response_budget(
-        budget: ResponseByteBudget,
-    ) -> (Self, HttpSendBuffer) {
+    pub(crate) fn with_response_budget(budget: ResponseByteBudget) -> (Self, HttpSendBuffer) {
         Self::with_optional_response_budget(Some(budget))
     }
 
@@ -126,9 +123,7 @@ impl HttpSendState {
     /// minted again: they share one inline queue and one streaming receiver,
     /// and a second buffer would both compete for those and close the outbound
     /// side out from under the first when it dropped.
-    fn with_optional_response_budget(
-        budget: Option<ResponseByteBudget>,
-    ) -> (Self, HttpSendBuffer) {
+    fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> (Self, HttpSendBuffer) {
         let shared = Arc::new(BufferedState::new(HttpSendControl {
             mode: HttpSendMode::Inline { accepted: 0 },
             close_signal: None,

@@ -161,7 +161,11 @@ impl MessageInflater {
             let consumed_before = self.decoder.total_in();
             let status = self
                 .decoder
-                .decompress_uninit(input, inflate_window(&mut self.out, max_message_size), flush)
+                .decompress_uninit(
+                    input,
+                    inflate_window(&mut self.out, max_message_size),
+                    flush,
+                )
                 .map_err(|_| WebSocketProtocolError::InvalidCompressedPayload)?;
             let written = (self.decoder.total_out() - before) as usize;
             // SAFETY: `decompress_uninit` writes exactly `written`

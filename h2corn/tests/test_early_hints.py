@@ -12,7 +12,12 @@ import h2.events
 import pytest
 from h2corn import Config
 
-from tests._support import http1_request, open_h2_connection, running_server, server_port
+from tests._support import (
+    http1_request,
+    open_h2_connection,
+    running_server,
+    server_port,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,7 +27,9 @@ LINKS = [b'</style.css>; rel=preload; as=style', b'</app.js>; rel=preload']
 async def _h2_exchange(app, path: bytes = b'/'):
     """Drive one H2 request, returning every interim and final event in order."""
     async with running_server(app, Config(port=0, lifespan='off')) as server:
-        reader, writer, conn, authority = await open_h2_connection(port=server_port(server))
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
         stream_id = conn.get_next_available_stream_id()
         conn.send_headers(
             stream_id,
@@ -99,9 +106,10 @@ async def test_empty_links_and_a_generator_are_both_accepted() -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.early_hint', 'links': []})
-        await send(
-            {'type': 'http.response.early_hint', 'links': (link for link in LINKS)}
-        )
+        await send({
+            'type': 'http.response.early_hint',
+            'links': (link for link in LINKS),
+        })
         await send({'type': 'http.response.body', 'body': b''})
 
     events, _ = await _h2_exchange(app)
@@ -181,6 +189,7 @@ async def test_response_start_with_103_is_still_rejected() -> None:
     assert [kind for kind, _ in events] == ['final']
     assert events[0][1] == b'500'
 
+
 async def test_a_hint_after_the_final_body_does_not_destroy_the_response() -> None:
     """A late hint is dropped, never fatal.
 
@@ -188,6 +197,7 @@ async def test_a_hint_after_the_final_body_does_not_destroy_the_response() -> No
     terminating chunk and the trailers, HTTP/2 reset a stream whose 200 the
     client already had.
     """
+
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',

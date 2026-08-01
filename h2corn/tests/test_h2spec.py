@@ -55,7 +55,9 @@ async def test_h2spec_conformance(tmp_path: Path) -> None:
             # pytest's private temporary directory.
             root = ET.parse(report).getroot()  # noqa: S314
         except (FileNotFoundError, ET.ParseError) as error:
-            pytest.fail(f'h2spec did not write a parseable JUnit report: {error}\n{output}')
+            pytest.fail(
+                f'h2spec did not write a parseable JUnit report: {error}\n{output}'
+            )
 
         failures = frozenset(
             (case.attrib['package'], case.attrib['classname'])

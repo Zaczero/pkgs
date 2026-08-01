@@ -10,9 +10,7 @@ use crate::async_util::write_all_vectored;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::digits;
-use crate::http::header::{
-    ResponseConnectionDirective, apply_default_response_headers,
-};
+use crate::http::header::{ResponseConnectionDirective, apply_default_response_headers};
 use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
 use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
 use crate::http::types::{
@@ -485,7 +483,8 @@ pub(super) async fn write_response_head<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    writer.write_all(build_response_head(status, headers, close_after, framing).as_slice())
+    writer
+        .write_all(build_response_head(status, headers, close_after, framing).as_slice())
         .await?;
     Ok(())
 }

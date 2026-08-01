@@ -5,9 +5,9 @@ mod state;
 mod websocket;
 mod writer;
 
-use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::HashMap;
 use std::future::{Future, pending};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,8 +21,8 @@ use request::{
 };
 use smallvec::SmallVec;
 use state::{
-    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream,
-    RequestInputClose, RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
+    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream, RequestInputClose,
+    RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
@@ -35,9 +35,8 @@ use writer::{
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
 use crate::error::{ErrorExt as _, ErrorKind, H2CornError, H2Error};
 use crate::h2_frame::{
-    HandledFrameKind,
-    self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType, PeerSettings,
-    RawFrame, StreamId, WindowIncrement,
+    self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType,
+    HandledFrameKind, PeerSettings, RawFrame, StreamId, WindowIncrement,
 };
 use crate::hpack::DecoderError;
 use crate::http::body::RequestBodyProgress;
@@ -133,8 +132,6 @@ struct ResetStreamFrame {
     stream_id: StreamId,
     error_code: ErrorCode,
 }
-
-
 
 impl ConnectionDeadline {
     const fn instant(self) -> TokioInstant {
@@ -958,8 +955,10 @@ where
         state.last_client_stream_id = Some(stream_id);
     }
     let target = match receive_state {
-        Some(StreamLifecycle::Open | StreamLifecycle::ResponseClosed) => HeaderBlockTarget::Trailers {
-            end_stream: fragment.end_stream,
+        Some(StreamLifecycle::Open | StreamLifecycle::ResponseClosed) => {
+            HeaderBlockTarget::Trailers {
+                end_stream: fragment.end_stream,
+            }
         },
         Some(StreamLifecycle::RequestClosed) => HeaderBlockTarget::RejectedTracked {
             error_code: ErrorCode::STREAM_CLOSED,
@@ -1255,7 +1254,10 @@ where
                 state.request_tasks.cancel_all().await;
                 stop_after_flush = true;
             },
-            IngestEvent::FrameLengthExceeded { reset_stream, error } => {
+            IngestEvent::FrameLengthExceeded {
+                reset_stream,
+                error,
+            } => {
                 // RFC 9113 6.3 makes a wrong-length PRIORITY a stream error,
                 // but 6.4 forbids sending RST_STREAM for an idle stream and
                 // requires a peer that receives one to fail the connection. An
@@ -1277,9 +1279,7 @@ where
                     // where writing the frame directly left the loop running to
                     // emit a second, contradictory `GOAWAY(NO_ERROR)` after the
                     // error one.
-                    state
-                        .peer_failure(H2PeerFailure::frame_size(error))
-                        .await?;
+                    state.peer_failure(H2PeerFailure::frame_size(error)).await?;
                 }
             },
             IngestEvent::Deadline(deadline) => match deadline {
@@ -1396,9 +1396,13 @@ fn map_frame_ingest_result(
     match frame {
         Ok(Some(frame)) => Ok(IngestEvent::Frame(frame)),
         Ok(None) => Ok(IngestEvent::PeerClosed),
-        Err(FrameReadError::DeclaredPayloadLength { reset_stream, error }) => {
-            Ok(IngestEvent::FrameLengthExceeded { reset_stream, error })
-        },
+        Err(FrameReadError::DeclaredPayloadLength {
+            reset_stream,
+            error,
+        }) => Ok(IngestEvent::FrameLengthExceeded {
+            reset_stream,
+            error,
+        }),
         Err(FrameReadError::Other(err)) => match err.into_kind() {
             ErrorKind::H2(
                 error @ (H2Error::FrameLengthExceedsPeerMax { .. }

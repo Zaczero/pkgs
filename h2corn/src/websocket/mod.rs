@@ -1,8 +1,8 @@
+mod accept;
 mod app;
 mod codec;
 mod deflate;
 mod request;
-mod accept;
 pub(crate) mod session;
 
 pub(crate) use accept::websocket_accept;

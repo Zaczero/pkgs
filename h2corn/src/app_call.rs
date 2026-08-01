@@ -153,8 +153,8 @@ impl WebSocketAppCall {
             py,
             PyWebSocketSend::new(shard, self.send_state, self.send, self.subprotocols),
         )?
-            .into_bound(py)
-            .into_any();
+        .into_bound(py)
+        .into_any();
         Ok(BuiltAppCall {
             scope,
             receive,

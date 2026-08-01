@@ -29,8 +29,6 @@ const HANDSHAKE_BUF_CAPACITY: usize = 512;
 
 type HandshakeBuf = SmallVec<[u8; HANDSHAKE_BUF_CAPACITY]>;
 
-
-
 struct H1WebSocketTransport<R, W> {
     config: Arc<ServerConfig>,
     key: WebSocketKey,
@@ -41,9 +39,6 @@ struct H1WebSocketTransport<R, W> {
     response: H1ResponseState,
     writer: BufWriter<W>,
 }
-
-
-
 
 impl<R, W> WebSocketHandshakeTransport for H1WebSocketTransport<R, W>
 where

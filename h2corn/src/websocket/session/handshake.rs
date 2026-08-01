@@ -2,7 +2,6 @@ use pyo3::pybacked::PyBackedStr;
 
 use super::super::app::{AppStep, RunningWebSocketApp};
 use super::WebSocketHandshakeTransport;
-use crate::log::{ResponseLogState, WebSocketAccessLogState};
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::header::ResponseConnectionDirective;
@@ -10,6 +9,7 @@ use crate::http::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_http_event, finalize_response,
 };
 use crate::http::types::{FinalResponseStatus, ResponseHeaders, status_code};
+use crate::log::{ResponseLogState, WebSocketAccessLogState};
 
 pub(super) enum HandshakeEvent {
     Accept {
@@ -177,8 +177,8 @@ mod tests {
     use crate::pyloop::TaskSlot;
     use crate::runtime::{AppRuntimeHandle, test_fixtures};
     use crate::websocket::app::{RunningWebSocketApp, WebSocketAppTask};
-    use crate::websocket::session::WebSocketHandshakeTransport;
     use crate::websocket::close_code;
+    use crate::websocket::session::WebSocketHandshakeTransport;
 
     #[derive(Default)]
     struct RecordingHandshakeTransport {

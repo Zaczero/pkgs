@@ -16,8 +16,9 @@ use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, IntoPyResult as _, WebSocketFrameKind, into_pyerr};
 use crate::http::types::BytesStr;
 use crate::pyloop::Shard;
-use crate::websocket::validate_accepted_subprotocol;
-use crate::websocket::{RequestedSubprotocols, WebSocketCloseCode, close_code};
+use crate::websocket::{
+    RequestedSubprotocols, WebSocketCloseCode, close_code, validate_accepted_subprotocol,
+};
 
 /// Ordinary application-visible WebSocket data. Terminal disconnect is a
 /// separate plane so a full message queue cannot block peer Close, ping
@@ -415,12 +416,7 @@ impl PyWebSocketReceive {
 #[pymethods]
 impl PyWebSocketReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        receive_or_await(
-            py,
-            &self.shard,
-            &self.state,
-            build_websocket_inbound_event,
-        )
+        receive_or_await(py, &self.shard, &self.state, build_websocket_inbound_event)
     }
 }
 

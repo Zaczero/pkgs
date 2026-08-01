@@ -233,9 +233,7 @@ async def test_h2_response_body_byte_budget_waits_for_flow_control_progress() ->
     assert len(body) == H2_OUTBOUND_RESPONSE_BYTE_CAPACITY + 64 * 1024
 
 
-async def test_empty_body_request_gets_empty_state_and_terminal_receive_event() -> (
-    None
-):
+async def test_empty_body_request_gets_empty_state_and_terminal_receive_event() -> None:
     received = []
     state = None
 
@@ -665,9 +663,7 @@ async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
                     task.uncancel()
             raise
 
-    monkeypatch.setattr(
-        _lifespan, 'stop_lifespan_runner', observe_stop_lifespan_runner
-    )
+    monkeypatch.setattr(_lifespan, 'stop_lifespan_runner', observe_stop_lifespan_runner)
     server = Server(
         app,
         Config(
@@ -1293,7 +1289,9 @@ async def test_http_response_pathsend_fifo_16_returns_to_baseline(
     async with running_server(app, config) as server:
         port = server_port(server)
         # Warm the process so baseline includes runtime/worker threads.
-        warm_status, _ = await asyncio.wait_for(h2_request(port=port, path='/'), timeout=5)
+        warm_status, _ = await asyncio.wait_for(
+            h2_request(port=port, path='/'), timeout=5
+        )
         assert warm_status == 403
         await asyncio.sleep(0.1)
         baseline = _native_thread_count()

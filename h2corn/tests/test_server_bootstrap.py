@@ -931,8 +931,8 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
                     real_close(fd)
                 except OSError:
                     pass
-    processes: list[FakeProcess] = []
 
+    processes: list[FakeProcess] = []
 
     class Context:
         def Process(self, **_kwargs):  # noqa: N802

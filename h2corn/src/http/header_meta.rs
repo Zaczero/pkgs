@@ -1,6 +1,6 @@
-use bitflags::bitflags;
 use std::num::NonZeroU32;
 
+use bitflags::bitflags;
 use bytes::Bytes;
 
 use crate::base64;
@@ -128,7 +128,9 @@ impl RequestHeaderMeta {
             self.flags = self.flags.union(RequestHeaderFlags::HAS_CONTENT_LENGTH);
         } else {
             self.content_length = 0;
-            self.flags = self.flags.difference(RequestHeaderFlags::HAS_CONTENT_LENGTH);
+            self.flags = self
+                .flags
+                .difference(RequestHeaderFlags::HAS_CONTENT_LENGTH);
         }
     }
 

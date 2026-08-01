@@ -3335,9 +3335,7 @@ async def test_h2_websocket_output_is_bounded_by_the_connection_byte_budget() ->
         _reader, writer, conn, authority = await open_h2_connection(
             port=server_port(server), initial_window_size=0
         )
-        _send_h2_websocket_headers(
-            conn, writer, authority=authority, path='/flood'
-        )
+        _send_h2_websocket_headers(conn, writer, authority=authority, path='/flood')
         await writer.drain()
         try:
             with pytest.raises(asyncio.TimeoutError):
@@ -3405,8 +3403,9 @@ async def test_websocket_accept_subprotocol_error_is_raised_from_send(
     assert headers.get(b'sec-websocket-protocol') == b'chat'
 
 
-
-async def test_h2_websocket_denial_body_is_bounded_by_the_connection_byte_budget() -> None:
+async def test_h2_websocket_denial_body_is_bounded_by_the_connection_byte_budget() -> (
+    None
+):
     """
     A denial response is driven straight from the handshake loop, so it never
     passes the ASGI admission that charges an ordinary response body. Against a

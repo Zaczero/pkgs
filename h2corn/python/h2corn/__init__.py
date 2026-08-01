@@ -43,7 +43,7 @@ if _TYPE_CHECKING:
         HTTPRequest,
         HTTPResponseBody,
         HTTPResponseEarlyHint,
-    HTTPResponsePathsend,
+        HTTPResponsePathsend,
         HTTPResponseStart,
         HTTPResponseTrailers,
         HTTPScope,

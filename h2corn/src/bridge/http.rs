@@ -389,12 +389,7 @@ impl PyHttpReceive {
                 }
             },
             HttpReceiveKind::Stream(state) => {
-                return receive_or_await(
-                    py,
-                    &self.shard,
-                    state,
-                    build_http_inbound_event,
-                );
+                return receive_or_await(py, &self.shard, state, build_http_inbound_event);
             },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)

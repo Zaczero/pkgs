@@ -839,7 +839,9 @@ async def test_client_certificate_chain_exact_der_order(tmp_path: Path) -> None:
     )
     context = client_context(root_path, certfile=client_cert, keyfile=client_key)
     async with running_server(app, config) as server_instance:
-        assert await tls_http1_request(server_port(server_instance), context) == b'chain'
+        assert (
+            await tls_http1_request(server_port(server_instance), context) == b'chain'
+        )
 
     assert captured
     tls = captured[0]
@@ -1008,7 +1010,6 @@ async def test_tls_extension_reaches_a_websocket_scope(tmp_path: Path) -> None:
     assert tls['server_cert'] is not None
     assert tls['server_cert'].startswith('-----BEGIN CERTIFICATE-----')
     assert tls['client_cert_chain'] == ()
-
 
 
 async def test_prepare_tls_rejects_empty_and_malformed_pem(tmp_path: Path) -> None:
@@ -1213,7 +1214,9 @@ async def test_supervisor_replacement_uses_inherited_tls_material(
         await wait_for_port(port, timeout=10)
         first = asyncio.create_task(tls_http1_request(port, context))
         while not first_entered.exists():
-            assert process.returncode is None, 'supervisor exited before first handshake'
+            assert process.returncode is None, (
+                'supervisor exited before first handshake'
+            )
             assert asyncio.get_running_loop().time() < deadline
             if first.done():
                 await first
@@ -1299,32 +1302,26 @@ def _rfc4514_subjects():
             id='escaping',
         ),
         pytest.param(
-            x509.Name(
-                [
-                    x509.NameAttribute(NameOID.COUNTRY_NAME, 'US'),
-                    x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'Acme'),
-                    x509.NameAttribute(NameOID.COMMON_NAME, 'multi'),
-                ]
-            ),
+            x509.Name([
+                x509.NameAttribute(NameOID.COUNTRY_NAME, 'US'),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'Acme'),
+                x509.NameAttribute(NameOID.COMMON_NAME, 'multi'),
+            ]),
             id='multi-attribute',
         ),
         pytest.param(
-            x509.Name(
-                [
-                    x509.RelativeDistinguishedName(
-                        [
-                            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, 'Sales'),
-                            x509.NameAttribute(NameOID.COMMON_NAME, 'Bob'),
-                        ]
-                    )
-                ]
-            ),
+            x509.Name([
+                x509.RelativeDistinguishedName([
+                    x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, 'Sales'),
+                    x509.NameAttribute(NameOID.COMMON_NAME, 'Bob'),
+                ])
+            ]),
             id='multivalued-rdn',
         ),
         pytest.param(
-            x509.Name(
-                [x509.NameAttribute(x509.ObjectIdentifier('1.2.3.4.5'), 'unknown')]
-            ),
+            x509.Name([
+                x509.NameAttribute(x509.ObjectIdentifier('1.2.3.4.5'), 'unknown')
+            ]),
             id='unknown-oid',
             # RFC 4514 §2.4 requires `#` + hex DER whenever the AttributeType
             # is rendered in dotted-decimal form, so an unknown OID is
@@ -1351,7 +1348,8 @@ async def test_rfc4514_client_name_matches_cryptography(
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'test-ca')])
     now = datetime.datetime.now(datetime.UTC)
     ca_cert = (
-        x509.CertificateBuilder()
+        x509
+        .CertificateBuilder()
         .subject_name(ca_name)
         .issuer_name(ca_name)
         .public_key(ca_key.public_key())
@@ -1363,7 +1361,8 @@ async def test_rfc4514_client_name_matches_cryptography(
     )
     client_key = ec.generate_private_key(ec.SECP256R1())
     client_cert = (
-        x509.CertificateBuilder()
+        x509
+        .CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_name)
         .public_key(client_key.public_key())
@@ -1410,7 +1409,10 @@ async def test_rfc4514_client_name_matches_cryptography(
     expected = leaf.subject.rfc4514_string()
     if 'unknown-oid' in request.node.callspec.id:
         # The value is the BER encoding of a UTF8String "unknown", hex-encoded.
-        assert captured and captured[0]['client_cert_name'] == '1.2.3.4.5=#0c07756e6b6e6f776e'
+        assert (
+            captured
+            and captured[0]['client_cert_name'] == '1.2.3.4.5=#0c07756e6b6e6f776e'
+        )
     else:
         assert captured and captured[0]['client_cert_name'] == expected
 
@@ -1449,8 +1451,7 @@ async def test_negotiated_cipher_suite_matches_scope(tmp_path: Path) -> None:
         assert captured
         tls = captured[0]
         context_summary = (
-            f'pinned={maximum!r} port={port} client={client!r} '
-            f'server_extension={tls!r}'
+            f'pinned={maximum!r} port={port} client={client!r} server_extension={tls!r}'
         )
         assert client_version == expected, (
             f'the client did not negotiate the pinned version; {context_summary}'

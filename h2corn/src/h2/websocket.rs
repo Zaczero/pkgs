@@ -5,9 +5,9 @@ use tokio::sync::mpsc;
 
 use super::H2WriterHandle;
 use super::http::H2HttpTransport;
+use crate::bridge::HttpOutboundEvent;
 use crate::error::{H2CornError, H2Error};
 use crate::h2_frame::{ErrorCode, StreamId};
-use crate::bridge::HttpOutboundEvent;
 use crate::http::app::AdmittedHttpOutboundEvent;
 use crate::http::response::{
     HttpResponseTransport, ResponseAction, ResponseActions, ResponseBytePermit,

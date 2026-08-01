@@ -802,8 +802,14 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, false)
-            .expect("valid HTTP/2 request should decode");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        )
+        .expect("valid HTTP/2 request should decode");
 
         let cookies: Vec<&[u8]> = request
             .headers
@@ -827,8 +833,14 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, false)
-            .expect("valid HTTP/2 request should decode");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            false,
+        )
+        .expect("valid HTTP/2 request should decode");
 
         let cookie = request
             .headers
@@ -856,15 +868,21 @@ mod tests {
         ]);
 
         let mut decoder = Decoder::new(4096);
-        let request = decode_request_head(&mut decoder, block, HeaderLimits::new(None, None), false, true)
-            .expect("valid HTTP/2 request should decode");
+        let request = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            false,
+            true,
+        )
+        .expect("valid HTTP/2 request should decode");
 
         let slots = request
             .header_meta
             .proxy_headers()
             .expect("the forwarded slot was recorded");
-        let index = ProxyHeaderSlots::index(slots.x_forwarded_for)
-            .expect("x-forwarded-for was recorded");
+        let index =
+            ProxyHeaderSlots::index(slots.x_forwarded_for).expect("x-forwarded-for was recorded");
         assert_eq!(
             request
                 .headers

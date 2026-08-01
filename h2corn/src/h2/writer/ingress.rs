@@ -224,9 +224,9 @@ impl WriterIngress {
 
 #[cfg(test)]
 mod tests {
-    use tokio::task::yield_now;
-
     use std::sync::Arc;
+
+    use tokio::task::yield_now;
 
     use super::{WRITER_CHANNEL_CAPACITY, WriterIngress};
     use crate::h2::writer::WriterCommand;

@@ -56,7 +56,9 @@ def capture(output: Path, target_directory: Path) -> None:
     if result.returncode:
         raise RuntimeError(f'capture build failed; compiler output is in {output}')
     if not parse_capture(output):
-        raise RuntimeError(f'capture contained no type sizes; compiler output is in {output}')
+        raise RuntimeError(
+            f'capture contained no type sizes; compiler output is in {output}'
+        )
 
 
 def parse_capture(path: Path) -> dict[str, Layout]:
@@ -97,11 +99,15 @@ def diff(control_path: Path, candidate_path: Path) -> int:
         print('Changed type layouts (candidate relative to control):')
         for name, before, after in changes:
             size_change = after.size - before.size
-            alignment = '' if before.alignment == after.alignment else (
-                f', alignment {before.alignment} -> {after.alignment}'
+            alignment = (
+                ''
+                if before.alignment == after.alignment
+                else (f', alignment {before.alignment} -> {after.alignment}')
             )
             kind = ' [async/future]' if future_or_async(name) else ''
-            print(f'  {size_change:+5d} B  {before.size:>5} -> {after.size:<5} {name}{kind}{alignment}')
+            print(
+                f'  {size_change:+5d} B  {before.size:>5} -> {after.size:<5} {name}{kind}{alignment}'
+            )
 
     futures = sorted(
         name for name in control.keys() & candidate.keys() if future_or_async(name)
@@ -133,7 +139,9 @@ def main() -> int:
     commands = parser.add_subparsers(dest='command', required=True)
     capture_parser = commands.add_parser('capture')
     capture_parser.add_argument('output', type=Path)
-    capture_parser.add_argument('--target-dir', type=Path, default=DEFAULT_TARGET_DIRECTORY)
+    capture_parser.add_argument(
+        '--target-dir', type=Path, default=DEFAULT_TARGET_DIRECTORY
+    )
     diff_parser = commands.add_parser('diff')
     diff_parser.add_argument('control', type=Path)
     diff_parser.add_argument('candidate', type=Path)

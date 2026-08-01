@@ -237,7 +237,7 @@ where
                     port: 8000,
                 }]),
                 access_log: false,
-            log_format: LogFormat::Text,
+                log_format: LogFormat::Text,
                 root_path: Box::from(""),
                 root_path_scope: crate::python::PyOnceLock::new(),
                 limit_request_fields: None,
@@ -1026,7 +1026,8 @@ where
             data,
             credit,
         } => {
-            handle_send_websocket_data(&mut context.send_context(), stream_id, data, credit).await?;
+            handle_send_websocket_data(&mut context.send_context(), stream_id, data, credit)
+                .await?;
         },
         WriterCommand::SendPath {
             stream_id,
@@ -1169,8 +1170,7 @@ mod tests {
 
     use super::{
         HeaderEncodeState, PeerSettings, ReadyStreamQueue, ResponseCloseBatch, StreamWriteState,
-        WriterCommand, WriterCommandBatch, WriterSendParts, WriterState,
-        handle_send_headers,
+        WriterCommand, WriterCommandBatch, WriterSendParts, WriterState, handle_send_headers,
     };
     use crate::bridge::PayloadBytes;
     use crate::h2::{ResponseClose, new_stream_map};

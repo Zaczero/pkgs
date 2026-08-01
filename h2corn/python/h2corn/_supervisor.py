@@ -106,8 +106,6 @@ class _Worker:
     forced_retirement_reap: bool = False
 
 
-
-
 def _restart_worker(worker: _WorkerProcess):
     if not worker.is_alive() or worker.pid is None:
         return
@@ -664,7 +662,9 @@ class _Supervisor:
             return
         worker.forced_retirement_reap = True
         if worker.process.is_alive():
-            Event.WORKER_KILLED.log('{message}', message=message, pid=worker.process.pid)
+            Event.WORKER_KILLED.log(
+                '{message}', message=message, pid=worker.process.pid
+            )
             worker.process.kill()
 
     def kill_expired_retirements(self) -> None:

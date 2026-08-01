@@ -290,8 +290,7 @@ impl HeaderParseState {
                 // A repeated field line is a second application of chunked,
                 // and Content-Length alongside Transfer-Encoding is RFC 9112
                 // 6.3 rule 3. Both are unframed, so both stay 400.
-                if self.chunked || self.header_meta.content_length().is_some()
-                {
+                if self.chunked || self.header_meta.content_length().is_some() {
                     return Http1Error::MalformedHeaderLine.err();
                 }
                 match classify_transfer_coding(value) {
@@ -1308,7 +1307,10 @@ mod tests {
         MAX_TRAILER_SECTION_BYTES, drain_chunked_trailers, parse_chunk_size, parse_http2_settings,
         read_chunk_size_line, read_chunked_body, read_request, read_request_head,
     };
-    use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, ServerConfig, WebSocketConfig};
+    use crate::config::{
+        BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig,
+        ServerConfig, WebSocketConfig,
+    };
     use crate::error::{ErrorKind, H2CornError, Http1Error};
     use crate::h1::{ConnectionPersistence, RequestBodyKind, RequestRoute, UpgradeRequest};
     use crate::h2_frame;

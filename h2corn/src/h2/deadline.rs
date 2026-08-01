@@ -1,4 +1,3 @@
-
 use tokio::time::Instant;
 
 /// A lazily allocated, generation-stamped deadline index.

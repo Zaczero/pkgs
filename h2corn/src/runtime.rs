@@ -908,7 +908,10 @@ pub(crate) mod test_fixtures {
         AppRuntime, AppRuntimeHandle, ConnectionContext, ConnectionShared, RequestTaskGuard,
         try_acquire_request_admission,
     };
-    use crate::config::{BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig, ServerConfig, WebSocketConfig};
+    use crate::config::{
+        BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig,
+        ServerConfig, WebSocketConfig,
+    };
     use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
     use crate::proxy_protocol::{
         ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr, ServerEndpoint,

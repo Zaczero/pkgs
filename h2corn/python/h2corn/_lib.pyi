@@ -5,8 +5,13 @@ from ._config import Config
 from ._server import TlsMaterial
 from ._types import Application, State
 
-__all__ = ['_LifespanHandoff', '_PreparedTls', 'emit_banner', 'prepare_tls', 'serve_fds']
-
+__all__ = [
+    '_LifespanHandoff',
+    '_PreparedTls',
+    'emit_banner',
+    'prepare_tls',
+    'serve_fds',
+]
 
 @final
 class _LifespanHandoff:

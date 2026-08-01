@@ -119,7 +119,9 @@ impl<T, const N: usize> InlineFifo<T, N> {
         };
         // SAFETY: ownership of every formerly live item was transferred to
         // this slice exactly once above.
-        unsafe { ptr::drop_in_place(live); }
+        unsafe {
+            ptr::drop_in_place(live);
+        }
     }
 
     fn advance_front(&mut self) {

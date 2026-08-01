@@ -10,9 +10,7 @@ pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInpu
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
-use pyo3::types::{
-    PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString,
-};
+use pyo3::types::{PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 #[cfg(test)]
@@ -343,10 +341,6 @@ impl<'py> AsgiMessage<'py> {
     fn message_type(&self) -> Result<&str, H2CornError> {
         self.message_type.to_str().map_err(H2CornError::from)
     }
-
-
-
-
 
     fn require(
         container: AsgiContainer,
@@ -1290,7 +1284,9 @@ mod tests {
 
     use bytes::Bytes;
     use pyo3::ffi::c_str;
-    use pyo3::types::{PyAnyMethods as _, PyBytes, PyDict, PyDictMethods as _, PyList, PyString, PyTuple};
+    use pyo3::types::{
+        PyAnyMethods as _, PyBytes, PyDict, PyDictMethods as _, PyList, PyString, PyTuple,
+    };
     use pyo3::{PyResult, Python};
     use tokio::sync::{Mutex, mpsc, oneshot};
 

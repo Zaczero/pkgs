@@ -453,7 +453,8 @@ mod tests {
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
             let scope_one = build_http_scope(py, &request_one)?;
-            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
+            let request_two =
+                RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_two = build_http_scope(py, &request_two)?;
             drop(request_one);
             drop(request_two);
@@ -516,7 +517,8 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
-            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
+            let request_two =
+                RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_one = build_http_scope(py, &request_one)?;
             let scope_two = build_http_scope(py, &request_two)?;
             drop(request_one);
@@ -576,7 +578,8 @@ mod tests {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let request_one = RequestContext::new(test_connection(py), test_request());
-            let request_two = RequestContext::new(Arc::clone(&request_one.connection), test_request());
+            let request_two =
+                RequestContext::new(Arc::clone(&request_one.connection), test_request());
             let scope_one = build_websocket_scope(py, &request_one, &[])?;
             let scope_two = build_websocket_scope(py, &request_two, &[])?;
             drop(request_one);
