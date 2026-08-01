@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 
 use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::app_call::AppCallArgs;
-use crate::error::H2CornError;
+use crate::error::{H2CornError, SendAfterCloseError};
 use crate::runtime::RequestTaskGuard;
 
 enum DoneSlot {
@@ -206,6 +206,13 @@ fn task_is_done(py: Python<'_>, task: &Bound<'_, PyAny>) -> PyResult<bool> {
 fn task_outcome(py: Python<'_>, task: &Bound<'_, PyAny>) -> Result<(), H2CornError> {
     match task.call_method0(pyo3::intern!(py, "result")) {
         Ok(_) => Ok(()),
+        // An application that let our own closed-stream error escape did not
+        // fail: the ASGI spec has the server raise that error, and says the
+        // server should not then log the exception it raised itself. Reporting
+        // it blamed the application for h2corn's own signal -- and whether the
+        // application ever saw it depended on a race the response driver won on
+        // some interpreters and lost on others.
+        Err(err) if err.is_instance_of::<SendAfterCloseError>(py) => Ok(()),
         Err(err) => Err(H2CornError::from(err)),
     }
 }

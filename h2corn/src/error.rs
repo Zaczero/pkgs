@@ -1059,6 +1059,13 @@ impl<T> IntoPyResult<T> for Result<T, H2CornError> {
     }
 }
 
+pyo3::create_exception!(
+    h2corn._lib,
+    SendAfterCloseError,
+    PyOSError,
+    "Raised when an application sends on a stream the server has already closed."
+);
+
 pub(crate) fn into_pyerr<E>(err: E) -> PyErr
 where
     E: Into<H2CornError>,
@@ -1074,7 +1081,7 @@ where
         },
         // Use of a stream the transport has already closed.
         ErrorKind::Asgi(AsgiError::SendAfterClose) => {
-            PyOSError::new_err(AsgiError::SendAfterClose.to_string())
+            SendAfterCloseError::new_err(AsgiError::SendAfterClose.to_string())
         },
         ErrorKind::Asgi(
             err @ (AsgiError::MissingField { .. }

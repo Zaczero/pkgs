@@ -552,6 +552,45 @@ async def test_send_after_a_real_response_close_raises(protocol: str) -> None:
     assert 'stream closed' in errors[0]
 
 
+async def test_an_uncaught_late_send_is_not_reported_as_an_app_failure(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The server must not log the exception the server itself raised.
+
+    A late send is deterministically after closure here -- the client has read
+    the whole response before the app is released -- so `send()` really does
+    raise. The application does not catch it, and ASGI still says this is not
+    an application failure to report.
+    """
+    attempt_late_send = asyncio.Event()
+    late_send_finished = asyncio.Event()
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'complete'})
+        await attempt_late_send.wait()
+        try:
+            # Uncaught on purpose: it propagates out of the app task.
+            await send({'type': 'http.response.body', 'body': b'too late'})
+        finally:
+            late_send_finished.set()
+
+    async with running_server(app, Config(port=0)) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(b'GET / HTTP/1.1\r\nHost: x\r\n\r\n')
+            await writer.drain()
+            status, _headers, body, _trailers = await read_http1_response(reader)
+            attempt_late_send.set()
+            await asyncio.wait_for(late_send_finished.wait(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert (status, body) == (200, b'complete')
+    assert 'request failed:' not in capfd.readouterr().err
+
+
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])
 async def test_delayed_pathsend_is_not_lost(protocol: str, tmp_path) -> None:
     path = tmp_path / 'delayed-pathsend.txt'
