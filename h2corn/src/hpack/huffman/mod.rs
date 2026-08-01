@@ -37,6 +37,11 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 
     buf.reserve(src.len().saturating_mul(8).div_ceil(MIN_CODE_BITS));
 
+    // Borrow the spare capacity once. Taking it per symbol rebuilds the slice
+    // from ptr/len/cap, and because the store lands in the same heap buffer the
+    // optimizer cannot prove it does not alias the `BytesMut` header -- so all
+    // three reload on every decoded symbol, twice per input byte.
+    let spare = buf.spare_capacity_mut();
     let result = (|| {
         for &byte in src {
             let entry = DecodeEntry(DECODE_TABLE[state][usize::from(byte >> 4)]);
@@ -46,7 +51,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
             }
             if flags & DECODED != 0 {
                 // The reserve bound leaves one uninitialized byte for every decoded symbol.
-                buf.spare_capacity_mut()[decoded_len].write(entry.symbol());
+                spare[decoded_len].write(entry.symbol());
                 decoded_len += 1;
             }
             state = entry.next();
@@ -58,7 +63,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
             }
             if flags & DECODED != 0 {
                 // The reserve bound leaves one uninitialized byte for every decoded symbol.
-                buf.spare_capacity_mut()[decoded_len].write(entry.symbol());
+                spare[decoded_len].write(entry.symbol());
                 decoded_len += 1;
             }
             state = entry.next();
@@ -73,7 +78,9 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 
     // SAFETY: `decoded_len` never exceeds the `MIN_CODE_BITS` reserve bound,
     // and every counted byte was written into the corresponding spare slot.
-    unsafe { buf.set_len(initial_len + decoded_len); }
+    unsafe {
+        buf.set_len(initial_len + decoded_len);
+    }
     result?;
 
     Ok(buf.split())

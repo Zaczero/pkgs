@@ -240,7 +240,6 @@ impl FrameFlags {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub(crate) struct FrameType(u8);
@@ -637,12 +636,9 @@ where
             return Err(H2CornError::from(H2Error::FramePayloadClosed).into());
         }
 
-        let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
-            unreachable!("frame header is buffered")
-        };
-        let stream_id = StreamId::new(
-            u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & STREAM_ID_MASK,
-        );
+        // `stream_id` decoded above is still the one this header carries:
+        // reading more payload only appends, and both paths that consume the
+        // header return before reaching here.
         self.buffer.advance(FRAME_HEADER_LEN);
         let payload = self.buffer.split_to(payload_len).freeze();
 
