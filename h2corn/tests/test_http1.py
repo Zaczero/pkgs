@@ -1836,6 +1836,63 @@ async def test_head_trailers_sent_after_the_response_completed_do_not_fail() -> 
     assert get_trailers == [(b'x-finished', b'yes')]
 
 
+async def test_http1_trailers_with_a_declared_length_do_not_desync_the_connection() -> None:
+    """
+    RFC 9110 section 6.5.1 allows a trailer section only under a framing that
+    supports one; in HTTP/1.1 that is chunked.
+
+    An application that declared ``content-length`` *and* asked for trailers
+    used to get a length-framed response with a chunked terminator appended
+    after it.  The client frames the body by length and then reads
+    ``0\\r\\nx-finished: yes\\r\\n\\r\\n`` as the start-line of the next
+    response -- response splitting on a shared keep-alive connection.  So the
+    property under test is the *second* response, not the first one's headers.
+    """
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            # The declared length is what used to win the framing decision.
+            'headers': [(b'content-length', b'5')],
+            'trailers': True,
+        })
+        await send({'type': 'http.response.body', 'body': b'hello'})
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
+
+    async with running_server(app, Config(port=0)) as server:
+        port = server_port(server)
+        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+        try:
+            head = f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTE: trailers\r\n\r\n'
+            # Both requests go out before either response is read, so a
+            # desynchronised first response corrupts the second.
+            writer.write(head.encode() * 2)
+            await writer.drain()
+
+            status, headers, body, trailers = await read_http1_response(reader)
+            assert status == 200
+            assert headers.get(b'transfer-encoding') == b'chunked'
+            assert b'content-length' not in headers, (
+                'a trailer section cannot be framed by length'
+            )
+            assert body == b'hello'
+            assert trailers == [(b'x-finished', b'yes')]
+
+            second_status, _, second_body, _ = await read_http1_response(reader)
+            assert second_status == 200, (
+                'the chunked terminator was read as the next response'
+            )
+            assert second_body == b'hello'
+        finally:
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+
+
 @pytest.mark.parametrize('version', ['HTTP/1.0', 'HTTP/1.4'])
 async def test_http1_unsupported_minor_version_is_a_bad_request(version: str) -> None:
     """

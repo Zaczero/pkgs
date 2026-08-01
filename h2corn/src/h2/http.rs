@@ -402,13 +402,15 @@ fn append_response_action(
                 &config.response_headers,
             );
         },
-        ResponseAction::Start { mut start } => {
+        ResponseAction::Start { mut start, .. } => {
             if start.status() == status_code::UPGRADE_REQUIRED {
                 return Err(H2CornError::from(pyo3::exceptions::PyValueError::new_err(
                     "HTTP/2 responses cannot advertise an Upgrade",
                 )));
             }
-            let _declared_length = start.prepare_streaming(&config.response_headers);
+            // HTTP/2 frames trailers in their own HEADERS frame, so a declared
+            // content-length stays: it describes the body either way.
+            let _declared_length = start.prepare_streaming(&config.response_headers, false);
             start.strip_http2_only_fields();
             let (status, headers) = start.into_status_headers();
             commands.push_back(WriterCommand::SendHeaders {

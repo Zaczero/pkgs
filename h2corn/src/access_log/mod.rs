@@ -322,7 +322,7 @@ impl ResponseLogState {
                     self.sent_body(body.len());
                 }
             },
-            ResponseAction::Start { start } => self.started(start.status()),
+            ResponseAction::Start { start, .. } => self.started(start.status()),
             ResponseAction::Body(body) => self.sent_body(body.len()),
             ResponseAction::File { len, .. } => self.sent_body(*len),
             ResponseAction::InternalError => self.internal_error(),
@@ -352,6 +352,7 @@ mod observe_tests {
 
         log.observe(&ResponseAction::Start {
             start: start(status_code::OK),
+            expects_trailers: false,
         });
         assert_eq!(log.status, Some(status_code::OK));
         assert_eq!(log.response_body_bytes, 0);
@@ -420,6 +421,7 @@ mod observe_tests {
         let mut log = ResponseLogState::default();
         log.observe(&ResponseAction::Start {
             start: start(status_code::OK),
+            expects_trailers: false,
         });
         log.observe(&ResponseAction::Body(ResponseBody::new(
             PayloadBytes::from(Bytes::from_static(b"partial")),

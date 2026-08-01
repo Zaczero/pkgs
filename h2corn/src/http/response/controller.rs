@@ -57,6 +57,7 @@ impl StartedResponse {
     fn take_start_action(&mut self) -> actions::ResponseAction {
         actions::ResponseAction::Start {
             start: self.start.take_for_action(),
+            expects_trailers: self.expects_trailers(),
         }
     }
 
@@ -333,7 +334,10 @@ impl ResponseController {
             http::header::ResponseConnectionDirective::default(),
         );
         self.state = if started.expects_trailers() {
-            actions.push(actions::ResponseAction::Start { start });
+            actions.push(actions::ResponseAction::Start {
+                start,
+                expects_trailers: true,
+            });
             ResponseState::waiting_for_trailers()
         } else {
             actions.push(actions::ResponseAction::Final {

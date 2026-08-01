@@ -253,11 +253,14 @@ impl H1ResponseState {
                 }
                 Ok(())
             },
-            ResponseAction::Start { mut start } => {
+            ResponseAction::Start {
+                mut start,
+                expects_trailers,
+            } => {
                 self.response_started = true;
                 let directive = start.directive();
                 self.close_after |= directive == ResponseConnectionDirective::Close;
-                let length = start.prepare_streaming(&config.response_headers);
+                let length = start.prepare_streaming(&config.response_headers, expects_trailers);
                 let (status, headers) = start.into_status_headers();
                 self.streaming_framing = if length.is_some() {
                     StreamingBodyFraming::KnownLength

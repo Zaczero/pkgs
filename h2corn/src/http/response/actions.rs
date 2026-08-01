@@ -244,8 +244,20 @@ impl ResponseStart {
         );
     }
 
-    pub(crate) fn prepare_streaming(&mut self, config: &ResponseHeaderConfig) -> Option<usize> {
-        if self.status().forbids_content_length() {
+    /// Settle the framing of an indeterminate-length response.
+    ///
+    /// `expects_trailers` carries an HTTP/1.1-only rule: RFC 9110 6.5.1 allows
+    /// a trailer section only under a framing that supports one, and in
+    /// HTTP/1.1 that is chunked. Honouring a declared length here would frame
+    /// the body by length and leave the chunked terminator to be read as the
+    /// start-line of the next response on a keep-alive connection. HTTP/2
+    /// frames trailers itself and passes `false`.
+    pub(crate) fn prepare_streaming(
+        &mut self,
+        config: &ResponseHeaderConfig,
+        expects_trailers: bool,
+    ) -> Option<usize> {
+        if self.status().forbids_content_length() || expects_trailers {
             prepare_response_headers_without_content_length(
                 &mut self.headers,
                 &mut self.scan,
@@ -287,6 +299,9 @@ pub(crate) enum ResponseAction {
     },
     Start {
         start: ResponseStart,
+        /// The response will end with a trailer section, which HTTP/1.1 can
+        /// only frame as chunked.
+        expects_trailers: bool,
     },
     Body(ResponseBody),
     File {
@@ -440,7 +455,7 @@ mod tests {
 
             let mut streaming = ResponseStart::new(http::types::status_code::OK, headers(values));
             assert_eq!(
-                streaming.prepare_streaming(&ResponseHeaderConfig::default()),
+                streaming.prepare_streaming(&ResponseHeaderConfig::default(), false),
                 declared,
                 "{name}",
             );
@@ -464,7 +479,7 @@ mod tests {
             let mut no_content = ResponseStart::new(http::types::status_code::NO_CONTENT, headers);
             if streaming {
                 assert_eq!(
-                    no_content.prepare_streaming(&ResponseHeaderConfig::default()),
+                    no_content.prepare_streaming(&ResponseHeaderConfig::default(), false),
                     None
                 );
             } else {
@@ -484,7 +499,7 @@ mod tests {
                 ResponseStart::new(http::types::status_code::NOT_MODIFIED, headers);
             if streaming {
                 assert_eq!(
-                    not_modified.prepare_streaming(&ResponseHeaderConfig::default()),
+                    not_modified.prepare_streaming(&ResponseHeaderConfig::default(), false),
                     Some(7)
                 );
             } else {
