@@ -892,7 +892,7 @@ pub(crate) fn start_app_call(
         args,
         slot: Arc::clone(&slot),
     });
-    slot.wait(shard)
+    Arc::clone(&slot).wait(shard)
 }
 
 #[cfg(test)]
@@ -1131,7 +1131,7 @@ mod tests {
         let done_callback_owner = Arc::clone(&slot);
         let shard = app.main_shard();
 
-        drop(slot.wait(shard));
+        drop(Arc::clone(&slot).wait(shard));
         assert_eq!(active_owners(&app.scoped_owners), 1);
         drop(slot);
         assert_eq!(
@@ -1202,7 +1202,7 @@ mod tests {
         slot.fill(());
         let shard = app.main_shard();
 
-        slot.wait(shard).await;
+        Arc::clone(&slot).wait(shard).await;
         assert_eq!(
             active_owners(&app.scoped_owners),
             1,
@@ -1278,7 +1278,7 @@ mod tests {
         let done_callback_owner = Arc::clone(&slot);
         let shard = app.main_shard();
 
-        drop(slot.wait(shard));
+        drop(Arc::clone(&slot).wait(shard));
         assert_eq!(active_owners(&app.scoped_owners), 1);
         drop(slot);
         assert_eq!(active_owners(&app.scoped_owners), 1);

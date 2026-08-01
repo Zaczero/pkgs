@@ -818,7 +818,7 @@ async fn shutdown_future(trigger: Py<PyAny>, shard: Shard) -> ShutdownKind {
         awaitable: trigger,
         slot: Arc::clone(&slot),
     });
-    if let Ok(value) = slot.wait(shard).await {
+    if let Ok(value) = Arc::clone(&slot).wait(shard).await {
         // Once per server shutdown, so the thread-state cost the pump exists
         // to avoid does not apply; the alternative is a bespoke pump event
         // for a single string conversion.

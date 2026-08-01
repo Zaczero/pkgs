@@ -621,7 +621,7 @@ where
         build: Box::new(build),
         slot: Arc::clone(&slot),
     });
-    slot.wait(shard)
+    Arc::clone(&slot).wait(shard)
 }
 
 pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {

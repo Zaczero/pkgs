@@ -124,9 +124,9 @@ impl<T, Guard> TaskSlot<T, Guard> {
     }
 
     /// Await the outcome from the tokio side.
-    pub(crate) fn wait(self: &Arc<Self>, shard: Shard) -> SlotFuture<T, Guard> {
+    pub(crate) const fn wait(self: Arc<Self>, shard: Shard) -> SlotFuture<T, Guard> {
         SlotFuture {
-            slot: Arc::clone(self),
+            slot: self,
             shard,
             completed: false,
         }
@@ -237,7 +237,7 @@ mod tests {
         let slot = TaskSlot::<()>::new();
         slot.fill(());
 
-        drop(slot.wait(shard));
+        drop(Arc::clone(&slot).wait(shard));
         assert!(matches!(*slot.state.lock(), SlotState::Taken));
     }
 
@@ -247,7 +247,7 @@ mod tests {
         let shard = Python::attach(ShardHandle::test_stub);
         for _ in 0..64 {
             let slot = TaskSlot::<()>::new();
-            let future = slot.wait(Arc::clone(&shard));
+            let future = Arc::clone(&slot).wait(Arc::clone(&shard));
             let fill_slot = Arc::clone(&slot);
             let barrier = Arc::new(Barrier::new(2));
 
