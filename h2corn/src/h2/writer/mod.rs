@@ -9,7 +9,7 @@ use std::mem::size_of;
 
 use smallvec::SmallVec;
 
-pub(super) use self::driver::{GrantSendWindowError, H2WriterHandle, WriterState, init_writer};
+pub(super) use self::driver::{H2WriterHandle, WindowOverflow, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
 use crate::http::response::ResponseBytePermit;

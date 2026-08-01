@@ -193,10 +193,6 @@ impl StreamId {
     }
 }
 
-// `StreamId` hashes exactly as its wrapped integer. Opting into nohash-hasher
-// is therefore sound and lets stream maps retain integer-key lookup cost.
-impl nohash_hasher::IsEnabled for StreamId {}
-
 /// A legal HTTP/2 WINDOW_UPDATE increment (RFC 9113: 1..=2^31-1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]

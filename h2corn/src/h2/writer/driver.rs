@@ -75,11 +75,10 @@ pub(crate) struct WriterState<W> {
     response_deadline_updates: ResponseDeadlineUpdateBatch,
 }
 
+/// The peer's WINDOW_UPDATE would push a send window past its 31-bit maximum.
+/// Which window is the caller's own question -- it named the target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GrantSendWindowError {
-    Stream(StreamId),
-    Connection,
-}
+pub(crate) struct WindowOverflow;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InitialWindowAdjustmentOverflow;
@@ -503,34 +502,38 @@ where
         Ok(())
     }
 
-    pub(crate) fn grant_send_window(
+    /// Grow the connection send window. `Err` means the peer overflowed it.
+    pub(crate) fn grant_connection_window(
         &mut self,
-        target: WindowTarget,
         increment: WindowIncrement,
-    ) -> Result<(), GrantSendWindowError> {
+    ) -> Result<(), WindowOverflow> {
         let increment = i64::from(increment.get());
-        let max_window = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
-        match target {
-            WindowTarget::Connection => {
-                if self.connection_send_window > max_window - increment {
-                    return Err(GrantSendWindowError::Connection);
-                }
-                self.connection_send_window += increment;
-            },
-            WindowTarget::Stream(stream_id) => {
-                let stream = self
-                    .streams
-                    .entry(stream_id)
-                    .or_insert_with(|| StreamWriteState::new(self.initial_stream_send_window));
-                if i64::from(stream.send_window) > max_window - increment {
-                    return Err(GrantSendWindowError::Stream(stream_id));
-                }
-                stream.send_window = i32::try_from(i64::from(stream.send_window) + increment)
-                    .expect("a checked window update preserves the signed 31-bit stream window");
-                if stream.has_pending_output() && !stream.is_closed() {
-                    self.ready_streams.schedule(stream, stream_id, false);
-                }
-            },
+        if self.connection_send_window > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+            return Err(WindowOverflow);
+        }
+        self.connection_send_window += increment;
+        Ok(())
+    }
+
+    /// Grow one stream's send window. `Err` means the peer overflowed it.
+    pub(crate) fn grant_stream_window(
+        &mut self,
+        stream_id: StreamId,
+        increment: WindowIncrement,
+    ) -> Result<(), WindowOverflow> {
+        let increment = i64::from(increment.get());
+        let stream = self
+            .streams
+            .entry(stream_id)
+            .or_insert_with(|| StreamWriteState::new(self.initial_stream_send_window));
+        if i64::from(stream.send_window) > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment
+        {
+            return Err(WindowOverflow);
+        }
+        stream.send_window = i32::try_from(i64::from(stream.send_window) + increment)
+            .expect("a checked window update preserves the signed 31-bit stream window");
+        if stream.has_pending_output() && !stream.is_closed() {
+            self.ready_streams.schedule(stream, stream_id, false);
         }
         Ok(())
     }
@@ -1131,7 +1134,7 @@ mod tests {
 
     use super::{
         HeaderEncodeState, PeerSettings, ReadyStreamQueue, ResponseCloseBatch, StreamWriteState,
-        WindowTarget, WriterCommand, WriterCommandBatch, WriterSendParts, WriterState,
+        WriterCommand, WriterCommandBatch, WriterSendParts, WriterState,
         handle_send_headers,
     };
     use crate::bridge::PayloadBytes;
@@ -1437,14 +1440,13 @@ mod tests {
         );
 
         writer
-            .grant_send_window(
-                WindowTarget::Connection,
+            .grant_connection_window(
                 WindowIncrement::new(64 * 1024).expect("positive test increment"),
             )
             .expect("connection window grant is valid");
         writer
-            .grant_send_window(
-                WindowTarget::Stream(stream_id),
+            .grant_stream_window(
+                stream_id,
                 WindowIncrement::new(64 * 1024).expect("positive test increment"),
             )
             .expect("stream window grant is valid");

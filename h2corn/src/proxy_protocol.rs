@@ -506,13 +506,20 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
             return ProxyError::UnsupportedProxyV2Command.err();
         },
     }
+    // AF_UNSPEC is what the spec tells a sender to use when it cannot describe
+    // the endpoints, and such a sender sets the transport to UNSPEC too.
+    // Checking the transport first dropped that spelling while accepting
+    // `(UNSPEC, STREAM)`, which says the same thing; both now fall back to the
+    // real socket endpoints.
+    if family == 0x0 {
+        return Ok(None);
+    }
     if transport != 0x1 {
         return ProxyError::UnsupportedProxyV2Transport.err();
     }
 
     let payload = &frame[16..];
     match family {
-        0x0 => Ok(None),
         0x1 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv4Addrs>::from_prefix(payload)
                 .map_err(|_| ProxyError::InvalidProxyV2Ipv4Payload)?;

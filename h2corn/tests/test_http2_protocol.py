@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -2345,6 +2346,47 @@ async def test_h2_malformed_priority_resets_only_its_stream() -> None:
         for frame_type, _flags, stream_id, payload in frames
     ), frames
     assert not [frame for frame in frames if frame[0] == 0x07], frames
+
+
+async def test_h2_malformed_priority_on_an_idle_stream_ends_the_connection() -> None:
+    """
+    RFC 9113 section 6.3 makes a wrong-length PRIORITY a stream error, but
+    section 6.4 forbids sending RST_STREAM for a stream in the "idle" state and
+    requires a peer that receives one to answer with a connection error.
+
+    The stream-scoped answer is therefore only correct once the stream exists.
+    On an idle stream -- any id the peer has not opened, including every
+    even-numbered one -- h2corn used to emit RST_STREAM for a stream it had
+    never seen, which a conforming client must tear the connection down over.
+    """
+    async def app(scope, receive, send):  # pragma: no cover - never reached
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, Config(port=0, access_log=False)) as server:
+        reader, writer, conn, _authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        try:
+            await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+            # Stream 99 has never carried HEADERS, so it is idle.
+            writer.write(
+                conn.data_to_send()
+                + _encode_h2_frame(0x02, b'\x00\x00\x00\x00', stream_id=99)
+            )
+            await writer.drain()
+            frames = await read_raw_h2_frames(reader, timeout=2.0)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    assert not [frame for frame in frames if frame[0] == 0x03], (
+        f'RST_STREAM must not be sent for an idle stream: {frames}'
+    )
+    assert [frame for frame in frames if frame[0] == 0x07], (
+        f'an idle-stream frame-size violation ends the connection: {frames}'
+    )
 
 
 @pytest.mark.parametrize(

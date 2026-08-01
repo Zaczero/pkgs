@@ -5,6 +5,7 @@ mod state;
 mod websocket;
 mod writer;
 
+use std::hash::{BuildHasherDefault, Hasher};
 use std::collections::HashMap;
 use std::future::{Future, pending};
 use std::num::NonZeroU32;
@@ -13,7 +14,6 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use http::spawn_request_stream;
-use nohash_hasher::BuildNoHashHasher;
 use request::{
     HeaderBlockFragment, HeaderBlockTarget, PendingHeaderBlock, RequestHeadError,
     decode_discarded_header_block, decode_request_head, decode_trailer_block,
@@ -21,7 +21,7 @@ use request::{
 };
 use smallvec::SmallVec;
 use state::{
-    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream, ReceiveState,
+    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream,
     RequestInputClose, RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout_at};
 use writer::{
-    GrantSendWindowError, H2WriterHandle, ResponseClose, WindowTarget, WriterState, init_writer,
+    H2WriterHandle, ResponseClose, WindowOverflow, WindowTarget, WriterState, init_writer,
 };
 
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
@@ -55,7 +55,33 @@ const MAX_CONSECUTIVE_PEER_FRAMES: usize = 32;
 /// deadlock after its first full window, so it refreshes at its full size.
 const INPUT_WINDOW_UPDATE_THRESHOLD: u32 = 256 * 1024;
 
-type StreamMap<T> = HashMap<StreamId, T, BuildNoHashHasher<StreamId>>;
+type StreamMap<T> = HashMap<StreamId, T, BuildHasherDefault<StreamIdHasher>>;
+
+/// Hasher for peer-chosen HTTP/2 stream identifiers.
+///
+/// An identity hash is tempting for a `u32` key, but the peer picks these:
+/// hashbrown takes its 7-bit control byte from the *top* of the hash, so an
+/// identity hash leaves it permanently zero and every SIMD group match hits,
+/// and a client numbering its streams `1, 65537, 131073, ...` lands every entry
+/// in one bucket chain. `max_concurrent_streams` bounds the damage, so this is
+/// an amplifier rather than a vulnerability -- but the key is not trusted, and
+/// one multiply restores both the control byte and the bucket spread.
+#[derive(Default)]
+struct StreamIdHasher(u64);
+
+impl Hasher for StreamIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("stream-map keys hash themselves as a single integer")
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.0 = u64::from(value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
 
 enum H2PeerFailure {
     Goaway {
@@ -108,9 +134,7 @@ struct ResetStreamFrame {
     error_code: ErrorCode,
 }
 
-struct PriorityFrame;
 
-struct GoawayFrame;
 
 impl ConnectionDeadline {
     const fn instant(self) -> TokioInstant {
@@ -261,7 +285,7 @@ impl<R, W> H2ConnectionState<R, W> {
         }
 
         let Some(stream) = self.streams.get_mut(&stream_id) else {
-            return if self.receive_state(stream_id).is_idle() {
+            return if self.receive_state(stream_id).is_none() {
                 DataIngress::IdleStream
             } else {
                 DataIngress::StreamClosed {
@@ -438,7 +462,7 @@ fn input_window_update_threshold(initial_window: NonZeroU32) -> u32 {
 /// streams at a time, and growing on first use measured free (33,341 vs
 /// 33,351 instructions/request, inside a 34-instruction noise floor).
 fn new_stream_map<T>() -> StreamMap<T> {
-    HashMap::with_hasher(BuildNoHashHasher::default())
+    HashMap::with_hasher(BuildHasherDefault::default())
 }
 
 async fn flush_released_input_credits<R, W>(
@@ -930,17 +954,17 @@ where
     };
 
     // 2. Classify the target for this entire block.
-    if receive_state == ReceiveState::Idle {
+    if receive_state.is_none() {
         state.last_client_stream_id = Some(stream_id);
     }
     let target = match receive_state {
-        ReceiveState::Open | ReceiveState::ResponseClosed => HeaderBlockTarget::Trailers {
+        Some(StreamLifecycle::Open | StreamLifecycle::ResponseClosed) => HeaderBlockTarget::Trailers {
             end_stream: fragment.end_stream,
         },
-        ReceiveState::RequestClosed => HeaderBlockTarget::RejectedTracked {
+        Some(StreamLifecycle::RequestClosed) => HeaderBlockTarget::RejectedTracked {
             error_code: ErrorCode::STREAM_CLOSED,
         },
-        ReceiveState::Closed => {
+        Some(StreamLifecycle::Closed) => {
             state
                 .peer_failure(H2PeerFailure::connection(
                     ErrorCode::STREAM_CLOSED,
@@ -949,7 +973,7 @@ where
                 .await?;
             return Ok(());
         },
-        ReceiveState::Idle => {
+        None => {
             if state.should_refuse_new_streams() {
                 HeaderBlockTarget::RejectedNew {
                     error_code: ErrorCode::REFUSED_STREAM,
@@ -1232,7 +1256,15 @@ where
                 stop_after_flush = true;
             },
             IngestEvent::FrameLengthExceeded { reset_stream, error } => {
-                if let Some(stream_id) = reset_stream {
+                // RFC 9113 6.3 makes a wrong-length PRIORITY a stream error,
+                // but 6.4 forbids sending RST_STREAM for an idle stream and
+                // requires a peer that receives one to fail the connection. An
+                // idle stream therefore has to be answered at connection
+                // scope; the sibling WINDOW_UPDATE and RST_STREAM paths below
+                // resolve the same conflict the same way.
+                if let Some(stream_id) =
+                    reset_stream.filter(|stream_id| state.receive_state(*stream_id).is_some())
+                {
                     state
                         .peer_failure(H2PeerFailure::stream(
                             stream_id,
@@ -1599,7 +1631,7 @@ where
     };
     if let Some(stream_id) = stream_id {
         match state.receive_state(stream_id) {
-            ReceiveState::Idle => {
+            None => {
                 state
                     .peer_failure(H2PeerFailure::protocol(H2Error::WindowUpdateOnIdleStream))
                     .await?;
@@ -1608,12 +1640,13 @@ where
             // RFC 9113 §5.1 permits updates that raced with stream closure.
             // They have no send-window owner left, so ignoring them is the
             // only action that cannot recreate writer state.
-            ReceiveState::ResponseClosed | ReceiveState::Closed => return Ok(false),
-            ReceiveState::Open | ReceiveState::RequestClosed => {},
+            Some(StreamLifecycle::ResponseClosed | StreamLifecycle::Closed) => return Ok(false),
+            Some(StreamLifecycle::Open | StreamLifecycle::RequestClosed) => {},
         }
-        if let Err(GrantSendWindowError::Stream(stream_id)) = state
+        if state
             .writer
-            .grant_send_window(WindowTarget::Stream(stream_id), increment)
+            .grant_stream_window(stream_id, increment)
+            .is_err()
         {
             state
                 .peer_failure(H2PeerFailure::stream(
@@ -1624,21 +1657,15 @@ where
         }
         Ok(false)
     } else {
-        match state
-            .writer
-            .grant_send_window(WindowTarget::Connection, increment)
-        {
+        match state.writer.grant_connection_window(increment) {
             Ok(()) => Ok(false),
-            Err(GrantSendWindowError::Connection) => state
+            Err(WindowOverflow) => state
                 .peer_failure(H2PeerFailure::connection(
                     ErrorCode::FLOW_CONTROL_ERROR,
                     H2Error::SendFlowControlWindowOverflow,
                 ))
                 .await
                 .map(|()| true),
-            Err(GrantSendWindowError::Stream(_)) => {
-                unreachable!("connection window update cannot name a stream")
-            },
         }
     }
 }
@@ -1675,7 +1702,7 @@ where
         Ok(reset) => reset,
         Err(failure) => return state.peer_failure(failure).await,
     };
-    if state.receive_state(stream_id).is_idle() {
+    if state.receive_state(stream_id).is_none() {
         state
             .peer_failure(H2PeerFailure::protocol(H2Error::RstStreamOnIdleStream))
             .await?;
@@ -1701,18 +1728,19 @@ where
 /// RFC 9113 deprecates the frame and permits it in every stream state. Its
 /// dependency tree is no longer interpreted, so only stream zero and the
 /// fixed wire length remain meaningful here.
-fn validate_priority_frame(frame: &RawFrame) -> Result<PriorityFrame, H2PeerFailure> {
+fn validate_priority_frame(frame: &RawFrame) -> Result<(), H2PeerFailure> {
     let Some(_stream_id) = frame.header.stream_id else {
         return Err(H2PeerFailure::protocol(
             H2Error::PriorityMustNotUseStreamZero,
         ));
     };
-    if frame.payload.len() != 5 {
-        return Err(H2PeerFailure::frame_size(
-            H2Error::PriorityPayloadInvalidLength,
-        ));
-    }
-    Ok(PriorityFrame)
+    // The payload length is not re-checked here, unlike the sibling
+    // fixed-length validators. `validate_declared_payload_length` rejects a
+    // wrong-length PRIORITY from the frame header, and its error scope depends
+    // on stream state — a local check could only contradict it, which is what
+    // it used to do. A PRIORITY that reached here carries no state to corrupt
+    // in any case: RFC 9113 deprecates the frame and this handler ignores it.
+    Ok(())
 }
 
 async fn handle_priority_frame<R, W>(
@@ -1723,7 +1751,7 @@ where
     W: WriteTarget,
 {
     match validate_priority_frame(&frame) {
-        Ok(PriorityFrame) => Ok(()),
+        Ok(()) => Ok(()),
         Err(failure) => state.peer_failure(failure).await,
     }
 }
@@ -1809,11 +1837,11 @@ where
     Ok(true)
 }
 
-fn validate_goaway_frame(frame: &RawFrame) -> Result<GoawayFrame, H2PeerFailure> {
+fn validate_goaway_frame(frame: &RawFrame) -> Result<(), H2PeerFailure> {
     if frame.header.stream_id.is_some() || frame.payload.len() < 8 {
         return Err(H2PeerFailure::protocol(H2Error::InvalidGoawayFrame));
     }
-    Ok(GoawayFrame)
+    Ok(())
 }
 
 async fn handle_goaway_frame<R, W>(
@@ -1823,7 +1851,7 @@ async fn handle_goaway_frame<R, W>(
 where
     W: WriteTarget,
 {
-    let GoawayFrame = match validate_goaway_frame(&frame) {
+    let () = match validate_goaway_frame(&frame) {
         Ok(frame) => frame,
         Err(failure) => return state.peer_failure(failure).await,
     };

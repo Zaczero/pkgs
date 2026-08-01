@@ -287,15 +287,10 @@ pub(super) enum StreamLifecycle {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub(super) enum ReceiveState {
-    Idle,
-    Open,
-    RequestClosed,
-    ResponseClosed,
-    Closed,
-}
+/// What the connection knows about a peer stream: its lifecycle, or `None`
+/// for idle -- which is the absence of a materialized stream, not a state one
+/// can be in. `Option` is also still one byte, by niche.
+pub(super) type ReceiveState = Option<StreamLifecycle>;
 
 const _: () = assert!(size_of::<StreamLifecycle>() == 1);
 const _: () = assert!(size_of::<ReceiveState>() == 1);
@@ -303,23 +298,6 @@ const _: () = assert!(size_of::<ReceiveState>() == 1);
 impl StreamLifecycle {
     pub(super) const fn request_is_closed(self) -> bool {
         matches!(self, Self::RequestClosed | Self::Closed)
-    }
-}
-
-impl From<StreamLifecycle> for ReceiveState {
-    fn from(state: StreamLifecycle) -> Self {
-        match state {
-            StreamLifecycle::Open => Self::Open,
-            StreamLifecycle::RequestClosed => Self::RequestClosed,
-            StreamLifecycle::ResponseClosed => Self::ResponseClosed,
-            StreamLifecycle::Closed => Self::Closed,
-        }
-    }
-}
-
-impl ReceiveState {
-    pub(super) fn is_idle(self) -> bool {
-        self == Self::Idle
     }
 }
 
@@ -939,10 +917,6 @@ impl RequestInputDeadlineKey {
     }
 }
 
-// Hash derives through the one wrapped integer, so the identity hasher is
-// collision-free for this packed key just as it is for `StreamId`.
-impl nohash_hasher::IsEnabled for RequestInputDeadlineKey {}
-
 const _: () = assert!(size_of::<RequestInputDeadlineKey>() == size_of::<u32>());
 
 impl RequestInputDeadline {
@@ -967,9 +941,9 @@ fn missing_receive_state(
 ) -> ReceiveState {
     if !stream_id.is_client_initiated() || last_client_stream_id.is_none_or(|last| stream_id > last)
     {
-        ReceiveState::Idle
+        None
     } else {
-        ReceiveState::Closed
+        Some(StreamLifecycle::Closed)
     }
 }
 
