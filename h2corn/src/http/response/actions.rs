@@ -48,15 +48,16 @@ impl ResponseByteBudget {
         if charge == 0 {
             return Ok(None);
         }
-        Arc::clone(&self.permits)
-            .try_acquire_many_owned(charge)?
-            .forget();
+        // Borrowed, not owned: the permit is forgotten on the next line, so
+        // an owned one only cloned the `Arc` in order to drop it again.
+        self.permits.try_acquire_many(charge)?.forget();
         // `ResponseBytePermit` returns credit incrementally as DATA is
         // written, which an opaque semaphore permit cannot represent.
-        Ok(Some(ResponseBytePermit {
-            permits: Arc::clone(&self.permits),
-            remaining: charge,
-        }))
+        Ok(Some(ResponseBytePermit::new(
+            Arc::clone(&self.permits),
+            charge,
+            len,
+        )))
     }
 
     pub(crate) async fn acquire(
@@ -67,14 +68,12 @@ impl ResponseByteBudget {
         if charge == 0 {
             return Ok(None);
         }
-        Arc::clone(&self.permits)
-            .acquire_many_owned(charge)
-            .await?
-            .forget();
-        Ok(Some(ResponseBytePermit {
-            permits: Arc::clone(&self.permits),
-            remaining: charge,
-        }))
+        self.permits.acquire_many(charge).await?.forget();
+        Ok(Some(ResponseBytePermit::new(
+            Arc::clone(&self.permits),
+            charge,
+            len,
+        )))
     }
 
     #[cfg(test)]
@@ -83,16 +82,46 @@ impl ResponseByteBudget {
     }
 }
 
-/// A body-owned portion of a [`ResponseByteBudget`]. Credit can be returned
-/// per DATA frame; dropping it returns anything not yet written.
+/// A body-owned portion of a [`ResponseByteBudget`]. Credit is returned as the
+/// body reaches the wire; dropping it returns whatever is left.
 #[derive(Debug)]
 pub(crate) struct ResponseBytePermit {
     permits: Arc<Semaphore>,
+    /// Credit still held.
     remaining: u32,
+    /// The body is longer than the whole connection capacity, so its charge
+    /// was clamped and no longer tracks its bytes.
+    oversized: bool,
 }
 
 impl ResponseBytePermit {
+    fn new(permits: Arc<Semaphore>, charge: u32, len: usize) -> Self {
+        Self {
+            permits,
+            remaining: charge,
+            oversized: usize::try_from(charge).is_ok_and(|charge| charge < len),
+        }
+    }
+
+    /// Return credit for body bytes that have reached the wire.
+    ///
+    /// A body at or under the connection capacity is charged its own length,
+    /// so this is one credit per byte. An oversized body's charge is clamped
+    /// to the capacity and therefore says nothing about its length: releasing
+    /// it per byte handed the entire charge back after the first `capacity`
+    /// bytes while the rest of the body was still queued, so admitting the
+    /// next body cost only `capacity` bytes of drain while adding a whole body
+    /// to the queue, and the queue grew without bound.
+    ///
+    /// Such a body instead holds its charge until the permit is dropped, which
+    /// happens when the body is fully written or abandoned. That bounds what
+    /// can be queued to one body plus the capacity, for a body of any size --
+    /// deliberately with no arithmetic on the length, so a response measured in
+    /// hundreds of gigabytes is bounded exactly like any other.
     pub(crate) fn release_written(&mut self, len: usize) {
+        if self.oversized {
+            return;
+        }
         let released = u32::try_from(len).unwrap_or(u32::MAX).min(self.remaining);
         self.remaining -= released;
         self.permits.add_permits(released as usize);
@@ -352,6 +381,76 @@ mod tests {
                 .count(),
             1,
         );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_body_holds_the_whole_budget_until_it_is_written() {
+        // The charge is clamped to the capacity, so releasing it one-for-one
+        // returned everything after the first `capacity` bytes and left the
+        // rest of the body queued against a fully available budget -- the next
+        // body was then admitted for `capacity` bytes of drain while adding a
+        // whole body to the queue.
+        let budget = ResponseByteBudget::new(64);
+        let mut credit = budget
+            .try_acquire(640)
+            .expect("budget is open")
+            .expect("non-empty body consumes credit");
+        assert_eq!(budget.available(), 0);
+
+        credit.release_written(64);
+        assert_eq!(
+            budget.available(),
+            0,
+            "an oversized body's charge says nothing about its length, so no \
+             part of it can be earned back mid-body"
+        );
+
+        credit.release_written(576);
+        assert_eq!(budget.available(), 0, "still not while the body is in flight");
+
+        drop(credit);
+        assert_eq!(
+            budget.available(),
+            64,
+            "the charge returns when the body is written or abandoned"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_enormous_body_is_bounded_like_any_other() {
+        // Lengths past u32 must not be clamped into an early release: a
+        // hundreds-of-gigabytes response is rare, not a special case.
+        let budget = ResponseByteBudget::new(64);
+        let mut credit = budget
+            .try_acquire(300 * 1024 * 1024 * 1024)
+            .expect("budget is open")
+            .expect("non-empty body consumes credit");
+        assert_eq!(budget.available(), 0);
+
+        credit.release_written(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            budget.available(),
+            0,
+            "writing more bytes than the whole budget must not free it"
+        );
+
+        drop(credit);
+        assert_eq!(budget.available(), 64);
+    }
+
+    #[tokio::test]
+    async fn a_body_within_the_budget_still_releases_one_credit_per_byte() {
+        let budget = ResponseByteBudget::new(64);
+        let mut credit = budget
+            .try_acquire(40)
+            .expect("budget is open")
+            .expect("non-empty body consumes credit");
+        assert_eq!(budget.available(), 24);
+
+        credit.release_written(10);
+        assert_eq!(budget.available(), 34);
+        credit.release_written(30);
+        assert_eq!(budget.available(), 64);
     }
 
     #[tokio::test]
