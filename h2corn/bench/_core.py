@@ -82,6 +82,11 @@ class BenchmarkError(RuntimeError):
 class Metrics(TypedDict):
     rps: float
     latency_percentiles: dict[str, float]
+    #: Completed responses in the trial. Kept because it is what makes `rps`
+    #: interpretable: a server that answers once per connection and then stalls
+    #: still reports a rate, and only the count against the concurrency shows
+    #: that it never reused a connection.
+    completed: int
 
 
 class MeasuredMetrics(Metrics):
@@ -629,11 +634,21 @@ def running_server(
 
 
 def duration_seconds(value: str) -> float:
+    """Parse a duration the load generator will also accept.
+
+    A unit is required because `oha` requires one. Accepting a bare number here
+    used to defer the rejection to load-generation time, after the servers for
+    that cell had already been started -- so the run failed several seconds in,
+    with `oha`'s error rather than one naming the option.
+    """
     units = {'ms': 0.001, 's': 1.0, 'm': 60.0}
     for suffix, scale in units.items():
         if value.endswith(suffix):
             return float(value[: -len(suffix)]) * scale
-    return float(value)
+    raise ValueError(
+        f'duration {value!r} needs a unit: one of '
+        + ', '.join(f'{unit!r}' for unit in units)
+    )
 
 
 def _run(command: list[str], timeout: float) -> str:
@@ -684,8 +699,10 @@ def _oha_metrics(raw: dict[str, Any]) -> Metrics:
     if not isinstance(rps, int | float) or not math.isfinite(rps) or rps <= 0:
         raise BenchmarkError(f'oha reported an invalid rate: {rps!r}')
     percentiles = raw.get('latencyPercentiles', {})
+    statuses: dict[str, int] = raw.get('statusCodeDistribution', {})
     return {
         'rps': float(rps),
+        'completed': sum(statuses.values()),
         'latency_percentiles': {
             name: float(percentiles[name])
             for name in ('p50', 'p75', 'p90', 'p95', 'p99', 'p99.9')
@@ -769,8 +786,10 @@ def _k6_metrics(raw: dict[str, Any]) -> Metrics:
         raise BenchmarkError(f'k6 reported an invalid iteration rate: {rate!r}')
     session = metrics.get('ws_session_duration', {})
     names = (('med', 'p50'), ('p(90)', 'p90'), ('p(95)', 'p95'), ('p(99)', 'p99'))
+    completed = metrics.get('iterations', {}).get('count', 0)
     return {
         'rps': float(rate),
+        'completed': int(completed) if isinstance(completed, int | float) else 0,
         'latency_percentiles': {
             target: float(session[source]) / 1000.0
             for source, target in names

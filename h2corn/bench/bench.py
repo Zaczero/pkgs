@@ -113,6 +113,13 @@ TUNING_MATERIALITY_THRESHOLD = 0.10
 CANONICAL_RAW_DIRECTORY = RESULTS_DIRECTORY / 'raw'
 CANONICAL_PLOT_DIRECTORY = RESULTS_DIRECTORY / 'plots'
 
+# Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
+# where it has one (uvicorn `--http h11`, gunicorn `--http-parser python`). The
+# comparison is meant to isolate the server, not its optional accelerators, and
+# uvloop is not equally load-bearing across them: it does all of uvicorn's I/O,
+# while h2corn's I/O runs in Rust and the loop only schedules application
+# callbacks. Giving it to some and not others measured the accelerator instead.
+#
 # Every server runs with access logging ENABLED — that is how these servers are
 # deployed, and request-log construction is part of the work a real deployment
 # does. h2corn and uvicorn log by default; hypercorn and gunicorn need an
@@ -125,7 +132,7 @@ SERVERS: dict[str, list[str]] = {
         '--backlog',
         '2048',
         '--loop',
-        'uvloop',
+        'asyncio',
         '--timeout-keep-alive',
         '120',
         '--server-header',
@@ -158,7 +165,7 @@ SERVERS: dict[str, list[str]] = {
         'hypercorn',
         'bench.bench_app:app',
         '-k',
-        'uvloop',
+        'asyncio',
         '--access-logfile',
         '-',
         '--backlog',
@@ -170,7 +177,7 @@ SERVERS: dict[str, list[str]] = {
         '-k',
         'asgi',
         '--asgi-loop',
-        'uvloop',
+        'asyncio',
         '--http-parser',
         'python',
         '--no-control-socket',
@@ -270,6 +277,13 @@ def rtt50_scenarios() -> tuple[Scenario, ...]:
     workers are the deployment headline shape, except for the existing HTTP/2
     multiplexing cell whose ten streams per connection are the point of the
     workload.
+
+    The streaming POSTs run at `CONCURRENCY`, not `STREAMING_CONCURRENCY`, for
+    that same reason. A 1 Gbit, 50 ms path holds about 6.25 MiB in flight, so a
+    thousand simultaneous uploads are bounded by the link and the generator
+    rather than by the server -- measurably so: every one of the 1000 virtual
+    users aborted on the deadline without a single completed request, which
+    failed the whole suite rather than producing a slow number.
     """
     return (
         Scenario(
@@ -286,13 +300,13 @@ def rtt50_scenarios() -> tuple[Scenario, ...]:
             'HTTP/1 Streaming POST (4 Workers, 50 ms RTT)',
             4,
             'h1_stream',
-            STREAMING_CONCURRENCY,
+            CONCURRENCY,
         ),
         Scenario(
             'HTTP/2 Streaming POST (4 Workers, 50 ms RTT)',
             4,
             'h2_stream',
-            STREAMING_CONCURRENCY,
+            CONCURRENCY,
         ),
         Scenario('HTTP/2 8 MiB upload (4 Workers, 50 ms RTT)', 4, 'h2_upload', 8),
         Scenario(
@@ -518,10 +532,10 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
     ]
     return {
         'h2corn': {
+            'profile_choice': [aligned_setting('loop', 'asyncio', 'auto')],
             'aligned': [
                 aligned_setting('workers', workers, 1),
                 aligned_setting('backlog', 2_048, 1_024),
-                aligned_setting('loop', 'uvloop', 'auto'),
                 aligned_setting('timeout_keep_alive', 120, 120),
                 aligned_setting('server_header', 'off', 'off'),
                 aligned_setting('date_header', True, True),
@@ -531,6 +545,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
             'no_equivalent': [],
         },
         'hypercorn': {
+            'profile_choice': [aligned_setting('worker_class', 'asyncio', 'asyncio')],
             'aligned': [
                 aligned_setting('workers', workers, 1),
                 aligned_setting('backlog', 2_048, 100),
@@ -595,7 +610,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                 aligned_setting('backlog', 2_048, 2_048),
                 aligned_setting('keep_alive', 120, 2),
             ],
-            'profile_choice': [aligned_setting('asgi_loop', 'uvloop', 'auto')],
+            'profile_choice': [aligned_setting('asgi_loop', 'asyncio', 'auto')],
             'no_equivalent': [
                 no_equivalent(
                     'server_header',
@@ -632,6 +647,10 @@ def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
     return {
         'rps': statistics.median(rates),
         'rps_samples': rates,
+        # Median completions, beside the rate they produced. A server that
+        # answers once per connection and then stalls still reports a rate;
+        # only this count against the cell's concurrency reveals it.
+        'completed': statistics.median([sample['completed'] for sample in samples]),
         'rps_range': [min(rates), max(rates)],
         'relative_half_width': relative_half_width(rates, SEED),
         # Throughput is the median trial, but deployment capacity must cover
