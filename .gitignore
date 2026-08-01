@@ -475,9 +475,10 @@ jinja2-htmlmin/tests/templates/.*
 h2corn/bench/*.bin
 h2corn/bench/results/raw/
 h2corn/bench/results/runs/
-h2corn/bench/results/*_summary.json
 h2corn/bench/results/compare/
-h2corn/bench/results/matrix/
+h2corn/bench/results/instr/
+h2corn/bench/results/*_summary.json
+h2corn/bench/results/*.sock
 
 # gometry: raw release bench dumps
 gometry/benches/results/releases/
