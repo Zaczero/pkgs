@@ -290,6 +290,13 @@ def _adopt_listener(fd: int) -> _BorrowedListener:
     return listener
 
 
+#: `socket.TCP_FASTOPEN` is missing from PyPy's socket module, but the option
+#: is a stable part of the Linux UAPI and the kernel still honours it. Falling
+#: back to the numeric value keeps Fast Open working there instead of silently
+#: dropping it.
+_TCP_FASTOPEN = getattr(socket, 'TCP_FASTOPEN', 23)
+
+
 def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -298,8 +305,11 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
 
     value = 512 if sys.platform == 'linux' else 1
     try:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, value)
-    except (OSError, AttributeError):
+        sock.setsockopt(socket.IPPROTO_TCP, _TCP_FASTOPEN, value)
+    except OSError:
+        # The kernel or its configuration refused the option. A binding that
+        # simply does not name the constant is a different thing, and is
+        # handled by `_TCP_FASTOPEN` rather than swallowed here.
         pass
 
     if sys.platform == 'linux':

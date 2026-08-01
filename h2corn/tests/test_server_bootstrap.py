@@ -181,7 +181,10 @@ def test_listener_sets_tcp_defer_accept_on_linux(bind_listeners) -> None:
 def test_listener_enables_tcp_fastopen_on_linux(bind_listeners) -> None:
     # On a Linux listener TCP_FASTOPEN stores the accept-queue length we request.
     _config, sockets = bind_listeners(bind=('127.0.0.1:0',))
-    assert sockets[0].getsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN) > 0
+    # Query by the UAPI option number rather than the binding's attribute, so
+    # the assertion holds on interpreters whose socket module omits the name.
+    fastopen = getattr(socket, 'TCP_FASTOPEN', 23)
+    assert sockets[0].getsockopt(socket.IPPROTO_TCP, fastopen) > 0
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='unix sockets are not supported')
