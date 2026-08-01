@@ -98,7 +98,13 @@ pub(crate) enum ConnectionPeer {
     Tcp(SocketAddr),
     /// Constructed only by the (unix-only) UDS accept path; the variant
     /// stays unconditional so peer handling reads platform-neutral.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(
+        windows,
+        expect(
+            dead_code,
+            reason = "the UDS peer variant stays unconditional so peer handling reads platform-neutral"
+        )
+    )]
     Unix,
 }
 

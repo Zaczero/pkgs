@@ -115,6 +115,21 @@ enum PathReadState {
     Failed,
 }
 
+impl PathReadState {
+    /// Take a ready file and its buffer, leaving `Failed`. Any other state is
+    /// put back untouched, so the caller never has to re-match -- and panic on
+    /// -- an arm it has already proved impossible.
+    fn take_ready(&mut self) -> Option<(File, Option<Box<[u8]>>)> {
+        match mem::replace(self, Self::Failed) {
+            Self::Ready { file, buffer } => Some((file, buffer)),
+            other => {
+                *self = other;
+                None
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PathReadResult {
     file: File,
@@ -134,12 +149,7 @@ impl PathStreamer {
 
     pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
         debug_assert!(self.cursor.buffered.is_empty());
-        if let PathReadState::Ready { .. } = self.read {
-            let PathReadState::Ready { mut file, buffer } =
-                mem::replace(&mut self.read, PathReadState::Failed)
-            else {
-                unreachable!("the ready state was matched")
-            };
+        if let Some((mut file, buffer)) = self.read.take_ready() {
             let mut buffer =
                 buffer.unwrap_or_else(|| vec![0; PATHSEND_READ_BUFFER_SIZE].into_boxed_slice());
             let read_len = buffer.len().min(self.cursor.unread_file_len);

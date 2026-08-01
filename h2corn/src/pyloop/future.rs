@@ -83,7 +83,7 @@ pub struct RustFuture {
 impl RustFuture {
     /// Attach the waiter task's abort handle as the Rust-side cancellation
     /// hook. Called once right after creation.
-    pub fn set_abort(&self, handle: AbortHandle) {
+    pub(crate) fn set_abort(&self, handle: AbortHandle) {
         let mut state = self.state.lock();
         match &mut *state {
             FutureState::Pending { abort, .. } => {
