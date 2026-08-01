@@ -122,7 +122,11 @@ async def read_h2_response(
             writer.write(pending)
             await writer.drain()
 
-    raise RuntimeError('response stream ended unexpectedly')
+    # The peer closed before END_STREAM. That is a transport outcome, not a
+    # helper defect, and callers that tolerate a server going away mid-request
+    # must be able to catch it as one -- a bare RuntimeError forces them to
+    # swallow genuine test bugs to do so.
+    raise ConnectionAbortedError('response stream ended unexpectedly')
 
 
 def find_free_port() -> int:
