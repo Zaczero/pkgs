@@ -56,6 +56,22 @@ pub(crate) enum ResponseConnectionDirective {
     Upgrade,
 }
 
+/// What an HTTP/1.1 `Transfer-Encoding` list earns, which is not one answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransferCoding {
+    /// `chunked` alone -- the only transfer coding h2corn implements.
+    Chunked,
+    /// Chunked is the final coding, so the message *is* framed (RFC 9112
+    /// 6.1), but a coding was applied that h2corn does not implement. RFC 9112
+    /// 6.1 asks for 501 here; 400 would tell the client its message was
+    /// malformed when the framing was in fact correct and only the coding was
+    /// unsupported.
+    Unsupported,
+    /// Chunked is absent, not final, or applied more than once. The message is
+    /// not reliably framed, and RFC 9112 6.3 rule 4 requires 400 plus a close.
+    Malformed,
+}
+
 bitflags! {
     /// The `Connection` tokens h2corn acts on.
     ///
@@ -359,6 +375,36 @@ pub(crate) fn request_path_is_valid(method: &http::Method, value: &[u8]) -> bool
 /// An HTTP token is the grammar used by `:protocol` and WebSocket subprotocols.
 pub(crate) fn protocol_token_is_valid(value: &[u8]) -> bool {
     request_header_name_needs_lowercase(value).is_some()
+}
+
+pub(crate) fn classify_transfer_coding(value: &[u8]) -> TransferCoding {
+    let mut chunked = 0_usize;
+    let mut others = 0_usize;
+    let mut final_is_chunked = false;
+    for coding in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
+        // RFC 9110 5.6.1.2 lets a list carry empty elements; they mean nothing.
+        if coding.is_empty() {
+            continue;
+        }
+        if !protocol_token_is_valid(coding) {
+            return TransferCoding::Malformed;
+        }
+        final_is_chunked = coding.eq_ignore_ascii_case(b"chunked");
+        if final_is_chunked {
+            chunked += 1;
+        } else {
+            others += 1;
+        }
+    }
+    // "A sender MUST NOT apply the chunked transfer coding more than once."
+    if chunked != 1 || !final_is_chunked {
+        return TransferCoding::Malformed;
+    }
+    if others == 0 {
+        TransferCoding::Chunked
+    } else {
+        TransferCoding::Unsupported
+    }
 }
 
 /// Fields whose semantics are fixed before a trailer section is reached.
@@ -735,8 +781,12 @@ pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     true
 }
 
+/// RFC 9110 7.8: protocol names are registered with a preferred case, but
+/// recipients should match them case-insensitively. The HTTP/1 side already
+/// does, via `header_contains_token`; matching exactly here made
+/// `:protocol: WebSocket` fall through to a 501.
 pub(crate) fn protocol_is_websocket(protocol: &Protocol) -> bool {
-    protocol.as_str() == "websocket"
+    protocol.as_str().eq_ignore_ascii_case("websocket")
 }
 
 pub(crate) fn header_value_text(value: &[u8]) -> Option<&str> {

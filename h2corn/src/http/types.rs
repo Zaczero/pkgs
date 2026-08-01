@@ -22,7 +22,6 @@ pub(crate) mod status_code {
     pub(crate) const INTERNAL_SERVER_ERROR: HttpStatusCode = HttpStatusCode::constant(500);
     pub(crate) const NOT_IMPLEMENTED: HttpStatusCode = HttpStatusCode::constant(501);
     pub(crate) const SERVICE_UNAVAILABLE: HttpStatusCode = HttpStatusCode::constant(503);
-    pub(crate) const HTTP_VERSION_NOT_SUPPORTED: HttpStatusCode = HttpStatusCode::constant(505);
 }
 
 /// Statuses with a fixed HTTP/1 line. The final value is the HPACK static

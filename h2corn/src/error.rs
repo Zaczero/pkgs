@@ -324,6 +324,8 @@ pub(crate) enum Http1Error {
     ConflictingAbsoluteFormAuthority,
     #[error("invalid Content-Length header")]
     InvalidContentLength,
+    #[error("unsupported transfer coding")]
+    UnsupportedTransferCoding,
     #[error("HTTP/1.1 request body exceeds max_request_body_size")]
     RequestBodyTooLarge,
     #[error("HTTP/1.1 request body exceeded max_request_body_size")]
@@ -379,6 +381,7 @@ impl Http1Error {
             | Self::InvalidHeaderValue
             | Self::ConflictingAbsoluteFormAuthority
             | Self::InvalidContentLength
+            | Self::UnsupportedTransferCoding
             | Self::RequestBodyTooLarge
             | Self::RequestBodyLimitExceeded
             | Self::ChunkMissingCrlf

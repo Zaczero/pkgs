@@ -14,11 +14,11 @@ use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute,
 use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
-use crate::error::{ErrorExt as _, H2CornError, Http1Error};
+use crate::error::{ErrorExt as _, ErrorKind, H2CornError, Http1Error};
 use crate::h2_frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 use crate::http::header::{
-    ConnectionHeaderTokens, header_contains_token, header_is_single_token,
+    ConnectionHeaderTokens, TransferCoding, classify_transfer_coding, header_contains_token,
     parse_connection_header_tokens, parse_content_length_header, request_authority_is_valid,
     request_header_name_needs_lowercase, request_path_is_valid, request_scheme_is_valid,
     trailer_field_name_is_forbidden,
@@ -85,7 +85,7 @@ struct HeaderParseState {
     host_header_index: Option<usize>,
     connection: ConnectionHeaderTokens,
     upgrade: UpgradeHeaderFlags,
-    body_kind: RequestBodyKind,
+    chunked: bool,
     expect_continue: bool,
     http2_settings: Option<PeerSettings>,
     header_field_count: usize,
@@ -203,7 +203,7 @@ impl HeaderParseState {
             host_header_index: None,
             connection: ConnectionHeaderTokens::default(),
             upgrade: UpgradeHeaderFlags::default(),
-            body_kind: RequestBodyKind::None,
+            chunked: false,
             expect_continue: false,
             http2_settings: None,
             header_field_count: 0,
@@ -277,34 +277,43 @@ impl HeaderParseState {
                 }
             },
             KnownRequestHeaderName::ContentLength => {
-                if self.body_kind == RequestBodyKind::Chunked {
+                if self.chunked {
                     return Http1Error::InvalidContentLength.err();
                 }
                 let parsed =
                     parse_content_length_header(value).ok_or(Http1Error::InvalidContentLength)?;
-                if self
-                    .header_meta
-                    .content_length()
-                    .is_some_and(|existing| existing != parsed)
-                {
+                if self.header_meta.try_set_content_length(parsed).is_err() {
                     return Http1Error::InvalidContentLength.err();
                 }
-                self.header_meta.set_content_length(Some(parsed));
-                self.body_kind = NonZeroU64::new(parsed)
-                    .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength);
             },
             KnownRequestHeaderName::TransferEncoding => {
-                if self.body_kind == RequestBodyKind::Chunked
-                    || self.header_meta.content_length().is_some()
-                    || !header_is_single_token(value, b"chunked")
+                // A repeated field line is a second application of chunked,
+                // and Content-Length alongside Transfer-Encoding is RFC 9112
+                // 6.3 rule 3. Both are unframed, so both stay 400.
+                if self.chunked || self.header_meta.content_length().is_some()
                 {
                     return Http1Error::MalformedHeaderLine.err();
                 }
-                self.body_kind = RequestBodyKind::Chunked;
-                self.header_meta.set_content_length(None);
+                match classify_transfer_coding(value) {
+                    TransferCoding::Chunked => {
+                        self.chunked = true;
+                        self.header_meta.set_content_length(None);
+                    },
+                    TransferCoding::Unsupported => {
+                        return Http1Error::UnsupportedTransferCoding.err();
+                    },
+                    TransferCoding::Malformed => {
+                        return Http1Error::MalformedHeaderLine.err();
+                    },
+                }
             },
             KnownRequestHeaderName::Expect => {
-                self.expect_continue = value.eq_ignore_ascii_case(b"100-continue");
+                // RFC 9110 10.1.1 makes Expect a list, and repeated field
+                // lines extend that list. Whole-value equality missed every
+                // list form, and *assigning* let a later `Expect: foo` clear
+                // an earlier `100-continue` -- either way the client waits for
+                // an interim response that never comes, until it times out.
+                self.expect_continue |= header_contains_token(value, b"100-continue");
             },
             KnownRequestHeaderName::Http2Settings => {
                 let settings = parse_http2_settings(value)?;
@@ -426,14 +435,13 @@ fn parse_request_line_or_reject(
     let (method, target, version) = parse_request_line(request_line)?;
     match version {
         b"HTTP/1.1" => {},
-        [b'H', b'T', b'T', b'P', b'/', b'1', b'.', ..] => {
-            return Ok(HeadParseOutcome::Reject(
-                status_code::HTTP_VERSION_NOT_SUPPORTED,
-            ));
-        },
-        _ => {
-            return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
-        },
+        // Every other version is refused with 400, including HTTP/1.0. Not
+        // 505: RFC 9110 15.6.6 scopes that status to the *major* version, and
+        // major version 1 is supported. h2corn does not serve HTTP/1.0 -- that
+        // needs close-delimited framing, no chunked, no keep-alive-by-default
+        // and no 100-continue, a second framing regime through the whole
+        // response path -- but saying so with 505 misstated the reason.
+        _ => return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST)),
     }
     Ok(HeadParseOutcome::Parsed(RequestLineParts {
         method,
@@ -461,8 +469,16 @@ fn parse_headers_or_reject(
         if header_state.header_too_large(line, limit_request_fields, limit_request_field_size) {
             return HeadParseOutcome::Reject(status_code::REQUEST_HEADER_FIELDS_TOO_LARGE);
         }
-        if header_state.push_header(line).is_err() {
-            return HeadParseOutcome::Reject(status_code::BAD_REQUEST);
+        if let Err(err) = header_state.push_header(line) {
+            return HeadParseOutcome::Reject(match err.into_kind() {
+                // RFC 9112 6.1: the message was framed, we just do not
+                // implement the coding. Every other rejection here is a
+                // malformed field line.
+                ErrorKind::Http1(Http1Error::UnsupportedTransferCoding) => {
+                    status_code::NOT_IMPLEMENTED
+                },
+                _ => status_code::BAD_REQUEST,
+            });
         }
     }
     HeadParseOutcome::Parsed(header_state)
@@ -528,12 +544,22 @@ fn parsed_request_from_head(
         headers,
         connection,
         upgrade,
-        body_kind,
+        chunked,
         http2_settings,
         header_meta,
         expect_continue,
         ..
     } = header_state;
+    // One source of truth: `Content-Length: 0` means no body, and that is a
+    // derivation rather than a second assignment kept in step by hand.
+    let body_kind = if chunked {
+        RequestBodyKind::Chunked
+    } else {
+        header_meta
+            .content_length()
+            .and_then(NonZeroU64::new)
+            .map_or(RequestBodyKind::None, RequestBodyKind::ContentLength)
+    };
     let request = RequestHead {
         http_version: HttpVersion::Http1_1,
         method: line.method,
@@ -623,13 +649,31 @@ where
         return Ok(None);
     };
     let mut lines = HeadLineCursor::new(head.as_ref());
-    let Some(request_line) = (match lines.next_line() {
-        HeadParseOutcome::Parsed(line) => line,
-        HeadParseOutcome::Reject(status) => {
+    let mut next_line = || match lines.next_line() {
+        HeadParseOutcome::Parsed(line) => Ok(line),
+        HeadParseOutcome::Reject(status) => Err(status),
+    };
+    let mut first = match next_line() {
+        Ok(line) => line,
+        Err(status) => {
             write_empty_response(writer, config, status, true).await?;
             return Ok(None);
         },
-    }) else {
+    };
+    // RFC 9112 2.2: a server SHOULD ignore at least one empty line received
+    // before the request-line. Clients have historically left a stray CRLF
+    // after a request body, and dropping the connection over it is the least
+    // robust thing available.
+    if first == Some(&b""[..]) {
+        first = match next_line() {
+            Ok(line) => line,
+            Err(status) => {
+                write_empty_response(writer, config, status, true).await?;
+                return Ok(None);
+            },
+        };
+    }
+    let Some(request_line) = first else {
         return Http1Error::EmptyRequestHead.err();
     };
     let line = match parse_request_line_or_reject(request_line, limit_request_line)? {

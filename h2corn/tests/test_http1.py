@@ -1060,16 +1060,23 @@ async def test_http1_streaming_chunk_reaches_the_client_before_the_app_continues
 
 
 @pytest.mark.parametrize(
-    'request_lines',
+    ('request_lines', 'expected_status'),
     [
-        ['Transfer-Encoding: gzip, chunked'],
-        ['Transfer-Encoding: chunked, chunked'],
-        ['Content-Length: 5', 'Transfer-Encoding: chunked'],
-        ['Transfer-Encoding: chunked', 'Content-Length: 5'],
+        # RFC 9112 6.1: chunked IS the final coding here, so the message is
+        # framed and only the gzip coding is unimplemented -- 501, not 400.
+        # Answering 400 told the client its message was malformed when the
+        # framing was in fact correct.
+        (['Transfer-Encoding: gzip, chunked'], 501),
+        # Chunked applied twice, chunked not final, and Content-Length
+        # alongside Transfer-Encoding are all genuinely unframed: 400.
+        (['Transfer-Encoding: chunked, chunked'], 400),
+        (['Transfer-Encoding: chunked, gzip'], 400),
+        (['Content-Length: 5', 'Transfer-Encoding: chunked'], 400),
+        (['Transfer-Encoding: chunked', 'Content-Length: 5'], 400),
     ],
 )
 async def test_http1_rejects_unsupported_request_framing(
-    request_lines: list[str],
+    request_lines: list[str], expected_status: int
 ) -> None:
     called = False
 
@@ -1095,7 +1102,7 @@ async def test_http1_rejects_unsupported_request_framing(
         )
 
     assert called is False
-    assert status == 400
+    assert status == expected_status
     assert body == b''
     assert trailers == []
     assert headers[b'content-length'] == b'0'
@@ -1827,3 +1834,52 @@ async def test_head_trailers_sent_after_the_response_completed_do_not_fail() -> 
     # The connection survived, so the next request on it was answered.
     assert (get_status, get_body) == (200, b'hello')
     assert get_trailers == [(b'x-finished', b'yes')]
+
+
+@pytest.mark.parametrize('version', ['HTTP/1.0', 'HTTP/1.4'])
+async def test_http1_unsupported_minor_version_is_a_bad_request(version: str) -> None:
+    """
+    RFC 9110 section 15.6.6 scopes 505 to the *major* version, and h2corn
+    supports major version 1.  It does not serve HTTP/1.0 -- that needs a
+    second framing regime -- but refusing with 505 misstated the reason.
+    """
+    async def app(scope, receive, send):  # pragma: no cover - never reached
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async with running_server(app, Config(port=0)) as server:
+        port = server_port(server)
+        status, _, _, _ = await asyncio.wait_for(
+            http1_request(
+                port=port,
+                request=f'GET / {version}\r\nHost: 127.0.0.1:{port}\r\n\r\n'.encode(),
+            ),
+            timeout=5,
+        )
+
+    assert status == 400
+
+
+async def test_http1_ignores_one_empty_line_before_the_request_line() -> None:
+    """
+    RFC 9112 section 2.2: a server should ignore at least one empty line
+    received before the request-line.  Clients have historically left a stray
+    CRLF after a request body; dropping the connection over it was the least
+    robust answer available.
+    """
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    async with running_server(app, Config(port=0)) as server:
+        port = server_port(server)
+        status, _, body, _ = await asyncio.wait_for(
+            http1_request(
+                port=port,
+                request=f'\r\nGET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n'.encode(),
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'ok'

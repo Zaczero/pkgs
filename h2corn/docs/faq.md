@@ -36,6 +36,17 @@ cannot talk directly to an `h2c`-only server, so HTTP/1.1 is kept
 available for **local development and testing**. In production,
 disable it with `--no-http1`.
 
+## Is HTTP/1.0 supported?
+
+No. `h2corn` speaks HTTP/1.1 and HTTP/2; an `HTTP/1.0` request-line is
+answered with `400 Bad Request`.
+
+HTTP/1.0 is a second framing regime — responses delimited by connection
+close, no chunked transfer coding, no keep-alive by default, no
+`100-continue` — and carrying it through the whole response path costs
+more than the remaining HTTP/1.0 clients are worth. If something in front
+of `h2corn` still speaks it, terminate it at the proxy.
+
 ## Does this work on Windows?
 
 Yes, but the full Unix-style worker supervisor does not. On Windows,
