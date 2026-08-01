@@ -22,7 +22,7 @@ import sys
 import uuid
 
 from pyo3stubs.config import StubConfig
-from pyo3stubs.gates import REGISTRY, SUCCESS, run_all
+from pyo3stubs.gates import REGISTRY, SUCCESS, run_all, runnable_gates
 
 
 def load_config(path: str) -> StubConfig:
@@ -145,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'gen-docs':
         return _gen_docs(cfg, check=args.check)
     if args.command in REGISTRY:
+        if args.command not in runnable_gates():
+            print(f'{args.command}: skipped (gate requires CPython: mypy does not run here)')
+            return 0
         return _report(REGISTRY[args.command](cfg), SUCCESS[args.command])
     status = 0
     for name, errors in run_all(cfg).items():

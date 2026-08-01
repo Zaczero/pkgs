@@ -248,15 +248,20 @@ def test_gen_docs_is_idempotent(tmp_path):
 
 def test_testing_gate_test_shape(tmp_path):
     """`pyo3stubs.testing.gate_test` yields one parametrized pytest test."""
-    from pyo3stubs.gates import REGISTRY
+    from pyo3stubs.gates import CPYTHON_ONLY, REGISTRY
     from pyo3stubs.testing import gate_test
 
     cfg = make_config(tmp_path)
     test = gate_test(cfg)
     marks = [m for m in getattr(test, 'pytestmark', [])]
     assert marks and marks[0].name == 'parametrize'
-    names = marks[0].args[1]
-    assert list(REGISTRY) == list(names)
+    params = marks[0].args[1]
+    assert list(REGISTRY) == [p.values[0] for p in params]
+    # Every gate stays addressable by its plain name, and exactly the
+    # mypy-backed ones carry the CPython guard.
+    assert [p.id for p in params] == list(REGISTRY)
+    guarded = {p.values[0] for p in params if p.marks}
+    assert guarded == CPYTHON_ONLY
 
 
 def test_rust_class_map_honors_pyclass_patterns(tmp_path):

@@ -13,10 +13,11 @@ The config path resolves relative to the caller's working directory.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from pyo3stubs.gates import REGISTRY
+from pyo3stubs.gates import CPYTHON_ONLY, REGISTRY
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
@@ -34,6 +35,17 @@ def gate_test(config: str | Path | StubConfig) -> Callable[..., None]:
     """
     import pytest
 
+    skip_cpython_only = pytest.mark.skipif(
+        platform.python_implementation() != 'CPython',
+        reason='gate requires CPython: mypy does not run on this interpreter',
+    )
+
+    def _param(name: str) -> object:
+        # Keep the plain name as the id so `test_pyo3stubs_gate[validity]`
+        # stays addressable and still fails on a real violation under CPython.
+        marks = [skip_cpython_only] if name in CPYTHON_ONLY else []
+        return pytest.param(name, id=name, marks=marks)
+
     def _resolve() -> StubConfig:
         from pyo3stubs.config import StubConfig
 
@@ -43,7 +55,7 @@ def gate_test(config: str | Path | StubConfig) -> Callable[..., None]:
 
         return load_config(str(config))
 
-    @pytest.mark.parametrize('gate', list(REGISTRY))
+    @pytest.mark.parametrize('gate', [_param(name) for name in REGISTRY])
     def test_pyo3stubs_gate(gate: str) -> None:
         cfg = _resolve()
         errors = REGISTRY[gate](cfg)

@@ -9,6 +9,7 @@ Tier B (config-activated): no-op when the matching StubConfig field is empty.
 
 from __future__ import annotations
 
+import platform
 from typing import TYPE_CHECKING, Callable
 
 from pyo3stubs.doc_contract import collect_doc_contract_errors
@@ -55,6 +56,14 @@ REGISTRY: dict[str, Collector] = {
     'stubtest': collect_stubtest_errors,
 }
 
+#: Gates that cannot run outside CPython. Both are backed by mypy, which does
+#: not support PyPy on either side: `mypy.main` exits 2 on import there, its
+#: `librt` runtime is declared `platform_python_implementation != "PyPy"`, and
+#: `mypy.stubtest` imports `symtable`, for which PyPy has no `_symtable`.
+#: Running them elsewhere is impossible, not merely slow -- so they are skipped
+#: rather than reported as violations.
+CPYTHON_ONLY: frozenset[str] = frozenset({'validity', 'stubtest'})
+
 SUCCESS: dict[str, str] = {
     'validity': 'stub validity OK: mypy-clean',
     'structural': 'structural checks OK',
@@ -76,6 +85,13 @@ def run_gate(name: str, cfg: StubConfig) -> list[str]:
     return REGISTRY[name](cfg)
 
 
+def runnable_gates() -> dict[str, Collector]:
+    """Registry entries this interpreter can actually run, in registry order."""
+    if platform.python_implementation() == 'CPython':
+        return REGISTRY
+    return {name: collect for name, collect in REGISTRY.items() if name not in CPYTHON_ONLY}
+
+
 def run_all(cfg: StubConfig) -> dict[str, list[str]]:
-    """Run every gate in registry order; values are violation lists."""
-    return {name: collect(cfg) for name, collect in REGISTRY.items()}
+    """Run every runnable gate in registry order; values are violation lists."""
+    return {name: collect(cfg) for name, collect in runnable_gates().items()}
