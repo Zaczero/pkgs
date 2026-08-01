@@ -611,7 +611,13 @@ class _KqueueNotifier:
         self._fds: list[int] = []
         self._paths: dict[int, Path] = {}
         self._directory_fds: set[int] = set()
-        self._rebuild()
+        try:
+            self._rebuild()
+        except BaseException:
+            # The kqueue and any watch descriptors opened so far are already
+            # ours. A caller that never received the object cannot close them.
+            self.close()
+            raise
 
     def _close_fds(self):
         for fd in self._fds:
@@ -947,7 +953,13 @@ def serve_with_reload(
         reload_includes,
         reload_excludes,
     )
-    selector = selectors.DefaultSelector()
+    try:
+        selector = selectors.DefaultSelector()
+    except BaseException:
+        # The notifier owns descriptors from the moment it is constructed, so
+        # acquiring the selector after it must not be able to strand them.
+        notifier.close()
+        raise
     child: _ReloadChild | None = None
     try:
         with (
