@@ -19,10 +19,6 @@ pub(crate) const HEADER_NAME_FLAGS: [u8; 256] = {
     fill_bytes(table, b"!#$%&'*+-.^_`|~", HEADER_NAME_VALID)
 };
 
-pub(crate) const fn is_base64(byte: u8) -> bool {
-    BASE64_VALUE[byte as usize] != INVALID_VALUE
-}
-
 const fn fill_linear_range(
     mut table: [u8; 256],
     first_byte: u8,

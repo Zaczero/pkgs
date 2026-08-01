@@ -1,45 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "the generated SHA-1 macros stay next to their WebSocket accept call site"
-)]
-
-mod accept {
-    use crate::websocket::WEBSOCKET_KEY_LEN;
-
-    pub(super) const LEN: usize = 28;
-    pub(super) const GUID: &[u8; 36] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    pub(super) const INPUT_LEN: usize = WEBSOCKET_KEY_LEN + GUID.len();
-    pub(super) const INITIAL_STATE: [u32; 5] = [
-        0x6745_2301_u32,
-        0xEFCD_AB89,
-        0x98BA_DCFE,
-        0x1032_5476,
-        0xC3D2_E1F0,
-    ];
-    pub(super) const FIRST_BLOCK_TEMPLATE: [u32; 16] = {
-        let mut block = [0; 16];
-        let mut index = 0;
-        while index < GUID.len() / 4 {
-            let offset = index * 4;
-            block[WEBSOCKET_KEY_LEN / 4 + index] = u32::from_be_bytes([
-                GUID[offset],
-                GUID[offset + 1],
-                GUID[offset + 2],
-                GUID[offset + 3],
-            ]);
-            index += 1;
-        }
-        block[15] = 0x8000_0000;
-        block
-    };
-    #[cfg(test)]
-    pub(super) const SECOND_BLOCK: [u32; 16] = {
-        let mut block = [0; 16];
-        block[15] = (INPUT_LEN as u32) << 3;
-        block
-    };
-}
-
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{io, mem};
@@ -49,7 +7,6 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter};
 
 use super::http::{H1ResponseState, append_header_lines, write_empty_response};
-use crate::base64;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::header::apply_default_response_headers;
@@ -61,12 +18,18 @@ use crate::websocket::session::{
     TransportRead, WebSocketContext, WebSocketHandshakeTransport, append_ws_accept_headers,
     run_websocket, take_pending_close_frame,
 };
-use crate::websocket::{WEBSOCKET_KEY_LEN, WebSocketCodec, WebSocketKey};
+use crate::websocket::{WEBSOCKET_KEY_LEN, WebSocketCodec, WebSocketKey, websocket_accept};
 
 const INITIAL_FRAME_BUF_CAPACITY: usize = 256;
+/// Replacement capacity for the WebSocket read buffer. The buffer is handed to
+/// the codec whole on every read so the payload can be unmasked in place, so a
+/// fresh one is allocated each time rather than carved from a shared tail.
+const READ_BUF_CAPACITY: usize = 4096;
 const HANDSHAKE_BUF_CAPACITY: usize = 512;
 
 type HandshakeBuf = SmallVec<[u8; HANDSHAKE_BUF_CAPACITY]>;
+
+
 
 struct H1WebSocketTransport<R, W> {
     config: Arc<ServerConfig>,
@@ -78,6 +41,9 @@ struct H1WebSocketTransport<R, W> {
     response: H1ResponseState,
     writer: BufWriter<W>,
 }
+
+
+
 
 impl<R, W> WebSocketHandshakeTransport for H1WebSocketTransport<R, W>
 where
@@ -170,7 +136,7 @@ where
         if read == 0 {
             return Ok(TransportRead::PeerGone);
         }
-        codec.push_segment(self.buffer.split().freeze());
+        hand_read_buffer_to_codec(&mut self.buffer, codec);
         Ok(TransportRead::Progress)
     }
 
@@ -189,6 +155,18 @@ where
         .await?;
         Ok(())
     }
+}
+
+/// Hand the accumulated read buffer to the codec, retaining no handle to it.
+///
+/// The codec unmasks a payload in place only when it solely owns the segment.
+/// `BytesMut::split()` reads like a handover but promotes the allocation to
+/// shared and leaves the caller holding the second handle, which silently
+/// disables that for the whole session and costs an allocation plus a full
+/// payload copy per message. Replacing the buffer outright is what keeps the
+/// guarantee, so the ownership transfer lives here rather than inline.
+fn hand_read_buffer_to_codec(buffer: &mut BytesMut, codec: &mut WebSocketCodec) {
+    codec.push_segment(mem::replace(buffer, BytesMut::with_capacity(READ_BUF_CAPACITY)).freeze());
 }
 
 pub(super) async fn handle_request<R, W>(
@@ -263,345 +241,6 @@ where
     Ok(())
 }
 
-/// One SHA-1 round with the register roles made explicit. `sha1_compress!`
-/// expands every schedule update and round at its call site: the WebSocket
-/// accept input is always exactly two blocks, so a generic round loop would
-/// only add branches and indexed schedule traffic to this fixed operation.
-macro_rules! sha1_round {
-    ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident; $word:expr; $mix:expr; $round_constant:expr) => {{
-        let temp = $a
-            .rotate_left(5)
-            .wrapping_add($mix)
-            .wrapping_add($e)
-            .wrapping_add($round_constant)
-            .wrapping_add($word);
-        $e = $d;
-        $d = $c;
-        $c = $b.rotate_left(30);
-        $b = $a;
-        $a = temp;
-    }};
-}
-
-/// Expands one SHA-1 compression with its sixteen-word ring in registers.
-/// The macro is invoked for both known-size blocks in `websocket_accept`,
-/// yielding all 160 rounds directly in that hot function.
-macro_rules! sha1_compress {
-    ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident; $w0:ident, $w1:ident, $w2:ident, $w3:ident, $w4:ident, $w5:ident, $w6:ident, $w7:ident, $w8:ident, $w9:ident, $w10:ident, $w11:ident, $w12:ident, $w13:ident, $w14:ident, $w15:ident) => {
-        sha1_round!($a, $b, $c, $d, $e; $w0; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w1; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w2; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w3; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w4; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w5; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w6; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w7; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w8; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w9; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w10; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w11; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w12; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w13; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w14; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        sha1_round!($a, $b, $c, $d, $e; $w15; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        $w0 = ($w13 ^ $w8 ^ $w2 ^ $w0).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w0; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        $w1 = ($w14 ^ $w9 ^ $w3 ^ $w1).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w1; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        $w2 = ($w15 ^ $w10 ^ $w4 ^ $w2).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w2; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        $w3 = ($w0 ^ $w11 ^ $w5 ^ $w3).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w3; ($b & $c) | ((!$b) & $d); 0x5A82_7999);
-        $w4 = ($w1 ^ $w12 ^ $w6 ^ $w4).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w4; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w5 = ($w2 ^ $w13 ^ $w7 ^ $w5).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w5; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w6 = ($w3 ^ $w14 ^ $w8 ^ $w6).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w6; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w7 = ($w4 ^ $w15 ^ $w9 ^ $w7).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w7; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w8 = ($w5 ^ $w0 ^ $w10 ^ $w8).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w8; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w9 = ($w6 ^ $w1 ^ $w11 ^ $w9).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w9; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w10 = ($w7 ^ $w2 ^ $w12 ^ $w10).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w10; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w11 = ($w8 ^ $w3 ^ $w13 ^ $w11).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w11; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w12 = ($w9 ^ $w4 ^ $w14 ^ $w12).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w12; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w13 = ($w10 ^ $w5 ^ $w15 ^ $w13).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w13; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w14 = ($w11 ^ $w6 ^ $w0 ^ $w14).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w14; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w15 = ($w12 ^ $w7 ^ $w1 ^ $w15).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w15; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w0 = ($w13 ^ $w8 ^ $w2 ^ $w0).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w0; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w1 = ($w14 ^ $w9 ^ $w3 ^ $w1).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w1; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w2 = ($w15 ^ $w10 ^ $w4 ^ $w2).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w2; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w3 = ($w0 ^ $w11 ^ $w5 ^ $w3).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w3; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w4 = ($w1 ^ $w12 ^ $w6 ^ $w4).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w4; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w5 = ($w2 ^ $w13 ^ $w7 ^ $w5).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w5; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w6 = ($w3 ^ $w14 ^ $w8 ^ $w6).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w6; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w7 = ($w4 ^ $w15 ^ $w9 ^ $w7).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w7; $b ^ $c ^ $d; 0x6ED9_EBA1);
-        $w8 = ($w5 ^ $w0 ^ $w10 ^ $w8).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w8; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w9 = ($w6 ^ $w1 ^ $w11 ^ $w9).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w9; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w10 = ($w7 ^ $w2 ^ $w12 ^ $w10).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w10; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w11 = ($w8 ^ $w3 ^ $w13 ^ $w11).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w11; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w12 = ($w9 ^ $w4 ^ $w14 ^ $w12).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w12; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w13 = ($w10 ^ $w5 ^ $w15 ^ $w13).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w13; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w14 = ($w11 ^ $w6 ^ $w0 ^ $w14).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w14; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w15 = ($w12 ^ $w7 ^ $w1 ^ $w15).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w15; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w0 = ($w13 ^ $w8 ^ $w2 ^ $w0).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w0; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w1 = ($w14 ^ $w9 ^ $w3 ^ $w1).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w1; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w2 = ($w15 ^ $w10 ^ $w4 ^ $w2).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w2; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w3 = ($w0 ^ $w11 ^ $w5 ^ $w3).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w3; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w4 = ($w1 ^ $w12 ^ $w6 ^ $w4).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w4; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w5 = ($w2 ^ $w13 ^ $w7 ^ $w5).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w5; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w6 = ($w3 ^ $w14 ^ $w8 ^ $w6).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w6; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w7 = ($w4 ^ $w15 ^ $w9 ^ $w7).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w7; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w8 = ($w5 ^ $w0 ^ $w10 ^ $w8).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w8; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w9 = ($w6 ^ $w1 ^ $w11 ^ $w9).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w9; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w10 = ($w7 ^ $w2 ^ $w12 ^ $w10).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w10; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w11 = ($w8 ^ $w3 ^ $w13 ^ $w11).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w11; ($b & $c) | ($b & $d) | ($c & $d); 0x8F1B_BCDC);
-        $w12 = ($w9 ^ $w4 ^ $w14 ^ $w12).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w12; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w13 = ($w10 ^ $w5 ^ $w15 ^ $w13).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w13; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w14 = ($w11 ^ $w6 ^ $w0 ^ $w14).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w14; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w15 = ($w12 ^ $w7 ^ $w1 ^ $w15).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w15; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w0 = ($w13 ^ $w8 ^ $w2 ^ $w0).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w0; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w1 = ($w14 ^ $w9 ^ $w3 ^ $w1).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w1; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w2 = ($w15 ^ $w10 ^ $w4 ^ $w2).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w2; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w3 = ($w0 ^ $w11 ^ $w5 ^ $w3).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w3; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w4 = ($w1 ^ $w12 ^ $w6 ^ $w4).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w4; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w5 = ($w2 ^ $w13 ^ $w7 ^ $w5).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w5; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w6 = ($w3 ^ $w14 ^ $w8 ^ $w6).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w6; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w7 = ($w4 ^ $w15 ^ $w9 ^ $w7).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w7; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w8 = ($w5 ^ $w0 ^ $w10 ^ $w8).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w8; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w9 = ($w6 ^ $w1 ^ $w11 ^ $w9).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w9; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w10 = ($w7 ^ $w2 ^ $w12 ^ $w10).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w10; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w11 = ($w8 ^ $w3 ^ $w13 ^ $w11).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w11; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w12 = ($w9 ^ $w4 ^ $w14 ^ $w12).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w12; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w13 = ($w10 ^ $w5 ^ $w15 ^ $w13).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w13; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w14 = ($w11 ^ $w6 ^ $w0 ^ $w14).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w14; $b ^ $c ^ $d; 0xCA62_C1D6);
-        $w15 = ($w12 ^ $w7 ^ $w1 ^ $w15).rotate_left(1);
-        sha1_round!($a, $b, $c, $d, $e; $w15; $b ^ $c ^ $d; 0xCA62_C1D6);
-    };
-}
-
-fn websocket_accept(key: &WebSocketKey) -> [u8; accept::LEN] {
-    let mut h0 = accept::INITIAL_STATE[0];
-    let mut h1 = accept::INITIAL_STATE[1];
-    let mut h2 = accept::INITIAL_STATE[2];
-    let mut h3 = accept::INITIAL_STATE[3];
-    let mut h4 = accept::INITIAL_STATE[4];
-
-    let mut w0 = u32::from_be_bytes([key[0], key[1], key[2], key[3]]);
-    let mut w1 = u32::from_be_bytes([key[4], key[5], key[6], key[7]]);
-    let mut w2 = u32::from_be_bytes([key[8], key[9], key[10], key[11]]);
-    let mut w3 = u32::from_be_bytes([key[12], key[13], key[14], key[15]]);
-    let mut w4 = u32::from_be_bytes([key[16], key[17], key[18], key[19]]);
-    let mut w5 = u32::from_be_bytes([key[20], key[21], key[22], key[23]]);
-    let mut w6 = accept::FIRST_BLOCK_TEMPLATE[6];
-    let mut w7 = accept::FIRST_BLOCK_TEMPLATE[7];
-    let mut w8 = accept::FIRST_BLOCK_TEMPLATE[8];
-    let mut w9 = accept::FIRST_BLOCK_TEMPLATE[9];
-    let mut w10 = accept::FIRST_BLOCK_TEMPLATE[10];
-    let mut w11 = accept::FIRST_BLOCK_TEMPLATE[11];
-    let mut w12 = accept::FIRST_BLOCK_TEMPLATE[12];
-    let mut w13 = accept::FIRST_BLOCK_TEMPLATE[13];
-    let mut w14 = accept::FIRST_BLOCK_TEMPLATE[14];
-    let mut w15 = accept::FIRST_BLOCK_TEMPLATE[15];
-    sha1_compress!(
-        h0, h1, h2, h3, h4;
-        w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15
-    );
-
-    let state0 = accept::INITIAL_STATE[0].wrapping_add(h0);
-    let state1 = accept::INITIAL_STATE[1].wrapping_add(h1);
-    let state2 = accept::INITIAL_STATE[2].wrapping_add(h2);
-    let state3 = accept::INITIAL_STATE[3].wrapping_add(h3);
-    let state4 = accept::INITIAL_STATE[4].wrapping_add(h4);
-    let mut h0 = state0;
-    let mut h1 = state1;
-    let mut h2 = state2;
-    let mut h3 = state3;
-    let mut h4 = state4;
-    w0 = 0;
-    w1 = 0;
-    w2 = 0;
-    w3 = 0;
-    w4 = 0;
-    w5 = 0;
-    w6 = 0;
-    w7 = 0;
-    w8 = 0;
-    w9 = 0;
-    w10 = 0;
-    w11 = 0;
-    w12 = 0;
-    w13 = 0;
-    w14 = 0;
-    w15 = (accept::INPUT_LEN as u32) << 3;
-    sha1_compress!(
-        h0, h1, h2, h3, h4;
-        w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15
-    );
-
-    let [w0, w1, w2, w3, w4] = [
-        state0.wrapping_add(h0),
-        state1.wrapping_add(h1),
-        state2.wrapping_add(h2),
-        state3.wrapping_add(h3),
-        state4.wrapping_add(h4),
-    ];
-    let mut out = [0_u8; accept::LEN];
-    let (out_groups, out_remainder) = out.as_chunks_mut::<4>();
-    debug_assert!(out_remainder.is_empty());
-    out_groups[0] = encode_b64_triplet((w0 >> 24) as u8, (w0 >> 16) as u8, (w0 >> 8) as u8);
-    out_groups[1] = encode_b64_triplet(w0 as u8, (w1 >> 24) as u8, (w1 >> 16) as u8);
-    out_groups[2] = encode_b64_triplet((w1 >> 8) as u8, w1 as u8, (w2 >> 24) as u8);
-    out_groups[3] = encode_b64_triplet((w2 >> 16) as u8, (w2 >> 8) as u8, w2 as u8);
-    out_groups[4] = encode_b64_triplet((w3 >> 24) as u8, (w3 >> 16) as u8, (w3 >> 8) as u8);
-    out_groups[5] = encode_b64_triplet(w3 as u8, (w4 >> 24) as u8, (w4 >> 16) as u8);
-    out_groups[6] = encode_b64_remainder((w4 >> 8) as u8, w4 as u8);
-
-    out
-}
-
-#[cfg(test)]
-fn reference_websocket_accept(key: &WebSocketKey) -> [u8; accept::LEN] {
-    let mut state = accept::INITIAL_STATE;
-    let mut first = accept::FIRST_BLOCK_TEMPLATE;
-    let (key_words, remainder) = key.as_chunks::<4>();
-    debug_assert!(remainder.is_empty());
-    for (dst, word) in first[..6].iter_mut().zip(key_words) {
-        *dst = u32::from_be_bytes(*word);
-    }
-    reference_compress_sha1_block(&mut state, first);
-    reference_compress_sha1_block(&mut state, accept::SECOND_BLOCK);
-
-    let [w0, w1, w2, w3, w4] = state;
-    let mut out = [0_u8; accept::LEN];
-    let (out_groups, out_remainder) = out.as_chunks_mut::<4>();
-    debug_assert!(out_remainder.is_empty());
-    out_groups[0] = encode_b64_triplet((w0 >> 24) as u8, (w0 >> 16) as u8, (w0 >> 8) as u8);
-    out_groups[1] = encode_b64_triplet(w0 as u8, (w1 >> 24) as u8, (w1 >> 16) as u8);
-    out_groups[2] = encode_b64_triplet((w1 >> 8) as u8, w1 as u8, (w2 >> 24) as u8);
-    out_groups[3] = encode_b64_triplet((w2 >> 16) as u8, (w2 >> 8) as u8, w2 as u8);
-    out_groups[4] = encode_b64_triplet((w3 >> 24) as u8, (w3 >> 16) as u8, (w3 >> 8) as u8);
-    out_groups[5] = encode_b64_triplet(w3 as u8, (w4 >> 24) as u8, (w4 >> 16) as u8);
-    out_groups[6] = encode_b64_remainder((w4 >> 8) as u8, w4 as u8);
-    out
-}
-
-#[cfg(test)]
-fn reference_compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
-    let mut words = block;
-    let [mut h0, mut h1, mut h2, mut h3, mut h4] = *state;
-
-    for index in 0..80 {
-        let word = if index < 16 {
-            words[index]
-        } else {
-            let word = (words[(index + 13) & 15]
-                ^ words[(index + 8) & 15]
-                ^ words[(index + 2) & 15]
-                ^ words[index & 15])
-                .rotate_left(1);
-            words[index & 15] = word;
-            word
-        };
-        let (mix, round_constant) = match index {
-            0..=19 => ((h1 & h2) | ((!h1) & h3), 0x5A82_7999),
-            20..=39 => (h1 ^ h2 ^ h3, 0x6ED9_EBA1),
-            40..=59 => ((h1 & h2) | (h1 & h3) | (h2 & h3), 0x8F1B_BCDC),
-            _ => (h1 ^ h2 ^ h3, 0xCA62_C1D6),
-        };
-        let temp = h0
-            .rotate_left(5)
-            .wrapping_add(mix)
-            .wrapping_add(h4)
-            .wrapping_add(round_constant)
-            .wrapping_add(word);
-        h4 = h3;
-        h3 = h2;
-        h2 = h1.rotate_left(30);
-        h1 = h0;
-        h0 = temp;
-    }
-
-    state[0] = state[0].wrapping_add(h0);
-    state[1] = state[1].wrapping_add(h1);
-    state[2] = state[2].wrapping_add(h2);
-    state[3] = state[3].wrapping_add(h3);
-    state[4] = state[4].wrapping_add(h4);
-}
-
-const fn encode_b64_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
-    [
-        base64::TABLE[(b0 >> 2) as usize],
-        base64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        base64::TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
-        base64::TABLE[(b2 & 0x3F) as usize],
-    ]
-}
-
-const fn encode_b64_remainder(b0: u8, b1: u8) -> [u8; 4] {
-    [
-        base64::TABLE[(b0 >> 2) as usize],
-        base64::TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        base64::TABLE[((b1 & 0x0F) << 2) as usize],
-        b'=',
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -611,7 +250,7 @@ mod tests {
     use bytes::Bytes;
     use tokio::io::{AsyncWrite, BufWriter};
 
-    use super::{reference_websocket_accept, websocket_accept, write_websocket_frames_vectored};
+    use super::write_websocket_frames_vectored;
     use crate::bridge::PayloadBytes;
     use crate::websocket::session::EncodedWebSocketFrame;
 
@@ -665,6 +304,29 @@ mod tests {
         }
     }
 
+    /// The read loop must hand the codec a buffer it keeps no handle to.
+    ///
+    /// `BytesMut::split()` looks like a handover but promotes the allocation to
+    /// shared and leaves the session holding the second handle for the rest of
+    /// the connection, so `is_unique()` was permanently false and the codec's
+    /// in-place unmask never fired. The test that guarded that optimisation
+    /// built its own vector-backed `Bytes`, which is unique whatever the
+    /// transport does, so it passed throughout. Reintroducing `split()` here
+    /// turns this red: splitting a vector-backed buffer promotes it too.
+    #[test]
+    fn the_read_loop_hands_the_codec_a_solely_owned_buffer() {
+        let mut buffer = bytes::BytesMut::from(&[0x82, 0x81, 1, 2, 3, 4, 5][..]);
+        let mut codec = crate::websocket::WebSocketCodec::default();
+
+        super::hand_read_buffer_to_codec(&mut buffer, &mut codec);
+
+        assert_eq!(
+            codec.front_segment_is_unique(),
+            Some(true),
+            "the session still holds a handle to the buffer it handed over"
+        );
+    }
+
     #[tokio::test]
     async fn h1_vectored_frames_preserve_segments_and_handle_partial_writes() {
         let payload = Bytes::from_static(b"payload");
@@ -682,31 +344,5 @@ mod tests {
 
         assert_eq!(writer.get_ref().bytes, b"\x89\x00\x82\x07payload");
         assert!(writer.get_ref().vectored_calls > 1);
-    }
-
-    #[test]
-    fn websocket_accept_matches_rfc_example() {
-        assert_eq!(
-            websocket_accept(b"dGhlIHNhbXBsZSBub25jZQ=="),
-            *b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
-        );
-    }
-
-    #[test]
-    fn websocket_accept_matches_reference_for_one_million_varied_keys() {
-        let mut state = 0xD1B5_4A32_D192_ED03_u64;
-        let mut key = [0_u8; crate::websocket::WEBSOCKET_KEY_LEN];
-        for _ in 0..1_000_000 {
-            for byte in &mut key {
-                // SplitMix64 gives every byte position a varied stream without
-                // introducing a test-only randomness dependency.
-                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut mixed = state;
-                mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                *byte = (mixed ^ (mixed >> 31)) as u8;
-            }
-            assert_eq!(websocket_accept(&key), reference_websocket_accept(&key));
-        }
     }
 }

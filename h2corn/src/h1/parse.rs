@@ -1251,7 +1251,8 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
 }
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {
-    let decoded = base64url_decode(value.trim_ascii())?;
+    let decoded = crate::base64::decode_url(value.trim_ascii())
+        .map_err(|()| Http1Error::InvalidHttp2SettingsBase64UrlPayload.into_error())?;
     if !decoded.len().is_multiple_of(SETTING_ENTRY_LEN) {
         return Http1Error::InvalidHttp2SettingsPayloadLength.err();
     }
@@ -1289,38 +1290,6 @@ where
         reader.read_buf(buffer).await?
     };
     Ok(read != 0)
-}
-
-pub(super) fn base64url_decode(src: &[u8]) -> Result<Vec<u8>, H2CornError> {
-    let mut out = Vec::with_capacity((src.len() * 3) / 4 + 3);
-    let mut block = [0_u8; 4];
-    let mut used = 0;
-    for &byte in src {
-        let value = ascii::BASE64URL_VALUE[usize::from(byte)];
-        if value == ascii::INVALID_VALUE {
-            return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
-        }
-        block[used] = value;
-        used += 1;
-        if used == 4 {
-            out.push((block[0] << 2) | (block[1] >> 4));
-            out.push((block[1] << 4) | (block[2] >> 2));
-            out.push((block[2] << 6) | block[3]);
-            used = 0;
-        }
-    }
-    match used {
-        0 => {},
-        2 => out.push((block[0] << 2) | (block[1] >> 4)),
-        3 => {
-            out.push((block[0] << 2) | (block[1] >> 4));
-            out.push((block[1] << 4) | (block[2] >> 2));
-        },
-        _ => {
-            return Http1Error::InvalidHttp2SettingsBase64UrlPayload.err();
-        },
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

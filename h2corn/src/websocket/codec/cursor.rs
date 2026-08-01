@@ -17,6 +17,11 @@ impl<const N: usize> SegmentCursor<N> {
         self.len
     }
 
+    #[cfg(test)]
+    pub(super) fn front_is_unique(&self) -> Option<bool> {
+        self.segments.front().map(Bytes::is_unique)
+    }
+
     pub(super) fn push(&mut self, segment: Bytes) {
         if segment.is_empty() {
             return;

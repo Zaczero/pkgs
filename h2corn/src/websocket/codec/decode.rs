@@ -54,6 +54,14 @@ impl WebSocketCodec {
         }
     }
 
+    /// Whether the oldest buffered segment is solely owned, which is what
+    /// lets the payload be unmasked in place instead of copied. Transports
+    /// must hand over a buffer they keep no handle to.
+    #[cfg(test)]
+    pub(crate) fn front_segment_is_unique(&self) -> Option<bool> {
+        self.segmented.front_is_unique()
+    }
+
     pub(crate) fn push_segment(&mut self, segment: Bytes) {
         self.segmented.push(segment);
     }

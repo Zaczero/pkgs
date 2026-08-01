@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use bytes::Bytes;
 
-use crate::ascii;
+use crate::base64;
 use crate::http::header::protocol_token_is_valid;
 use crate::http::types::{BytesStr, KnownRequestHeaderName};
 use crate::websocket::{
@@ -263,7 +263,7 @@ fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
         && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
         && value[..WEBSOCKET_KEY_LEN - 2]
             .iter()
-            .all(|byte| ascii::is_base64(*byte))
+            .all(|byte| base64::is_base64(*byte))
 }
 
 /// Parse one `Sec-WebSocket-Protocol` field value into `out`.

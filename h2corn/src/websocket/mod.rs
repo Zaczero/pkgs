@@ -2,8 +2,10 @@ mod app;
 mod codec;
 mod deflate;
 mod request;
+mod accept;
 pub(crate) mod session;
 
+pub(crate) use accept::websocket_accept;
 pub(crate) use codec::{EncodedFrameHeader, WebSocketCloseCode, WebSocketCodec, close_code};
 pub(crate) use deflate::{PERMESSAGE_DEFLATE_RESPONSE, offers_compatible_permessage_deflate};
 pub(crate) use request::{validate_accepted_subprotocol, validate_websocket_request};
