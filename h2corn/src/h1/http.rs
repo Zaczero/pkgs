@@ -214,7 +214,10 @@ impl H1ResponseState {
                 streamer.consume(chunk.len());
             }
         }
-        writer.flush().await?;
+        // No flush here: `apply_response_actions` flushes once the batch is
+        // applied, which is the moment the application has nothing more ready.
+        // Flushing per segment would split what a mixed body coalesces -- and
+        // only for file segments, since the byte path never flushed either.
         Ok(())
     }
 
@@ -708,12 +711,56 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use tokio::io::{AsyncWrite, BufWriter};
+    use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
     use tokio::net::tcp::OwnedWriteHalf;
 
-    use super::{FileTransferMode, PATHSEND_SENDFILE_MIN, ResponseBuf, append_status_line};
+    use super::{
+        FileTransferMode, H1ResponseState, PATHSEND_SENDFILE_MIN, ResponseBuf,
+        StreamingBodyFraming, append_status_line,
+    };
+    use crate::http::response::FileSegment;
     use crate::http::types::{HttpStatusCode, common_status_codes, status_code};
     use crate::sendfile::WriteTarget;
+
+    /// Records what actually reached the transport, and when it was pushed.
+    #[derive(Default)]
+    struct RecordingWriter {
+        written: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl AsyncWrite for RecordingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.written.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl WriteTarget for RecordingWriter {
+        const SUPPORTS_SENDFILE: bool = false;
+
+        async fn send_file(
+            _writer: &mut BufWriter<Self>,
+            _file: &mut File,
+            _offset: &mut u64,
+            _len: usize,
+        ) -> io::Result<()> {
+            unreachable!("a recording target cannot select sendfile")
+        }
+    }
 
     struct BufferedOnly;
 
@@ -793,6 +840,46 @@ mod tests {
             append_status_line(&mut out, status);
             assert_eq!(out.as_slice(), expected.as_bytes(), "{code}");
         }
+    }
+
+    /// A mixed body -- file segments and application bytes in one batch --
+    /// leaves the transport alone until the batch is done.
+    ///
+    /// `apply_response_actions` owns that flush precisely so a batch coalesces
+    /// into one write; a flush inside the file path would have split every
+    /// `http.response.zerocopysend` out of it, and only file segments, since
+    /// the byte path never flushed.
+    #[tokio::test]
+    async fn a_mixed_streaming_body_does_not_flush_between_its_segments() {
+        let mut state = H1ResponseState::new(false);
+        state.streaming_framing = StreamingBodyFraming::Chunked;
+        let mut writer = BufWriter::new(RecordingWriter::default());
+
+        let source = File::open("/etc/hostname").expect("a readable regular file");
+        let len = usize::try_from(source.metadata().expect("metadata reads").len())
+            .expect("the file fits usize");
+        assert!(len > 0, "the fixture file must have contents to stream");
+
+        state
+            .write_streaming_file(&mut writer, FileSegment::new(source, 0, len, None))
+            .await
+            .expect("the file segment is written");
+        state
+            .write_streaming_body(&mut writer, b"tail")
+            .await
+            .expect("the trailing bytes are written");
+
+        assert_eq!(
+            writer.get_ref().flushes,
+            0,
+            "the batch flush belongs to apply_response_actions"
+        );
+        writer.flush().await.expect("the batch flush succeeds");
+        let written = writer.into_inner().written;
+        assert!(
+            written.ends_with(b"4\r\ntail\r\n"),
+            "the trailing chunk survives the coalesced write"
+        );
     }
 
     #[test]
