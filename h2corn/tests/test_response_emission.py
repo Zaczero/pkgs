@@ -566,7 +566,7 @@ async def test_send_after_a_real_response_close_raises(protocol: str) -> None:
 
 
 async def test_an_uncaught_late_send_is_not_reported_as_an_app_failure(
-    capfd: pytest.CaptureFixture[str],
+    captured_stderr: pytest.CaptureFixture[str],
 ) -> None:
     """The server must not log the exception the server itself raised.
 
@@ -601,7 +601,7 @@ async def test_an_uncaught_late_send_is_not_reported_as_an_app_failure(
             await writer.wait_closed()
 
     assert (status, body) == (200, b'complete')
-    assert 'request failed:' not in capfd.readouterr().err
+    assert 'request failed:' not in captured_stderr.readouterr().err
 
 
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])
@@ -753,7 +753,7 @@ async def test_uncaught_invalid_response_header_is_500_without_h2_sibling_reset(
 
 
 async def test_post_completion_event_is_ignored(
-    capfd: pytest.CaptureFixture[str],
+    captured_stderr: pytest.CaptureFixture[str],
 ) -> None:
     async def app(scope, receive, send):
         if scope['path'] == '/sibling':
@@ -776,7 +776,7 @@ async def test_post_completion_event_is_ignored(
     assert bodies == {1: b'prefixcomplete', 3: b'sibling survives'}
     assert resets == set()
     assert ping_acks == {ping}
-    assert 'request failed:' not in capfd.readouterr().err
+    assert 'request failed:' not in captured_stderr.readouterr().err
 
 
 @pytest.mark.parametrize('mismatch', ['short', 'long'])

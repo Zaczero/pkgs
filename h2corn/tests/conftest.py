@@ -22,6 +22,28 @@ import pytest
 
 
 @pytest.fixture
+def captured_stderr(capfd: pytest.CaptureFixture[str]) -> pytest.CaptureFixture[str]:
+    """`capfd`, drained so a test only ever reads its own output.
+
+    pytest's file-descriptor capture is process-wide and continuous: a test that
+    never requested the fixture still writes into the same buffer, so a bare
+    `readouterr()` can hand back the *previous* test's lines. That turns an
+    absence assertion into a coin flip -- and a test that parses every captured
+    line into JSON into a crash.
+
+    It bites under capture specifically. The server batches diagnostics when
+    stderr is a regular file, which is what fd capture makes it, and graceful
+    shutdown flushes that queue with a *bounded* wait. So a line normally lands
+    before its own server is gone and this drain removes it -- but on a machine
+    busy enough for the flush to time out, one can still arrive mid-test. If an
+    absence assertion here ever fails while its subject looks correct, suspect
+    the neighbour that logged the same text, not the code under test.
+    """
+    _ = capfd.readouterr()
+    return capfd
+
+
+@pytest.fixture
 def unix_socket_dir() -> Iterator[Path]:
     """A short-lived directory for binding AF_UNIX sockets.
 

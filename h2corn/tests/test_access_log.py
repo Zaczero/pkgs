@@ -47,11 +47,11 @@ async def _serve_once(
 
 
 async def test_json_access_log_emits_one_parsable_record_per_request(
-    capfd: pytest.CaptureFixture[str],
+    captured_stderr: pytest.CaptureFixture[str],
 ) -> None:
     await _serve_once('json', b'/items?q=1')
 
-    records = _json_records(capfd.readouterr().err)
+    records = _json_records(captured_stderr.readouterr().err)
     # The banner is encoded too, so the stream is entirely machine-readable.
     assert [record['event'] for record in records] == [
         'starting',
@@ -76,7 +76,7 @@ async def test_json_access_log_emits_one_parsable_record_per_request(
 
 
 async def test_json_access_log_escapes_a_hostile_target(
-    capfd: pytest.CaptureFixture[str],
+    captured_stderr: pytest.CaptureFixture[str],
 ) -> None:
     # A raw quote and backslash reach the log verbatim -- a request target is
     # not required to be percent-encoded on the wire. Unescaped, either one
@@ -84,18 +84,20 @@ async def test_json_access_log_escapes_a_hostile_target(
     await _serve_once('json', rb'/a"b\c')
 
     requests = [
-        r for r in _json_records(capfd.readouterr().err) if r['event'] == 'request'
+        r
+        for r in _json_records(captured_stderr.readouterr().err)
+        if r['event'] == 'request'
     ]
     assert len(requests) == 1, requests
     assert requests[0]['target'] == '/a"b\\c'
 
 
 async def test_access_log_off_still_emits_diagnostics(
-    capfd: pytest.CaptureFixture[str],
+    captured_stderr: pytest.CaptureFixture[str],
 ) -> None:
     await _serve_once('text', b'/quiet', access_log=False)
 
-    err = capfd.readouterr().err
+    err = captured_stderr.readouterr().err
     # No per-request record...
     assert '/quiet' not in err
     # ...but the stream is not silenced: diagnostics are a separate axis.
