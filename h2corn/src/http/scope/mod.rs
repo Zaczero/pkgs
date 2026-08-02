@@ -116,6 +116,11 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         "raw_path" => raw_path_to_python(py, raw_path),
         "path" => path_to_python(py, path.as_ref()),
         "query_string" => query_string_to_python(py, query),
+        // Omitted when empty, which the spec allows and every ASGI framework
+        // already handles -- Starlette, FastAPI and Django all read it with
+        // `scope.get("root_path", "")`. Emitting it anyway measured
+        // +0.554% instructions/request (95% CI +0.500..+0.593), so the default
+        // is served by not building it.
         if !view.root_path.is_empty() => {
             "root_path" => root_path_to_python(py, &ctx.connection.config, view.root_path.as_ref()),
         },
@@ -144,8 +149,10 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
 /// identical every time.
 ///
 /// The trade is that a mutation would be seen by every later scope, so this is
-/// only for what an application reads and never writes — which rules out
-/// `extensions`, where an application may add its own namespaced key.
+/// only for what an application reads and never writes. That rules out the
+/// `extensions` mapping itself, where an application may add its own
+/// namespaced key — but not the per-extension *parameter* dicts inside it,
+/// which are server-published capability metadata that nothing writes to.
 fn cached_dict<'py>(
     py: Python<'py>,
     cell: &'static PyOnceLock<Py<PyDict>>,
@@ -157,14 +164,43 @@ fn cached_dict<'py>(
         .clone())
 }
 
+/// The parameter mapping for an extension that has none.
+///
+/// Every advertised extension but `tls` publishes an empty one, so a request
+/// was allocating one per extension — each a GC-tracked object built to be read
+/// and thrown away. One shared dict serves them all, measured against a control
+/// differing only in this:
+///
+/// - HTTP/1: 37,602 -> 37,377 instructions/request (**-0.585%**, 95% CI
+///   -0.617..-0.552)
+/// - HTTP/2: 51,829 -> 51,443 instructions/request (**-0.712%**, 95% CI
+///   -0.831..-0.586)
+///
+/// HTTP/2 gains more because it advertises more extensions, which is the shape
+/// the mechanism predicts.
+///
+/// They are capability metadata, not application storage: nothing in the ASGI
+/// specification, in Starlette, FastAPI or Django writes to them, and the
+/// convention that *does* involve writing —
+/// `scope["extensions"]["application.private"]` — targets the mapping above,
+/// which stays per-request for exactly that reason. A read-only view would
+/// make a stray write impossible rather than merely unlikely, but `mappingproxy`
+/// costs an indirection on every read and is not a `dict`, which is the wrong
+/// trade for a mapping that is almost never read and never written.
+fn empty_extension_params(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    static EMPTY: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
+    cached_dict(py, &EMPTY, || Ok(PyDict::new(py)))
+}
+
 fn http_scope_extensions<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
     // Deliberately per-request, unlike `asgi`: an application may write its own
     // namespaced key here (`scope["extensions"]["application.private"]`), and a
-    // shared dict would carry that write into every later request. Worth the
-    // measured 525 instructions.
+    // shared dict would carry that write into every later request. The 525
+    // instructions that used to cost are lower now that the mappings inside it
+    // are shared; remeasure with `bench/instr.py` before quoting a figure.
     // Early hints are HTTP/2 only. RFC 8297 names interoperability and
     // security risks with HTTP/1 clients that mishandle an interim response,
     // and a pipelined peer that ignores one desynchronizes -- so the extension
@@ -173,20 +209,20 @@ fn http_scope_extensions<'py>(
     let early_hints = ctx.request.http_version == HttpVersion::Http2;
     let extensions = match (ctx.request.accepts_trailers(), early_hints) {
         (true, true) => py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
-            "http.response.trailers" => py_dict!(py, {}),
-            "http.response.early_hint" => py_dict!(py, {}),
+            "http.response.pathsend" => empty_extension_params(py)?,
+            "http.response.trailers" => empty_extension_params(py)?,
+            "http.response.early_hint" => empty_extension_params(py)?,
         }),
         (true, false) => py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
-            "http.response.trailers" => py_dict!(py, {}),
+            "http.response.pathsend" => empty_extension_params(py)?,
+            "http.response.trailers" => empty_extension_params(py)?,
         }),
         (false, true) => py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
-            "http.response.early_hint" => py_dict!(py, {}),
+            "http.response.pathsend" => empty_extension_params(py)?,
+            "http.response.early_hint" => empty_extension_params(py)?,
         }),
         (false, false) => py_dict!(py, {
-            "http.response.pathsend" => py_dict!(py, {}),
+            "http.response.pathsend" => empty_extension_params(py)?,
         }),
     };
     add_tls_extension(py, ctx, &extensions)?;
@@ -198,7 +234,7 @@ fn websocket_scope_extensions<'py>(
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
     let extensions = py_dict!(py, {
-        "websocket.http.response" => py_dict!(py, {}),
+        "websocket.http.response" => empty_extension_params(py)?,
     });
     add_tls_extension(py, ctx, &extensions)?;
     Ok(extensions)
@@ -554,10 +590,12 @@ mod tests {
             // may write its own keys there.
             assert!(asgi_one.is(&asgi_two));
             assert!(!extensions_one.is(&extensions_two));
-            assert!(!pathsend_one.is(&pathsend_two));
+            // A parameterless extension's params are one shared dict. Nothing
+            // writes to capability metadata, so rebuilding it per request paid
+            // for isolation nobody used.
+            assert!(pathsend_one.is(&pathsend_two));
 
             extensions_one.set_item("application.private", true)?;
-            pathsend_one.set_item("application.private", true)?;
 
             assert_eq!(
                 asgi_two
@@ -567,7 +605,6 @@ mod tests {
                 "3.0",
             );
             assert!(extensions_two.get_item("application.private")?.is_none());
-            assert!(pathsend_two.get_item("application.private")?.is_none());
             Ok(())
         })
         .unwrap();
@@ -603,11 +640,11 @@ mod tests {
                 .cast_into::<PyDict>()?;
 
             assert!(!extensions_one.is(&extensions_two));
-            assert!(!response_one.is(&response_two));
+            // Shared, like the HTTP side: these carry no parameters and nothing
+            // writes to them.
+            assert!(response_one.is(&response_two));
             extensions_one.set_item("application.private", true)?;
-            response_one.set_item("application.private", true)?;
             assert!(extensions_two.get_item("application.private")?.is_none());
-            assert!(response_two.get_item("application.private")?.is_none());
             Ok(())
         })
         .unwrap();

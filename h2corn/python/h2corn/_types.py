@@ -1,11 +1,19 @@
-from collections.abc import Awaitable, Callable, Iterable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
 from typing import Any, Literal, NotRequired, TypedDict
 
 HeaderPair = tuple[bytes, bytes]
 Headers = Iterable[HeaderPair]
 ScopeHeaders = list[HeaderPair]
 State = dict[str, Any]
-ExtensionParameters = dict[str, Any]
+#: An extension's parameters, as the server publishes them.
+#:
+#: `Mapping`, not `dict`, and deliberately: a parameterless extension's value is
+#: one object shared by every scope, so writing to it would be visible to every
+#: later request. Nothing writes to capability metadata, so the runtime value
+#: stays a plain `dict` -- a read-only view would cost an indirection on every
+#: read to defend against something no framework does. Saying `Mapping` here
+#: costs nothing and lets a type checker reject the write instead.
+ExtensionParameters = Mapping[str, Any]
 
 
 class TLSExtension(TypedDict):

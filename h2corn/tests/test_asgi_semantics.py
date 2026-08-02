@@ -275,25 +275,24 @@ async def test_statuses_that_forbid_content_send_none(
 async def test_extension_mutation_is_request_local() -> None:
     """An app may add its own key under `extensions`; it must not persist.
 
-    `scope["asgi"]` is deliberately not covered: it is constant protocol
-    metadata, so one dict is shared by every scope rather than rebuilt per
-    request. Nothing writes to it, and rebuilding it measured 599
-    instructions/request.
+    Two things are deliberately *not* covered, both shared rather than rebuilt
+    per request because nothing writes to them. `scope["asgi"]` is constant
+    protocol metadata, and rebuilding it measured 599 instructions/request. An
+    individual extension's parameter mapping is server-published capability
+    metadata; the write convention this test does guard targets the
+    `extensions` mapping itself.
     """
     requests = 0
+    params_seen = []
 
     async def app(scope, receive, send):
         nonlocal requests
         assert scope['asgi']['version'] == '3.0'
+        params_seen.append(id(scope['extensions']['http.response.pathsend']))
         if requests == 0:
             scope['extensions']['application.private'] = {}
-            scope['extensions']['http.response.pathsend']['application.private'] = True
         else:
             assert 'application.private' not in scope['extensions']
-            assert (
-                'application.private'
-                not in scope['extensions']['http.response.pathsend']
-            )
         requests += 1
         await _respond(send, b'ok')
 
@@ -304,6 +303,8 @@ async def test_extension_mutation_is_request_local() -> None:
     assert first == (200, b'ok')
     assert second == (200, b'ok')
     assert requests == 2
+    # One object across both requests: the saving this buys is the point.
+    assert params_seen[0] == params_seen[1]
 
 
 async def test_peer_disconnect_cancels_abandoned_application_task() -> None:
