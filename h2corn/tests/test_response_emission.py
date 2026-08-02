@@ -752,9 +752,40 @@ async def test_uncaught_invalid_response_header_is_500_without_h2_sibling_reset(
     assert resets == set()
 
 
-async def test_post_completion_event_is_ignored(
-    captured_stderr: pytest.CaptureFixture[str],
-) -> None:
+async def test_a_malformed_late_send_reports_the_closed_stream() -> None:
+    """A closed stream outranks a malformed message.
+
+    An application catching `OSError` around a late send should not get a
+    `TypeError` instead just because the message it could never have sent was
+    also the wrong shape. Validation runs first, so without the closed-stream
+    check the parse error escapes.
+    """
+    errors: list[BaseException] = []
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'complete'})
+        try:
+            # `body` must be bytes; this raises TypeError while the stream is open.
+            await send({'type': 'http.response.body', 'body': 'not bytes'})
+        except BaseException as exc:
+            errors.append(exc)
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, body, _trailers = await http1_request(
+            port=server_port(server),
+            request=b'GET / HTTP/1.1\r\nHost: x\r\n\r\n',
+        )
+
+    assert (status, body) == (200, b'complete')
+    assert len(errors) == 1
+    assert isinstance(errors[0], OSError), type(errors[0]).__name__
+    assert type(errors[0]).__name__ == 'SendAfterCloseError'
+
+
+async def test_immediate_sends_after_terminal_body_raise() -> None:
+    errors: list[BaseException] = []
+
     async def app(scope, receive, send):
         if scope['path'] == '/sibling':
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -764,7 +795,10 @@ async def test_post_completion_event_is_ignored(
         await send({'type': 'http.response.body', 'body': b'prefix', 'more_body': True})
         await send({'type': 'http.response.body', 'body': b'complete'})
         for _ in range(3):
-            await send({'type': 'http.response.body', 'body': b'ignored'})
+            try:
+                await send({'type': 'http.response.body', 'body': b'late'})
+            except BaseException as exc:
+                errors.append(exc)
 
     ping = b'complete'
     async with running_server(app, Config(port=0)) as server:
@@ -776,7 +810,105 @@ async def test_post_completion_event_is_ignored(
     assert bodies == {1: b'prefixcomplete', 3: b'sibling survives'}
     assert resets == set()
     assert ping_acks == {ping}
-    assert 'request failed:' not in captured_stderr.readouterr().err
+    assert len(errors) == 3
+    for exc in errors:
+        assert type(exc).__name__ == 'SendAfterCloseError'
+        assert isinstance(exc, OSError)
+        assert str(exc) == 'ASGI send called after the stream closed'
+
+
+async def test_send_after_final_trailers_raises() -> None:
+    errors: list[BaseException] = []
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'trailer', b'x-finished')],
+            'trailers': True,
+        })
+        await send({'type': 'http.response.body', 'body': b'done'})
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
+        for event in [
+            {'type': 'http.response.trailers', 'headers': []},
+            {'type': 'http.response.body', 'body': b'late'},
+        ]:
+            try:
+                await send(event)
+            except BaseException as exc:
+                errors.append(exc)
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, body, trailers = await http1_request(
+            port=server_port(server),
+            request=(
+                b'GET / HTTP/1.1\r\nHost: x\r\nTE: trailers\r\n'
+                b'Connection: close\r\n\r\n'
+            ),
+        )
+
+    assert (status, body) == (200, b'done')
+    assert trailers == [(b'x-finished', b'yes')]
+    assert [type(exc).__name__ for exc in errors] == [
+        'SendAfterCloseError',
+        'SendAfterCloseError',
+    ]
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+async def test_send_after_pathsend_raises(protocol: str, tmp_path) -> None:
+    path = tmp_path / 'terminal-pathsend.txt'
+    path.write_bytes(b'pathsend')
+    errors: list[BaseException] = []
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.pathsend', 'path': str(path)})
+        try:
+            await send({'type': 'http.response.body', 'body': b'late'})
+        except BaseException as exc:
+            errors.append(exc)
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, body = await _response(protocol, server_port(server))
+
+    assert (status, body) == (200, b'pathsend')
+    assert len(errors) == 1
+    assert type(errors[0]).__name__ == 'SendAfterCloseError'
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+async def test_reaching_content_length_with_more_body_true_stays_open(
+    protocol: str,
+) -> None:
+    errors: list[BaseException] = []
+
+    async def app(scope, receive, send):
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-length', b'4')],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': b'done',
+            'more_body': True,
+        })
+        await send({'type': 'http.response.body', 'body': b''})
+        try:
+            await send({'type': 'http.response.body', 'body': b'late'})
+        except BaseException as exc:
+            errors.append(exc)
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, body = await _response(protocol, server_port(server))
+
+    assert (status, body) == (200, b'done')
+    assert len(errors) == 1
+    assert type(errors[0]).__name__ == 'SendAfterCloseError'
 
 
 @pytest.mark.parametrize('mismatch', ['short', 'long'])

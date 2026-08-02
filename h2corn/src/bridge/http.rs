@@ -12,7 +12,7 @@ use super::{
     EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
-use crate::error::{AsgiError, IntoPyResult as _, into_pyerr};
+use crate::error::{AsgiError, into_pyerr};
 use crate::http::app::{HttpSendDisposition, HttpSendState};
 use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future};
 use crate::runtime::StreamInput;
@@ -415,7 +415,22 @@ impl PyHttpSend {
         py: Python<'py>,
         message: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let event = parse_http_outbound_event(message).into_pyresult()?;
+        let event = match parse_http_outbound_event(message) {
+            Ok(event) => event,
+            // Once the stream is closed nothing could have been delivered, so
+            // the shape of the message is moot and `send()` after close is the
+            // fact worth reporting -- an application catching `OSError` around a
+            // late send should not get a `TypeError` because the message it
+            // could not have sent was also malformed. Costs a lock only where
+            // parsing already failed.
+            Err(err) => {
+                return Err(if self.state.is_closed() {
+                    into_pyerr(AsgiError::SendAfterClose)
+                } else {
+                    into_pyerr(err)
+                });
+            },
+        };
         match self.state.push_or_forward(event) {
             HttpSendDisposition::Buffered | HttpSendDisposition::Sent => {
                 Ok(super::ready_none(py, &self.shard))

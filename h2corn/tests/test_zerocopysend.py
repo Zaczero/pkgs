@@ -646,6 +646,26 @@ async def test_trailers_may_follow_a_file_segment(tmp_path: Path) -> None:
             assert (b'x-checksum', b'ok') in trailers
 
 
+async def test_send_after_terminal_file_segment_raises(tmp_path: Path) -> None:
+    path = _payload_file(tmp_path, b'file segment')
+    errors: list[BaseException] = []
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.zerocopysend', 'file': handle})
+        try:
+            await send({'type': 'http.response.body', 'body': b'late'})
+        except BaseException as exc:
+            errors.append(exc)
+
+    with path.open('rb') as handle:
+        async with _serving(app) as server:
+            assert await _http1(server_port(server)) == (200, b'file segment')
+
+    assert len(errors) == 1
+    assert type(errors[0]).__name__ == 'SendAfterCloseError'
+
+
 async def test_before_response_start_is_an_application_error(tmp_path: Path) -> None:
     """A segment needs a response to belong to, and that is enforced.
 

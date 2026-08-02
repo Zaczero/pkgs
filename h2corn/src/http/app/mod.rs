@@ -194,6 +194,7 @@ where
                     apply_admitted_http_event(response, transport, actions, response_log, event)
                         .await
                 {
+                    send_buffer.close_send_gate();
                     return finalize_response(response, transport, actions, response_log, Err(err))
                         .await;
                 }
@@ -236,31 +237,35 @@ where
 {
     while let Some(event) = send_buffer.take_ready() {
         if response.is_complete() {
-            // ASGI send is intentionally fire-and-forget until the transport
-            // closes. Events already accepted before finalization must not
-            // poison an otherwise reusable H1 connection or sibling H2
-            // stream; only a later real close reports OSError to the app.
+            // Reached only by events admitted before the send gate closed --
+            // a later send is now rejected at admission instead. Draining
+            // rather than applying them keeps an otherwise reusable H1
+            // connection, or a sibling H2 stream, out of the blast radius.
             continue;
         }
         if let Err(err) =
             apply_admitted_http_event(response, transport, actions, response_log, event).await
         {
+            send_buffer.close_send_gate();
             return finalize_response(response, transport, actions, response_log, Err(err)).await;
         }
     }
+    send_buffer.close_send_gate();
     finalize_response(response, transport, actions, response_log, app_result).await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use bytes::Bytes;
+    use tokio::sync::Notify;
     use tokio::time::timeout;
 
     use super::{HttpSendDisposition, HttpSendState, drive_response};
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
-    use crate::error::H2CornError;
+    use crate::error::{ErrorKind, H2CornError, HttpResponseError};
     use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::{
         HttpResponseTransport, ResponseAction, ResponseActions, ResponseController,
@@ -271,6 +276,26 @@ mod tests {
     #[derive(Default)]
     struct RecordingTransport {
         calls: Vec<&'static str>,
+    }
+
+    struct FinalizationBarrierTransport {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl HttpResponseTransport for FinalizationBarrierTransport {
+        async fn apply_response_action(
+            &mut self,
+            _action: ResponseAction,
+        ) -> Result<(), H2CornError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+
+        async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
+            Ok(())
+        }
     }
 
     impl HttpResponseTransport for RecordingTransport {
@@ -335,14 +360,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_completion_ignores_events_accepted_before_close() {
-        let mut response = streaming_response();
+    async fn immediate_post_terminal_sends_fail_while_driver_is_starved() {
+        let mut response = ResponseController::new(false, false);
         let (send_state, mut send_buffer) = HttpSendState::new();
         assert!(send_buffer.take_ready().is_none());
         let app_task = async move {
+            assert!(
+                app_send(&send_state, HttpOutboundEvent::Start {
+                    status: FinalResponseStatus::new(status_code::OK)
+                        .expect("test status is final"),
+                    headers: ResponseHeaders::new(),
+                    trailers: false,
+                    directive: ResponseConnectionDirective::default(),
+                },)
+                .await
+            );
+            assert!(app_send(&send_state, body_event(b"prefix", true)).await);
             assert!(app_send(&send_state, body_event(b"final", false)).await);
             for _ in 0..3 {
-                assert!(app_send(&send_state, body_event(b"extra", false)).await);
+                assert!(!app_send(&send_state, body_event(b"extra", false)).await);
             }
             Ok(())
         };
@@ -364,10 +400,114 @@ mod tests {
         )
         .await
         .expect("response completion cannot deadlock a buffered app send")
-        .expect("accepted post-completion events are ignored");
-        assert_eq!(
-            transport.calls.get(..2),
-            Some(["body", "finish"].as_slice())
+        .expect("post-terminal sends are rejected before the driver runs");
+        // Flushes are batching, not contract: pinning where they land makes an
+        // unrelated transport change red. What this guards is that the three
+        // rejected sends produced no transport write of their own.
+        let written: Vec<&str> = transport
+            .calls
+            .iter()
+            .copied()
+            .filter(|call| *call != "flush")
+            .collect();
+        assert_eq!(written, ["start", "body", "body", "finish"]);
+    }
+
+    #[tokio::test]
+    async fn preterminal_contract_error_survives_logical_close() {
+        let mut response = ResponseController::new(false, false);
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        let start = || HttpOutboundEvent::Start {
+            status: FinalResponseStatus::new(status_code::OK).expect("test status is final"),
+            headers: ResponseHeaders::new(),
+            trailers: false,
+            directive: ResponseConnectionDirective::default(),
+        };
+        assert!(app_send(&send_state, start()).await);
+        assert!(app_send(&send_state, start()).await);
+
+        let mut actions = ResponseActions::new();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut transport = FinalizationBarrierTransport {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        };
+        let mut response_log = ResponseLogState::default();
+        let finalization = super::finish_response(
+            &mut response,
+            &mut send_buffer,
+            &mut actions,
+            Ok(()),
+            &mut transport,
+            &mut response_log,
+        );
+        let late_send = async {
+            entered.notified().await;
+            let rejected = matches!(
+                send_state.push_or_forward(body_event(b"late", false)),
+                HttpSendDisposition::Closed
+            );
+            release.notify_one();
+            rejected
+        };
+        let (result, rejected) = tokio::join!(finalization, late_send);
+        let err = result.expect_err("the queued duplicate start remains authoritative");
+        assert!(matches!(
+            err.kind(),
+            ErrorKind::HttpResponse(HttpResponseError::StartAlreadyReceived)
+        ));
+        assert!(
+            rejected,
+            "error finalization closes the application send gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_finalization_closes_send_gate_before_transport_await() {
+        let mut response = ResponseController::new(false, false);
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        assert!(
+            app_send(&send_state, HttpOutboundEvent::Start {
+                status: FinalResponseStatus::new(status_code::OK).expect("test status is final"),
+                headers: ResponseHeaders::new(),
+                trailers: false,
+                directive: ResponseConnectionDirective::default(),
+            })
+            .await
+        );
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut transport = FinalizationBarrierTransport {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        };
+        let mut actions = ResponseActions::new();
+        let mut response_log = ResponseLogState::default();
+        let finalization = super::finish_response(
+            &mut response,
+            &mut send_buffer,
+            &mut actions,
+            Ok(()),
+            &mut transport,
+            &mut response_log,
+        );
+        let late_send = async {
+            entered.notified().await;
+            let rejected = matches!(
+                send_state.push_or_forward(body_event(b"late", false)),
+                HttpSendDisposition::Closed
+            );
+            release.notify_one();
+            rejected
+        };
+        let (result, rejected) = tokio::join!(finalization, late_send);
+
+        result.expect("driver-induced completion finishes");
+        assert!(
+            rejected,
+            "the bridge maps this closed disposition to SendAfterCloseError"
         );
     }
 

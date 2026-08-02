@@ -21,12 +21,97 @@ enum HttpSendMode {
     Closed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpSendPhase {
+    AwaitingStart,
+    Body {
+        expects_trailers: bool,
+        body_started: bool,
+    },
+    Trailers,
+    Terminal,
+}
+
+impl HttpSendPhase {
+    const fn after(self, event: &HttpOutboundEvent) -> Self {
+        match (self, event) {
+            (Self::AwaitingStart, HttpOutboundEvent::Start { trailers, .. }) => Self::Body {
+                expects_trailers: *trailers,
+                body_started: false,
+            },
+            (
+                Self::Body {
+                    expects_trailers, ..
+                },
+                HttpOutboundEvent::Body {
+                    more_body: true, ..
+                },
+            ) => Self::Body {
+                expects_trailers,
+                body_started: true,
+            },
+            #[cfg(unix)]
+            (
+                Self::Body {
+                    expects_trailers, ..
+                },
+                HttpOutboundEvent::ZeroCopySend {
+                    more_body: true, ..
+                },
+            ) => Self::Body {
+                expects_trailers,
+                body_started: true,
+            },
+            (
+                Self::Body {
+                    expects_trailers, ..
+                },
+                HttpOutboundEvent::Body {
+                    more_body: false, ..
+                },
+            ) => terminal_or_trailers(expects_trailers),
+            #[cfg(unix)]
+            (
+                Self::Body {
+                    expects_trailers, ..
+                },
+                HttpOutboundEvent::ZeroCopySend {
+                    more_body: false, ..
+                },
+            ) => terminal_or_trailers(expects_trailers),
+            (
+                Self::Body {
+                    expects_trailers,
+                    body_started: false,
+                },
+                HttpOutboundEvent::PathSend { .. },
+            ) => terminal_or_trailers(expects_trailers),
+            (
+                Self::Trailers,
+                HttpOutboundEvent::Trailers {
+                    more_trailers: false,
+                    ..
+                },
+            ) => Self::Terminal,
+            (
+                Self::Trailers,
+                HttpOutboundEvent::Trailers {
+                    more_trailers: true,
+                    ..
+                },
+            ) => Self::Trailers,
+            _ => self,
+        }
+    }
+}
+
 /// Run once when the request finishes. Opaque so this layer stays free of
 /// Python types; the bridge registers one that resolves an awaitable.
 type FinishedWaiter = Box<dyn FnOnce() + Send>;
 
 struct HttpSendControl {
     mode: HttpSendMode,
+    phase: HttpSendPhase,
     close_signal: Option<watch::Sender<()>>,
     finished_waiters: SmallVec<[FinishedWaiter; 1]>,
 }
@@ -128,6 +213,7 @@ impl HttpSendState {
     fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> (Self, HttpSendBuffer) {
         let shared = Arc::new(BufferedState::new(HttpSendControl {
             mode: HttpSendMode::Inline { accepted: 0 },
+            phase: HttpSendPhase::AwaitingStart,
             close_signal: None,
             finished_waiters: SmallVec::new(),
         }));
@@ -142,6 +228,13 @@ impl HttpSendState {
         let admitted = match self.try_admit(event) {
             Ok(event) => event,
             Err(event) => {
+                let inner = self.shared.lock();
+                if matches!(inner.state.phase, HttpSendPhase::Terminal)
+                    || matches!(inner.state.mode, HttpSendMode::Closed)
+                {
+                    return HttpSendDisposition::Closed;
+                }
+                drop(inner);
                 return HttpSendDisposition::Backpressured(HttpSendWaiter {
                     state: self.clone(),
                     event,
@@ -190,16 +283,34 @@ impl HttpSendState {
     /// consumer are one step, so no caller can perform one without the other —
     /// a blocking send that installed the channel silently and never notified
     /// left the consumer parked in `wait_ready` with the response half-written.
+    /// Whether any further send is already refused, logically or physically.
+    ///
+    /// Only the malformed-message path asks. A well-formed send learns the same
+    /// thing from `admit`, under the lock it was taking anyway.
+    pub(crate) fn is_closed(&self) -> bool {
+        let inner = self.shared.lock();
+        matches!(inner.state.phase, HttpSendPhase::Terminal)
+            || matches!(inner.state.mode, HttpSendMode::Closed)
+    }
+
     fn admit(&self, event: AdmittedHttpOutboundEvent) -> Admission {
         let mut inner = self.shared.lock();
+        if matches!(inner.state.phase, HttpSendPhase::Terminal) {
+            return Admission::Closed;
+        }
+        let next_phase = inner.state.phase.after(&event.event);
         let accepted = match &inner.state.mode {
             HttpSendMode::Inline { accepted } => *accepted,
             HttpSendMode::Streaming { tx, .. } => {
-                return match try_push(tx, event) {
+                let admission = match try_push(tx, event) {
                     TryPush::Sent => Admission::Sent,
                     TryPush::Full(event) => Admission::Full(tx.clone(), event),
                     TryPush::Closed(_) => Admission::Closed,
                 };
+                if matches!(admission, Admission::Sent) {
+                    Self::publish_phase(&mut inner.state, next_phase);
+                }
+                return admission;
             },
             HttpSendMode::Closed => return Admission::Closed,
         };
@@ -219,9 +330,21 @@ impl HttpSendState {
             inner.state.mode = HttpSendMode::Streaming { tx, rx: Some(rx) };
             Admission::Started
         };
+        Self::publish_phase(&mut inner.state, next_phase);
         drop(inner);
         self.shared.notify_ready();
         admission
+    }
+
+    fn publish_phase(state: &mut HttpSendControl, phase: HttpSendPhase) {
+        if state.phase != phase {
+            state.phase = phase;
+            if matches!(phase, HttpSendPhase::Terminal)
+                && let Some(close_signal) = &state.close_signal
+            {
+                close_signal.send_replace(());
+            }
+        }
     }
 
     fn try_forward(&self, event: AdmittedHttpOutboundEvent) -> HttpSendDisposition {
@@ -247,7 +370,9 @@ impl HttpSendState {
                 } else {
                     let mut closed = {
                         let mut inner = self.shared.lock();
-                        if matches!(&inner.state.mode, HttpSendMode::Closed) {
+                        if matches!(inner.state.phase, HttpSendPhase::Terminal)
+                            || matches!(&inner.state.mode, HttpSendMode::Closed)
+                        {
                             return None;
                         }
                         inner
@@ -273,7 +398,41 @@ impl HttpSendState {
     async fn forward_after_admission(&self, event: AdmittedHttpOutboundEvent) -> bool {
         match self.admit(event) {
             Admission::Buffered | Admission::Started | Admission::Sent => true,
-            Admission::Full(tx, event) => tx.send(event).await.is_ok(),
+            Admission::Full(tx, event) => {
+                let mut closed = {
+                    let mut inner = self.shared.lock();
+                    if matches!(inner.state.phase, HttpSendPhase::Terminal)
+                        || matches!(inner.state.mode, HttpSendMode::Closed)
+                    {
+                        return false;
+                    }
+                    inner
+                        .state
+                        .close_signal
+                        .get_or_insert_with(|| watch::channel(()).0)
+                        .subscribe()
+                };
+                let permit = tokio::select! {
+                    permit = tx.reserve_owned() => match permit {
+                        Ok(permit) => permit,
+                        Err(_) => return false,
+                    },
+                    changed = closed.changed() => {
+                        let _ = changed;
+                        return false;
+                    }
+                };
+                let mut inner = self.shared.lock();
+                if matches!(inner.state.phase, HttpSendPhase::Terminal)
+                    || matches!(inner.state.mode, HttpSendMode::Closed)
+                {
+                    return false;
+                }
+                let next_phase = inner.state.phase.after(&event.event);
+                permit.send(event);
+                Self::publish_phase(&mut inner.state, next_phase);
+                true
+            },
             Admission::Closed => false,
         }
     }
@@ -289,11 +448,20 @@ impl HttpSendWaiter {
 }
 
 impl HttpSendBuffer {
+    /// Stop application admission without tearing down the driver's queue or
+    /// request-finished observers. Finalization may await transport work, but
+    /// no send that begins after finalization starts can belong to the response.
+    pub(super) fn close_send_gate(&self) {
+        let mut inner = self.shared.lock();
+        HttpSendState::publish_phase(&mut inner.state, HttpSendPhase::Terminal);
+    }
+
     /// Reject new app sends and wake any sender currently waiting on a full
     /// streaming channel. Events accepted before closure remain available so
     /// the response driver can report their original ASGI contract error.
     pub(super) fn close_outbound(&mut self) {
         let mut inner = self.shared.lock();
+        inner.state.phase = HttpSendPhase::Terminal;
         let state = std::mem::replace(&mut inner.state.mode, HttpSendMode::Closed);
         let close_signal = inner.state.close_signal.take();
         let finished_waiters = std::mem::take(&mut inner.state.finished_waiters);
@@ -349,6 +517,14 @@ impl Drop for HttpSendBuffer {
     }
 }
 
+const fn terminal_or_trailers(expects_trailers: bool) -> HttpSendPhase {
+    if expects_trailers {
+        HttpSendPhase::Trailers
+    } else {
+        HttpSendPhase::Terminal
+    }
+}
+
 /// What one outbound event costs against the connection's response budget.
 ///
 /// A file segment is charged a floor as well as its length: while queued it
@@ -368,17 +544,64 @@ pub(crate) fn outbound_charge(event: &HttpOutboundEvent) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
     use bytes::Bytes;
     use tokio::time::{Duration, timeout};
 
     use super::{HttpSendDisposition, HttpSendState};
     use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent, PayloadBytes};
+    use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::ResponseByteBudget;
+    use crate::http::types::{FinalResponseStatus, ResponseHeaders, ResponseTrailers, status_code};
 
     fn body_event(body: &'static [u8]) -> HttpOutboundEvent {
         HttpOutboundEvent::Body {
             body: PayloadBytes::from(Bytes::from_static(body)),
             more_body: true,
+        }
+    }
+
+    fn final_body(body: &'static [u8]) -> HttpOutboundEvent {
+        HttpOutboundEvent::Body {
+            body: PayloadBytes::from(Bytes::from_static(body)),
+            more_body: false,
+        }
+    }
+
+    fn start_event(trailers: bool) -> HttpOutboundEvent {
+        HttpOutboundEvent::Start {
+            status: FinalResponseStatus::new(status_code::OK).expect("status is final"),
+            headers: ResponseHeaders::new(),
+            trailers,
+            directive: ResponseConnectionDirective::default(),
+        }
+    }
+
+    fn trailers_event(more_trailers: bool) -> HttpOutboundEvent {
+        HttpOutboundEvent::Trailers {
+            headers: ResponseTrailers::new(),
+            more_trailers,
+        }
+    }
+
+    fn assert_admitted(disposition: HttpSendDisposition) {
+        let admitted = matches!(
+            &disposition,
+            HttpSendDisposition::Buffered | HttpSendDisposition::Sent
+        );
+        drop(disposition);
+        assert!(admitted);
+    }
+
+    fn fill_streaming_channel(send_state: &HttpSendState) {
+        assert_admitted(send_state.push_or_forward(start_event(false)));
+        assert_admitted(send_state.push_or_forward(body_event(b"inline")));
+        assert_admitted(send_state.push_or_forward(body_event(b"streaming")));
+        for _ in 0..HTTP_ASGI_QUEUE_CAPACITY - 1 {
+            assert_admitted(send_state.push_or_forward(body_event(b"queued")));
         }
     }
 
@@ -827,6 +1050,290 @@ mod tests {
                 .expect("waiter task joins"),
             "a torn-down request must not leave an ASGI send waiting for credit"
         );
+    }
+
+    #[test]
+    fn terminal_body_closes_gate_in_inline_and_streaming_modes() {
+        let (inline_state, mut inline_buffer) = HttpSendState::new();
+        assert_admitted(inline_state.push_or_forward(start_event(false)));
+        assert_admitted(inline_state.push_or_forward(final_body(b"done")));
+        assert!(inline_buffer.take_ready().is_some());
+        assert!(inline_buffer.take_ready().is_some());
+        assert!(matches!(
+            inline_state.push_or_forward(final_body(b"late")),
+            HttpSendDisposition::Closed
+        ));
+
+        let (stream_state, mut stream_buffer) = HttpSendState::new();
+        assert_admitted(stream_state.push_or_forward(start_event(false)));
+        assert_admitted(stream_state.push_or_forward(body_event(b"one")));
+        assert_admitted(stream_state.push_or_forward(final_body(b"done")));
+        for _ in 0..3 {
+            assert!(stream_buffer.take_ready().is_some());
+        }
+        assert!(matches!(
+            stream_state.push_or_forward(final_body(b"late")),
+            HttpSendDisposition::Closed
+        ));
+    }
+
+    #[test]
+    fn terminal_gate_is_visible_under_concurrent_sender_contention() {
+        let (send_state, _send_buffer) = HttpSendState::new();
+        assert_admitted(send_state.push_or_forward(start_event(false)));
+        assert_admitted(send_state.push_or_forward(final_body(b"done")));
+        let barrier = Arc::new(Barrier::new(21));
+        let mut threads = Vec::new();
+        for _ in 0..20 {
+            let state = send_state.clone();
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                matches!(
+                    state.push_or_forward(final_body(b"late")),
+                    HttpSendDisposition::Closed
+                )
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            assert!(thread.join().expect("sender thread joins"));
+        }
+    }
+
+    #[test]
+    fn declared_trailers_keep_gate_open_until_final_trailers() {
+        let (send_state, _send_buffer) = HttpSendState::new();
+        for event in [
+            start_event(true),
+            final_body(b"done"),
+            trailers_event(true),
+            trailers_event(false),
+        ] {
+            assert_admitted(send_state.push_or_forward(event));
+        }
+        for event in [trailers_event(false), final_body(b"late")] {
+            assert!(matches!(
+                send_state.push_or_forward(event),
+                HttpSendDisposition::Closed
+            ));
+        }
+    }
+
+    #[test]
+    fn pathsend_closes_only_without_declared_trailers() {
+        let pathsend = || HttpOutboundEvent::PathSend {
+            path: PathBuf::from("/tmp/h2corn-phase-test"),
+        };
+        let (plain_state, _plain_buffer) = HttpSendState::new();
+        assert_admitted(plain_state.push_or_forward(start_event(false)));
+        assert_admitted(plain_state.push_or_forward(pathsend()));
+        assert!(matches!(
+            plain_state.push_or_forward(final_body(b"late")),
+            HttpSendDisposition::Closed
+        ));
+
+        let (trailer_state, _trailer_buffer) = HttpSendState::new();
+        assert_admitted(trailer_state.push_or_forward(start_event(true)));
+        assert_admitted(trailer_state.push_or_forward(pathsend()));
+        assert_admitted(trailer_state.push_or_forward(trailers_event(false)));
+        assert!(matches!(
+            trailer_state.push_or_forward(trailers_event(false)),
+            HttpSendDisposition::Closed
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zerocopysend_respects_more_body_and_declared_trailers() {
+        use std::fs::File;
+
+        let segment = |more_body| HttpOutboundEvent::ZeroCopySend {
+            file: File::open("/dev/null").expect("null device opens"),
+            start: 0,
+            len: 0,
+            more_body,
+        };
+        let (plain_state, _plain_buffer) = HttpSendState::new();
+        assert_admitted(plain_state.push_or_forward(start_event(false)));
+        assert_admitted(plain_state.push_or_forward(segment(true)));
+        assert_admitted(plain_state.push_or_forward(segment(false)));
+        assert!(matches!(
+            plain_state.push_or_forward(final_body(b"late")),
+            HttpSendDisposition::Closed
+        ));
+
+        let (trailer_state, _trailer_buffer) = HttpSendState::new();
+        assert_admitted(trailer_state.push_or_forward(start_event(true)));
+        assert_admitted(trailer_state.push_or_forward(segment(false)));
+        assert_admitted(trailer_state.push_or_forward(trailers_event(false)));
+        assert!(matches!(
+            trailer_state.push_or_forward(final_body(b"late")),
+            HttpSendDisposition::Closed
+        ));
+    }
+
+    #[tokio::test]
+    async fn backpressured_terminal_admission_publishes_before_success_returns() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        fill_streaming_channel(&send_state);
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(final_body(b"done"))
+        else {
+            panic!("terminal event waits for channel capacity")
+        };
+        let terminal = tokio::spawn(waiter.send());
+        for _ in 0..3 {
+            assert!(send_buffer.take_ready().is_some());
+        }
+        assert!(terminal.await.expect("terminal waiter joins"));
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"late")),
+            HttpSendDisposition::Closed
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_terminal_waiter_does_not_close_gate() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        fill_streaming_channel(&send_state);
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(final_body(b"cancelled"))
+        else {
+            panic!("terminal event waits for channel capacity")
+        };
+        let terminal = tokio::spawn(waiter.send());
+        tokio::task::yield_now().await;
+        terminal.abort();
+        let _ = terminal.await;
+        for _ in 0..3 {
+            assert!(send_buffer.take_ready().is_some());
+        }
+        assert_admitted(send_state.push_or_forward(body_event(b"still open")));
+    }
+
+    #[tokio::test]
+    async fn terminal_admission_wakes_existing_capacity_waiters() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        fill_streaming_channel(&send_state);
+        let HttpSendDisposition::Backpressured(terminal) =
+            send_state.push_or_forward(final_body(b"done"))
+        else {
+            panic!("terminal event waits for channel capacity")
+        };
+        let terminal = tokio::spawn(terminal.send());
+        tokio::task::yield_now().await;
+        let mut later = Vec::new();
+        for _ in 0..3 {
+            let HttpSendDisposition::Backpressured(waiter) =
+                send_state.push_or_forward(body_event(b"later"))
+            else {
+                panic!("later event waits for channel capacity")
+            };
+            later.push(tokio::spawn(waiter.send()));
+        }
+        tokio::task::yield_now().await;
+        for _ in 0..3 {
+            assert!(send_buffer.take_ready().is_some());
+        }
+        assert!(terminal.await.expect("terminal waiter joins"));
+        for waiter in later {
+            assert!(
+                !timeout(Duration::from_secs(1), waiter)
+                    .await
+                    .expect("logical closure wakes capacity waiter")
+                    .expect("capacity waiter joins")
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_gate_short_circuits_exhausted_byte_budget() {
+        let budget = ResponseByteBudget::new(1);
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
+        assert_admitted(send_state.push_or_forward(start_event(false)));
+        assert_admitted(send_state.push_or_forward(body_event(b"x")));
+        let _retained = send_buffer.take_ready().expect("start remains queued");
+        let _retained = send_buffer.take_ready().expect("body retains credit");
+        assert_admitted(send_state.push_or_forward(final_body(b"")));
+        assert!(matches!(
+            send_state.push_or_forward(body_event(b"charged")),
+            HttpSendDisposition::Closed
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_admission_wakes_byte_budget_waiters() {
+        let budget = ResponseByteBudget::new(1);
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
+        assert_admitted(send_state.push_or_forward(start_event(false)));
+        assert_admitted(send_state.push_or_forward(body_event(b"x")));
+        let _start = send_buffer.take_ready().expect("start remains queued");
+        let _retained = send_buffer.take_ready().expect("body retains credit");
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(body_event(b"blocked"))
+        else {
+            panic!("charged event waits for byte credit")
+        };
+        let blocked = tokio::spawn(waiter.send());
+        tokio::task::yield_now().await;
+        assert_admitted(send_state.push_or_forward(final_body(b"")));
+        assert!(
+            !timeout(Duration::from_secs(1), blocked)
+                .await
+                .expect("logical closure wakes byte waiter")
+                .expect("byte waiter joins")
+        );
+    }
+
+    #[tokio::test]
+    async fn logical_close_does_not_resolve_the_request_finished_waiters() {
+        // `http.disconnect` means the exchange reached the peer, not that the
+        // application ran out of legal sends. Keeping `on_request_finished` on
+        // physical closure is what separates the two; collapsing the phase into
+        // the mode would fire it as soon as a terminal body was accepted.
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        send_buffer.close_send_gate();
+        assert!(send_state.is_closed(), "the gate is shut");
+
+        // Registered *after* logical closure: this is the arm that decides
+        // whether `Terminal` counts as "finished". It must not.
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "a closed send gate is not a finished request"
+        );
+
+        send_buffer.close_outbound();
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "physical closure finishes the request"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_byte_budget_terminal_waiter_does_not_close_gate() {
+        let budget = ResponseByteBudget::new(1);
+        let (send_state, mut send_buffer) = HttpSendState::with_response_budget(budget);
+        assert_admitted(send_state.push_or_forward(start_event(false)));
+        assert_admitted(send_state.push_or_forward(body_event(b"x")));
+        let start = send_buffer.take_ready().expect("start remains queued");
+        drop(start);
+        let retained = send_buffer.take_ready().expect("body retains credit");
+        let HttpSendDisposition::Backpressured(waiter) =
+            send_state.push_or_forward(final_body(b"terminal"))
+        else {
+            panic!("nonempty terminal body waits for byte credit")
+        };
+        let terminal = tokio::spawn(waiter.send());
+        tokio::task::yield_now().await;
+        terminal.abort();
+        let _ = terminal.await;
+        drop(retained);
+
+        assert_admitted(send_state.push_or_forward(body_event(b"still open")));
     }
 
     #[test]
