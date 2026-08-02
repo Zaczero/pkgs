@@ -1966,7 +1966,12 @@ async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_d
     blocked_path = tmp_path / 'blocked-worker'
     stderr_lines: list[bytes] = []
     healthcheck_failed = asyncio.Event()
-    graceful_timeout = 8.0
+    # The assertions below are proportional to this, not absolute: the worker
+    # must be alive at `graceful_timeout + 0.5` and gone after the second grace
+    # at `2 * graceful_timeout`, leaving `graceful_timeout - 0.5` of margin. At
+    # 8.0 this test alone was 19 s and set the floor for the whole parallel
+    # suite. Do not drop below ~3.0 -- the margin shrinks with it.
+    graceful_timeout = 4.0
 
     async def collect_stderr(stream: asyncio.StreamReader | None) -> None:
         if stream is None:

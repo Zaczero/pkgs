@@ -168,6 +168,40 @@ async def _h2_expect_error(
         await writer.wait_closed()
 
 
+async def _read_until_stream_end(
+    reader: asyncio.StreamReader,
+    *,
+    stream_id: int = 1,
+    timeout: float = 5.0,
+) -> list[tuple[int, int, int, bytes]]:
+    """Frames up to and including the end of `stream_id`.
+
+    Terminal is END_STREAM on that stream, its RST_STREAM, or a connection
+    GOAWAY -- every one a real event the server emits. Draining to an inactivity
+    timeout instead pays that timeout on every green run, and proves less: a
+    server that is merely slow looks exactly like one that is finished.
+
+    A PING ACK is *not* a usable fence here. The HTTP/2 layer answers a PING
+    before the application has run, so the ACK arrives ahead of the response it
+    was supposed to be ordered behind.
+    """
+    frames: list[tuple[int, int, int, bytes]] = []
+    while True:
+        header = await asyncio.wait_for(reader.readexactly(9), timeout=timeout)
+        length = int.from_bytes(header[:3], 'big')
+        frame_type = header[3]
+        flags = header[4]
+        frame_stream = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
+        payload = await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
+        frames.append((frame_type, flags, frame_stream, payload))
+        if frame_type == 0x07:
+            return frames
+        if frame_stream == stream_id and (
+            frame_type == 0x03 or (frame_type in (0x00, 0x01) and flags & 0x01)
+        ):
+            return frames
+
+
 async def _raw_h2_request_frames(
     *,
     port: int,
@@ -190,7 +224,7 @@ async def _raw_h2_request_frames(
             )
         writer.write(payload)
         await writer.drain()
-        return await read_raw_h2_frames(reader, timeout=1, stop_at_goaway=False)
+        return await _read_until_stream_end(reader)
     finally:
         writer.close()
         await writer.wait_closed()
@@ -2082,11 +2116,15 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
             _encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
             + (padded_data * 32_769)
         )
+        writer.write(_encode_h2_frame(0x06, b'padding!'))
         await writer.drain()
         try:
-            # The slower Windows runner needs more slack to stream the WINDOW_UPDATE
-            # frames back after consuming the ~8 MB padding flood.
-            frames = await read_raw_h2_frames(reader, timeout=3.0, stop_at_goaway=False)
+            # Fence on the PING rather than on silence: it is answered in
+            # connection order, so its ACK proves the ~8 MB flood was consumed
+            # and every WINDOW_UPDATE it earned is already in front of us. The
+            # timeout is now only an error bound -- and the assertions below
+            # stay real, because an ACK says nothing about window replenishment.
+            frames = await _read_through_ping_ack(reader, b'padding!', timeout=15)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -2523,12 +2561,17 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
             await writer.drain()
             writer.write(b'\x00\x00\x08\x06\x00\x00\x00\x00\x00' + b'h2corn!!')
             await writer.drain()
-            frames = await read_raw_h2_frames(reader)
+            # The PING is answered in connection order, so its ACK proves every
+            # ignored update above was processed. Reading to it rather than
+            # draining to a timeout also makes the answer itself the assertion:
+            # a server that never ACKs raises here instead of passing quietly.
+            frames = await _read_through_ping_ack(reader, b'h2corn!!', timeout=10)
             growth = _resident_kib() - before
         finally:
             writer.close()
 
-    assert any(frame[0] == 0x06 for frame in frames), 'expected a PING ack'
+    # The PING ack is the read's terminal condition above, so asserting it here
+    # would be vacuous.
     assert not [frame for frame in frames if frame[0] == 0x07], 'unexpected GOAWAY'
     # Per-stream writer state ran to roughly 840 bytes, so the defect grew
     # this by several MiB. Ordinary buffer churn is far below the bound.

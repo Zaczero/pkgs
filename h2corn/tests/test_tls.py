@@ -1231,7 +1231,13 @@ async def test_supervisor_replacement_uses_inherited_tls_material(
             assert asyncio.get_running_loop().time() < deadline
             try:
                 replacement_pid = await tls_http1_request(port, context)
-            except (ConnectionError, OSError, ssl.SSLError, TimeoutError):
+            # `EOFError` covers `asyncio.IncompleteReadError`, which is what a
+            # connection accepted by the outgoing worker and closed mid-response
+            # raises -- it derives from `EOFError`, not `OSError`, so the rest of
+            # this tuple never caught it. That is the exact transient this loop
+            # exists to absorb, and missing it made the test fail whenever the
+            # replacement landed inside a response rather than before one.
+            except (ConnectionError, OSError, ssl.SSLError, TimeoutError, EOFError):
                 await asyncio.sleep(0.02)
                 continue
             if replacement_pid != first_pid:

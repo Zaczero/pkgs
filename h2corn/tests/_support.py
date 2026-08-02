@@ -1,6 +1,7 @@
 import asyncio
 import socket
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import h2.config
@@ -313,8 +314,20 @@ async def read_http1_response(
     return status, headers, bytes(body), trailers
 
 
+#: Teardown budget for tests that park a handler and never return one. The
+#: production default is 30 s and is spent twice, once draining and once
+#: cancelling. Below ~2 s the parallel suite starves a shutdown and fails
+#: somewhere unrelated, so the teardown wait clears 2x this rather than less.
+_TEST_GRACEFUL_SHUTDOWN = 2.0
+_PRODUCTION_GRACEFUL_SHUTDOWN = Config().timeout_graceful_shutdown
+
+
 @asynccontextmanager
 async def running_server(app, config: Config):
+    # Only when the test expressed no opinion: one that *is* about shutdown
+    # timing passes its own value and keeps it.
+    if config.timeout_graceful_shutdown == _PRODUCTION_GRACEFUL_SHUTDOWN:
+        config = replace(config, timeout_graceful_shutdown=_TEST_GRACEFUL_SHUTDOWN)
     server = Server(app, config)
     task = asyncio.create_task(server.serve())
     await wait_for_server(server, task)
@@ -323,7 +336,7 @@ async def running_server(app, config: Config):
     finally:
         server.shutdown()
         try:
-            await asyncio.wait_for(task, timeout=2)
+            await asyncio.wait_for(task, timeout=_TEST_GRACEFUL_SHUTDOWN * 3)
         except TimeoutError:
             task.cancel()
             try:

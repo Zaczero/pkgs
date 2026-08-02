@@ -74,20 +74,18 @@ dev = [
   "mkdocs-minify-plugin>=0.8",
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
-  "pyo3stubs",
   "pymdown-extensions>=10.7",
+  "pyo3stubs",
   "pyright>=1.1.390",
-  "pytest-asyncio>=0.26.0",
   "pytest>=9.0.0",
+  "pytest-asyncio>=0.26.0",
+  "pytest-xdist>=3.6",
   "ruff>=0.9",
   "starlette>=0.46.0",
   "trustme>=1.2.0",
   "uvicorn>=0.43.0",
   "websockets>=16.0",
 ]
-
-[tool.uv]
-sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
@@ -109,6 +107,10 @@ venv = ".venv"
 venvPath = "."
 
 [tool.pytest.ini_options]
+# Every test binds port 0 and each worker is its own process, so the suite
+# parallelises without coordination. Pass `-n0` to serialise -- needed for
+# `--pdb`, which xdist cannot support.
+addopts = ["-n", "auto", "--dist", "worksteal"]
 filterwarnings = [
   # Tests parametrize uvloop via EventLoopPolicy (pytest-asyncio); that
   # still hits asyncio's deprecated policy API. Production uses an
@@ -124,3 +126,6 @@ testpaths = ["tests"]
 
 [tool.ruff]
 extend = "../ruff.toml"
+
+[tool.uv]
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
