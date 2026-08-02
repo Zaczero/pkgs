@@ -2,20 +2,16 @@
 name = "h2corn"
 version = "1.6.0"
 edition = "2024"
-publish = false
 readme = "README.md"
 license = "MIT"
+publish = false
+
+[package.metadata.cargo-machete]
+ignored = ["pyo3-build-config"]
 
 [lib]
 crate-type = ["cdylib"]
 name = "_lib"
-
-[target.'cfg(unix)'.dependencies]
-# `http.response.zerocopysend` duplicates a descriptor the application names by
-# integer. Every typed rustix/std entry point wants a `BorrowedFd` first, whose
-# safety contract we cannot honour for an unvalidated value -- the raw `fcntl`
-# takes the integer directly and reports EBADF instead.
-libc = "0.2"
 
 [dependencies]
 anstream = "0.6"
@@ -56,8 +52,12 @@ zerocopy = { version = "0.8", features = ["derive"] }
 [build-dependencies]
 pyo3-build-config = { version = "0.29.0", features = ["resolve-config"] }
 
-[package.metadata.cargo-machete]
-ignored = ["pyo3-build-config"]
+[target.'cfg(unix)'.dependencies]
+# `http.response.zerocopysend` duplicates a descriptor the application names by
+# integer. Every typed rustix/std entry point wants a `BorrowedFd` first, whose
+# safety contract we cannot honour for an unvalidated value -- the raw `fcntl`
+# takes the integer directly and reports EBADF instead.
+libc = "0.2"
 
 [lints]
 workspace = true

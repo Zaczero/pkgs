@@ -1,3 +1,4 @@
+#:tombi schema.strict = false
 style_edition = "2024"
 unstable_features = true
 
