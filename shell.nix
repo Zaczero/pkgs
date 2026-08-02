@@ -56,7 +56,7 @@ let
       raise SystemExit(1)
       PY
           then
-            uv run python -m maturin_import_hook site install --args="--release"
+            uv run python -m maturin_import_hook site install
           fi
         fi
       fi
@@ -139,6 +139,18 @@ let
     export PYTHONPATH=""
     export COVERAGE_CORE=sysmon
     export PYTEST_ADDOPTS="--quiet --import-mode=importlib --strict-markers --strict-config"
+
+    # `uv sync` builds through maturin's PEP 517 backend, which defaults to
+    # release -- fat LTO and codegen-units=1, measured at 37 s for a one-line
+    # change against 2 s for dev. The import hook is separately unset above, so
+    # both paths agree on dev. Dev also turns on debug_assertions and
+    # overflow-checks, which release omits and which nothing else exercises.
+    #
+    # Two consequences worth knowing: `uv build` run *in this shell* produces a
+    # dev-profile wheel (publishing happens in CI via cibuildwheel, which does
+    # not source this shell), and benchmarks must still build release -- see
+    # h2corn/bench/README.md.
+    export MATURIN_PEP517_ARGS="--profile dev"
   '';
 in
 pkgs.mkShell {
