@@ -6,6 +6,7 @@ that ignores one desynchronizes.
 """
 
 import asyncio
+from typing import Literal
 
 import h2.connection
 import h2.events
@@ -22,6 +23,20 @@ from tests._support import (
 pytestmark = pytest.mark.asyncio
 
 LINKS = [b'</style.css>; rel=preload; as=style', b'</app.js>; rel=preload']
+
+#: An interim event carries its whole header block; a final one carries only
+#: the status, which is all these tests assert about it.
+InterimEvent = tuple[Literal['interim'], list[tuple[bytes, bytes]]]
+FinalEvent = tuple[Literal['final'], bytes]
+ExchangeEvent = InterimEvent | FinalEvent
+
+
+def _headers(event: ExchangeEvent) -> list[tuple[bytes, bytes]]:
+    """The header block of an interim event, failing loudly on a final one."""
+    kind, payload = event
+    assert kind == 'interim', f'expected an interim event, got {kind}'
+    assert not isinstance(payload, bytes)
+    return payload
 
 
 async def _h2_exchange(app, path: bytes = b'/'):
@@ -44,7 +59,7 @@ async def _h2_exchange(app, path: bytes = b'/'):
         writer.write(conn.data_to_send())
         await writer.drain()
 
-        events: list[tuple[str, object]] = []
+        events: list[ExchangeEvent] = []
         body = bytearray()
         ended = False
         try:
@@ -77,7 +92,7 @@ async def test_early_hint_reaches_the_wire_before_the_final_response() -> None:
     events, body = await _h2_exchange(app)
 
     assert [kind for kind, _ in events] == ['interim', 'final']
-    interim = events[0][1]
+    interim = _headers(events[0])
     # Order and duplicates are preserved: a Link list is ordered by the app.
     assert interim == [
         (b':status', b'103'),
@@ -98,8 +113,8 @@ async def test_multiple_hints_each_produce_their_own_block() -> None:
     events, _ = await _h2_exchange(app)
 
     assert [kind for kind, _ in events] == ['interim', 'interim', 'final']
-    assert events[0][1][1] == (b'link', LINKS[0])
-    assert events[1][1][1] == (b'link', LINKS[1])
+    assert _headers(events[0])[1] == (b'link', LINKS[0])
+    assert _headers(events[1])[1] == (b'link', LINKS[1])
 
 
 async def test_empty_links_and_a_generator_are_both_accepted() -> None:
@@ -116,8 +131,8 @@ async def test_empty_links_and_a_generator_are_both_accepted() -> None:
 
     assert [kind for kind, _ in events] == ['interim', 'interim', 'final']
     # An empty iterable is valid and produces a bare 103.
-    assert events[0][1] == [(b':status', b'103')]
-    assert [value for name, value in events[1][1] if name == b'link'] == LINKS
+    assert _headers(events[0]) == [(b':status', b'103')]
+    assert [value for name, value in _headers(events[1]) if name == b'link'] == LINKS
 
 
 async def test_a_hint_after_the_body_has_started_is_ignored() -> None:

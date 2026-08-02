@@ -26,6 +26,7 @@ from ._config import (
     ProxyProtocolMode,
     ServerHeaderMode,
 )
+from ._log import LogFormat
 
 if _TYPE_CHECKING:
     from ._server import Server, serve
@@ -99,7 +100,6 @@ __all__ = (
     'HTTPScope',
     'Headers',
     'LifespanASGIVersions',
-    'LogFormat',
     'LifespanMode',
     'LifespanScope',
     'LifespanShutdown',
@@ -108,6 +108,7 @@ __all__ = (
     'LifespanStartup',
     'LifespanStartupComplete',
     'LifespanStartupFailed',
+    'LogFormat',
     'LoopImpl',
     'Message',
     'ProxyProtocolMode',

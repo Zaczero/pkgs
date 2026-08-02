@@ -55,7 +55,7 @@ class Event(Enum):
 
             Event.WORKER_KILLED.log('{message}', message=message, pid=pid)
         """
-        if _FORMAT == 'json':
+        if _format == 'json':
             record: dict[str, object] = {'level': self.level, 'event': self.event}
             record.update(fields)
             # `separators` keeps one record on one line; `default=str` means a
@@ -69,9 +69,9 @@ class Event(Enum):
 
 #: Process-wide, published once at startup. The supervisor logs from signal
 #: handlers and reaper callbacks that hold no configuration.
-_FORMAT: LogFormat = 'text'
+_format: LogFormat = 'text'
 
 
 def set_format(value: LogFormat) -> None:
-    global _FORMAT
-    _FORMAT = value
+    global _format
+    _format = value

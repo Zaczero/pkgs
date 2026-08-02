@@ -19,6 +19,8 @@ from typing import (
     overload,
 )
 
+from ._log import LogFormat
+
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
@@ -26,7 +28,6 @@ if TYPE_CHECKING:
     from typing import Self
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']
-LogFormat = Literal['text', 'json']
 LifespanMode = Literal['auto', 'on', 'off']
 ServerHeaderMode = Literal['off', 'on', 'full']
 CertReqsMode = Literal['none', 'optional', 'required']

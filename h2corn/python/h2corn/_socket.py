@@ -205,7 +205,14 @@ class _InheritedListener:
 
 
 # Spec writes `type ListenerLease = ...` (PEP 695 / 3.12+); floor is 3.11.
-ListenerLease = _CreatedListener | _BorrowedListener | _InheritedListener
+#
+# `BoundListener` is the half this process holds a `socket` object for, which is
+# everything `bound_sockets` can yield: a listener is either created here or
+# borrowed through `fd://`. An inherited descriptor only reaches a forked
+# worker, which never binds. Keeping the two apart is what lets a caller reach
+# for `.socket` without narrowing something that cannot occur.
+BoundListener = _CreatedListener | _BorrowedListener
+ListenerLease = BoundListener | _InheritedListener
 
 
 def _build_unix_listener(
@@ -376,8 +383,8 @@ def _build_sockets(
     config: Config,
     *,
     socket_owner: tuple[int | None, int | None] = (None, None),
-) -> tuple[ListenerLease, ...]:
-    leases: list[ListenerLease] = []
+) -> tuple[BoundListener, ...]:
+    leases: list[BoundListener] = []
     pending: ListenerLease | None = None
     shared_tcp_port: int | None = None
     owner_uid, owner_gid = socket_owner
