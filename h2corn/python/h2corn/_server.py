@@ -22,6 +22,7 @@ from ._socket import (
     lease_owned_fds,
     nonblocking_pipe,
 )
+from ._systemd import notify_ready, notify_stopping
 
 TYPE_CHECKING = False
 
@@ -352,6 +353,12 @@ class Server:
             self._readiness = state
             waiters = self._started_waiters
             self._started_waiters = []
+        if state is _Readiness.SERVING:
+            # Same fact, reported outward. Under the supervisor this is a no-op
+            # in the worker: `_worker_entry` drops `NOTIFY_SOCKET` so only the
+            # supervisor, which knows when the whole fleet is serving, answers
+            # for the unit.
+            notify_ready()
         for waiter in waiters:
             _resolve_on_owning_loop(waiter, error)
 
@@ -456,6 +463,12 @@ class Server:
         self._settle_started(
             _Readiness.STOPPING, RuntimeError('the server is shutting down')
         )
+        # Only a real stop. A RESTART is a supervisor-internal generation
+        # change: the unit is not shutting down, and saying so would have
+        # systemd publish a state the service is not in. Under the supervisor
+        # this is a no-op anyway, since workers have no `NOTIFY_SOCKET`.
+        if kind is _ShutdownKind.STOP:
+            notify_stopping()
         with self._state_lock:
             generation = self._generation
             if generation is None:

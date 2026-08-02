@@ -21,6 +21,7 @@ from ._config import (
     tcp_bind_convenience,
 )
 from ._log import Event, set_format
+from ._systemd import notification_configured
 
 TYPE_CHECKING = False
 
@@ -462,6 +463,18 @@ def run_cli(
             # Checked here so an unsupported platform reads as the operator
             # error it is, rather than a traceback out of the watcher factory.
             _fail('reload is currently supported only on Linux and macOS')
+        if notification_configured():
+            # Under `Type=notify` the watcher is the main PID while the
+            # supervisor that actually knows when workers are serving is its
+            # child, and systemd's default `NotifyAccess=main` discards a
+            # child's READY -- so the unit would hang in `activating`.
+            # `NotifyAccess=all` is not a workaround either: every retiring
+            # reload child would then send STOPPING for the whole unit.
+            _fail(
+                'reload cannot be combined with a systemd Type=notify unit; '
+                'drop --reload, or set Type=exec and manage restarts with '
+                'systemctl'
+            )
         serve_with_reload(
             import_settings,
             config,

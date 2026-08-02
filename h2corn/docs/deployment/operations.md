@@ -144,6 +144,30 @@ or a blocking syscall that never returns to the event loop.
 
 Set `--timeout-worker-healthcheck 0` to disable.
 
+## systemd readiness
+
+Under a `Type=notify` unit, `h2corn` sends `READY=1` when it is actually
+accepting connections — with `--workers`, once *every* worker is serving, not
+when the supervisor process starts. `STOPPING=1` goes out when shutdown begins,
+before draining, so the unit's published state matches what the process is
+actually doing. It reports state; `systemd` runs `TimeoutStopSec` independently
+of it.
+
+```ini title="h2corn.service"
+[Service]
+Type=notify
+ExecStart=/srv/app/.venv/bin/h2corn hello:app --bind 127.0.0.1:8000 --workers 4
+```
+
+The default, `Type=simple`, treats `exec` itself as readiness, so dependent
+units start against a socket nothing is accepting on yet. That is the gap this
+closes.
+
+Nothing turns it on: when `$NOTIFY_SOCKET` is absent — every run outside a
+`Type=notify` unit — no notification is attempted. Workers never send one
+either, since the supervisor is the main PID and the only process that knows
+when the whole fleet is up.
+
 ## Crash backoff
 
 Crashed workers are restarted with exponential backoff. A sustained crash

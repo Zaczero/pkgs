@@ -24,6 +24,7 @@ from ._socket import (
     signal_wakeup_pipe,
     swap_signal_handlers,
 )
+from ._systemd import notification_configured, notify_ready, notify_stopping
 
 TYPE_CHECKING = False
 
@@ -203,6 +204,13 @@ def _worker_entry(
         except OSError:
             pass
 
+    # Readiness for a `Type=notify` unit is the supervisor's to report: it is
+    # the main PID, and it is the only process that knows when *every* worker is
+    # serving. Left in place, each worker would announce READY=1 as soon as it
+    # personally came up, so the unit would be considered started while the rest
+    # of the fleet was still forking.
+    os.environ.pop('NOTIFY_SOCKET', None)
+
     drop_process_privileges(identity)
     _install_parent_death_signal(expected_supervisor_pid)
     loop_factory = event_loop_factory(config.loop)
@@ -342,9 +350,43 @@ class _Supervisor:
     fatal_error: str | None = None
     last_failure_exit_code: int | None = None
     target_workers: int = field(init=False)
+    #: `READY=1` is sent once per process lifetime. Readiness is a fact about
+    #: the fleet reaching a serving state, not about any individual worker, and
+    #: a reload that replaces every worker does not make the service un-ready.
+    notified_ready: bool = False
 
     def __post_init__(self) -> None:
         self.target_workers = self.config.workers
+
+    def note_fleet_ready(self) -> None:
+        """Tell `systemd` once the fleet is actually serving.
+
+        `systemd` otherwise has to treat `exec` as readiness, which starts
+        dependent units against a socket nothing is accepting on yet.
+
+        Readiness is counted over *serving capacity*, not over registry
+        entries. A worker already on its way out must not hold the unit in
+        `activating` — otherwise a scale-down or a rolling replacement that
+        happens before the first READY leaves an already-serving fleet stuck
+        there forever, since the worker that never became ready is removed
+        rather than reporting in. For the same reason this is re-evaluated on
+        every reconciliation, not only when a READY byte arrives.
+        """
+        if self.notified_ready or self.stopping:
+            return
+        serving = sum(
+            1
+            for worker in self.workers.values()
+            if worker.ready and not worker.expected_exit and worker.retirement is None
+        )
+        if serving < self.target_workers:
+            return
+        # Latch on a delivered notification, or on there being no endpoint to
+        # deliver to. Latching on the attempt would let one transient failure
+        # -- a full queue, a socket not yet drained -- permanently suppress the
+        # retry that the next reconciliation would otherwise make.
+        if notify_ready() or not notification_configured():
+            self.notified_ready = True
 
     def _child_discard_fds(
         self,
@@ -701,6 +743,7 @@ class _Supervisor:
                 )
             if _CONTROL_READY[0] in data:
                 worker.ready = True
+                self.note_fleet_ready()
                 reload_cycle = self.reload_cycle
                 if reload_cycle is not None and self.is_viable_reload_replacement(
                     sentinel
@@ -930,8 +973,19 @@ class _Supervisor:
                     self.check_worker_healthchecks()
                     self.kill_expired_retirements()
                     self.reconcile()
+                    # After reconciliation, so a retirement or scale-down that
+                    # removes the worker holding readiness back is seen. A
+                    # READY byte alone is not enough: the last topology change
+                    # before the fleet is complete may not be a worker
+                    # reporting in.
+                    self.note_fleet_ready()
             finally:
                 self.stopping = True
+                # Before draining, not after, so the unit's published state
+                # matches what the process is doing while it drains. This
+                # reports state only -- it neither starts nor extends
+                # `TimeoutStopSec`.
+                notify_stopping()
                 try:
                     Event.SUPERVISOR_STOPPING.log('Shutting down supervisor')
                 except OSError:
