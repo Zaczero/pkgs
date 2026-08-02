@@ -66,7 +66,7 @@
 .hero {
   position: relative;
   text-align: center;
-  padding: 3rem 1rem 2.5rem;
+  padding: 1.5rem 1rem 2.25rem;
   margin-bottom: 1.5rem;
 }
 
@@ -102,7 +102,7 @@
 
 .hero-logo {
   display: block;
-  width: 200px;
+  width: 168px;
   height: auto;
   margin: 0 auto 1.5rem;
 }
@@ -112,17 +112,25 @@
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.1;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.4rem;
   background: linear-gradient(135deg, var(--md-typeset-a-color) 0%, var(--md-accent-fg-color) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
+/* `background-clip: text` paints the gradient through every glyph in the
+   element, including the toc permalink -- which Material only fades to
+   opacity 0, so the pilcrow stays visible on this heading alone. Remove it
+   from the text run instead. */
+.hero h1 .headerlink {
+  display: none;
+}
+
 .hero p {
   font-size: 1.05rem;
   max-width: 640px;
-  margin: 0.75rem auto 1.5rem;
+  margin: 0 auto 1.9rem;
   color: var(--md-default-fg-color--light);
 }
 
@@ -131,7 +139,7 @@
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
-  margin: -0.25rem auto 1.5rem;
+  margin: 0 auto 1.4rem;
 }
 
 .hero .hero-stats strong {
@@ -140,19 +148,6 @@
 
 .hero .md-button {
   margin: 0.25rem;
-}
-
-/* "Why h2corn" rationale — keep the H3s as plain headings so the
-   section stays calm; the title text alone is enough to mark the three
-   pillars now that body paragraphs lead with the outcome. */
-.rationale h3 {
-  margin-top: 2.25rem;
-  margin-bottom: 0.5rem;
-  font-size: 1.1rem;
-}
-
-.rationale h3:first-child {
-  margin-top: 0;
 }
 
 /* Matplotlib bench plots ship a white canvas; lift them out of slate. */

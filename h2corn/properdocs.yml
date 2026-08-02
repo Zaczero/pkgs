@@ -136,8 +136,6 @@ markdown_extensions:
         - .
         - examples
       check_paths: true
-      auto_append:
-        - _snippets/links.md
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
@@ -152,16 +150,17 @@ nav:
   - Home: index.md
   - Guide:
     - Quickstart: quickstart.md
-    - Behind a proxy: deployment/proxy.md
-    - Direct TLS: deployment/tls.md
     - Operations: deployment/operations.md
+    - Behind a reverse proxy: deployment/proxy.md
+    - Direct TLS: deployment/tls.md
     - WebSockets: websockets.md
     - Embedding: embedding.md
   - Reference:
     - Configuration: configuration.md
+    - ASGI surface: asgi.md
     - API:
-      - Overview: api/index.md
-      - Server: api/server.md
+      - api/index.md
+      - Server entrypoints: api/server.md
       - Config: api/config.md
       - Types: api/types.md
     - Benchmarks: benchmarks.md

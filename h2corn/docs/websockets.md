@@ -1,3 +1,7 @@
+---
+description: WebSockets over HTTP/1.1 and over HTTP/2 (RFC 8441), the limits that apply, and what a proxy has to do.
+---
+
 # WebSockets
 
 `h2corn` implements WebSockets on both transports the ASGI ecosystem
@@ -68,13 +72,9 @@ async def echo(ws: WebSocket):
         pass
 ```
 
-Catch `WebSocketDisconnect` and do not close again. A client that goes away
-makes `receive_text()` raise it, and the stream is already gone by then —
-closing from the handler sends on a closed stream, which raises `OSError` from
-`send()` (see the [FAQ](faq.md#what-can-an-asgi-send-call-raise)). Starlette
-turns that into another `WebSocketDisconnect`, so the broader
-`except Exception: await ws.close()` shape raises out of its own handler on
-every normal disconnect.
+Once the peer is gone, `send()` raises `OSError` — see
+[What `send()` raises](asgi.md#what-send-raises). Starlette surfaces that as the
+`WebSocketDisconnect` above.
 
 ```bash
 h2corn ws:app --no-http1

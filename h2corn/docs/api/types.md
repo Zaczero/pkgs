@@ -1,3 +1,7 @@
+---
+description: Precisely typed ASGI scope, message and application aliases exported by h2corn.
+---
+
 # Types
 
 ::: h2corn.ASGIApp

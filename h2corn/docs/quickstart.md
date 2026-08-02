@@ -1,3 +1,7 @@
+---
+description: Install h2corn, run your first ASGI app, and understand the flags a production start line needs.
+---
+
 # Quickstart
 
 ## Install
@@ -39,16 +43,16 @@ You'll see something like this in your terminal:
 ```text
 h2corn v1.6.0 • HTTP/2 ASGI
 Listening on http://127.0.0.1:8000
-HTTP/1 compatibility is enabled; disable with --no-http1
+HTTP/1 compatibility is enabled; disable with http1=False (--no-http1)
 
 Started worker [12345]
-127.0.0.1:54321 "GET / HTTP/1.1" 200 0.4ms tx=25b
+127.0.0.1:54321 "GET / HTTP/1.1" 200 0.42ms tx=25b
 ```
 
 Visit <http://127.0.0.1:8000/> in your browser. You should see
 `{"message": "hello from h2corn"}` come back.
 
-!!! info "Why does the response say HTTP/1.1?"
+!!! note "Why does the response say HTTP/1.1?"
     Browsers do not speak cleartext `h2c`, so the development server
     keeps HTTP/1.1 enabled for local testing. In production, the edge
     advertises HTTPS — either through a
@@ -98,8 +102,7 @@ h2corn hello:app \
   --no-http1
 ```
 
-Each flag above makes a deliberate choice worth understanding before
-you ship it:
+What each flag buys:
 
 - **`--bind 127.0.0.1:8000`** listens on loopback only so the proxy can
   reach it locally. Use `0.0.0.0:port` if you want a public-facing TCP

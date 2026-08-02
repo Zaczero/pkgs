@@ -1,3 +1,7 @@
+---
+description: Terminate TLS in h2corn itself with Rustls, including mutual TLS and reading the client identity from an app.
+---
+
 # Direct TLS
 
 `h2corn` can terminate TLS itself instead of relying on a reverse proxy.
@@ -78,15 +82,13 @@ chain leaves both the tuple empty and the name `None`.
 `client_cert_error` is always `None`: a certificate that fails
 verification fails the handshake and never reaches an application.
 
-The parameters are read from the handshake once and the dictionary is
-built once, so every request on a keep-alive or multiplexed HTTP/2
-connection is handed the same object however many it carries. A
-plaintext listener never builds one.
+The dictionary is built once per connection, so every request on a keep-alive
+or multiplexed HTTP/2 connection is handed the same object.
 
-Certificate and key files are read while the process is still privileged,
-converted into an immutable native acceptor (`prepare_tls`), and then
-reused by every worker — workers do not reopen PEM paths after privilege
-drop or on replacement.
+Certificate and key files are read once, while the process is still
+privileged, and every worker reuses what the supervisor read. No worker
+reopens a PEM path after dropping privileges or when it is replaced, so the
+key may stay `root:root` mode `0600`.
 
 ## Restrictions
 

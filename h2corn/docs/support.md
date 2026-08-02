@@ -1,3 +1,7 @@
+---
+description: Where to file bugs and security reports, and what commercial support covers.
+---
+
 # Support
 
 ## Issues, questions, and feature requests
@@ -6,10 +10,8 @@ The [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues) is the
 home for everything from bug reports to design discussions. Reports get
 triaged and rolled into the next release.
 
-!!! tip "What makes a useful report"
-    `h2corn --version`, the relevant CLI flags or `h2corn.toml`, the
-    reverse proxy in front (if any), and a minimal reproducer. Issues
-    with these land faster.
+A report lands fastest with `h2corn --version`, the relevant CLI flags or
+`h2corn.toml`, the reverse proxy in front (if any), and a minimal reproducer.
 
 For feature requests, describe the use case rather than the
 implementation you have in mind — that leaves the most room for the
@@ -38,3 +40,6 @@ Common scopes:
 - **Prioritized fixes and features** on a defined timeline.
 
 Reach out at [monicz.dev](https://monicz.dev/#get-in-touch).
+
+If you are still evaluating, the [FAQ](faq.md) and [Behind a proxy](deployment/proxy.md)
+cover most of what comes up first.

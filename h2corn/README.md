@@ -22,7 +22,7 @@ behind a trusted reverse proxy, with optional direct TLS for TCP listeners.
 - **Higher throughput** and lower latency from a Rust engine on Tokio
 - **Compatible** with any ASGI 3 application — FastAPI, Starlette, Django, Litestar
 - **Direct TLS** with Rustls and modern defaults, including mutual TLS with the client identity exposed to the application
-- **RFC 8441 WebSockets** over HTTP/2
+- **[RFC 8441 WebSockets](https://h2corn.monicz.dev/websockets/)** over HTTP/2
 - **Operator-friendly**: multi-worker supervisor with graceful shutdown, rolling reload, live scaling, worker recycling, and health checks
 
 ## Install
@@ -60,9 +60,10 @@ upstream. The full deployment recipes live in
 
 In local runs comparing `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn`
 across baseline GETs, Unix sockets, static files, streaming, and
-WebSockets, `h2corn` leads on every scenario tested:
+WebSockets, `h2corn` leads every scenario that has a comparator — in one,
+HTTP/2 multiplexed, no other server completed the workload:
 
-![HTTP/1 GET, 4 workers. h2corn ~228k RPS p99 1.0ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
+![HTTP/1 GET, 4 workers. h2corn ~242k RPS p99 0.8ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
 
 Full plots and methodology: [Benchmarks](https://h2corn.monicz.dev/benchmarks/).
 

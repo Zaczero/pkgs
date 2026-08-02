@@ -1,3 +1,7 @@
+---
+description: Reference for the Config dataclass and its option literals.
+---
+
 # Config
 
 ::: h2corn.Config
@@ -15,5 +19,9 @@
       show_signature: false
 
 ::: h2corn.LoopImpl
+    options:
+      show_signature: false
+
+::: h2corn.ServerHeaderMode
     options:
       show_signature: false

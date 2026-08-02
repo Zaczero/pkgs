@@ -1,3 +1,7 @@
+---
+description: The public Python API of h2corn at a glance.
+---
+
 # API reference
 
 The public Python API is intentionally small. Most users only touch

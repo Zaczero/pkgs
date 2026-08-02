@@ -1,3 +1,7 @@
+---
+description: The multi-worker supervisor: signals, rolling reload, live scaling, recycling, health checks, systemd and logs.
+---
+
 # Operations
 
 `h2corn` runs in one of two shapes:
@@ -95,7 +99,7 @@ workload-specific measurement supports oversubscription.
 
 ## Signals
 
-The supervisor responds to four standard signals:
+The supervisor responds to these signals:
 
 | Signal              | Effect                                                                |
 | ------------------- | --------------------------------------------------------------------- |
@@ -222,7 +226,10 @@ instead of surfacing later as a failed handshake.
 
 ## Observability
 
-## Structured logs
+`h2corn` owns its own logs and leaves metrics and tracing to the application,
+where they belong.
+
+### Structured logs
 
 `--log-format json` encodes everything h2corn writes to stderr — the startup
 banner, worker lifecycle, errors and access records — as one JSON object per
@@ -231,11 +238,11 @@ line, so the stream can be shipped without parsing prose out of it:
 ```json
 {"level":"info","event":"listening","url":"http://127.0.0.1:8000"}
 {"level":"info","event":"worker_started","pid":1234}
-{"level":"info","event":"request","client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.42,"rx_bytes":0,"tx_bytes":218}
+{"level":"info","event":"request","client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.420,"rx_bytes":0,"tx_bytes":218}
 ```
 
-Numbers stay numbers, so a collector does not have to recover `0.42` from
-`0.42ms` or a byte count from `218b`. There is no timestamp field: journald,
+Numbers stay numbers, so a collector does not have to strip `ms` off
+`0.42ms` or `b` off `218b` to get at them. There is no timestamp field: journald,
 Docker and Kubernetes all stamp arrival time already, and two clocks in one
 pipeline is a debugging problem rather than a feature.
 
@@ -243,7 +250,7 @@ pipeline is a debugging problem rather than a feature.
 --log-format json` keeps the diagnostics machine-readable while dropping the
 per-request records.
 
-## Metrics and tracing
+### Metrics and tracing
 
 `h2corn` does not bundle a metrics endpoint or trace exporter. ASGI is the right place to add those — anything you
 plug in works the same regardless of which ASGI server is in front,

@@ -87,10 +87,9 @@ def _intro_section() -> str:
         '- a key in a TOML config file (passed via `--config` or `H2CORN_CONFIG`)\n\n'
         'When the same option is provided in more than one place, the order of '
         'precedence is **CLI > environment > TOML > defaults**.\n\n'
-        '!!! tip "Convenience pair"\n'
-        '    `--host` / `--port` (and `H2CORN_HOST` / `H2CORN_PORT`) are accepted '
-        'as a shortcut when you only need a single TCP listener and have not set '
-        '`bind`. They cannot be combined with `bind`.\n\n'
+        '`--host` / `--port` (and `H2CORN_HOST` / `H2CORN_PORT`) are a shortcut '
+        'for a single TCP listener, accepted when `bind` is not set. They cannot '
+        'be combined with it.\n\n'
         '## Option index\n\n'
         '<div class="option-index" markdown>\n\n'
     )

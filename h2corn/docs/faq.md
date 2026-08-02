@@ -1,3 +1,7 @@
+---
+description: Short answers about h2c, HTTP/1.1, HTTP/3, Windows, Django, gRPC, and where to report bugs.
+---
+
 # FAQ
 
 ## Should I expose `h2corn` directly to the internet?
@@ -66,77 +70,17 @@ Django channels and any other ASGI 3 framework work the same way.
 
 ## Which ASGI extensions are supported?
 
-On HTTP and WebSocket scopes: `http.response.pathsend`,
-`http.response.zerocopysend` (Unix only), `http.response.trailers`,
-`http.response.early_hint` (HTTP/2 only), `websocket.http.response`, and `tls`.
-Check `scope["extensions"]` rather than assuming — several are offered only
-where they can be delivered.
-
-Lifespan `state` is separate and is *not* found there: a lifespan scope has no
-`extensions` key at all. Read `scope["state"]` on the lifespan scope, and the
-same mapping reappears as `scope["state"]` on each request.
-
-Use `pathsend` when the server should open the file, and `zerocopysend` when
-you already hold a descriptor or want to send a *range* of one, which
-`pathsend` cannot express:
-
-```python
-async def app(scope, receive, send):
-    await send({"type": "http.response.start", "status": 200, "headers": []})
-    with open("/srv/media/clip.mp4", "rb") as handle:
-        await send({
-            "type": "http.response.zerocopysend",
-            "file": handle,
-            "offset": 1024,
-            "count": 4096,
-        })
-```
-
-Unlike `pathsend`, it may be sent repeatedly and interleaved with
-`http.response.body`. The descriptor stays yours: `h2corn` duplicates it and
-closes only its own copy, so you may close yours as soon as `send()` returns —
-and per the ASGI specification you should. Your file position is never moved.
-
-One limitation: the range is sized from the descriptor's reported size, so a
-file whose size is not its length — anything under `/proc` or `/sys` — is
-rejected rather than served as an empty body. Read those and send them with
-`http.response.body`.
-
-Zero-copy here is best-effort, and the buffered path is byte-for-byte identical
-on the wire. It is used for TLS, Unix sockets, non-Linux platforms and small
-ranges — and, on HTTP/1, for any segment that is not the entire body: one mixed
-with `http.response.body`, or followed by trailers, is streamed through a
-rolling read rather than `sendfile`.
+`pathsend`, `zerocopysend`, `trailers`, `early_hint`, `websocket.http.response`
+and `tls`, each offered where it can be delivered — see the
+[ASGI surface](asgi.md#extensions) for the conditions and for sending files.
 
 ## What can an ASGI `send()` call raise?
 
-`h2corn` validates each outbound ASGI message at `await send(message)`. A
-field of the wrong Python type raises `TypeError`. A malformed application
-value raises `ValueError`: this includes a missing required field, an invalid
-response header or trailer field, a non-final or non-three-digit response
-status, an invalid WebSocket close value, an empty accepted subprotocol, or a
-`websocket.send` message that sets neither or both payload fields.
-
-`ValueError` also covers a `websocket.accept` that names a subprotocol the
-client did not offer, or that carries a header the handshake owns — both are
-raised from the `send()` call that supplied them, so an application can catch
-one and accept a subprotocol the client did offer instead.
-
-`RuntimeError` reports an invalid message sequence, such as sending a response
-body before `http.response.start`, mixing `http.response.pathsend` with a
-response body, sending trailers at the wrong point, or sending an unexpected
-WebSocket event. It also covers conditions that are nobody's message in
-particular: a handshake that timed out, a compression failure, an application
-that ended before completing its response. Calling `send()` after the stream
-has closed raises `OSError`. An exception raised by the application itself
-propagates unchanged.
-
-Every error variant is mapped to one of these four types explicitly; there is
-no fall-through, so a type here is a decision rather than a default.
-
-This differs from Uvicorn: it reports several malformed values as
-`RuntimeError`. Catch `ValueError` around `send()` when an application intends
-to replace a malformed outbound message with a valid one.
+`TypeError` for a field of the wrong type, `ValueError` for a malformed value,
+`RuntimeError` for an invalid message sequence, and `OSError` after the stream
+has closed. The [full mapping](asgi.md#what-send-raises) lists what falls under
+each — it differs from Uvicorn, which reports several malformed values as
+`RuntimeError`.
 
 ## Does `h2corn` support gRPC?
 
