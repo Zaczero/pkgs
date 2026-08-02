@@ -55,6 +55,59 @@ when the upstream is explicitly configured to send it.
     keep that part. Without `--proxy-headers` no forwarding header is trusted
     at all, which is the right setting when nothing upstream sets them.
 
+## nginx
+
+[nginx](https://nginx.org/) speaks HTTP/2 to an upstream from **1.29.4**
+onwards, where the changelog records
+"*the ngx_http_proxy_module supports HTTP/2*". Set
+[`proxy_http_version 2`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_http_version)
+and keep the upstream URL on `http://`, which makes that hop cleartext `h2c`.
+It needs `ngx_http_v2_module`, which distribution builds normally include.
+
+!!! danger "Run 1.30.1+ or 1.31.0+, not merely 1.29.4+"
+    [CVE-2026-42926](https://nginx.org/en/security_advisories.html) is an
+    HTTP/2 request injection in `ngx_http_proxy_module` — the module this
+    recipe turns on — affecting **1.29.4 through 1.30.0**. Those are exactly
+    the releases that first carried the feature, so "new enough to have it" is
+    not the same as "safe to deploy it". Use **1.30.1 or later** on the stable
+    branch, or **1.31.0 or later** on mainline.
+
+```nginx title="nginx.conf"
+--8<-- "nginx.conf"
+```
+
+Pair it with:
+
+```bash
+h2corn hello:app \
+  --bind 127.0.0.1:8000 \
+  --proxy-headers \
+  --forwarded-allow-ips 127.0.0.1,::1
+```
+
+!!! warning "WebSockets need their own HTTP/1.1 location"
+    nginx still performs the HTTP/1.1 `Upgrade` handshake and does not
+    translate it into the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)
+    extended `CONNECT` that HTTP/2 requires, so a location forced to
+    `proxy_http_version 2` cannot carry them. The configuration above routes
+    `/ws` over HTTP/1.1 and everything else over `h2c`, which means **do not
+    pass `--no-http1`** with nginx if you serve WebSockets. For WebSockets over
+    a pure HTTP/2 upstream, use [HAProxy](#haproxy) below.
+
+!!! warning "nginx does not multiplex to the upstream yet"
+    NGINX describes the current implementation as one where "*each upstream
+    connection handles one request at a time rather than interleaving multiple
+    requests on a single connection*", and that matches what the wire shows:
+    ten overlapping requests through nginx 1.30.4 arrive at `h2corn` on ten
+    separate connections, while sequential ones reuse a single keepalive
+    connection.
+
+    So the win on this hop is HPACK header compression and the absence of
+    HTTP/1.1 framing ambiguity — **not** the connection-count reduction that
+    end-to-end HTTP/2 implies elsewhere. NGINX says multiplexing is planned.
+    None of this affects the browser-facing hop, where nginx multiplexes
+    normally.
+
 ## Caddy
 
 [Caddy](https://caddyserver.com/) speaks `h2c` upstream natively with
@@ -121,7 +174,7 @@ h2corn hello:app \
 
 ## Other proxies
 
-`h2corn` works with any reverse proxy that speaks `h2c` upstream — Caddy
-and HAProxy are simply the two that do it cleanly today. If you're
-evaluating an alternative that cannot, pick one that can rather than
+`h2corn` works with any reverse proxy that speaks `h2c` upstream. The three
+above are the ones with recipes here; Traefik and Envoy also support it. If
+you're evaluating an alternative that cannot, pick one that can rather than
 falling back to HTTP/1.1 between the proxy and the application.
