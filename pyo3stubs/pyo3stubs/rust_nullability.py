@@ -27,134 +27,148 @@ import re
 from typing import TYPE_CHECKING
 
 from pyo3stubs.context import CheckContext
-from pyo3stubs.rust_scan import DEFAULT_PYCLASS, PYCLASS_NAME_ARG, rust_class_map, sanitize
+from pyo3stubs.report import Findings, loc
+from pyo3stubs.rust_scan import (
+    iter_sources,
+    pyclass_exports,
+    rust_class_map,
+    unquote,
+)
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
+    from pyo3stubs.rust_scan import Attr, Item
 
-PYMETHODS_IMPL = re.compile(r'#\s*\[\s*pymethods\s*\]\s*impl\s+(?:<[^>]*>\s*)?(\w+)')
-# `#[getter]`, `#[getter(name)]`, and the quoted `#[getter("name")]` form
-GETTER_FN = re.compile(
-    r'#\s*\[\s*getter\s*(?:\(\s*"?([\w.]+)"?\s*\))?\s*\]'
-    r'(?:\s*#\s*\[[^\]]*\])*'
-    r'\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*->\s*([^{;]+)',
-)
-GET_FIELD = re.compile(
-    r'#\s*\[\s*pyo3\s*\(\s*get[^)]*\)\s*\]'
-    r'(?:\s*#\s*\[[^\]]*\])*'
-    r'\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:\s*([^,}]+)',
-)
+_PYRESULT = re.compile(r'^PyResult\s*<(.*)>$', re.DOTALL)
 
 
 def _returns_option(rust_type: str) -> bool:
     """True when the (possibly ``PyResult``-wrapped) type is ``Option<...>``."""
     text = rust_type.strip()
-    inner = re.match(r'PyResult\s*<(.*)>\s*$', text)
+    inner = _PYRESULT.match(text)
     if inner:
         text = inner.group(1).strip()
     return text.startswith(('Option<', 'Option <'))
 
 
-def _impl_body(text: str, start: int) -> str:
-    """The brace-balanced body of the impl block opening at/after ``start``.
+def _getter_name(attr: Attr, item: Item) -> str:
+    """The Python attribute a ``#[getter]`` exposes.
 
-    Braces are counted over the sanitized text (comments and string contents
-    blanked) so a ``{`` inside a doc comment or literal cannot derail the
-    scan; the returned slice is from the ORIGINAL text.
+    PyO3 strips a `get_` prefix only when deriving the name from the function;
+    an explicit `#[getter(name)]` is used verbatim.
     """
-    clean = sanitize(text)
-    open_brace = clean.index('{', start)
-    depth, index = 1, open_brace + 1
-    while depth and index < len(clean):
-        if clean[index] == '{':
-            depth += 1
-        elif clean[index] == '}':
-            depth -= 1
-        index += 1
-    return text[open_brace:index]
+    if attr.params:
+        return unquote(attr.params[0][0])
+    return item.name.removeprefix('get_')
 
 
 def _optional_attrs(cfg: StubConfig) -> dict[tuple[str, str], str]:
     """``(python class, attribute) -> defining path`` for Option-typed surfaces."""
     classes = rust_class_map(cfg)
     found: dict[tuple[str, str], str] = {}
-    for path in sorted(cfg.src_root.rglob('*.rs')):
-        text = path.read_text()
-        rel = path.relative_to(cfg.src_root).as_posix()
-        for match in PYMETHODS_IMPL.finditer(text):
-            py_class = classes.get(match.group(1))
+    for source in iter_sources(cfg):
+        for item in source.walk():
+            # Keyed on the member's `#[getter]`, not the impl's `#[pymethods]`:
+            # a project macro may supply the latter, which hid 29 of gometry's
+            # 195 getters from this gate. `#[getter]` does not compile outside
+            # `#[pymethods]`, so it is the sound signal anyway.
+            if item.kind != 'impl_item':
+                continue
+            py_class = classes.get(item.name)
             if py_class is None:
                 continue
-            body = _impl_body(text, match.end())
-            for getter in GETTER_FN.finditer(body):
-                if not _returns_option(getter.group(3)):
+            for child in item.children:
+                attr = child.attr('getter')
+                if attr is None or not _returns_option(child.ty):
                     continue
-                name = getter.group(1) or getter.group(2)
-                name = name.removeprefix('get_')
-                found.setdefault((py_class, name), rel)
-        for match in DEFAULT_PYCLASS.finditer(text):
-            name_arg = PYCLASS_NAME_ARG.search(match.group('args') or '')
-            py_class = name_arg.group(1) if name_arg else match.group('ident')
-            body = _impl_body(text, match.end())
-            for field in GET_FIELD.finditer(body):
-                if _returns_option(field.group(2)):
-                    found.setdefault((py_class, field.group(1)), rel)
+                found.setdefault((py_class, _getter_name(attr, child)), source.rel)
+    for export in pyclass_exports(cfg):
+        for field in export.item.children:
+            attr = field.attr('pyo3')
+            if attr is not None and attr.has('get') and _returns_option(field.ty):
+                found.setdefault((export.python, field.name), export.source.rel)
     return found
 
 
 def _admits_none(annotation: ast.expr) -> bool:
+    """Whether the annotation admits `None` *itself*.
+
+    Three things this deliberately does not do. It does not look for the text
+    `None` inside a forward reference -- `"NoneCheck"` is a class name, so the
+    reference is parsed and re-examined. It does not treat a container of
+    optionals as optional: `list[int | None]` never is `None`. And it matches
+    `Optional`/`Union` as resolved names, so `typing.Optional[int]` counts.
+    """
     if isinstance(annotation, ast.Constant):
-        return annotation.value is None or (
-            isinstance(annotation.value, str) and 'None' in annotation.value
-        )
-    if isinstance(annotation, ast.BinOp):
+        if annotation.value is None:
+            return True
+        if isinstance(annotation.value, str):
+            try:
+                inner = ast.parse(annotation.value, mode='eval').body
+            except SyntaxError:
+                return False
+            return _admits_none(inner)
+        return False
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
         return _admits_none(annotation.left) or _admits_none(annotation.right)
     if isinstance(annotation, ast.Subscript):
-        value = annotation.value
-        if isinstance(value, ast.Name) and value.id == 'Optional':
+        head = _qualified_name(annotation.value)
+        if head in ('Optional', 'typing.Optional'):
             return True
-        if isinstance(annotation.slice, ast.Tuple):
-            return any(_admits_none(elt) for elt in annotation.slice.elts)
-        return _admits_none(annotation.slice)
-    if isinstance(annotation, ast.Name):
-        return annotation.id == 'None'
-    return False
+        if head in ('Union', 'typing.Union'):
+            elts = (
+                annotation.slice.elts
+                if isinstance(annotation.slice, ast.Tuple)
+                else [annotation.slice]
+            )
+            return any(_admits_none(elt) for elt in elts)
+        # Any other subscript is a container; its parameters are not the
+        # annotation's own nullability.
+        return False
+    return isinstance(annotation, ast.Name) and annotation.id == 'None'
 
 
-def collect_errors(cfg: StubConfig) -> list[str]:
+def _qualified_name(node: ast.expr) -> str | None:
+    """Dotted name of a `Name`/`Attribute` chain, or None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _qualified_name(node.value)
+        return f'{base}.{node.attr}' if base else None
+    return None
+
+
+def _annotation_of(node: ast.ClassDef, attr: str) -> ast.expr | None:
+    """The stub's annotation for one attribute: an assignment or a property."""
+    for stmt in node.body:
+        if (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id == attr
+        ):
+            return stmt.annotation
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == attr:
+            return stmt.returns
+    return None
+
+
+def collect_errors(cfg: StubConfig) -> Findings:
     """Stub annotations that deny ``None`` for Option-typed Rust surfaces."""
-    ctx = CheckContext(cfg)
     optional = _optional_attrs(cfg)
     if not optional:
-        return []
-    stub_classes: dict[str, ast.ClassDef] = {
-        node.name: node
-        for node in ctx.stub_ast.body
-        if isinstance(node, ast.ClassDef)
-    }
+        return Findings(examined=0)
+    ctx = CheckContext(cfg)
     errors: list[str] = []
     for (py_class, attr), rel in sorted(optional.items()):
-        node = stub_classes.get(py_class)
+        node = ctx.stub_classes.get(py_class)
         if node is None:
             continue  # leak gate owns missing classes
-        for stmt in node.body:
-            annotation: ast.expr | None = None
-            lineno = stmt.lineno
-            if (
-                isinstance(stmt, ast.AnnAssign)
-                and isinstance(stmt.target, ast.Name)
-                and stmt.target.id == attr
-            ):
-                annotation = stmt.annotation
-            elif isinstance(stmt, ast.FunctionDef) and stmt.name == attr:
-                annotation = stmt.returns
-            if annotation is None:
-                continue
-            if not _admits_none(annotation):
-                errors.append(
-                    f'{cfg.stub_path}:{lineno}: {py_class}.{attr}: Rust surface '
-                    f'is Option<..> (src/{rel}) but the stub type '
-                    f'`{ast.unparse(annotation)}` does not admit None'
-                )
-            break
-    return errors
+        annotation = _annotation_of(node, attr)
+        if annotation is None or _admits_none(annotation):
+            continue
+        errors.append(
+            f'{loc(cfg.stub_path, annotation)}: {py_class}.{attr}: Rust surface '
+            f'is Option<..> ({cfg.src_root.name}/{rel}) but the stub type '
+            f'`{ast.unparse(annotation)}` does not admit None'
+        )
+    return Findings(errors, examined=len(optional))

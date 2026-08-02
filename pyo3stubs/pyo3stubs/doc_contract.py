@@ -20,53 +20,65 @@ from typing import TYPE_CHECKING
 
 from pyo3stubs.ast_util import doc_of, function_groups
 from pyo3stubs.context import CheckContext
+from pyo3stubs.report import Findings, loc
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
 
 
 def _has_docstring(node: ast.FunctionDef) -> bool:
-    if not node.body:
-        return False
-    first = node.body[0]
-    return isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+    """Whether the def carries prose.
+
+    Not "the first statement is a constant": in a `.pyi` every body is `...`,
+    which parses to `Expr(Constant(Ellipsis))`. Accepting that made this
+    return True for every stub def, so the contract it guards -- a stub-only
+    override must document itself -- could never fire.
+    """
+    return ast.get_docstring(node) is not None
 
 
-def collect_doc_contract_errors(cfg: StubConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> Findings:
     """Flag public runtime symbols missing docs and stub overrides without prose."""
     ctx = CheckContext(cfg)
     runtime = ctx.runtime_module
-    tree = ctx.stub_ast
+    path = cfg.stub_path
     missing: list[str] = []
+    examined = 0
 
-    for name in function_groups(tree.body):
+    for name, defs in function_groups(ctx.stub_ast.body).items():
         obj = getattr(runtime, name, None)
         if obj is None or name.startswith('_'):
             continue
+        examined += 1
         if not doc_of(obj):
-            missing.append(f'{name}: runtime docstring missing or empty')
+            missing.append(
+                f'{loc(path, defs[-1])}: {name}: runtime docstring missing or empty'
+            )
 
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
+    for node in ctx.stub_classes.values():
         cls = getattr(runtime, node.name, None)
-        if cls is None or not isinstance(cls, type):
+        if not isinstance(cls, type):
             continue  # stub-only typing helper (protocols)
         if not node.name.startswith('_') and not doc_of(cls):
-            missing.append(f'{node.name}: runtime docstring missing or empty')
+            missing.append(
+                f'{loc(path, node)}: {node.name}: runtime docstring missing or empty'
+            )
         for name, defs in function_groups(node.body).items():
             qualname = f'{node.name}.{name}'
+            carrier = defs[-1]
+            examined += 1
             if name in vars(cls):
                 if not name.startswith('_') and not doc_of(getattr(cls, name, None)):
-                    missing.append(f'{qualname}: runtime docstring missing or empty')
-            elif not name.startswith('__') and not _has_docstring(defs[-1]):
+                    missing.append(
+                        f'{loc(path, carrier)}: {qualname}: runtime docstring '
+                        f'missing or empty'
+                    )
+            elif not name.startswith('__') and not _has_docstring(carrier):
                 # Stub-only override: the carrier def (last of the group) must
                 # hold hand-written prose.
-                missing.append(f'{qualname}: stub override needs its own docstring')
+                missing.append(
+                    f'{loc(path, carrier)}: {qualname}: stub override needs its '
+                    f'own docstring'
+                )
 
-    return missing
-
-
-def collect_errors(cfg: StubConfig) -> list[str]:
-    """Alias for :func:`collect_doc_contract_errors`."""
-    return collect_doc_contract_errors(cfg)
+    return Findings(missing, examined=examined)

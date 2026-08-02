@@ -1,17 +1,14 @@
 """Unified CLI for the PyO3 stub toolkit.
 
-A project drives every gate through one entry point::
+    pyo3stubs <command> --config tools/stubconfig.py
 
-    python -m pyo3stubs <command> --config tools/stubconfig.py [--check]
+``--config`` points at a Python file exposing either a ``config()`` callable or
+a ``CONFIG`` attribute returning a :class:`~pyo3stubs.config.StubConfig`.
 
-``--config`` points at a Python file that exposes either a ``config()`` callable
-or a ``CONFIG`` attribute returning a :class:`~pyo3stubs.config.StubConfig`.
-
-Commands mirror the gate registry (see :mod:`pyo3stubs.gates`), plus::
-
-  gen-docs       inject runtime docstrings into the stub (``--check`` verifies)
-  check-all      every gate in registry order
-  init           scaffold ``tools/stubconfig.py`` + ``tests/test_stubs.py``
+Commands are the gate names (see :mod:`pyo3stubs.gates`), plus ``gen-docs``,
+``check-all``, and ``init``. Exit status is 0 when every gate that ran was
+clean, and 1 when any reported a violation — a gate that is skipped, disabled,
+or inactive is reported as such and does not affect the status.
 """
 
 from __future__ import annotations
@@ -20,17 +17,18 @@ import argparse
 import importlib.util
 import sys
 import uuid
+from pathlib import Path
 
 from pyo3stubs.config import StubConfig
-from pyo3stubs.gates import REGISTRY, SUCCESS, run_all, runnable_gates
+from pyo3stubs.gates import GATES, Result, Status, gate, gate_names, run_all
 
 
-def load_config(path: str) -> StubConfig:
+def load_config(path: str | Path) -> StubConfig:
     """Import the project's config shim and return its :class:`StubConfig`."""
     module_name = f'_pyo3stubs_config_{uuid.uuid4().hex}'
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise SystemExit(f'cannot import stub config from {path!r}')
+        raise SystemExit(f'cannot import stub config from {str(path)!r}')
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -43,73 +41,68 @@ def load_config(path: str) -> StubConfig:
     return cfg
 
 
-def _report(errors: list[str], success: str) -> int:
-    if errors:
-        for error in errors:
-            sys.stderr.write(f'  {error}\n')
-        sys.stderr.write(f'{len(errors)} problem(s)\n')
-        return 1
-    print(success)
-    return 0
+def _report(result: Result, config_path: str) -> int:
+    """Print one gate's outcome; 1 when it found violations."""
+    if result.status is not Status.VIOLATIONS:
+        print(result.line)
+        return 0
+    sys.stderr.write(f'{result.line}\n')
+    for error in result.errors:
+        sys.stderr.write(f'  {error}\n')
+    remedy = result.gate.remedy.replace('<shim>', config_path)
+    sys.stderr.write(f'  -> {remedy}\n')
+    return 1
 
 
-def _gen_docs(cfg: StubConfig, *, check: bool) -> int:
+def _gen_docs(cfg: StubConfig, config_path: str) -> int:
+    """Write runtime docstrings into the stub, and report contract violations.
+
+    The write is unconditional on purpose: running this is how a missing
+    docstring gets fixed, so refusing to write when the contract is unmet would
+    withhold the remedy. The exit status still carries the violations.
+    """
     from pyo3stubs.gen import render_stub_with_docs  # libcst only needed here
 
-    status = _report(REGISTRY['doc-contract'](cfg), SUCCESS['doc-contract'])
-    code = render_stub_with_docs(cfg)
-    if check:
-        if cfg.stub_path.read_text(encoding='utf-8') != code:
-            sys.stderr.write(
-                f'{cfg.stub_path} is out of sync; run `pyo3stubs gen-docs`\n'
-            )
-            return 1
-        print(SUCCESS['gen-docs-sync'])
-        return status
-    cfg.stub_path.write_text(code, encoding='utf-8')
+    status = _report(gate('doc-contract').run(cfg), config_path)
+    cfg.stub_path.write_text(render_stub_with_docs(cfg), encoding='utf-8')
     print(f'wrote {cfg.stub_path}')
     return status
 
 
-_INIT_CONFIG_TEMPLATE = (
-    '\"\"\"pyo3stubs configuration for {package}.\"\"\"\n'
-    '\n'
-    'from pathlib import Path\n'
-    '\n'
-    'from pyo3stubs import StubConfig\n'
-    '\n'
-    'ROOT = Path(__file__).resolve().parent.parent\n'
-    '\n'
-    '\n'
-    'def config() -> StubConfig:\n'
-    '    return StubConfig(\n'
-    "        module='{package}._lib',\n"
-    "        stub_path=ROOT / 'python' / '{package}' / '_lib.pyi',\n"
-    "        src_root=ROOT / 'src',\n"
-    '    )\n'
-)
+_INIT_CONFIG_TEMPLATE = '''\
+"""pyo3stubs configuration for {package}."""
 
-_INIT_TEST_TEMPLATE = (
-    '\"\"\"pyo3stubs gates for {package} (one test per gate).\"\"\"\n'
-    '\n'
-    'from pyo3stubs.testing import gate_test\n'
-    '\n'
-    "test_pyo3stubs_gate = gate_test('tools/stubconfig.py')\n"
-)
+from pathlib import Path
+
+from pyo3stubs import StubConfig
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def config() -> StubConfig:
+    return StubConfig(
+        module='{package}._lib',
+        stub_path=ROOT / 'python' / '{package}' / '_lib.pyi',
+        src_root=ROOT / 'src',
+    )
+'''
+
+_INIT_TEST_TEMPLATE = '''\
+"""pyo3stubs gates for {package} (one test per gate)."""
+
+from pyo3stubs.testing import gate_test
+
+test_pyo3stubs_gate = gate_test('tools/stubconfig.py')
+'''
 
 
 def _init(package: str) -> int:
     """Scaffold ``tools/stubconfig.py`` + ``tests/test_stubs.py`` in cwd."""
-    from pathlib import Path
-
-    tools = Path('tools')
-    tests = Path('tests')
-    tools.mkdir(exist_ok=True)
-    tests.mkdir(exist_ok=True)
     for path, template in (
-        (tools / 'stubconfig.py', _INIT_CONFIG_TEMPLATE),
-        (tests / 'test_stubs.py', _INIT_TEST_TEMPLATE),
+        (Path('tools/stubconfig.py'), _INIT_CONFIG_TEMPLATE),
+        (Path('tests/test_stubs.py'), _INIT_TEST_TEMPLATE),
     ):
+        path.parent.mkdir(exist_ok=True)
         if path.exists():
             print(f'{path} already exists; skipping')
             continue
@@ -118,22 +111,30 @@ def _init(package: str) -> int:
     return 0
 
 
+def _gate_help() -> str:
+    width = max(len(name) for name in gate_names())
+    return '\n'.join(
+        f'  {entry.name:<{width}}  {entry.summary} [{entry.tier}]' for entry in GATES
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog='pyo3stubs', description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog='pyo3stubs',
+        description='Stub/runtime/Rust parity gates for PyO3 packages.',
+        epilog=f'gates:\n{_gate_help()}',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         'command',
-        choices=['gen-docs', 'check-all', 'init', *REGISTRY],
+        metavar='COMMAND',
+        choices=['gen-docs', 'check-all', 'init', *gate_names()],
+        help='a gate name, or gen-docs / check-all / init',
     )
     parser.add_argument('--config', help='path to the StubConfig shim')
-    parser.add_argument(
-        '--package', help='init: the Python package name to scaffold for'
-    )
-    parser.add_argument(
-        '--check',
-        action='store_true',
-        help='gen-docs: verify the stub is in sync instead of writing it',
-    )
+    parser.add_argument('--package', help='init: the package name to scaffold for')
     args = parser.parse_args(argv)
+
     if args.command == 'init':
         if not args.package:
             parser.error('init requires --package <name>')
@@ -143,16 +144,13 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
 
     if args.command == 'gen-docs':
-        return _gen_docs(cfg, check=args.check)
-    if args.command in REGISTRY:
-        if args.command not in runnable_gates():
-            print(f'{args.command}: skipped (gate requires CPython: mypy does not run here)')
-            return 0
-        return _report(REGISTRY[args.command](cfg), SUCCESS[args.command])
-    status = 0
-    for name, errors in run_all(cfg).items():
-        status |= _report(errors, SUCCESS[name])
-    return status
+        return _gen_docs(cfg, args.config)
+    if args.command == 'check-all':
+        status = 0
+        for result in run_all(cfg):
+            status |= _report(result, args.config)
+        return status
+    return _report(gate(args.command).run(cfg), args.config)
 
 
 if __name__ == '__main__':

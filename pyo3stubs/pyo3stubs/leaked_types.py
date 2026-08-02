@@ -1,45 +1,54 @@
-"""Leak gate: reachable PyO3 types must be registered and stubbed."""
+"""Leak gate: reachable PyO3 types must be registered and stubbed.
+
+Two ways a ``#[pyclass]`` leaks. It is declared but never registered on the
+module, so it exists at runtime and cannot be named or imported; or a public
+signature mentions it while the stub has no public class of that name, so the
+type a caller receives has no reachable spelling.
+"""
 
 from __future__ import annotations
 
 import ast
-import inspect
-import re
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from pyo3stubs.context import CheckContext
+from pyo3stubs.report import Findings, loc, unused_allowlist_errors
+from pyo3stubs.rust_scan import pyclass_names
 
+if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
 
-# Any `#[pyclass]` attribute (with or without arguments) followed by its
-# struct/enum declaration, tolerating other attributes in between. The Python
-# name is the `name = "..."` argument when present, else the Rust identifier —
-# an unnamed `#[pyclass]` exports under its struct name and leaks just the same.
-from pyo3stubs.rust_scan import (  # noqa: F401 — re-exported
-    DEFAULT_PYCLASS,
-    PYCLASS_NAME_ARG,
-)
-from pyo3stubs.rust_scan import pyclass_names as collect_pyclass_names
-
+#: Annotation names that are never a PyO3 class: typing vocabulary, builtins,
+#: the exception hierarchy PyO3 raises through, and the numpy spellings that
+#: appear in array signatures. Projects add to this through
+#: ``StubConfig.extra_ignored_type_names``.
 DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
     'Any',
+    'BaseException',
+    'BufferError',
     'Buffer',
     'Callable',
     'ClassVar',
+    'Exception',
     'Final',
     'Generic',
+    'IndexError',
     'Iterable',
     'Iterator',
     'Literal',
     'Mapping',
     'MutableMapping',
+    'NDArray',
     'Protocol',
+    'RuntimeError',
     'Self',
     'Sequence',
+    'StopIteration',
+    'TypeError',
     'TypedDict',
     'TypeVar',
     'Union',
+    'ValueError',
     'bool',
     'bytes',
     'dict',
@@ -47,42 +56,33 @@ DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
     'frozenset',
     'int',
     'list',
+    'np',
+    'npt',
+    'numpy',
     'object',
     'override',
     'set',
     'str',
     'tuple',
     'type',
-    'npt',
-    'np',
-    'numpy',
-    'NDArray',
-    'BaseException',
-    'Exception',
-    'ValueError',
-    'TypeError',
-    'RuntimeError',
-    'IndexError',
-    'StopIteration',
-    'BufferError',
 })
 
 
-def _registered_class_names(runtime_module: object) -> set[str]:
-    return {
-        name
-        for name in dir(runtime_module)
-        if inspect.isclass(getattr(runtime_module, name, None))
-    }
+def _all_args(args: ast.arguments) -> list[ast.arg]:
+    """Every annotated parameter, including the kinds a partial walk misses.
 
-
-def _stub_class_names(stub_path: Path) -> set[str]:
-    tree = ast.parse(stub_path.read_text())
-    return {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
-
-
-def _public_stub_class_names(stub_path: Path) -> set[str]:
-    return {name for name in _stub_class_names(stub_path) if not name.startswith('_')}
+    `posonlyargs`, `*args` and `**kwargs` were skipped, so a leaked pyclass in
+    a positional-only parameter was invisible -- and gometry's stub alone has
+    136 `, /` markers. `structural._parameters` already walks all five kinds;
+    the two modules disagreed about what a parameter list is.
+    """
+    optional = [args.vararg, args.kwarg]
+    return [
+        *args.posonlyargs,
+        *args.args,
+        *args.kwonlyargs,
+        *[arg for arg in optional if arg is not None],
+    ]
 
 
 def _annotation_type_names(node: ast.expr | None) -> set[str]:
@@ -111,105 +111,89 @@ def _annotation_type_names(node: ast.expr | None) -> set[str]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _annotation_type_names(node.left) | _annotation_type_names(node.right)
     if isinstance(node, ast.Tuple):
-        names: set[str] = set()
+        names = set()
         for elt in node.elts:
             names |= _annotation_type_names(elt)
         return names
     return set()
 
 
-def _collect_stub_signature_leaks(
-    stub_path: Path,
-    pyclass_names: set[str],
-    public_stub_classes: set[str],
-    *,
-    leak_allowlist: dict[str, str],
-    ignored_type_names: frozenset[str],
-) -> list[str]:
-    tree = ast.parse(stub_path.read_text())
+def _signature_type_names(node: ast.FunctionDef) -> set[str]:
+    names = _annotation_type_names(node.returns)
+    for arg in _all_args(node.args):
+        names |= _annotation_type_names(arg.annotation)
+    return names
+
+
+def collect_errors(cfg: StubConfig) -> Findings:
+    """Flag registration leaks, stub reachability leaks, and allowlist rot."""
+    ctx = CheckContext(cfg)
+    declared = pyclass_names(cfg)
+    runtime = ctx.runtime_module
+    registered = {
+        name for name in dir(runtime) if isinstance(getattr(runtime, name, None), type)
+    }
+    public_stub_classes = {
+        name for name in ctx.stub_classes if not name.startswith('_')
+    }
+    ignored = DEFAULT_IGNORED_TYPE_NAMES | cfg.extra_ignored_type_names
+    used_allowlist: set[str] = set()
     errors: list[str] = []
 
-    def check_refs(symbol: str, refs: set[str]) -> None:
+    for name, rel in sorted(declared.items()):
+        if name.startswith('_') or name in registered:
+            continue
+        if name in cfg.leak_allowlist:
+            used_allowlist.add(name)
+            continue
+        errors.append(
+            f'{cfg.src_root.name}/{rel}: pyclass {name!r} is not registered on '
+            f'{cfg.module}'
+        )
+
+    def check(symbol: str, node: ast.stmt, refs: set[str]) -> None:
         for ref in sorted(refs):
-            if ref.startswith('_'):
+            if ref.startswith('_') or ref in ignored or ref not in declared:
                 continue
-            if ref in ignored_type_names:
-                continue
-            if ref in leak_allowlist:
-                continue
-            if ref not in pyclass_names:
+            if ref in cfg.leak_allowlist:
+                used_allowlist.add(ref)
                 continue
             if ref in public_stub_classes:
                 continue
             errors.append(
-                f'{symbol}: annotation references leaked pyclass {ref!r} — '
-                f'add a public stub class or register the type'
+                f'{loc(cfg.stub_path, node)}: {symbol}: annotation references '
+                f'leaked pyclass {ref!r} — add a public stub class or register '
+                f'the type'
             )
 
-    for node in tree.body:
+    for node in ctx.stub_ast.body:
         if isinstance(node, ast.ClassDef):
             if node.name.startswith('_'):
                 continue
             for base in node.bases:
-                check_refs(f'class {node.name}', _annotation_type_names(base))
+                check(f'class {node.name}', node, _annotation_type_names(base))
             for child in node.body:
                 if isinstance(child, ast.FunctionDef) and not child.name.startswith(
                     '_'
                 ):
-                    refs = _annotation_type_names(child.returns)
-                    for arg in child.args.args:
-                        refs |= _annotation_type_names(arg.annotation)
-                    for arg in child.args.kwonlyargs:
-                        refs |= _annotation_type_names(arg.annotation)
-                    check_refs(f'{node.name}.{child.name}', refs)
+                    check(
+                        f'{node.name}.{child.name}',
+                        child,
+                        _signature_type_names(child),
+                    )
                 elif isinstance(child, ast.AnnAssign) and isinstance(
                     child.target, ast.Name
                 ):
-                    check_refs(
+                    check(
                         f'{node.name}.{child.target.id}',
+                        child,
                         _annotation_type_names(child.annotation),
                     )
         elif isinstance(node, ast.FunctionDef) and not node.name.startswith('_'):
-            refs = _annotation_type_names(node.returns)
-            for arg in node.args.args:
-                refs |= _annotation_type_names(arg.annotation)
-            for arg in node.args.kwonlyargs:
-                refs |= _annotation_type_names(arg.annotation)
-            check_refs(node.name, refs)
+            check(node.name, node, _signature_type_names(node))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            check_refs(node.target.id, _annotation_type_names(node.annotation))
+            check(node.target.id, node, _annotation_type_names(node.annotation))
 
-    return errors
-
-
-def collect_errors(cfg: StubConfig) -> list[str]:
-    """Flag registration leaks and stub reachability leaks."""
-    from pyo3stubs.context import CheckContext
-
-    ctx = CheckContext(cfg)
-    pyclass_map = collect_pyclass_names(cfg)
-    pyclass_names = set(pyclass_map)
-    registered = _registered_class_names(ctx.runtime_module)
-    public_stub_classes = _public_stub_class_names(cfg.stub_path)
-    ignored = cfg.ignored_type_names or DEFAULT_IGNORED_TYPE_NAMES
-    errors: list[str] = []
-
-    for name, rel_path in sorted(pyclass_map.items()):
-        if name.startswith('_') or name in cfg.leak_allowlist:
-            continue
-        if name in registered:
-            continue
-        errors.append(
-            f'{rel_path}: pyclass {name!r} is not registered on {cfg.module}'
-        )
-
-    errors.extend(
-        _collect_stub_signature_leaks(
-            cfg.stub_path,
-            pyclass_names,
-            public_stub_classes,
-            leak_allowlist=cfg.leak_allowlist,
-            ignored_type_names=ignored,
-        )
-    )
-    return errors
+    errors += unused_allowlist_errors('leak', cfg.leak_allowlist, used_allowlist)
+    public = [name for name in declared if not name.startswith('_')]
+    return Findings(errors, examined=len(public))

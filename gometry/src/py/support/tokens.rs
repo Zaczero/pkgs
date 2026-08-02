@@ -60,8 +60,8 @@ crate::tokens::token_from_pyobject!(
 /// canonical_tokens)`, where the alias is the private `_types` `Literal` name
 /// (`None` for surfaces typed as plain `str`). Read straight from the
 /// generated `TOKENS` tables so the stub `Literal`s cannot drift from the
-/// runtime parsers; `pyo3stubs parity` cross-checks this against
-/// `gometry._types` and the `token_enum!` declarations in the source tree.
+/// runtime parsers; the `pyo3stubs token-vocabulary` gate cross-checks this
+/// against `gometry._types` and the `token_enum!` declarations in the tree.
 #[pyfunction]
 pub(crate) fn _token_vocabulary() -> Vec<(&'static str, Option<&'static str>, Vec<&'static str>)> {
     vec![

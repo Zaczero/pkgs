@@ -64,8 +64,12 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
     """Run ``mypy.stubtest`` on the compiled module against its stub.
 
     The stub resolves via ``MYPYPATH`` pointed at the stub's package root, so
-    the gate checks the working tree even under an editable install. Allowlist
-    entries that no longer match fail the run (no rot).
+    the gate checks the working tree even under an editable install. The child
+    inherits this process's import path, so the module it imports is the module
+    the caller has — a config shim that puts its package on ``sys.path`` (rather
+    than installing it) would otherwise fail here with an import error that
+    looks like a stub problem. Allowlist entries that no longer match fail the
+    run (no rot).
     """
     command = [sys.executable, '-m', 'mypy.stubtest', cfg.module]
     if cfg.stubtest_allowlist is not None:
@@ -77,7 +81,11 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, 'MYPYPATH': str(_stub_root(cfg))},
+        env={
+            **os.environ,
+            'MYPYPATH': str(_stub_root(cfg)),
+            'PYTHONPATH': os.pathsep.join(path for path in sys.path if path),
+        },
     )
     if result.returncode == 0:
         return []

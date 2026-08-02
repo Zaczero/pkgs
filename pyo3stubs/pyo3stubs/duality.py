@@ -7,7 +7,7 @@ TypeVar), the array method must return ``Self``; otherwise it must return
 ``ArrayClass[<union of scalar leaf returns>]`` (a scalar return of
 ``ArrayClass[X]`` — an expansion op — contributes ``X``).
 
-Activated by ``StubConfig.duality``; no-op when unset.
+Activated by ``StubConfig.duality``; a reported no-op when unset.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import ast
 from typing import TYPE_CHECKING
 
 from pyo3stubs.context import CheckContext
+from pyo3stubs.report import Findings, loc, unused_allowlist_errors
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
@@ -54,23 +55,29 @@ def _unwrap_array(atom: str, array_class: str) -> str | None:
     return None
 
 
-def collect_errors(cfg: StubConfig) -> list[str]:
+def collect_errors(cfg: StubConfig) -> Findings:
     """Scalar↔array method return parity for configured class pairs."""
     conf = cfg.duality
-    if conf is None or not conf.pairs:
-        return []
+    if conf is None:
+        return Findings()
     ctx = CheckContext(cfg)
     path = cfg.stub_path
     errors: list[str] = []
+    used_exempt: set[str] = set()
+    compared = 0
     for scalar_class, array_class in conf.pairs:
         scalar_methods = _class_methods(ctx.stub_ast, scalar_class)
         array_methods = _class_methods(ctx.stub_ast, array_class)
         for name, array_defs in sorted(array_methods.items()):
-            if name.startswith('_') or name in conf.exempt:
+            if name.startswith('_'):
                 continue
             scalar_defs = scalar_methods.get(name)
             if not scalar_defs:
                 continue
+            if name in conf.exempt:
+                used_exempt.add(name)
+                continue
+            compared += 1
             array_returns = [
                 (node, atoms)
                 for node in array_defs
@@ -117,10 +124,13 @@ def collect_errors(cfg: StubConfig) -> list[str]:
                 if not actual_ok:
                     scalar_label = ' | '.join(sorted(scalar_atoms))
                     errors.append(
-                        f'{path}:{node.lineno}: {array_class}.{name}: return '
-                        f'`{ast.unparse(node.returns)}` breaks scalar<->array '
+                        f'{loc(path, node)}: {array_class}.{name}: return '
+                        f'`{" | ".join(sorted(atoms))}` breaks scalar<->array '
                         f'duality — scalar returns `{scalar_label}`, so the '
                         f'array form must return `{expected_label}` (exempt '
                         f'via DualityConfig.exempt with a reason if deliberate)'
                     )
-    return errors
+    return Findings(
+        errors + unused_allowlist_errors('duality exempt', conf.exempt, used_exempt),
+        examined=compared,
+    )

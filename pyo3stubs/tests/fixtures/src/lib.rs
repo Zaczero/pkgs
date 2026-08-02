@@ -30,3 +30,7 @@ pub struct Orphan {
 fn documented(a: i64, b: &str) -> String {
     b.repeat(a as usize)
 }
+
+crate::tokens::token_enum! {
+    enum Mode(fast, exact)
+}

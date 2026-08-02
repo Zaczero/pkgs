@@ -7,8 +7,7 @@ import sys
 from pathlib import Path
 
 import gometry as gm
-from pyo3stubs.config import DualityConfig, StubConfig, TokenConfig
-from pyo3stubs.leaked_types import DEFAULT_IGNORED_TYPE_NAMES
+from pyo3stubs import DualityConfig, StubConfig, SurfaceConfig, TokenConfig
 
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
@@ -21,29 +20,18 @@ ROOT = _TOOLS_ROOT.parent
 STUB = ROOT / 'python' / 'gometry' / '_lib.pyi'
 SRC = ROOT / 'src'
 
-# Two capture groups: Rust ident then Python export name.
-COVERAGE_ITERATOR = re.compile(
-    r'coverage_iterator!\s*\(\s*(\w+)\s*,\s*"([^"]+)"',
-    re.MULTILINE,
-)
+# `geometry_leaf!(PyPoint, "Point", "docstring")` declares a `#[pyclass]` from a
+# macro, so the attribute scan cannot see it: the Rust identifier and the Python
+# export name come from the invocation's own arguments.
 GEOMETRY_LEAF = re.compile(
-    r'geometry_leaf!\s*\(\s*(\w+)\s*,\s*"([^"]+)"',
-    re.MULTILINE,
+    r'geometry_leaf!\s*\(\s*(?P<rust>\w+)\s*,\s*"(?P<py>[^"]+)"',
 )
-
-LEAK_ALLOWLIST: dict[str, str] = {
-    '_Float64Buffer': 'buffer-protocol internal (Arrow float64 mover)',
-    '_Int32Buffer': 'buffer-protocol internal (Arrow int32 mover)',
-}
 
 # (empty since gm.index was folded into the SpatialIndex constructor — the
 # 2026-07 form review resolved the index name collision at the source.)
 KNOWN_DIVERGENCES: dict[str, str] = {}
 
-GOMETRY_IGNORED_TYPE_NAMES = DEFAULT_IGNORED_TYPE_NAMES | frozenset({
-    '_GeometryT',
-    '_GeometryT_co',
-})
+EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co'})
 
 SURFACES = (
     ('Geometry', gm.Geometry),
@@ -59,15 +47,16 @@ def config() -> StubConfig:
         module='gometry._lib',
         stub_path=STUB,
         src_root=SRC,
-        surfaces=SURFACES,
-        known_divergences=KNOWN_DIVERGENCES,
-        leak_allowlist=LEAK_ALLOWLIST,
+        surface=SurfaceConfig(
+            targets=SURFACES,
+            known_divergences=KNOWN_DIVERGENCES,
+        ),
         stubtest_allowlist=_STUBS / 'stubtest_allowlist.txt',
         # Error-code policy (e.g. the overload-overlap rationale) lives in
         # [tool.mypy] there — one source for validity, stubtest, and bare mypy.
         mypy_config=ROOT / 'pyproject.toml',
-        ignored_type_names=GOMETRY_IGNORED_TYPE_NAMES,
-        pyclass_patterns=(COVERAGE_ITERATOR, GEOMETRY_LEAF),
+        extra_ignored_type_names=EXTRA_IGNORED_TYPE_NAMES,
+        pyclass_patterns=(GEOMETRY_LEAF,),
         # Array method returns are DERIVED from the scalar contract.
         duality=DualityConfig(pairs=(('Geometry', 'GeometryArray'),)),
         tokens=TokenConfig(
