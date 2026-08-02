@@ -4,8 +4,6 @@ import argparse
 import importlib.metadata
 import os
 import sys
-
-from h2corn._log import Event, set_format
 from dataclasses import MISSING, dataclass
 from pathlib import Path
 from typing import NoReturn, TypeAlias, cast
@@ -22,6 +20,7 @@ from ._config import (
     env_values,
     tcp_bind_convenience,
 )
+from ._log import Event, set_format
 
 TYPE_CHECKING = False
 

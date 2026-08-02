@@ -9,8 +9,6 @@ import signal
 import struct
 import subprocess
 import sys
-
-from h2corn._log import Event
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -19,6 +17,7 @@ from pathlib import Path
 from typing import cast
 
 from ._config import FdBindSpec, parse_bind_spec
+from ._log import Event
 from ._socket import (
     drain_fd,
     nonblocking_pipe,

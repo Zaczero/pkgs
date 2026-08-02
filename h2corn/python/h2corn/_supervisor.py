@@ -7,8 +7,6 @@ import random
 import selectors
 import signal
 import sys
-
-from h2corn._log import Event
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -16,6 +14,7 @@ from typing import Any, cast
 
 from ._cli import ImportSettings
 from ._lifespan import cancel_task
+from ._log import Event
 from ._reload import take_reload_parent_liveness_fd
 from ._socket import (
     bound_addresses,
