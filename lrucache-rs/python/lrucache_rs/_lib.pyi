@@ -22,7 +22,7 @@ class LRUCache(MutableMapping[_K, _V]):
         """
 
     def __new__(cls, maxsize: int) -> LRUCache[_K, _V]:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a cache holding at most ``maxsize`` entries."""
 
     @property
     def maxsize(self) -> int:
@@ -52,8 +52,19 @@ class LRUCache(MutableMapping[_K, _V]):
     def get(self, key: _K, /, default: _D) -> _V | _D: ...
     @overload
     def get(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
-        """Retrieve the value for ``key``, marking it most recently used;
-        ``default`` (``None`` if omitted) when the key is absent.
+        """Retrieve the value for ``key``, marking it most recently used.
+
+        Parameters
+        ----------
+        key : Hashable
+            The key to look up.
+        default : object, optional
+            Returned when the key is absent; ``None`` if omitted.
+
+        Returns
+        -------
+        object
+            The stored value, or ``default`` when the key is absent.
         """
 
     @overload
@@ -64,12 +75,34 @@ class LRUCache(MutableMapping[_K, _V]):
     def peek(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
         """Read without bumping recency. Useful for instrumentation that should not
         perturb the LRU order; the convention is borrowed from `cachetools`.
+
+        Parameters
+        ----------
+        key : Hashable
+            The key to look up.
+        default : object, optional
+            Returned when the key is absent; ``None`` if omitted.
+
+        Returns
+        -------
+        object
+            The stored value, or ``default`` when the key is absent.
         """
 
     def clear(self) -> None:
-        """Remove all entries from the cache."""
+        """Remove all entries from the cache.
+
+        Returns
+        -------
+        None
+        """
 
     def popitem(self) -> tuple[_K, _V]:
         """Remove and return the least-recently-used `(key, value)` pair, raising
         `KeyError` if empty.
+
+        Returns
+        -------
+        tuple
+            The evicted ``(key, value)`` pair.
         """

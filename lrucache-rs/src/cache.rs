@@ -144,8 +144,19 @@ impl LRUCache {
     }
 
     #[pyo3(signature = (key, /, default=None))]
-    /// Retrieve the value for ``key``, marking it most recently used;
-    /// ``default`` (``None`` if omitted) when the key is absent.
+    /// Retrieve the value for ``key``, marking it most recently used.
+    ///
+    /// Parameters
+    /// ----------
+    /// key : Hashable
+    ///     The key to look up.
+    /// default : object, optional
+    ///     Returned when the key is absent; ``None`` if omitted.
+    ///
+    /// Returns
+    /// -------
+    /// object
+    ///     The stored value, or ``default`` when the key is absent.
     fn get(
         &self,
         py: Python<'_>,
@@ -161,6 +172,18 @@ impl LRUCache {
 
     /// Read without bumping recency. Useful for instrumentation that should not
     /// perturb the LRU order; the convention is borrowed from `cachetools`.
+    ///
+    /// Parameters
+    /// ----------
+    /// key : Hashable
+    ///     The key to look up.
+    /// default : object, optional
+    ///     Returned when the key is absent; ``None`` if omitted.
+    ///
+    /// Returns
+    /// -------
+    /// object
+    ///     The stored value, or ``default`` when the key is absent.
     #[pyo3(signature = (key, /, default=None))]
     fn peek(
         &self,
@@ -176,12 +199,21 @@ impl LRUCache {
     }
 
     /// Remove all entries from the cache.
+    ///
+    /// Returns
+    /// -------
+    /// None
     fn clear(&self, py: Python<'_>) {
         self.inner.lock_py_attached(py).clear(py);
     }
 
     /// Remove and return the least-recently-used `(key, value)` pair, raising
     /// `KeyError` if empty.
+    ///
+    /// Returns
+    /// -------
+    /// tuple
+    ///     The evicted ``(key, value)`` pair.
     fn popitem<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let mut guard = self.inner.lock_py_attached(py);
         let popped = guard.pop_lru();

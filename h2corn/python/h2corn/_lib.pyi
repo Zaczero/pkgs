@@ -45,10 +45,34 @@ def prepare_tls(
 
     Runs the same `server_config` extraction serving uses so `--check-config`
     rejects bad cert/key/CA bytes before any worker starts.
+
+    Parameters
+    ----------
+    config : Config
+        The server configuration to extract from.
+    tls_material : _TlsMaterial, optional
+        PEM certificate, key and CA bytes; ``None`` serves plaintext.
+
+    Returns
+    -------
+    _PreparedTls
+        The prepared acceptor, to be handed to every worker.
     """
 
 def emit_banner(config: Config, tls: _PreparedTls) -> None:
-    """Print the startup banner for a validated server configuration."""
+    """Print the startup banner for a validated server configuration.
+
+    Parameters
+    ----------
+    config : Config
+        The validated server configuration.
+    tls : _PreparedTls
+        The prepared acceptor, which decides whether the banner says HTTPS.
+
+    Returns
+    -------
+    None
+    """
 
 def serve_fds(
     app: Application,
@@ -71,4 +95,30 @@ def serve_fds(
 
     `prepared_tls` is required: PEM is converted once in `prepare_tls` and
     reused here. There is no path that reopens certificate files in a worker.
+
+    Parameters
+    ----------
+    app : object
+        The ASGI application to serve.
+    fds : list of int
+        Listener descriptors to adopt; ownership transfers to this call.
+    config : Config
+        The validated server configuration.
+    shutdown_trigger : object
+        Awaited to begin a graceful shutdown.
+    retire_trigger : object, optional
+        Awaited to stop accepting while draining in-flight requests.
+    lifespan_handoff : _LifespanHandoff, optional
+        Carries lifespan state from the parent process.
+    ready_trigger : object, optional
+        Resolved once the worker is accepting connections.
+    quiesce_fd : int, optional
+        Descriptor signalling quiesce; ownership transfers to this call.
+    prepared_tls : _PreparedTls
+        The acceptor built once by ``prepare_tls``.
+
+    Returns
+    -------
+    Awaitable[None]
+        Completes when the worker has stopped serving.
     """
