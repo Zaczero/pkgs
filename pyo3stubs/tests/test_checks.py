@@ -107,6 +107,38 @@ def test_doc_contract_flags_missing_runtime_doc(tmp_path, monkeypatch):
     assert any('Sealed.method' in e for e in errors)
 
 
+def test_gen_docs_leaves_cpython_slot_wrappers_alone(tmp_path, pristine_stub, monkeypatch):
+    """A slot's doc belongs to CPython, not to the class that registered it.
+
+    PyO3 exposes protocol methods as type slots; CPython synthesises the wrapper
+    and supplies its own docstring, so ``__len__`` reads "Return len(self)."
+    whatever the Rust ``///`` said. Injecting that overwrites the stub's own
+    prose with boilerplate.
+
+    ``list.__len__`` stands in for the PyO3 slot: a pure-Python ``def __len__``
+    is a plain function, and only a C-level slot reproduces the descriptor kind
+    that tells the two apart.
+    """
+    import fakepkg._lib as lib
+
+    monkeypatch.setattr(lib.Sealed, '__len__', list.__len__, raising=False)
+    assert lib.Sealed.__len__.__doc__ == 'Return len(self).'
+
+    anchor = '    def method(self, value: int, flag: bool = True) -> int:'
+    assert anchor in pristine_stub, 'fixture drifted; the anchor must match'
+    mutated = pristine_stub.replace(
+        anchor,
+        '    def __len__(self) -> int:\n'
+        '        """Number of things, as the stub author described it."""\n'
+        + anchor,
+    )
+    cfg = make_config(tmp_path, stub_text=mutated)
+    rendered = render_stub_with_docs(cfg)
+
+    assert 'Number of things, as the stub author described it.' in rendered
+    assert 'Return len(self).' not in rendered
+
+
 def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):
     # Move the docstring onto the FIRST variant; the renderer must put it back
     # on the last (the canonical carrier) and strip earlier variants.

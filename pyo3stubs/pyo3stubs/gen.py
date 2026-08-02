@@ -35,6 +35,26 @@ if TYPE_CHECKING:
 
     from pyo3stubs.config import StubConfig
 
+# PyO3 registers protocol methods as type slots, and CPython synthesises the
+# wrapper — taking the docstring with it. `LRUCache.__getitem__` reads "Return
+# self[key]." no matter what the `///` comment above the Rust said, so injecting
+# the runtime doc would overwrite the stub's own prose with boilerplate.
+#
+# The tell is the descriptor kind, not the text. Everything PyO3 documents
+# itself arrives as a `method_descriptor` (plain methods), `getset_descriptor`
+# (getters) or `classmethod_descriptor`; only CPython-synthesised slots are
+# `wrapper_descriptor`. Matching on the English instead would have to track
+# CPython's wording across versions, and would still miss the ones it had not
+# been told about.
+_CPYTHON_SLOT_WRAPPER = type(object.__lt__)
+
+
+def _runtime_doc_for_stub(obj: object) -> str | None:
+    """Runtime ``__doc__`` suitable for stub injection, or ``None`` to leave stub."""
+    if isinstance(obj, _CPYTHON_SLOT_WRAPPER):
+        return None
+    return doc_of(obj)
+
 
 def _docstring_statement(doc: str, indent: str) -> cst.BaseStatement:
     """Build an indented triple-quoted docstring statement line."""
@@ -132,7 +152,7 @@ class DocInjector(cst.CSTTransformer):
         obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper (protocols)
-        doc = doc_of(obj)
+        doc = _runtime_doc_for_stub(obj)
         if doc:
             return _apply(updated, doc, '    ' * (len(self._stack) + 1))
         return updated
@@ -160,7 +180,7 @@ class DocInjector(cst.CSTTransformer):
             return updated  # stub-only typing helper
         if not carrier:
             return _without_docstring(updated)
-        doc = doc_of(obj)
+        doc = _runtime_doc_for_stub(obj)
         if doc:
             return _apply(updated, doc, indent)
         return updated
