@@ -5,10 +5,10 @@ use tokio::time::Instant;
 
 use super::{ResponseClose, ResponseCloseBatch, WebSocketData};
 use crate::bridge::PayloadBytes;
-use crate::error::{ErrorExt as _, H2CornError, H2Error, HttpResponseError};
+use crate::error::{ErrorExt as _, H2CornError, H2Error};
 use crate::h2::StreamMap;
 use crate::h2_frame::StreamId;
-use crate::http::pathsend::PathStreamer;
+use crate::http::pathsend::FileStreamer;
 use crate::http::response::ResponseBytePermit;
 use crate::http::types::ResponseTrailers;
 use crate::inline_fifo::InlineFifo;
@@ -27,7 +27,36 @@ enum PendingChunkData {
     WebSocket(Box<WebSocketData>),
 }
 
-pub(super) type PendingChunks = InlineFifo<PendingChunk, 2>;
+/// One item of a response body, in the order the application produced it.
+///
+/// Buffered chunks and file segments share a queue because
+/// `http.response.zerocopysend` may be sent repeatedly and interleaved with
+/// `http.response.body`: order is the contract, so a body cannot be modelled as
+/// "either some chunks or one file" without losing it.
+///
+/// Both arms are stored inline. `FileStreamer` holds only a cursor and the
+/// state of one rolling read -- its buffer is behind its own pointer -- so it is
+/// *smaller* than a chunk descriptor and sets nothing: the sizes below are
+/// pinned so that stays true rather than being asserted in prose.
+#[derive(Debug)]
+pub(super) enum BodyItem {
+    Chunk(PendingChunk),
+    File(FileStreamer),
+}
+
+// Pinned exactly, in both directions, because this type is stored inline two
+// deep in every open stream. The file arm is *not* boxed: a `FileStreamer` is
+// the same size as a buffered chunk, so boxing would buy one pointer of
+// discriminant back in exchange for an allocation per segment.
+//
+// The queued item is one word wider than a chunk, and deliberately: it carries
+// the admission credit that bounds how many descriptors a flow-controlled
+// client can make an application queue. Sixteen bytes per open stream is the
+// price of turning an unbounded descriptor leak into backpressure.
+const _: () = assert!(size_of::<FileStreamer>() == size_of::<PendingChunk>());
+const _: () = assert!(size_of::<BodyItem>() == 80);
+
+pub(super) type PendingBody = InlineFifo<BodyItem, 2>;
 
 #[derive(Debug)]
 pub(super) struct ReadyStreamQueue {
@@ -93,11 +122,7 @@ impl ReadyStreamQueue {
 #[derive(Debug)]
 pub(super) enum StreamBodyState {
     Idle,
-    Chunks(PendingChunks),
-    // The one-buffer std-file streamer is 64 bytes, smaller than the common
-    // inline chunk queue, so storing it directly removes one pathsend-only
-    // allocation without growing `StreamWriteState`.
-    Path(PathStreamer),
+    Body(PendingBody),
 }
 
 // `Open` carries everything and the other two variants carry nothing, so
@@ -105,8 +130,12 @@ pub(super) enum StreamBodyState {
 // `body`, which puts the inline chunk queue above behind a pointer and adds a
 // malloc per response. The size is pinned here instead: exact, and it fails in
 // both directions.
-const _: () = assert!(size_of::<ResponseWriteState>() == 192);
+const _: () = assert!(size_of::<ResponseWriteState>() == 208);
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing `Open` would put the inline body queue behind a pointer and add a malloc per response; the size is pinned above instead"
+)]
 #[derive(Debug)]
 pub(super) enum ResponseWriteState {
     AwaitingHeaders,
@@ -249,51 +278,54 @@ impl StreamWriteState {
     }
 
     fn queue_chunk(&mut self, chunk: PendingChunk) -> Result<(), H2CornError> {
+        self.queue_body_item(
+            BodyItem::Chunk(chunk),
+            H2Error::DataBeforeResponseHeaders,
+            H2Error::DataOnClosedStream,
+        )
+    }
+
+    pub(super) fn queue_file(&mut self, streamer: FileStreamer) -> Result<(), H2CornError> {
+        self.queue_body_item(
+            BodyItem::File(streamer),
+            H2Error::PathDataBeforeResponseHeaders,
+            H2Error::PathDataOnClosedStream,
+        )
+    }
+
+    /// Append one item to the response body, preserving application order.
+    ///
+    /// There is deliberately no "already has a body" rejection here. Mixing a
+    /// file with buffered chunks is exactly what `http.response.zerocopysend`
+    /// is for; pathsend's own terminality is a rule about the *ASGI messages*
+    /// and is enforced where those are admitted
+    /// (`ResponseController::handle_pathsend`), not a second time against this
+    /// server's own trusted queue.
+    fn queue_body_item(
+        &mut self,
+        item: BodyItem,
+        before_headers: H2Error,
+        on_closed: H2Error,
+    ) -> Result<(), H2CornError> {
         match &mut self.response {
-            ResponseWriteState::AwaitingHeaders => {
-                return H2Error::DataBeforeResponseHeaders.err();
-            },
-            ResponseWriteState::Closed => {
-                return H2Error::DataOnClosedStream.err();
-            },
+            ResponseWriteState::AwaitingHeaders => before_headers.err(),
+            ResponseWriteState::Closed => on_closed.err(),
             ResponseWriteState::Open { body, .. } => {
                 let was_idle = body.is_idle();
                 match body {
                     StreamBodyState::Idle => {
-                        let mut chunks = PendingChunks::new();
-                        chunks.push_back(chunk);
-                        *body = StreamBodyState::Chunks(chunks);
+                        let mut queue = PendingBody::new();
+                        queue.push_back(item);
+                        *body = StreamBodyState::Body(queue);
                     },
-                    StreamBodyState::Chunks(pending) => pending.push_back(chunk),
-                    StreamBodyState::Path(_) => {
-                        return HttpResponseError::PathsendMixedWithBody.err();
-                    },
+                    StreamBodyState::Body(queue) => queue.push_back(item),
                 }
                 if was_idle {
                     self.pending_body_since = Some(Instant::now());
                 }
+                Ok(())
             },
         }
-        Ok(())
-    }
-
-    pub(super) fn queue_path(&mut self, streamer: PathStreamer) -> Result<(), H2CornError> {
-        match &mut self.response {
-            ResponseWriteState::AwaitingHeaders => {
-                return H2Error::PathDataBeforeResponseHeaders.err();
-            },
-            ResponseWriteState::Closed => {
-                return H2Error::PathDataOnClosedStream.err();
-            },
-            ResponseWriteState::Open { body, .. } => {
-                if !body.is_idle() {
-                    return HttpResponseError::PathsendMixedWithBody.err();
-                }
-                *body = StreamBodyState::Path(streamer);
-                self.pending_body_since = Some(Instant::now());
-            },
-        }
-        Ok(())
     }
 
     pub(super) fn finish(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
@@ -317,17 +349,28 @@ impl StreamBodyState {
     pub(super) fn has_pending_output(&self) -> bool {
         match self {
             Self::Idle => false,
-            Self::Chunks(chunks) => !chunks.is_empty(),
-            Self::Path(_) => true,
+            Self::Body(queue) => !queue.is_empty(),
         }
     }
 
     fn normalized(self) -> Self {
         match self {
-            Self::Chunks(chunks) if chunks.is_empty() => Self::Idle,
-            Self::Chunks(chunks) => Self::Chunks(chunks),
-            Self::Path(streamer) if streamer.is_drained() && !streamer.end_stream => Self::Idle,
+            Self::Body(queue) if queue.is_empty() => Self::Idle,
             other => other,
+        }
+    }
+}
+
+impl BodyItem {
+    /// The buffered chunk, when this item is one.
+    ///
+    /// The vectored frame collector walks the queue with this: a file segment
+    /// has no in-memory slice to hand a `writev`, so it stops the batch rather
+    /// than joining it.
+    pub(super) const fn as_chunk(&self) -> Option<&PendingChunk> {
+        match self {
+            Self::Chunk(chunk) => Some(chunk),
+            Self::File(_) => None,
         }
     }
 }
@@ -395,6 +438,7 @@ pub(super) fn notify_response_abort(response_closes: &mut ResponseCloseBatch, st
 
 #[cfg(test)]
 mod tests {
+
     use std::collections::VecDeque;
     use std::mem::size_of;
 

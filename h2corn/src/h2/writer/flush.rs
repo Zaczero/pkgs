@@ -24,7 +24,7 @@ use super::header_encode::{HeaderEncodeState, write_header_block};
 #[cfg(test)]
 use super::stream_state::writer_stream;
 use super::stream_state::{
-    PendingChunk, PendingChunks, ReadyStreamQueue, StreamBodyState, StreamWriteState,
+    BodyItem, PendingBody, PendingChunk, ReadyStreamQueue, StreamBodyState, StreamWriteState,
 };
 use super::{
     FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch,
@@ -38,7 +38,7 @@ use crate::h2_frame::{
     self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FramePayload, FramePayloadLen,
     FrameType, StreamId,
 };
-use crate::http::pathsend::{PathStreamer, SendfileCursor};
+use crate::http::pathsend::{FileStreamer, SendfileCursor};
 use crate::sendfile::WriteTarget;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,9 +167,53 @@ const fn fair_write_quantum(max_frame_size: FramePayloadLen) -> usize {
     }
 }
 
-async fn flush_chunk_body<W>(
+/// Drive a response body in application order.
+///
+/// The queue mixes buffered chunks and file segments, and the two cannot share
+/// a write: a chunk hands `writev` an in-memory slice, while a file is either
+/// `sendfile`d or read into a rolling buffer first. So each turn takes the head
+/// of the queue — a run of buffered chunks in one vectored write, or one file
+/// segment — and comes back for the rest.
+async fn flush_body_queue<W>(
     context: &mut FlushBodyParts<'_, W>,
-    pending: &mut PendingChunks,
+    queue: &mut PendingBody,
+    stream_id: StreamId,
+    stream: &mut StreamWriteState,
+) -> Result<FlushBodyProgress, H2CornError>
+where
+    W: AsyncWrite + Unpin + WriteTarget,
+{
+    if stream.is_closed() {
+        return Ok(FlushBodyProgress::Continue);
+    }
+    if !matches!(queue.front(), Some(BodyItem::File(_))) {
+        if queue.is_empty() {
+            return Ok(FlushBodyProgress::Continue);
+        }
+        return flush_chunk_run(context, queue, stream_id, stream).await;
+    }
+
+    let Some(BodyItem::File(streamer)) = queue.front_mut() else {
+        unreachable!("the front item was just observed to be a file segment")
+    };
+    let progress = flush_file_body(context, streamer, stream_id, stream).await?;
+    // Drained is the only signal that this segment is finished; a segment that
+    // ends the stream has already closed it above.
+    if streamer.is_drained() {
+        queue.pop_front();
+    }
+    // One file item per turn, whatever its size, so this returns rather than
+    // taking the next. The fair-write budget counts bytes, and a queue of tiny
+    // segments costs almost none of them while still charging a blocking-pool
+    // read, an allocation and a queue pop each -- so a byte budget alone would
+    // let one stream run thousands of file operations before its peers got a
+    // turn. Anything still queued is picked up on the stream's next one.
+    Ok(progress)
+}
+
+async fn flush_chunk_run<W>(
+    context: &mut FlushBodyParts<'_, W>,
+    pending: &mut PendingBody,
     stream_id: StreamId,
     stream: &mut StreamWriteState,
 ) -> Result<FlushBodyProgress, H2CornError>
@@ -185,7 +229,15 @@ where
     // multi-chunk streamed body becomes a single writev instead of a
     // flush+write pair per frame.
     let (total, drained_segments, tail_consumed, ended_stream, connection_blocked) = {
-        let batch = collect_chunk_data_frames(context, stream, stream_id, pending.iter());
+        // `map_while` stops the batch at the first file segment: it has no
+        // in-memory slice to contribute, and everything behind it must wait so
+        // the body stays in application order.
+        let batch = collect_chunk_data_frames(
+            context,
+            stream,
+            stream_id,
+            pending.iter().map_while(BodyItem::as_chunk),
+        );
         if !batch.headers.is_empty()
             && let Err(error) = write_frames_vectored(
                 context.writer,
@@ -211,14 +263,16 @@ where
         *context.connection_send_window -= total as i64;
         stream.send_window -= i32::try_from(total)
             .expect("one fair-write batch fits the signed 31-bit stream-window domain");
+        // Only buffered chunks reach the batch, so every drained segment it
+        // reports is one — a file segment stopped the collector before it.
         for _ in 0..drained_segments {
-            let mut chunk = pending
-                .pop_front()
-                .expect("frame batch drains only queued chunks");
+            let Some(BodyItem::Chunk(mut chunk)) = pending.pop_front() else {
+                unreachable!("frame batch drains only queued buffered chunks")
+            };
             chunk.consume(chunk.remaining_len());
         }
         if tail_consumed != 0
-            && let Some(front) = pending.front_mut()
+            && let Some(BodyItem::Chunk(front)) = pending.front_mut()
         {
             front.consume(tail_consumed);
         }
@@ -238,9 +292,9 @@ where
     Ok(FlushBodyProgress::Continue)
 }
 
-async fn flush_path_body<W>(
+async fn flush_file_body<W>(
     context: &mut FlushBodyParts<'_, W>,
-    streamer: &mut PathStreamer,
+    streamer: &mut FileStreamer,
     stream_id: StreamId,
     stream: &mut StreamWriteState,
 ) -> Result<FlushBodyProgress, H2CornError>
@@ -331,7 +385,11 @@ where
             return Ok(FlushBodyProgress::Continue);
         }
         if connection_blocked {
-            // Not rescheduled -- see `flush_chunk_body`.
+            // Deliberately not rescheduled: the shared window is empty, so
+            // requeueing would only have the writer spin against zero credit, and
+            // putting it at the front lets one stream take every later grant while
+            // its peers wait. `grant_connection_window` queues everything with
+            // pending output when credit actually arrives.
             return Ok(FlushBodyProgress::ConnectionBlocked);
         }
         if total == 0 || context.budget_exhausted() {
@@ -351,7 +409,8 @@ where
     W: AsyncWrite + Unpin + WriteTarget,
 {
     if *context.connection_send_window <= 0 {
-        // Not rescheduled -- see `flush_chunk_body`.
+        // Not rescheduled here either: `grant_connection_window` owns waking
+        // streams that ran out of shared credit.
         return Ok(SendfileProgress::Done(FlushBodyProgress::ConnectionBlocked));
     }
     let Some(limit) = send_limit(
@@ -643,7 +702,7 @@ where
         let deadline_before = stream.pending_body_since();
 
         if *connection_send_window <= 0 && stream.has_pending_output() {
-            // Not rescheduled -- see `flush_chunk_body`.
+            // Deliberately not rescheduled -- see below.
             result = FlushPassResult::ConnectionBlocked;
             break;
         }
@@ -659,11 +718,8 @@ where
         let mut body = stream.take_body();
         let progress = match &mut body {
             StreamBodyState::Idle => FlushBodyProgress::Continue,
-            StreamBodyState::Chunks(pending) => {
-                flush_chunk_body(&mut context, pending, stream_id, stream).await?
-            },
-            StreamBodyState::Path(streamer) => {
-                flush_path_body(&mut context, streamer, stream_id, stream).await?
+            StreamBodyState::Body(queue) => {
+                flush_body_queue(&mut context, queue, stream_id, stream).await?
             },
         };
 
@@ -1050,7 +1106,7 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_path(PathStreamer::new(file, b"abc".len(), true))
+            .queue_file(FileStreamer::new(file, 0, b"abc".len(), true))
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -1303,6 +1359,64 @@ mod tests {
             ResponseClose::Clean,
             stream_id
         )]);
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_exactly_drains_the_connection_window_stays_wakeable() {
+        // The collector stops at a file segment, so a leading chunk that
+        // consumes the last of the shared window ends the batch by iterator
+        // exhaustion rather than by hitting a blocked chunk -- and so does not
+        // report `connection_blocked`. The stream is then left with a file
+        // still queued and no credit. Nothing but a connection WINDOW_UPDATE
+        // can move it, so that update has to be what wakes it.
+        let stream_id = StreamId::new(1).unwrap();
+
+        let mut streams = new_stream_map();
+        let mut ready_streams = ReadyStreamQueue::new();
+        let mut response_closes = ResponseCloseBatch::new();
+        let mut connection_send_window = 4_i64;
+        let mut header_state = HeaderEncodeState::new();
+
+        let path = temp_dir().join(format!("h2corn-flush-exact-{}", id()));
+        write(&path, b"file-body").unwrap();
+        let stream = writer_stream(&mut streams, stream_id, i64::from(u16::MAX));
+        stream.open_response(false).unwrap();
+        stream
+            .queue_data(Bytes::from_static(b"body").into(), None, false)
+            .unwrap();
+        stream
+            .queue_file(FileStreamer::new(
+                File::open(&path).expect("temp file opens"),
+                0,
+                b"file-body".len(),
+                true,
+            ))
+            .unwrap();
+        ready_streams.schedule(stream, stream_id, false);
+
+        let recording = RecordingWriter::default();
+        let mut writer = BufWriter::new(recording);
+        flush_pending_data(
+            &mut writer,
+            &mut streams,
+            &mut ready_streams,
+            &mut connection_send_window,
+            FramePayloadLen::constant(FAIR_WRITE_QUANTUM),
+            &mut header_state,
+            &mut response_closes,
+        )
+        .await
+        .unwrap();
+
+        // The four chunk bytes consumed the whole shared window, and the file
+        // is still pending.
+        assert_eq!(connection_send_window, 0);
+        assert!(streams[&stream_id].has_pending_output());
+        // And it is NOT left in the ready queue: requeueing a stream with no
+        // shared credit makes the writer spin against zero, retrying a flush
+        // that cannot make progress until the peer grants more.
+        assert_eq!(ready_streams.iter().collect::<Vec<_>>(), []);
+        drop(remove_file(&path));
     }
 
     #[tokio::test]

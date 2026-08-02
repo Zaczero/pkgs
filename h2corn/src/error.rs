@@ -94,6 +94,8 @@ pub(crate) enum AsgiContainer {
     HttpResponseStart,
     HttpResponseBody,
     HttpResponsePathsend,
+    #[cfg(unix)]
+    HttpResponseZeroCopySend,
     HttpResponseTrailers,
     HttpResponseEarlyHint,
     WebSocketAccept,
@@ -110,6 +112,8 @@ impl fmt::Display for AsgiContainer {
             Self::HttpResponseStart => "http.response.start",
             Self::HttpResponseBody => "http.response.body",
             Self::HttpResponsePathsend => "http.response.pathsend",
+            #[cfg(unix)]
+            Self::HttpResponseZeroCopySend => "http.response.zerocopysend",
             Self::HttpResponseTrailers => "http.response.trailers",
             Self::HttpResponseEarlyHint => "http.response.early_hint",
             Self::WebSocketAccept => "websocket.accept",
@@ -416,6 +420,20 @@ pub(crate) enum HttpResponseError {
     PathsendBeforeStart,
     #[error("http.response.pathsend must not be mixed with http.response.body")]
     PathsendMixedWithBody,
+    #[cfg(unix)]
+    #[error("http.response.zerocopysend received before response start")]
+    ZeroCopySendBeforeStart,
+    #[cfg(unix)]
+    #[error("http.response.zerocopysend file must be a regular file")]
+    ZeroCopySendNotRegularFile,
+    #[cfg(unix)]
+    #[error("http.response.zerocopysend file must be open for reading")]
+    ZeroCopySendNotReadable,
+    #[cfg(unix)]
+    #[error(
+        "http.response.zerocopysend file does not report a usable size; pass an explicit count"
+    )]
+    ZeroCopySendLengthUnknown,
     #[error(
         "http.response.trailers received before the response body completed with trailers enabled"
     )]
@@ -1096,6 +1114,15 @@ where
         ErrorKind::Asgi(err @ AsgiError::UnsupportedOutboundMessage { .. }) => {
             PyRuntimeError::new_err(err.to_string())
         },
+        // Separate arms rather than three more alternatives below: `#[cfg]`
+        // applies to a match arm but not to one alternative of an `|` pattern,
+        // and these variants do not exist off Unix.
+        #[cfg(unix)]
+        ErrorKind::HttpResponse(
+            err @ (HttpResponseError::ZeroCopySendNotRegularFile
+            | HttpResponseError::ZeroCopySendNotReadable
+            | HttpResponseError::ZeroCopySendLengthUnknown),
+        ) => PyValueError::new_err(err.to_string()),
         ErrorKind::HttpResponse(
             err @ (HttpResponseError::InvalidResponseHeaderName
             | HttpResponseError::InvalidResponseHeaderValue
@@ -1107,6 +1134,10 @@ where
         ) => PyValueError::new_err(err.to_string()),
         // Messages that are individually well formed but arrive in an order
         // the response state machine does not allow.
+        #[cfg(unix)]
+        ErrorKind::HttpResponse(err @ HttpResponseError::ZeroCopySendBeforeStart) => {
+            PyRuntimeError::new_err(err.to_string())
+        },
         ErrorKind::HttpResponse(
             err @ (HttpResponseError::StartAlreadyReceived
             | HttpResponseError::TrailersNotAdvertised
@@ -1240,6 +1271,11 @@ mod tests {
             HttpResponseError::StatusMustBeThreeDigitCode { container: AsgiContainer::HttpResponseStart, status: 99 },
             HttpResponseError::StatusOutsideSigned64BitRange { container: AsgiContainer::HttpResponseStart },
             HttpResponseError::InformationalStatusUnsupported { container: AsgiContainer::HttpResponseStart, status: 100 },
+        );
+        #[cfg(unix)]
+        rendered!(messages;
+            HttpResponseError::ZeroCopySendBeforeStart, HttpResponseError::ZeroCopySendNotRegularFile,
+            HttpResponseError::ZeroCopySendNotReadable, HttpResponseError::ZeroCopySendLengthUnknown,
         );
     }
 

@@ -14,6 +14,7 @@ use tokio::task::{JoinHandle, spawn_blocking};
 
 use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
 use crate::error::{H2CornError, PathsendError};
+use crate::http::response::ResponseBytePermit;
 
 /// Below this size the HTTP/2 path serves files from the rolling read buffer,
 /// whose DATA frames can share vectored writes. Larger files retain sendfile
@@ -21,13 +22,26 @@ use crate::error::{H2CornError, PathsendError};
 pub(crate) const PATHSEND_SENDFILE_MIN: usize = 1 << 20;
 
 #[derive(Debug)]
-pub(crate) struct PathStreamer {
+pub(crate) struct FileStreamer {
     read: PathReadState,
     cursor: PathCursor,
     pub(crate) end_stream: bool,
     /// Decided once per response from the total length (mode flapping
     /// mid-stream would complicate end-of-stream bookkeeping).
     pub(crate) prefers_sendfile: bool,
+    /// Admission credit for a queued segment, released when this is dropped.
+    ///
+    /// The streamer outlives the `FileSegment` it came from -- it *is* what
+    /// sits in the HTTP/2 body queue -- so the credit has to move here, or the
+    /// descriptor bound would end the moment the segment was lowered into a
+    /// command.
+    ///
+    /// Boxed, and this one is measured: inline it takes the streamer past a
+    /// buffered chunk in size, which then sets every slot of the writer's
+    /// inline body queue. `None` for pathsend, so the allocation only happens
+    /// for a credited zerocopysend segment -- next to the file I/O it is
+    /// already doing.
+    _credit: Option<Box<ResponseBytePermit>>,
 }
 
 #[derive(Debug)]
@@ -67,11 +81,11 @@ impl Drop for SendfileCursor<'_> {
 }
 
 impl PathCursor {
-    const fn new(len: usize) -> Self {
+    const fn new(start: u64, len: usize) -> Self {
         Self {
             buffered: 0..0,
             unread_file_len: len,
-            file_offset: 0,
+            file_offset: start,
         }
     }
 
@@ -137,32 +151,42 @@ struct PathReadResult {
     read: io::Result<usize>,
 }
 
-/// Read at an explicit offset without disturbing the handle's position.
-#[cfg(unix)]
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
-}
+impl FileStreamer {
+    /// `start` is the file offset the transfer begins at: zero for a pathsend
+    /// file this server opened itself, and the resolved `offset` for a
+    /// `zerocopysend` range over a descriptor the application still owns.
+    pub(crate) const fn new(file: File, start: u64, len: usize, end_stream: bool) -> Self {
+        Self::with_credit(file, start, len, end_stream, None)
+    }
 
-#[cfg(windows)]
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
-}
-
-impl PathStreamer {
-    pub(crate) const fn new(file: File, len: usize, end_stream: bool) -> Self {
+    pub(crate) const fn with_credit(
+        file: File,
+        start: u64,
+        len: usize,
+        end_stream: bool,
+        credit: Option<Box<ResponseBytePermit>>,
+    ) -> Self {
         Self {
             read: PathReadState::Ready { file, buffer: None },
-            cursor: PathCursor::new(len),
+            cursor: PathCursor::new(start, len),
             end_stream,
             prefers_sendfile: len >= PATHSEND_SENDFILE_MIN,
+            _credit: credit,
         }
     }
 
     pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
         debug_assert!(self.cursor.buffered.is_empty());
         if let Some((file, buffer)) = self.read.take_ready() {
-            let mut buffer =
-                buffer.unwrap_or_else(|| vec![0; PATHSEND_READ_BUFFER_SIZE].into_boxed_slice());
+            // Sized to the segment, not to the constant: pathsend only reaches
+            // here for files above its preload threshold, but a zerocopysend
+            // range may be a few bytes, and allocating and zeroing 128 KiB for
+            // them turns a descriptor-and-range message into real work. A
+            // reused buffer is kept whatever its size.
+            let mut buffer = buffer.unwrap_or_else(|| {
+                vec![0; PATHSEND_READ_BUFFER_SIZE.min(self.cursor.unread_file_len)]
+                    .into_boxed_slice()
+            });
             let read_len = buffer.len().min(self.cursor.unread_file_len);
             // Positional, like the sendfile path beside it, which already
             // takes an explicit offset. The cursor is the single source of
@@ -252,11 +276,22 @@ pub(crate) enum PathSource {
     /// (≥ [`PATHSEND_SENDFILE_MIN`]) tiers.
     // Boxed at the blocking boundary because the response action already needs
     // rare file bodies boxed to keep its common variants compact.
-    File(Box<File>),
+    File(File),
 }
 
 pub(crate) async fn open_pathsend_file(path: PathBuf) -> Result<(PathSource, usize), H2CornError> {
     Ok(spawn_blocking(move || open_pathsend_file_blocking(path)).await??)
+}
+
+/// Read at an explicit offset without disturbing the handle's position.
+#[cfg(unix)]
+pub(crate) fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
 }
 
 /// Single blocking-pool hop: open the path, admit only a regular file, then
@@ -303,7 +338,7 @@ fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), Pat
     let _ = fadvise(&file, 0, None, Advice::Sequential);
     #[cfg(target_os = "macos")]
     let _ = fcntl_rdadvise(&file, 0, len as u64);
-    Ok((PathSource::File(Box::new(file)), len))
+    Ok((PathSource::File(file), len))
 }
 
 #[cfg(test)]
@@ -323,7 +358,7 @@ mod tests {
     use tokio::task::{spawn_blocking, yield_now};
 
     use super::{
-        PATHSEND_SENDFILE_MIN, PathReadResult, PathReadState, PathSource, PathStreamer,
+        FileStreamer, PATHSEND_SENDFILE_MIN, PathReadResult, PathReadState, PathSource,
         open_pathsend_file, open_pathsend_file_blocking,
     };
     use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
@@ -331,14 +366,18 @@ mod tests {
 
     #[test]
     fn accounting_cursor_preserves_streamer_layout_budget() {
-        assert!(size_of::<PathStreamer>() <= 64);
+        // 72, not the former 64: the streamer now also carries the admission
+        // credit that bounds queued descriptors. The HTTP/2 writer pins the
+        // consequence exactly -- see the `BodyItem` assertions in
+        // `h2::writer::stream_state`, which this budget exists to protect.
+        assert!(size_of::<FileStreamer>() <= 72);
     }
 
     #[test]
     fn sendfile_cursor_accounts_partial_offset_progress_on_drop() {
         let path = temp_file(b"partial");
         let file = File::open(&path).expect("temporary pathsend file opens");
-        let mut streamer = PathStreamer::new(file, PATHSEND_SENDFILE_MIN, true);
+        let mut streamer = FileStreamer::new(file, 0, PATHSEND_SENDFILE_MIN, true);
 
         {
             let mut cursor = streamer.sendfile_cursor().expect("sendfile is selected");
@@ -375,7 +414,7 @@ mod tests {
         let payload = vec![b'x'; PATHSEND_READ_BUFFER_SIZE * 2 + 17];
         let path = temp_file(&payload);
         let file = File::open(&path).expect("temporary pathsend file opens");
-        let mut streamer = PathStreamer::new(file, payload.len(), true);
+        let mut streamer = FileStreamer::new(file, 0, payload.len(), true);
         let mut received = Vec::with_capacity(payload.len());
 
         while !streamer.is_drained() {
@@ -404,7 +443,7 @@ mod tests {
     async fn rolling_reader_rejects_eof_before_the_admitted_length() {
         let path = temp_file(b"partial");
         let file = File::open(&path).expect("temporary pathsend file opens");
-        let mut streamer = PathStreamer::new(file, b"partial".len() + 1, true);
+        let mut streamer = FileStreamer::new(file, 0, b"partial".len() + 1, true);
 
         streamer
             .fill()
@@ -433,8 +472,9 @@ mod tests {
         let payload_len = payload.len();
         let path = temp_file(&payload);
         let mut file = File::open(&path).expect("temporary pathsend file opens");
-        let mut streamer = PathStreamer::new(
+        let mut streamer = FileStreamer::new(
             File::open(&path).expect("temporary pathsend file opens"),
+            0,
             payload_len,
             true,
         );

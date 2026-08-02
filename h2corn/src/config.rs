@@ -12,6 +12,17 @@ use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
 use crate::http::types::ResponseHeaderKind;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer};
 
+/// Floor charged against the outbound response budget for one queued file
+/// segment.
+///
+/// A segment holds a descriptor for as long as it is queued, and descriptors
+/// are a far scarcer process resource than the couple of megabytes the byte
+/// budget guards. Charging a floor turns that budget into a descriptor bound
+/// too: with the 2 MiB connection capacity this admits at most 32 queued
+/// segments per connection before the application's next `send()` waits.
+#[cfg(unix)]
+pub(crate) const QUEUED_FILE_SEGMENT_MIN_CHARGE: usize = 64 * 1024;
+
 pub(crate) const PATHSEND_PRELOAD_MAX: usize = 128 * 1024;
 pub(crate) const PATHSEND_READ_BUFFER_SIZE: usize = 128 * 1024;
 

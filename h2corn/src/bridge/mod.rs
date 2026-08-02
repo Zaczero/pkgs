@@ -13,6 +13,18 @@ use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
+
+/// Everything only `http.response.zerocopysend` needs, which exists only on
+/// Unix. Grouped so the extension leaves no trace in a build that cannot serve
+/// it, rather than seven separately gated imports.
+#[cfg(unix)]
+use {
+    pyo3::exceptions::{PyAttributeError, PyTypeError},
+    pyo3::intern,
+    rustix::fs::{FileType, fstat},
+    std::fs::File,
+    std::io,
+};
 #[cfg(test)]
 pub(crate) use websocket::WebSocketSendDisposition;
 pub(crate) use websocket::{
@@ -31,6 +43,8 @@ use crate::http::header::{
     ApplicationResponseField, RESPONSE_DEFAULT_BUILTIN_SLOTS, ResponseConnectionDirective,
     application_response_field, protocol_token_is_valid, split_commas_bytes,
 };
+#[cfg(unix)]
+use crate::http::pathsend::read_at;
 use crate::http::types::{
     BytesStr, EarlyHintLinks, FinalResponseStatus, HttpStatusCode, ResponseHeaderName,
     ResponseHeaderValue, ResponseHeaders, ResponseTrailers,
@@ -50,21 +64,27 @@ use crate::websocket::{
 /// type three times, and omitting one from the pointer chain silently demoted
 /// a canonical interned message to a string comparison on the hot path — a
 /// slowdown with no wrong answer, so nothing would have caught it.
+///
+/// A variant may carry attributes, which reach every one of those places at
+/// once. `#[cfg]` is the reason it exists: a message type the build cannot
+/// serve should not have a name to resolve to, so gating it here makes the
+/// wire string fall through to `unsupported_outbound_message` instead of
+/// producing a variant with no handler.
 macro_rules! asgi_outbound_types {
     (
         $name:ident, $channel:expr, $interned:ident, $resolve:ident {
-            $($variant:ident => $wire:literal),+ $(,)?
+            $($(#[$attr:meta])* $variant:ident => $wire:literal),+ $(,)?
         }
     ) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         enum $name {
-            $($variant),+
+            $($(#[$attr])* $variant),+
         }
 
         #[cfg(test)]
         impl $name {
             const WIRE_NAMES: &'static [(Self, &'static str)] =
-                &[$((Self::$variant, $wire)),+];
+                &[$($(#[$attr])* (Self::$variant, $wire)),+];
         }
 
         impl AsgiMessage<'_> {
@@ -72,6 +92,7 @@ macro_rules! asgi_outbound_types {
                 let py = self.message_type.py();
                 let message_type = self.message_type.as_ptr();
                 $(
+                    $(#[$attr])*
                     {
                         static CELL: crate::python::PyOnceLock<Py<PyString>> =
                             crate::python::PyOnceLock::new();
@@ -91,7 +112,7 @@ macro_rules! asgi_outbound_types {
             fn $resolve(&self) -> Result<$name, H2CornError> {
                 self.$interned().map_or_else(
                     || match self.message_type()? {
-                        $($wire => Ok($name::$variant),)+
+                        $($(#[$attr])* $wire => Ok($name::$variant),)+
                         message_type => {
                             AsgiError::unsupported_outbound_message($channel, message_type).err()
                         },
@@ -126,6 +147,8 @@ asgi_outbound_types! {
         Start => "http.response.start",
         Body => "http.response.body",
         Pathsend => "http.response.pathsend",
+        #[cfg(unix)]
+        ZeroCopySend => "http.response.zerocopysend",
         Trailers => "http.response.trailers",
         EarlyHint => "http.response.early_hint",
     }
@@ -186,6 +209,31 @@ pub(crate) enum HttpOutboundEvent {
     },
     PathSend {
         path: PathBuf,
+    },
+    /// One `http.response.zerocopysend` segment.
+    ///
+    /// The descriptor is already ours: it is duplicated at parse time, while
+    /// the application's `send()` is still on the stack. The spec leaves the
+    /// original with the application — *"ASGI servers are not responsible for
+    /// closing descriptors"* — so it may be closed the instant `send()`
+    /// returns, which would otherwise pull the file out from under an
+    /// in-flight sendfile.
+    #[cfg(unix)]
+    ZeroCopySend {
+        file: File,
+        /// Where to start reading, already resolved: the explicit `offset` when
+        /// the application gave one, otherwise the descriptor's current
+        /// position, which the spec names as the default.
+        ///
+        /// Reads are positional from here in **both** cases. The duplicate
+        /// shares its file *description* — and therefore its position — with
+        /// the application's own object, so sequential reads would drag that
+        /// position along under an application still using the file. Resolving
+        /// the default once, here, honours "current position" without ever
+        /// moving it.
+        start: u64,
+        len: usize,
+        more_body: bool,
     },
     Trailers {
         headers: ResponseTrailers,
@@ -302,6 +350,12 @@ impl<'py> AsgiMessage<'py> {
     asgi_item!(body_item, "body");
     asgi_item!(more_body_item, "more_body");
     asgi_item!(path_item, "path");
+    #[cfg(unix)]
+    asgi_item!(file_item, "file");
+    #[cfg(unix)]
+    asgi_item!(offset_item, "offset");
+    #[cfg(unix)]
+    asgi_item!(count_item, "count");
     asgi_item!(links_item, "links");
     asgi_item!(more_trailers_item, "more_trailers");
     asgi_item!(subprotocol_item, "subprotocol");
@@ -462,6 +516,128 @@ impl<'py> AsgiMessage<'py> {
 
     fn more_trailers_flag(&self, container: AsgiContainer) -> Result<bool, H2CornError> {
         Self::bool_or_false(container, "more_trailers", self.more_trailers_item()?)
+    }
+
+    /// The descriptor, range and continuation flag of an
+    /// `http.response.zerocopysend`.
+    ///
+    /// Unix only, because the whole message is: `std::os::fd` does not exist on
+    /// Windows, and a CRT file descriptor there is a different object needing
+    /// its own duplication and metadata handling. The extension is not
+    /// advertised where this is not compiled, so an application never sees a
+    /// capability the server cannot honour.
+    ///
+    /// The duplicate is taken here, synchronously, because this is the closest
+    /// this server can get to the moment the application still holds the
+    /// descriptor.
+    #[cfg(unix)]
+    fn zerocopysend(&self, container: AsgiContainer) -> Result<(File, u64, usize), H2CornError> {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+
+        let value = Self::require(container, "file", self.file_item()?)?;
+        // The spec's field is a file *object*, not a raw descriptor. A missing
+        // or non-callable `fileno` is a wrong type; a `fileno()` that raises --
+        // a closed file raises `ValueError` -- is the application's own error
+        // and is propagated rather than relabelled as a type problem.
+        let fileno = match value.call_method0(intern!(value.py(), "fileno")) {
+            Ok(fileno) => fileno,
+            Err(err)
+                if err.is_instance_of::<PyAttributeError>(value.py())
+                    || err.is_instance_of::<PyTypeError>(value.py()) =>
+            {
+                return Err(field_type_error(
+                    container,
+                    "file",
+                    "an object with fileno()",
+                    &value,
+                ));
+            },
+            Err(err) => return Err(err.into()),
+        };
+        let raw = fileno.extract::<RawFd>().map_err(|_| {
+            field_type_error(container, "file", "fileno() returning an int", &fileno)
+        })?;
+
+        // Duplicated straight from the integer. Every typed entry point would
+        // need a `BorrowedFd` first, and its safety contract cannot be honoured
+        // for a value the application chose -- `-1` panics on construction, and
+        // a stale number is simply a lie. `F_DUPFD_CLOEXEC` takes the integer,
+        // answers `EBADF` when it does not name anything, and sets
+        // close-on-exec *atomically*: a separate `fcntl` would leave a window
+        // in which a concurrently spawned process inherits the duplicate and
+        // keeps the file alive past every Rust owner.
+        //
+        // SAFETY: the descriptor is constructed only from a successful return,
+        // so it is one the kernel just handed us and nobody else owns.
+        // SAFETY: `fcntl` accepts any integer and answers `EBADF` rather than
+        // misbehaving, so passing an application-chosen value is defined.
+        let duplicated = match unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 0) } {
+            -1 => return Err(H2CornError::from(io::Error::last_os_error())),
+            // SAFETY: a successful return is a descriptor the kernel just
+            // created for us, so this is its sole owner.
+            duplicated => unsafe { OwnedFd::from_raw_fd(duplicated) },
+        };
+
+        let metadata = fstat(&duplicated).map_err(|err| H2CornError::from(io::Error::from(err)))?;
+        // sendfile requires a regular file as its input, and a directory or
+        // socket here is an application bug rather than a transport condition.
+        if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+            return HttpResponseError::ZeroCopySendNotRegularFile.err();
+        }
+        // Readability is checked here rather than discovered by the first read:
+        // an `O_WRONLY` or `O_PATH` descriptor fails only once the response
+        // head is already committed, where the application can no longer
+        // substitute a fallback.
+        // SAFETY: the descriptor is one we own and have not closed.
+        let flags = match unsafe { libc::fcntl(duplicated.as_raw_fd(), libc::F_GETFL) } {
+            -1 => return Err(H2CornError::from(io::Error::last_os_error())),
+            flags => flags,
+        };
+        if flags & libc::O_ACCMODE == libc::O_WRONLY {
+            return HttpResponseError::ZeroCopySendNotReadable.err();
+        }
+        let file = File::from(duplicated);
+
+        let offset = Self::optional_item(self.offset_item()?)
+            .map(|value| extract_unsigned(container, "offset", &value))
+            .transpose()?;
+        let count = Self::optional_item(self.count_item()?)
+            .map(|value| extract_unsigned(container, "count", &value))
+            .transpose()?;
+
+        // "Defaults to current position if absent". Read once, here, and never
+        // advanced: the duplicate shares its file *description* -- and so its
+        // position -- with the object the application still holds.
+        let start = match offset {
+            Some(offset) => offset,
+            None => rustix::fs::seek(&file, rustix::fs::SeekFrom::Current(0))
+                .map_err(|err| H2CornError::from(io::Error::from(err)))?,
+        };
+        let size = u64::try_from(metadata.st_size).unwrap_or(0);
+        let available = size.saturating_sub(start);
+        let len = usize::try_from(count.map_or(available, |count| count.min(available))).map_err(
+            |_| {
+                H2CornError::from(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zerocopysend length does not fit usize",
+                ))
+            },
+        )?;
+
+        // "Until its end" is an I/O condition; `st_size` is only a snapshot of
+        // it. They disagree on the synthetic filesystems: `/proc/version` is a
+        // regular, seekable file reporting `st_size == 0` that nonetheless
+        // reads its contents. Believing the metadata there would answer an
+        // empty body and call it a complete response, so the disagreement is
+        // detected and reported instead of served.
+        if len == 0 && count.is_none() {
+            let mut probe = [0_u8; 1];
+            if read_at(&file, &mut probe, start).map_err(H2CornError::from)? != 0 {
+                return HttpResponseError::ZeroCopySendLengthUnknown.err();
+            }
+        }
+
+        Ok((file, start, len))
     }
 
     fn optional_backed_str(
@@ -1063,6 +1239,25 @@ fn extract_backed_str(
     )?)
 }
 
+/// A non-negative integer field.
+///
+/// A negative `offset` or `count` is rejected here rather than wrapping into a
+/// huge unsigned value, which would otherwise surface much later as a
+/// nonsensical range. The range is named in the message: a Python integer of
+/// 2^64 is both an int and non-negative, so reporting it as neither would send
+/// the caller looking for the wrong mistake.
+#[cfg(unix)]
+fn extract_unsigned(
+    container: AsgiContainer,
+    field: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<u64, H2CornError> {
+    cast_exact_first::<PyInt>(value)
+        .map_err(|_| field_type_error(container, field, "an int", value))?
+        .extract::<u64>()
+        .map_err(|_| field_type_error(container, field, "an int in 0..=2**64-1", value))
+}
+
 fn field_type_error(
     container: AsgiContainer,
     field: &'static str,
@@ -1200,6 +1395,17 @@ pub(crate) fn parse_http_outbound_event(
         HttpOutboundType::Pathsend => Ok(HttpOutboundEvent::PathSend {
             path: message.path(AsgiContainer::HttpResponsePathsend)?,
         }),
+        #[cfg(unix)]
+        HttpOutboundType::ZeroCopySend => {
+            let container = AsgiContainer::HttpResponseZeroCopySend;
+            let (file, start, len) = message.zerocopysend(container)?;
+            Ok(HttpOutboundEvent::ZeroCopySend {
+                file,
+                start,
+                len,
+                more_body: message.more_body_flag(container)?,
+            })
+        },
         HttpOutboundType::Trailers => {
             let headers = message.response_trailers(AsgiContainer::HttpResponseTrailers)?;
             let more_trailers = message.more_trailers_flag(AsgiContainer::HttpResponseTrailers)?;

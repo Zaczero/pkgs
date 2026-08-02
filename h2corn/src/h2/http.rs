@@ -13,7 +13,7 @@ use crate::error::{H2CornError, H2Error};
 use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::{
     AdmittedHttpOutboundEvent, HttpRequestBody, HttpSendBuffer, HttpSendState, RunningHttpRequest,
-    drive_pinned_http_request, poll_app_task_once, start_asgi_http_request,
+    drive_pinned_http_request, outbound_charge, poll_app_task_once, start_asgi_http_request,
     try_complete_http_request,
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
@@ -57,13 +57,15 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
         &self,
         event: HttpOutboundEvent,
     ) -> Result<AdmittedHttpOutboundEvent, H2CornError> {
-        let HttpOutboundEvent::Body { body, .. } = &event else {
+        // Same policy as the buffered send path, so the two cannot disagree
+        // about what an event costs.
+        let Some(charge) = outbound_charge(&event) else {
             return Ok(AdmittedHttpOutboundEvent::unbounded(event));
         };
         let credit = self
             .connection
             .response_byte_budget()
-            .acquire(body.len())
+            .acquire(charge)
             .await
             .map_err(|_| H2CornError::from(H2Error::StreamChannelClosed))?;
         Ok(AdmittedHttpOutboundEvent::with_credit(event, credit))
@@ -363,17 +365,16 @@ fn push_final_response_commands(
                 credit,
             });
         },
-        FinalResponseBody::File { file, len } => {
+        FinalResponseBody::File(segment) => {
             commands.push_back(WriterCommand::SendHeaders {
                 stream_id,
                 status,
                 headers,
                 end_stream: false,
             });
-            commands.push_back(WriterCommand::SendPath {
+            commands.push_back(WriterCommand::SendFile {
                 stream_id,
-                file,
-                len,
+                segment,
                 end_stream: true,
             });
         },
@@ -432,10 +433,9 @@ fn append_response_action(
                 end_stream: false,
             });
         },
-        ResponseAction::File { file, len } => commands.push_back(WriterCommand::SendPath {
+        ResponseAction::File(segment) => commands.push_back(WriterCommand::SendFile {
             stream_id,
-            file,
-            len,
+            segment,
             end_stream: false,
         }),
         ResponseAction::Finish => commands.push_back(WriterCommand::SendData {
@@ -473,7 +473,7 @@ mod tests {
     };
     use crate::config::ResponseHeaderConfig;
     use crate::h2_frame::StreamId;
-    use crate::http::response::ResponseStart;
+    use crate::http::response::{FileSegment, ResponseStart};
     use crate::http::types::{ResponseHeaders, status_code};
 
     #[test]
@@ -493,10 +493,7 @@ mod tests {
             StreamId::new(1).unwrap(),
             &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
-            FinalResponseBody::File {
-                file: Box::new(file),
-                len: 1,
-            },
+            FinalResponseBody::File(FileSegment::new(file, 0, 1, None)),
             &ResponseHeaderConfig::default(),
         );
 
@@ -526,7 +523,7 @@ mod tests {
         }
         assert!(matches!(
             commands.pop_front(),
-            Some(WriterCommand::SendPath { .. })
+            Some(WriterCommand::SendFile { .. })
         ));
         assert!(commands.is_empty());
 

@@ -206,7 +206,11 @@ fn http_scope_extensions<'py>(
     // Early hints are HTTP/2 only. RFC 8297 names interoperability and
     // security risks with HTTP/1 clients that mishandle an interim response,
     // and a pipelined peer that ignores one desynchronizes -- so the extension
-    // is not offered where it cannot be delivered safely.
+    // is not offered where it cannot be delivered safely. `zerocopysend` spans
+    // both protocol versions -- unlike early hints it is a body, not an interim
+    // response -- but only on Unix, where the descriptor handling it needs
+    // exists. Advertising it elsewhere would promise a capability the parser is
+    // not even compiled with.
     //
     // Conditional entries rather than one arm per combination: `py_dict!`
     // sizes the dict from the entries actually pushed, so spelling the four
@@ -221,6 +225,9 @@ fn http_scope_extensions<'py>(
     // mappings below just returned.
     let extensions = py_dict!(py, {
         "http.response.pathsend" => empty_extension_params(py)?,
+        if cfg!(unix) => {
+            "http.response.zerocopysend" => empty_extension_params(py)?,
+        },
         if ctx.request.accepts_trailers() => {
             "http.response.trailers" => empty_extension_params(py)?,
         },

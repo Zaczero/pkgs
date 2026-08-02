@@ -4,7 +4,6 @@ mod header_encode;
 mod ingress;
 mod stream_state;
 
-use std::fs::File;
 use std::mem::size_of;
 
 use smallvec::SmallVec;
@@ -12,7 +11,7 @@ use smallvec::SmallVec;
 pub(super) use self::driver::{H2WriterHandle, WindowOverflow, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
-use crate::http::response::ResponseBytePermit;
+use crate::http::response::{FileSegment, ResponseBytePermit};
 use crate::http::types::{EarlyHintLinks, HttpStatusCode, ResponseHeaders, ResponseTrailers};
 use crate::inline_fifo::InlineFifo;
 use crate::websocket::EncodedFrameHeader;
@@ -111,10 +110,9 @@ pub(super) enum WriterCommand {
         data: Box<WebSocketData>,
         credit: Option<ResponseBytePermit>,
     },
-    SendPath {
+    SendFile {
         stream_id: StreamId,
-        file: Box<File>,
-        len: usize,
+        segment: FileSegment,
         end_stream: bool,
     },
     FlushBufferedOutput,
@@ -148,7 +146,7 @@ impl WriterCommand {
             | Self::SendEarlyHint { stream_id, .. }
             | Self::SendData { stream_id, .. }
             | Self::SendWebSocketData { stream_id, .. }
-            | Self::SendPath { stream_id, .. }
+            | Self::SendFile { stream_id, .. }
             | Self::SendReset { stream_id, .. }
             | Self::PeerReset { stream_id } => Some(*stream_id),
             Self::FlushBufferedOutput

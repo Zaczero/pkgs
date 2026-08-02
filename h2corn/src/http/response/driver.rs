@@ -137,6 +137,21 @@ fn handle_http_event_sync(
             .handle_early_hint(actions, links)
             .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::PathSend { path } => Ok(HttpEventEffect::PathSend(path)),
+        // The descriptor was already duplicated and measured while parsing, so
+        // unlike pathsend there is no path to open and nothing to defer.
+        #[cfg(unix)]
+        bridge::HttpOutboundEvent::ZeroCopySend {
+            file,
+            start,
+            len,
+            more_body,
+        } => controller
+            .handle_zerocopysend(
+                actions,
+                actions::FileSegment::new(file, start, len, credit),
+                more_body,
+            )
+            .map(|()| HttpEventEffect::None),
         bridge::HttpOutboundEvent::Trailers {
             headers,
             more_trailers,

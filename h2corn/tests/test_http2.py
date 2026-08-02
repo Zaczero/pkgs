@@ -303,6 +303,7 @@ async def test_http_scope_advertises_pathsend_extension() -> None:
 
     assert extensions == {
         'http.response.pathsend': {},
+        'http.response.zerocopysend': {},
         'http.response.early_hint': {},
     }
     assert client is not None
@@ -333,6 +334,7 @@ async def test_http_scope_advertises_trailer_extension_when_request_accepts_it()
 
     assert extensions == {
         'http.response.pathsend': {},
+        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }
@@ -1086,6 +1088,7 @@ async def test_response_trailers_are_sent_when_request_accepts_them() -> None:
 
     assert extensions == {
         'http.response.pathsend': {},
+        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }
@@ -1115,6 +1118,7 @@ async def test_response_trailers_require_request_te_trailers() -> None:
 
     assert extensions == {
         'http.response.pathsend': {},
+        'http.response.zerocopysend': {},
         'http.response.early_hint': {},
     }
     assert status == 500
@@ -1516,6 +1520,7 @@ async def test_http_response_pathsend_can_be_followed_by_trailers(
 
     assert extensions == {
         'http.response.pathsend': {},
+        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }

@@ -168,7 +168,7 @@ async def test_the_extension_is_not_offered_on_http1() -> None:
             request=b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
         )
 
-    assert seen == [['http.response.pathsend']]
+    assert seen == [['http.response.pathsend', 'http.response.zerocopysend']]
 
 
 async def test_a_hint_before_start_is_an_application_error() -> None:

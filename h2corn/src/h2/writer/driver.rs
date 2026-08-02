@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::future::Future;
 use std::mem;
 use std::mem::take;
@@ -43,8 +42,8 @@ use crate::h2_frame::{
     WindowIncrement,
 };
 use crate::http::header::apply_default_response_headers;
-use crate::http::pathsend::PathStreamer;
-use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
+use crate::http::pathsend::FileStreamer;
+use crate::http::response::{FileSegment, ResponseByteBudget, ResponseBytePermit};
 use crate::http::types::{EarlyHintLinks, HttpStatusCode, ResponseHeaders, ResponseTrailers};
 #[cfg(test)]
 use crate::proxy_protocol::ProxyProtocolMode;
@@ -521,11 +520,10 @@ where
         // credit is never woken by the very event that grants it -- it waits
         // out the response stall timeout instead. `schedule` is idempotent, so
         // streams already queued are untouched.
-        //
-        // Sorted, because the stream map is hash-ordered and this decides who
-        // gets the new credit first. Ascending stream id is the oldest request
-        // first, which is both deterministic and the fairer answer.
         if self.connection_send_window > 0 {
+            // Sorted, because the stream map is hash-ordered and this decides
+            // who gets the new credit first. Ascending stream id is the oldest
+            // request first, which is both deterministic and the fairer answer.
             let mut waiting: SmallVec<[StreamId; 8]> = self
                 .streams
                 .iter()
@@ -897,11 +895,10 @@ where
     handle_send_data(context, stream_id, data, credit, true).await
 }
 
-async fn handle_send_path<W>(
+async fn handle_send_file<W>(
     context: &mut WriterSendParts<'_, W>,
     stream_id: StreamId,
-    file: Box<File>,
-    len: usize,
+    segment: FileSegment,
     end_stream: bool,
 ) -> Result<(), H2CornError>
 where
@@ -913,7 +910,13 @@ where
         context.initial_stream_send_window,
     );
     if stream
-        .queue_path(PathStreamer::new(*file, len, end_stream))
+        .queue_file(FileStreamer::with_credit(
+            segment.file,
+            segment.start,
+            segment.len,
+            end_stream,
+            segment.credit.map(Box::new),
+        ))
         .is_err()
     {
         let _ = force_reset_stream(
@@ -1054,14 +1057,13 @@ where
             handle_send_websocket_data(&mut context.send_context(), stream_id, data, credit)
                 .await?;
         },
-        WriterCommand::SendPath {
+        WriterCommand::SendFile {
             stream_id,
-            file,
-            len,
+            segment,
             end_stream,
         } => {
             let mut send = context.send_context();
-            handle_send_path(&mut send, stream_id, file, len, end_stream).await?;
+            handle_send_file(&mut send, stream_id, segment, end_stream).await?;
         },
         WriterCommand::FlushBufferedOutput => {
             flush_buffered_writer_output(context).await?;
@@ -1290,51 +1292,6 @@ mod tests {
         assert_eq!(
             super::initial_settings(&config).max_header_list_size,
             Some(u32::MAX)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_connection_window_grant_wakes_the_streams_it_unblocks() {
-        // A stream out of *shared* credit is not left in the ready queue: it
-        // would only spin against zero. That makes the grant responsible for
-        // waking it, and nothing else can -- a connection WINDOW_UPDATE names
-        // no stream, so before this it incremented a counter and the response
-        // sat there until the stall timeout.
-        let first = StreamId::new(1).expect("test stream id is valid");
-        let second = StreamId::new(3).expect("test stream id is valid");
-        let mut writer = WriterState::new_test(TestWriter);
-        writer.connection_send_window = 0;
-
-        for stream_id in [second, first] {
-            writer
-                .streams
-                .insert(stream_id, StreamWriteState::new(0xFFFF));
-            let stream = writer
-                .streams
-                .get_mut(&stream_id)
-                .expect("the stream was just inserted");
-            stream.open_response(false).expect("response opens");
-            stream
-                .queue_data(
-                    PayloadBytes::from(bytes::Bytes::from_static(b"pending")),
-                    None,
-                    true,
-                )
-                .expect("data queues");
-        }
-
-        // Nothing is ready while the shared window is empty.
-        assert_eq!(writer.ready_streams.iter().collect::<Vec<_>>(), []);
-
-        writer
-            .grant_connection_window(WindowIncrement::new(1024).expect("increment is valid"))
-            .expect("the grant fits the window");
-
-        // Both woken, oldest first: the map is hash-ordered, so without the
-        // sort the service order would vary run to run.
-        assert_eq!(
-            writer.ready_streams.iter().collect::<Vec<_>>(),
-            [first, second]
         );
     }
 

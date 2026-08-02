@@ -9,7 +9,7 @@ import h2.connection
 import h2.events
 import pytest
 from fastapi import FastAPI, WebSocket
-from h2corn import Config
+from h2corn import Config, WebSocketScope
 
 from tests._support import (
     h2_request,
@@ -1053,7 +1053,11 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
         state['scheme'] = scope['scheme']
         state['client'] = scope['client']
         state['server'] = scope['server']
-        state['root_path'] = scope.get('root_path', '')
+        # Indexed, not `.get`: this request configures a non-empty root path,
+        # so the key must be there. A defensive default would let the scope
+        # stop carrying it -- or carry the wrong value -- unnoticed.
+        state['root_path'] = scope['root_path']
+        state['contract_keys'] = set(WebSocketScope.__required_keys__) - set(scope)
         assert await receive() == {'type': 'websocket.connect'}
         await send({'type': 'websocket.close'})
 
@@ -1087,6 +1091,9 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
     assert isinstance(state['client'][1], int)
     assert state['server'] == ('example.com', 9443)
     assert state['root_path'] == '/api/root'
+    assert state['contract_keys'] == set(), (
+        f'websocket scope is missing required keys: {state["contract_keys"]}'
+    )
 
 
 async def test_http1_websocket_invalid_version_is_rejected_with_426() -> None:

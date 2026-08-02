@@ -358,7 +358,7 @@ impl ResponseLogState {
             },
             ResponseAction::Start { start, .. } => self.started(start.status()),
             ResponseAction::Body(body) => self.sent_body(body.len()),
-            ResponseAction::File { len, .. } => self.sent_body(*len),
+            ResponseAction::File(segment) => self.sent_body(segment.len),
             ResponseAction::InternalError => self.internal_error(),
             // An interim block carries no status and no body, so like the
             // terminators it settles nothing the access log records.
@@ -376,7 +376,9 @@ mod observe_tests {
 
     use super::ResponseLogState;
     use crate::bridge::PayloadBytes;
-    use crate::http::response::{FinalResponseBody, ResponseAction, ResponseBody, ResponseStart};
+    use crate::http::response::{
+        FileSegment, FinalResponseBody, ResponseAction, ResponseBody, ResponseStart,
+    };
     use crate::http::types::{HttpStatusCode, ResponseHeaders, ResponseTrailers, status_code};
 
     fn start(status: HttpStatusCode) -> ResponseStart {
@@ -426,13 +428,13 @@ mod observe_tests {
         assert_eq!(log.response_body_bytes, 0);
 
         let mut log = ResponseLogState::default();
-        log.observe(&ResponseAction::File {
-            file: Box::new(
-                // Any open handle is enough: observe only reads `len`.
-                std::fs::File::open("/dev/null").expect("/dev/null opens"),
-            ),
-            len: 7,
-        });
+        log.observe(&ResponseAction::File(FileSegment::new(
+            // Any open handle is enough: observe only reads `len`.
+            std::fs::File::open("/dev/null").expect("/dev/null opens"),
+            0,
+            7,
+            None,
+        )));
         assert_eq!(log.response_body_bytes, 7);
 
         let mut log = ResponseLogState::default();

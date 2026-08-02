@@ -180,13 +180,52 @@ impl From<PayloadBytes> for ResponseBody {
     }
 }
 
+/// A byte range of an open file, ready to be written out.
+///
+/// `start` and `len` travel together because they are only meaningful as a
+/// pair: every read is positional from `start`, so the handle's own position is
+/// never consulted and never moved. That is what makes it safe to stream a
+/// descriptor an application still owns and may keep using —
+/// `http.response.zerocopysend` duplicates such a descriptor, and the duplicate
+/// shares its position with the original.
+///
+/// A pathsend file this server opened itself simply starts at zero.
+#[derive(Debug)]
+pub(crate) struct FileSegment {
+    pub(crate) file: File,
+    pub(crate) start: u64,
+    pub(crate) len: usize,
+    /// Admission credit, held until the segment is written or dropped.
+    ///
+    /// A queued segment costs a descriptor, not just memory, and the HTTP/2
+    /// writer's body queue is unbounded. Without this a flow-controlled client
+    /// could have an application queue segments until the process runs out of
+    /// descriptors, since the event channel's permits are released as soon as
+    /// the writer takes the command.
+    pub(crate) credit: Option<ResponseBytePermit>,
+}
+
+impl FileSegment {
+    pub(crate) const fn new(
+        file: File,
+        start: u64,
+        len: usize,
+        credit: Option<ResponseBytePermit>,
+    ) -> Self {
+        Self {
+            file,
+            start,
+            len,
+            credit,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum FinalResponseBody {
     Empty,
     Bytes(ResponseBody),
-    // File bodies are rare relative to byte/empty bodies; retain the box so
-    // the handle never sets the common response-action enum layout.
-    File { file: Box<File>, len: usize },
+    File(FileSegment),
     Suppressed { len: usize },
 }
 
@@ -195,7 +234,8 @@ impl FinalResponseBody {
         match self {
             Self::Empty => 0,
             Self::Bytes(body) => body.len(),
-            Self::File { len, .. } | Self::Suppressed { len } => *len,
+            Self::File(segment) => segment.len,
+            Self::Suppressed { len } => *len,
         }
     }
 }
@@ -334,10 +374,7 @@ pub(crate) enum ResponseAction {
         expects_trailers: bool,
     },
     Body(ResponseBody),
-    File {
-        file: Box<File>,
-        len: usize,
-    },
+    File(FileSegment),
     Finish,
     FinishWithTrailers(ResponseTrailers),
     /// An interim 103 block. Deliberately carries no status and no

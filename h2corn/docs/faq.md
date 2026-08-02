@@ -64,6 +64,50 @@ h2corn myproject.asgi:application --workers 4 --no-http1
 
 Django channels and any other ASGI 3 framework work the same way.
 
+## Which ASGI extensions are supported?
+
+On HTTP and WebSocket scopes: `http.response.pathsend`,
+`http.response.zerocopysend` (Unix only), `http.response.trailers`,
+`http.response.early_hint` (HTTP/2 only), `websocket.http.response`, and `tls`.
+Check `scope["extensions"]` rather than assuming — several are offered only
+where they can be delivered.
+
+Lifespan `state` is separate and is *not* found there: a lifespan scope has no
+`extensions` key at all. Read `scope["state"]` on the lifespan scope, and the
+same mapping reappears as `scope["state"]` on each request.
+
+Use `pathsend` when the server should open the file, and `zerocopysend` when
+you already hold a descriptor or want to send a *range* of one, which
+`pathsend` cannot express:
+
+```python
+async def app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    with open("/srv/media/clip.mp4", "rb") as handle:
+        await send({
+            "type": "http.response.zerocopysend",
+            "file": handle,
+            "offset": 1024,
+            "count": 4096,
+        })
+```
+
+Unlike `pathsend`, it may be sent repeatedly and interleaved with
+`http.response.body`. The descriptor stays yours: `h2corn` duplicates it and
+closes only its own copy, so you may close yours as soon as `send()` returns —
+and per the ASGI specification you should. Your file position is never moved.
+
+One limitation: the range is sized from the descriptor's reported size, so a
+file whose size is not its length — anything under `/proc` or `/sys` — is
+rejected rather than served as an empty body. Read those and send them with
+`http.response.body`.
+
+Zero-copy here is best-effort, and the buffered path is byte-for-byte identical
+on the wire. It is used for TLS, Unix sockets, non-Linux platforms and small
+ranges — and, on HTTP/1, for any segment that is not the entire body: one mixed
+with `http.response.body`, or followed by trailers, is streamed through a
+rolling read rather than `sendfile`.
+
 ## What can an ASGI `send()` call raise?
 
 `h2corn` validates each outbound ASGI message at `await send(message)`. A

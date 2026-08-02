@@ -6,6 +6,8 @@ use tokio::sync::{mpsc, watch};
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{HTTP_ASGI_QUEUE_CAPACITY, HttpOutboundEvent};
 use crate::buffered_events::BufferedState;
+#[cfg(unix)]
+use crate::config::QUEUED_FILE_SEGMENT_MIN_CHARGE;
 use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
 
 enum HttpSendMode {
@@ -171,12 +173,10 @@ impl HttpSendState {
         &self,
         event: HttpOutboundEvent,
     ) -> Result<AdmittedHttpOutboundEvent, HttpOutboundEvent> {
-        let credit = match (&event, &self.budget) {
-            (HttpOutboundEvent::Body { body, .. }, Some(budget)) => {
-                match budget.try_acquire(body.len()) {
-                    Ok(credit) => credit,
-                    Err(_) => return Err(event),
-                }
+        let credit = match (outbound_charge(&event), &self.budget) {
+            (Some(charge), Some(budget)) => match budget.try_acquire(charge) {
+                Ok(credit) => credit,
+                Err(_) => return Err(event),
             },
             _ => None,
         };
@@ -240,9 +240,9 @@ impl HttpSendState {
         &self,
         event: HttpOutboundEvent,
     ) -> Option<AdmittedHttpOutboundEvent> {
-        let credit = match (&event, &self.budget) {
-            (HttpOutboundEvent::Body { body, .. }, Some(budget)) => {
-                if let Ok(credit) = budget.try_acquire(body.len()) {
+        let credit = match (outbound_charge(&event), &self.budget) {
+            (Some(charge), Some(budget)) => {
+                if let Ok(credit) = budget.try_acquire(charge) {
                     credit
                 } else {
                     let mut closed = {
@@ -257,7 +257,7 @@ impl HttpSendState {
                             .subscribe()
                     };
                     tokio::select! {
-                        credit = budget.acquire(body.len()) => credit.ok()?,
+                        credit = budget.acquire(charge) => credit.ok()?,
                         changed = closed.changed() => {
                             let _ = changed;
                             return None;
@@ -346,6 +346,23 @@ impl HttpSendBuffer {
 impl Drop for HttpSendBuffer {
     fn drop(&mut self) {
         self.close_outbound();
+    }
+}
+
+/// What one outbound event costs against the connection's response budget.
+///
+/// A file segment is charged a floor as well as its length: while queued it
+/// holds a *descriptor*, which is a far scarcer resource than the couple of
+/// megabytes the byte budget guards, and a flood of one-byte ranges would
+/// otherwise be nearly free.
+pub(crate) fn outbound_charge(event: &HttpOutboundEvent) -> Option<usize> {
+    match event {
+        HttpOutboundEvent::Body { body, .. } => Some(body.len()),
+        #[cfg(unix)]
+        HttpOutboundEvent::ZeroCopySend { len, .. } => {
+            Some((*len).max(QUEUED_FILE_SEGMENT_MIN_CHARGE))
+        },
+        _ => None,
     }
 }
 

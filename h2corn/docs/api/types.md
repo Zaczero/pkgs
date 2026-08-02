@@ -40,6 +40,7 @@ similar frameworks; both are accepted anywhere h2corn accepts an application.
 The individual event types are exported as well. Their names follow their ASGI
 events: `HTTPRequest`, `HTTPDisconnect`, `HTTPResponseStart`,
 `HTTPResponseBody`, `HTTPResponseTrailers`, `HTTPResponsePathsend`,
+`HTTPResponseZeroCopySend`, `HTTPResponseEarlyHint`,
 `WebSocketConnect`, `WebSocketReceiveBytes`, `WebSocketReceiveText`,
 `WebSocketDisconnect`, `WebSocketAccept`, `WebSocketSendBytes`,
 `WebSocketSendText`, `WebSocketClose`, `WebSocketHTTPResponseStart`,

@@ -92,7 +92,10 @@ def _send_type_is_discriminated(message: SendMessage) -> None:
 
 def _extension_types_expose_supported_capabilities() -> None:
     parameters: ExtensionParameters = {}
-    http: HTTPExtensions = {'http.response.pathsend': parameters}
+    http: HTTPExtensions = {
+        'http.response.pathsend': parameters,
+        'http.response.zerocopysend': parameters,
+    }
     websocket: WebSocketExtensions = {'websocket.http.response': parameters}
     assert_type(http['http.response.pathsend'], ExtensionParameters)
     assert_type(websocket['websocket.http.response'], ExtensionParameters)
@@ -121,7 +124,10 @@ def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None
         'query_string': b'',
         'headers': [(b'host', b'example.test')],
         'server': ('127.0.0.1', 8000),
-        'extensions': {'http.response.pathsend': {}},
+        'extensions': {
+            'http.response.pathsend': {},
+            'http.response.zerocopysend': {},
+        },
     }
     websocket_scope: WebSocketScope = {
         'type': 'websocket',
@@ -237,15 +243,26 @@ def test_published_typeddicts_have_the_declared_shape() -> None:
     # moving between required and optional stays inside the same union).
     assert HTTPRequest.__required_keys__ == frozenset({'type'})
     assert HTTPRequest.__optional_keys__ == frozenset({'body', 'more_body'})
-    assert WebSocketScope.__required_keys__ >= {
+    # Exact, not a subset: `>=` would let a key be deleted outright and still
+    # pass, which is precisely what an oracle is here to prevent.
+    assert WebSocketScope.__required_keys__ == {
         'type',
         'asgi',
         'http_version',
+        'scheme',
+        'path',
+        'raw_path',
+        'query_string',
+        'headers',
+        'server',
         'subprotocols',
+        'extensions',
     }
     assert WebSocketScope.__optional_keys__ == {'root_path', 'client', 'state'}
     assert HTTPExtensions.__required_keys__ == {'http.response.pathsend'}
     assert HTTPExtensions.__optional_keys__ == {
+        # Unix only, so the key is absent on Windows -- see `_types.py`.
+        'http.response.zerocopysend',
         'http.response.trailers',
         'http.response.early_hint',
         'tls',

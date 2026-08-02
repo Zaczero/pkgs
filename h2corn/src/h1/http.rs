@@ -11,8 +11,10 @@ use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::http::digits;
 use crate::http::header::{ResponseConnectionDirective, apply_default_response_headers};
-use crate::http::pathsend::{PATHSEND_SENDFILE_MIN, PathStreamer};
-use crate::http::response::{FinalResponseBody, HttpResponseTransport, ResponseAction};
+use crate::http::pathsend::{FileStreamer, PATHSEND_SENDFILE_MIN};
+use crate::http::response::{
+    FileSegment, FinalResponseBody, HttpResponseTransport, ResponseAction,
+};
 use crate::http::types::{
     HttpStatusCode, ResponseField, ResponseHeaderKind, ResponseHeaders, ResponseTrailers,
     common_status_codes, status_code,
@@ -187,13 +189,17 @@ impl H1ResponseState {
     async fn write_streaming_file<W>(
         &mut self,
         writer: &mut BufWriter<W>,
-        file: Box<std::fs::File>,
-        len: usize,
+        segment: FileSegment,
     ) -> Result<(), H2CornError>
     where
         W: WriteTarget,
     {
-        let mut streamer = PathStreamer::new(*file, len, false);
+        // HTTP/1 writes each action as it arrives, so nothing queues and the
+        // credit is simply released here.
+        let FileSegment {
+            file, start, len, ..
+        } = segment;
+        let mut streamer = FileStreamer::new(file, start, len, false);
         while !streamer.is_drained() {
             if streamer.needs_fill() {
                 streamer.fill().await?;
@@ -281,9 +287,7 @@ impl H1ResponseState {
                 .await
             },
             ResponseAction::Body(body) => self.write_streaming_body(writer, body.as_ref()).await,
-            ResponseAction::File { file, len } => {
-                self.write_streaming_file(writer, file, len).await
-            },
+            ResponseAction::File(segment) => self.write_streaming_file(writer, segment).await,
             ResponseAction::Finish => self.finish_streaming(writer).await,
             ResponseAction::FinishWithTrailers(trailers) => {
                 finish_chunked_with_trailers(writer, &trailers).await
@@ -408,7 +412,9 @@ where
             writer.flush().await?;
             Ok(())
         },
-        FinalResponseBody::File { file, len } => {
+        FinalResponseBody::File(FileSegment {
+            file, start, len, ..
+        }) => {
             write_response_head(
                 writer,
                 status,
@@ -417,14 +423,14 @@ where
                 BodyFraming::KnownLength(len),
             )
             .await?;
-            let mut file = *file;
+            let mut file = file;
             match FileTransferMode::for_target::<W>(len) {
                 FileTransferMode::Buffered => {
                     // Small files use the ordinary buffered-write path.
                     // Transports that cannot sendfile keep the same bounded
                     // rolling reader at every size instead of falling back to
                     // Tokio's generic 8 KiB copy buffer.
-                    let mut streamer = PathStreamer::new(file, len, true);
+                    let mut streamer = FileStreamer::new(file, start, len, true);
                     while !streamer.is_drained() {
                         streamer.fill().await?;
                         let chunk = streamer.remaining();
@@ -439,7 +445,10 @@ where
                 },
                 FileTransferMode::Sendfile => {
                     writer.flush().await?;
-                    let mut offset = 0_u64;
+                    // Explicit, not zero: a zerocopysend range begins wherever
+                    // the application asked, and `send_file` advances this
+                    // rather than the descriptor's shared position.
+                    let mut offset = start;
                     W::send_file(writer, &mut file, &mut offset, len).await?;
                 },
             }

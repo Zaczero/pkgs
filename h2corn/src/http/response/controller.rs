@@ -173,6 +173,51 @@ pub(crate) struct ResponseController {
     state: ResponseState,
 }
 
+/// One unit of response body, whatever it is made of.
+///
+/// Bytes the application produced and a range of a descriptor it handed over
+/// travel the same state machine; only the action they lower to differs. An
+/// empty one of either lowers to nothing at all: a zero-byte DATA frame needs
+/// no flow-control credit, so emitting one would make a final empty range wait
+/// for a `WINDOW_UPDATE` the peer has no reason to send.
+enum BodyPayload {
+    Bytes(actions::ResponseBody),
+    #[cfg(unix)]
+    File(actions::FileSegment),
+}
+
+impl BodyPayload {
+    fn len(&self) -> usize {
+        match self {
+            Self::Bytes(body) => body.len(),
+            #[cfg(unix)]
+            Self::File(segment) => segment.len,
+        }
+    }
+
+    fn into_final_body(self) -> actions::FinalResponseBody {
+        match self {
+            Self::Bytes(body) if body.is_empty() => actions::FinalResponseBody::Empty,
+            Self::Bytes(body) => actions::FinalResponseBody::Bytes(body),
+            #[cfg(unix)]
+            Self::File(segment) if segment.len == 0 => actions::FinalResponseBody::Empty,
+            #[cfg(unix)]
+            Self::File(segment) => actions::FinalResponseBody::File(segment),
+        }
+    }
+
+    fn into_streaming_action(self) -> Option<actions::ResponseAction> {
+        match self {
+            Self::Bytes(body) if body.is_empty() => None,
+            Self::Bytes(body) => Some(actions::ResponseAction::Body(body)),
+            #[cfg(unix)]
+            Self::File(segment) if segment.len == 0 => None,
+            #[cfg(unix)]
+            Self::File(segment) => Some(actions::ResponseAction::File(segment)),
+        }
+    }
+}
+
 impl ResponseController {
     pub(crate) const fn new(head_only: bool, supports_response_trailers: bool) -> Self {
         Self {
@@ -232,7 +277,29 @@ impl ResponseController {
         body: actions::ResponseBody,
         more_body: bool,
     ) -> Result<(), error::H2CornError> {
-        let mut started = self.take_started(error::HttpResponseError::BodyBeforeStart)?;
+        self.handle_body_payload(
+            actions,
+            BodyPayload::Bytes(body),
+            more_body,
+            error::HttpResponseError::BodyBeforeStart,
+        )
+    }
+
+    /// Admit one unit of response body, whatever it is made of.
+    ///
+    /// `http.response.body` and `http.response.zerocopysend` differ only in
+    /// where their bytes live: both are ordinary body items that may continue
+    /// or complete the response, and both must agree about suppression,
+    /// declared-length accounting, trailers and finalization. Writing that
+    /// state machine twice is what let the two drift apart, so there is one.
+    fn handle_body_payload(
+        &mut self,
+        actions: &mut actions::ResponseActions,
+        payload: BodyPayload,
+        more_body: bool,
+        before_start: error::HttpResponseError,
+    ) -> Result<(), error::H2CornError> {
+        let mut started = self.take_started(before_start)?;
         let final_chunk = !more_body;
 
         if self.payload.suppresses_body() {
@@ -246,7 +313,16 @@ impl ResponseController {
                     unreachable!("a suppressed response never streams body bytes")
                 },
             };
-            let len = previous_len.saturating_add(body.len());
+            // Checked, like the streamed accounting above: saturating here
+            // would let a suppressed response advertise `usize::MAX` instead of
+            // telling the application its lengths do not add up.
+            let Some(len) = previous_len.checked_add(payload.len()) else {
+                actions.push(actions::ResponseAction::AbortIncomplete);
+                self.state = ResponseState::Aborted;
+                return Err(error::H2CornError::from(PyValueError::new_err(
+                    "suppressed response body exceeds the representable length",
+                )));
+            };
             self.state = if final_chunk {
                 // The response goes out complete here rather than opening a
                 // chunked body to carry trailers: HTTP/1 would write a
@@ -280,16 +356,12 @@ impl ResponseController {
         }
 
         if final_chunk && !started.expects_trailers() && !started.body_started() {
-            let body = if body.is_empty() {
-                actions::FinalResponseBody::Empty
-            } else {
-                actions::FinalResponseBody::Bytes(body)
-            };
+            let body = payload.into_final_body();
             self.state = complete_response(actions, &mut started, body);
             return Ok(());
         }
 
-        if let Err(err) = started.record_streaming_body(body.len(), final_chunk) {
+        if let Err(err) = started.record_streaming_body(payload.len(), final_chunk) {
             actions.push(actions::ResponseAction::AbortIncomplete);
             self.state = ResponseState::Aborted;
             return Err(err);
@@ -300,8 +372,11 @@ impl ResponseController {
         }
         let expects_trailers = started.expects_trailers();
         started.body = StartedBody::Streaming { expects_trailers };
-        if !body.is_empty() {
-            actions.push(actions::ResponseAction::Body(body));
+        // An empty item carries no bytes, so it produces no action -- it would
+        // otherwise wait on HTTP/2 flow-control credit that an empty DATA frame
+        // never needs.
+        if let Some(action) = payload.into_streaming_action() {
+            actions.push(action);
         }
 
         self.state = if final_chunk {
@@ -413,18 +488,44 @@ impl ResponseController {
                         return Err(err);
                     }
                     actions.push(started.take_start_action());
-                    actions.push(actions::ResponseAction::File { file, len });
+                    actions.push(actions::ResponseAction::File(actions::FileSegment::new(
+                        file, 0, len, None,
+                    )));
                     self.state = ResponseState::waiting_for_trailers();
                 } else {
                     self.state = complete_response(
                         actions,
                         &mut started,
-                        actions::FinalResponseBody::File { file, len },
+                        actions::FinalResponseBody::File(actions::FileSegment::new(
+                            file, 0, len, None,
+                        )),
                     );
                 }
             },
         }
         Ok(())
+    }
+
+    /// One `http.response.zerocopysend` segment.
+    ///
+    /// Unlike pathsend, which substitutes for the whole body and is terminal,
+    /// this is an ordinary body chunk that happens to live in a file: the spec
+    /// allows it "at any time after the Response Start message but before the
+    /// final Response Body message", mixed with `http.response.body` and
+    /// repeated. So it is the same transition, with a different payload.
+    #[cfg(unix)]
+    pub(crate) fn handle_zerocopysend(
+        &mut self,
+        actions: &mut actions::ResponseActions,
+        segment: actions::FileSegment,
+        more_body: bool,
+    ) -> Result<(), error::H2CornError> {
+        self.handle_body_payload(
+            actions,
+            BodyPayload::File(segment),
+            more_body,
+            error::HttpResponseError::ZeroCopySendBeforeStart,
+        )
     }
 
     /// An `http.response.early_hint`, per RFC 8297.
@@ -640,6 +741,19 @@ mod tests {
                 .handle_body(actions, body, more_body)
                 .map(|()| false),
             bridge::HttpOutboundEvent::PathSend { .. } => Ok(true),
+            #[cfg(unix)]
+            bridge::HttpOutboundEvent::ZeroCopySend {
+                file,
+                start,
+                len,
+                more_body,
+            } => controller
+                .handle_zerocopysend(
+                    actions,
+                    http::response::FileSegment::new(file, start, len, None),
+                    more_body,
+                )
+                .map(|()| false),
             bridge::HttpOutboundEvent::Trailers {
                 headers,
                 more_trailers,
@@ -1009,9 +1123,7 @@ mod tests {
         controller
             .handle_pathsend(
                 &mut actions,
-                http::pathsend::PathSource::File(Box::new(
-                    File::open(&temp_path).expect("temp file opens"),
-                )),
+                http::pathsend::PathSource::File(File::open(&temp_path).expect("temp file opens")),
                 4,
             )
             .expect("pathsend is accepted");

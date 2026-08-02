@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 HeaderPair = tuple[bytes, bytes]
 Headers = Iterable[HeaderPair]
@@ -44,6 +44,10 @@ HTTPExtensions = TypedDict(
     'HTTPExtensions',
     {
         'http.response.pathsend': ExtensionParameters,
+        # Unix only: the descriptor handling it needs has no Windows
+        # equivalent, so the key is absent there rather than advertising a
+        # capability the server was not built with.
+        'http.response.zerocopysend': NotRequired[ExtensionParameters],
         'http.response.trailers': NotRequired[ExtensionParameters],
         # HTTP/2 only -- RFC 8297 interim responses are not offered on HTTP/1.
         'http.response.early_hint': NotRequired[ExtensionParameters],
@@ -187,9 +191,42 @@ class HTTPResponseTrailers(TypedDict):
     more_trailers: NotRequired[bool]
 
 
+class SupportsFileno(Protocol):
+    """An object naming an OS descriptor, per the ASGI specification's
+    "opened file descriptor object".
+
+    Structural on purpose, so an open file and an application's own wrapper
+    both qualify without inheriting anything. Note that satisfying this
+    protocol is necessary but not sufficient: at runtime the descriptor must
+    name a *readable regular file*, so a socket -- which has `fileno()` -- is
+    rejected.
+    """
+
+    def fileno(self) -> int: ...
+
+
 class HTTPResponsePathsend(TypedDict):
     type: Literal['http.response.pathsend']
     path: str
+
+
+class HTTPResponseZeroCopySend(TypedDict):
+    """A response body segment read straight from an open file.
+
+    Sent after `http.response.start`, as many times as wanted, and freely
+    interleaved with `http.response.body`. `offset` defaults to the
+    descriptor's current position and `count` to the rest of the file.
+
+    The descriptor stays yours: this server duplicates it and closes only the
+    duplicate, so closing it as soon as `send()` returns is safe -- and, per the
+    ASGI specification, your responsibility.
+    """
+
+    type: Literal['http.response.zerocopysend']
+    file: SupportsFileno
+    offset: NotRequired[int]
+    count: NotRequired[int]
+    more_body: NotRequired[bool]
 
 
 class HTTPResponseEarlyHint(TypedDict):
@@ -263,6 +300,7 @@ SendMessage = (
     | HTTPResponseBody
     | HTTPResponseTrailers
     | HTTPResponsePathsend
+    | HTTPResponseZeroCopySend
     | HTTPResponseEarlyHint
     | WebSocketAccept
     | WebSocketSendBytes

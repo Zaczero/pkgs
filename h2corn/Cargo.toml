@@ -10,6 +10,13 @@ license = "MIT"
 crate-type = ["cdylib"]
 name = "_lib"
 
+[target.'cfg(unix)'.dependencies]
+# `http.response.zerocopysend` duplicates a descriptor the application names by
+# integer. Every typed rustix/std entry point wants a `BorrowedFd` first, whose
+# safety contract we cannot honour for an unvalidated value -- the raw `fcntl`
+# takes the integer directly and reports EBADF instead.
+libc = "0.2"
+
 [dependencies]
 anstream = "0.6"
 atoi_simd = { version = "0.18", default-features = false }

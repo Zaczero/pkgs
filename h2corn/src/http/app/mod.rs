@@ -7,6 +7,7 @@ use std::task::{Context, Poll, Waker};
 
 pub(crate) use buffered::{
     AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendDisposition, HttpSendState, HttpSendWaiter,
+    outbound_charge,
 };
 use bytes::Bytes;
 use http::Method;
