@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
 import gometry as gm
-from pyo3stubs import DualityConfig, StubConfig, SurfaceConfig, TokenConfig
+from pyo3stubs import (
+    DualityConfig,
+    MacroExport,
+    StubConfig,
+    SurfaceConfig,
+    TokenConfig,
+)
 
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
@@ -22,10 +27,8 @@ SRC = ROOT / 'src'
 
 # `geometry_leaf!(PyPoint, "Point", "docstring")` declares a `#[pyclass]` from a
 # macro, so the attribute scan cannot see it: the Rust identifier and the Python
-# export name come from the invocation's own arguments.
-GEOMETRY_LEAF = re.compile(
-    r'geometry_leaf!\s*\(\s*(?P<rust>\w+)\s*,\s*"(?P<py>[^"]+)"',
-)
+# export name are the invocation's first two arguments.
+GEOMETRY_LEAF = MacroExport(macro='geometry_leaf', rust=0, python=1)
 
 # (empty since gm.index was folded into the SpatialIndex constructor — the
 # 2026-07 form review resolved the index name collision at the source.)
@@ -56,7 +59,7 @@ def config() -> StubConfig:
         # [tool.mypy] there — one source for validity, stubtest, and bare mypy.
         mypy_config=ROOT / 'pyproject.toml',
         extra_ignored_type_names=EXTRA_IGNORED_TYPE_NAMES,
-        pyclass_patterns=(GEOMETRY_LEAF,),
+        macro_exports=(GEOMETRY_LEAF,),
         # Array method returns are DERIVED from the scalar contract.
         duality=DualityConfig(pairs=(('Geometry', 'GeometryArray'),)),
         tokens=TokenConfig(
