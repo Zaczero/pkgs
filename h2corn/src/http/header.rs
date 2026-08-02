@@ -9,6 +9,7 @@ use bitflags::bitflags;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
+use smallvec::SmallVec;
 #[cfg(target_os = "linux")]
 use rustix::time::{ClockId, clock_gettime};
 
@@ -192,39 +193,64 @@ pub(crate) const fn application_response_field(name: &[u8]) -> ApplicationRespon
     }
 }
 
-pub(crate) fn last_csv_token(value: &str) -> &str {
+/// Byte offsets of the top-level commas in a header value, skipping any that
+/// sit inside a quoted string.
+fn csv_delimiters(value: &str) -> impl Iterator<Item = usize> + '_ {
     let bytes = value.as_bytes();
     let mut in_quotes = false;
     let mut escaped = false;
-    let mut last_delimiter = None;
     let mut index = 0;
 
-    while index < bytes.len() {
-        if escaped {
-            escaped = false;
-            index += 1;
-            continue;
+    iter::from_fn(move || {
+        while index < bytes.len() {
+            if escaped {
+                escaped = false;
+                index += 1;
+                continue;
+            }
+            let offset = memchr3(b'\\', b'"', b',', &bytes[index..])?;
+            let current = index + offset;
+            index = current + 1;
+            match bytes[current] {
+                b'\\' if in_quotes => escaped = true,
+                b'"' => in_quotes = !in_quotes,
+                b',' if !in_quotes => return Some(current),
+                _ => {},
+            }
         }
-        let Some(offset) = memchr3(b'\\', b'"', b',', &bytes[index..]) else {
-            break;
-        };
-        let current = index + offset;
-        match bytes[current] {
-            b'\\' if in_quotes => escaped = true,
-            b'"' => in_quotes = !in_quotes,
-            b',' if !in_quotes => last_delimiter = Some(current),
-            _ => {},
-        }
-        index = current + 1;
-    }
+        None
+    })
+}
 
+pub(crate) fn last_csv_token(value: &str) -> &str {
     // The delimiter is ASCII, so `index + 1` is always a char boundary and
     // `get` always returns `Some`; taking the fallible form keeps the panic out
     // of the type rather than arguing it away in a comment.
-    last_delimiter
+    csv_delimiters(value)
+        .last()
         .and_then(|index| value.get(index + 1..))
         .unwrap_or(value)
         .trim_ascii()
+}
+
+/// Every comma-separated element of a header value, in wire order.
+///
+/// `Forwarded` is the one header that needs the whole list rather than just its
+/// last element: its `for=` names a client and has to be walked back through
+/// trusted hops the way `X-Forwarded-For` is.
+fn csv_tokens(value: &str) -> SmallVec<[&str; 8]> {
+    let mut tokens = SmallVec::new();
+    let mut start = 0;
+    for delimiter in csv_delimiters(value) {
+        if let Some(token) = value.get(start..delimiter) {
+            tokens.push(token.trim_ascii());
+        }
+        start = delimiter + 1;
+    }
+    if let Some(token) = value.get(start..) {
+        tokens.push(token.trim_ascii());
+    }
+    tokens
 }
 
 pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -815,13 +841,12 @@ pub(crate) fn header_value_text(value: &[u8]) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
-    let value = last_csv_token(value);
+fn parse_forwarded_element(element: &str) -> Option<ForwardedView<'_>> {
     let mut client_host = None;
     let mut proto = None;
     let mut host = None;
 
-    for part in value.split(';') {
+    for part in element.split(';') {
         let (name, value) = part.split_once('=')?;
         let value = normalize_forwarded_value(value);
         let name = name.trim_ascii();
@@ -840,6 +865,45 @@ pub(crate) fn parse_forwarded_value(value: &str) -> Option<ForwardedView<'_>> {
         client_host,
         proto,
         host,
+    })
+}
+
+/// The trusted view of a `Forwarded` header.
+///
+/// `proto` and `host` describe the hop that handed us the request, so they come
+/// from the last element alone. `for` identifies the *client*, so it is walked
+/// back through hops matching `--forwarded-allow-ips` exactly as
+/// `parse_x_forwarded_for_value` walks `X-Forwarded-For` — taking the last
+/// element's `for` would report the nearest proxy instead of the client
+/// whenever more than one trusted hop is in front.
+pub(crate) fn parse_forwarded_value<'a>(
+    value: &'a str,
+    config: &ServerConfig,
+) -> Option<ForwardedView<'a>> {
+    let elements = csv_tokens(value);
+    let (last, earlier) = elements.split_last()?;
+    let nearest = parse_forwarded_element(last)?;
+
+    let mut client_host = nearest.client_host;
+    if client_host.is_some_and(|host| trusted_host_matches(&config.proxy.trusted_peers, host)) {
+        for element in earlier.iter().rev() {
+            // An element without a usable `for` ends the walk: the chain stops
+            // being attributable there, so the nearest untrusted hop we did
+            // resolve is the best answer available.
+            let Some(host) = parse_forwarded_element(element).and_then(|view| view.client_host)
+            else {
+                break;
+            };
+            client_host = Some(host);
+            if !trusted_host_matches(&config.proxy.trusted_peers, host) {
+                break;
+            }
+        }
+    }
+
+    Some(ForwardedView {
+        client_host,
+        ..nearest
     })
 }
 

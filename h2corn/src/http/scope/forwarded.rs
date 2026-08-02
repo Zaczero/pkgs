@@ -139,7 +139,10 @@ pub(crate) fn scope_view_with_defaults<'a>(
 
     let proxy_headers = request_proxy_headers(request);
     let used_forwarded =
-        if let Some(forwarded) = proxy_headers.forwarded.and_then(parse_forwarded_value) {
+        if let Some(forwarded) = proxy_headers
+            .forwarded
+            .and_then(|value| parse_forwarded_value(value, config))
+        {
             if let Some(host) = forwarded.client_host {
                 let port = view.client.as_ref().map_or(0, |(_, port)| *port);
                 view.client = Some((ScopeHost::Text(host), port));

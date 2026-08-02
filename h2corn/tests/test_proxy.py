@@ -262,6 +262,52 @@ async def test_proxy_headers_support_mixed_case_forwarded_parameters() -> None:
     assert body == b'https|2001:db8::1|example.com|8443'
 
 
+async def test_proxy_headers_walk_forwarded_for_through_trusted_hops() -> None:
+    """`for` names the client, so trusted hops are skipped as in X-Forwarded-For.
+
+    `proto` and `host` describe the hop that handed us the request and stay with
+    the last element, so this asserts both halves at once: taking the last
+    element's `for` too would report the intermediate proxy as the client.
+    """
+
+    async def app(scope, receive, send):
+        payload = (
+            f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
+            f'{scope["server"][1]}'
+        ).encode()
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [(b'content-type', b'text/plain')],
+        })
+        await send({'type': 'http.response.body', 'body': payload})
+
+    config = Config(
+        port=0,
+        proxy_headers=True,
+        # The edge proxy is trusted too, so the walk has to pass through it.
+        forwarded_allow_ips=('127.0.0.1', '198.51.100.7'),
+    )
+    async with running_server(app, config) as server:
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=server_port(server),
+                extra_headers=[
+                    (
+                        b'forwarded',
+                        # The edge saw the client; the next hop saw the edge.
+                        b'for=203.0.113.10;proto=http;host=attacker.example, '
+                        b'for=198.51.100.7;proto=https;host=example.com:8443',
+                    ),
+                ],
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == b'https|203.0.113.10|example.com|8443'
+
+
 async def test_proxy_headers_use_backend_facing_forwarded_hop() -> None:
     async def app(scope, receive, send):
         payload = (
