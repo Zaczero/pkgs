@@ -13,7 +13,13 @@ use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
-
+#[cfg(test)]
+pub(crate) use websocket::WebSocketSendDisposition;
+pub(crate) use websocket::{
+    PyWebSocketReceive, PyWebSocketSend, WebSocketDisconnect, WebSocketInboundMessage,
+    WebSocketInboundReceiver, WebSocketInboundSender, WebSocketInboundTrySendError,
+    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
+};
 /// Everything only `http.response.zerocopysend` needs, which exists only on
 /// Unix. Grouped so the extension leaves no trace in a build that cannot serve
 /// it, rather than seven separately gated imports.
@@ -24,13 +30,6 @@ use {
     rustix::fs::{FileType, fstat},
     std::fs::File,
     std::io,
-};
-#[cfg(test)]
-pub(crate) use websocket::WebSocketSendDisposition;
-pub(crate) use websocket::{
-    PyWebSocketReceive, PyWebSocketSend, WebSocketDisconnect, WebSocketInboundMessage,
-    WebSocketInboundReceiver, WebSocketInboundSender, WebSocketInboundTrySendError,
-    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
 };
 
 use crate::async_util::{TryPush, try_push};

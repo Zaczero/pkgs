@@ -138,29 +138,28 @@ pub(crate) fn scope_view_with_defaults<'a>(
     let mut view = defaults.clone();
 
     let proxy_headers = request_proxy_headers(request);
-    let used_forwarded =
-        if let Some(forwarded) = proxy_headers
-            .forwarded
-            .and_then(|value| parse_forwarded_value(value, config))
-        {
-            if let Some(host) = forwarded.client_host {
-                let port = view.client.as_ref().map_or(0, |(_, port)| *port);
-                view.client = Some((ScopeHost::Text(host), port));
-            }
-            if let Some(proto) = forwarded.proto {
-                view.scheme = normalize_scheme(proto);
-            }
-            if let Some((host, port)) = forwarded.host {
-                view.server = (
-                    ScopeHost::Text(host),
-                    port.or_else(|| default_port_for_scheme(&view.scheme))
-                        .or(view.server.1),
-                );
-            }
-            true
-        } else {
-            false
-        };
+    let used_forwarded = if let Some(forwarded) = proxy_headers
+        .forwarded
+        .and_then(|value| parse_forwarded_value(value, config))
+    {
+        if let Some(host) = forwarded.client_host {
+            let port = view.client.as_ref().map_or(0, |(_, port)| *port);
+            view.client = Some((ScopeHost::Text(host), port));
+        }
+        if let Some(proto) = forwarded.proto {
+            view.scheme = normalize_scheme(proto);
+        }
+        if let Some((host, port)) = forwarded.host {
+            view.server = (
+                ScopeHost::Text(host),
+                port.or_else(|| default_port_for_scheme(&view.scheme))
+                    .or(view.server.1),
+            );
+        }
+        true
+    } else {
+        false
+    };
 
     if !used_forwarded {
         if let Some(host) = proxy_headers

@@ -9,9 +9,9 @@ use bitflags::bitflags;
 use bytes::Bytes;
 use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
-use smallvec::SmallVec;
 #[cfg(target_os = "linux")]
 use rustix::time::{ClockId, clock_gettime};
+use smallvec::SmallVec;
 
 use crate::ascii;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
