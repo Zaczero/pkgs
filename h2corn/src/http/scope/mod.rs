@@ -198,33 +198,36 @@ fn http_scope_extensions<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     // Deliberately per-request, unlike `asgi`: an application may write its own
     // namespaced key here (`scope["extensions"]["application.private"]`), and a
-    // shared dict would carry that write into every later request. The 525
-    // instructions that used to cost are lower now that the mappings inside it
-    // are shared; remeasure with `bench/instr.py` before quoting a figure.
+    // shared dict would carry that write into every later request. The
+    // mappings *inside* it are shared, so this costs a dict and its entries,
+    // not a tree of them; remeasure with `bench/instr.py` before quoting a
+    // figure.
+    //
     // Early hints are HTTP/2 only. RFC 8297 names interoperability and
     // security risks with HTTP/1 clients that mishandle an interim response,
     // and a pipelined peer that ignores one desynchronizes -- so the extension
-    // is not offered where it cannot be delivered safely. Each arm is spelled
-    // out so the dict is still sized once, as the note above requires.
-    let early_hints = ctx.request.http_version == HttpVersion::Http2;
-    let extensions = match (ctx.request.accepts_trailers(), early_hints) {
-        (true, true) => py_dict!(py, {
-            "http.response.pathsend" => empty_extension_params(py)?,
+    // is not offered where it cannot be delivered safely.
+    //
+    // Conditional entries rather than one arm per combination: `py_dict!`
+    // sizes the dict from the entries actually pushed, so spelling the four
+    // combinations out bought nothing but four copies of one list that could
+    // drift apart.
+    //
+    // It is not quite free -- measured at +0.181% instructions/request (95% CI
+    // +0.052..+0.373) against the spelled-out form, because unconditional
+    // entries let the slot indices constant-fold while a conditional one makes
+    // the write index a runtime value. Accepted deliberately: ~50 instructions
+    // against four copies of a list, and a fraction of what sharing the
+    // mappings below just returned.
+    let extensions = py_dict!(py, {
+        "http.response.pathsend" => empty_extension_params(py)?,
+        if ctx.request.accepts_trailers() => {
             "http.response.trailers" => empty_extension_params(py)?,
+        },
+        if ctx.request.http_version == HttpVersion::Http2 => {
             "http.response.early_hint" => empty_extension_params(py)?,
-        }),
-        (true, false) => py_dict!(py, {
-            "http.response.pathsend" => empty_extension_params(py)?,
-            "http.response.trailers" => empty_extension_params(py)?,
-        }),
-        (false, true) => py_dict!(py, {
-            "http.response.pathsend" => empty_extension_params(py)?,
-            "http.response.early_hint" => empty_extension_params(py)?,
-        }),
-        (false, false) => py_dict!(py, {
-            "http.response.pathsend" => empty_extension_params(py)?,
-        }),
-    };
+        },
+    });
     add_tls_extension(py, ctx, &extensions)?;
     Ok(extensions)
 }
