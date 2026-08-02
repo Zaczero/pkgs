@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::{num::NonZeroU32, time::Duration};
 
 use bytes::BytesMut;
+use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::sync::futures::Notified;
 use tokio::time::Instant as TokioInstant;
@@ -514,6 +515,30 @@ where
             return Err(WindowOverflow);
         }
         self.connection_send_window += increment;
+        // Wake everything the shared window was holding back. A stream window
+        // update reschedules its own stream below; the connection window has no
+        // stream to name, so without this a stream parked for want of shared
+        // credit is never woken by the very event that grants it -- it waits
+        // out the response stall timeout instead. `schedule` is idempotent, so
+        // streams already queued are untouched.
+        //
+        // Sorted, because the stream map is hash-ordered and this decides who
+        // gets the new credit first. Ascending stream id is the oldest request
+        // first, which is both deterministic and the fairer answer.
+        if self.connection_send_window > 0 {
+            let mut waiting: SmallVec<[StreamId; 8]> = self
+                .streams
+                .iter()
+                .filter(|(_, stream)| stream.has_pending_output() && !stream.is_closed())
+                .map(|(stream_id, _)| *stream_id)
+                .collect();
+            waiting.sort_unstable();
+            for stream_id in waiting {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    self.ready_streams.schedule(stream, stream_id, false);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1265,6 +1290,51 @@ mod tests {
         assert_eq!(
             super::initial_settings(&config).max_header_list_size,
             Some(u32::MAX)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_window_grant_wakes_the_streams_it_unblocks() {
+        // A stream out of *shared* credit is not left in the ready queue: it
+        // would only spin against zero. That makes the grant responsible for
+        // waking it, and nothing else can -- a connection WINDOW_UPDATE names
+        // no stream, so before this it incremented a counter and the response
+        // sat there until the stall timeout.
+        let first = StreamId::new(1).expect("test stream id is valid");
+        let second = StreamId::new(3).expect("test stream id is valid");
+        let mut writer = WriterState::new_test(TestWriter);
+        writer.connection_send_window = 0;
+
+        for stream_id in [second, first] {
+            writer
+                .streams
+                .insert(stream_id, StreamWriteState::new(0xFFFF));
+            let stream = writer
+                .streams
+                .get_mut(&stream_id)
+                .expect("the stream was just inserted");
+            stream.open_response(false).expect("response opens");
+            stream
+                .queue_data(
+                    PayloadBytes::from(bytes::Bytes::from_static(b"pending")),
+                    None,
+                    true,
+                )
+                .expect("data queues");
+        }
+
+        // Nothing is ready while the shared window is empty.
+        assert_eq!(writer.ready_streams.iter().collect::<Vec<_>>(), []);
+
+        writer
+            .grant_connection_window(WindowIncrement::new(1024).expect("increment is valid"))
+            .expect("the grant fits the window");
+
+        // Both woken, oldest first: the map is hash-ordered, so without the
+        // sort the service order would vary run to run.
+        assert_eq!(
+            writer.ready_streams.iter().collect::<Vec<_>>(),
+            [first, second]
         );
     }
 

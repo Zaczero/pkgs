@@ -54,7 +54,6 @@ enum SendfileProgress {
 
 struct FlushBodyParts<'a, W> {
     writer: &'a mut BufWriter<W>,
-    ready_streams: &'a mut ReadyStreamQueue,
     connection_send_window: &'a mut i64,
     data_frame_size: FramePayloadLen,
     stream_budget: usize,
@@ -229,7 +228,11 @@ where
     if ended_stream {
         stream.finish(stream_id, context.response_closes);
     } else if connection_blocked {
-        context.ready_streams.schedule(stream, stream_id, true);
+        // Deliberately not rescheduled: the shared window is empty, so
+        // requeueing would only have the writer spin against zero credit, and
+        // putting it at the front lets one stream take every later grant while
+        // its peers wait. `grant_connection_window` queues everything with
+        // pending output when credit actually arrives.
         return Ok(FlushBodyProgress::ConnectionBlocked);
     }
     Ok(FlushBodyProgress::Continue)
@@ -259,6 +262,19 @@ where
                 Ok(SendfileProgress::Done(progress)) => return Ok(progress),
                 Err(error) => return Err(error),
             }
+        }
+
+        // Nothing is filled without somewhere to put it: the connection writer
+        // awaits this read, so starting one with no window to write into holds
+        // every other stream on the connection behind a disk that cannot help.
+        if send_limit(
+            *context.connection_send_window,
+            i64::from(stream.send_window),
+            context.data_frame_size,
+        )
+        .is_none()
+        {
+            return Ok(FlushBodyProgress::Continue);
         }
 
         if streamer.needs_fill()
@@ -315,7 +331,7 @@ where
             return Ok(FlushBodyProgress::Continue);
         }
         if connection_blocked {
-            context.ready_streams.schedule(stream, stream_id, true);
+            // Not rescheduled -- see `flush_chunk_body`.
             return Ok(FlushBodyProgress::ConnectionBlocked);
         }
         if total == 0 || context.budget_exhausted() {
@@ -335,7 +351,7 @@ where
     W: AsyncWrite + Unpin + WriteTarget,
 {
     if *context.connection_send_window <= 0 {
-        context.ready_streams.schedule(stream, stream_id, true);
+        // Not rescheduled -- see `flush_chunk_body`.
         return Ok(SendfileProgress::Done(FlushBodyProgress::ConnectionBlocked));
     }
     let Some(limit) = send_limit(
@@ -627,14 +643,13 @@ where
         let deadline_before = stream.pending_body_since();
 
         if *connection_send_window <= 0 && stream.has_pending_output() {
-            ready_streams.schedule(stream, stream_id, true);
+            // Not rescheduled -- see `flush_chunk_body`.
             result = FlushPassResult::ConnectionBlocked;
             break;
         }
 
         let mut context = FlushBodyParts {
             writer,
-            ready_streams,
             connection_send_window,
             data_frame_size,
             stream_budget: fair_write_quantum(data_frame_size),
