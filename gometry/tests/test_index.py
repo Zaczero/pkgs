@@ -8,7 +8,8 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import floats, ids, pair_rows
+
+from tests._support import floats, ids, pair_rows
 
 
 def match_rows(matches: gm.Groups) -> list[list[int]]:

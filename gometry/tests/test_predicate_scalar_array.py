@@ -7,7 +7,8 @@ topology matrix in ``test_predicates.py``.
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import bools
+
+from tests._support import bools
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,8 @@ from __future__ import annotations
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import ndarray_lane
+
+from tests._support import ndarray_lane
 
 
 def test_bounds_array_semantics() -> None:

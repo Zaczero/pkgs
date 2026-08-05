@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import gometry as gm
-from conftest import canon, geo_line_storage_twins, line_storage_twins
+
+from tests._support import canon, geo_line_storage_twins, line_storage_twins
 
 
 def _long_packed_lines() -> gm.GeometryArray:

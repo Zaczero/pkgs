@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import pytest
-from conftest import canon, floats, ids, line_storage_twins, polygon_storage_twins
+
+from tests._support import canon, floats, ids, line_storage_twins, polygon_storage_twins
 
 _SLICES = [slice(None), slice(None, None, -1), slice(0, 1), slice(1, None)]
 

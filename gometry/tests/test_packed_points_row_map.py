@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import numpy as np
-from conftest import canon
+
+from tests._support import canon
 
 
 def _permuted_take() -> tuple[gm.GeometryArray, gm.GeometryArray]:

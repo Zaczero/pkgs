@@ -13,8 +13,9 @@ from typing import Any, cast
 import gometry as gm
 import pyarrow as pa
 import pytest
-from conftest import canon, polygon_storage_twins
 from gometry._lib import CRS as _CRS
+
+from tests._support import canon, polygon_storage_twins
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
     {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},

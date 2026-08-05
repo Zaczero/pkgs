@@ -5,8 +5,9 @@ from __future__ import annotations
 import gometry as gm
 import polars as pl
 import pytest
-from conftest import canon
 from gometry._polars import from_polars, to_polars
+
+from tests._support import canon
 
 
 @pytest.fixture

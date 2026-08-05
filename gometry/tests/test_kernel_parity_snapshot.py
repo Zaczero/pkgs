@@ -17,7 +17,7 @@ import gometry as gm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-from _oracles_support import (
+from tests._oracles_support import (
     error_snapshot,
     serialize_snapshot_value,
     snapshot_values_match,

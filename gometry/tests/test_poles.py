@@ -3,7 +3,8 @@
 import math
 
 import gometry as gm
-from conftest import bools
+
+from tests._support import bools
 
 
 def _pole_hexagons() -> tuple[gm.Polygon, gm.Polygon]:

@@ -704,7 +704,7 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
 
 
 def test_crs_namespace_exposes_proj_authority_metadata() -> None:
-    from test_crs_metadata_operations import (
+    from tests.test_crs_metadata_operations import (
         _assert_crs_namespace_operations_geodesic_and_transforms,
     )
 

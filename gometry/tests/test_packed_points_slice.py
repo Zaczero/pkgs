@@ -5,7 +5,8 @@ from __future__ import annotations
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import canon
+
+from tests._support import canon
 
 
 def _packed_points() -> gm.GeometryArray:

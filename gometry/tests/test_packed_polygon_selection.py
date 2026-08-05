@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import canon, polygon_storage_twins
+from tests._support import canon, polygon_storage_twins
 
 
 def test_packed_polygons_take_matches_mixed_storage() -> None:

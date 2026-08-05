@@ -6,13 +6,14 @@ import gometry as gm
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import canon
 from gometry._pandas import (
     GeometryDtype,
     GeometryExtensionArray,
     from_pandas,
     to_pandas,
 )
+
+from tests._support import canon
 
 
 @pytest.fixture

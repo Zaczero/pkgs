@@ -6,7 +6,8 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import GOMETRY_ROOT, load_tool
+
+from tests._support import GOMETRY_ROOT, load_tool
 
 if TYPE_CHECKING:
     from types import ModuleType

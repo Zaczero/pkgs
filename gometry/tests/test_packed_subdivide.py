@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import gometry as gm
-from conftest import canon, polygon_storage_twins
+
+from tests._support import canon, polygon_storage_twins
 
 
 def _dense_line_twins() -> tuple[gm.GeometryArray, gm.GeometryArray]:

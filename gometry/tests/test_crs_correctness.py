@@ -11,8 +11,9 @@ import math
 
 import gometry as gm
 import pytest
-from conftest import bools, floats, ids
 from pyproj import Geod
+
+from tests._support import bools, floats, ids
 
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192

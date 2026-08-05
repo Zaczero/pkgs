@@ -8,8 +8,9 @@ import pickle
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import bools
 from gometry import Cell
+
+from tests._support import bools
 
 
 def test_coverage_iteration_matches_cells_array():
@@ -1613,7 +1614,7 @@ def test_cell_uniform_surface() -> None:
     Driven by the shared ``GridCase`` table so depth-metadata assertions are not
     hand-duplicated x4; unique int-id / max-depth edges stay explicit.
     """
-    from test_grids_cells_construct import GRID_CASES
+    from tests.test_grids_cells_construct import GRID_CASES
 
     samples = {g.name: g.make() for g in GRID_CASES}
     for grid in GRID_CASES:

@@ -9,7 +9,8 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import ids, pair_rows
+
+from tests._support import ids, pair_rows
 
 
 def test_polygon_planar_measurements_and_predicates() -> None:

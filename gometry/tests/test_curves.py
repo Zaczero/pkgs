@@ -5,7 +5,8 @@ and the GeoPandas-interoperable key values.
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import ndarray_lane, uints
+
+from tests._support import ndarray_lane, uints
 
 
 def test_hilbert_keys_match_geopandas_and_preserve_locality() -> None:

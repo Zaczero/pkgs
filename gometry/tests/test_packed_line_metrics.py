@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import pytest
-from conftest import canon, floats, line_storage_twins
+
+from tests._support import canon, floats, line_storage_twins
 
 
 def test_packed_lines_hausdorff_array_matches_mixed_storage() -> None:

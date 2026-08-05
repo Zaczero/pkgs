@@ -9,8 +9,9 @@ import tempfile
 import geopandas as gpd
 import gometry as gm
 import pytest
-from conftest import canon
 from shapely.geometry import LineString, Point, Polygon
+
+from tests._support import canon
 
 
 @pytest.fixture

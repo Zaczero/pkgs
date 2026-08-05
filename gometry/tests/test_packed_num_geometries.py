@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import gometry as gm
-from conftest import ints, line_storage_twins, polygon_storage_twins
+
+from tests._support import ints, line_storage_twins, polygon_storage_twins
 
 
 def test_packed_lines_num_geometries_matches_mixed_storage() -> None:

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import bools, canon, floats
+
+from tests._support import bools, canon, floats
 
 if TYPE_CHECKING:
     from collections.abc import Callable

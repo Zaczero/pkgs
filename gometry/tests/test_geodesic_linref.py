@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import pytest
-from conftest import canon
+
+from tests._support import canon
 
 
 def test_geodesic_line_cache_isolated_across_frame_retag() -> None:

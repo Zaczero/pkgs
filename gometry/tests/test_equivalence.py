@@ -15,7 +15,8 @@ from typing import Any
 import gometry as gm
 import numpy as np
 import pytest
-from conftest import (
+
+from tests._support import (
     bools,
     canon,
     floats,

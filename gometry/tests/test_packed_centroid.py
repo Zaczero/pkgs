@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import pytest
-from conftest import canon, line_storage_twins, polygon_storage_twins
+
+from tests._support import canon, line_storage_twins, polygon_storage_twins
 
 
 def test_multipoint_centroid_survives_overflow_scale_coordinates() -> None:

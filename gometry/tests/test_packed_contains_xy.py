@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import gometry as gm
-from conftest import bools, polygon_storage_twins
+
+from tests._support import bools, polygon_storage_twins
 
 
 def test_packed_polygons_point_predicate_matches_mixed_storage() -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gometry as gm
 import pytest
-from conftest import floats
+
+from tests._support import floats
 
 WGS84 = 4326
 

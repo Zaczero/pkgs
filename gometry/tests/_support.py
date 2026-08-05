@@ -1,4 +1,4 @@
-"""Shared test helpers."""
+"""Shared test helpers imported explicitly by the test suite."""
 
 from __future__ import annotations
 
