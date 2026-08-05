@@ -15,6 +15,7 @@ import libcst as cst
 import pytest
 
 from pyo3stubs.gen import DocInjector, _def_totals, _docstring_statement
+from tests._support import make_config
 
 Q = '"'
 
@@ -165,8 +166,6 @@ def test_cpython_boilerplate_never_reaches_the_stub():
 
 def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
     """The `#[new]`'s `///` is the only place the prose exists — read it there."""
-    from conftest import make_config
-
     from pyo3stubs.rust_scan import constructor_docs
 
     src = (
@@ -213,8 +212,6 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
     `frozen_pymethods! { impl PyWidget { … } }` was invisible. Re-parsing the
     body recovers it — and the recovered items keep their real line numbers.
     """
-    from conftest import make_config
-
     from pyo3stubs.rust_scan import constructor_docs, iter_sources
 
     src = (
