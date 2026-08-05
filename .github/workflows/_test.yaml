@@ -189,6 +189,10 @@ jobs:
           enable-cache: true
           working-directory: ${{ env.PACKAGE }}
 
+      - name: Set reproducible build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
       - name: Rewrite README for PyPI
         shell: bash
         run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
