@@ -39,6 +39,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
+include = [{ path = "rust-toolchain.toml", format = "sdist" }]
 module-name = "zid._lib"
 python-source = "python"
 
