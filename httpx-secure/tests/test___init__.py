@@ -44,8 +44,7 @@ def mock_tcp(default_ip: str = MOCK_DEFAULT_IP):
                 resolved_ip = default_ip
 
         stream = Mock()
-        stream._raw_socket = Mock()
-        stream._raw_socket.getpeername.return_value = (resolved_ip, port)
+        stream.extra.return_value = (resolved_ip, port)
         stream.__aenter__ = AsyncMock(return_value=stream)
         stream.__aexit__ = AsyncMock(return_value=None)
         return stream
@@ -223,9 +222,10 @@ async def test_custom_validator_blocks_specific_ips():
         with pytest.raises(
             SSRFProtectionError,
             match=r'Access denied: .* failed custom validation',
-        ):
+        ) as first_denial:
             await client.get('http://8.8.8.8/')
         assert call_count == 1
+        assert first_denial.value.request.url.path == '/'
 
         with pytest.raises(SuccessError):
             await client.get('http://1.1.1.1/')
@@ -235,9 +235,11 @@ async def test_custom_validator_blocks_specific_ips():
         with pytest.raises(
             SSRFProtectionError,
             match=r'Access denied: .* failed custom validation',
-        ):
+        ) as cached_denial:
             await client.get('http://8.8.8.8/different/path')
         assert call_count == 2
+        assert cached_denial.value is not first_denial.value
+        assert cached_denial.value.request.url.path == '/different/path'
 
 
 async def test_dns_resolution_failure_raises_error(mock_tcp_fixture):

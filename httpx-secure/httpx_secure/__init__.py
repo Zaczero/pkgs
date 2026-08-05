@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from inspect import isawaitable
 from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
 from time import monotonic
 from weakref import WeakValueDictionary
 
 from anyio import Lock, connect_tcp, fail_after
+from anyio.abc import SocketAttribute
 from httpx import ConnectError, ConnectTimeout, RequestError
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from typing import TypeVar, Union
+    from typing import TypeVar
 
     from httpx import AsyncClient, Request
 
-    _IPAddress = Union[IPv4Address, IPv6Address]
+    _IPAddress = IPv4Address | IPv6Address
 
     _CacheKey = tuple[str, int]  # (hostname, port)
 
@@ -92,13 +94,39 @@ class SSRFProtectionError(RequestError):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _DeniedAddress:
+    message: str
+    hostname: str
+    ip_addr: _IPAddress | None
+    port: int
+
+    @classmethod
+    def from_exception(cls, error: SSRFProtectionError) -> _DeniedAddress:
+        return cls(
+            message=str(error),
+            hostname=error.hostname,
+            ip_addr=error.ip_addr,
+            port=error.port,
+        )
+
+    def exception(self, request: Request) -> SSRFProtectionError:
+        return SSRFProtectionError(
+            self.message,
+            request=request,
+            hostname=self.hostname,
+            ip_addr=self.ip_addr,
+            port=self.port,
+        )
+
+
 class _DNSCache:
     __slots__ = ('_cache', '_max_size', '_ttl')
 
     def __init__(self, max_size: int, ttl: float) -> None:
         self._cache: OrderedDict[
             _CacheKey,
-            tuple[float, str | SSRFProtectionError],
+            tuple[float, str | _DeniedAddress],
         ] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl
@@ -107,7 +135,7 @@ class _DNSCache:
         self,
         key: _CacheKey,
         /,
-    ) -> str | SSRFProtectionError | None:
+    ) -> str | _DeniedAddress | None:
         cached_value = self._cache.get(key)
         if cached_value is None:
             return None
@@ -125,7 +153,7 @@ class _DNSCache:
     def put(
         self,
         key: _CacheKey,
-        value: str | SSRFProtectionError,
+        value: str | _DeniedAddress,
         /,
     ) -> None:
         current_time = monotonic()
@@ -183,7 +211,10 @@ class _SSRFProtectionHook:
                     port,
                     happy_eyeballs_delay=self.happy_eyeballs_delay,
                 ) as stream:
-                    return stream._raw_socket.getpeername()[0]
+                    remote_address = stream.extra(SocketAttribute.remote_address)
+                    if isinstance(remote_address, str):
+                        return remote_address
+                    return remote_address[0]
         except TimeoutError as e:
             raise ConnectTimeout(str(e), request=request) from e
         except OSError as e:
@@ -240,8 +271,8 @@ class _SSRFProtectionHook:
         cache_key = (hostname, port)
         result = self._cache.get(cache_key)
         if result is not None:
-            if isinstance(result, SSRFProtectionError):
-                raise result
+            if isinstance(result, _DeniedAddress):
+                raise result.exception(request)
             return result
 
         lock = self._locks.get(cache_key)
@@ -251,8 +282,8 @@ class _SSRFProtectionHook:
         async with lock:
             result = self._cache.get(cache_key)
             if result is not None:
-                if isinstance(result, SSRFProtectionError):
-                    raise result
+                if isinstance(result, _DeniedAddress):
+                    raise result.exception(request)
                 return result
 
             ip_str = await self._resolve(request, hostname, port)
@@ -260,8 +291,9 @@ class _SSRFProtectionHook:
             try:
                 await self._validate(ip_str, port, hostname)
             except SSRFProtectionError as e:
-                self._cache.put(cache_key, e)
-                raise
+                denial = _DeniedAddress.from_exception(e)
+                self._cache.put(cache_key, denial)
+                raise denial.exception(request) from None
 
             self._cache.put(cache_key, ip_str)
             return ip_str
