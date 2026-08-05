@@ -172,8 +172,16 @@ def _check_file(label: str, target: Path, errors: list[str]) -> None:
         )
     from mypy import api
 
+    # Per-corpus cache directory — see the note in `_check_typing_runtime.py`.
+    # Sharing mypy's default cache with the other typing gate keeps both
+    # permanently cold; the two corpora also get separate directories so they
+    # do not invalidate each other.  The corpus file itself lands in a fresh
+    # temp path each run and so always misses, but its dependency graph
+    # (gometry, numpy, the stub) is stable and is where the time goes.
     stdout, stderr, status = api.run([
         str(target),
+        '--cache-dir',
+        str(_ROOT / 'target' / 'mypy-cache' / f'doctest-{target.stem}'),
         '--no-error-summary',
         '--no-color-output',
     ])
