@@ -75,7 +75,7 @@ def test_encode_lat_wrapping(lon, lat, expected_lon, expected_lat):
 )
 def test_decode(input, expected):
     decoded = shortlink_decode(input)
-    for a, b in zip(expected, decoded):
+    for a, b in zip(expected, decoded, strict=True):
         assert isclose(a, b, abs_tol=0.01)
 
 
@@ -104,5 +104,5 @@ def test_decode_rejects_malformed_input(input):
 def test_decode_deprecated(new, old):
     decoded1 = shortlink_decode(new)
     decoded2 = shortlink_decode(old)
-    for a, b in zip(decoded1, decoded2):
+    for a, b in zip(decoded1, decoded2, strict=True):
         assert isclose(a, b)

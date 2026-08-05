@@ -50,11 +50,15 @@ def test_encode_decode(coords, precision, expected):
     assert encode_lonlat(coords_lonlat, precision) == expected
     assert all(
         decoded == pytest.approx(coord, abs=0.1**precision)
-        for decoded, coord in zip(decode_latlon(expected, precision), coords)
+        for decoded, coord in zip(
+            decode_latlon(expected, precision), coords, strict=True
+        )
     )
     assert all(
         decoded == pytest.approx(coord, abs=0.1**precision)
-        for decoded, coord in zip(decode_lonlat(expected, precision), coords_lonlat)
+        for decoded, coord in zip(
+            decode_lonlat(expected, precision), coords_lonlat, strict=True
+        )
     )
 
 

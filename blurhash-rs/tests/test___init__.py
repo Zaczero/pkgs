@@ -14,7 +14,7 @@ def _assert_bytes_close(
     max_different_bytes: int,
 ) -> None:
     assert len(actual) == len(expected)
-    diffs = [abs(a - b) for a, b in zip(actual, expected)]
+    diffs = [abs(a - b) for a, b in zip(actual, expected, strict=True)]
     assert max(diffs) <= max_abs_diff
     assert (sum(diffs) / len(diffs)) <= max_mean_abs_diff
     assert sum(1 for d in diffs if d) <= max_different_bytes
