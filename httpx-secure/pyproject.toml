@@ -66,7 +66,7 @@ path = "httpx_secure/__init__.py"
 include = ["httpx_secure"]
 pythonPlatform = "All"
 pythonVersion = "3.10"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 
 [tool.ruff]
 extend = "../ruff.toml"
