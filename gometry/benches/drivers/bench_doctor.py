@@ -130,10 +130,8 @@ def select_benchmark_cpu(requested: int | None) -> tuple[int, str]:
 
 
 def _package_version(name: str) -> str | None:
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:
-        return None
+    from importlib.metadata import PackageNotFoundError, version
+
     try:
         return version(name)
     except PackageNotFoundError:
