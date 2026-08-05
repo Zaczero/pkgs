@@ -124,18 +124,9 @@ exclude = [
   { path = "site/**", format = "sdist" },
   { path = "target*/**", format = "sdist" },
   { path = "vendor/**/target/**", format = "sdist" },
-  { path = "**/__pycache__/**", format = "sdist" },
-  { path = "**/__pycache__/**", format = "wheel" },
-  { path = "**/*.pyc", format = "sdist" },
-  { path = "**/*.pyc", format = "wheel" },
-  { path = "**/*.pyo", format = "sdist" },
-  { path = "**/*.pyo", format = "wheel" },
+  "**/__pycache__/**",
+  "**/*.py[co]",
 ]
-
-[tool.maturin.sbom]
-# cargo-cyclonedx currently serializes absolute workspace-member paths for the
-# root crate. Do not leak build-host paths in public artifacts.
-rust = false
 
 [tool.mypy]
 # overload-overlap flags gometry's core scalar/array idiom (a scalar variant

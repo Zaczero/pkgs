@@ -53,6 +53,7 @@ bindings = "pyo3"
 include = [{ path = "rust-toolchain.toml", format = "sdist" }]
 module-name = "blurhash_rs._lib"
 python-source = "python"
+exclude = ["**/__pycache__/**", "**/*.py[co]"]
 
 [tool.pyright]
 include = ["python/blurhash_rs", "tests"]
