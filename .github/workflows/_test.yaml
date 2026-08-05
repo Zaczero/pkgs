@@ -150,7 +150,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          uv run --python "${{ matrix.python-version }}" python tools/check.py
+          uv run --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
+            python tools/check.py
 
   build:
     needs: resolve

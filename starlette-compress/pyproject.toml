@@ -59,11 +59,9 @@ dev = [
   "brotlicffi",
   "coverage",
   "httpx2",
-  "pyright>=1.1.411",
   "pytest>=9.1",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
-  "ruff>=0.15.22",
   "trio",
   "uvloop; sys_platform != 'win32'",
 ]

@@ -35,7 +35,6 @@ import textwrap
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_PYRIGHT = _ROOT / '.venv/bin/pyright'
 _PYTHON = _ROOT / '.venv/bin/python'
 
 _PREAMBLE = '''\
@@ -161,7 +160,7 @@ def render_markdown_corpus() -> str:
 
 def _check_file(label: str, target: Path, errors: list[str]) -> None:
     pyright = subprocess.run(
-        [str(_PYRIGHT), str(target), '--pythonpath', str(_PYTHON)],
+        ['pyright', str(target), '--pythonpath', str(_PYTHON)],
         cwd=_ROOT,
         capture_output=True,
         text=True,

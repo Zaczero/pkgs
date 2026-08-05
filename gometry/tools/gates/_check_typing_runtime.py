@@ -226,8 +226,6 @@ def _check_pyright(errors: list[str], label: str, *targets: str) -> None:
     """One pyright run; no targets means the whole configured project scope."""
     result = subprocess.run(
         [
-            sys.executable,
-            '-m',
             'pyright',
             *targets,
             '--pythonpath',
