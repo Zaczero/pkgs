@@ -34,10 +34,12 @@ import argparse
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
-import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = Path(__file__).resolve().parent
@@ -49,7 +51,7 @@ THIRD_PARTY_NAME = 'LICENSE-THIRD-PARTY.md'
 ZERO_BSD = """\
 # 0BSD License
 
-Copyright (c) {year} {author}
+{copyright}
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted.
@@ -66,7 +68,7 @@ PERFORMANCE OF THIS SOFTWARE.
 MIT = """\
 # MIT License
 
-Copyright (c) {year} {author}
+{copyright}
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -293,7 +295,7 @@ def _render_own(package: str) -> dict[str, str]:
         raise SystemExit(f'{package}: project.authors must name the copyright holder')
     rendered = {
         identifier: SPDX_TEXTS[identifier].format(
-            year=datetime.now(UTC).year, author=authors[0]['name']
+            copyright=f'Copyright (c) {datetime.now(UTC).year} {authors[0]["name"]}'
         )
         for identifier in identifiers
     }
@@ -333,6 +335,97 @@ def _generate_third_party(package: str, out_path: Path) -> None:
         )
 
 
+def _native_error(package: str, component: str, message: str) -> SystemExit:
+    return SystemExit(f'{package}: native component {component}: {message}')
+
+
+def _native_section(package: str) -> str:
+    manifest = ROOT / package / 'native-licenses.toml'
+    if not manifest.exists():
+        return ''
+    try:
+        with manifest.open('rb') as stream:
+            components = tomllib.load(stream)['component']
+    except (OSError, KeyError, tomllib.TOMLDecodeError) as error:
+        raise SystemExit(f'{package}: invalid native-licenses.toml: {error}') from error
+    if not isinstance(components, list) or not components:
+        raise SystemExit(
+            f'{package}: native-licenses.toml component must be a non-empty array'
+        )
+    with CONFIG.open('rb') as stream:
+        accepted = frozenset(tomllib.load(stream)['accepted'])
+    rendered = ['\n## Additional Components\n']
+    for index, component in enumerate(components, start=1):
+        if not isinstance(component, dict):
+            raise _native_error(package, f'#{index}', 'must be a table')
+        name = component.get('name', f'#{index}')
+        if not isinstance(name, str) or not name:
+            raise _native_error(package, f'#{index}', 'name must be a non-empty string')
+        try:
+            version, license = component['version'], component['license']
+        except KeyError as error:
+            raise _native_error(package, name, f'missing {error.args[0]!r}') from error
+        if not isinstance(version, str) or not version:
+            raise _native_error(package, name, 'version must be a non-empty string')
+        if not isinstance(license, str) or license not in accepted:
+            raise _native_error(package, name, f'license {license!r} is not accepted')
+        archive, notice, copyright = (
+            component.get('archive'),
+            component.get('notice'),
+            component.get('copyright'),
+        )
+        archive_mode = archive is not None or notice is not None
+        if archive_mode == (copyright is not None) or (archive is None) != (
+            notice is None
+        ):
+            raise _native_error(
+                package, name, 'declare exactly one of archive + notice or copyright'
+            )
+        if archive_mode:
+            if not isinstance(archive, str) or not isinstance(notice, str):
+                raise _native_error(package, name, 'archive and notice must be strings')
+            try:
+                with tarfile.open(ROOT / package / archive) as tar:
+                    member = tar.extractfile(notice)
+                    text = member.read().decode('utf-8') if member else ''
+            except (OSError, KeyError, tarfile.TarError, UnicodeDecodeError) as error:
+                raise _native_error(
+                    package, name, f'could not extract {notice!r}: {error}'
+                ) from error
+        else:
+            if not isinstance(copyright, str) or not copyright.strip():
+                raise _native_error(
+                    package, name, 'copyright must be a non-empty string'
+                )
+            try:
+                canonical = SPDX_TEXTS[license]
+                text = canonical.format(copyright=copyright)
+                heading, newline, remainder = text.partition('\n')
+                if heading.startswith('# ') and newline:
+                    text = remainder
+                if '{copyright}' not in canonical:
+                    text = f'{copyright}\n\n{text}'
+            except KeyError as error:
+                raise _native_error(
+                    package, name, f'no canonical SPDX text for {license!r}'
+                ) from error
+        if not text.strip():
+            raise _native_error(package, name, 'notice is empty')
+        rendered.append(f'\n### {name} {version}\n')
+        if 'homepage' in component:
+            homepage = component['homepage']
+            if not isinstance(homepage, str) or not homepage:
+                raise _native_error(
+                    package, name, 'homepage must be a non-empty string'
+                )
+            rendered.append(f'\n<{homepage}>\n')
+        rendered.append(f'\nLicensed under {license}.\n\n```\n{text}')
+        if not text.endswith('\n'):
+            rendered.append('\n')
+        rendered.append('```\n')
+    return ''.join(rendered)
+
+
 def _fresh_files(package: str) -> dict[str, str]:
     """Name → content of every license file this package must generate."""
     files = _render_own(package)
@@ -340,7 +433,9 @@ def _fresh_files(package: str) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / THIRD_PARTY_NAME
             _generate_third_party(package, out)
-            files[THIRD_PARTY_NAME] = out.read_text(encoding='utf-8')
+            files[THIRD_PARTY_NAME] = out.read_text(encoding='utf-8') + _native_section(
+                package
+            )
     return files
 
 
