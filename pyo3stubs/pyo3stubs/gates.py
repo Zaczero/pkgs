@@ -110,8 +110,10 @@ class Gate:
                 self,
                 Status.VIOLATIONS,
                 [
-                    f'{self.name}: gate could not run: {type(exc).__name__}: {exc} '
-                    f'(at {frame.filename}:{frame.lineno})'
+                    (
+                        f'{self.name}: gate could not run: {type(exc).__name__}: '
+                        f'{exc} (at {frame.filename}:{frame.lineno})'
+                    )
                 ],
                 None,
             )

@@ -147,13 +147,17 @@ def _compare(item: Item, source: RustSource) -> list[str]:
         text = _python_params(unquote(text_signature))
     except SyntaxError as exc:
         return [
-            f'{location}: text_signature {text_signature} is not a valid Python '
-            f'signature ({exc.msg}) — inspect.signature cannot read it either'
+            (
+                f'{location}: text_signature {text_signature} is not a valid Python '
+                f'signature ({exc.msg}) — inspect.signature cannot read it either'
+            )
         ]
     if [token for token, _ in rust] != [token for token, _ in text]:
         return [
-            f'{location}: text_signature params {[t for t, _ in text]} != '
-            f'signature params {[t for t, _ in rust]}'
+            (
+                f'{location}: text_signature params {[t for t, _ in text]} != '
+                f'signature params {[t for t, _ in rust]}'
+            )
         ]
     errors: list[str] = []
     for (token, rust_default), (_, text_default) in zip(rust, text, strict=True):

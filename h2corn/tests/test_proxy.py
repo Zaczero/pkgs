@@ -296,8 +296,10 @@ async def test_proxy_headers_walk_forwarded_for_through_trusted_hops() -> None:
                     (
                         b'forwarded',
                         # The edge saw the client; the next hop saw the edge.
-                        b'for=203.0.113.10;proto=http;host=attacker.example, '
-                        b'for=198.51.100.7;proto=https;host=example.com:8443',
+                        (
+                            b'for=203.0.113.10;proto=http;host=attacker.example, '
+                            b'for=198.51.100.7;proto=https;host=example.com:8443'
+                        ),
                     ),
                 ],
             ),
@@ -333,8 +335,10 @@ async def test_proxy_headers_use_backend_facing_forwarded_hop() -> None:
                 extra_headers=[
                     (
                         b'forwarded',
-                        b'for=203.0.113.10;proto=http;host=attacker.example, '
-                        b'for=198.51.100.7;proto=https;host=example.com:8443',
+                        (
+                            b'for=203.0.113.10;proto=http;host=attacker.example, '
+                            b'for=198.51.100.7;proto=https;host=example.com:8443'
+                        ),
                     ),
                 ],
             ),
