@@ -1,7 +1,7 @@
 """Filter changed-file paths to those that affect builds or tests.
 
-Reads paths on stdin, prints relevant paths on stdout. Lets docs-only
-changes skip CI universally for any package using the docs/ convention.
+Reads paths on stdin and prints build-relevant paths on stdout. Docs-only
+changes are skipped for every package.
 """
 
 import re
@@ -12,7 +12,6 @@ IGNORE = re.compile(
     r'[^/]+/(?:docs|overrides|_snippets|assets)/'  # per-package docs and theme
     r'|[^/]+/properdocs\.yml$'  # per-package docs site config
     r'|[^/]+\.md$'  # repo-root markdown
-    r'|Cargo\.lock$'  # workspace Cargo lockfile
     r')'
 )
 

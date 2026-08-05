@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Never
+from typing import Literal, Never, assert_never
 
 import tomllib
 
@@ -65,19 +65,31 @@ def cargo_package_info(path: Path) -> dict[str, str]:
     fail(f'Cargo metadata did not include package manifest {path}')
 
 
-def list_packages() -> list[str]:
-    """Release packages: top-level dirs whose pyproject declares a dynamic version.
+def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
+    """List monorepo packages by capability set.
 
-    This is the single source of truth for "what is a CI/release package" (used by
-    the detect job). Dev-only tooling like `pyo3stubs` pins a static version and is
-    deliberately excluded — it is built/tested only as a dependency of its consumers.
+    kind='release' (default): dynamic-version packages eligible for release tags.
+    kind='test': every top-level directory that has a pyproject.toml.
     """
-    packages = []
-    for pyproject in sorted(Path('.').glob('*/pyproject.toml')):
-        data = load_toml(pyproject)
-        if 'version' in data.get('project', {}).get('dynamic', []):
-            packages.append(pyproject.parent.name)
-    return packages
+    if kind == 'release':
+        packages = []
+        for pyproject in sorted(Path('.').glob('*/pyproject.toml')):
+            data = load_toml(pyproject)
+            if 'version' in data.get('project', {}).get('dynamic', []):
+                packages.append(pyproject.parent.name)
+        return packages
+
+    if kind == 'test':
+        return sorted(
+            pyproject.parent.name for pyproject in Path('.').glob('*/pyproject.toml')
+        )
+
+    assert_never(kind)
+
+
+def require_release_package(package: str) -> None:
+    if package not in list_packages('release'):
+        fail(f'{package!r} is not a release package')
 
 
 def package_info(package: str) -> dict[str, str]:
@@ -91,6 +103,7 @@ def package_info(package: str) -> dict[str, str]:
         in project.get('classifiers', [])
         else 'false'
     )
+    is_release = 'true' if package in list_packages('release') else 'false'
     cargo_toml = path / 'Cargo.toml'
 
     if cargo_toml.is_file():
@@ -98,6 +111,7 @@ def package_info(package: str) -> dict[str, str]:
         module_name = pyproject['tool']['maturin']['module-name']
         return {
             'import-name': module_name.split('.', maxsplit=1)[0],
+            'is-release': is_release,
             'is-rusty': 'true',
             'package': package,
             'pypy': pypy,
@@ -108,9 +122,41 @@ def package_info(package: str) -> dict[str, str]:
             'crate': cargo['name'],
         }
 
+    # Pure-Python with a static project.version (no hatch dynamic version path).
+    if 'version' not in project.get('dynamic', []) and 'version' in project:
+        packages = (
+            pyproject
+            .get('tool', {})
+            .get('hatch', {})
+            .get('build', {})
+            .get('targets', {})
+            .get('wheel', {})
+            .get('packages')
+        )
+        if (
+            not isinstance(packages, list)
+            or len(packages) != 1
+            or not isinstance(packages[0], str)
+            or not packages[0]
+        ):
+            fail(f'{package}: expected exactly one Hatch wheel package')
+
+        import_name = Path(packages[0]).name
+        return {
+            'import-name': import_name,
+            'is-release': is_release,
+            'is-rusty': 'false',
+            'package': package,
+            'pypy': pypy,
+            'requires-python': requires_python,
+            'type': 'python-static',
+            'version': str(project['version']),
+        }
+
     version_path = path / pyproject['tool']['hatch']['version']['path']
     return {
         'import-name': version_path.relative_to(path).parts[0],
+        'is-release': is_release,
         'is-rusty': 'false',
         'package': package,
         'pypy': pypy,
@@ -161,7 +207,7 @@ def write_outputs(outputs: dict[str, str]) -> None:
 
 
 def command_list(args: argparse.Namespace) -> None:
-    for name in list_packages():
+    for name in list_packages(args.kind):
         print(name)
 
 
@@ -170,6 +216,7 @@ def command_info(args: argparse.Namespace) -> None:
 
 
 def command_set(args: argparse.Namespace) -> None:
+    require_release_package(args.package)
     validate_version(args.version)
     info = package_info(args.package)
 
@@ -188,6 +235,7 @@ def command_set(args: argparse.Namespace) -> None:
 
 
 def command_check(args: argparse.Namespace) -> None:
+    require_release_package(args.package)
     info = package_info(args.package)
     if info['version'] != args.version:
         fail(
@@ -202,7 +250,22 @@ def main() -> None:
     subparsers = parser.add_subparsers(required=True)
 
     list_parser = subparsers.add_parser('list')
-    list_parser.set_defaults(func=command_list)
+    list_kind = list_parser.add_mutually_exclusive_group()
+    list_kind.add_argument(
+        '--release',
+        action='store_const',
+        const='release',
+        dest='kind',
+        help='List release packages (default)',
+    )
+    list_kind.add_argument(
+        '--test',
+        action='store_const',
+        const='test',
+        dest='kind',
+        help='List all testable packages (includes static-version tooling)',
+    )
+    list_parser.set_defaults(func=command_list, kind='release')
 
     info_parser = subparsers.add_parser('info')
     info_parser.add_argument('package')

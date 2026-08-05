@@ -21,7 +21,6 @@ jobs:
     outputs:
       packages: ${{ steps.detect.outputs.packages }}
       release-package: ${{ steps.release.outputs.package }}
-      release-version: ${{ steps.release.outputs.version }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BEFORE_SHA: ${{ github.event.before }}
@@ -52,30 +51,21 @@ jobs:
               test_all=false
             fi
 
-            # Single source of truth for the release-package set (excludes dev-only
-            # tooling like pyo3stubs that pins a static version).
-            all_packages="$(python3 .github/scripts/package_version.py list)"
+            test_packages="$(python3 .github/scripts/package_version.py list --test)"
 
             if ! $test_all && [[ "$base" =~ ^0+$ ]]; then
               test_all=true
               changed=""
             elif ! $test_all; then
-              relevant="$(git diff --name-only "$base" HEAD | python3 .github/scripts/path_filter.py)"
-
-              if [ -z "$relevant" ]; then
-                changed=""
-              else
-                changed="$(echo "$relevant" | cut -d/ -f1 | sort -u)"
-                # Any changed top-level dir that is not a release package (shared
-                # infra, or dev tooling like pyo3stubs) means "test everything".
-                for package in $changed; do
-                  grep -qxF "$package" <<< "$all_packages" || test_all=true
-                done
-              fi
+              changed="$(
+                git diff --name-only "$base" HEAD |
+                  python3 .github/scripts/path_filter.py |
+                  python3 .github/scripts/route_packages.py
+              )"
             fi
 
             if $test_all; then
-              changed="$all_packages"
+              changed="$test_packages"
             fi
           fi
 
