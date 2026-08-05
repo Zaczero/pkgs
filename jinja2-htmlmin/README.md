@@ -9,7 +9,7 @@ Automatic HTML minification for Jinja2 templates.
 - **Zero runtime overhead**: Minification happens once at load time, not on every render
 - **Smaller HTML**: Reduced bandwidth and faster page loads
 - **Drop-in compatibility**: Works with any Jinja2 loader (Flask, Django, FastAPI, etc.)
-- **Broad Python support**: Compatible with Python 3.9+
+- **Broad Python support**: Compatible with Python 3.10+
 - [**Semantic Versioning**](https://semver.org): Predictable, reliable updates
 - [**Zero-Clause BSD**](https://choosealicense.com/licenses/0bsd/): Public domain, use freely anywhere
 

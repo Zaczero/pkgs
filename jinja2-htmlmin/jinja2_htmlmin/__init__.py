@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import wraps
 from html import unescape
 from random import getrandbits
@@ -6,19 +8,12 @@ from htmlmin import Minifier
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
     from typing import TypedDict, TypeVar
 
-    try:
-        from typing import Unpack  # type: ignore
-    except ImportError:
-        try:
-            from typing_extensions import Unpack  # type: ignore
-        except ImportError:
-            from typing import Any as Unpack
-
     from htmlmin.parser import HTMLMinParser
-    from jinja2 import BaseLoader
+    from jinja2 import BaseLoader, Environment
+    from typing_extensions import Unpack
 
     _Loader = TypeVar('_Loader', bound=BaseLoader)
 
@@ -70,9 +65,9 @@ def _restore_placeholders(
 
 def _protect_jinja_syntax(
     source: str,
-    environment,
+    environment: Environment,
     template: str,
-    path: 'str | None',
+    path: str | None,
 ) -> tuple[str, list[str], str]:
     """Replace lexer-owned Jinja spans with placeholders before minification."""
     placeholder_prefix = ''
@@ -119,10 +114,10 @@ def _protect_jinja_syntax(
 
 
 def minify_loader(
-    loader: '_Loader',
+    loader: _Loader,
     /,
-    **kwargs: 'Unpack[_HTMLMinKwargs]',
-) -> '_Loader':
+    **kwargs: Unpack[_HTMLMinKwargs],
+) -> _Loader:
     """
     Enhance a Jinja2 loader to automatically minify HTML templates.
 
@@ -153,7 +148,10 @@ def minify_loader(
     super_get_source = loader.get_source
 
     @wraps(super_get_source)
-    def get_source(environment, template):
+    def get_source(
+        environment: Environment,
+        template: str,
+    ) -> tuple[str, str | None, Callable[[], bool] | None]:
         source, path, up_to_date = super_get_source(environment, template)
         source, lookup, placeholder_prefix = _protect_jinja_syntax(
             source,

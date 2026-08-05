@@ -37,7 +37,11 @@ classifiers = [
   "Topic :: Text Processing :: Markup :: HTML",
   "Typing :: Typed",
 ]
-dependencies = ["htmlmin2", "jinja2"]
+dependencies = [
+  "htmlmin2",
+  "jinja2",
+  "typing-extensions>=4.1; python_version < '3.11'",
+]
 dynamic = ["version"]
 
 [project.urls]
@@ -45,7 +49,13 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/jinja2-htmlmin"
 
 [dependency-groups]
-dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
+dev = [
+  "pyright>=1.1.411",
+  "pytest>=9.1",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
+  "ruff>=0.15.22",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -58,7 +68,7 @@ path = "jinja2_htmlmin/__init__.py"
 include = ["jinja2_htmlmin"]
 pythonPlatform = "All"
 pythonVersion = "3.10"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 
 [tool.ruff]
 extend = "../ruff.toml"
