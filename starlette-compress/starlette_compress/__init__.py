@@ -13,6 +13,8 @@ from starlette_compress._utils import (
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 __version__ = '1.8.0'
@@ -90,7 +92,7 @@ class CompressMiddleware:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
 
-        raw_headers = scope['headers']
+        raw_headers: Iterable[tuple[bytes, bytes]] = scope['headers']
         if not isinstance(raw_headers, list):
             raw_headers = scope['headers'] = list(raw_headers)
 

@@ -58,10 +58,12 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/starlette-compress"
 dev = [
   "brotlicffi",
   "coverage",
-  "httpx",
+  "httpx2",
+  "pyright>=1.1.411",
   "pytest>=9.1",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
+  "ruff>=0.15.22",
   "trio",
   "uvloop; sys_platform != 'win32'",
 ]
@@ -80,6 +82,13 @@ path = "starlette_compress/__init__.py"
 include = ["starlette_compress", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.10"
+strict = [
+  "starlette_compress/__init__.py",
+  "starlette_compress/_gzip.py",
+  "starlette_compress/_identity.py",
+  "starlette_compress/_responder.py",
+  "starlette_compress/_utils.py",
+]
 typeCheckingMode = "standard"
 
 [tool.ruff]

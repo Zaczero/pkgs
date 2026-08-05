@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import pytest
 from starlette.testclient import TestClient

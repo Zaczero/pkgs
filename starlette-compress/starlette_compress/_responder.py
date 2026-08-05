@@ -61,7 +61,7 @@ class CompressionResponder:
         start_message: Message | None = None
         encoder: StreamEncoder | None = None
         streaming = False
-        extensions = scope.get('extensions', ())
+        extensions: dict[str, object] = scope.get('extensions', {})
         pathsend_capable = 'http.response.pathsend' in extensions
 
         # Encoded path: never advertise zerocopysend — after Content-Encoding

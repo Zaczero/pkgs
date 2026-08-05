@@ -4,7 +4,8 @@ import asyncio
 import copy
 import random
 import sys
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from starlette.applications import Starlette
@@ -345,9 +346,10 @@ def test_classify_start_message_reads_raw_headers():
         == 'skip'
     )
     assert (
-        classify_start_message(
-            {'status': 200, 'headers': [(b'content-type', b'image/png')]}
-        )
+        classify_start_message({
+            'status': 200,
+            'headers': [(b'content-type', b'image/png')],
+        })
         == 'skip'
     )
     assert (
@@ -607,9 +609,7 @@ def test_sse_per_encoding_incremental_flush(encoding: str):
     # Stream finalization: gzip/3.14-zstd .eof; brotli is_finished(); legacy zstd oneshot.
     if encoding == 'br':
         assert dec.is_finished()  # type: ignore[attr-defined]
-    elif encoding == 'gzip' or (
-        encoding == 'zstd' and sys.version_info >= (3, 14)
-    ):
+    elif encoding == 'gzip' or (encoding == 'zstd' and sys.version_info >= (3, 14)):
         assert dec.eof()  # type: ignore[attr-defined]
     else:
         assert dec.legacy_frame_complete(b''.join(events))  # type: ignore[attr-defined]
@@ -688,9 +688,7 @@ def test_pathsend_event_stream(encoding: str, order: str):
             })
 
     middleware = CompressMiddleware(app)
-    sent = asyncio.run(
-        run_asgi(middleware, accept_encoding=encoding, pathsend=True)
-    )
+    sent = asyncio.run(run_asgi(middleware, accept_encoding=encoding, pathsend=True))
 
     if order == 'pathsend_first':
         types = [m['type'] for m in sent]
@@ -728,9 +726,7 @@ def test_sse_oneshot_under_pathsend_capable_scope(encoding: str):
         })
 
     middleware = CompressMiddleware(app)
-    sent = asyncio.run(
-        run_asgi(middleware, accept_encoding=encoding, pathsend=True)
-    )
+    sent = asyncio.run(run_asgi(middleware, accept_encoding=encoding, pathsend=True))
     starts = [m for m in sent if m['type'] == 'http.response.start']
     bodies = [m for m in sent if m['type'] == 'http.response.body']
     assert len(starts) == 1
@@ -921,7 +917,11 @@ def _drive_responder_with_fake(
     if pathsend:
         scope['extensions']['http.response.pathsend'] = {}
     asyncio.run(responder(scope, fake_receive, fake_send))
-    return encoder_holder[0] if encoder_holder else _RecordingFakeEncoder(), sent, cl_args
+    return (
+        encoder_holder[0] if encoder_holder else _RecordingFakeEncoder(),
+        sent,
+        cl_args,
+    )
 
 
 def test_fake_encoder_feed_two_events_one_message():
@@ -1339,9 +1339,7 @@ def test_legacy_zstd_sse_mismatched_content_length_roundtrip():
 
     wire = b''.join(m.get('body', b'') for m in bodies)
     expected = b''.join(events)
-    plain = zstd_mod.ZstdDecompressor().decompress(
-        wire, max_output_size=len(expected)
-    )
+    plain = zstd_mod.ZstdDecompressor().decompress(wire, max_output_size=len(expected))
     assert plain == expected
 
 
@@ -1416,9 +1414,7 @@ def test_sse_headers_vary_merge_and_precompressed():
             'more_body': False,
         })
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app_pre), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app_pre), accept_encoding='gzip'))
     headers = {k.lower(): v for k, v in sent[0]['headers']}
     assert headers[b'content-encoding'] == b'gzip'
     # original body not re-compressed (same length content)
@@ -1439,9 +1435,7 @@ def test_sse_content_encoding_identity_still_compressible():
             'more_body': False,
         })
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='gzip'))
     headers = {k.lower(): v for k, v in sent[0]['headers']}
     assert headers[b'content-encoding'] == b'gzip'
 
@@ -1459,9 +1453,7 @@ def test_identity_sse_preserves_content_length():
             'more_body': False,
         })
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='identity')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='identity'))
     headers = {k.lower(): v for k, v in sent[0]['headers']}
     assert b'content-encoding' not in headers
     assert headers[b'content-length'] == b'11'
@@ -1549,9 +1541,7 @@ def test_case_insensitive_event_stream_content_type():
             'more_body': False,
         })
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='gzip'))
     headers = {k.lower(): v for k, v in sent[0]['headers']}
     assert headers[b'content-encoding'] == b'gzip'
     # commit-at-start: Content-Length removed
@@ -1559,7 +1549,9 @@ def test_case_insensitive_event_stream_content_type():
 
 
 @pytest.mark.parametrize('encoding', ['gzip', 'br', 'zstd'])
-def test_sse_testclient_roundtrip(test_client_factory: TestClientFactory, encoding: str):
+def test_sse_testclient_roundtrip(
+    test_client_factory: TestClientFactory, encoding: str
+):
     async def gen():
         yield b'data: one\n\n'
         yield b'data: two\n\n'
@@ -1616,9 +1608,7 @@ def test_mixed_case_managed_headers_oneshot():
         })
         await send({'type': 'http.response.body', 'body': body})
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='gzip'))
     start = next(m for m in sent if m['type'] == 'http.response.start')
     raw = start['headers']
     # Exactly one of each managed name (case-insensitive), all lowercase wire names.
@@ -1661,9 +1651,7 @@ def test_mixed_case_streaming_content_length_removal():
         })
         await send({'type': 'http.response.body', 'body': b''})
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='gzip'))
     start = next(m for m in sent if m['type'] == 'http.response.start')
     names_lower = [n.lower() for n, _ in start['headers']]
     assert b'content-length' not in names_lower
@@ -1688,9 +1676,7 @@ def test_mixed_case_repeated_vary_coalesced():
         })
         await send({'type': 'http.response.body', 'body': b'x' * 1000})
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(app), accept_encoding='gzip'))
     start = next(m for m in sent if m['type'] == 'http.response.start')
     vary_fields = [v for n, v in start['headers'] if n.lower() == b'vary']
     assert len(vary_fields) == 1
@@ -1717,9 +1703,7 @@ def test_mixed_case_skip_small_pathsend_byte_identical():
         })
         await send({'type': 'http.response.body', 'body': b'OK'})
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(small_app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(small_app), accept_encoding='gzip'))
     start = next(m for m in sent if m['type'] == 'http.response.start')
     assert start['headers'] == mixed
 
@@ -1738,9 +1722,7 @@ def test_mixed_case_skip_small_pathsend_byte_identical():
         })
         await send({'type': 'http.response.body', 'body': b'data'})
 
-    sent = asyncio.run(
-        run_asgi(CompressMiddleware(skip_app), accept_encoding='gzip')
-    )
+    sent = asyncio.run(run_asgi(CompressMiddleware(skip_app), accept_encoding='gzip'))
     start = next(m for m in sent if m['type'] == 'http.response.start')
     assert start['headers'] == skip_headers
 
