@@ -10,7 +10,7 @@ mod errors;
 mod srgb;
 
 use pyo3::prelude::*;
-use pyo3::types::PyByteArray;
+use pyo3::types::PyBytes;
 
 use crate::errors::Error;
 
@@ -32,10 +32,10 @@ fn decode_rgb(
     width: usize,
     height: usize,
     punch: f32,
-) -> PyResult<Py<PyByteArray>> {
+) -> PyResult<Py<PyBytes>> {
     let blurhash = blurhash.trim();
     let out_len = width * height * 3;
-    let out = PyByteArray::new_with(py, out_len, |buf| {
+    let out = PyBytes::new_with(py, out_len, |buf| {
         decode::decode_rgb_into(blurhash, width, height, punch, buf).map_err(Error::into_pyerr)
     })?;
     Ok(out.unbind())
