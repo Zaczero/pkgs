@@ -362,6 +362,7 @@ def test_h3_index_scalar_and_bulk_parsing_share_validation() -> None:
         lambda: gm.h3_pentagons(16),
         lambda: gm.h3_cover(gm.Point(13.4, 52.5, crs=4326), resolution=16),
     ],
+    ids=['cell', 'pentagons', 'cover'],
 )
 def test_h3_resolution_boundaries_share_the_typed_parser(call: Any) -> None:
     with pytest.raises(

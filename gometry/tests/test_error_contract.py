@@ -23,6 +23,7 @@ import pytest
         lambda: gm.frechet_distance(gm.box(0, 0, 1, 1), gm.box(0, 0, 1, 1)),
         lambda: gm.Point(0, 0).offset_curve(1),
     ],
+    ids=['line-interpolate', 'split', 'triangulate', 'frechet', 'offset-curve'],
 )
 def test_wrong_geometry_kind_raises_type_error(op) -> None:
     with pytest.raises(TypeError):

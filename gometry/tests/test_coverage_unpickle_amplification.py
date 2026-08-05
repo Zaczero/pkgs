@@ -281,6 +281,22 @@ def test_d09_reduce_arity_has_no_discarded_fields():
         .compact()
         .uncompact(6),
     ],
+    ids=[
+        'tile-compact',
+        'tile-parents',
+        'tile-uncompact',
+        'geohash-compact',
+        'geohash-parents',
+        'h3-compact',
+        'h3-parents',
+        's2-compact',
+        's2-parents',
+        'h3-composed',
+        's2-composed',
+        'geohash-composed',
+        'tile-composed',
+        'tile-deep-composed',
+    ],
 )
 def test_transform_pickle_roundtrip_all_grids(cov):
     original = cov()

@@ -54,6 +54,7 @@ def test_max_cells_none_allows_past_old_wall():
         lambda src, **kw: gm.geohash_cover(src, 4, **kw),
         lambda src, **kw: gm.tile_cover(src, 6, **kw),
     ],
+    ids=['h3', 's2', 'geohash', 'tile'],
 )
 def test_max_cells_nonpositive_typed_error(factory):
     src = gm.box(0, 0, 1, 1, crs=4326)
