@@ -41,7 +41,6 @@ jobs:
       PACKAGE: ${{ inputs.package }}
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.package }}/${{ inputs.version }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -95,6 +94,8 @@ jobs:
           git push origin "$TAG"
 
       - name: Dispatch tag CI
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
