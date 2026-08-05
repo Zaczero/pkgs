@@ -1,4 +1,4 @@
-"""Tests for ``tools/gates/_check_docstyle.py`` (stub-based docstring style gate).
+"""Unit tests for the stub-based documentation-style checker.
 
 Covers the stub-applicable SPEC section 8 cases: type-column isolation, empty
 Raises, See Also format classes, reciprocity directed-miss, mirror parity
@@ -12,7 +12,7 @@ import json
 import textwrap
 from typing import TYPE_CHECKING
 
-from conftest import load_tool
+from tests._support import load_tool
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -20,7 +20,14 @@ if TYPE_CHECKING:
 gate = load_tool('_check_docstyle')
 
 
-def _doc(symbol: str, text: str, *, kind: str = 'function', is_operation: bool = True, owner: str | None = None):
+def _doc(
+    symbol: str,
+    text: str,
+    *,
+    kind: str = 'function',
+    is_operation: bool = True,
+    owner: str | None = None,
+):
     return gate.PublicDoc(
         symbol=symbol,
         text=textwrap.dedent(text).strip(),
@@ -38,7 +45,7 @@ def _scan(doc, public: frozenset[str] | None = None):
 def test_type_column_backticks_only_in_type_columns() -> None:
     doc = _doc(
         'buffer',
-        '''
+        """
         Buffer a geometry by ``distance``.
 
         Parameters
@@ -57,14 +64,15 @@ def test_type_column_backticks_only_in_type_columns() -> None:
         ------
         GeometryError
             If ``distance`` is non-finite (backticks OK here).
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     classes = [f.class_ for f in findings]
     assert 'type_column.backticks' in classes
     # Raises description with backticks must not be flagged as type_column
     raise_backtick = [
-        f for f in findings
+        f
+        for f in findings
         if f.class_ == 'type_column.backticks' and f.section == 'Raises'
     ]
     assert raise_backtick == []
@@ -76,28 +84,28 @@ def test_type_column_backticks_only_in_type_columns() -> None:
 def test_type_column_ndarray_spelling() -> None:
     doc = _doc(
         'bounds_array',
-        '''
+        """
         Return bounds.
 
         Returns
         -------
         ndarray of float64
             Shape (n, 4).
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     assert any(f.class_ == 'type_column.ndarray_spelling' for f in findings)
     # prose mention of ndarray outside type column is fine
     doc2 = _doc(
         'note_ndarray',
-        '''
+        """
         Uses an ndarray under the hood.
 
         Returns
         -------
         float
             Scalar.
-        ''',
+        """,
     )
     findings2, _ = _scan(doc2)
     assert not any(f.class_ == 'type_column.ndarray_spelling' for f in findings2)
@@ -106,7 +114,7 @@ def test_type_column_ndarray_spelling() -> None:
 def test_empty_raises_description() -> None:
     doc = _doc(
         'coverage_clean',
-        '''
+        """
         Clean coverage.
 
         Raises
@@ -114,7 +122,7 @@ def test_empty_raises_description() -> None:
         GeometryError
         InvalidGeometryError
             If content is invalid.
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     empty = [f for f in findings if f.class_ == 'numpydoc.empty_raises_description']
@@ -125,13 +133,13 @@ def test_empty_raises_description() -> None:
 def test_missing_blank_before_section() -> None:
     doc = _doc(
         'foo',
-        '''
+        """
         Summary without blank.
         Parameters
         ----------
         x : float
             Value.
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     assert any(f.class_ == 'numpydoc.missing_blank_before_section' for f in findings)
@@ -140,7 +148,7 @@ def test_missing_blank_before_section() -> None:
 def test_see_also_format_classes() -> None:
     doc = _doc(
         'centroid',
-        '''
+        """
         Compute the centroid.
 
         See Also
@@ -153,11 +161,16 @@ def test_see_also_format_classes() -> None:
         ok_name : Missing period
         double : Ends with two periods..
         envelope : First. polylabel : Second on one line.
-        ''',
+        """,
     )
     public = frozenset({
-        'centroid', 'point_on_surface', 'polylabel', 'envelope', 'ok_name',
-        'lowercase', 'double',
+        'centroid',
+        'point_on_surface',
+        'polylabel',
+        'envelope',
+        'ok_name',
+        'lowercase',
+        'double',
     })
     findings, _ = _scan(doc, public)
     classes = {f.class_ for f in findings}
@@ -175,17 +188,17 @@ def test_reciprocity_directed_miss() -> None:
     """Contains must point to within (and vice versa) under policy."""
     contains = _doc(
         'contains',
-        '''
+        """
         Test whether left contains right.
 
         See Also
         --------
         covers : Related covering predicate.
-        ''',
+        """,
     )
     within = _doc(
         'within',
-        '''
+        """
         Test whether left is within right.
 
         Examples
@@ -193,7 +206,7 @@ def test_reciprocity_directed_miss() -> None:
         >>> import gometry as gm
         >>> True
         True
-        ''',
+        """,
     )
     public = frozenset({'contains', 'within', 'covers'})
     graph = {}
@@ -214,7 +227,7 @@ def test_reciprocity_directed_miss() -> None:
 def test_mirror_raises_crsmismatch_delta() -> None:
     free = _doc(
         'union_all',
-        '''
+        """
         Union all geometries.
 
         Raises
@@ -230,11 +243,11 @@ def test_mirror_raises_crsmismatch_delta() -> None:
         --------
         >>> import gometry as gm
         >>> gm.union_all([])
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.union_all',
-        '''
+        """
         Union all rows.
 
         Raises
@@ -248,7 +261,7 @@ def test_mirror_raises_crsmismatch_delta() -> None:
         --------
         >>> import gometry as gm
         >>> arr.union_all()
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -262,7 +275,7 @@ def test_mirror_raises_crsmismatch_delta() -> None:
 def test_mirror_raises_extra_mismatch_flagged() -> None:
     free = _doc(
         'coverage_clean',
-        '''
+        """
         Clean coverage.
 
         Raises
@@ -274,11 +287,11 @@ def test_mirror_raises_extra_mismatch_flagged() -> None:
         --------
         >>> import gometry as gm
         >>> gm.coverage_clean([])
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.coverage_clean',
-        '''
+        """
         Clean coverage rows.
 
         Raises
@@ -292,7 +305,7 @@ def test_mirror_raises_extra_mismatch_flagged() -> None:
         --------
         >>> import gometry as gm
         >>> arr.coverage_clean()
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -304,7 +317,7 @@ def test_mirror_raises_extra_mismatch_flagged() -> None:
 def test_polygonize_excluded_from_mirror() -> None:
     free = _doc(
         'polygonize',
-        '''
+        """
         Polygonize linework pool.
 
         Raises
@@ -316,11 +329,11 @@ def test_polygonize_excluded_from_mirror() -> None:
         --------
         >>> import gometry as gm
         >>> gm.polygonize([])
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.polygonize',
-        '''
+        """
         Polygonize each row.
 
         Raises
@@ -332,7 +345,7 @@ def test_polygonize_excluded_from_mirror() -> None:
         --------
         >>> import gometry as gm
         >>> arr.polygonize()
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -354,7 +367,7 @@ def test_space_after_open_paren_same_line_only() -> None:
 def test_examples_import_style() -> None:
     doc = _doc(
         'area',
-        '''
+        """
         Compute area.
 
         Examples
@@ -363,7 +376,7 @@ def test_examples_import_style() -> None:
         >>> from gometry import Point
         >>> 1
         1
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     assert any(f.class_ == 'examples.import_style' for f in findings)
@@ -410,51 +423,50 @@ def test_deterministic_json_roundtrip(tmp_path: Path) -> None:
     assert a == b
     # Violation sort key is total-ordered
     v1 = gate.Violation(
-        file='b.rs', line=2, column=0, owner_file=None, owner_line=None,
-        source_kind='stub', symbol='z', class_='a', section=None, entry=None,
-        current_text=None, suggested_fix='', message='m',
+        file='b.rs',
+        line=2,
+        column=0,
+        owner_file=None,
+        owner_line=None,
+        source_kind='stub',
+        symbol='z',
+        class_='a',
+        section=None,
+        entry=None,
+        current_text=None,
+        suggested_fix='',
+        message='m',
     )
     v2 = gate.Violation(
-        file='a.rs', line=1, column=0, owner_file=None, owner_line=None,
-        source_kind='stub', symbol='y', class_='b', section=None, entry=None,
-        current_text=None, suggested_fix='', message='m',
+        file='a.rs',
+        line=1,
+        column=0,
+        owner_file=None,
+        owner_line=None,
+        source_kind='stub',
+        symbol='y',
+        class_='b',
+        section=None,
+        entry=None,
+        current_text=None,
+        suggested_fix='',
+        message='m',
     )
     ordered = sorted([v1, v2], key=gate._sort_key)
     assert ordered[0].file == 'a.rs'
 
 
-def test_full_surface_gate_is_complete_and_clean() -> None:
-    """Release blocker: full public surface has zero docstyle violations.
-
-    Asserts CLI exit code (0 or 1, never 2), completeness, empty violation
-    list, and pass status so the gate stays a hard CI/release check.
-    """
-    code = gate.main(['--format', 'json'])
-    assert code in (0, 1), f'expected exit 0/1, got {code}'
-    report = gate.collect_report()
-    assert report['complete'] is True, (
-        f'docstyle gate incomplete: errors={report.get("errors")!r}'
-    )
-    summary = report['summary']
-    assert summary['errors'] == 0, report.get('errors')
-    assert summary['violations'] == 0, (
-        f'docstyle violations remain: {summary.get("by_class")!r}'
-    )
-    assert report['violations'] == []
-    assert report['status'] == 'pass'
-
-
 def test_style_banned_terms() -> None:
     doc = _doc(
         'distance',
-        '''
+        """
         Measure the natural way in metres.
 
         Parameters
         ----------
         values : iterable of float or array-like
             Input.
-        ''',
+        """,
     )
     findings, _ = _scan(doc)
     classes = {f.class_ for f in findings}
@@ -471,7 +483,7 @@ def test_mirror_examples_parity_identical_free_and_method() -> None:
     """
     free = _doc(
         'union_all',
-        '''
+        """
         Union all geometries.
 
         Raises
@@ -493,11 +505,11 @@ def test_mirror_examples_parity_identical_free_and_method() -> None:
         >>> values = [gm.Point(0, 0), gm.Point(1, 1)]
         >>> gm.union_all(values)
         <Geometry>
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.union_all',
-        '''
+        """
         Union all rows.
 
         Raises
@@ -517,7 +529,7 @@ def test_mirror_examples_parity_identical_free_and_method() -> None:
         >>> values = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
         >>> values.union_all()
         <Geometry>
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -534,9 +546,7 @@ def test_mirror_examples_parity_identical_free_and_method() -> None:
     assert free_c, 'expected at least one normalized mirror call'
 
     findings = gate.check_mirror_parity([free, method], public)
-    assert not any(
-        f.class_ == 'mirror.examples_parity' for f in findings
-    ), findings
+    assert not any(f.class_ == 'mirror.examples_parity' for f in findings), findings
     assert not any(f.class_ == 'mirror.raises_parity' for f in findings), findings
     assert not any(f.class_ == 'mirror.see_also_parity' for f in findings), findings
 
@@ -544,7 +554,7 @@ def test_mirror_examples_parity_identical_free_and_method() -> None:
 def test_mirror_examples_parity_detects_real_divergence() -> None:
     free = _doc(
         'union_all',
-        '''
+        """
         Union all.
 
         Raises
@@ -559,11 +569,11 @@ def test_mirror_examples_parity_detects_real_divergence() -> None:
         >>> import gometry as gm
         >>> gm.union_all([gm.Point(0, 0)])
         <Geometry>
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.union_all',
-        '''
+        """
         Union all rows.
 
         Raises
@@ -576,7 +586,7 @@ def test_mirror_examples_parity_detects_real_divergence() -> None:
         >>> import gometry as gm
         >>> gm.GeometryArray([gm.Point(9, 9)]).union_all()
         <Geometry>
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -588,7 +598,7 @@ def test_mirror_examples_parity_detects_real_divergence() -> None:
 def test_mirror_see_also_parity_detects_description_drift() -> None:
     free = _doc(
         'coverage_clean',
-        '''
+        """
         Clean coverage.
 
         Raises
@@ -604,11 +614,11 @@ def test_mirror_see_also_parity_detects_description_drift() -> None:
         --------
         >>> import gometry as gm
         >>> gm.coverage_clean([])
-        ''',
+        """,
     )
     method = _doc(
         'GeometryArray.coverage_clean',
-        '''
+        """
         Clean coverage rows.
 
         Raises
@@ -624,7 +634,7 @@ def test_mirror_see_also_parity_detects_description_drift() -> None:
         --------
         >>> import gometry as gm
         >>> gm.GeometryArray([]).coverage_clean()
-        ''',
+        """,
         kind='method',
         owner='GeometryArray',
     )
@@ -642,7 +652,7 @@ def test_free_coverage_reciprocity_policy() -> None:
     """Free coverage_* duals participate in ReciprocalFamily (SPEC §4.3)."""
     free_valid = _doc(
         'coverage_is_valid',
-        '''
+        """
         Test whether a polygonal coverage is valid.
 
         Examples
@@ -650,11 +660,11 @@ def test_free_coverage_reciprocity_policy() -> None:
         >>> import gometry as gm
         >>> True
         True
-        ''',
+        """,
     )
     free_invalid = _doc(
         'coverage_invalid_edges',
-        '''
+        """
         Return invalid coverage edges.
 
         Examples
@@ -662,7 +672,7 @@ def test_free_coverage_reciprocity_policy() -> None:
         >>> import gometry as gm
         >>> True
         True
-        ''',
+        """,
     )
     public = frozenset({
         'coverage_is_valid',

@@ -18,7 +18,6 @@ jobs:
       import-name: ${{ steps.resolve.outputs.import-name }}
       is-rusty: ${{ steps.resolve.outputs.is-rusty }}
       pypy: ${{ steps.resolve.outputs.pypy }}
-      primary-python-version: ${{ steps.resolve.outputs.primary-python-version }}
       rust-toolchain: ${{ steps.resolve.outputs.rust-toolchain }}
       test-matrix: ${{ steps.resolve.outputs.test-matrix }}
     env:
@@ -142,7 +141,15 @@ jobs:
             uv run --python "${{ matrix.python-version }}" python -c \
               'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
           fi
-          uv run --python "${{ matrix.python-version }}" pytest
+          uv run --python "${{ matrix.python-version }}" python -m pytest tests
+
+      - name: Check package quality
+        if: matrix.primary == 'true' && hashFiles(format('{0}/tools/check.py', inputs.package)) != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          uv run --python "${{ matrix.python-version }}" python tools/check.py
 
   build:
     needs: resolve

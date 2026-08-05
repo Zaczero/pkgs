@@ -5,7 +5,7 @@ Every line here is a deliberate error carrying a ``# type: ignore[code]``.
 and pyright with ``reportUnnecessaryTypeIgnoreComment=error`` over this file:
 if the stub ever *loosens* (an overload widens, a Literal vocabulary drifts,
 ``@final`` is dropped), the corresponding ignore becomes unused and both
-checkers fail. The positive twin is ``test_typing_conformance.py``.
+checkers fail. The positive twin is ``test_conformance.py``.
 
 Everything lives under ``if TYPE_CHECKING`` — the misuse must never execute.
 """
@@ -16,10 +16,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import gometry as gm
-
-
-def test_negatives_are_static_only() -> None:
-    """Runtime placeholder: the checks in this module are static."""
 
 
 if TYPE_CHECKING:

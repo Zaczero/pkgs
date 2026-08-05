@@ -30,10 +30,8 @@ import gometry
 from gometry import _types
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_PYRIGHT = _ROOT / '.venv/bin/pyright'
-_PYTHON = _ROOT / '.venv/bin/python'
-_CONFORMANCE = _ROOT / 'tests/test_typing_conformance.py'
-_NEGATIVES = _ROOT / 'tests/test_typing_negatives.py'
+_CONFORMANCE = _ROOT / 'tests/typing/test_conformance.py'
+_NEGATIVES = _ROOT / 'tests/typing/negatives.py'
 
 _TOP_LEVEL_HINT_TARGETS = (
     'from_features',
@@ -52,8 +50,8 @@ _INTEROP_MODULES = (
 )
 
 # Highest-value free-function overload groups that must keep both a positive
-# ``assert_type`` witness (tests/test_typing_conformance.py) and a negative
-# misuse ``# type: ignore`` witness (tests/test_typing_negatives.py).
+# ``assert_type`` witness (tests/typing/test_conformance.py) and a negative
+# misuse ``# type: ignore`` witness (tests/typing/negatives.py).
 # Native PyO3 callables have no runtime ``@overload`` registry, so the
 # fixtures — not ``typing.get_overloads`` — are the real narrowing gate.
 _OVERLOAD_TARGETS: tuple[str, ...] = (
@@ -226,11 +224,15 @@ def _check_private_types_have_producers(exported: set[str], errors: list[str]) -
 
 def _check_pyright(errors: list[str], label: str, *targets: str) -> None:
     """One pyright run; no targets means the whole configured project scope."""
-    if not _PYRIGHT.is_file():
-        errors.append(f'pyright not found at {_PYRIGHT}')
-        return
     result = subprocess.run(
-        [str(_PYRIGHT), *targets, '--pythonpath', str(_PYTHON)],
+        [
+            sys.executable,
+            '-m',
+            'pyright',
+            *targets,
+            '--pythonpath',
+            sys.executable,
+        ],
         cwd=_ROOT,
         capture_output=True,
         text=True,
@@ -247,8 +249,17 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
     """
     from mypy import api
 
+    # A cache directory private to this gate.  Both typing gates call
+    # `mypy.api.run` in-process; sharing mypy's default `.mypy_cache` means each
+    # one invalidates the other's build, so alternating them leaves both cold
+    # forever (~12.5s and ~10.8s every run instead of ~3.7s warm).  It is also a
+    # latent hazard: under xdist the two gates can run concurrently in different
+    # workers against one cache directory.  mypy validates cache entries by
+    # content hash, so a warm cache still fails on a real error.
     stdout, stderr, status = api.run([
         *targets,
+        '--cache-dir',
+        str(_ROOT / 'target' / 'mypy-cache' / 'typing-runtime'),
         '--warn-unused-ignores',
         '--no-error-summary',
         '--no-color-output',

@@ -1,4 +1,4 @@
-"""Built-site type-link + Raises-render gates, and Griffe public-class canonicalize.
+"""Unit tests for built-site checks and Griffe public-class canonicalization.
 
 Drives the real shipped helpers in ``tools/docs/``:
 * ``check.collect_errors`` unresolved-public-type + rendered double-period rules
@@ -11,15 +11,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import griffe
-import pytest
-from conftest import GOMETRY_ROOT, load_tool
+
+from tests._support import GOMETRY_ROOT, load_tool
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 def _check():
-    return load_tool('check')
+    return load_tool('docs_check', GOMETRY_ROOT / 'tools/docs/check.py')
 
 
 def _write_site(tmp_path: Path, pages: dict[str, str]) -> Path:
@@ -135,13 +135,16 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
     assert isinstance(private_cell, griffe.Alias)
     assert private_cell.canonical_path == 'gometry.Cell'
 
-    # coverage_clean return annotation should resolve publicly after materialize
-    coverage_clean = pkg.members.get('coverage_clean')
-    if coverage_clean is None:
-        pytest.skip('coverage_clean not top-level in stub model')
+    # coverage_clean return annotation must resolve publicly after materialize.
+    # Absence of the symbol or its returns is a hard failure (not a skip).
+    assert 'coverage_clean' in pkg.members, (
+        'coverage_clean missing from stub model; public API surface regressed'
+    )
+    coverage_clean = pkg.members['coverage_clean']
     returns = getattr(coverage_clean, 'returns', None)
-    if returns is None:
-        pytest.skip('coverage_clean returns not loaded')
+    assert returns is not None, (
+        'coverage_clean returns annotation missing from stub model'
+    )
     # Walk expression names for GeometryArray → public path
     found: list[str] = []
 
@@ -161,5 +164,3 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
         path == 'gometry.GeometryArray' or path.endswith('.GeometryArray')
         for path in found
     ), found
-
-

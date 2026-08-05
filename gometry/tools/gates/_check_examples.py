@@ -13,10 +13,12 @@ real build.
 
 from __future__ import annotations
 
+import io
 import re
 import sys
 import textwrap
 import traceback
+from contextlib import redirect_stdout
 from pathlib import Path
 
 _BLOCK = re.compile(
@@ -69,12 +71,22 @@ def main() -> int:
                 ns = readme_ns
             else:
                 ns = {'__name__': '__main__'}
+            output = io.StringIO()
             try:
-                exec(compile(code, f'{p}:{line_no}', 'exec'), ns)  # noqa: S102
-            except Exception:
+                with redirect_stdout(output):
+                    exec(compile(code, f'{p}:{line_no}', 'exec'), ns)  # noqa: S102
+            except BaseException as error:
+                # PyO3 deliberately derives PanicException from BaseException so
+                # ordinary application handlers cannot swallow Rust panics. This
+                # is a validation boundary: report the failing public example and
+                # continue checking the remaining documentation blocks.
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
                 failures += 1
                 first = code.strip().splitlines()[0] if code.strip() else '<empty>'
                 print(f'\n### FAIL {p}:{line_no}  (block {i})  first: {first!r}')
+                if captured := output.getvalue().strip():
+                    print(captured[-2000:])
                 print(traceback.format_exc().rstrip().split('\n')[-1])
     print(f'\nTOTAL EXAMPLE FAILURES: {failures}')
     return 1 if failures else 0

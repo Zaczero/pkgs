@@ -259,8 +259,14 @@ assert_type(gm.osm_shortlink_encode(8.0, 47.0), str)
 assert_type(gm.osm_shortlink_location('0MbEUxVoG-'), tuple[float, float, int])
 assert_type(gm.h3_cells([1.0, 2.0], [2.0, 3.0], resolution=9), gm.CellArray[gm.H3Cell])
 assert_type(gm.h3_cells(POINTS, resolution=9), gm.CellArray[gm.H3Cell])
+# A coarse resolution on purpose: `assert_type` is a runtime no-op, but Python
+# still *evaluates* the argument, and this module is imported by every xdist
+# worker.  `resolution=9` over a 2-degree box measured 3.55s per worker (~114
+# CPU-seconds across 32) purely to build a value that is then discarded.  The
+# narrowed static type depends only on the argument *types*, never on the
+# resolution value, so pyright checks exactly the same thing at 2.
 assert_type(
-    gm.h3_cover(gm.GeometryArray([POLY]), resolution=9),
+    gm.h3_cover(gm.GeometryArray([POLY]), resolution=2),
     gm.Groups[gm.CellArray[gm.H3Cell]],
 )
 h3_cell = gm.H3Cell(POINT, resolution=9)
@@ -365,8 +371,8 @@ if TYPE_CHECKING:
 assert_type(POINTS.length, npt.NDArray[np.float64])
 assert_type(POINTS.is_empty, npt.NDArray[np.bool_])
 assert_type(cast('list[bool]', POINTS.is_empty.tolist()), list[bool])
-assert_type(POINT.spatial_key(), int)
-assert_type(POINT.spatial_key(curve='morton'), int)
+assert_type(POINT.spatial_key(), int | None)
+assert_type(POINT.spatial_key(curve='morton'), int | None)
 assert_type(POINTS.spatial_key(), npt.NDArray[np.uint64])
 assert_type(POINTS.spatial_key(curve='morton'), npt.NDArray[np.uint64])
 assert_type(POINTS.sort_by_spatial_key(), gm.GeometryArray[gm.Point])

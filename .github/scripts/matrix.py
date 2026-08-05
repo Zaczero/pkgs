@@ -280,7 +280,7 @@ def build_test_matrix(
             'os': LINUX_TEST_RUNNER,
             'python-version': str(minor),
             'freethreaded': 'false',
-            'pypy': 'false',
+            'primary': 'true' if minor == primary else 'false',
         }
         for minor in stable_minors
     ]
@@ -289,7 +289,7 @@ def build_test_matrix(
             'os': runner,
             'python-version': str(primary),
             'freethreaded': 'false',
-            'pypy': 'false',
+            'primary': 'false',
         }
         for runner in (MACOS_TEST_RUNNER, WINDOWS_TEST_RUNNER)
     )
@@ -299,7 +299,7 @@ def build_test_matrix(
                 'os': LINUX_TEST_RUNNER,
                 'python-version': minor.freethreaded_selector,
                 'freethreaded': 'true',
-                'pypy': 'false',
+                'primary': 'false',
             }
             for minor in freethreaded_linux
             if minor.as_tuple >= MIN_FREETHREADED_MINOR
@@ -309,7 +309,7 @@ def build_test_matrix(
             'os': LINUX_TEST_RUNNER,
             'python-version': pypy_selector,
             'freethreaded': 'false',
-            'pypy': 'true',
+            'primary': 'false',
         })
     return matrix
 
@@ -382,7 +382,6 @@ def resolve_matrix(
         'pypy': info['pypy'],
         'package': info['package'],
         'requires-python': requires_python,
-        'primary-python-version': str(primary),
         'python-versions': json.dumps([str(m) for m in stable_minors]),
         'test-matrix': json.dumps(test_matrix, separators=(',', ':')),
         'build-runners': json.dumps(build_runners, separators=(',', ':')),
