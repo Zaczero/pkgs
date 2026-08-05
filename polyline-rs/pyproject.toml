@@ -41,7 +41,7 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/polyline-rs"
 dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
 
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+requires = ["maturin~=1.14"]
 build-backend = "maturin"
 
 [tool.maturin]

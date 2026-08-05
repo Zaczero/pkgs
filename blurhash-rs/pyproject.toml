@@ -45,7 +45,7 @@ bench = ["blurhash-python", "pyperf"]
 bench-2 = ["blurhash", "pyperf"]
 
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+requires = ["maturin~=1.14"]
 build-backend = "maturin"
 
 [tool.maturin]
