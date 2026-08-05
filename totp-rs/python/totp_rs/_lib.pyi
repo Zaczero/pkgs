@@ -1,12 +1,4 @@
-from typing import Literal
-
-try:
-    from typing import TypeAlias  # type: ignore
-except ImportError:
-    try:
-        from typing_extensions import TypeAlias  # type: ignore
-    except ImportError:
-        from typing import Any as TypeAlias
+from typing import Literal, TypeAlias
 
 _Algorithm: TypeAlias = Literal['sha1', 'sha256', 'sha512']
 
