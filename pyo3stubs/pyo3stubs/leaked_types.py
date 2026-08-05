@@ -11,61 +11,13 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
+from pyo3stubs.config import DEFAULT_IGNORED_TYPE_NAMES
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, loc, unused_allowlist_errors
 from pyo3stubs.rust_scan import pyclass_names
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
-
-#: Annotation names that are never a PyO3 class: typing vocabulary, builtins,
-#: the exception hierarchy PyO3 raises through, and the numpy spellings that
-#: appear in array signatures. Projects add to this through
-#: ``StubConfig.extra_ignored_type_names``.
-DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
-    'Any',
-    'BaseException',
-    'BufferError',
-    'Buffer',
-    'Callable',
-    'ClassVar',
-    'Exception',
-    'Final',
-    'Generic',
-    'IndexError',
-    'Iterable',
-    'Iterator',
-    'Literal',
-    'Mapping',
-    'MutableMapping',
-    'NDArray',
-    'Protocol',
-    'RuntimeError',
-    'Self',
-    'Sequence',
-    'StopIteration',
-    'TypeError',
-    'TypedDict',
-    'TypeVar',
-    'Union',
-    'ValueError',
-    'bool',
-    'bytes',
-    'dict',
-    'float',
-    'frozenset',
-    'int',
-    'list',
-    'np',
-    'npt',
-    'numpy',
-    'object',
-    'override',
-    'set',
-    'str',
-    'tuple',
-    'type',
-})
 
 
 def _all_args(args: ast.arguments) -> list[ast.arg]:

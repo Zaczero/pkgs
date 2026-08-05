@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyo3stubs.config import (
+    DEFAULT_IGNORED_TYPE_NAMES,
     DualityConfig,
     MacroExport,
     Reasons,
@@ -34,7 +35,6 @@ from pyo3stubs.config import (
     SurfaceConfig,
     TokenConfig,
 )
-from pyo3stubs.leaked_types import DEFAULT_IGNORED_TYPE_NAMES
 
 if TYPE_CHECKING:
     from pyo3stubs.gen import render_stub_with_docs

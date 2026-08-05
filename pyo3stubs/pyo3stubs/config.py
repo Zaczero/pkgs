@@ -19,8 +19,55 @@ if TYPE_CHECKING:
 #: guessed at.
 Reasons = dict[str, str]
 
+#: Annotation names that are never PyO3 classes. Projects extend this through
+#: ``StubConfig.extra_ignored_type_names``.
+DEFAULT_IGNORED_TYPE_NAMES: frozenset[str] = frozenset({
+    'Any',
+    'BaseException',
+    'BufferError',
+    'Buffer',
+    'Callable',
+    'ClassVar',
+    'Exception',
+    'Final',
+    'Generic',
+    'IndexError',
+    'Iterable',
+    'Iterator',
+    'Literal',
+    'Mapping',
+    'MutableMapping',
+    'NDArray',
+    'Protocol',
+    'RuntimeError',
+    'Self',
+    'Sequence',
+    'StopIteration',
+    'TypeError',
+    'TypedDict',
+    'TypeVar',
+    'Union',
+    'ValueError',
+    'bool',
+    'bytes',
+    'dict',
+    'float',
+    'frozenset',
+    'int',
+    'list',
+    'np',
+    'npt',
+    'numpy',
+    'object',
+    'override',
+    'set',
+    'str',
+    'tuple',
+    'type',
+})
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class MacroExport:
     """A project macro that declares a ``#[pyclass]`` the attribute scan cannot see.
 
@@ -47,7 +94,7 @@ class MacroExport:
     rust: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SurfaceConfig:
     """Cross-surface option-block parity (``surface`` gate).
 
@@ -73,7 +120,7 @@ class SurfaceConfig:
         return bool(self.targets)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DualityConfig:
     """Scalar↔array return duality (``duality`` gate).
 
@@ -98,7 +145,7 @@ class DualityConfig:
         return bool(self.pairs)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TokenConfig:
     """``Literal`` token aliases vs runtime ``token_enum!`` (``token-vocabulary``).
 
@@ -117,7 +164,7 @@ class TokenConfig:
     enum_macro: str = 'token_enum'
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StubConfig:
     """Everything a PyO3 project must supply to run the gates.
 
@@ -144,7 +191,7 @@ class StubConfig:
         (reason per qualified name). Unused entries fail the run.
     extra_ignored_type_names:
         Annotation names skipped by the leaked-types scan, *in addition to*
-        :data:`~pyo3stubs.leaked_types.DEFAULT_IGNORED_TYPE_NAMES`.
+        :data:`~pyo3stubs.config.DEFAULT_IGNORED_TYPE_NAMES`.
     macro_exports:
         Project macros that declare ``#[pyclass]`` types, by argument position.
     disabled_gates:
