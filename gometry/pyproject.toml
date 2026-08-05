@@ -66,9 +66,10 @@ dev = [
   "pyo3stubs",
   "pyperf",
   "pyproj",
-  "pytest",
++  "pytest>=9.1",
   "pytest-cov",
-  "pytest-xdist",
++  "pytest-timeout>=2.4",
++  "pytest-xdist[psutil]>=3.8",
   "rtree",
   "s2sphere",
   "scikit-learn",
@@ -165,28 +166,6 @@ typeCheckingMode = "standard"
 reportUnnecessaryCast = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 
-[tool.pytest.ini_options]
-pythonpath = ["tests"]
-testpaths = ["tests"]
-# Default lane: the full deterministic suite, parallelized across cores via
-  # pytest-xdist (`-n auto`) — local and CI both scale to the machine with no
-  # flag to remember. Force serial with `-n0` (single-test debugging). The
-  # catalog-wide exhaustive EPSG observer is opt-in (`pytest -m exhaustive`).
-  # Release-artifact validation runs in CI's build job via `tools/wheel_smoke.py`
-  # on the real wheels/sdist — run it locally the same way, not through pytest.
-  # Skip the heavy static-analysis gates for a fast behavioral loop with
-  # `pytest --ignore=tests/gates`.
-  addopts = "--strict-markers -n auto -m 'not exhaustive'"
-  markers = [
-    "exhaustive: catalog-wide / combinatorial sweeps (e.g. the full EPSG parity observer); opt-in",
-  ]
-# Warnings are defects: any warning raised by the suite fails it.
-filterwarnings = [
-  "error",
-  # pyproj oracle tests: PROJ notes an undownloaded datum grid on this machine
-  # and degrades to the next-best transformation — environment, not a defect.
-  "ignore:Best transformation is not available:UserWarning",
-]
 
 [tool.ruff]
 extend = "../ruff.toml"

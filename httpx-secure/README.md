@@ -9,7 +9,7 @@ Drop-in SSRF protection for httpx.
 - **SSRF Protection**: Block requests to private/internal IP addresses
 - **Custom Validation**: Extend with your own validation logic
 - **Minimal Overhead**: Efficient implementation with built-in DNS caching
-- **Broad Python Support**: Compatible with Python 3.9+
+- **Broad Python Support**: Compatible with Python 3.10+
 - [**Semantic Versioning**](https://semver.org): Predictable, reliable updates
 - [**Zero-Clause BSD**](https://choosealicense.com/licenses/0bsd/): Public domain, use freely anywhere
 

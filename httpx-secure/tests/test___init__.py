@@ -4,6 +4,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 from anyio import getaddrinfo
 from httpx import AsyncClient, ConnectError, Request
 
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from anyio.abc import IPAddressType
 
 MOCK_DEFAULT_IP = '1.2.3.4'
+
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 class SuccessError(BaseException):
@@ -56,7 +59,7 @@ def mock_tcp_fixture():
         yield mock
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     async with httpx_ssrf_protection(AsyncClient()) as client:
         client.event_hooks['request'].append(success_hook)

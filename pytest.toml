@@ -1,0 +1,28 @@
+[pytest]
+minversion = "9.1"
+strict = true
+required_plugins = [
+  "pytest-timeout>=2.4",
+  "pytest-xdist>=3.8",
+]
+filterwarnings = [
+  "error",
+  # pyproj oracle tests may lack an optional datum grid and then select the
+  # next-best transformation. This is an environment capability, not a warning
+  # from gometry.
+  "ignore:Best transformation is not available:UserWarning",
+]
+faulthandler_timeout = "30"
+markers = [
+  "exhaustive: catalog-wide / combinatorial sweeps; opt in explicitly",
+]
+addopts = [
+  "-n", "auto",
+  "--dist=worksteal",
+  "--timeout=60",
+  "--timeout-method=thread",
+  "--durations=25",
+  "--durations-min=0.25",
+  "-ra",
+  "-m", "not exhaustive",
+]

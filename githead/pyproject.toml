@@ -2,7 +2,7 @@
 name = "githead"
 description = "Simple utility for getting the current git commit hash (HEAD)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "0BSD"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 keywords = [
@@ -19,7 +19,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -37,7 +36,9 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/githead"
 
 [dependency-groups]
 dev = [
-  "pytest",
+  "pytest>=9.1",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
 ]
 
 [build-system]
@@ -50,11 +51,8 @@ path = "githead/__init__.py"
 [tool.pyright]
 include = ["githead", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 strict = ["githead"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.ruff]
 extend = "../ruff.toml"

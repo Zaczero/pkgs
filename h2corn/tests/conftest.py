@@ -11,11 +11,9 @@ guard) working on whichever loop a deployment picks.
 """
 
 import asyncio
-import inspect
 import shutil
 import tempfile
-import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -58,33 +56,14 @@ def unix_socket_dir() -> Iterator[Path]:
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 
-def _event_loop_policies():
-    # pytest-asyncio's `event_loop_policy` fixture still takes a policy object,
-    # but the policy classes are deprecated (removal in 3.16). Use the
-    # supported API and scope-silence that one unavoidable warning.
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        params = [pytest.param(asyncio.DefaultEventLoopPolicy(), id='asyncio')]
-        try:
-            import uvloop
-        except ModuleNotFoundError:
-            return params
-        return [*params, pytest.param(uvloop.EventLoopPolicy(), id='uvloop')]
-
-
-def pytest_generate_tests(metafunc):
-    """Run coroutine tests under each loop without duplicating sync tests."""
-    if 'event_loop_policy' in metafunc.fixturenames and inspect.iscoroutinefunction(
-        metafunc.function
-    ):
-        metafunc.parametrize('event_loop_policy', _event_loop_policies(), indirect=True)
-
-
-@pytest.fixture
-def event_loop_policy(request):
-    """Select the parametrized policy, or asyncio for a sync fixture user."""
-    if hasattr(request, 'param'):
-        return request.param
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        return asyncio.DefaultEventLoopPolicy()
+def pytest_asyncio_loop_factories(
+    config: pytest.Config, item: pytest.Item
+) -> Mapping[str, Callable[[], asyncio.AbstractEventLoop]]:
+    """Run async tests under the stdlib loop and uvloop without global policies."""
+    del config, item
+    factories = {'asyncio': asyncio.new_event_loop}
+    try:
+        import uvloop
+    except ModuleNotFoundError:
+        return factories
+    return {**factories, 'uvloop': uvloop.new_event_loop}

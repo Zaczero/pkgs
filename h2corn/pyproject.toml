@@ -77,9 +77,10 @@ dev = [
   "pymdown-extensions>=10.7",
   "pyo3stubs",
   "pyright>=1.1.390",
-  "pytest>=9.0.0",
-  "pytest-asyncio>=0.26.0",
-  "pytest-xdist>=3.6",
+  "pytest>=9.1",
+  "pytest-asyncio>=1.4",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
   "ruff>=0.9",
   "starlette>=0.46.0",
   "trustme>=1.2.0",
@@ -105,24 +106,6 @@ pythonVersion = "3.11"
 strict = ["python/h2corn"]
 venv = ".venv"
 venvPath = "."
-
-[tool.pytest.ini_options]
-# Every test binds port 0 and each worker is its own process, so the suite
-# parallelises without coordination. Pass `-n0` to serialise -- needed for
-# `--pdb`, which xdist cannot support.
-addopts = ["-n", "auto", "--dist", "worksteal"]
-filterwarnings = [
-  # Tests parametrize uvloop via EventLoopPolicy (pytest-asyncio); that
-  # still hits asyncio's deprecated policy API. Production uses an
-  # explicit loop factory and never installs a global policy.
-  "ignore:'asyncio.(set_event_loop_policy|DefaultEventLoopPolicy)':DeprecationWarning",
-  # uvloop 0.22.1's executor bridge still calls the deprecated helper while
-  # these tests deliberately exercise Server's cross-thread lifecycle API.
-  "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:asyncio.threads",
-]
-minversion = "9.0"
-pythonpath = ["."]
-testpaths = ["tests"]
 
 [tool.ruff]
 extend = "../ruff.toml"

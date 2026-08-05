@@ -2,7 +2,7 @@
 name = "blurhash-rs"
 description = "High-performance BlurHash encoder/decoder"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 keywords = [
@@ -20,7 +20,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -41,7 +40,7 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/blurhash-rs"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
 bench = ["blurhash-python", "pyperf"]
 bench-2 = ["blurhash", "pyperf"]
 
@@ -57,11 +56,8 @@ python-source = "python"
 [tool.pyright]
 include = ["python/blurhash_rs", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 strict = ["python/blurhash_rs"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.ruff]
 extend = "../ruff.toml"

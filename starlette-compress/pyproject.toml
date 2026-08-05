@@ -2,7 +2,7 @@
 name = "starlette-compress"
 description = "Compression middleware for Starlette - supporting ZStd, Brotli, and GZip"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "0BSD"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 keywords = [
@@ -32,7 +32,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -60,7 +59,9 @@ dev = [
   "brotlicffi",
   "coverage",
   "httpx",
-  "pytest",
+  "pytest>=9.1",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
   "trio",
   "uvloop; sys_platform != 'win32'",
 ]
@@ -78,11 +79,8 @@ path = "starlette_compress/__init__.py"
 [tool.pyright]
 include = ["starlette_compress", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 typeCheckingMode = "standard"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.ruff]
 extend = "../ruff.toml"

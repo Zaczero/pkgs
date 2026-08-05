@@ -57,20 +57,25 @@ jobs:
           # Empty: avoid RUSTFLAGS env overriding .cargo/config.toml target-cpu.
           rustflags: ""
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2.83.1
+        with:
+          tool: nextest
+
       # Practical behavior only — no clippy/fmt/lint gates in CI.
       - name: Test Rust debug
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          cargo test
+          cargo nextest run
 
       - name: Test Rust release
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          cargo test --release
+          cargo nextest run --release
 
   test:
     needs: resolve
