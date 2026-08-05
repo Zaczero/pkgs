@@ -1,6 +1,12 @@
 indent-width = 4
 line-length = 88
-target-version = "py39"
+target-version = "py310"
+
+[per-file-target-version]
+".github/scripts/**" = "py311"
+"gometry/**" = "py311"
+"h2corn/**" = "py311"
+"pyo3stubs/**" = "py311"
 
 [lint]
 ignore = [
@@ -42,8 +48,6 @@ ignore = [
   "PT023",  # pytest-incorrect-mark-parentheses-style
   "PYI015",  # assignment-default-in-stub
   "PYI021",  # docstring-in-stub
-  "PYI025",  # unaliased-collections-abc-set-import
-  "PYI041",  # redundant-numeric-union
   "UP046",  # non-pep695-generic-class
   "UP047",  # non-pep695-generic-function
   "Q000",  # bad-quotes-inline-string
@@ -122,6 +126,11 @@ select = [
 extend-safe-fixes = ["D2"]
 fixable = ["ALL"]
 unfixable = []
+
+[lint.per-file-ignores]
+# Native extension stubs attach public documentation to the final canonical
+# overload because a .pyi overload set cannot include an implementation body.
+"**/_lib.pyi" = ["D418"]
 
 [lint.flake8-quotes]
 docstring-quotes = "double"

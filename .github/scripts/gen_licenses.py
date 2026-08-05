@@ -36,10 +36,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = Path(__file__).resolve().parent

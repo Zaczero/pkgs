@@ -3,10 +3,9 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Literal, Never, assert_never
-
-import tomllib
 
 VERSION_RE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+\Z')
 

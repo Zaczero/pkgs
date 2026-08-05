@@ -30,8 +30,3 @@ strict = true
 
 [tool.ruff]
 extend = "../ruff.toml"
-
-[tool.ruff.lint.per-file-ignores]
-# Fixture stub follows the toolkit's own convention: the docstring lives on
-# the final (canonical) @overload variant.
-"tests/fixtures/fakepkg/_lib.pyi" = ["D418"]
