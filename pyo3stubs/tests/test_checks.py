@@ -18,7 +18,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import make_config, seeded
 
 from pyo3stubs.config import DualityConfig, MacroExport, StubConfig, SurfaceConfig
 from pyo3stubs.doc_contract import collect_errors as doc_contract
@@ -29,6 +28,7 @@ from pyo3stubs.rust_nullability import collect_errors as rust_nullability
 from pyo3stubs.rust_scan import pyclass_names, rust_class_map
 from pyo3stubs.structural import collect_errors as structural
 from pyo3stubs.text_signature import collect_errors as text_signature
+from tests._support import make_config, seeded
 
 if TYPE_CHECKING:
     from pathlib import Path
