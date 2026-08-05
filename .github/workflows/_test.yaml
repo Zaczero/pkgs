@@ -16,6 +16,7 @@ jobs:
     outputs:
       build-runners: ${{ steps.resolve.outputs.build-runners }}
       import-name: ${{ steps.resolve.outputs.import-name }}
+      is-release: ${{ steps.resolve.outputs.is-release }}
       is-rusty: ${{ steps.resolve.outputs.is-rusty }}
       pypy: ${{ steps.resolve.outputs.pypy }}
       rust-toolchain: ${{ steps.resolve.outputs.rust-toolchain }}
@@ -206,6 +207,7 @@ jobs:
           tool: cargo-about@0.8.4
 
       - name: Generate license files
+        if: needs.resolve.outputs.is-release == 'true'
         shell: bash
         run: |
           set -euo pipefail

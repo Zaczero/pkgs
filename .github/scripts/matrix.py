@@ -378,6 +378,7 @@ def resolve_matrix(
 
     return {
         'import-name': info['import-name'],
+        'is-release': info['is-release'],
         'is-rusty': info['is-rusty'],
         'pypy': info['pypy'],
         'package': info['package'],
