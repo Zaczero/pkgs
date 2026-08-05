@@ -156,7 +156,7 @@ SAME_NAME_NON_MIRRORS = {
 # Doubled-word intentional allowlist: (symbol, normalized_phrase) -> rationale.
 DOUBLED_WORD_ALLOWLIST: dict[tuple[str, str], str] = {}
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReciprocalFamily:
     key: str
     left: frozenset[str]
@@ -310,7 +310,7 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Span:
     path: Path
     line: int
@@ -319,14 +319,14 @@ class Span:
     end_column: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DocLine:
     text: str
     start: int
     end: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PublicDoc:
     symbol: str
     text: str
@@ -335,7 +335,7 @@ class PublicDoc:
     owner_class: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Section:
     name: str
     header_index: int
@@ -343,13 +343,13 @@ class Section:
     body_end: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Entry:
     header: DocLine
     description: tuple[DocLine, ...]
 
 
-@dataclass
+@dataclass(slots=True)
 class Violation:
     file: str
     line: int | None
@@ -376,7 +376,7 @@ class Violation:
         return value
 
 
-@dataclass
+@dataclass(slots=True)
 class ScanError:
     message: str
     symbol: str | None = None
@@ -1560,7 +1560,7 @@ def check_reciprocity(
                     current_text=None,
                     suggested_fix=f'Link to one of: {", ".join(sorted(right))}.',
                     message=f'Missing reciprocal See Also toward {fam.key} right side.',
-                    related_symbol=sorted(right)[0] if right else fam.key,
+                    related_symbol=min(right) if right else fam.key,
                 ))
         for src in right:
             targets = {t for t, _ in see_also_graph.get(src, [])}
@@ -1576,7 +1576,7 @@ def check_reciprocity(
                     current_text=None,
                     suggested_fix=f'Link to one of: {", ".join(sorted(left))}.',
                     message=f'Missing reciprocal See Also toward {fam.key} left side.',
-                    related_symbol=sorted(left)[0] if left else fam.key,
+                    related_symbol=min(left) if left else fam.key,
                 ))
     return findings
 
