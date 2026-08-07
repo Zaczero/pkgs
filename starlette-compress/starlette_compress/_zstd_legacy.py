@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from zstandard import ZstdCompressor  # type: ignore
+from zstandard import ZstdCompressor
 
 from starlette_compress._responder import CompressionResponder
 
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from starlette.types import ASGIApp
-    from zstandard import ZstdCompressionChunker  # type: ignore
+    from zstandard import ZstdCompressionChunker
 
 
 class _ZstdLegacyStreamEncoder:

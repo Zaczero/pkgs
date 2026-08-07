@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from compression.zstd import ZstdCompressor  # type: ignore
+from compression.zstd import ZstdCompressor  # pyright: ignore[reportMissingImports]
 
 from starlette_compress._responder import CompressionResponder
 
