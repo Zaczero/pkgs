@@ -4,7 +4,7 @@ use std::hint::{likely, unlikely};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
+use rand::RngCore as _;
 
 const RAND_BUFFER_SIZE: usize = 8 * 1024; // 8 KiB
 

@@ -11,7 +11,7 @@ use pyo3::types::PyList;
 
 use crate::constants::MAX_ZIDS_AT_ONCE;
 use crate::core::{reserve_sequences, zid_from_time_and_sequence};
-use crate::errors::Error;
+use crate::errors::ZidError;
 
 #[pyfunction]
 fn zid() -> u64 {
@@ -24,7 +24,7 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
         return Ok(PyList::empty(py));
     }
     if unlikely(n > MAX_ZIDS_AT_ONCE) {
-        return Err(Error::TooManyZIDsAtOnce { attempted: n }.into_pyerr());
+        return Err(ZidError::TooManyZIDsAtOnce { attempted: n }.into_pyerr());
     }
 
     let (time, start_seq) = reserve_sequences((n - 1) as u16);
