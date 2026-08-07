@@ -9,16 +9,6 @@ use std::time::Instant;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::watch;
 
-use self::accepted::run_accepted_session;
-use self::handshake::{
-    HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event,
-};
-use super::app::start_websocket_app;
-use super::codec::{
-    EncodedFrameHeader, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCodec,
-    encode_close_frame_into, encode_frame_header,
-};
-use super::{PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code};
 use crate::async_util::with_optional_timeout;
 use crate::bridge::{PayloadBytes, WEBSOCKET_INBOUND_BYTE_CAPACITY};
 use crate::config::WebSocketKeepAlive;
@@ -27,6 +17,18 @@ use crate::http::response::HttpResponseTransport;
 use crate::http::types::{BytesStr, HttpStatusCode, ResponseHeaders, status_code};
 use crate::log::WebSocketAccessLogState;
 use crate::runtime::{RequestAdmission, RequestContext, ShutdownKind, ShutdownState};
+use crate::websocket::app::start_websocket_app;
+use crate::websocket::codec::{
+    EncodedFrameHeader, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCodec,
+    encode_close_frame_into, encode_frame_header,
+};
+use crate::websocket::session::accepted::run_accepted_session;
+use crate::websocket::session::handshake::{
+    HandshakeEvent, drive_denial_response, fail_handshake, receive_handshake_event,
+};
+use crate::websocket::{
+    PERMESSAGE_DEFLATE_RESPONSE, WebSocketCloseCode, WebSocketRequestMeta, close_code,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct AcceptedWebSocketState {
@@ -338,9 +340,8 @@ async fn drive_websocket<T>(transport: &mut T, context: WebSocketContext) -> Res
 where
     T: WebSocketHandshakeTransport + AcceptedWebSocketTransport,
 {
-    let request = &context.request;
-    let config = Arc::clone(&request.connection.config);
-    let access_log = WebSocketAccessLogState::new(request);
+    let config = Arc::clone(&context.request.connection.config);
+    let access_log = WebSocketAccessLogState::new(&context.request);
     let per_message_deflate =
         config.websocket.per_message_deflate && context.meta.per_message_deflate;
     let timeout_handshake = config.timeout_handshake;

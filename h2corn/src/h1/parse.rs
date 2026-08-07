@@ -9,12 +9,14 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, Bu
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use super::http::write_empty_response;
-use super::{ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute, UpgradeRequest};
 use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt as _, ErrorKind, H2CornError, Http1Error};
+use crate::h1::http::write_empty_response;
+use crate::h1::{
+    ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute, UpgradeRequest,
+};
 use crate::h2_frame::{PeerSettings, SETTING_ENTRY_LEN, parse_settings_payload};
 use crate::http::body::{RequestBodyFinish, RequestBodyProgress, RequestBodyState};
 use crate::http::header::{

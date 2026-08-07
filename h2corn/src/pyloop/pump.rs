@@ -8,9 +8,9 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 
-use super::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::app_call::AppCallArgs;
 use crate::error::{H2CornError, SendAfterCloseError};
+use crate::pyloop::{PumpEvent, RustFuture, Shard, ShardHandle, SlotHandle};
 use crate::runtime::RequestTaskGuard;
 
 enum DoneSlot {

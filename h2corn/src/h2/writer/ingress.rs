@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
-use super::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::error::{ErrorExt as _, H2CornError, H2Error};
+use crate::h2::writer::{WRITER_CHANNEL_CAPACITY, WriterCommandBatch};
 use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::StreamId;
 use crate::inline_fifo::InlineFifo;

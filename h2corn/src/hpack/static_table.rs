@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use super::HpackField;
+use crate::hpack::HpackField;
 
 macro_rules! static_field_data {
     ($($first:literal => { $(($index:literal, $name:literal, $value:literal $(, $flag:ident)*),)+ }),+ $(,)?) => {

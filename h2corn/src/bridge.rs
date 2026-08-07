@@ -6,20 +6,12 @@ use std::sync::Arc;
 use std::{fmt, future, ptr};
 
 use bytes::Bytes;
-pub(crate) use http::{PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
 use pyo3::types::{PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
-#[cfg(test)]
-pub(crate) use websocket::WebSocketSendDisposition;
-pub(crate) use websocket::{
-    PyWebSocketReceive, PyWebSocketSend, WebSocketDisconnect, WebSocketInboundMessage,
-    WebSocketInboundReceiver, WebSocketInboundSender, WebSocketInboundTrySendError,
-    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
-};
 /// Everything only `http.response.zerocopysend` needs, which exists only on
 /// Unix. Grouped so the extension leaves no trace in a build that cannot serve
 /// it, rather than seven separately gated imports.
@@ -33,6 +25,16 @@ use {
 };
 
 use crate::async_util::{TryPush, try_push};
+pub(crate) use crate::bridge::http::{
+    PyHttpReceive, PyHttpSend, RequestBodyCounter, RequestInputShared,
+};
+#[cfg(test)]
+pub(crate) use crate::bridge::websocket::WebSocketSendDisposition;
+pub(crate) use crate::bridge::websocket::{
+    PyWebSocketReceive, PyWebSocketSend, WebSocketDisconnect, WebSocketInboundMessage,
+    WebSocketInboundReceiver, WebSocketInboundSender, WebSocketInboundTrySendError,
+    WebSocketSendBuffer, WebSocketSendState, websocket_inbound_channel,
+};
 use crate::error::{
     AsgiChannel, AsgiContainer, AsgiError, ErrorExt as _, H2CornError, HttpResponseError,
     WebSocketError, into_pyerr,
@@ -741,7 +743,7 @@ impl ReadyAwaitable {
 /// both have `.value is None`, which is what `await` reads; passing `None`
 /// only differs in `.args`, and costs a one-element tuple on every `send()`.
 #[pyclass(frozen, name = "_ReadyNone")]
-pub struct ReadyNone;
+pub(crate) struct ReadyNone;
 
 #[pymethods]
 impl ReadyNone {

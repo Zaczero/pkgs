@@ -3,10 +3,10 @@ use std::mem;
 
 use tokio::time::Instant;
 
-use super::{ResponseClose, ResponseCloseBatch, WebSocketData};
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt as _, H2CornError, H2Error};
 use crate::h2::StreamMap;
+use crate::h2::writer::{ResponseClose, ResponseCloseBatch, WebSocketData};
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::FileStreamer;
 use crate::http::response::ResponseBytePermit;

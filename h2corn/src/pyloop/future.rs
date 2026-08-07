@@ -17,7 +17,7 @@ use pyo3::types::PyDict;
 use smallvec::SmallVec;
 use tokio::task::AbortHandle;
 
-use super::Shard;
+use crate::pyloop::Shard;
 
 /// Builds a future's result under the GIL on the loop thread.
 pub(super) type Convert = Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send>;
@@ -74,7 +74,7 @@ enum FutureState {
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
 /// app task. Created pending; resolved exclusively by the pump.
 #[pyclass(frozen, name = "_RustFuture")]
-pub struct RustFuture {
+pub(crate) struct RustFuture {
     state: Mutex<FutureState>,
     blocking: AtomicBool,
     shard: Shard,

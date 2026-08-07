@@ -3,13 +3,13 @@ use std::task::Poll;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use super::state::RequestTaskCancellation;
-use super::websocket::handle_request as handle_websocket_request;
-use super::writer::{WriterCommand, WriterCommandBatch};
-use super::{H2WriterHandle, InboundStream, RequestSpawnContext};
 use crate::bridge::{HttpOutboundEvent, RequestBodyCounter};
 use crate::config::{ResponseHeaderConfig, ServerConfig};
 use crate::error::{H2CornError, H2Error};
+use crate::h2::state::RequestTaskCancellation;
+use crate::h2::websocket::handle_request as handle_websocket_request;
+use crate::h2::writer::{WriterCommand, WriterCommandBatch};
+use crate::h2::{H2WriterHandle, InboundStream, RequestSpawnContext};
 use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::{
     AdmittedHttpOutboundEvent, HttpRequestBody, HttpSendBuffer, HttpSendState, RunningHttpRequest,

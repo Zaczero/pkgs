@@ -8,7 +8,6 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
-pub(crate) use event::{Event, set_format};
 use http::Method;
 use itoa::{Buffer as ItoaBuffer, Integer};
 use owo_colors::{OwoColorize as _, Style};
@@ -18,6 +17,7 @@ use crate::config::{BindTarget, LogFormat, ServerConfig};
 use crate::http::response::{FinalResponseBody, ResponseAction};
 use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
+pub(crate) use crate::log::event::{Event, set_format};
 use crate::proxy_protocol::ConnectionInfo;
 use crate::runtime::RequestContext;
 use crate::websocket::{WebSocketCloseCode, close_code};
@@ -1023,6 +1023,7 @@ mod tests {
             let context = RequestContext::new(Arc::clone(&connection), request);
             drop(connection);
             let label = super::ClientLabel::build(&context);
+            drop(context);
             assert_eq!(label.as_str().trim_end(), "127.0.0.1:54321");
             assert!(!label.as_str().trim_end().contains([' ', '"']));
         });

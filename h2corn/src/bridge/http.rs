@@ -8,7 +8,7 @@ use pyo3::types::{PyAny, PyDict};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 
-use super::{
+use crate::bridge::{
     EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
@@ -206,7 +206,7 @@ impl EventSource for HttpReceiveState {
 }
 
 #[pyclass(frozen, name = "_HttpReceive")]
-pub struct PyHttpReceive {
+pub(crate) struct PyHttpReceive {
     shard: Shard,
     kind: HttpReceiveKind,
 }
@@ -397,7 +397,7 @@ impl PyHttpReceive {
 }
 
 #[pyclass(frozen, name = "_HttpSend")]
-pub struct PyHttpSend {
+pub(crate) struct PyHttpSend {
     shard: Shard,
     state: HttpSendState,
 }

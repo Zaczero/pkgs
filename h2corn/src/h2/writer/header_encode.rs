@@ -1,9 +1,9 @@
 use bytes::{Bytes, BytesMut};
 use tokio::io::AsyncWrite;
 
-use super::ENCODED_HEADER_BLOCK_CAPACITY;
-use super::flush::write_frame;
 use crate::error::{H2CornError, H2Error};
+use crate::h2::writer::ENCODED_HEADER_BLOCK_CAPACITY;
+use crate::h2::writer::flush::write_frame;
 use crate::h2_frame;
 use crate::h2_frame::{
     FrameFlags, FrameHeader, FramePayload, FramePayloadLen, FrameType, StreamId,

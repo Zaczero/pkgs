@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 
-use super::Shard;
+use crate::pyloop::Shard;
 
 enum SlotState<T> {
     Pending {

@@ -8,8 +8,10 @@ use std::mem::size_of;
 
 use smallvec::SmallVec;
 
-pub(super) use self::driver::{H2WriterHandle, WindowOverflow, WriterState, init_writer};
 use crate::bridge::PayloadBytes;
+pub(super) use crate::h2::writer::driver::{
+    H2WriterHandle, WindowOverflow, WriterState, init_writer,
+};
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
 use crate::http::response::{FileSegment, ResponseBytePermit};
 use crate::http::types::{EarlyHintLinks, HttpStatusCode, ResponseHeaders, ResponseTrailers};

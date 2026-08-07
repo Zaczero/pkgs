@@ -1,9 +1,9 @@
 use bytes::BytesMut;
 
-use super::dynamic_table::DynamicBuffer;
-use super::static_table::{self, StaticFieldEntry};
-use super::{HpackField, huffman};
 use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
+use crate::hpack::dynamic_table::DynamicBuffer;
+use crate::hpack::static_table::{self, StaticFieldEntry};
+use crate::hpack::{HpackField, huffman};
 
 #[derive(Debug)]
 pub(crate) struct Encoder {

@@ -12,11 +12,11 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
-from ._cli import ImportSettings
-from ._lifespan import cancel_task
-from ._log import Event
-from ._reload import take_reload_parent_liveness_fd
-from ._socket import (
+from h2corn._cli import ImportSettings
+from h2corn._lifespan import cancel_task
+from h2corn._log import Event
+from h2corn._reload import take_reload_parent_liveness_fd
+from h2corn._socket import (
     bound_addresses,
     bound_sockets,
     drain_fd,
@@ -24,7 +24,7 @@ from ._socket import (
     signal_wakeup_pipe,
     swap_signal_handlers,
 )
-from ._systemd import notification_configured, notify_ready, notify_stopping
+from h2corn._systemd import notification_configured, notify_ready, notify_stopping
 
 TYPE_CHECKING = False
 
@@ -52,10 +52,10 @@ if TYPE_CHECKING:
         def kill(self) -> None: ...
         def close(self) -> None: ...
 
-    from ._config import Config
-    from ._lib import _PreparedTls
-    from ._server import ProcessIdentity
-    from ._types import Application
+    from h2corn._config import Config
+    from h2corn._lib import _PreparedTls
+    from h2corn._server import ProcessIdentity
+    from h2corn._types import Application
 
 _WORKER_FAILURE_WINDOW = 5.0
 _WORKER_FAILURE_BACKOFF_INITIAL = 0.1
@@ -177,7 +177,7 @@ def _worker_entry(
     control_write_fd: int | None = None,
     quiesce_read_fd: int | None = None,
 ):
-    from ._server import (
+    from h2corn._server import (
         Server,
         drop_process_privileges,
         event_loop_factory,
@@ -1014,7 +1014,11 @@ def serve_with_supervisor(
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 
-    from ._server import load_env_file, load_tls_material, resolve_process_identity
+    from h2corn._server import (
+        load_env_file,
+        load_tls_material,
+        resolve_process_identity,
+    )
 
     # Strip before any application import: workers inherit the cleaned env.
     parent_liveness_fd = take_reload_parent_liveness_fd()
@@ -1031,7 +1035,7 @@ def serve_with_supervisor(
     # Read PEM and build the acceptor once, while the supervisor still holds
     # the starting user's privileges: every forked worker reuses the same
     # prepared state and none of them reopen a key they may no longer read.
-    from ._lib import emit_banner, prepare_tls
+    from h2corn._lib import emit_banner, prepare_tls
 
     prepared_tls = prepare_tls(config, load_tls_material(config))
     with bound_sockets(config, socket_owner=(identity.uid, identity.gid)) as leases:

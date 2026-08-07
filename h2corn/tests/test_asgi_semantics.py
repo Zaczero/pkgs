@@ -206,7 +206,9 @@ async def test_concurrent_streams_resolve_without_reentrancy_errors() -> None:
         results = await asyncio.wait_for(
             asyncio.gather(*[
                 _streaming_exchange(
-                    server_port(server), body_parts=[f'req-{i}'.encode()], pause=0.05
+                    server_port(server),
+                    body_parts=[f'req-{i}'.encode()],
+                    pause=0.05,
                 )
                 for i in range(8)
             ]),

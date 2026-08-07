@@ -2,9 +2,6 @@ mod forwarded;
 
 use std::borrow::Cow;
 
-pub(crate) use forwarded::{
-    ScopeHost, default_scope_view, resolve_scope_view, scope_view_with_defaults,
-};
 use http::Method;
 use memchr::memchr;
 use pyo3::intern;
@@ -14,6 +11,9 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 
 use crate::ascii;
 use crate::config::ServerConfig;
+pub(crate) use crate::http::scope::forwarded::{
+    ScopeHost, default_scope_view, resolve_scope_view, scope_view_with_defaults,
+};
 use crate::http::types::{
     BytesStr, HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaders,
 };
@@ -547,6 +547,7 @@ mod tests {
             };
             let request = RequestContext::new(test_connection(py), request);
             let scope = build_http_scope(py, &request)?;
+            drop(request);
             let headers = scope
                 .get_item("headers")?
                 .expect("ASGI headers are present")
@@ -671,6 +672,7 @@ mod tests {
                 request.http_version = http_version;
                 let request = RequestContext::new(test_connection(py), request);
                 let scope = build_websocket_scope(py, &request, &[])?;
+                drop(request);
 
                 assert_eq!(
                     scope

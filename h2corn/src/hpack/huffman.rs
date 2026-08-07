@@ -2,8 +2,8 @@ mod table;
 
 use bytes::BytesMut;
 
-use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
+use crate::hpack::huffman::table::{DECODE_TABLE, ENCODE_TABLE};
 
 const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;

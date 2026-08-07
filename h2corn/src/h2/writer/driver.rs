@@ -12,21 +12,6 @@ use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::sync::futures::Notified;
 use tokio::time::Instant as TokioInstant;
 
-use super::flush::{
-    FlushPassResult, FlushTracking, flush_pending_data_tracked, outbound_data_frame_size,
-    send_limit, write_frame, write_frame_buf,
-};
-use super::header_encode::{HeaderEncodeState, write_header_block};
-use super::ingress::{QueuedStreamCommands, WriterIngress};
-use super::stream_state::{
-    ReadyStreamQueue, StreamWriteState, notify_response_abort, notify_response_complete,
-    writer_stream,
-};
-use super::{
-    FRAME_BUFFER_CAPACITY, H2_OUTBOUND_RESPONSE_BYTE_CAPACITY, H2_WRITER_BUFFER_CAPACITY,
-    ResponseCloseBatch, ResponseDeadlineUpdateBatch, WebSocketData, WindowTarget, WriterCommand,
-    WriterCommandBatch,
-};
 use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 #[cfg(test)]
@@ -36,6 +21,21 @@ use crate::config::{
 };
 use crate::error::H2CornError;
 use crate::h2::deadline::DeadlineQueue;
+use crate::h2::writer::flush::{
+    FlushPassResult, FlushTracking, flush_pending_data_tracked, outbound_data_frame_size,
+    send_limit, write_frame, write_frame_buf,
+};
+use crate::h2::writer::header_encode::{HeaderEncodeState, write_header_block};
+use crate::h2::writer::ingress::{QueuedStreamCommands, WriterIngress};
+use crate::h2::writer::stream_state::{
+    ReadyStreamQueue, StreamWriteState, notify_response_abort, notify_response_complete,
+    writer_stream,
+};
+use crate::h2::writer::{
+    FRAME_BUFFER_CAPACITY, H2_OUTBOUND_RESPONSE_BYTE_CAPACITY, H2_WRITER_BUFFER_CAPACITY,
+    ResponseCloseBatch, ResponseDeadlineUpdateBatch, WebSocketData, WindowTarget, WriterCommand,
+    WriterCommandBatch,
+};
 use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::{
     self, ErrorCode, FramePayload, FramePayloadLen, PeerSettings, Settings, StreamId,

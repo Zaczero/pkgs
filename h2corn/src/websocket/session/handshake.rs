@@ -1,7 +1,5 @@
 use pyo3::pybacked::PyBackedStr;
 
-use super::super::app::{AppStep, RunningWebSocketApp};
-use super::WebSocketHandshakeTransport;
 use crate::bridge::{HttpOutboundEvent, WebSocketOutboundEvent};
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::header::ResponseConnectionDirective;
@@ -10,6 +8,8 @@ use crate::http::response::{
 };
 use crate::http::types::{FinalResponseStatus, ResponseHeaders, status_code};
 use crate::log::{ResponseLogState, WebSocketAccessLogState};
+use crate::websocket::app::{AppStep, RunningWebSocketApp};
+use crate::websocket::session::WebSocketHandshakeTransport;
 
 pub(super) enum HandshakeEvent {
     Accept {

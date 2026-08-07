@@ -27,7 +27,6 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, OnceLock};
 use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
-pub(crate) use future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -35,13 +34,14 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBool, PyDict};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
-pub(crate) use slot::{SlotFuture, TaskSlot};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 
 use crate::app_call::AppCallArgs;
 use crate::bridge::ReadyNone;
 use crate::error::H2CornError;
+pub(crate) use crate::pyloop::future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
+pub(crate) use crate::pyloop::slot::{SlotFuture, TaskSlot};
 use crate::runtime::{AppRuntimeHandle, RequestTaskGuard};
 
 /// Maximum events processed per pump invocation before yielding back to the

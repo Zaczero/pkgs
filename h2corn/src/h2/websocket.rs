@@ -3,10 +3,10 @@ use std::num::NonZeroUsize;
 use bytes::BytesMut;
 use tokio::sync::mpsc;
 
-use super::H2WriterHandle;
-use super::http::H2HttpTransport;
 use crate::bridge::HttpOutboundEvent;
 use crate::error::{H2CornError, H2Error};
+use crate::h2::H2WriterHandle;
+use crate::h2::http::H2HttpTransport;
 use crate::h2_frame::{ErrorCode, StreamId};
 use crate::http::app::AdmittedHttpOutboundEvent;
 use crate::http::response::{

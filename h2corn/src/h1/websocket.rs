@@ -6,9 +6,9 @@ use bytes::BytesMut;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter};
 
-use super::http::{H1ResponseState, append_header_lines, write_empty_response};
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
+use crate::h1::http::{H1ResponseState, append_header_lines, write_empty_response};
 use crate::http::header::apply_default_response_headers;
 use crate::http::response::{HttpResponseTransport, ResponseAction};
 use crate::http::types::{HttpStatusCode, ResponseHeaders, status_code};

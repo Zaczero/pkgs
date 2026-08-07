@@ -3,14 +3,14 @@ use std::num::NonZeroUsize;
 
 use bytes::{Bytes, BytesMut};
 
-use super::super::deflate::PerMessageDeflateMode;
-use super::cursor::SegmentCursor;
-use super::frame::{decode_control_frame, parse_frame_header};
-use super::mask::MaskKey;
-use super::wire::opcode;
-use super::{DecodedFrame, wire};
 use crate::error::WebSocketProtocolError;
 use crate::http::types::BytesStr;
+use crate::websocket::codec::cursor::SegmentCursor;
+use crate::websocket::codec::frame::{decode_control_frame, parse_frame_header};
+use crate::websocket::codec::mask::MaskKey;
+use crate::websocket::codec::wire::opcode;
+use crate::websocket::codec::{DecodedFrame, wire};
+use crate::websocket::deflate::PerMessageDeflateMode;
 
 #[derive(Debug, Default)]
 pub(crate) struct WebSocketCodec {

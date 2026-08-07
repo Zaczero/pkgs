@@ -2,8 +2,8 @@ use std::cmp::min;
 
 use bytes::{Buf as _, Bytes, BytesMut};
 
-use super::mask::{MaskKey, apply_websocket_mask_phase};
 use crate::inline_fifo::InlineFifo;
+use crate::websocket::codec::mask::{MaskKey, apply_websocket_mask_phase};
 
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {

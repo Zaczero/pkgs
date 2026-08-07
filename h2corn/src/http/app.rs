@@ -5,21 +5,21 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-pub(crate) use buffered::{
-    AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendDisposition, HttpSendState, HttpSendWaiter,
-    outbound_charge,
-};
 use bytes::Bytes;
 use http::Method;
 use tokio::sync::mpsc;
 
-use super::response::{
-    HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
-    finalize_response,
-};
 use crate::app_call::AppCallArgs;
 use crate::bridge::RequestInputShared;
 use crate::error::H2CornError;
+pub(crate) use crate::http::app::buffered::{
+    AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendDisposition, HttpSendState, HttpSendWaiter,
+    outbound_charge,
+};
+use crate::http::response::{
+    HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,
+    finalize_response,
+};
 use crate::log::ResponseLogState;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput, start_app_call};
 

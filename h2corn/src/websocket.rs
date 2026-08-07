@@ -5,13 +5,18 @@ mod deflate;
 mod request;
 pub(crate) mod session;
 
-pub(crate) use accept::websocket_accept;
-pub(crate) use codec::{EncodedFrameHeader, WebSocketCloseCode, WebSocketCodec, close_code};
-pub(crate) use deflate::{PERMESSAGE_DEFLATE_RESPONSE, offers_compatible_permessage_deflate};
-pub(crate) use request::{validate_accepted_subprotocol, validate_websocket_request};
-pub(crate) use session::WebSocketContext;
-
 use crate::http::types::BytesStr;
+pub(crate) use crate::websocket::accept::websocket_accept;
+pub(crate) use crate::websocket::codec::{
+    EncodedFrameHeader, WebSocketCloseCode, WebSocketCodec, close_code,
+};
+pub(crate) use crate::websocket::deflate::{
+    PERMESSAGE_DEFLATE_RESPONSE, offers_compatible_permessage_deflate,
+};
+pub(crate) use crate::websocket::request::{
+    validate_accepted_subprotocol, validate_websocket_request,
+};
+pub(crate) use crate::websocket::session::WebSocketContext;
 
 pub(crate) const WEBSOCKET_KEY_LEN: usize = 24;
 pub(crate) const WEBSOCKET_VERSION: &[u8; 2] = b"13";

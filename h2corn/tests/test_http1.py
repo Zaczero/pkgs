@@ -1523,7 +1523,7 @@ async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_repa
             # Wait for the application to own the request before the oversized
             # chunk arrives. Without this the rejection races the app task's
             # first step, which only wins on interpreters that start tasks
-            # eagerly (CPython >= 3.12) -- see `eager` in src/pyloop/mod.rs.
+            # eagerly (CPython >= 3.12) -- see `eager` in src/pyloop.rs.
             await asyncio.wait_for(app_started.wait(), timeout=5)
             writer.write(
                 (

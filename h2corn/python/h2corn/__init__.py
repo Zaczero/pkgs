@@ -18,7 +18,7 @@ constructable from environment variables or a TOML file.
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 from typing import Any as _Any
 
-from ._config import (
+from h2corn._config import (
     CertReqsMode,
     Config,
     LifespanMode,
@@ -26,11 +26,11 @@ from ._config import (
     ProxyProtocolMode,
     ServerHeaderMode,
 )
-from ._log import LogFormat
+from h2corn._log import LogFormat
 
 if _TYPE_CHECKING:
-    from ._server import Server, serve
-    from ._types import (
+    from h2corn._server import Server, serve
+    from h2corn._types import (
         Application,
         ASGIApp,
         ASGIVersions,
@@ -142,9 +142,9 @@ __all__ = (
 
 def __getattr__(name: str) -> _Any:
     if name in {'Server', 'serve'}:
-        from . import _server as module
+        import h2corn._server as module
     elif name in __all__:
-        from . import _types as module
+        import h2corn._types as module
     else:
         raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 

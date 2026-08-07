@@ -6,8 +6,8 @@
 use std::fmt::{self, Write as _};
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use super::{AccessLogBuf, BytesWriter, sink};
 use crate::config::LogFormat;
+use crate::log::{AccessLogBuf, BytesWriter, sink};
 
 /// The encoding for this process's stderr, published once at serve start.
 ///

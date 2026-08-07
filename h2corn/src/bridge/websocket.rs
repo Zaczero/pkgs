@@ -8,7 +8,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
-use super::{
+use crate::bridge::{
     EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent,
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
 };
@@ -396,7 +396,7 @@ impl EventSource for WebSocketReceiveState {
 }
 
 #[pyclass(frozen, name = "_WebSocketReceive")]
-pub struct PyWebSocketReceive {
+pub(crate) struct PyWebSocketReceive {
     shard: Shard,
     state: Arc<AsyncMutex<Requeueable<WebSocketReceiveState>>>,
 }
@@ -421,7 +421,7 @@ impl PyWebSocketReceive {
 }
 
 #[pyclass(frozen, name = "_WebSocketSend")]
-pub struct PyWebSocketSend {
+pub(crate) struct PyWebSocketSend {
     shard: Shard,
     state: WebSocketSendState,
     tx: mpsc::Sender<WebSocketOutboundEvent>,

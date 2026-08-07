@@ -12,17 +12,17 @@ from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from ._cli import ImportSettings, run_cli
-from ._config import Config
-from ._lifespan import LifespanRunner, await_with_timeout, cancel_task
-from ._socket import (
+from h2corn._cli import ImportSettings, run_cli
+from h2corn._config import Config
+from h2corn._lifespan import LifespanRunner, await_with_timeout, cancel_task
+from h2corn._socket import (
     ListenerLease,
     bound_addresses,
     bound_sockets,
     lease_owned_fds,
     nonblocking_pipe,
 )
-from ._systemd import notify_ready, notify_stopping
+from h2corn._systemd import notify_ready, notify_stopping
 
 TYPE_CHECKING = False
 
@@ -30,8 +30,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
-    from ._lib import _LifespanHandoff, _PreparedTls
-    from ._types import Application, ASGIApp
+    from h2corn._lib import _LifespanHandoff, _PreparedTls
+    from h2corn._types import Application, ASGIApp
 
 
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
@@ -713,7 +713,7 @@ class Server:
         # the TLS key, which is routinely root-owned and mode 0600.
         # Read PEM → prepare acceptor → banner, all before the drop so workers
         # never reopen certificate paths.
-        from ._lib import emit_banner, prepare_tls
+        from h2corn._lib import emit_banner, prepare_tls
 
         tls_material = load_tls_material(self.config)
         prepared_tls = prepare_tls(self.config, tls_material)
@@ -805,7 +805,7 @@ class Server:
             raise
 
         try:
-            from ._lib import _LifespanHandoff
+            from h2corn._lib import _LifespanHandoff
 
             handoff = _LifespanHandoff(
                 self.app,
@@ -927,7 +927,7 @@ class Server:
         prepared_tls: _PreparedTls,
     ) -> None:
         """Drive one native serve lifecycle owned by `generation`."""
-        from ._lib import serve_fds
+        from h2corn._lib import serve_fds
 
         internal_quiesce_write_fd: int | None = None
         if quiesce_fd is None and sys.platform != 'win32':
@@ -1091,7 +1091,7 @@ def serve(app: Application, config: Config | None = None) -> None:
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':
-        from ._supervisor import serve_with_supervisor
+        from h2corn._supervisor import serve_with_supervisor
 
         with _process_umask(config), _pidfile(config) as pid_fd:
             serve_with_supervisor(app, config, pid_fd=pid_fd)
@@ -1111,7 +1111,7 @@ def _serve_import_target(import_settings: ImportSettings, config: Config) -> Non
     whatever the import opened.
     """
     if sys.platform != 'win32':
-        from ._supervisor import serve_with_supervisor
+        from h2corn._supervisor import serve_with_supervisor
 
         with _process_umask(config), _pidfile(config) as pid_fd:
             serve_with_supervisor(import_settings, config, pid_fd=pid_fd)

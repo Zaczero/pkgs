@@ -11,13 +11,12 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant as TokioInstant;
 
-use super::StreamMap;
-use super::deadline::DeadlineQueue;
-use super::request::{HeaderBlockTarget, HeaderLimits, PendingHeaderBlock};
-use super::writer::{H2WriterHandle, WriterState};
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{RequestBodyCounter, RequestInputShared};
-use crate::h2::new_stream_map;
+use crate::h2::deadline::DeadlineQueue;
+use crate::h2::request::{HeaderBlockTarget, HeaderLimits, PendingHeaderBlock};
+use crate::h2::writer::{H2WriterHandle, WriterState};
+use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::{self, FramePayloadLen, StreamId, WindowIncrement};
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};

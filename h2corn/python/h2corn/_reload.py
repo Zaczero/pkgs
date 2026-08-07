@@ -16,9 +16,9 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
 
-from ._config import FdBindSpec, parse_bind_spec
-from ._log import Event
-from ._socket import (
+from h2corn._config import FdBindSpec, parse_bind_spec
+from h2corn._log import Event
+from h2corn._socket import (
     drain_fd,
     nonblocking_pipe,
     signal_wakeup_pipe,
@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
     from typing import Protocol, Self
 
-    from ._cli import ImportSettings
-    from ._config import Config
+    from h2corn._cli import ImportSettings
+    from h2corn._config import Config
 
     class _KEvent(Protocol):
         """What this module reads off a `select.kevent`.

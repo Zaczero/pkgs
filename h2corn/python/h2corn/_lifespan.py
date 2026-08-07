@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
     from typing import Any
 
-    from ._types import (
+    from h2corn._types import (
         Application,
         FrameworkASGIApp,
         FrameworkMessage,

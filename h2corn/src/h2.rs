@@ -13,27 +13,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use http::spawn_request_stream;
-use request::{
-    HeaderBlockFragment, HeaderBlockTarget, PendingHeaderBlock, RequestHeadError,
-    decode_discarded_header_block, decode_request_head, decode_trailer_block,
-    parse_header_block_fragment, resolve_request_head,
-};
 use smallvec::SmallVec;
-use state::{
-    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream, RequestInputClose,
-    RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
-};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::task::yield_now;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout_at};
-use writer::{
-    H2WriterHandle, ResponseClose, WindowOverflow, WindowTarget, WriterState, init_writer,
-};
 
 use crate::async_util::{send_best_effort, send_with_backpressure, with_optional_timeout};
 use crate::error::{ErrorExt as _, ErrorKind, H2CornError, H2Error};
+use crate::h2::http::spawn_request_stream;
+use crate::h2::request::{
+    HeaderBlockFragment, HeaderBlockTarget, PendingHeaderBlock, RequestHeadError,
+    decode_discarded_header_block, decode_request_head, decode_trailer_block,
+    parse_header_block_fragment, resolve_request_head,
+};
+use crate::h2::state::{
+    ClientPrefaceState, ConnectionDrainState, H2ConnectionState, InboundStream, RequestInputClose,
+    RequestInputDeadline, RequestSpawnContext, StreamLifecycle,
+};
+use crate::h2::writer::{
+    H2WriterHandle, ResponseClose, WindowOverflow, WindowTarget, WriterState, init_writer,
+};
 use crate::h2_frame::{
     self, ErrorCode, FrameFlags, FrameHeader, FrameRead, FrameReadError, FrameType,
     HandledFrameKind, PeerSettings, RawFrame, StreamId, WindowIncrement,

@@ -5,10 +5,10 @@ use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 
-use super::ConnectionPersistence;
 use crate::async_util::write_all_vectored;
 use crate::config::ServerConfig;
 use crate::error::H2CornError;
+use crate::h1::ConnectionPersistence;
 use crate::http::digits;
 use crate::http::header::{ResponseConnectionDirective, apply_default_response_headers};
 use crate::http::pathsend::{FileStreamer, PATHSEND_SENDFILE_MIN};

@@ -19,7 +19,7 @@ from typing import (
     overload,
 )
 
-from ._log import LogFormat
+from h2corn._log import LogFormat
 
 TYPE_CHECKING = False
 

@@ -18,22 +18,22 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 use tokio::time::Instant;
 
-#[cfg(test)]
-use super::ResponseClose;
-use super::header_encode::{HeaderEncodeState, write_header_block};
-#[cfg(test)]
-use super::stream_state::writer_stream;
-use super::stream_state::{
-    BodyItem, PendingBody, PendingChunk, ReadyStreamQueue, StreamBodyState, StreamWriteState,
-};
-use super::{
-    FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch,
-    ResponseDeadlineUpdateBatch,
-};
 use crate::error::H2CornError;
 use crate::h2::StreamMap;
 #[cfg(test)]
 use crate::h2::new_stream_map;
+#[cfg(test)]
+use crate::h2::writer::ResponseClose;
+use crate::h2::writer::header_encode::{HeaderEncodeState, write_header_block};
+#[cfg(test)]
+use crate::h2::writer::stream_state::writer_stream;
+use crate::h2::writer::stream_state::{
+    BodyItem, PendingBody, PendingChunk, ReadyStreamQueue, StreamBodyState, StreamWriteState,
+};
+use crate::h2::writer::{
+    FAIR_WRITE_QUANTUM, H2_OUTBOUND_DATA_FRAME_SIZE_TARGET, ResponseCloseBatch,
+    ResponseDeadlineUpdateBatch,
+};
 use crate::h2_frame::{
     self, ErrorCode, FRAME_HEADER_LEN, FrameFlags, FrameHeader, FramePayload, FramePayloadLen,
     FrameType, StreamId,

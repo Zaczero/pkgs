@@ -5,7 +5,6 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use super::session::WebSocketContext;
 use crate::app_call::AppCallArgs;
 use crate::bridge::{
     WEBSOCKET_OUTBOUND_QUEUE_CAPACITY, WebSocketInboundSender, WebSocketOutboundEvent,
@@ -14,6 +13,7 @@ use crate::bridge::{
 use crate::error::H2CornError;
 use crate::pyloop::SlotFuture;
 use crate::runtime::{RequestTaskGuard, start_app_call};
+use crate::websocket::session::WebSocketContext;
 
 /// The app task, encapsulated so session code can never race or misuse the
 /// raw future: completion is only observable through methods that

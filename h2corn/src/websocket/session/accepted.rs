@@ -8,11 +8,6 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::watch;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
-use super::super::app::RunningWebSocketApp;
-use super::{
-    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport,
-    EncodedWebSocketFrame, FrameFlushMode, TransportRead, shutdown_close_code,
-};
 use crate::bridge::{
     PayloadBytes, WEBSOCKET_OUTBOUND_QUEUE_CAPACITY, WebSocketDisconnect, WebSocketInboundMessage,
     WebSocketInboundSender, WebSocketInboundTrySendError, WebSocketOutboundEvent,
@@ -21,9 +16,14 @@ use crate::config::WebSocketKeepAlive;
 use crate::error::{ErrorExt as _, FailureDomain, H2CornError, WebSocketError, WebSocketFrameKind};
 use crate::http::types::BytesStr;
 use crate::runtime::{ShutdownKind, ShutdownState};
+use crate::websocket::app::RunningWebSocketApp;
 use crate::websocket::codec::{DecodedFrame, DecodedPeerClose, WebSocketCodec, encode_frame_into};
 use crate::websocket::deflate::{
     PerMessageDeflateDisabled, PerMessageDeflateEnabled, PerMessageDeflateMode,
+};
+use crate::websocket::session::{
+    AcceptedSessionConfig, AcceptedWebSocketState, AcceptedWebSocketTransport,
+    EncodedWebSocketFrame, FrameFlushMode, TransportRead, shutdown_close_code,
 };
 use crate::websocket::{WebSocketCloseCode, close_code};
 

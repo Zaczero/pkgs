@@ -1,9 +1,9 @@
 from collections.abc import Awaitable, Callable
 from typing import final
 
-from ._config import Config
-from ._server import TlsMaterial
-from ._types import Application, State
+from h2corn._config import Config
+from h2corn._server import TlsMaterial
+from h2corn._types import Application, State
 
 __all__ = [
     '_LifespanHandoff',

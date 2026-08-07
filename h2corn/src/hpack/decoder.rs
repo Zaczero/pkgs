@@ -1,9 +1,9 @@
 use bytes::{Buf, Bytes, BytesMut};
 
-use super::dynamic_table::DynamicBuffer;
-use super::field::{DecodeBlockError, HpackField};
-use super::{huffman, static_table};
 use crate::h2_frame::DEFAULT_HEADER_TABLE_SIZE;
+use crate::hpack::dynamic_table::DynamicBuffer;
+use crate::hpack::field::{DecodeBlockError, HpackField};
+use crate::hpack::{huffman, static_table};
 
 const HUFFMAN_ARENA_CAPACITY: usize = 4096;
 

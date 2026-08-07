@@ -9,7 +9,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from ._config import (
+from h2corn._config import (
     Config,
     FdBindSpec,
     TcpBindSpec,

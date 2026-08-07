@@ -1,12 +1,12 @@
 use bytes::{Bytes, BytesMut};
 
-use super::super::deflate::PerMessageDeflateMode;
-use super::wire::opcode;
-use super::{
-    DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode, wire,
-};
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError, WebSocketProtocolError};
 use crate::http::types::BytesStr;
+use crate::websocket::codec::wire::opcode;
+use crate::websocket::codec::{
+    DecodedFrame, DecodedPeerClose, MAX_CLOSE_REASON_LEN, ValidCloseCode, WebSocketCloseCode, wire,
+};
+use crate::websocket::deflate::PerMessageDeflateMode;
 
 pub(super) struct ParsedFrameHeader {
     pub(super) fin: bool,

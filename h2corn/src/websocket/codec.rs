@@ -4,7 +4,7 @@ mod frame;
 mod mask;
 
 pub(crate) mod close_code {
-    use super::WebSocketCloseCode;
+    use crate::websocket::codec::WebSocketCloseCode;
 
     pub(crate) const NORMAL: WebSocketCloseCode = WebSocketCloseCode::new(1000).unwrap();
     pub(crate) const GOING_AWAY: WebSocketCloseCode = WebSocketCloseCode::new(1001).unwrap();
@@ -49,11 +49,11 @@ mod wire {
 use std::num::NonZeroU16;
 
 use bytes::Bytes;
-pub(crate) use decode::WebSocketCodec;
-pub(crate) use frame::{EncodedFrameHeader, encode_frame_header};
-pub(super) use frame::{encode_close_frame_into, encode_frame_into};
 
 use crate::http::types::BytesStr;
+pub(crate) use crate::websocket::codec::decode::WebSocketCodec;
+pub(crate) use crate::websocket::codec::frame::{EncodedFrameHeader, encode_frame_header};
+pub(super) use crate::websocket::codec::frame::{encode_close_frame_into, encode_frame_into};
 
 pub(super) const MAX_CLOSE_REASON_LEN: usize = 123;
 

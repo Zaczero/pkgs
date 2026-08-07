@@ -8,7 +8,7 @@ from dataclasses import MISSING, dataclass
 from pathlib import Path
 from typing import NoReturn, TypeAlias, cast
 
-from ._config import (
+from h2corn._config import (
     CONFIG_PATH_ENV_VAR,
     CONVENIENCE_KEYS,
     DEFAULT_BIND,
@@ -20,8 +20,8 @@ from ._config import (
     env_values,
     tcp_bind_convenience,
 )
-from ._log import Event, set_format
-from ._systemd import notification_configured
+from h2corn._log import Event, set_format
+from h2corn._systemd import notification_configured
 
 TYPE_CHECKING = False
 
@@ -441,8 +441,8 @@ def run_cli(
         _print_config(config)
         return
     if cli_settings.check_config:
-        from ._lib import prepare_tls
-        from ._server import load_tls_material
+        from h2corn._lib import prepare_tls
+        from h2corn._server import load_tls_material
 
         # `parse_cli` routes every configuration failure through
         # `parser.error`: one line, exit 2. Validation reached only from here
@@ -457,7 +457,7 @@ def run_cli(
             _fail(str(error))
         return
     if cli_settings.reload:
-        from ._reload import serve_with_reload
+        from h2corn._reload import serve_with_reload
 
         if sys.platform not in {'linux', 'darwin'}:
             # Checked here so an unsupported platform reads as the operator

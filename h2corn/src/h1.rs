@@ -9,17 +9,17 @@ use std::task::Poll;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use parse::read_request;
 use tokio::io::{AsyncRead, AsyncWriteExt as _, BufWriter};
 use tokio::sync::{mpsc, watch};
 
-use self::http::{
-    H1HttpTransport, write_empty_response, write_h2c_upgrade_response, write_simple_response,
-};
 use crate::async_util::send_best_effort;
 use crate::bridge::RequestBodyCounter;
 use crate::config::ServerConfig;
 use crate::error::{ErrorKind, H2CornError, Http1Error};
+use crate::h1::http::{
+    H1HttpTransport, write_empty_response, write_h2c_upgrade_response, write_simple_response,
+};
+use crate::h1::parse::read_request;
 use crate::h2::{UpgradedH2Request, serve_h2_upgraded_connection};
 use crate::h2_frame::PeerSettings;
 use crate::http::app::{HttpRequestBody, poll_app_task_once};

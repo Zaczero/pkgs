@@ -4,7 +4,7 @@
 )]
 
 pub(crate) mod status_code {
-    use super::HttpStatusCode;
+    use crate::http::types::HttpStatusCode;
 
     pub(crate) const SWITCHING_PROTOCOLS: HttpStatusCode = HttpStatusCode::constant(101);
     /// Deliberately outside `common_status_codes!`: 103 is never a final

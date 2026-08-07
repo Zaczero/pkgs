@@ -4,7 +4,7 @@ mod dict_api {
 
     use pyo3::{PyErr, ffi};
 
-    use super::*;
+    use crate::python::{Bound, Py, PyAny, PyDict, PyResult, PyString, Python};
 
     pub(super) type CachedKey = (Py<PyString>, ffi::Py_hash_t);
 
@@ -116,9 +116,9 @@ mod dict_api {
 
 #[cfg(any(PyPy, GraalPy, Py_LIMITED_API))]
 mod dict_api {
-    use pyo3::types::PyDictMethods;
+    use pyo3::types::PyDictMethods as _;
 
-    use super::*;
+    use crate::python::{Bound, Py, PyAny, PyDict, PyResult, PyString, Python};
 
     pub(super) type CachedKey = Py<PyString>;
 

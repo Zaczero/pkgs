@@ -1,8 +1,8 @@
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use super::{actions, controller, transport};
 use crate::http::app::AdmittedHttpOutboundEvent;
+use crate::http::response::{actions, controller, transport};
 use crate::http::types::{HttpStatusCode, status_code};
 use crate::log::ResponseLogState;
 use crate::{bridge, error, http};

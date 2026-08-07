@@ -2,11 +2,11 @@ use std::mem;
 
 use pyo3::exceptions::PyValueError;
 
-use super::actions;
 #[cfg(test)]
 use crate::bridge;
 use crate::error::{self, ErrorExt as _};
 use crate::http;
+use crate::http::response::actions;
 
 #[derive(Debug)]
 enum ResponseState {

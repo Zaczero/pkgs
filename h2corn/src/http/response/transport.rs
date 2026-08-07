@@ -1,7 +1,7 @@
-use super::actions::{ResponseAction, ResponseActions};
 use crate::bridge::HttpOutboundEvent;
 use crate::error::H2CornError;
 use crate::http::app::{AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendState};
+use crate::http::response::actions::{ResponseAction, ResponseActions};
 
 pub(crate) trait HttpResponseTransport {
     /// HTTP/1 has no cross-stream body backlog. HTTP/2 overrides this with a
