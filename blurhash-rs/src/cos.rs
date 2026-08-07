@@ -37,7 +37,7 @@ pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
         let mut cache = cache.borrow_mut();
         for (k, v) in cache.iter() {
             if *k == key {
-                return v.clone();
+                return Rc::clone(v);
             }
         }
 
@@ -47,7 +47,7 @@ pub(crate) fn cos_axis_cached(len: usize, components: usize) -> Rc<[f32]> {
         }
 
         let rc: Rc<[f32]> = precompute_cos_axis(len, components).into();
-        cache.push((key, rc.clone()));
+        cache.push((key, Rc::clone(&rc)));
         rc
     })
 }
@@ -58,7 +58,7 @@ pub(crate) fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
         let mut cache = cache.borrow_mut();
         for (k, v) in cache.iter() {
             if *k == key {
-                return v.clone();
+                return Rc::clone(v);
             }
         }
 
@@ -86,7 +86,7 @@ pub(crate) fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
         }
 
         let rc: Rc<[V4]> = out.into();
-        cache.push((key, rc.clone()));
+        cache.push((key, Rc::clone(&rc)));
         rc
     })
 }

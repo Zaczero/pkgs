@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use crate::color::{
     BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
 };
-use crate::errors::Error;
+use crate::errors::BlurhashError;
 use crate::{base83, cos, srgb};
 
 struct ComponentGrid {
@@ -24,10 +24,10 @@ pub(crate) fn encode_rgb(
     height: usize,
     x_components: u8,
     y_components: u8,
-) -> Result<String, Error> {
+) -> Result<String, BlurhashError> {
     let rgb_len = width * height * 3;
     if unlikely(rgb.len() != rgb_len) {
-        return Err(Error::InvalidRGBBufferLength {
+        return Err(BlurhashError::InvalidRGBBufferLength {
             expected: rgb_len,
             got: rgb.len(),
         });
@@ -52,9 +52,9 @@ pub(crate) fn encode_rgb(
     ))
 }
 
-fn validate_component_count(axis: &'static str, count: u8) -> Result<(), Error> {
+fn validate_component_count(axis: &'static str, count: u8) -> Result<(), BlurhashError> {
     if unlikely(count == 0 || usize::from(count) > MAX_COMPONENTS) {
-        return Err(Error::InvalidComponentCount { axis, got: count });
+        return Err(BlurhashError::InvalidComponentCount { axis, got: count });
     }
     Ok(())
 }
@@ -117,7 +117,7 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
         let mut row = row_vectors();
 
         let rgb_row = &rgb[y * width * 3..(y + 1) * width * 3];
-        for (cos_x_pixel, pixel) in cos_x_pixels.iter().zip(rgb_row.chunks_exact(3)) {
+        for (cos_x_pixel, pixel) in cos_x_pixels.iter().zip(rgb_row.as_chunks::<3>().0) {
             let r = srgb::srgb_u8_to_linear(pixel[0]);
             let g = srgb::srgb_u8_to_linear(pixel[1]);
             let b = srgb::srgb_u8_to_linear(pixel[2]);

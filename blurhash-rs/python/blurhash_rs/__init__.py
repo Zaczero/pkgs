@@ -4,7 +4,7 @@ from contextlib import nullcontext
 
 from PIL import Image
 
-from ._lib import decode_rgb, encode_rgb
+from blurhash_rs._lib import decode_rgb, encode_rgb
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:

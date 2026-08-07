@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum Error {
+pub(crate) enum BlurhashError {
     #[error("Invalid RGB buffer length: expected {expected}, got {got}")]
     InvalidRGBBufferLength { expected: usize, got: usize },
     #[error("Invalid {axis} component count: expected 1..=9, got {got}")]
@@ -14,7 +14,7 @@ pub(crate) enum Error {
     BlurhashLengthMismatch { expected: usize, got: usize },
 }
 
-impl Error {
+impl BlurhashError {
     pub(crate) fn into_pyerr(self) -> PyErr {
         PyValueError::new_err(self.to_string())
     }

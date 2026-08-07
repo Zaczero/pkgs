@@ -25,8 +25,7 @@ fn linear_to_srgb_u8(v: f32) -> u8 {
 }
 
 fn separated_hex_u32(value: u32) -> String {
-    let digits = format!("{value:08x}");
-    format!("{}_{}", &digits[..4], &digits[4..])
+    format!("{:04x}_{:04x}", value >> 16, value & 0xFFFF)
 }
 
 fn main() {

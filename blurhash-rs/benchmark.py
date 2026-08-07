@@ -6,7 +6,7 @@ from PIL import Image
 
 
 def _pil_rgb_image_to_3d_array(img: Image.Image) -> list[list[list[int]]]:
-    data = list(img.getdata())  # type: ignore
+    data = list(img.getdata())  # pyright: ignore[reportArgumentType]
     pixels: list[list[list[int]]] = []
     p = 0
     for _y in range(img.height):

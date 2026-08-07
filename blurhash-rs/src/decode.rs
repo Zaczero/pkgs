@@ -1,10 +1,10 @@
 use std::hint::unlikely;
-use std::simd::num::SimdFloat;
+use std::simd::num::SimdFloat as _;
 
 use crate::color::{
     BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
 };
-use crate::errors::Error;
+use crate::errors::BlurhashError;
 use crate::{base83, cos, srgb};
 
 const AC_QUANT_LEVELS: usize = 19;
@@ -39,7 +39,7 @@ pub(crate) fn decode_rgb_into(
     height: usize,
     punch: f32,
     out_pixels: &mut [u8],
-) -> Result<(), Error> {
+) -> Result<(), BlurhashError> {
     if unlikely(width == 0 || height == 0) {
         return Ok(());
     }
@@ -53,16 +53,16 @@ pub(crate) fn decode_rgb_into(
     Ok(())
 }
 
-fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Error> {
+fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, BlurhashError> {
     if unlikely(bytes.len() < 6) {
-        return Err(Error::BlurhashLengthMismatch {
+        return Err(BlurhashError::BlurhashLengthMismatch {
             expected: 6,
             got: bytes.len(),
         });
     }
 
     let Some(size_flag) = base83::decode_byte(bytes[0]) else {
-        return Err(Error::BlurhashMalformed { index: 0 });
+        return Err(BlurhashError::BlurhashMalformed { index: 0 });
     };
     let size_flag = size_flag as usize;
     let num_y = (size_flag / MAX_COMPONENTS) + 1;
@@ -71,14 +71,14 @@ fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Error> {
     let expected_len = 4 + 2 * num_components;
 
     if unlikely(bytes.len() != expected_len) {
-        return Err(Error::BlurhashLengthMismatch {
+        return Err(BlurhashError::BlurhashLengthMismatch {
             expected: expected_len,
             got: bytes.len(),
         });
     }
 
     let Some(quantised_max_value) = base83::decode_byte(bytes[1]) else {
-        return Err(Error::BlurhashMalformed { index: 1 });
+        return Err(BlurhashError::BlurhashMalformed { index: 1 });
     };
     let quantised_max_value = f32::from(quantised_max_value);
     let max_value = ((quantised_max_value + 1.0) / 166.0) * punch.max(1.0);
@@ -95,10 +95,10 @@ const fn validate_output_buffer(
     width: usize,
     height: usize,
     out_pixels: &[u8],
-) -> Result<(), Error> {
+) -> Result<(), BlurhashError> {
     let out_len = width * height * 3;
     if out_pixels.len() != out_len {
-        return Err(Error::InvalidRGBBufferLength {
+        return Err(BlurhashError::InvalidRGBBufferLength {
             expected: out_len,
             got: out_pixels.len(),
         });
@@ -109,13 +109,13 @@ const fn validate_output_buffer(
 fn decode_component_vectors(
     bytes: &[u8],
     layout: &DecodeLayout,
-) -> Result<ComponentVectors, Error> {
+) -> Result<ComponentVectors, BlurhashError> {
     let mut colors = component_vectors();
     let Some(dc_bytes) = bytes[2..].first_chunk::<4>() else {
         unreachable!("layout validation ensures a four-character DC component")
     };
     let Some(dc_value) = base83::decode_array(dc_bytes) else {
-        return Err(Error::BlurhashMalformed { index: 2 });
+        return Err(BlurhashError::BlurhashMalformed { index: 2 });
     };
     colors[RED][0].as_mut_array()[0] = srgb::srgb_u8_to_linear((dc_value >> 16) as u8);
     colors[GREEN][0].as_mut_array()[0] = srgb::srgb_u8_to_linear(((dc_value >> 8) & 255) as u8);
@@ -128,10 +128,10 @@ fn decode_component_vectors(
             unreachable!("layout validation ensures every AC component has two characters")
         };
         let Some(value) = base83::decode_array(value_bytes) else {
-            return Err(Error::BlurhashMalformed { index: start });
+            return Err(BlurhashError::BlurhashMalformed { index: start });
         };
         if unlikely(value >= AC_VALUE_LIMIT) {
-            return Err(Error::BlurhashMalformed { index: start });
+            return Err(BlurhashError::BlurhashMalformed { index: start });
         }
 
         let quant_r = (value / (AC_QUANT_LEVELS_U32 * AC_QUANT_LEVELS_U32)) as usize;
