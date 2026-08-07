@@ -219,9 +219,20 @@ mod tests {
         const OPERATIONS: usize = 4;
         const DEPTH: u32 = 8;
 
+        // Reused across programs rather than rebuilt: the enumeration runs
+        // 4^DEPTH programs per instantiation, so a fresh pair per program is
+        // hundreds of thousands of spilled allocations that the state model
+        // does not need. `clear()` is itself under test, so each program
+        // additionally asserts the cleared state before it starts.
+        let mut queue = InlineFifo::<u32, N>::new();
+        let mut model = VecDeque::new();
+
         for mut program in 0..OPERATIONS.pow(DEPTH) {
-            let mut queue = InlineFifo::<u32, N>::new();
-            let mut model = VecDeque::new();
+            queue.clear();
+            model.clear();
+            assert_eq!(queue.len(), 0);
+            assert_eq!(queue.front, 0);
+            assert_eq!(queue.items.len(), 0);
             let mut next = 0_u32;
 
             for _ in 0..DEPTH {

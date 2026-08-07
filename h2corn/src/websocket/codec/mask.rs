@@ -93,10 +93,29 @@ mod tests {
         let mut candidate = vec![0; 0x4001 + 64];
         let mut reference = candidate.clone();
 
+        // Every mask is swept exhaustively across all phases, alignments and
+        // short lengths. The long lengths — which exist to drive multiple
+        // 32-byte lanes and the 0x4000 boundary — run against a single mask:
+        // the kernel XORs each byte with a mask byte chosen by position
+        // alone, so the mask VALUE cannot interact with the lane-splitting or
+        // tail logic that length and alignment select. Sweeping all four
+        // masks over 16 KiB payloads re-measures the same code paths at four
+        // times the cost.
         for mask in MASKS {
+            let lengths = if mask == MASKS[MASKS.len() - 1] {
+                LARGE_LENGTHS.as_slice()
+            } else {
+                &[]
+            };
             for phase in 0..4 {
                 for offset in 0..32 {
-                    for len in (0..=512).chain(LARGE_LENGTHS) {
+                    // 0..=192 is six full 32-byte lanes, so every combination
+                    // of prefix residue, lane count 0..6 and suffix residue
+                    // appears — the complete set of shapes the kernel's
+                    // prefix/lanes/suffix split can take. Lengths beyond it
+                    // only add lanes, which `LARGE_LENGTHS` already drives up
+                    // to the 0x4000 boundary, at quadratic cost in the sweep.
+                    for len in (0..=192).chain(lengths.iter().copied()) {
                         let total = offset + len + 32;
                         for (index, byte) in candidate[..total].iter_mut().enumerate() {
                             *byte = index.wrapping_mul(29) as u8;

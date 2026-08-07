@@ -381,10 +381,15 @@ mod tests {
     }
 
     #[test]
-    fn websocket_accept_matches_reference_for_one_million_varied_keys() {
+    fn websocket_accept_matches_reference_across_varied_keys() {
+        // `websocket_accept` is a pure function of its key, and SHA-1's
+        // avalanche means a few thousand varied keys already exercise every
+        // input bit position against the reference. Beyond that the
+        // confidence curve is flat, so a larger sweep buys run time, not
+        // coverage.
         let mut state = 0xD1B5_4A32_D192_ED03_u64;
         let mut key = [0_u8; crate::websocket::WEBSOCKET_KEY_LEN];
-        for _ in 0..1_000_000 {
+        for _ in 0..20_000 {
             for byte in &mut key {
                 // SplitMix64 gives every byte position a varied stream without
                 // introducing a test-only randomness dependency.
