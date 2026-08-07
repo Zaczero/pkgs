@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use crate::constants::{
     ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, scale_for_precision,
 };
-use crate::errors::Error;
+use crate::errors::PolylineError;
 use crate::zigzag::zigzag_encode;
 
 fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, f64)> {
@@ -11,10 +11,10 @@ fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, 
 
     let first = it
         .next()
-        .ok_or_else(|| Error::CoordinateMustContain2Values { index }.into_pyerr())??;
+        .ok_or_else(|| PolylineError::CoordinateMustContain2Values { index }.into_pyerr())??;
     let second = it
         .next()
-        .ok_or_else(|| Error::CoordinateMustContain2Values { index }.into_pyerr())??;
+        .ok_or_else(|| PolylineError::CoordinateMustContain2Values { index }.into_pyerr())??;
 
     Ok((first.extract()?, second.extract()?))
 }

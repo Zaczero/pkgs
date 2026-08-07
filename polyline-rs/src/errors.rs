@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum Error {
+pub(crate) enum PolylineError {
     #[error("Invalid coordinate: expected 2 values at index {index}")]
     CoordinateMustContain2Values { index: usize },
     #[error("Invalid polyline: byte 0x{byte:02x} at index {index} is outside encoded range")]
@@ -18,7 +18,7 @@ pub(crate) enum Error {
     CoordinateOverflow { index: usize },
 }
 
-impl Error {
+impl PolylineError {
     pub(crate) fn into_pyerr(self) -> PyErr {
         PyValueError::new_err(self.to_string())
     }

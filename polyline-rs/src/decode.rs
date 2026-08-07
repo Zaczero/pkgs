@@ -1,10 +1,10 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyListMethods};
+use pyo3::types::PyList;
 
 use crate::constants::{
     ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, inv_scale_for_precision,
 };
-use crate::errors::Error;
+use crate::errors::PolylineError;
 use crate::zigzag::zigzag_decode;
 
 const MAX_CHUNK: u8 = CHUNK_MASK | CONTINUATION_BIT;
@@ -29,28 +29,28 @@ impl<'a> DecodeCursor<'a> {
     }
 }
 
-fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, Error> {
+fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError> {
     let start = cursor.index;
     let mut value = 0_u32;
     let mut shift = 0;
 
     loop {
         if cursor.index == cursor.bytes.len() {
-            return Err(Error::UnterminatedPolylineValue { index: start });
+            return Err(PolylineError::UnterminatedPolylineValue { index: start });
         }
         let byte = cursor.bytes[cursor.index];
         cursor.index += 1;
 
         let b = byte.wrapping_sub(ASCII_OFFSET);
         if b > MAX_CHUNK {
-            return Err(Error::InvalidPolylineByte {
+            return Err(PolylineError::InvalidPolylineByte {
                 index: cursor.index - 1,
                 byte,
             });
         }
 
         if shift == MAX_SHIFT && b > 0b11 {
-            return Err(Error::PolylineValueOverflow { index: start });
+            return Err(PolylineError::PolylineValueOverflow { index: start });
         }
 
         value |= u32::from(b & CHUNK_MASK) << shift;
@@ -79,19 +79,19 @@ pub(crate) fn decode<'py, const LATLON: bool>(
 
     while !cursor.is_empty() {
         let coord_index = cursor.index();
-        let dlat = decode_next_value(&mut cursor).map_err(Error::into_pyerr)?;
+        let dlat = decode_next_value(&mut cursor).map_err(PolylineError::into_pyerr)?;
         let dlon = decode_next_value(&mut cursor).map_err(|err| match err {
-            Error::UnterminatedPolylineValue { .. } => {
-                Error::IncompletePolylineCoordinate { index: coord_index }.into_pyerr()
+            PolylineError::UnterminatedPolylineValue { .. } => {
+                PolylineError::IncompletePolylineCoordinate { index: coord_index }.into_pyerr()
             },
             err => err.into_pyerr(),
         })?;
         last_lat = last_lat
             .checked_add(dlat)
-            .ok_or_else(|| Error::CoordinateOverflow { index: coord_index }.into_pyerr())?;
+            .ok_or_else(|| PolylineError::CoordinateOverflow { index: coord_index }.into_pyerr())?;
         last_lon = last_lon
             .checked_add(dlon)
-            .ok_or_else(|| Error::CoordinateOverflow { index: coord_index }.into_pyerr())?;
+            .ok_or_else(|| PolylineError::CoordinateOverflow { index: coord_index }.into_pyerr())?;
 
         let lat = f64::from(last_lat) * inv_scale;
         let lon = f64::from(last_lon) * inv_scale;
