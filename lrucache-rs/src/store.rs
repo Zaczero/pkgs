@@ -168,7 +168,9 @@ impl Store {
             self.tail = idx;
         } else {
             // SAFETY: `prev_head` was the head; it is occupied while linked.
-            unsafe { self.node_mut(prev_head).prev = idx };
+            unsafe {
+                self.node_mut(prev_head).prev = idx;
+            }
         }
         self.head = idx;
         self.len += 1;
@@ -285,13 +287,17 @@ impl Store {
             self.head = next;
         } else {
             // SAFETY: `prev` is an occupied neighbour link.
-            unsafe { self.node_mut(prev).next = next };
+            unsafe {
+                self.node_mut(prev).next = next;
+            }
         }
         if next == INVALID {
             self.tail = prev;
         } else {
             // SAFETY: `next` is an occupied neighbour link.
-            unsafe { self.node_mut(next).prev = prev };
+            unsafe {
+                self.node_mut(next).prev = prev;
+            }
         }
     }
 
@@ -337,7 +343,9 @@ impl Store {
             n.next = prev_head;
         }
         // SAFETY: `prev_head` was occupied as the previous head.
-        unsafe { self.node_mut(prev_head).prev = idx };
+        unsafe {
+            self.node_mut(prev_head).prev = idx;
+        }
         self.head = idx;
     }
 }

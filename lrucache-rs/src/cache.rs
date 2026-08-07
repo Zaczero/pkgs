@@ -34,7 +34,7 @@ use std::num::NonZeroUsize;
 
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::sync::MutexExt;
+use pyo3::sync::MutexExt as _;
 use pyo3::types::{PyAny, PyTuple, PyType};
 use pyo3::{Py, ffi};
 
