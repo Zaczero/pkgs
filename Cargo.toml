@@ -54,11 +54,7 @@ return_self_not_must_use = "allow"
 struct_field_names = "allow"
 suboptimal_flops = "allow"
 unused_self = "allow"
-wildcard_imports = "allow"
 
-# New in clippy 2026: fires on sync impls of async trait methods, but its
-# Until the lint family is coherent, keep idiomatic `async fn` impls.
-# suggested rewrites then trip manual_async_fn / impl-trait-signature-match.
 absolute_paths = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
@@ -95,7 +91,7 @@ redundant_type_annotations = "warn"
 ref_patterns = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 same_name_method = "warn"
-self_named_module_files = "warn"
+mod_module_files = "warn"
 semicolon_inside_block = "warn"
 str_to_string = "warn"
 string_add = "warn"
