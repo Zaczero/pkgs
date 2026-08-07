@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum Error {
+pub(crate) enum TotpError {
     #[error("Invalid secret: invalid Base32 character at index {index}")]
     InvalidSecretChar { index: usize },
     #[error("Invalid secret: must be bytes or Base32 string")]
@@ -18,16 +18,16 @@ pub(crate) enum Error {
     TimeAndTimeWindowBothSet,
 }
 
-impl Error {
+impl TotpError {
     pub(crate) fn into_pyerr(self) -> PyErr {
         PyValueError::new_err(self.to_string())
     }
 }
 
-pub(crate) fn validate_digits(digits: u8) -> Result<(), Error> {
+pub(crate) fn validate_digits(digits: u8) -> Result<(), TotpError> {
     if (1..=9).contains(&digits) {
         Ok(())
     } else {
-        Err(Error::DigitsOutOfRange { digits })
+        Err(TotpError::DigitsOutOfRange { digits })
     }
 }

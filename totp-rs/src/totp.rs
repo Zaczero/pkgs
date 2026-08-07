@@ -4,7 +4,7 @@ use hmac::digest::{FixedOutputReset, KeyInit};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
-use subtle::ConstantTimeEq;
+use subtle::ConstantTimeEq as _;
 
 use crate::algorithm::Algorithm;
 

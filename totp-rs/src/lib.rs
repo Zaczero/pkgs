@@ -12,10 +12,10 @@ use std::num::NonZeroU32;
 use std::str;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyString, PyStringMethods};
+use pyo3::types::{PyInt, PyString};
 
 use crate::algorithm::parse_algorithm;
-use crate::errors::{Error, validate_digits};
+use crate::errors::{TotpError, validate_digits};
 use crate::secret::parse_secret_from_py;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
@@ -94,7 +94,7 @@ fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: NonZeroU32) -> Op
 #[pyfunction]
 #[pyo3(signature = (time = None, *, step_seconds = 30, t0 = 0))]
 fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> PyResult<i64> {
-    time_window_from_time(time, step_seconds, t0).map_err(Error::into_pyerr)
+    time_window_from_time(time, step_seconds, t0).map_err(TotpError::into_pyerr)
 }
 
 #[pyfunction]
@@ -109,10 +109,10 @@ fn totp_generate(
     step_seconds: i64,
     t0: i64,
 ) -> PyResult<Py<PyString>> {
-    validate_digits(digits).map_err(Error::into_pyerr)?;
-    let algorithm = parse_algorithm(algorithm).map_err(Error::into_pyerr)?;
+    validate_digits(digits).map_err(TotpError::into_pyerr)?;
+    let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
     let counter =
-        resolve_counter(time, time_window, step_seconds, t0).map_err(Error::into_pyerr)?;
+        resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
 
     let secret = parse_secret_from_py(secret)?;
     let modulus = modulus_for_digits(digits);
@@ -135,10 +135,10 @@ fn totp_verify(
     t0: i64,
     window: u8,
 ) -> PyResult<bool> {
-    validate_digits(digits).map_err(Error::into_pyerr)?;
-    let algorithm = parse_algorithm(algorithm).map_err(Error::into_pyerr)?;
+    validate_digits(digits).map_err(TotpError::into_pyerr)?;
+    let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
     let counter =
-        resolve_counter(time, time_window, step_seconds, t0).map_err(Error::into_pyerr)?;
+        resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
 
     let modulus = modulus_for_digits(digits);
     let Some(code) = parse_code_py(code, digits, modulus) else {

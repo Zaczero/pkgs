@@ -236,7 +236,7 @@ def test_invalid_inputs() -> None:
         ValueError,
         match='Invalid algorithm: expected sha1, sha256, or sha512',
     ):
-        totp_generate(SECRET_SHA1, algorithm='md5')  # type: ignore
+        totp_generate(SECRET_SHA1, algorithm='md5')  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(
         ValueError,

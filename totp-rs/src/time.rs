@@ -1,7 +1,7 @@
 use std::hint::unlikely;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::errors::Error;
+use crate::errors::TotpError;
 
 fn time_seconds_or_default(time: Option<f64>) -> i64 {
     if let Some(value) = time {
@@ -18,9 +18,9 @@ pub(crate) fn time_window_from_time(
     time: Option<f64>,
     step_seconds: i64,
     t0: i64,
-) -> Result<i64, Error> {
+) -> Result<i64, TotpError> {
     if unlikely(step_seconds == 0) {
-        return Err(Error::StepSecondsMustBeNonZero);
+        return Err(TotpError::StepSecondsMustBeNonZero);
     }
 
     let diff = time_seconds_or_default(time) - t0;
@@ -32,9 +32,9 @@ pub(crate) fn resolve_counter(
     time_window: Option<i64>,
     step_seconds: i64,
     t0: i64,
-) -> Result<i64, Error> {
+) -> Result<i64, TotpError> {
     if unlikely(time.is_some() && time_window.is_some()) {
-        return Err(Error::TimeAndTimeWindowBothSet);
+        return Err(TotpError::TimeAndTimeWindowBothSet);
     }
 
     match time_window {
