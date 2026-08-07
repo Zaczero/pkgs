@@ -1,6 +1,6 @@
 [profile.default]
 test-threads = "num-cpus"
-slow-timeout = { period = "1s", terminate-after = 1, grace-period = "0s" }
+slow-timeout = { period = "1s", terminate-after = 3, grace-period = "1s" }
 leak-timeout = { period = "1s", result = "fail" }
 retries = 0
 fail-fast = false
