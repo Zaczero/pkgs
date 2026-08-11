@@ -482,9 +482,14 @@ h2corn/bench/results/instr/
 h2corn/bench/results/*_summary.json
 h2corn/bench/results/*.sock
 
-# gometry: raw release bench dumps
-gometry/benches/results/releases/
-gometry/dev/
+# gometry: the only genuinely package-specific rules (build artifacts and
+# LICENSE-*.md are already covered by the general `target/` and `**/LICENSE*.md`
+# rules above). This coverage output is gometry-tool-specific:
+gometry/coverage-python/
+# The root Node-template `coverage` rule would otherwise hide this Rust source
+# module; generated Python coverage reports remain ignored above.
+!gometry/src/geometry/coverage/
+!gometry/src/geometry/coverage/**
 
 # mkdocs / properdocs build output (any package)
 **/site/
