@@ -1,30 +1,25 @@
 ---
-description: gometry benchmark methodology, release profiles, and evidence rules.
+description: gometry benchmark methodology, release profiles, and competitive tables.
 ---
 
 # Benchmarks
 
 Performance claims must measure the public API users call, compare equivalent
-semantics, and report uncertainty. A one-off timing loop is useful for finding a
-lead, not for publishing a result.
-
-## Evidence status
-
-The pre-release API and harness have changed since the last exploratory run, so
-there is currently **no locked v1.0.0 performance baseline and no published
-faster/slower claim**. The release profile must be rerun on the final worktree
-before the first public release. This avoids presenting stale measurements as
-evidence for a different API or implementation.
+semantics against ecosystem competitors (Shapely, pyproj, h3-py, GeoPandas,
+Mercantile, …), and report uncertainty. A one-off timing loop is useful for
+finding a lead, not for publishing a result. gometry v1.0.0 has no prior public
+release, so every comparison is gometry versus a competitor — never gometry
+versus an older gometry.
 
 ## The two profiles
 
 [`benches/support/_bench_registry.py`](https://github.com/Zaczero/pkgs/tree/main/gometry/benches/support/_bench_registry.py)
-is the single manifest for both profiles.
+is the single ordered manifest (`RELEASE_OPERATIONS`) for both profiles.
 
 | Profile | Purpose | Sampling |
 |---|---|---|
-| `smoke` | Prove the curated rows import, execute, and validate their outputs. | One debug value per row. |
-| `release` | Produce the reproducible comparison artifact used by release notes. | 6 processes per row; competitor pairs split evenly across A/B and B/A lead order. |
+| `smoke` | Prove the curated rows import, execute, and pass the untimed oracle. | One debug value per logical operation. |
+| `release` | Produce the competitive comparison table for the docs. | Each competitive pair once as A/B and once as B/A, three processes per ordering. |
 
 There is no standard/full/exhaustive profile matrix. Focused optimization work
 uses the interleaved A/B harness; the release driver stays bounded and has one
@@ -38,10 +33,19 @@ Build the current extension first:
 uv run --no-project --python .venv/bin/python --with maturin==1.14.1 maturin develop --release
 ```
 
-Check the manifest and dependencies:
+**Two-step flow** (oracle + timing, then presentation):
 
 ```bash
-.venv/bin/python benches/drivers/bench.py --profile smoke
+# 1) Run the profile (writes a run manifest JSON with embedded public_operations)
+.venv/bin/python benches/drivers/bench.py --profile smoke \
+  --output-dir target/bench/results
+# or, for publishable evidence on a quiet host:
+.venv/bin/python benches/drivers/bench.py --profile release \
+  --output-dir target/bench/results
+
+# 2) Render the competitive table from that exact run JSON
+.venv/bin/python benches/support/summarize_bench.py \
+  target/bench/results/<timestamp>-<profile>.json --format md
 ```
 
 Inspect the exact release commands without executing them:
@@ -50,60 +54,66 @@ Inspect the exact release commands without executing them:
 .venv/bin/python benches/drivers/bench.py --profile release --plan-only
 ```
 
-Then run the release profile on a quiet host and keep the JSON/Markdown outputs:
+The driver prints the run-manifest path; pass that file to `summarize_bench.py`
+rather than a directory that may contain several runs. The summarizer reads the
+ordered `public_operations` metadata embedded in the run JSON (domains, labels,
+workloads, competitor labels, footnotes) and never re-infers them from raw row
+names. Rows stay in the manifest editorial order (hero-first per domain). Smoke,
+filtered, failed-oracle, and otherwise nonpublishable runs show a visible banner
+and are not release evidence.
 
-```bash
-.venv/bin/python benches/drivers/bench.py --profile release \
-  --output-dir benches/results/baseline
-```
-
-Summarize competitor parity from that run's exact manifest (the driver prints
-its path):
-
-```bash
-.venv/bin/python benches/support/summarize_bench.py \
-  benches/results/baseline/<timestamp>-release.json --format md
-```
-
-Use the run manifest rather than a directory containing several runs; the
-manifest pins the exact A/B and B/A artifact set that belongs together.
-
-The orchestrator always runs the complete profile: gometry kernels, direct
-competitor pairs, and real-world pairs when no filter is supplied. `--filter`
-accepts exact row names for a focused sampled check, but its output is marked as
-a partial manifest, omits the whole-profile resource probes, and is never
+The orchestrator always runs the complete profile when no filter is supplied.
+`--filter` accepts exact row names for a focused sampled check, but its output
+is marked nonpublishable, omits the whole-profile resource probes, and is never
 release evidence. Exploratory cases that are not release rows belong in
 `benches/cases/` and run through `bench_ab.py`.
 
 Release comparisons require a quiet committed worktree, performance governors,
-all competitor dependencies, and a kernel-isolated CPU. Each competitive pair
-runs immediately in both lead orders with three pyperf processes per pass, so
-each row still receives six processes while slow machine drift cannot favor one
-library consistently. Four fresh-process probes additionally retain call-level
-p50/p99/p99.9 samples and record absolute process peak RSS, post-setup RSS
-growth, and Python allocation peaks. The driver checks contention again after
-the last probe; a run is marked
+the competitor packages required by the selected operations, and a
+kernel-isolated CPU. Each competitive pair runs immediately in both lead orders
+with three pyperf processes per pass, so each row still receives six processes
+while slow machine drift cannot favor one library consistently. Four
+fresh-process probes additionally retain call-level p50/p99/p99.9 samples and
+record absolute process peak RSS, post-setup RSS growth, and Python allocation
+peaks. The driver checks contention again after the last probe; a run is marked
 publishable only when the full manifest succeeds with clean preflight and
-postflight evidence.
+postflight evidence (a quiet host is required for a table worth pasting).
 
 ## What the release manifest covers
 
-- geometry construction and vectorized predicates;
-- WKB ingestion and representative constructive operations;
-- H3 and S2 construction;
-- CRS transforms, bounds, factors, and ellipsoidal geodesics;
-- spatial-index build, query, nearest, and dense pair workloads;
-- real-world country GeoJSON parsing, bounds, area, and representative points.
+Six domains (32 logical operations; 31 competitive pairs + one honest S2-only
+row):
 
-Competitor rows use Shapely, pyproj, h3-py, and s2sphere only where the input,
-semantics, and output shape are meaningfully comparable. A candidate-only index
-query is not compared with an exact predicate, and planar area is not presented
-as equivalent to ellipsoidal area.
+1. **Array construction & I/O** — mixed EWKB round-trip, GeoArrow ingest
+   (including BinaryView WKB), coordinate extraction, NumPy point construction.
+2. **Geometry** — prepared contains XY, dwithin, area/length, simplify, buffer,
+   intersection, union_all, coverage_union, is_valid, repair.
+3. **CRS & geodesy** — masked `to_crs` (in-core path), vector `crs_transform`,
+   geodesic distance and destination.
+4. **Discrete global grids** — H3 cover/compact, adaptive S2 cover (gometry-only),
+   tile bbox cover.
+5. **Spatial index** — join/within, candidates, nearest k=1, tree build.
+6. **Real-world workflows** — country GeoJSON parse, ellipsoidal area and
+   exterior length.
+
+Competitor rows use Shapely, pyproj, h3-py, GeoPandas, and Mercantile only where
+the input, semantics, and output shape are meaningfully comparable. The S2
+adaptive cover row is gometry-only (s2sphere has no equivalent polygon coverer)
+and is excluded from every speedup statistic. A candidate-only index query is
+not compared with an exact predicate, and planar area is not presented as
+equivalent to ellipsoidal area.
+
+Speedup language is ratio = competitor_time / gometry_time: solo → "—",
+statistical tie → "≈ parity", ratio ≥ 1 → "{r:.2f}× faster", ratio < 1 →
+"{r:.2f}× as fast". Domain headlines use the geometric mean of pair ratios;
+the overall headline is the geometric mean of domain geomeans (equal domain
+weight, so Geometry's larger row count does not dominate).
 
 ## Per-change A/B measurements
 
-For an implementation optimization, compare separate baseline and candidate
-environments with the balanced harness:
+For an implementation optimization, compare separate environments with the
+balanced harness (this is local engineering evidence, not the published
+competitive table):
 
 ```bash
 .venv/bin/python benches/drivers/bench_ab.py \
@@ -124,13 +134,23 @@ a 300-second hard timeout, so a broken probe cannot hang the A/B run indefinitel
 ## Reading results
 
 - Compare steady-state distributions, not one point estimate.
-- Publish ties and regressions alongside wins.
+- Publish ties alongside wins.
 - Separate conversion cost from kernel cost.
 - Record Python/Rust/dependency versions, hardware, affinity/governor, and host
   contention with the raw artifact.
 - Include peak memory/allocation and tail latency when those dimensions matter
   to the real workload.
-- Run correctness/oracle tests before trusting a faster result.
+- Run the untimed cross-library oracle before trusting a faster result.
 
-The release report and raw JSON are the source of truth. This guide explains the
-method; it does not substitute for measurements.
+The release JSON artifacts and the domain-grouped markdown table are the source
+of truth. This guide explains the method; it does not substitute for
+measurements.
+
+## Results
+
+!!! note "Release table pending"
+
+    The competitive table is generated by the two-step release flow above
+    (`bench.py --profile release` then `summarize_bench.py … --format md`) on a
+    quiet, committed, kernel-isolated host and pasted here at release. No
+    publishable numbers have been recorded yet — do not invent them.

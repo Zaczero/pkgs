@@ -24,8 +24,40 @@ for _path in (_SUPPORT, _DRIVERS, _PYTHON):
         sys.path.insert(0, str(_path))
 
 from _bench_pairs import pair_orderings, pair_units
-from _bench_registry import CHUNK_SIZE, PROFILES, SCRIPTS, SUITES, Profile
+from _bench_registry import (
+    CHUNK_SIZE,
+    PROFILES,
+    SCRIPTS,
+    SUITES,
+    Profile,
+    ReleaseOperation,
+    expand_filter_to_pairs,
+)
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
+
+
+def _serialize_public_operations(
+    operations: tuple[ReleaseOperation, ...],
+    selected: dict[str, tuple[str, ...]],
+) -> list[dict[str, object]]:
+    """Ordered operation records for the run JSON (summarizer input)."""
+    selected_names = {name for rows in selected.values() for name in rows}
+    records: list[dict[str, object]] = []
+    for op in operations:
+        if not any(name in selected_names for name in op.rows):
+            continue
+        records.append({
+            'domain': op.domain,
+            'label': op.label,
+            'workload': op.workload,
+            'suite': op.suite,
+            'gometry': op.gometry,
+            'competitor': op.competitor,
+            'competitor_label': op.competitor_label,
+            'footnotes': list(op.footnotes),
+        })
+    return records
+
 
 _OUTPUT_TAIL = 10_000
 
@@ -45,6 +77,10 @@ def _select(
     if value is None:
         return rows
     requested = {name.strip() for name in value.split(',') if name.strip()}
+    if not requested:
+        raise SystemExit('--filter must contain at least one benchmark row name')
+    # Selecting either raw member expands to the complete pair.
+    requested = expand_filter_to_pairs(requested)
     available = {name for suite_rows in rows.values() for name in suite_rows}
     unknown = sorted(requested - available)
     if unknown:
@@ -78,6 +114,69 @@ def _validate_release_manifest(profile: Profile) -> None:
             )
 
 
+def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
+    """Fail closed before timing/planning when a selected op has no builder.
+
+    Manifest↔builder must be an exact bijection for every selected gometry
+    row; orphans against the full public set are also rejected.
+    """
+    # Local import: builders register numpy-heavy public cases.
+    from _bench_oracles import PUBLIC_CASE_BUILDERS
+    from _bench_registry import RELEASE_OPERATIONS
+    import _bench_public_cases as _public_cases  # noqa: F401
+    from bench_oracle import validate_builders
+
+    gometry_names = [
+        name
+        for suite_rows in selected.values()
+        for name in suite_rows
+        if name.startswith('gometry.')
+    ]
+    by_name = {op.gometry: op for op in RELEASE_OPERATIONS}
+    by_any = {row: op for op in RELEASE_OPERATIONS for row in op.rows}
+    seen: set[str] = set()
+    operations = []
+    for name in gometry_names:
+        op = by_name.get(name) or by_any.get(name)
+        if op is None or op.gometry in seen:
+            continue
+        seen.add(op.gometry)
+        operations.append(op)
+    if not operations:
+        # Full-manifest oracle path (--all) when no gometry rows selected.
+        operations = list(RELEASE_OPERATIONS)
+    validate_builders(operations, PUBLIC_CASE_BUILDERS)
+
+
+def _oracle_command(selected: dict[str, tuple[str, ...]]) -> list[str]:
+    """Build the single oracle subprocess command for selected logical ops."""
+    gometry_names = [
+        name
+        for suite_rows in selected.values()
+        for name in suite_rows
+        if name.startswith('gometry.')
+    ]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in gometry_names:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    if not ordered:
+        return [
+            '.venv/bin/python',
+            'benches/python/bench_oracle.py',
+            '--all',
+        ]
+    return [
+        '.venv/bin/python',
+        'benches/python/bench_oracle.py',
+        '--operations',
+        ','.join(ordered),
+    ]
+
+
 def _pyperf_command(
     script: str,
     output: Path,
@@ -94,7 +193,8 @@ def _pyperf_command(
         '--timeout',
         str(profile.row_timeout),
         '--inherit-environ',
-        'GOMETRY_BENCH_FILTER,GOMETRY_BENCH_PROFILE,GOMETRY_BENCH_ORCHESTRATED',
+        'GOMETRY_BENCH_FILTER,GOMETRY_BENCH_PROFILE,GOMETRY_BENCH_ORCHESTRATED,'
+        'GOMETRY_BENCH_ORACLE_OK',
         '--output',
         str(output),
     ]
@@ -419,6 +519,8 @@ def main() -> None:
     if args.profile == 'release':
         _validate_release_manifest(profile)
     selected = _select(_rows(profile), args.filter)
+    # Builder bijection is pre-timing for smoke and release (incl. plan-only).
+    _validate_oracle_builders(selected)
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = GOMETRY_ROOT / output_dir
@@ -438,7 +540,26 @@ def main() -> None:
         plans.extend(
             _resource_plans(output_dir=output_dir, timestamp=timestamp, cpu=cpu)
         )
-    doctor = collect()
+    # Oracle runs once after env/manifest validation and before timing.
+    oracle_plan: dict[str, Any] = {
+        'kind': 'oracle',
+        'suite': 'oracle',
+        'label': 'oracle',
+        'rows': (),
+        'environment': None,
+        'command': _oracle_command(selected),
+        'output': None,
+    }
+    # Doctor package requirements follow the selected public operations so an
+    # internal-only dependency (e.g. s2sphere) never blocks the public S2-only row.
+    selected_ops = tuple(
+        op
+        for op in profile.operations
+        if any(
+            name in {n for rows in selected.values() for n in rows} for name in op.rows
+        )
+    )
+    doctor = collect(operations=selected_ops)
     doctor['metadata']['selected_cpu'] = cpu
     doctor['metadata']['selected_cpu_source'] = cpu_selection
     if args.profile == 'release' and cpu_selection.endswith('not-isolated'):
@@ -453,47 +574,86 @@ def main() -> None:
     )
     commands: list[dict[str, Any]] = []
     started = time.monotonic()
+    oracle_ok = False
     if not args.plan_only:
-        for plan in plans:
-            remaining = profile.total_timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                commands.append({
-                    'suite': plan['suite'],
-                    'label': plan['label'],
-                    'command': plan['command'],
-                    'returncode': 124,
-                    'timeout': True,
-                    'elapsed_seconds': 0.0,
-                    'stdout_tail': '',
-                    'stderr_tail': 'whole-run timeout exhausted',
-                })
-                break
-            result = _run(
-                plan['command'],
-                environment=plan['environment'],
-                timeout=min(profile.command_timeout, max(1, int(remaining))),
-            )
-            result['suite'] = plan['suite']
-            result['label'] = plan['label']
-            commands.append(result)
-            if result['returncode']:
-                break
+        oracle_result = _run(
+            oracle_plan['command'],
+            environment=None,
+            timeout=min(profile.command_timeout, profile.total_timeout),
+        )
+        oracle_result['suite'] = 'oracle'
+        oracle_result['label'] = 'oracle'
+        oracle_result['kind'] = 'oracle'
+        commands.append(oracle_result)
+        if oracle_result['returncode']:
+            # Failed oracle: zero pyperf commands, publishable=false, nonzero.
+            oracle_ok = False
+        else:
+            oracle_ok = True
+            for plan in plans:
+                remaining = profile.total_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    commands.append({
+                        'suite': plan['suite'],
+                        'label': plan['label'],
+                        'command': plan['command'],
+                        'returncode': 124,
+                        'timeout': True,
+                        'elapsed_seconds': 0.0,
+                        'stdout_tail': '',
+                        'stderr_tail': 'whole-run timeout exhausted',
+                    })
+                    break
+                env = dict(plan['environment'] or {})
+                env['GOMETRY_BENCH_ORACLE_OK'] = '1'
+                result = _run(
+                    plan['command'],
+                    environment=env,
+                    timeout=min(profile.command_timeout, max(1, int(remaining))),
+                )
+                result['suite'] = plan['suite']
+                result['label'] = plan['label']
+                result['kind'] = plan.get('kind', 'pyperf')
+                commands.append(result)
+                if result['returncode']:
+                    break
+    else:
+        # plan-only: surface oracle + timing/resource plans
+        plans = [oracle_plan, *plans]
+        oracle_ok = True
 
     contention_after = (
         collect_contention()
         if args.profile == 'release' and not args.plan_only
         else {'metadata': {}, 'warnings': []}
     )
-    commands_complete = len(commands) == len(plans) and all(
-        command['returncode'] == 0 for command in commands
-    )
-    artifacts = [plan['output'] for plan in plans if Path(plan['output']).is_file()]
+    # Oracle has no pyperf artifact; count timing/resource plans separately.
+    timing_plans = [plan for plan in plans if plan.get('kind') != 'oracle']
+    if args.plan_only:
+        # plans already includes oracle_plan at front
+        timing_plans = [plan for plan in plans if plan.get('kind') != 'oracle']
+    expected_commands = 1 + len(timing_plans)  # oracle + timing/resource
+    if args.plan_only:
+        commands_complete = True
+    else:
+        commands_complete = (
+            oracle_ok
+            and len(commands) == expected_commands
+            and all(command['returncode'] == 0 for command in commands)
+        )
+    artifacts = [
+        plan['output']
+        for plan in timing_plans
+        if plan.get('output') and Path(plan['output']).is_file()
+    ]
+    expected_artifacts = sum(1 for plan in timing_plans if plan.get('output'))
     publishable = (
         args.profile == 'release'
         and args.filter is None
         and not args.plan_only
+        and oracle_ok
         and commands_complete
-        and len(artifacts) == len(plans)
+        and len(artifacts) == expected_artifacts
         and not doctor['warnings']
         and not contention_after['warnings']
     )
@@ -513,13 +673,18 @@ def main() -> None:
         'benchmark_names': sorted({
             name for rows in selected.values() for name in rows
         }),
+        # Ordered editorial metadata for summarize_bench (never re-inferred).
+        'public_operations': _serialize_public_operations(profile.operations, selected),
         'elapsed_seconds': time.monotonic() - started,
         'doctor': doctor,
         'contention_after': contention_after,
         'selected_cpu': cpu,
         'selected_cpu_source': cpu_selection,
-        'planned_commands': plans,
+        'planned_commands': (
+            [oracle_plan, *timing_plans] if not args.plan_only else plans
+        ),
         'commands': commands,
+        'oracle_ok': oracle_ok if not args.plan_only else None,
         'artifacts': artifacts,
         'pyperf': {}
         if args.plan_only
@@ -534,11 +699,15 @@ def main() -> None:
     report.write_text(_markdown(result), encoding='utf-8')
     print(f'wrote {output}')
     print(f'wrote {report}')
-    if any(command['returncode'] for command in commands) or (
-        args.profile == 'release'
-        and not args.plan_only
-        and args.filter is None
-        and not publishable
+    if (
+        (not args.plan_only and not oracle_ok)
+        or any(command['returncode'] for command in commands)
+        or (
+            args.profile == 'release'
+            and not args.plan_only
+            and args.filter is None
+            and not publishable
+        )
     ):
         raise SystemExit(1)
 

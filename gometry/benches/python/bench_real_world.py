@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, cast
 
 import shapely
 import gometry as gm
@@ -13,13 +13,11 @@ from _bench_real_world_layers import (
 )
 from shapely import point_on_surface
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-_T = TypeVar('_T')
 FIXTURE = Path(__file__).resolve().parents[2] / 'fixtures' / 'osm_countries_0_1.geojson'
 GEOJSON = FIXTURE.read_text(encoding='utf-8')
-GOMETRY_PARTS = cast('gm.GeometryArray[gm.Geometry]', gm.from_geojson(GEOJSON))
+GOMETRY_PARTS = cast(
+    'gm.GeometryArray[gm.Geometry]', gm.from_geojson(GEOJSON, crs=4326)
+)
 GOMETRY_GEOMETRY = gm.GeometryCollection(list(GOMETRY_PARTS), crs=4326)
 COUNTRY_COUNT = len(GOMETRY_PARTS)
 COUNTRY_LABEL = f'{COUNTRY_COUNT}_countries'
@@ -38,46 +36,12 @@ SHAPELY_REAL_WORLD_LINES = tuple(
 SHAPELY_REAL_WORLD_POLYGON = shapely.box(*REAL_WORLD_POINTS.total_bounds)
 
 
-def _validate_checked_result(name: str, result: Any) -> None:
-    if name.endswith('from_geojson'):
-        if isinstance(result, gm.GeometryArray):
-            assert len(result) == COUNTRY_COUNT
-        else:
-            assert result.geom_type == 'GeometryCollection'
-    elif name.endswith(('bounds_cold', 'bounds_warm')):
-        assert len(result) == 4
-    elif name.endswith(('area_cold', 'area_warm')):
-        assert abs(result) > 0
-    elif name.endswith('point_on_surface'):
-        assert len(result) == COUNTRY_COUNT
-    elif name.endswith('buffer_points'):
-        assert result.area > 0
-    elif name.endswith('contains_points'):
-        assert len(result) == len(REAL_WORLD_POINTS)
-    elif name.endswith('length_lines'):
-        assert result > 0
-
-
-def _checked(name: str, func: Callable[[], _T]) -> Callable[[], _T]:
-    checked = False
-
-    def wrapper() -> _T:
-        nonlocal checked
-        result = func()
-        if not checked:
-            _validate_checked_result(name, result)
-            checked = True
-        return result
-
-    return wrapper
-
-
 def gometry_from_geojson() -> gm.GeometryArray:
-    return cast('gm.GeometryArray', gm.from_geojson(GEOJSON))
+    return cast('gm.GeometryArray', gm.from_geojson(GEOJSON, crs=4326))
 
 
 def gometry_bounds_cold() -> tuple[float, float, float, float] | None:
-    return cast('gm.GeometryArray', gm.from_geojson(GEOJSON)).total_bounds
+    return cast('gm.GeometryArray', gm.from_geojson(GEOJSON, crs=4326)).total_bounds
 
 
 def gometry_bounds_warm() -> tuple[float, float, float, float] | None:
@@ -85,7 +49,7 @@ def gometry_bounds_warm() -> tuple[float, float, float, float] | None:
 
 
 def gometry_area_cold() -> float:
-    return sum(cast('gm.GeometryArray', gm.from_geojson(GEOJSON)).area)
+    return sum(cast('gm.GeometryArray', gm.from_geojson(GEOJSON, crs=4326)).area)
 
 
 def gometry_area_warm() -> float:
@@ -157,77 +121,79 @@ def main() -> None:
     flush_benchmarks = queue_selected_benchmarks(runner, 'real_world')
     runner.bench_func(
         f'gometry.real_world.from_geojson/{COUNTRY_LABEL}',
-        _checked('gometry.from_geojson', gometry_from_geojson),
+        gometry_from_geojson,
     )
     runner.bench_func(
         f'gometry.real_world.bounds_cold/{COUNTRY_LABEL}',
-        _checked('gometry.bounds_cold', gometry_bounds_cold),
+        gometry_bounds_cold,
     )
     runner.bench_func(
         f'gometry.real_world.bounds_warm/{COUNTRY_LABEL}',
-        _checked('gometry.bounds_warm', gometry_bounds_warm),
+        gometry_bounds_warm,
     )
     runner.bench_func(
         f'gometry.real_world.area_cold/{COUNTRY_LABEL}',
-        _checked('gometry.area_cold', gometry_area_cold),
+        gometry_area_cold,
     )
-    runner.bench_func(
-        f'gometry.real_world.area_warm/{COUNTRY_LABEL}',
-        _checked('gometry.area_warm', gometry_area_warm),
-    )
+    # Planar area_warm deleted; public geodesic_area is the RELEASE metric.
     runner.bench_func(
         f'gometry.real_world.point_on_surface/{COUNTRY_LABEL}',
-        _checked('gometry.point_on_surface', gometry_point_on_surface),
+        gometry_point_on_surface,
     )
     runner.bench_func(
         f'shapely.real_world.from_geojson/{COUNTRY_LABEL}',
-        _checked('shapely.from_geojson', shapely_from_geojson),
+        shapely_from_geojson,
     )
     runner.bench_func(
         f'shapely.real_world.bounds_cold/{COUNTRY_LABEL}',
-        _checked('shapely.bounds_cold', shapely_bounds_cold),
+        shapely_bounds_cold,
     )
     runner.bench_func(
         f'shapely.real_world.bounds_warm/{COUNTRY_LABEL}',
-        _checked('shapely.bounds_warm', shapely_bounds_warm),
+        shapely_bounds_warm,
     )
     runner.bench_func(
         f'shapely.real_world.area_cold/{COUNTRY_LABEL}',
-        _checked('shapely.area_cold', shapely_area_cold),
+        shapely_area_cold,
     )
-    runner.bench_func(
-        f'shapely.real_world.area_warm/{COUNTRY_LABEL}',
-        _checked('shapely.area_warm', shapely_area_warm),
-    )
+    # Planar shapely area_warm deleted; public geodesic_area uses pyproj.
     runner.bench_func(
         f'shapely.real_world.point_on_surface/{COUNTRY_LABEL}',
-        _checked('shapely.point_on_surface', shapely_point_on_surface),
+        shapely_point_on_surface,
     )
     runner.bench_func(
         f'gometry.real_world.buffer_points/{COUNTRY_LABEL}',
-        _checked('gometry.buffer_points', gometry_buffer_points),
+        gometry_buffer_points,
     )
     runner.bench_func(
         f'gometry.real_world.contains_points/{COUNTRY_LABEL}',
-        _checked('gometry.contains_points', gometry_contains_points),
+        gometry_contains_points,
     )
     runner.bench_func(
         f'gometry.real_world.length_lines/{COUNTRY_LABEL}',
-        _checked('gometry.length_lines', gometry_length_lines),
+        gometry_length_lines,
     )
     runner.bench_func(
         f'shapely.real_world.buffer_points/{COUNTRY_LABEL}',
-        _checked('shapely.buffer_points', shapely_buffer_points),
+        shapely_buffer_points,
     )
     runner.bench_func(
         f'shapely.real_world.contains_points/{COUNTRY_LABEL}',
-        _checked('shapely.contains_points', shapely_contains_points),
+        shapely_contains_points,
     )
     runner.bench_func(
         f'shapely.real_world.length_lines/{COUNTRY_LABEL}',
-        _checked('shapely.length_lines', shapely_length_lines),
+        shapely_length_lines,
     )
+    _register_public_release_ops(runner, 'real_world')
     flush_benchmarks()
+
+
+def _register_public_release_ops(runner: Any, suite: str) -> None:
+    """Register Lane-2 public timed callables (selected rows only; lazy fixtures)."""
+    from _bench_config import register_selected_public_release_ops
+
+    register_selected_public_release_ops(runner, suite)
 
 
 if __name__ == '__main__':

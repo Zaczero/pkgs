@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import warnings
+from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import gometry as gm
@@ -11,8 +13,6 @@ from _bench_config import queue_selected_benchmarks
 from _bench_config import runner as bench_runner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import pyperf
 warnings.filterwarnings(
     'ignore',
@@ -20,7 +20,6 @@ warnings.filterwarnings(
     category=UserWarning,
     module='pyproj.transformer',
 )
-_T = TypeVar('_T')
 POINT_COUNT = 10000
 WKB_COUNT = 1000
 TEXT_COUNT = 1000
@@ -52,6 +51,7 @@ QUERY_BOX_COUNT = 1000
 ORDER_COUNT = 1000
 STRUCTURAL_COUNT = 1000
 TRIANGULATION_COUNT = 1000
+VORONOI_SCALE_COUNTS = (1000, 2000)
 POLYGONIZE_COUNT = 1000
 INVALID_COUNT = 1000
 RELATE_PATTERN = 'T*F**F***'
@@ -66,7 +66,7 @@ CRS_DATABASE_COUNT = 120
 REAL_WORLD_GEOJSON = (
     Path(__file__).resolve().parents[2] / 'fixtures' / 'osm_countries_0_1.geojson'
 ).read_text(encoding='utf-8')
-REAL_WORLD_GEOMETRY = gm.from_geojson(REAL_WORLD_GEOJSON).set_crs(4326)
+REAL_WORLD_GEOMETRY = gm.from_geojson(REAL_WORLD_GEOJSON, crs=4326)
 # One row per country: from_geojson parses the FeatureCollection straight to
 # a GeometryArray (parts() would flatten multipolygon members).
 REAL_WORLD_PARTS = list(REAL_WORLD_GEOMETRY)
@@ -264,6 +264,65 @@ SUMMARY_INPUTS = tuple(
     gm.Polygon([(0.0, 0.0), (2.0, 0.0), (2.0, 1.0 + i * 0.001), (0.0, 1.0), (0.0, 0.0)])
     for i in range(SUMMARY_COUNT)
 )
+
+
+def _stored_fraction(value: float) -> Fraction:
+    return Fraction(value)
+
+
+def _exact_mrr_area(geometry: gm.Geometry) -> Fraction:
+    """Exact stored-double support-width oracle, independent of MRR output."""
+    vertices = [
+        (_stored_fraction(x), _stored_fraction(y))
+        for x, y in list(geometry.exterior.coords)[:-1]
+    ]
+    best: Fraction | None = None
+    for index, (x1, y1) in enumerate(vertices):
+        for x2, y2 in vertices[index + 1 :]:
+            dx, dy = x2 - x1, y2 - y1
+            norm_squared = dx * dx + dy * dy
+            if norm_squared == 0:
+                continue
+            along = [dx * x + dy * y for x, y in vertices]
+            outward = [-dy * x + dx * y for x, y in vertices]
+            candidate = (
+                (max(along) - min(along)) * (max(outward) - min(outward)) / norm_squared
+            )
+            if best is None or candidate < best:
+                best = candidate
+    assert best is not None
+    return best
+
+
+SUMMARY_MRR_EXPECTED_AREAS = tuple(
+    _exact_mrr_area(geometry) for geometry in SUMMARY_INPUTS
+)
+
+
+def _validate_summary_mrr() -> None:
+    """Validate once before timing; the timed callable remains construction-only."""
+    results = gometry_minimum_rotated_rectangle()
+    assert len(results) == len(SUMMARY_INPUTS)
+    for source, result, expected_area in zip(
+        SUMMARY_INPUTS, results, SUMMARY_MRR_EXPECTED_AREAS, strict=True
+    ):
+        assert math.isfinite(result.area)
+        assert math.isclose(
+            result.area, float(expected_area), rel_tol=2e-14, abs_tol=0.0
+        )
+        ring = [
+            (_stored_fraction(x), _stored_fraction(y))
+            for x, y in result.exterior.coords
+        ]
+        assert len(ring) == 5 and ring[0] == ring[-1]
+        for x, y in source.exterior.coords:
+            point = (_stored_fraction(x), _stored_fraction(y))
+            for left, right in pairwise(ring):
+                assert (right[0] - left[0]) * (point[1] - left[1]) - (
+                    right[1] - left[1]
+                ) * (point[0] - left[0]) >= 0
+
+
 SIMILARITY_INPUTS = tuple(
     gm.LineString([(0.0, float(i)), (3.0, float(i + 4)), (6.0, float(i + 4))])
     for i in range(SIMILARITY_COUNT)
@@ -359,7 +418,11 @@ BUFFER_POLYGON_INPUTS = gm.GeometryArray([
 ])
 PLANAR_OVERLAY_LEFT = gm.GeometryArray([
     gm.box(
-        530000.0 + float(i), 180000.0, 530000.0 + float(i) + 2000.0, 182000.0, crs=27700
+        530000.0 + float(i),
+        180000.0,
+        530000.0 + float(i) + 2000.0,
+        182000.0,
+        crs=27700,
     )
     for i in range(OVERLAY_COUNT)
 ])
@@ -435,6 +498,14 @@ TRIANGULATION_INPUTS = tuple(
     ])
     for i in range(TRIANGULATION_COUNT)
 )
+VORONOI_SCALE_COORDINATES = {
+    count: np.random.default_rng(0xC0DEC0DE).random((count, 2))
+    for count in VORONOI_SCALE_COUNTS
+}
+VORONOI_SCALE_INPUTS = {
+    count: gm.MultiPoint(coordinates)
+    for count, coordinates in VORONOI_SCALE_COORDINATES.items()
+}
 CONSTRAINED_TRIANGULATION_INPUTS = tuple(
     gm.Polygon(
         [
@@ -500,381 +571,17 @@ INVALID_INPUTS = gm.GeometryArray([
 RELATE_TARGETS = gm.GeometryArray(STRUCTURAL_INPUTS, crs=4326)
 
 
-def _validate_checked_result(name: str, result: Any) -> None:
-    if name.endswith('real_world_from_geojson'):
-        if isinstance(result, gm.GeometryArray):
-            # gometry: a FeatureCollection parses to one row per feature
-            assert len(result) > 0
-        else:
-            # shapely: collapses to a single GeometryCollection
-            assert result.geom_type == 'GeometryCollection'
-    elif name.endswith(('real_world_bounds_cold', 'real_world_bounds_warm')):
-        assert len(result) == 4
-    elif name.endswith(('real_world_area_cold', 'real_world_area_warm')):
-        assert abs(result) > 0
-    elif name.endswith('real_world_point_on_surface'):
-        assert len(result) == REAL_WORLD_COUNTRY_COUNT
-    elif name.endswith('nearest_points'):
-        assert len(result) == NEAREST_COUNT
-    elif name.endswith(('reverse', 'orient_polygons', 'normalize')):
-        assert len(result) == ORDER_COUNT
-    elif name.endswith(('is_simple', 'minimum_clearance')):
-        assert len(result) == STRUCTURAL_COUNT
-    elif name.endswith('polygon_triangles'):
-        assert len(result) == TRIANGULATION_COUNT
-        assert (
-            sum(
-                len(value) if isinstance(value, gm.GeometryArray) else len(value.geoms)
-                for value in result
-            )
-            == TRIANGULATION_COUNT * 4
-        )
-    elif name.endswith('constrained_delaunay_triangles'):
-        assert len(result) == TRIANGULATION_COUNT
-        assert (
-            sum(
-                len(value) if isinstance(value, gm.GeometryArray) else len(value.geoms)
-                for value in result
-            )
-            > TRIANGULATION_COUNT * 2
-        )
-    elif name.endswith('delaunay_triangles'):
-        assert (
-            sum(
-                len(value) if isinstance(value, gm.GeometryArray) else len(value.geoms)
-                for value in result
-            )
-            == TRIANGULATION_COUNT * 2
-        )
-    elif name.endswith('voronoi_polygons'):
-        assert len(result) == TRIANGULATION_COUNT
-        assert sum(len(value) for value in result) == TRIANGULATION_COUNT * 4
-    elif name.endswith('voronoi_edges'):
-        assert len(result) == TRIANGULATION_COUNT
-        assert sum(len(value) for value in result) >= TRIANGULATION_COUNT * 4
-    elif name.endswith('polygonize'):
-        assert len(result) == POLYGONIZE_COUNT
-        assert (
-            sum(
-                len(value)
-                if isinstance(value, (gm.GeometryArray, list))
-                else len(value.geoms)
-                for value in result
-            )
-            == POLYGONIZE_COUNT
-        )
-    elif name.endswith('polygonize_full'):
-        assert len(result) == POLYGONIZE_COUNT
-        assert (
-            sum(
-                len(value[0])
-                if isinstance(value[0], gm.GeometryArray)
-                else len(value[0].geoms)
-                for value in result
-            )
-            == POLYGONIZE_COUNT
-        )
-    elif name.endswith(('centroid_packed_lines_20k', 'rotate_packed_lines_20k')):
-        assert len(result) == PACKED_LINES_COUNT
-    elif name.endswith((
-        'segmentize_packed_lines_1k',
-        'densify_packed_lines_1k',
-        'simplify_packed_lines_1k',
-        'simplify_vw_packed_lines_1k',
-        'smooth_packed_lines_1k',
-        'hausdorff_distance_packed_lines_1k',
-        'hausdorff_distance_packed_lines_cross_1k',
-        'frechet_distance_packed_lines_1k',
-        'hausdorff_distance_geographic_1k',
-    )):
-        assert len(result) == PACKED_LINES_1K_COUNT
-    elif name.endswith('concat_packed_polygons_2x1k'):
-        assert len(result) == PACKED_POLYGON_COUNT * 2
-    elif name.endswith('filter_packed_polygons_1k'):
-        assert len(result) == sum(PACKED_POLYGONS_FILTER_MASK)
-    elif name.endswith(('remove_repeated_points', 'segmentize', 'densify')):
-        assert len(result) == CLEANUP_COUNT
-    elif name.endswith(('snap', 'snap_pairwise')):
-        assert len(result) == SNAP_COUNT
-    elif name.endswith((
-        '.points',
-        'h3_cell',
-        's2_cell',
-        'geodesic_distance',
-        'geodesic_bearing',
-        'geodesic_destination',
-        'geodesic_interpolate',
-        'geodesic_nearest',
-        'to_crs_fast',
-        'to_crs_proj',
-        'to_crs_aoi_options',
-        'crs_transform',
-        'crs_transform_numpy',
-        'crs_transform_aoi',
-        'crs_transform_3d',
-        'crs_transform_4d',
-        'crs_apply',
-        'crs_apply_inverse',
-    )):
-        if isinstance(result, tuple) and len(result) in {2, 3, 4}:
-            assert len(result[0]) == POINT_COUNT
-            assert all(len(values) == POINT_COUNT for values in result)
-        else:
-            assert len(result) == POINT_COUNT
-    elif name.endswith((
-        'crs_info',
-        'crs_operation',
-        'crs_operation_at',
-        'crs_roundtrip',
-        'crs_factors',
-        'crs_geodesic',
-        'crs_operations',
-    )):
-        assert len(result) == CRS_INFO_COUNT
-    elif name.endswith((
-        'crs_geodesic_batch',
-        'crs_geodesic_direct_batch',
-        'crs_geodesic_interpolate_batch',
-        'crs_geodesic_geometry_batch',
-    )):
-        assert len(result[0]) == CRS_INFO_COUNT
-    elif name.endswith((
-        'crs_info_churn',
-        'crs_info_decompose',
-        'crs_operation_churn',
-        'crs_operation_reused',
-    )):
-        assert len(result) == CRS_CHURN_COUNT
-    elif name.endswith('crs_operation_cold_distinct'):
-        assert len(result) == CRS_INFO_COUNT
-    elif name.endswith('crs_transform_bounds'):
-        assert len(result) == CRS_BOUNDS_COUNT
-        assert result[0][0] < result[0][2]
-    elif name.endswith(('crs_transform_bounds_3d', 'crs_transform_bounds_3d_corners')):
-        assert len(result) == CRS_BOUNDS_COUNT
-        assert len(result[0]) == 6
-        assert result[0][0] < result[0][3]
-        assert result[0][2] < result[0][5]
-    elif name.endswith((
-        'crs_catalog',
-        'crs_utm_zones',
-        'crs_units',
-        'crs_celestial_bodies',
-        'crs_non_deprecated',
-        'crs_search',
-        'crs_exports',
-        'crs_authority_conversion',
-        'crs_cf',
-    )):
-        assert len(result) == CRS_DATABASE_COUNT
-        assert len(result[0]) > 0
-    elif name.endswith('crs_same'):
-        assert len(result) == CRS_DATABASE_COUNT
-        assert all(result)
-    elif name.endswith('nearest_m'):
-        assert len(result) == 10
-    elif name.endswith((
-        'contains_xy',
-        'contains',
-        'intersects_polygon_points',
-        'within_polygon_points',
-        'touches_polygon_points',
-        'crosses_polygon_points',
-        'overlaps_polygon_points',
-        'disjoint_polygon_points',
-        'covers_polygon_points',
-        'covered_by_polygon_points',
-        'prepared_contains_polygon_points',
-    )):
-        assert len(result) == POINT_COUNT
-    elif name.endswith('index_build'):
-        assert len(result) == INDEX_POLYGON_COUNT
-    elif name.endswith('index_query'):
-        if isinstance(result, list):
-            assert len(result) == QUERY_BOX_COUNT
-        else:
-            assert result.offsets is not None
-            assert len(result.offsets) == QUERY_BOX_COUNT + 1
-    elif name.endswith('rtree_nearest_k10_planar'):
-        # rtree.nearest returns MORE than num_results on distance ties
-        assert len(result) >= NEAREST_K
-    elif name.endswith('nearest_k10_planar'):
-        assert len(result) == NEAREST_K
-    elif name.endswith(('dwithin_pairwise', 'distance_pairwise')):
-        assert len(result) == POINT_COUNT
-    elif name.endswith('length_lines'):
-        assert len(result) == PACKED_LINES_1K_COUNT
-    elif name.endswith((
-        'area_polygons',
-        'buffer_points',
-        'buffer_polygons_dilate',
-        'buffer_polygons_erosion',
-        'buffer_lines',
-    )):
-        assert len(result) == BUFFER_COUNT
-    elif name.endswith(('union_all_overlap', 'intersection_all_overlap')):
-        area = result.area
-        assert area > 0
-    elif name.endswith(('union_pairwise', 'symmetric_difference_pairwise')):
-        assert len(result) == OVERLAY_COUNT
-    elif name.endswith('rtree_index_build'):
-        assert result is not None
-    elif name.endswith('rtree_index_query'):
-        assert len(result) == QUERY_BOX_COUNT
-    elif name.endswith((
-        'from_wkb',
-        'to_wkt',
-        'from_wkt',
-        'to_geojson',
-        'from_geojson',
-    )):
-        assert len(result) == WKB_COUNT
-    elif name.endswith('line_merge'):
-        assert len(result) == LINE_MERGE_COUNT
-    elif name.endswith('clip_by_rect'):
-        assert len(result) == CLIP_COUNT
-    elif name.endswith((
-        'line_interpolate_point',
-        'line_substring',
-        'line_locate_point',
-        'line_locate_point_pairwise',
-    )):
-        assert len(result) == LINE_REF_COUNT
-    elif name.endswith(('intersection_pairwise', 'difference_pairwise')):
-        assert len(result) == OVERLAY_COUNT
-    elif name.endswith('split_pairwise'):
-        assert len(result) == SPLIT_COUNT * 3
-    elif name.endswith('split'):
-        assert len(result) == SPLIT_COUNT
-        assert (
-            sum(
-                len(value) if isinstance(value, gm.GeometryArray) else len(value.geoms)
-                for value in result
-            )
-            == SPLIT_COUNT * 3
-        )
-    elif name.endswith('offset_curve'):
-        assert len(result) == OFFSET_COUNT
-        assert all(
-            (value.geometry_type if isinstance(value, gm.Geometry) else value.geom_type)
-            == 'LineString'
-            for value in result
-        )
-    elif name.endswith(('shared_paths', 'shared_paths_pairwise')):
-        assert len(result) == SHARED_PATHS_COUNT
-        assert all(
-            (value.geometry_type if isinstance(value, gm.Geometry) else value.geom_type)
-            == 'GeometryCollection'
-            for value in result
-        )
-    elif name.endswith('concave_hull'):
-        assert len(result) == HULL_COUNT
-        assert all(value.area > 0 for value in result)
-    elif name.endswith('polylabel'):
-        assert len(result) == POLYLABEL_COUNT
-        assert all(
-            (value.geometry_type if isinstance(value, gm.Geometry) else value.geom_type)
-            == 'Point'
-            for value in result
-        )
-    elif name.endswith('maximum_inscribed_circle_filled'):
-        assert len(result) == POLYLABEL_COUNT
-        assert all(
-            value.geom_type == 'Polygon' and value.area > 0.0 for value in result
-        )
-    elif name.endswith('h3_cell_to_boundary'):
-        assert len(result) == POINT_COUNT
-    elif name.endswith((
-        '.centroid',
-        '.point_on_surface',
-        '.envelope',
-        '.convex_hull',
-        '.minimum_rotated_rectangle',
-        '.oriented_envelope',
-        '.boundary',
-    )):
-        # dotted suffixes: bare ones collide (h3_cell_to_boundary once fell in)
-        assert len(result) == SUMMARY_COUNT
-    elif name.endswith(('hausdorff_distance', 'frechet_distance')):
-        assert len(result) == SIMILARITY_COUNT
-    elif name.endswith((
-        'to_wkb',
-        'to_arrow_roundtrip',
-        'from_arrow_roundtrip',
-        'from_polyline',
-        'to_polyline',
-    )):
-        assert len(result) == WKB_COUNT or len(result) == PACKED_LINES_1K_COUNT
-    elif name.endswith(('from_geopandas_geometry_array_10k', 'to_wkb_mixed_10k')):
-        assert len(result) == POINT_COUNT
-    elif name.endswith((
-        'scale_packed_lines_20k',
-        'skew_packed_lines_20k',
-        'translate_packed_lines_20k',
-        'affine_transform_packed_lines_20k',
-    )):
-        assert len(result) == PACKED_LINES_COUNT
-    elif name.endswith(('relate_1k', 'relate_pattern_1k')):
-        assert len(result) == STRUCTURAL_COUNT
-    elif name.endswith('is_valid_10k'):
-        assert len(result) == POINT_COUNT
-    elif name.endswith('repair_1k'):
-        assert len(result) == INVALID_COUNT
-        assert all(value.is_valid for value in result)
-    elif name.endswith((
-        'h3_boundary_10k',
-        's2_boundary_10k',
-        'geohash_boundary_10k',
-        'tiles_boundary_10k',
-    )):
-        assert len(result) == POINT_COUNT
-    elif name.endswith((
-        'h3_to_polygon_10k',
-        's2_to_polygon_10k',
-        'geohash_to_polygon_10k',
-        'tiles_to_polygon_10k',
-    )):
-        assert result.area > 0
-    elif name.endswith('h3_compact_10k'):
-        # compact merges complete sibling sets and dedupes coincident cells
-        assert 0 < len(result) <= POINT_COUNT
-    elif name.endswith(('geohash_cell_10k', 'tiles_cell_10k')):
-        assert len(result) == POINT_COUNT
-    elif name.endswith(('minimum_bounding_circle_1k', 'minimum_clearance_line_1k')):
-        assert len(result) == SUMMARY_COUNT
-    elif name.endswith('maximum_inscribed_circle_1k'):
-        assert len(result) == POLYLABEL_COUNT
-
-
-def _checked(name: str, func: Callable[[], _T]) -> Callable[[], _T]:
-    checked = False
-
-    def wrapper() -> _T:
-        nonlocal checked
-        result = func()
-        if not checked:
-            _validate_checked_result(name, result)
-            checked = True
-        return result
-
-    return wrapper
-
-
 def gometry_points() -> gm.GeometryArray:
     return gm.points(XS, YS, crs=4326)
 
 
 def gometry_contains() -> np.ndarray:
     result = gm.contains(POLYGON, POINTS)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype == np.bool_
     return result
 
 
 def gometry_contains_xy() -> np.ndarray:
     result = gm.contains_xy(POLYGON, XS, YS)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype == np.bool_
     return result
 
 
@@ -884,7 +591,6 @@ def gometry_from_wkb() -> list[gm.Geometry]:
 
 def gometry_from_wkb_batch() -> gm.GeometryArray:
     result = gm.from_wkb(WKB_POINTS)
-    assert isinstance(result, gm.GeometryArray)
     return result
 
 
@@ -894,7 +600,6 @@ def gometry_to_wkt_batch() -> list[str]:
 
 def gometry_from_wkt_batch() -> gm.GeometryArray:
     result = gm.from_wkt(WKT_POINTS)
-    assert isinstance(result, gm.GeometryArray)
     return result
 
 
@@ -904,7 +609,6 @@ def gometry_to_geojson_batch() -> list[str]:
 
 def gometry_from_geojson_batch() -> gm.GeometryArray:
     result = gm.from_geojson(GEOJSON_POINTS)
-    assert isinstance(result, gm.GeometryArray)
     return result
 
 
@@ -1085,6 +789,7 @@ def gometry_hausdorff_distance() -> list[float]:
 
 
 def gometry_hausdorff_distance_packed_lines() -> np.ndarray:
+    # Identity shortcut: A vs A returns 0.0 without pairwise work; see packed_lines_cross for real work.
     return gm.hausdorff_distance(PACKED_LINES_PLANAR_1K, PACKED_LINES_PLANAR_1K)
 
 
@@ -1163,6 +868,14 @@ def gometry_voronoi_edges() -> list[gm.GeometryArray]:
     ]
 
 
+def gometry_voronoi_polygons_single_1000() -> gm.GeometryArray:
+    return VORONOI_SCALE_INPUTS[1000].voronoi_polygons(clip='padded')
+
+
+def gometry_voronoi_polygons_single_2000() -> gm.GeometryArray:
+    return VORONOI_SCALE_INPUTS[2000].voronoi_polygons(clip='padded')
+
+
 def gometry_polygonize() -> list[gm.GeometryArray]:
     return [geometry.polygonize() for geometry in POLYGONIZE_INPUTS]
 
@@ -1175,31 +888,26 @@ def gometry_polygonize_full() -> list[
 
 def gometry_h3_cell() -> gm.CellArray[gm.H3Cell]:
     result = gm.h3_cells(XS, YS, resolution=9)
-    assert isinstance(result, gm.CellArray)
     return result
 
 
 def gometry_s2_cell() -> gm.CellArray[gm.S2Cell]:
     result = gm.s2_cells(XS, YS, level=15)
-    assert isinstance(result, gm.CellArray)
     return result
 
 
 def gometry_geodesic_distance() -> np.ndarray:
     result = gm.distance(POINTS, gm.Point(0, 0, crs=4326))
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_distance_geodesic_point_pairs() -> np.ndarray:
     result = gm.distance(POINTS, GEO_POINTS_B)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_dwithin_geodesic_point_pairs() -> np.ndarray:
     result = gm.dwithin(POINTS, GEO_POINTS_B, GEO_DWITHIN_DISTANCE)
-    assert isinstance(result, np.ndarray)
     return result
 
 
@@ -1223,11 +931,9 @@ def gometry_quantize_packed_polygons() -> gm.GeometryArray:
     return PACKED_POLYGONS_1K.quantize(6)
 
 
-def gometry_bearing() -> list[float]:
+def gometry_bearing() -> np.ndarray:
     origin = gm.Point(0, 0, crs=4326)
-    result = [gm.bearing(point, origin) for point in POINTS]
-    assert isinstance(result, list)
-    return result
+    return gm.bearing(POINTS, origin)
 
 
 def gometry_destination() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1237,12 +943,7 @@ def gometry_destination() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 def gometry_point_between() -> gm.GeometryArray:
     origin = gm.Point(0, 0, crs=4326)
-    result = gm.GeometryArray(
-        [gm.point_between(point, origin, 0.5, normalized=True) for point in POINTS],
-        crs=4326,
-    )
-    assert isinstance(result, gm.GeometryArray)
-    return result
+    return gm.point_between(POINTS, origin, 0.5, normalized=True)
 
 
 def gometry_to_crs_fast() -> gm.GeometryArray:
@@ -1437,14 +1138,16 @@ def gometry_crs_transform_bounds_3d_corners() -> list[
 
 def gometry_crs_catalog() -> list[list[dict[str, object]]]:
     return [
-        gm.crs_catalog(authority='EPSG', kind='projected', area=(-1.0, 50.0, 1.0, 52.0))
+        gm.crs_catalog(
+            authority='EPSG', kind='projected', area_of_interest=(-1.0, 50.0, 1.0, 52.0)
+        )
         for _ in range(CRS_DATABASE_COUNT)
     ]
 
 
 def gometry_crs_utm_zones() -> list[list[dict[str, object]]]:
     return [
-        gm.crs_utm_zones(datum_name='WGS 84', area=(20.0, 51.0, 22.0, 53.0))
+        gm.crs_utm_zones(datum_name='WGS 84', area_of_interest=(20.0, 51.0, 22.0, 53.0))
         for _ in range(CRS_DATABASE_COUNT)
     ]
 
@@ -1482,8 +1185,10 @@ def gometry_crs_exports() -> list[tuple[str, str, str, str, dict[str, object]]]:
 
 
 def gometry_crs_same() -> list[bool]:
+    # mode='exact' matches pyproj CRS.equals default (full equality, not
+    # axis-order-tolerant). same_as requires an explicit mode.
     wkt = gm.CRS(4326).to_wkt()
-    return [gm.CRS(4326).same_as(wkt) for _ in range(CRS_DATABASE_COUNT)]
+    return [gm.CRS(4326).same_as(wkt, mode='exact') for _ in range(CRS_DATABASE_COUNT)]
 
 
 def gometry_index_build() -> gm.SpatialIndex:
@@ -1496,68 +1201,56 @@ def gometry_index_query() -> object:
 
 def gometry_index_nearest_k10_planar() -> np.ndarray:
     result = INDEX_TREE.nearest(NEAREST_QUERY_POINT, k=NEAREST_K, unit='planar')
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_dwithin_pairwise() -> np.ndarray:
     result = gm.dwithin(CRS_POINTS, CRS_POINTS_B, DWITHIN_DISTANCE)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_prepared_contains() -> np.ndarray:
     result = PLANAR_PREPARED.contains(CRS_POINTS)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype == np.bool_
     return result
 
 
 def gometry_intersects_polygon_points() -> np.ndarray:
     result = gm.intersects(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_within_polygon_points() -> np.ndarray:
     result = gm.within(CRS_POINTS, PLANAR_POLYGON)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_touches_polygon_points() -> np.ndarray:
     result = gm.touches(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_crosses_polygon_points() -> np.ndarray:
     result = gm.crosses(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_overlaps_polygon_points() -> np.ndarray:
     result = gm.overlaps(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_disjoint_polygon_points() -> np.ndarray:
     result = gm.disjoint(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_covers_polygon_points() -> np.ndarray:
     result = gm.covers(PLANAR_POLYGON, CRS_POINTS)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_covered_by_polygon_points() -> np.ndarray:
     result = gm.covered_by(CRS_POINTS, PLANAR_POLYGON)
-    assert isinstance(result, np.ndarray)
     return result
 
 
@@ -1587,19 +1280,16 @@ def gometry_buffer_lines() -> gm.GeometryArray:
 
 def gometry_distance_pairwise() -> np.ndarray:
     result = gm.distance(CRS_POINTS, CRS_POINTS_B)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_length_lines() -> np.ndarray:
     result = PACKED_LINES_PLANAR_1K.length
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_area_polygons() -> np.ndarray:
     result = BUFFER_POLYGON_INPUTS.area
-    assert isinstance(result, np.ndarray)
     return result
 
 
@@ -1667,13 +1357,11 @@ def gometry_relate_1k() -> list[str]:
 
 def gometry_relate_pattern_1k() -> np.ndarray:
     result = gm.relate_pattern(RELATE_TARGETS, POLYGON, RELATE_PATTERN)
-    assert isinstance(result, np.ndarray)
     return result
 
 
 def gometry_is_valid_10k() -> np.ndarray:
     result = POINTS.is_valid
-    assert isinstance(result, np.ndarray)
     return result
 
 
@@ -1730,11 +1418,11 @@ def gometry_maximum_inscribed_circle_1k() -> gm.GeometryArray:
 
 
 def gometry_real_world_from_geojson() -> gm.GeometryArray:
-    return gm.from_geojson(REAL_WORLD_GEOJSON)
+    return gm.from_geojson(REAL_WORLD_GEOJSON, crs=4326)
 
 
 def gometry_real_world_bounds_cold() -> tuple[float, float, float, float] | None:
-    return gm.from_geojson(REAL_WORLD_GEOJSON).total_bounds
+    return gm.from_geojson(REAL_WORLD_GEOJSON, crs=4326).total_bounds
 
 
 def gometry_real_world_bounds_warm() -> tuple[float, float, float, float] | None:
@@ -1742,7 +1430,9 @@ def gometry_real_world_bounds_warm() -> tuple[float, float, float, float] | None
 
 
 def gometry_real_world_area_cold() -> float:
-    return float(gm.area(gm.from_geojson(REAL_WORLD_GEOJSON), unit='planar').sum())
+    return float(
+        gm.area(gm.from_geojson(REAL_WORLD_GEOJSON, crs=4326), unit='planar').sum()
+    )
 
 
 def gometry_real_world_area_warm() -> float:
@@ -2035,6 +1725,10 @@ def _register_shapely(runner: pyperf.Runner) -> None:
         ])
         for i in range(TRIANGULATION_COUNT)
     )
+    voronoi_scale_inputs = {
+        count: MultiPoint(coordinates)
+        for count, coordinates in VORONOI_SCALE_COORDINATES.items()
+    }
     constrained_triangulation_inputs = tuple(
         Polygon(
             [
@@ -2483,448 +2177,365 @@ def _register_shapely(runner: pyperf.Runner) -> None:
             for value in triangulation_inputs
         ]
 
+    def shapely_voronoi_polygons_single_1000() -> object:
+        value = voronoi_scale_inputs[1000]
+        return voronoi_polygons(value, extend_to=value.envelope)
+
+    def shapely_voronoi_polygons_single_2000() -> object:
+        value = voronoi_scale_inputs[2000]
+        return voronoi_polygons(value, extend_to=value.envelope)
+
     def shapely_polygonize() -> list[object]:
         return [list(polygonize(value)) for value in polygonize_inputs]
 
     def shapely_polygonize_full() -> list[object]:
         return [polygonize_full(value) for value in polygonize_inputs]
 
-    runner.bench_func('shapely.points/10k', _checked('shapely.points', shapely_points))
+    runner.bench_func('shapely.points/10k', shapely_points)
     runner.bench_func(
         'shapely.contains/polygon_points_10k',
-        _checked('shapely.contains', shapely_contains),
+        shapely_contains,
     )
     runner.bench_func(
         'shapely.contains_xy/polygon_points_10k',
-        _checked('shapely.contains_xy', shapely_contains_xy),
+        shapely_contains_xy,
     )
-    runner.bench_func(
-        'shapely.from_wkb/1k', _checked('shapely.from_wkb', shapely_from_wkb)
-    )
-    runner.bench_func(
-        'shapely.from_wkb.batch/1k',
-        _checked('shapely.from_wkb', shapely_from_wkb_batch),
-    )
-    runner.bench_func(
-        'shapely.to_wkb.batch/1k', _checked('shapely.to_wkb', shapely_to_wkb_batch)
-    )
+    # Old point-only precision-7 WKB rows removed; public mixed-EWKB supersedes.
+    runner.bench_func('shapely.to_wkb.batch/1k', shapely_to_wkb_batch)
     runner.bench_func(
         'shapely.to_wkb.mixed/10k',
-        _checked('shapely.to_wkb_mixed_10k', shapely_to_wkb_mixed),
+        shapely_to_wkb_mixed,
     )
     runner.bench_func(
         'shapely.from_geopandas.geometry_array/10k',
-        _checked(
-            'shapely.from_geopandas_geometry_array_10k',
-            shapely_from_geopandas_geometry_array,
-        ),
+        shapely_from_geopandas_geometry_array,
     )
     runner.bench_func(
         'shapely.from_arrow.roundtrip/1k',
-        _checked('shapely.from_arrow_roundtrip', shapely_from_arrow_roundtrip),
+        shapely_from_arrow_roundtrip,
     )
-    runner.bench_func(
-        'shapely.to_wkt.batch/1k', _checked('shapely.to_wkt', shapely_to_wkt_batch)
-    )
+    runner.bench_func('shapely.to_wkt.batch/1k', shapely_to_wkt_batch)
     runner.bench_func(
         'shapely.from_wkt.batch/1k',
-        _checked('shapely.from_wkt', shapely_from_wkt_batch),
+        shapely_from_wkt_batch,
     )
     runner.bench_func(
         'shapely.to_geojson.batch/1k',
-        _checked('shapely.to_geojson', shapely_to_geojson_batch),
+        shapely_to_geojson_batch,
     )
     runner.bench_func(
         'shapely.from_geojson.batch/1k',
-        _checked('shapely.from_geojson', shapely_from_geojson_batch),
+        shapely_from_geojson_batch,
     )
-    runner.bench_func(
-        'shapely.line_merge/1k', _checked('shapely.line_merge', shapely_line_merge)
-    )
+    runner.bench_func('shapely.line_merge/1k', shapely_line_merge)
     runner.bench_func(
         'shapely.clip_by_rect/1k',
-        _checked('shapely.clip_by_rect', shapely_clip_by_rect),
+        shapely_clip_by_rect,
     )
     runner.bench_func(
         'shapely.line_interpolate_point/1k',
-        _checked('shapely.line_interpolate_point', shapely_line_interpolate_point),
+        shapely_line_interpolate_point,
     )
     runner.bench_func(
         'shapely.line_substring/1k',
-        _checked('shapely.line_substring', shapely_line_substring),
+        shapely_line_substring,
     )
     runner.bench_func(
         'shapely.line_locate_point/1k',
-        _checked('shapely.line_locate_point', shapely_line_locate_point),
+        shapely_line_locate_point,
     )
     runner.bench_func(
         'shapely.line_locate_point_pairwise/1k',
-        _checked(
-            'shapely.line_locate_point_pairwise', shapely_line_locate_point_pairwise
-        ),
+        shapely_line_locate_point_pairwise,
     )
     runner.bench_func(
         'shapely.intersection_pairwise/1k',
-        _checked('shapely.intersection_pairwise', shapely_intersection_pairwise),
+        shapely_intersection_pairwise,
     )
     runner.bench_func(
         'shapely.difference_pairwise/1k',
-        _checked('shapely.difference_pairwise', shapely_difference_pairwise),
+        shapely_difference_pairwise,
     )
-    runner.bench_func('shapely.split/1k', _checked('shapely.split', shapely_split))
+    runner.bench_func('shapely.split/1k', shapely_split)
     runner.bench_func(
         'shapely.offset_curve/1k',
-        _checked('shapely.offset_curve', shapely_offset_curve),
+        shapely_offset_curve,
     )
     runner.bench_func(
         'shapely.shared_paths/1k',
-        _checked('shapely.shared_paths', shapely_shared_paths),
+        shapely_shared_paths,
     )
-    runner.bench_func(
-        'shapely.centroid/1k', _checked('shapely.centroid', shapely_centroid)
-    )
+    runner.bench_func('shapely.centroid/1k', shapely_centroid)
     runner.bench_func(
         'shapely.point_on_surface/1k',
-        _checked('shapely.point_on_surface', shapely_point_on_surface),
+        shapely_point_on_surface,
     )
-    runner.bench_func(
-        'shapely.envelope/1k', _checked('shapely.envelope', shapely_envelope)
-    )
-    runner.bench_func(
-        'shapely.convex_hull/1k', _checked('shapely.convex_hull', shapely_convex_hull)
-    )
+    runner.bench_func('shapely.envelope/1k', shapely_envelope)
+    runner.bench_func('shapely.convex_hull/1k', shapely_convex_hull)
     runner.bench_func(
         'shapely.concave_hull/1k',
-        _checked('shapely.concave_hull', shapely_concave_hull),
+        shapely_concave_hull,
     )
     runner.bench_func(
         'shapely.maximum_inscribed_circle/1k',
-        _checked(
-            'shapely.maximum_inscribed_circle_filled',
-            shapely_maximum_inscribed_circle_filled,
-        ),
+        shapely_maximum_inscribed_circle_filled,
     )
-    runner.bench_func(
-        'shapely.polylabel/1k', _checked('shapely.polylabel', shapely_polylabel)
-    )
+    runner.bench_func('shapely.polylabel/1k', shapely_polylabel)
     runner.bench_func(
         'shapely.minimum_rotated_rectangle/1k',
-        _checked(
-            'shapely.minimum_rotated_rectangle', shapely_minimum_rotated_rectangle
-        ),
+        shapely_minimum_rotated_rectangle,
     )
-    runner.bench_func(
-        'shapely.boundary/1k', _checked('shapely.boundary', shapely_boundary)
-    )
+    runner.bench_func('shapely.boundary/1k', shapely_boundary)
     runner.bench_func(
         'shapely.remove_repeated_points/1k',
-        _checked('shapely.remove_repeated_points', shapely_remove_repeated_points),
+        shapely_remove_repeated_points,
     )
-    runner.bench_func(
-        'shapely.segmentize/1k', _checked('shapely.segmentize', shapely_segmentize)
-    )
+    runner.bench_func('shapely.segmentize/1k', shapely_segmentize)
     runner.bench_func(
         'shapely.centroid.packed_lines/20k',
-        _checked('shapely.centroid_packed_lines_20k', shapely_centroid_packed_lines),
+        shapely_centroid_packed_lines,
     )
     runner.bench_func(
         'shapely.rotate.packed_lines/20k',
-        _checked('shapely.rotate_packed_lines_20k', shapely_rotate_packed_lines),
+        shapely_rotate_packed_lines,
     )
     runner.bench_func(
         'shapely.affine.scale.packed_lines/20k',
-        _checked(
-            'shapely.affine_scale_packed_lines_20k', shapely_affine_scale_packed_lines
-        ),
+        shapely_affine_scale_packed_lines,
     )
     runner.bench_func(
         'shapely.affine.skew.packed_lines/20k',
-        _checked(
-            'shapely.affine_skew_packed_lines_20k', shapely_affine_skew_packed_lines
-        ),
+        shapely_affine_skew_packed_lines,
     )
     runner.bench_func(
         'shapely.affine.translate.packed_lines/20k',
-        _checked(
-            'shapely.affine_translate_packed_lines_20k',
-            shapely_affine_translate_packed_lines,
-        ),
+        shapely_affine_translate_packed_lines,
     )
     runner.bench_func(
         'shapely.affine.affine_transform.packed_lines/20k',
-        _checked(
-            'shapely.affine_affine_transform_packed_lines_20k',
-            shapely_affine_affine_transform_packed_lines,
-        ),
+        shapely_affine_affine_transform_packed_lines,
     )
     runner.bench_func(
         'shapely.segmentize.packed_lines/1k',
-        _checked('shapely.segmentize_packed_lines_1k', shapely_segmentize_packed_lines),
+        shapely_segmentize_packed_lines,
     )
     runner.bench_func(
         'shapely.densify.packed_lines/1k',
-        _checked('shapely.densify_packed_lines_1k', shapely_densify_packed_lines),
+        shapely_densify_packed_lines,
     )
     runner.bench_func(
         'shapely.concat/packed_polygons_2x1k',
-        _checked(
-            'shapely.concat_packed_polygons_2x1k', shapely_concat_packed_polygons_2x1k
-        ),
+        shapely_concat_packed_polygons_2x1k,
     )
     runner.bench_func(
         'shapely.filter/packed_polygons_1k',
-        _checked(
-            'shapely.filter_packed_polygons_1k', shapely_filter_packed_polygons_1k
-        ),
+        shapely_filter_packed_polygons_1k,
     )
     runner.bench_func(
         'shapely.simplify.packed_lines/1k',
-        _checked('shapely.simplify_packed_lines_1k', shapely_simplify_packed_lines),
+        shapely_simplify_packed_lines,
     )
-    runner.bench_func('shapely.snap/1k', _checked('shapely.snap', shapely_snap))
+    runner.bench_func('shapely.snap/1k', shapely_snap)
     runner.bench_func(
         'shapely.hausdorff_distance/1k',
-        _checked('shapely.hausdorff_distance', shapely_hausdorff_distance),
+        shapely_hausdorff_distance,
     )
     runner.bench_func(
         'shapely.hausdorff_distance.packed_lines/1k',
-        _checked(
-            'shapely.hausdorff_distance_packed_lines_1k',
-            shapely_hausdorff_distance_packed_lines,
-        ),
+        shapely_hausdorff_distance_packed_lines,
     )
     runner.bench_func(
         'shapely.hausdorff_distance.packed_lines_cross/1k',
-        _checked(
-            'shapely.hausdorff_distance_packed_lines_cross_1k',
-            shapely_hausdorff_distance_packed_lines_cross,
-        ),
+        shapely_hausdorff_distance_packed_lines_cross,
     )
     runner.bench_func(
         'shapely.hausdorff_distance.geographic/1k',
-        _checked(
-            'shapely.hausdorff_distance_geographic_1k',
-            shapely_hausdorff_distance_geographic,
-        ),
+        shapely_hausdorff_distance_geographic,
     )
     runner.bench_func(
         'shapely.frechet_distance/1k',
-        _checked('shapely.frechet_distance', shapely_frechet_distance),
+        shapely_frechet_distance,
     )
     runner.bench_func(
         'shapely.frechet_distance.packed_lines/1k',
-        _checked(
-            'shapely.frechet_distance_packed_lines_1k',
-            shapely_frechet_distance_packed_lines,
-        ),
+        shapely_frechet_distance_packed_lines,
     )
     runner.bench_func(
         'shapely.nearest_points/1k',
-        _checked('shapely.nearest_points', shapely_nearest_points),
+        shapely_nearest_points,
     )
-    runner.bench_func(
-        'shapely.reverse/1k', _checked('shapely.reverse', shapely_reverse)
-    )
+    runner.bench_func('shapely.reverse/1k', shapely_reverse)
     runner.bench_func(
         'shapely.orient_polygons/1k',
-        _checked('shapely.orient_polygons', shapely_orient_polygons),
+        shapely_orient_polygons,
     )
-    runner.bench_func(
-        'shapely.normalize/1k', _checked('shapely.normalize', shapely_normalize)
-    )
-    runner.bench_func(
-        'shapely.is_simple/1k', _checked('shapely.is_simple', shapely_is_simple)
-    )
+    runner.bench_func('shapely.normalize/1k', shapely_normalize)
+    runner.bench_func('shapely.is_simple/1k', shapely_is_simple)
     runner.bench_func(
         'shapely.minimum_clearance/1k',
-        _checked('shapely.minimum_clearance', shapely_minimum_clearance),
+        shapely_minimum_clearance,
     )
-    runner.bench_func(
-        'shapely.relate/1k', _checked('shapely.relate_1k', shapely_relate_1k)
-    )
+    runner.bench_func('shapely.relate/1k', shapely_relate_1k)
     runner.bench_func(
         'shapely.relate_pattern/1k',
-        _checked('shapely.relate_pattern_1k', shapely_relate_pattern_1k),
+        shapely_relate_pattern_1k,
     )
-    runner.bench_func(
-        'shapely.is_valid/10k', _checked('shapely.is_valid_10k', shapely_is_valid_10k)
-    )
+    runner.bench_func('shapely.is_valid/10k', shapely_is_valid_10k)
     runner.bench_func(
         'shapely.make_valid/1k',
-        _checked('shapely.make_valid_1k', shapely_make_valid_1k),
+        shapely_make_valid_1k,
     )
     runner.bench_func(
         'shapely.minimum_bounding_circle/1k',
-        _checked(
-            'shapely.minimum_bounding_circle_1k', shapely_minimum_bounding_circle_1k
-        ),
+        shapely_minimum_bounding_circle_1k,
     )
     runner.bench_func(
         'shapely.minimum_clearance_line/1k',
-        _checked(
-            'shapely.minimum_clearance_line_1k', shapely_minimum_clearance_line_1k
-        ),
+        shapely_minimum_clearance_line_1k,
     )
     runner.bench_func(
         'shapely.delaunay_triangles/1k',
-        _checked('shapely.delaunay_triangles', shapely_delaunay_triangles),
+        shapely_delaunay_triangles,
     )
     runner.bench_func(
         'shapely.constrained_delaunay_triangles/1k',
-        _checked(
-            'shapely.constrained_delaunay_triangles',
-            shapely_constrained_delaunay_triangles,
-        ),
+        shapely_constrained_delaunay_triangles,
     )
     runner.bench_func(
         'shapely.polygon_triangles/1k',
-        _checked('shapely.polygon_triangles', shapely_polygon_triangles),
+        shapely_polygon_triangles,
     )
     runner.bench_func(
         'shapely.voronoi_polygons/1k',
-        _checked('shapely.voronoi_polygons', shapely_voronoi_polygons),
+        shapely_voronoi_polygons,
     )
     runner.bench_func(
         'shapely.voronoi_edges/1k',
-        _checked('shapely.voronoi_edges', shapely_voronoi_edges),
+        shapely_voronoi_edges,
     )
     runner.bench_func(
-        'shapely.polygonize/1k', _checked('shapely.polygonize', shapely_polygonize)
+        'shapely.voronoi_polygons.single/1k_sites',
+        shapely_voronoi_polygons_single_1000,
     )
+    runner.bench_func(
+        'shapely.voronoi_polygons.single/2k_sites',
+        shapely_voronoi_polygons_single_2000,
+    )
+    runner.bench_func('shapely.polygonize/1k', shapely_polygonize)
     runner.bench_func(
         'shapely.polygonize_full/1k',
-        _checked('shapely.polygonize_full', shapely_polygonize_full),
+        shapely_polygonize_full,
     )
-    runner.bench_func(
-        'shapely.index.build/10k', _checked('shapely.index_build', shapely_index_build)
-    )
+    runner.bench_func('shapely.index.build/10k', shapely_index_build)
     runner.bench_func(
         'shapely.index.query/boxes_1k',
-        _checked('shapely.index_query', shapely_index_query),
+        shapely_index_query,
     )
-    runner.bench_func(
-        'shapely.index.nearest/k10_planar_10k',
-        _checked('shapely.index_nearest_k10_planar', shapely_index_nearest_k10_planar),
-    )
+    # Fabricated Shapely k=10 nearest partner deleted; gometry k=10 stays diagnostic.
     runner.bench_func(
         'shapely.dwithin/pairwise_10k',
-        _checked('shapely.dwithin_pairwise', shapely_dwithin_pairwise),
+        shapely_dwithin_pairwise,
     )
     runner.bench_func(
         'shapely.prepared.contains/polygon_points_10k',
-        _checked(
-            'shapely.prepared_contains_polygon_points',
-            shapely_prepared_contains_polygon_points,
-        ),
+        shapely_prepared_contains_polygon_points,
     )
     runner.bench_func(
         'shapely.intersects/polygon_points_10k',
-        _checked(
-            'shapely.intersects_polygon_points', shapely_intersects_polygon_points
-        ),
+        shapely_intersects_polygon_points,
     )
     runner.bench_func(
         'shapely.within/polygon_points_10k',
-        _checked('shapely.within_polygon_points', shapely_within_polygon_points),
+        shapely_within_polygon_points,
     )
     runner.bench_func(
         'shapely.touches/polygon_points_10k',
-        _checked('shapely.touches_polygon_points', shapely_touches_polygon_points),
+        shapely_touches_polygon_points,
     )
     runner.bench_func(
         'shapely.crosses/polygon_points_10k',
-        _checked('shapely.crosses_polygon_points', shapely_crosses_polygon_points),
+        shapely_crosses_polygon_points,
     )
     runner.bench_func(
         'shapely.overlaps/polygon_points_10k',
-        _checked('shapely.overlaps_polygon_points', shapely_overlaps_polygon_points),
+        shapely_overlaps_polygon_points,
     )
     runner.bench_func(
         'shapely.disjoint/polygon_points_10k',
-        _checked('shapely.disjoint_polygon_points', shapely_disjoint_polygon_points),
+        shapely_disjoint_polygon_points,
     )
     runner.bench_func(
         'shapely.covers/polygon_points_10k',
-        _checked('shapely.covers_polygon_points', shapely_covers_polygon_points),
+        shapely_covers_polygon_points,
     )
     runner.bench_func(
         'shapely.covered_by/polygon_points_10k',
-        _checked(
-            'shapely.covered_by_polygon_points', shapely_covered_by_polygon_points
-        ),
+        shapely_covered_by_polygon_points,
     )
     runner.bench_func(
         'shapely.buffer/points_1k',
-        _checked('shapely.buffer_points', shapely_buffer_points),
+        shapely_buffer_points,
     )
     runner.bench_func(
         'shapely.buffer/polygons_dilate_1k',
-        _checked('shapely.buffer_polygons_dilate', shapely_buffer_polygons_dilate),
+        shapely_buffer_polygons_dilate,
     )
     runner.bench_func(
         'shapely.buffer/polygons_erosion_1k',
-        _checked('shapely.buffer_polygons_erosion', shapely_buffer_polygons_erosion),
+        shapely_buffer_polygons_erosion,
     )
     runner.bench_func(
         'shapely.buffer/lines_1k',
-        _checked('shapely.buffer_lines', shapely_buffer_lines),
+        shapely_buffer_lines,
     )
     runner.bench_func(
         'shapely.distance/pairwise_10k',
-        _checked('shapely.distance_pairwise', shapely_distance_pairwise),
+        shapely_distance_pairwise,
     )
     runner.bench_func(
         'shapely.length/lines_1k',
-        _checked('shapely.length_lines', shapely_length_lines),
+        shapely_length_lines,
     )
     runner.bench_func(
         'shapely.area/polygons_1k',
-        _checked('shapely.area_polygons', shapely_area_polygons),
+        shapely_area_polygons,
     )
     runner.bench_func(
         'shapely.union_all/overlap_1k',
-        _checked('shapely.union_all_overlap', shapely_union_all_overlap),
+        shapely_union_all_overlap,
     )
     runner.bench_func(
         'shapely.union/pairwise_1k',
-        _checked('shapely.union_pairwise', shapely_union_pairwise),
+        shapely_union_pairwise,
     )
     runner.bench_func(
         'shapely.symmetric_difference/pairwise_1k',
-        _checked(
-            'shapely.symmetric_difference_pairwise',
-            shapely_symmetric_difference_pairwise,
-        ),
+        shapely_symmetric_difference_pairwise,
     )
     runner.bench_func(
         'shapely.intersection_all/overlap_1k',
-        _checked('shapely.intersection_all_overlap', shapely_intersection_all_overlap),
+        shapely_intersection_all_overlap,
     )
     runner.bench_func(
         f'shapely.real_world.from_geojson/{REAL_WORLD_LABEL}',
-        _checked('shapely.real_world_from_geojson', shapely_real_world_from_geojson),
+        shapely_real_world_from_geojson,
     )
     runner.bench_func(
         f'shapely.real_world.bounds_cold/{REAL_WORLD_LABEL}',
-        _checked('shapely.real_world_bounds_cold', shapely_real_world_bounds_cold),
+        shapely_real_world_bounds_cold,
     )
     runner.bench_func(
         f'shapely.real_world.bounds_warm/{REAL_WORLD_LABEL}',
-        _checked('shapely.real_world_bounds_warm', shapely_real_world_bounds_warm),
+        shapely_real_world_bounds_warm,
     )
     runner.bench_func(
         f'shapely.real_world.area_cold/{REAL_WORLD_LABEL}',
-        _checked('shapely.real_world_area_cold', shapely_real_world_area_cold),
+        shapely_real_world_area_cold,
     )
-    runner.bench_func(
-        f'shapely.real_world.area_warm/{REAL_WORLD_LABEL}',
-        _checked('shapely.real_world_area_warm', shapely_real_world_area_warm),
-    )
+    # Planar shapely area_warm deleted; public geodesic_area uses pyproj.
     runner.bench_func(
         f'shapely.real_world.point_on_surface/{REAL_WORLD_LABEL}',
-        _checked(
-            'shapely.real_world_point_on_surface', shapely_real_world_point_on_surface
-        ),
+        shapely_real_world_point_on_surface,
     )
 
 
@@ -2968,16 +2579,14 @@ def _register_rtree(runner: pyperf.Runner) -> None:
     def rtree_nearest_k10_planar() -> list[int]:
         return list(rtree_index.nearest(rtree_query_bounds, NEAREST_K))
 
-    runner.bench_func(
-        'rtree.index.build/10k', _checked('rtree.rtree_index_build', rtree_index_build)
-    )
+    runner.bench_func('rtree.index.build/10k', rtree_index_build)
     runner.bench_func(
         'rtree.index.query/boxes_1k',
-        _checked('rtree.rtree_index_query', rtree_index_query),
+        rtree_index_query,
     )
     runner.bench_func(
         'rtree.nearest/k10_planar_10k',
-        _checked('rtree.rtree_nearest_k10_planar', rtree_nearest_k10_planar),
+        rtree_nearest_k10_planar,
     )
 
 
@@ -3004,17 +2613,13 @@ def _register_h3(runner: pyperf.Runner) -> None:
     def h3_cells_to_geo() -> dict[str, object]:
         return h3.cells_to_geo(h3_cells[:64])
 
-    runner.bench_func('h3.latlng_to_cell/10k', _checked('h3.h3_cell', h3_cell))
+    runner.bench_func('h3.latlng_to_cell/10k', h3_cell)
     runner.bench_func(
         'h3.cell_to_boundary/10k',
-        _checked('h3.h3_cell_to_boundary', h3_cell_to_boundary),
+        h3_cell_to_boundary,
     )
-    runner.bench_func(
-        'h3.compact_cells/10k', _checked('h3.h3_compact_cells', h3_compact_cells)
-    )
-    runner.bench_func(
-        'h3.cells_to_geo/10k', _checked('h3.h3_cells_to_geo', h3_cells_to_geo)
-    )
+    runner.bench_func('h3.compact_cells/10k', h3_compact_cells)
+    runner.bench_func('h3.cells_to_geo/10k', h3_cells_to_geo)
 
 
 def _register_s2sphere(runner: pyperf.Runner) -> None:
@@ -3026,7 +2631,7 @@ def _register_s2sphere(runner: pyperf.Runner) -> None:
             for x, y in zip(XS, YS, strict=False)
         ]
 
-    runner.bench_func('s2sphere.cell/10k', _checked('s2.s2_cell', s2_cell))
+    runner.bench_func('s2sphere.cell/10k', s2_cell)
 
 
 def _register_pyproj(runner: pyperf.Runner) -> None:
@@ -3073,10 +2678,12 @@ def _register_pyproj(runner: pyperf.Runner) -> None:
     def geodesic_distance() -> np.ndarray:
         return geod.inv(NP_XS, NP_YS, NP_ZEROS, NP_ZEROS)[2]
 
-    def geodesic_bearing() -> list[float]:
-        return [
-            geod.inv(x, y, 0.0, 0.0)[0] % 360.0 for x, y in zip(XS, YS, strict=False)
-        ]
+    def geodesic_bearing() -> np.ndarray:
+        # Vectorized inv: pair stays fair vs gometry.bearing array form.
+        return (
+            np.asarray(geod.inv(NP_XS, NP_YS, NP_ZEROS, NP_ZEROS)[0], dtype=np.float64)
+            % 360.0
+        )
 
     def geodesic_destination() -> tuple[object, object, object]:
         longitude, latitude, back_azimuth = geod.fwd(
@@ -3084,12 +2691,11 @@ def _register_pyproj(runner: pyperf.Runner) -> None:
         )
         return (longitude, latitude, (back_azimuth + 180.0) % 360.0)
 
-    def geodesic_interpolate() -> list[tuple[float, float]]:
-        result = []
-        for x, y in zip(XS, YS, strict=False):
-            bearing, _, distance = geod.inv(x, y, 0.0, 0.0)
-            result.append(geod.fwd(x, y, bearing, distance * 0.5)[:2])
-        return result
+    def geodesic_interpolate() -> tuple[object, object]:
+        # Vectorized inv+fwd (same path as scalar loop, array form).
+        bearings, _, distances = geod.inv(NP_XS, NP_YS, NP_ZEROS, NP_ZEROS)
+        lon, lat, _ = geod.fwd(NP_XS, NP_YS, bearings, np.asarray(distances) * 0.5)
+        return (lon, lat)
 
     def geodesic_nearest() -> list[int]:
         distances = [
@@ -3541,861 +3147,720 @@ def _register_pyproj(runner: pyperf.Runner) -> None:
         other = CRS.from_wkt(wgs84.to_wkt())
         return [wgs84.equals(other) for _ in range(CRS_DATABASE_COUNT)]
 
-    runner.bench_func(
-        'pyproj.Geod.inv/10k', _checked('pyproj.geodesic_distance', geodesic_distance)
-    )
-    runner.bench_func(
-        'pyproj.Geod.bearing/10k', _checked('pyproj.geodesic_bearing', geodesic_bearing)
-    )
-    runner.bench_func(
-        'pyproj.Geod.fwd/10k',
-        _checked('pyproj.geodesic_destination', geodesic_destination),
-    )
+    # Fixed-origin Geod.inv/10k and misnamed Geod.fwd/10k deleted; public
+    # RELEASE uses Geod.inv/10k_wgs84_pairs and Geod.fwd/10k_wgs84.
+    runner.bench_func('pyproj.Geod.bearing/10k', geodesic_bearing)
     runner.bench_func(
         'pyproj.Geod.interpolate/10k',
-        _checked('pyproj.geodesic_interpolate', geodesic_interpolate),
+        geodesic_interpolate,
     )
-    runner.bench_func(
-        'pyproj.Geod.nearest_m/10k', _checked('pyproj.nearest_m', geodesic_nearest)
-    )
+    runner.bench_func('pyproj.Geod.nearest_m/10k', geodesic_nearest)
     runner.bench_func(
         'pyproj.Transformer.to_crs_fast/10k',
-        _checked('pyproj.to_crs_fast', to_crs_fast),
+        to_crs_fast,
     )
     runner.bench_func(
         'pyproj.Transformer.to_crs_proj/10k',
-        _checked('pyproj.to_crs_proj', to_crs_authority),
+        to_crs_authority,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_numpy/10k',
-        _checked('pyproj.crs_transform_numpy', crs_transform_numpy),
+        crs_transform_numpy,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_aoi/10k',
-        _checked('pyproj.crs_transform_aoi', crs_transform_aoi),
+        crs_transform_aoi,
     )
     runner.bench_func(
         'pyproj.Transformer.to_crs_aoi_options/10k',
-        _checked('pyproj.to_crs_aoi_options', to_crs_aoi_options),
+        to_crs_aoi_options,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_3d/10k',
-        _checked('pyproj.crs_transform_3d', crs_transform_3d),
+        crs_transform_3d,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_4d/10k',
-        _checked('pyproj.crs_transform_4d', crs_transform_4d),
+        crs_transform_4d,
     )
-    runner.bench_func(
-        'pyproj.Transformer.from_pipeline/10k', _checked('pyproj.crs_apply', crs_apply)
-    )
+    runner.bench_func('pyproj.Transformer.from_pipeline/10k', crs_apply)
     runner.bench_func(
         'pyproj.Transformer.from_pipeline_inverse/10k',
-        _checked('pyproj.crs_apply_inverse', crs_apply_inverse),
+        crs_apply_inverse,
     )
-    runner.bench_func('pyproj.CRS.info/1k', _checked('pyproj.crs_info', crs_info))
+    runner.bench_func('pyproj.CRS.info/1k', crs_info)
     runner.bench_func(
         'pyproj.Transformer.operation_cold/1k',
-        _checked('pyproj.crs_operation', crs_operation),
+        crs_operation,
     )
     runner.bench_func(
         'pyproj.Transformer.roundtrip_reused/1k',
-        _checked('pyproj.crs_roundtrip', crs_roundtrip),
+        crs_roundtrip,
     )
-    runner.bench_func(
-        'pyproj.Proj.factors/1k', _checked('pyproj.crs_factors', crs_factors)
-    )
+    runner.bench_func('pyproj.Proj.factors/1k', crs_factors)
     runner.bench_func(
         'pyproj.Proj.factors_batch/1k',
-        _checked('pyproj.crs_factors_batch', crs_factors_batch),
+        crs_factors_batch,
     )
-    runner.bench_func(
-        'pyproj.Geod.crs_geodesic/1k', _checked('pyproj.crs_geodesic', crs_geodesic)
-    )
+    runner.bench_func('pyproj.Geod.crs_geodesic/1k', crs_geodesic)
     runner.bench_func(
         'pyproj.Geod.crs_geodesic_batch/1k',
-        _checked('pyproj.crs_geodesic_batch', crs_geodesic_batch),
+        crs_geodesic_batch,
     )
     runner.bench_func(
         'pyproj.Geod.crs_geodesic_direct_batch/1k',
-        _checked('pyproj.crs_geodesic_direct_batch', crs_geodesic_direct_batch),
+        crs_geodesic_direct_batch,
     )
     runner.bench_func(
         'pyproj.Geod.crs_geodesic_interpolate_batch/1k',
-        _checked(
-            'pyproj.crs_geodesic_interpolate_batch', crs_geodesic_interpolate_batch
-        ),
+        crs_geodesic_interpolate_batch,
     )
     runner.bench_func(
         'pyproj.Geod.crs_geodesic_geometry_batch/1k',
-        _checked('pyproj.crs_geodesic_geometry_batch', crs_geodesic_geometry_batch),
+        crs_geodesic_geometry_batch,
     )
     runner.bench_func(
         'pyproj.CRS.authority_conversion/120',
-        _checked('pyproj.crs_authority_conversion', crs_authority_conversion),
+        crs_authority_conversion,
     )
-    runner.bench_func('pyproj.CRS.cf/120', _checked('pyproj.crs_cf', crs_cf))
+    runner.bench_func('pyproj.CRS.cf/120', crs_cf)
     runner.bench_func(
         'pyproj.TransformerGroup.operations_cold/1k',
-        _checked('pyproj.crs_operations', crs_operations),
+        crs_operations,
     )
-    runner.bench_func(
-        'pyproj.CRS.info_churn/120', _checked('pyproj.crs_info_churn', crs_info_churn)
-    )
+    runner.bench_func('pyproj.CRS.info_churn/120', crs_info_churn)
     runner.bench_func(
         'pyproj.CRS.info_decompose/120',
-        _checked('pyproj.crs_info_decompose', crs_info_decompose),
+        crs_info_decompose,
     )
     runner.bench_func(
         'pyproj.Transformer.operation_churn/120',
-        _checked('pyproj.crs_operation_churn', crs_operation_churn),
+        crs_operation_churn,
     )
     runner.bench_func(
         'pyproj.Transformer.operation_cold_distinct/1k',
-        _checked('pyproj.crs_operation_cold_distinct', crs_operation_cold_distinct),
+        crs_operation_cold_distinct,
     )
     runner.bench_func(
         'pyproj.Transformer.operation_reused/120',
-        _checked('pyproj.crs_operation_reused', crs_operation_reused),
+        crs_operation_reused,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_bounds/1k',
-        _checked('pyproj.crs_transform_bounds', crs_transform_bounds),
+        crs_transform_bounds,
     )
     runner.bench_func(
         'pyproj.Transformer.transform_bounds_3d_corners/1k',
-        _checked('pyproj.crs_transform_bounds_3d', crs_transform_bounds_3d),
+        crs_transform_bounds_3d,
     )
     runner.bench_func(
         'pyproj.database.query_crs_info/120',
-        _checked('pyproj.crs_catalog', crs_catalog),
+        crs_catalog,
     )
     runner.bench_func(
         'pyproj.database.query_utm_crs_info/120',
-        _checked('pyproj.crs_utm_zones', crs_utm_zones),
+        crs_utm_zones,
     )
-    runner.bench_func(
-        'pyproj.database.get_units_map/120', _checked('pyproj.crs_units', crs_units)
-    )
+    runner.bench_func('pyproj.database.get_units_map/120', crs_units)
     runner.bench_func(
         'pyproj.CRS.get_non_deprecated/120',
-        _checked('pyproj.crs_non_deprecated', crs_non_deprecated),
+        crs_non_deprecated,
     )
     runner.bench_func(
         'pyproj.database.query_crs_info_search/120',
-        _checked('pyproj.crs_search', crs_search),
+        crs_search,
     )
-    runner.bench_func(
-        'pyproj.CRS.exports/120', _checked('pyproj.crs_exports', crs_exports)
-    )
-    runner.bench_func('pyproj.CRS.equals/120', _checked('pyproj.crs_same', crs_same))
+    runner.bench_func('pyproj.CRS.exports/120', crs_exports)
+    runner.bench_func('pyproj.CRS.equals/120', crs_same)
 
 
 def main() -> None:
+    _validate_summary_mrr()
     runner = bench_runner()
     runner.metadata['project'] = 'gometry'
     runner.metadata['fixture'] = 'deterministic-trig-points'
     runner.metadata['competitors'] = 'shapely,h3,pyproj,s2sphere,rtree'
     runner.metadata['gometry_only'] = ','.join(sorted(GOMETRY_ONLY_BENCHMARKS))
     flush_benchmarks = queue_selected_benchmarks(runner, 'competitors')
-    runner.bench_func('gometry.points/10k', _checked('gometry.points', gometry_points))
+    runner.bench_func('gometry.points/10k', gometry_points)
     runner.bench_func(
         'gometry.contains/polygon_points_10k',
-        _checked('gometry.contains', gometry_contains),
+        gometry_contains,
     )
     runner.bench_func(
         'gometry.contains_xy/polygon_points_10k',
-        _checked('gometry.contains_xy', gometry_contains_xy),
+        gometry_contains_xy,
     )
-    runner.bench_func(
-        'gometry.from_wkb/1k', _checked('gometry.from_wkb', gometry_from_wkb)
-    )
-    runner.bench_func(
-        'gometry.from_wkb.batch/1k',
-        _checked('gometry.from_wkb', gometry_from_wkb_batch),
-    )
-    runner.bench_func(
-        'gometry.to_wkt.batch/1k', _checked('gometry.to_wkt', gometry_to_wkt_batch)
-    )
+    # Old point-only precision-7 WKB rows removed; public mixed-EWKB supersedes.
+    runner.bench_func('gometry.to_wkt.batch/1k', gometry_to_wkt_batch)
     runner.bench_func(
         'gometry.from_wkt.batch/1k',
-        _checked('gometry.from_wkt', gometry_from_wkt_batch),
+        gometry_from_wkt_batch,
     )
     runner.bench_func(
         'gometry.to_geojson.batch/1k',
-        _checked('gometry.to_geojson', gometry_to_geojson_batch),
+        gometry_to_geojson_batch,
     )
     runner.bench_func(
         'gometry.from_geojson.batch/1k',
-        _checked('gometry.from_geojson', gometry_from_geojson_batch),
+        gometry_from_geojson_batch,
     )
-    runner.bench_func(
-        'gometry.line_merge/1k', _checked('gometry.line_merge', gometry_line_merge)
-    )
+    runner.bench_func('gometry.line_merge/1k', gometry_line_merge)
     runner.bench_func(
         'gometry.clip_by_rect/1k',
-        _checked('gometry.clip_by_rect', gometry_clip_by_rect),
+        gometry_clip_by_rect,
     )
     runner.bench_func(
         'gometry.line_interpolate/1k',
-        _checked('gometry.line_interpolate', gometry_line_interpolate),
+        gometry_line_interpolate,
     )
     runner.bench_func(
         'gometry.line_substring/1k',
-        _checked('gometry.line_substring', gometry_line_substring),
+        gometry_line_substring,
     )
     runner.bench_func(
         'gometry.line_locate/1k',
-        _checked('gometry.line_locate', gometry_line_locate),
+        gometry_line_locate,
     )
     runner.bench_func(
         'gometry.line_locate.pairwise/1k',
-        _checked('gometry.line_locate_pairwise', gometry_line_locate_pairwise),
+        gometry_line_locate_pairwise,
     )
     runner.bench_func(
         'gometry.intersection_pairwise/1k',
-        _checked('gometry.intersection_pairwise', gometry_intersection_pairwise),
+        gometry_intersection_pairwise,
     )
     runner.bench_func(
         'gometry.difference_pairwise/1k',
-        _checked('gometry.difference_pairwise', gometry_difference_pairwise),
+        gometry_difference_pairwise,
     )
-    runner.bench_func('gometry.split/1k', _checked('gometry.split', gometry_split))
+    runner.bench_func('gometry.split/1k', gometry_split)
     runner.bench_func(
         'gometry.split_pairwise/1k',
-        _checked('gometry.split_pairwise', gometry_split_pairwise),
+        gometry_split_pairwise,
     )
     runner.bench_func(
         'gometry.offset_curve/1k',
-        _checked('gometry.offset_curve', gometry_offset_curve),
+        gometry_offset_curve,
     )
     runner.bench_func(
         'gometry.shared_paths/1k',
-        _checked('gometry.shared_paths', gometry_shared_paths),
+        gometry_shared_paths,
     )
     runner.bench_func(
         'gometry.shared_paths_pairwise/1k',
-        _checked('gometry.shared_paths_pairwise', gometry_shared_paths_pairwise),
+        gometry_shared_paths_pairwise,
     )
-    runner.bench_func(
-        'gometry.centroid/1k', _checked('gometry.centroid', gometry_centroid)
-    )
+    runner.bench_func('gometry.centroid/1k', gometry_centroid)
     runner.bench_func(
         'gometry.point_on_surface/1k',
-        _checked('gometry.point_on_surface', gometry_point_on_surface),
+        gometry_point_on_surface,
     )
-    runner.bench_func(
-        'gometry.envelope/1k', _checked('gometry.envelope', gometry_envelope)
-    )
-    runner.bench_func(
-        'gometry.convex_hull/1k', _checked('gometry.convex_hull', gometry_convex_hull)
-    )
+    runner.bench_func('gometry.envelope/1k', gometry_envelope)
+    runner.bench_func('gometry.convex_hull/1k', gometry_convex_hull)
     runner.bench_func(
         'gometry.concave_hull/1k',
-        _checked('gometry.concave_hull', gometry_concave_hull),
+        gometry_concave_hull,
     )
-    runner.bench_func(
-        'gometry.polylabel/1k', _checked('gometry.polylabel', gometry_polylabel)
-    )
+    runner.bench_func('gometry.polylabel/1k', gometry_polylabel)
     runner.bench_func(
         'gometry.minimum_rotated_rectangle/1k',
-        _checked(
-            'gometry.minimum_rotated_rectangle', gometry_minimum_rotated_rectangle
-        ),
+        gometry_minimum_rotated_rectangle,
     )
-    runner.bench_func(
-        'gometry.boundary/1k', _checked('gometry.boundary', gometry_boundary)
-    )
+    runner.bench_func('gometry.boundary/1k', gometry_boundary)
     runner.bench_func(
         'gometry.remove_repeated_points/1k',
-        _checked('gometry.remove_repeated_points', gometry_remove_repeated_points),
+        gometry_remove_repeated_points,
     )
-    runner.bench_func(
-        'gometry.segmentize/1k', _checked('gometry.segmentize', gometry_segmentize)
-    )
+    runner.bench_func('gometry.segmentize/1k', gometry_segmentize)
     runner.bench_func(
         'gometry.centroid.packed_lines/20k',
-        _checked('gometry.centroid_packed_lines_20k', gometry_centroid_packed_lines),
+        gometry_centroid_packed_lines,
     )
     runner.bench_func(
         'gometry.rotate.packed_lines/20k',
-        _checked('gometry.rotate_packed_lines_20k', gometry_rotate_packed_lines),
+        gometry_rotate_packed_lines,
     )
     runner.bench_func(
         'gometry.segmentize.packed_lines/1k',
-        _checked('gometry.segmentize_packed_lines_1k', gometry_segmentize_packed_lines),
+        gometry_segmentize_packed_lines,
     )
     runner.bench_func(
         'gometry.segmentize.fraction/1k',
-        _checked('gometry.segmentize_fraction', gometry_segmentize_fraction),
+        gometry_segmentize_fraction,
     )
     runner.bench_func(
         'gometry.segmentize.fraction.packed_lines/1k',
-        _checked(
-            'gometry.segmentize_fraction_packed_lines_1k',
-            gometry_segmentize_fraction_packed_lines,
-        ),
+        gometry_segmentize_fraction_packed_lines,
     )
     runner.bench_func(
         'gometry.concat/packed_polygons_2x1k',
-        _checked(
-            'gometry.concat_packed_polygons_2x1k', gometry_concat_packed_polygons_2x1k
-        ),
+        gometry_concat_packed_polygons_2x1k,
     )
     runner.bench_func(
         'gometry.filter/packed_polygons_1k',
-        _checked(
-            'gometry.filter_packed_polygons_1k', gometry_filter_packed_polygons_1k
-        ),
+        gometry_filter_packed_polygons_1k,
     )
     runner.bench_func(
         'gometry.simplify.packed_lines/1k',
-        _checked('gometry.simplify_packed_lines_1k', gometry_simplify_packed_lines),
+        gometry_simplify_packed_lines,
     )
     runner.bench_func(
         'gometry.simplify_vw.packed_lines/1k',
-        _checked(
-            'gometry.simplify_vw_packed_lines_1k', gometry_simplify_vw_packed_lines
-        ),
+        gometry_simplify_vw_packed_lines,
     )
     runner.bench_func(
         'gometry.smooth/polygon_200',
-        _checked('gometry.smooth_polygon_200', gometry_smooth_polygon_200),
+        gometry_smooth_polygon_200,
     )
     runner.bench_func(
         'gometry.smooth/packed_lines/1k',
-        _checked('gometry.smooth_packed_lines_1k', gometry_smooth_packed_lines_1k),
+        gometry_smooth_packed_lines_1k,
     )
-    runner.bench_func('gometry.snap/1k', _checked('gometry.snap', gometry_snap))
+    runner.bench_func('gometry.snap/1k', gometry_snap)
     runner.bench_func(
         'gometry.snap_pairwise/1k',
-        _checked('gometry.snap_pairwise', gometry_snap_pairwise),
+        gometry_snap_pairwise,
     )
     runner.bench_func(
         'gometry.hausdorff_distance/1k',
-        _checked('gometry.hausdorff_distance', gometry_hausdorff_distance),
+        gometry_hausdorff_distance,
     )
     runner.bench_func(
         'gometry.hausdorff_distance.packed_lines/1k',
-        _checked(
-            'gometry.hausdorff_distance_packed_lines_1k',
-            gometry_hausdorff_distance_packed_lines,
-        ),
+        gometry_hausdorff_distance_packed_lines,
     )
     runner.bench_func(
         'gometry.hausdorff_distance.packed_lines_cross/1k',
-        _checked(
-            'gometry.hausdorff_distance_packed_lines_cross_1k',
-            gometry_hausdorff_distance_packed_lines_cross,
-        ),
+        gometry_hausdorff_distance_packed_lines_cross,
     )
     runner.bench_func(
         'gometry.hausdorff_distance.geographic/1k',
-        _checked(
-            'gometry.hausdorff_distance_geographic_1k',
-            gometry_hausdorff_distance_geographic,
-        ),
+        gometry_hausdorff_distance_geographic,
     )
     runner.bench_func(
         'gometry.frechet_distance/1k',
-        _checked('gometry.frechet_distance', gometry_frechet_distance),
+        gometry_frechet_distance,
     )
     runner.bench_func(
         'gometry.frechet_distance.packed_lines/1k',
-        _checked(
-            'gometry.frechet_distance_packed_lines_1k',
-            gometry_frechet_distance_packed_lines,
-        ),
+        gometry_frechet_distance_packed_lines,
     )
     runner.bench_func(
         'gometry.nearest_points/1k',
-        _checked('gometry.nearest_points', gometry_nearest_points),
+        gometry_nearest_points,
     )
-    runner.bench_func(
-        'gometry.reverse/1k', _checked('gometry.reverse', gometry_reverse)
-    )
+    runner.bench_func('gometry.reverse/1k', gometry_reverse)
     runner.bench_func(
         'gometry.orient_polygons/1k',
-        _checked('gometry.orient_polygons', gometry_orient_polygons),
+        gometry_orient_polygons,
     )
-    runner.bench_func(
-        'gometry.normalize/1k', _checked('gometry.normalize', gometry_normalize)
-    )
-    runner.bench_func(
-        'gometry.is_simple/1k', _checked('gometry.is_simple', gometry_is_simple)
-    )
+    runner.bench_func('gometry.normalize/1k', gometry_normalize)
+    runner.bench_func('gometry.is_simple/1k', gometry_is_simple)
     runner.bench_func(
         'gometry.minimum_clearance/1k',
-        _checked('gometry.minimum_clearance', gometry_minimum_clearance),
+        gometry_minimum_clearance,
     )
     runner.bench_func(
         'gometry.triangulate.delaunay/1k',
-        _checked('gometry.triangulate_delaunay', gometry_triangulate_delaunay),
+        gometry_triangulate_delaunay,
     )
     runner.bench_func(
         'gometry.triangulate.constrained/1k',
-        _checked(
-            'gometry.triangulate_constrained',
-            gometry_triangulate_constrained,
-        ),
+        gometry_triangulate_constrained,
     )
     runner.bench_func(
         'gometry.triangulate.earcut/1k',
-        _checked('gometry.triangulate_earcut', gometry_triangulate_earcut),
+        gometry_triangulate_earcut,
     )
     runner.bench_func(
         'gometry.voronoi_polygons/1k',
-        _checked('gometry.voronoi_polygons', gometry_voronoi_polygons),
+        gometry_voronoi_polygons,
     )
     runner.bench_func(
         'gometry.voronoi_edges/1k',
-        _checked('gometry.voronoi_edges', gometry_voronoi_edges),
+        gometry_voronoi_edges,
     )
     runner.bench_func(
-        'gometry.polygonize/1k', _checked('gometry.polygonize', gometry_polygonize)
+        'gometry.voronoi_polygons.single/1k_sites',
+        gometry_voronoi_polygons_single_1000,
     )
+    runner.bench_func(
+        'gometry.voronoi_polygons.single/2k_sites',
+        gometry_voronoi_polygons_single_2000,
+    )
+    runner.bench_func('gometry.polygonize/1k', gometry_polygonize)
     runner.bench_func(
         'gometry.polygonize_full/1k',
-        _checked('gometry.polygonize_full', gometry_polygonize_full),
+        gometry_polygonize_full,
     )
-    runner.bench_func(
-        'gometry.h3_cells/10k', _checked('gometry.h3_cells', gometry_h3_cell)
-    )
-    runner.bench_func(
-        'gometry.s2_cells/10k', _checked('gometry.s2_cells', gometry_s2_cell)
-    )
-    runner.bench_func(
-        'gometry.distance/10k', _checked('gometry.distance', gometry_geodesic_distance)
-    )
+    runner.bench_func('gometry.h3_cells/10k', gometry_h3_cell)
+    runner.bench_func('gometry.s2_cells/10k', gometry_s2_cell)
+    # Fixed-origin gometry.distance/10k deleted (Point(0,0) pair).
     runner.bench_func(
         'gometry.distance_geodesic_point_pairs/10k',
-        _checked(
-            'gometry.distance_geodesic_point_pairs',
-            gometry_distance_geodesic_point_pairs,
-        ),
+        gometry_distance_geodesic_point_pairs,
     )
     runner.bench_func(
         'gometry.dwithin_geodesic_point_pairs/10k',
-        _checked(
-            'gometry.dwithin_geodesic_point_pairs', gometry_dwithin_geodesic_point_pairs
-        ),
+        gometry_dwithin_geodesic_point_pairs,
     )
     runner.bench_func(
         'gometry.swap_xy_packed_points/10k',
-        _checked('gometry.swap_xy_packed_points', gometry_swap_xy_packed_points),
+        gometry_swap_xy_packed_points,
     )
     runner.bench_func(
         'gometry.swap_xy_packed_lines/20k',
-        _checked('gometry.swap_xy_packed_lines', gometry_swap_xy_packed_lines),
+        gometry_swap_xy_packed_lines,
     )
     runner.bench_func(
         'gometry.swap_xy_packed_polygons/1k',
-        _checked('gometry.swap_xy_packed_polygons', gometry_swap_xy_packed_polygons),
+        gometry_swap_xy_packed_polygons,
     )
     runner.bench_func(
         'gometry.quantize_packed_lines/1k',
-        _checked('gometry.quantize_packed_lines', gometry_quantize_packed_lines),
+        gometry_quantize_packed_lines,
     )
     runner.bench_func(
         'gometry.quantize_packed_polygons/1k',
-        _checked('gometry.quantize_packed_polygons', gometry_quantize_packed_polygons),
+        gometry_quantize_packed_polygons,
     )
-    runner.bench_func(
-        'gometry.bearing/10k', _checked('gometry.bearing', gometry_bearing)
-    )
-    runner.bench_func(
-        'gometry.destination/10k', _checked('gometry.destination', gometry_destination)
-    )
+    runner.bench_func('gometry.bearing/10k', gometry_bearing)
+    # Misnamed gometry.destination/10k (CRS.geodesic_direct) deleted; public
+    # RELEASE uses gometry.destination.geodesic/10k_wgs84.
     runner.bench_func(
         'gometry.point_between/10k',
-        _checked('gometry.point_between', gometry_point_between),
+        gometry_point_between,
     )
-    runner.bench_func(
-        'gometry.to_crs_fast/10k', _checked('gometry.to_crs_fast', gometry_to_crs_fast)
-    )
-    runner.bench_func(
-        'gometry.to_crs_proj/10k', _checked('gometry.to_crs_proj', gometry_to_crs_proj)
-    )
+    runner.bench_func('gometry.to_crs_fast/10k', gometry_to_crs_fast)
+    runner.bench_func('gometry.to_crs_proj/10k', gometry_to_crs_proj)
     runner.bench_func(
         'gometry.to_crs_aoi_options/10k',
-        _checked('gometry.to_crs_aoi_options', gometry_to_crs_aoi_options),
+        gometry_to_crs_aoi_options,
     )
     runner.bench_func(
         'gometry.crs_transform/10k',
-        _checked('gometry.crs_transform', gometry_crs_transform),
+        gometry_crs_transform,
     )
     runner.bench_func(
         'gometry.crs_transform_aoi/10k',
-        _checked('gometry.crs_transform_aoi', gometry_crs_transform_aoi),
+        gometry_crs_transform_aoi,
     )
     runner.bench_func(
         'gometry.crs_transform_3d/10k',
-        _checked('gometry.crs_transform_3d', gometry_crs_transform_3d),
+        gometry_crs_transform_3d,
     )
     runner.bench_func(
         'gometry.crs_transform_4d/10k',
-        _checked('gometry.crs_transform_4d', gometry_crs_transform_4d),
+        gometry_crs_transform_4d,
     )
-    runner.bench_func(
-        'gometry.crs_apply/10k', _checked('gometry.crs_apply', gometry_crs_apply)
-    )
+    runner.bench_func('gometry.crs_apply/10k', gometry_crs_apply)
     runner.bench_func(
         'gometry.crs_apply_inverse/10k',
-        _checked('gometry.crs_apply_inverse', gometry_crs_apply_inverse),
+        gometry_crs_apply_inverse,
     )
-    runner.bench_func(
-        'gometry.crs_info/1k', _checked('gometry.crs_info', gometry_crs_info)
-    )
+    runner.bench_func('gometry.crs_info/1k', gometry_crs_info)
     runner.bench_func(
         'gometry.crs_operation_warm/1k',
-        _checked('gometry.crs_operation', gometry_crs_operation),
+        gometry_crs_operation,
     )
     runner.bench_func(
         'gometry.crs_operation_at/1k',
-        _checked('gometry.crs_operation_at', gometry_crs_operation_at),
+        gometry_crs_operation_at,
     )
     runner.bench_func(
         'gometry.crs_roundtrip/1k',
-        _checked('gometry.crs_roundtrip', gometry_crs_roundtrip),
+        gometry_crs_roundtrip,
     )
-    runner.bench_func(
-        'gometry.crs_factors/1k', _checked('gometry.crs_factors', gometry_crs_factors)
-    )
+    runner.bench_func('gometry.crs_factors/1k', gometry_crs_factors)
     runner.bench_func(
         'gometry.crs_geodesic/1k',
-        _checked('gometry.crs_geodesic', gometry_crs_geodesic),
+        gometry_crs_geodesic,
     )
     runner.bench_func(
         'gometry.crs_geodesic_batch/1k',
-        _checked('gometry.crs_geodesic_batch', gometry_crs_geodesic_batch),
+        gometry_crs_geodesic_batch,
     )
     runner.bench_func(
         'gometry.crs_geodesic_direct_batch/1k',
-        _checked(
-            'gometry.crs_geodesic_direct_batch', gometry_crs_geodesic_direct_batch
-        ),
+        gometry_crs_geodesic_direct_batch,
     )
     runner.bench_func(
         'gometry.crs_geodesic_interpolate_batch/1k',
-        _checked(
-            'gometry.crs_geodesic_interpolate_batch',
-            gometry_crs_geodesic_interpolate_batch,
-        ),
+        gometry_crs_geodesic_interpolate_batch,
     )
     runner.bench_func(
         'gometry.crs_geodesic_geometry_batch/1k',
-        _checked(
-            'gometry.crs_geodesic_geometry_batch', gometry_crs_geodesic_geometry_batch
-        ),
+        gometry_crs_geodesic_geometry_batch,
     )
     runner.bench_func(
         'gometry.crs_operations_warm/1k',
-        _checked('gometry.crs_operations', gometry_crs_operations),
+        gometry_crs_operations,
     )
     runner.bench_func(
         'gometry.crs_static_catalogs/120',
-        _checked('gometry.crs_static_catalogs', gometry_crs_static_catalogs),
+        gometry_crs_static_catalogs,
     )
     runner.bench_func(
         'gometry.crs_authority_conversion/120',
-        _checked('gometry.crs_authority_conversion', gometry_crs_authority_conversion),
+        gometry_crs_authority_conversion,
     )
-    runner.bench_func('gometry.crs_cf/120', _checked('gometry.crs_cf', gometry_crs_cf))
+    runner.bench_func('gometry.crs_cf/120', gometry_crs_cf)
     runner.bench_func(
         'gometry.crs_info_churn/120',
-        _checked('gometry.crs_info_churn', gometry_crs_info_churn),
+        gometry_crs_info_churn,
     )
     runner.bench_func(
         'gometry.crs_info_decompose/120',
-        _checked('gometry.crs_info_decompose', gometry_crs_info_decompose),
+        gometry_crs_info_decompose,
     )
     runner.bench_func(
         'gometry.crs_operation_churn/120',
-        _checked('gometry.crs_operation_churn', gometry_crs_operation_churn),
+        gometry_crs_operation_churn,
     )
     runner.bench_func(
         'gometry.crs_transform_bounds/1k',
-        _checked('gometry.crs_transform_bounds', gometry_crs_transform_bounds),
+        gometry_crs_transform_bounds,
     )
     runner.bench_func(
         'gometry.crs_transform_bounds_3d/1k',
-        _checked('gometry.crs_transform_bounds_3d', gometry_crs_transform_bounds_3d),
+        gometry_crs_transform_bounds_3d,
     )
     runner.bench_func(
         'gometry.crs_transform_bounds_3d_corners/1k',
-        _checked(
-            'gometry.crs_transform_bounds_3d_corners',
-            gometry_crs_transform_bounds_3d_corners,
-        ),
+        gometry_crs_transform_bounds_3d_corners,
     )
-    runner.bench_func(
-        'gometry.crs_list/120', _checked('gometry.crs_catalog', gometry_crs_catalog)
-    )
+    runner.bench_func('gometry.crs_list/120', gometry_crs_catalog)
     runner.bench_func(
         'gometry.crs_utm_zones/120',
-        _checked('gometry.crs_utm_zones', gometry_crs_utm_zones),
+        gometry_crs_utm_zones,
     )
-    runner.bench_func(
-        'gometry.crs_units/120', _checked('gometry.crs_units', gometry_crs_units)
-    )
+    runner.bench_func('gometry.crs_units/120', gometry_crs_units)
     runner.bench_func(
         'gometry.crs_celestial_bodies/120',
-        _checked('gometry.crs_celestial_bodies', gometry_crs_celestial_bodies),
+        gometry_crs_celestial_bodies,
     )
     runner.bench_func(
         'gometry.crs_non_deprecated/120',
-        _checked('gometry.crs_non_deprecated', gometry_crs_non_deprecated),
+        gometry_crs_non_deprecated,
     )
-    runner.bench_func(
-        'gometry.crs_search/120', _checked('gometry.crs_search', gometry_crs_search)
-    )
-    runner.bench_func(
-        'gometry.crs_exports/120', _checked('gometry.crs_exports', gometry_crs_exports)
-    )
-    runner.bench_func(
-        'gometry.crs_same/120', _checked('gometry.crs_same', gometry_crs_same)
-    )
-    runner.bench_func(
-        'gometry.index.build/10k', _checked('gometry.index_build', gometry_index_build)
-    )
+    runner.bench_func('gometry.crs_search/120', gometry_crs_search)
+    runner.bench_func('gometry.crs_exports/120', gometry_crs_exports)
+    runner.bench_func('gometry.crs_same/120', gometry_crs_same)
+    runner.bench_func('gometry.index.build/10k', gometry_index_build)
     runner.bench_func(
         'gometry.index.query/boxes_1k',
-        _checked('gometry.index_query', gometry_index_query),
+        gometry_index_query,
     )
     runner.bench_func(
         'gometry.index.nearest/k10_planar_10k',
-        _checked('gometry.index_nearest_k10_planar', gometry_index_nearest_k10_planar),
+        gometry_index_nearest_k10_planar,
     )
     runner.bench_func(
         'gometry.dwithin/pairwise_10k',
-        _checked('gometry.dwithin_pairwise', gometry_dwithin_pairwise),
+        gometry_dwithin_pairwise,
     )
     runner.bench_func(
         'gometry.prepared.contains/polygon_points_10k',
-        _checked('gometry.prepared_contains_polygon_points', gometry_prepared_contains),
+        gometry_prepared_contains,
     )
     runner.bench_func(
         'gometry.intersects/polygon_points_10k',
-        _checked(
-            'gometry.intersects_polygon_points', gometry_intersects_polygon_points
-        ),
+        gometry_intersects_polygon_points,
     )
     runner.bench_func(
         'gometry.within/polygon_points_10k',
-        _checked('gometry.within_polygon_points', gometry_within_polygon_points),
+        gometry_within_polygon_points,
     )
     runner.bench_func(
         'gometry.touches/polygon_points_10k',
-        _checked('gometry.touches_polygon_points', gometry_touches_polygon_points),
+        gometry_touches_polygon_points,
     )
     runner.bench_func(
         'gometry.crosses/polygon_points_10k',
-        _checked('gometry.crosses_polygon_points', gometry_crosses_polygon_points),
+        gometry_crosses_polygon_points,
     )
     runner.bench_func(
         'gometry.overlaps/polygon_points_10k',
-        _checked('gometry.overlaps_polygon_points', gometry_overlaps_polygon_points),
+        gometry_overlaps_polygon_points,
     )
     runner.bench_func(
         'gometry.disjoint/polygon_points_10k',
-        _checked('gometry.disjoint_polygon_points', gometry_disjoint_polygon_points),
+        gometry_disjoint_polygon_points,
     )
     runner.bench_func(
         'gometry.covers/polygon_points_10k',
-        _checked('gometry.covers_polygon_points', gometry_covers_polygon_points),
+        gometry_covers_polygon_points,
     )
     runner.bench_func(
         'gometry.covered_by/polygon_points_10k',
-        _checked(
-            'gometry.covered_by_polygon_points', gometry_covered_by_polygon_points
-        ),
+        gometry_covered_by_polygon_points,
     )
     runner.bench_func(
         'gometry.buffer/points_1k',
-        _checked('gometry.buffer_points', gometry_buffer_points),
+        gometry_buffer_points,
     )
     runner.bench_func(
         'gometry.buffer/polygons_dilate_1k',
-        _checked('gometry.buffer_polygons_dilate', gometry_buffer_polygons_dilate),
+        gometry_buffer_polygons_dilate,
     )
     runner.bench_func(
         'gometry.buffer/polygons_erosion_1k',
-        _checked('gometry.buffer_polygons_erosion', gometry_buffer_polygons_erosion),
+        gometry_buffer_polygons_erosion,
     )
     runner.bench_func(
         'gometry.buffer/lines_1k',
-        _checked('gometry.buffer_lines', gometry_buffer_lines),
+        gometry_buffer_lines,
     )
     runner.bench_func(
         'gometry.distance/pairwise_10k',
-        _checked('gometry.distance_pairwise', gometry_distance_pairwise),
+        gometry_distance_pairwise,
     )
     runner.bench_func(
         'gometry.length/lines_1k',
-        _checked('gometry.length_lines', gometry_length_lines),
+        gometry_length_lines,
     )
     runner.bench_func(
         'gometry.area/polygons_1k',
-        _checked('gometry.area_polygons', gometry_area_polygons),
+        gometry_area_polygons,
     )
     runner.bench_func(
         'gometry.union_all/overlap_1k',
-        _checked('gometry.union_all_overlap', gometry_union_all_overlap),
+        gometry_union_all_overlap,
     )
     runner.bench_func(
         'gometry.union/pairwise_1k',
-        _checked('gometry.union_pairwise', gometry_union_pairwise),
+        gometry_union_pairwise,
     )
     runner.bench_func(
         'gometry.symmetric_difference/pairwise_1k',
-        _checked(
-            'gometry.symmetric_difference_pairwise',
-            gometry_symmetric_difference_pairwise,
-        ),
+        gometry_symmetric_difference_pairwise,
     )
     runner.bench_func(
         'gometry.intersection_all/overlap_1k',
-        _checked('gometry.intersection_all_overlap', gometry_intersection_all_overlap),
+        gometry_intersection_all_overlap,
     )
-    runner.bench_func(
-        'gometry.nearest_m/10k', _checked('gometry.nearest_m', gometry_nearest_m)
-    )
-    runner.bench_func(
-        'gometry.to_wkb.batch/1k', _checked('gometry.to_wkb', gometry_to_wkb_batch)
-    )
+    runner.bench_func('gometry.nearest_m/10k', gometry_nearest_m)
+    runner.bench_func('gometry.to_wkb.batch/1k', gometry_to_wkb_batch)
     runner.bench_func(
         'gometry.to_arrow.roundtrip/1k',
-        _checked('gometry.to_arrow_roundtrip', gometry_to_arrow_roundtrip),
+        gometry_to_arrow_roundtrip,
     )
     runner.bench_func(
         'gometry.from_arrow.roundtrip/1k',
-        _checked('gometry.from_arrow_roundtrip', gometry_from_arrow_roundtrip),
+        gometry_from_arrow_roundtrip,
     )
-    runner.bench_func(
-        'gometry.to_polyline/1k', _checked('gometry.to_polyline', gometry_to_polyline)
-    )
+    runner.bench_func('gometry.to_polyline/1k', gometry_to_polyline)
     runner.bench_func(
         'gometry.from_polyline/1k',
-        _checked('gometry.from_polyline', gometry_from_polyline),
+        gometry_from_polyline,
     )
     runner.bench_func(
         'gometry.scale.packed_lines/20k',
-        _checked('gometry.scale_packed_lines_20k', gometry_scale_packed_lines),
+        gometry_scale_packed_lines,
     )
     runner.bench_func(
         'gometry.skew.packed_lines/20k',
-        _checked('gometry.skew_packed_lines_20k', gometry_skew_packed_lines),
+        gometry_skew_packed_lines,
     )
     runner.bench_func(
         'gometry.translate.packed_lines/20k',
-        _checked('gometry.translate_packed_lines_20k', gometry_translate_packed_lines),
+        gometry_translate_packed_lines,
     )
     runner.bench_func(
         'gometry.affine_transform.packed_lines/20k',
-        _checked(
-            'gometry.affine_transform_packed_lines_20k',
-            gometry_affine_transform_packed_lines,
-        ),
+        gometry_affine_transform_packed_lines,
     )
-    runner.bench_func(
-        'gometry.relate/1k', _checked('gometry.relate_1k', gometry_relate_1k)
-    )
+    runner.bench_func('gometry.relate/1k', gometry_relate_1k)
     runner.bench_func(
         'gometry.relate_pattern/1k',
-        _checked('gometry.relate_pattern_1k', gometry_relate_pattern_1k),
+        gometry_relate_pattern_1k,
     )
-    runner.bench_func(
-        'gometry.is_valid/10k', _checked('gometry.is_valid_10k', gometry_is_valid_10k)
-    )
-    runner.bench_func(
-        'gometry.repair/1k', _checked('gometry.repair_1k', gometry_repair_1k)
-    )
+    runner.bench_func('gometry.is_valid/10k', gometry_is_valid_10k)
+    runner.bench_func('gometry.repair/1k', gometry_repair_1k)
     runner.bench_func(
         'gometry.h3_polygon/10k',
-        _checked('gometry.h3_boundary_10k', gometry_h3_boundary_10k),
+        gometry_h3_boundary_10k,
     )
     runner.bench_func(
         'gometry.h3_to_polygon/10k',
-        _checked('gometry.h3_to_polygon_10k', gometry_h3_to_polygon_10k),
+        gometry_h3_to_polygon_10k,
     )
     runner.bench_func(
         'gometry.h3_compact/10k',
-        _checked('gometry.h3_compact_10k', gometry_h3_compact_10k),
+        gometry_h3_compact_10k,
     )
     runner.bench_func(
         'gometry.s2_polygon/10k',
-        _checked('gometry.s2_boundary_10k', gometry_s2_boundary_10k),
+        gometry_s2_boundary_10k,
     )
     runner.bench_func(
         'gometry.s2_to_polygon/10k',
-        _checked('gometry.s2_to_polygon_10k', gometry_s2_to_polygon_10k),
+        gometry_s2_to_polygon_10k,
     )
     runner.bench_func(
         'gometry.geohash_cell/10k',
-        _checked('gometry.geohash_cell_10k', gometry_geohash_cell_10k),
+        gometry_geohash_cell_10k,
     )
     runner.bench_func(
         'gometry.geohash_to_polygon/10k',
-        _checked('gometry.geohash_to_polygon_10k', gometry_geohash_to_polygon_10k),
+        gometry_geohash_to_polygon_10k,
     )
     runner.bench_func(
         'gometry.tile_cell/10k',
-        _checked('gometry.tiles_cell_10k', gometry_tiles_cell_10k),
+        gometry_tiles_cell_10k,
     )
     runner.bench_func(
         'gometry.tile_to_polygon/10k',
-        _checked('gometry.tiles_to_polygon_10k', gometry_tiles_to_polygon_10k),
+        gometry_tiles_to_polygon_10k,
     )
     runner.bench_func(
         'gometry.minimum_bounding_circle/1k',
-        _checked(
-            'gometry.minimum_bounding_circle_1k', gometry_minimum_bounding_circle_1k
-        ),
+        gometry_minimum_bounding_circle_1k,
     )
     runner.bench_func(
         'gometry.minimum_clearance_line/1k',
-        _checked(
-            'gometry.minimum_clearance_line_1k', gometry_minimum_clearance_line_1k
-        ),
+        gometry_minimum_clearance_line_1k,
     )
     runner.bench_func(
         'gometry.maximum_inscribed_circle/1k',
-        _checked(
-            'gometry.maximum_inscribed_circle_1k', gometry_maximum_inscribed_circle_1k
-        ),
+        gometry_maximum_inscribed_circle_1k,
     )
     runner.bench_func(
         f'gometry.real_world.from_geojson/{REAL_WORLD_LABEL}',
-        _checked('gometry.real_world_from_geojson', gometry_real_world_from_geojson),
+        gometry_real_world_from_geojson,
     )
     runner.bench_func(
         f'gometry.real_world.bounds_cold/{REAL_WORLD_LABEL}',
-        _checked('gometry.real_world_bounds_cold', gometry_real_world_bounds_cold),
+        gometry_real_world_bounds_cold,
     )
     runner.bench_func(
         f'gometry.real_world.bounds_warm/{REAL_WORLD_LABEL}',
-        _checked('gometry.real_world_bounds_warm', gometry_real_world_bounds_warm),
+        gometry_real_world_bounds_warm,
     )
     runner.bench_func(
         f'gometry.real_world.area_cold/{REAL_WORLD_LABEL}',
-        _checked('gometry.real_world_area_cold', gometry_real_world_area_cold),
+        gometry_real_world_area_cold,
     )
-    runner.bench_func(
-        f'gometry.real_world.area_warm/{REAL_WORLD_LABEL}',
-        _checked('gometry.real_world_area_warm', gometry_real_world_area_warm),
-    )
+    # Planar area_warm deleted; public geodesic_area is the RELEASE metric.
     runner.bench_func(
         f'gometry.real_world.point_on_surface/{REAL_WORLD_LABEL}',
-        _checked(
-            'gometry.real_world_point_on_surface', gometry_real_world_point_on_surface
-        ),
+        gometry_real_world_point_on_surface,
     )
     _register_shapely(runner)
     _register_rtree(runner)
     _register_h3(runner)
     _register_s2sphere(runner)
     _register_pyproj(runner)
+    _register_public_release_ops(runner, 'competitors')
     flush_benchmarks()
+
+
+def _register_public_release_ops(runner: Any, suite: str) -> None:
+    """Register Lane-2 public timed callables (selected rows only; lazy fixtures)."""
+    from _bench_config import register_selected_public_release_ops
+
+    register_selected_public_release_ops(runner, suite)
 
 
 if __name__ == '__main__':

@@ -233,20 +233,101 @@ def collect_contention(*, exclude_pgids: set[int] | None = None) -> dict[str, An
     }
 
 
-def collect() -> dict[str, Any]:
+# Full inventory for doctor output (import name → distribution name).
+PACKAGE_INVENTORY: dict[str, str] = {
+    'gometry': 'gometry',
+    'numpy': 'numpy',
+    'pyperf': 'pyperf',
+    'shapely': 'shapely',
+    'pyproj': 'pyproj',
+    'h3': 'h3',
+    's2sphere': 's2sphere',
+    'geopandas': 'geopandas',
+    'pyarrow': 'pyarrow',
+    'mercantile': 'mercantile',
+}
+
+# Display names for competitor libraries (summarizer still prefers competitor_label).
+PACKAGE_DISPLAY_NAMES: dict[str, str] = {
+    'gometry': 'gometry',
+    'numpy': 'NumPy',
+    'pyperf': 'pyperf',
+    'shapely': 'Shapely',
+    'pyproj': 'pyproj',
+    'h3': 'h3-py',
+    's2sphere': 's2sphere',
+    'geopandas': 'GeoPandas',
+    'pyarrow': 'pyarrow',
+    'mercantile': 'Mercantile',
+}
+
+# Competitor-label tokens → import names (multi-lib labels split on ' + ').
+_LABEL_PACKAGE: dict[str, str] = {
+    'Shapely': 'shapely',
+    'GeoPandas': 'geopandas',
+    'pyproj': 'pyproj',
+    'h3-py': 'h3',
+    'Mercantile': 'mercantile',
+    's2sphere': 's2sphere',
+}
+
+# Row-name prefix → import name for internal/fallback pairing.
+_PREFIX_PACKAGE: dict[str, str] = {
+    'shapely': 'shapely',
+    'pyproj': 'pyproj',
+    'h3': 'h3',
+    's2sphere': 's2sphere',
+    'geopandas': 'geopandas',
+    'mercantile': 'mercantile',
+    'rtree': 'rtree',
+}
+
+
+def packages_required_by_operations(operations: Any) -> set[str]:
+    """Derive required import names from selected public operations.
+
+    Always includes gometry/numpy/pyperf. Internal-only packages such as
+    s2sphere are required only when a selected competitor row names them —
+    the public S2 gometry-only row does not pull s2sphere in.
+    """
+    required = {'gometry', 'numpy', 'pyperf'}
+    if operations is None:
+        # Standalone doctor / full public RELEASE surface (no s2sphere).
+        required.update({
+            'shapely',
+            'pyproj',
+            'h3',
+            'geopandas',
+            'pyarrow',
+            'mercantile',
+        })
+        return required
+    for op in operations:
+        gometry = getattr(op, 'gometry', '') or ''
+        if 'from_arrow' in gometry or 'arrow' in gometry:
+            required.add('pyarrow')
+        competitor = getattr(op, 'competitor', None)
+        if competitor:
+            prefix = str(competitor).split('.', 1)[0]
+            if prefix in _PREFIX_PACKAGE:
+                required.add(_PREFIX_PACKAGE[prefix])
+        label = getattr(op, 'competitor_label', None)
+        if label:
+            for token in str(label).split(' + '):
+                token = token.strip()
+                if token in _LABEL_PACKAGE:
+                    required.add(_LABEL_PACKAGE[token])
+    return required
+
+
+def collect(*, operations: Any = None) -> dict[str, Any]:
     packages = {
         name: {
             'available': importlib.util.find_spec(name) is not None,
             'version': _package_version(dist),
+            'display_name': PACKAGE_DISPLAY_NAMES.get(name, name),
         }
-        for name, dist in {
-            'gometry': 'gometry',
-            'pyperf': 'pyperf',
-            'shapely': 'shapely',
-            'h3': 'h3',
-            's2sphere': 's2sphere',
-            'pyproj': 'pyproj',
-        }.items()
+        for name, dist in PACKAGE_INVENTORY.items()
     }
     contention = collect_contention()
     frequencies = _per_cpu_frequency_state()
@@ -267,6 +348,7 @@ def collect() -> dict[str, Any]:
         'load_average': contention['metadata']['load_average'],
         'top_cpu_processes': contention['metadata']['top_cpu_processes'],
         'packages': packages,
+        'package_display_names': dict(PACKAGE_DISPLAY_NAMES),
     }
     warnings = list(contention['warnings'])
     if metadata['git_dirty_build_inputs']:
@@ -286,16 +368,25 @@ def collect() -> dict[str, Any]:
         warnings.append(
             f'non-performance governors in the allowed CPU set: {non_performance}'
         )
-    warnings.extend(
-        f'required Python package {package!r} is not importable'
-        for package in ('gometry', 'pyperf')
-        if not packages[package]['available']
-    )
-    warnings.extend(
-        f'competitor package {package!r} is not importable'
-        for package in ('shapely', 'h3', 's2sphere', 'pyproj')
-        if not packages[package]['available']
-    )
+    required = packages_required_by_operations(operations)
+    for package in sorted(required):
+        info = packages.get(package)
+        if info is None:
+            # Optional inventory extension (e.g. rtree on internal filters).
+            available = importlib.util.find_spec(package) is not None
+            if not available:
+                warnings.append(f'competitor package {package!r} is not importable')
+            continue
+        if not info['available']:
+            if package in {'gometry', 'numpy', 'pyperf'}:
+                warnings.append(
+                    f'required Python package {package!r} is not importable'
+                )
+            else:
+                display = PACKAGE_DISPLAY_NAMES.get(package, package)
+                warnings.append(
+                    f'competitor package {package!r} ({display}) is not importable'
+                )
     return {'metadata': metadata, 'warnings': warnings}
 
 
@@ -326,7 +417,8 @@ def main() -> None:
     print('packages:')
     for name, info in report['metadata']['packages'].items():
         version = info['version'] if info['version'] is not None else 'unknown'
-        print(f'  {name}: available={info["available"]} version={version}')
+        display = info.get('display_name', name)
+        print(f'  {name} ({display}): available={info["available"]} version={version}')
     if report['warnings']:
         print('warnings:')
         for warning in report['warnings']:

@@ -1,7 +1,22 @@
-"""Shared gometry↔competitor pairing for benchmark orchestration and summaries."""
+"""Shared gometry↔competitor pairing for benchmark orchestration and summaries.
+
+Public RELEASE rows resolve through ``RELEASE_OPERATIONS`` (never suffix
+inference). ``PAIR_OVERRIDES`` and suffix matching remain for internal catalog
+rows only.
+"""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_SUPPORT = Path(__file__).resolve().parents[1] / 'support'
+if str(_SUPPORT) not in sys.path:
+    sys.path.insert(0, str(_SUPPORT))
+
+from _bench_registry import RELEASE_OPERATIONS, operation_for_row
+
+# Internal-only catalog pairing (not used for public RELEASE rows).
 PAIR_OVERRIDES: dict[str, str] = {
     'gometry.polylabel/1k': 'shapely.polylabel/1k',
     'gometry.h3_cells/10k': 'h3.latlng_to_cell/10k',
@@ -9,11 +24,11 @@ PAIR_OVERRIDES: dict[str, str] = {
     'gometry.h3_compact/10k': 'h3.compact_cells/10k',
     'gometry.h3_to_polygon/10k': 'h3.cells_to_geo/10k',
     'gometry.s2_cells/10k': 's2sphere.cell/10k',
-    'gometry.distance/10k': 'pyproj.Geod.inv/10k',
+    # Fixed-origin geodesic distance, misnamed destination/10k (CRS method), and
+    # the cross-suite geodesic.destination_batch alias were deleted — use the
+    # public RELEASE geodesic pairs / destination.geodesic rows instead.
     'gometry.bearing/10k': 'pyproj.Geod.bearing/10k',
-    'gometry.destination/10k': 'pyproj.Geod.fwd/10k',
     'gometry.point_between/10k': 'pyproj.Geod.interpolate/10k',
-    'gometry.geodesic.destination_batch/1k': 'pyproj.Geod.crs_geodesic_direct_batch/1k',
     'gometry.nearest_m/10k': 'pyproj.Geod.nearest_m/10k',
     'gometry.to_crs_aoi_options/10k': 'pyproj.Transformer.to_crs_aoi_options/10k',
     'gometry.crs_transform/10k': 'pyproj.Transformer.transform_numpy/10k',
@@ -58,6 +73,17 @@ def _suffix(name: str) -> str:
 
 
 def find_competitor(gometry_name: str, available: set[str]) -> str | None:
+    """Resolve a competitor for a gometry row name among *available* names.
+
+    Public RELEASE rows use ``RELEASE_OPERATIONS`` only. Internal catalog rows
+    still use ``PAIR_OVERRIDES`` then shared-suffix inference.
+    """
+    op = operation_for_row(gometry_name)
+    if op is not None and op.gometry == gometry_name:
+        if op.competitor is not None and op.competitor in available:
+            return op.competitor
+        return None
+
     if gometry_name in PAIR_OVERRIDES:
         override = PAIR_OVERRIDES[gometry_name]
         if override in available:
@@ -72,14 +98,47 @@ def find_competitor(gometry_name: str, available: set[str]) -> str | None:
 
 
 def find_real_world_competitor(gometry_name: str, available: set[str]) -> str | None:
-    if not gometry_name.startswith('gometry.real_world.'):
+    """Resolve a real-world competitor via the public manifest first."""
+    if not gometry_name.startswith(
+        'gometry.real_world.'
+    ) and not gometry_name.startswith('gometry.'):
         return None
-    candidate = f'shapely.{_suffix(gometry_name)}'
-    return candidate if candidate in available else None
+    op = operation_for_row(gometry_name)
+    if op is not None and op.gometry == gometry_name and op.suite == 'real_world':
+        if op.competitor is not None and op.competitor in available:
+            return op.competitor
+        return None
+    # Internal real-world: legacy shapely.real_world.* suffix pairing
+    if gometry_name.startswith('gometry.real_world.'):
+        candidate = f'shapely.{_suffix(gometry_name)}'
+        return candidate if candidate in available else None
+    return None
 
 
 def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], ...]:
-    """Group rows into atomic pair units for pair-aware chunking."""
+    """Group rows into atomic pair units for pair-aware chunking.
+
+    Public rows are grouped by ``ReleaseOperation`` (gometry first). Internal
+    rows fall back to override/suffix matching.
+    """
+    available = set(rows)
+    used: set[str] = set()
+    units: list[tuple[str, ...]] = []
+
+    # Prefer manifest order for public operations that touch this suite.
+    for op in RELEASE_OPERATIONS:
+        if op.suite != suite:
+            continue
+        members = tuple(name for name in op.rows if name in available)
+        if not members:
+            continue
+        if any(name in used for name in members):
+            continue
+        # Emit gometry-first even if filter only selected the competitor.
+        ordered = tuple(name for name in op.rows if name in available)
+        units.append(ordered)
+        used.update(ordered)
+
     if suite == 'real_world':
         matcher = find_real_world_competitor
         driver_prefix = 'gometry.'
@@ -87,10 +146,12 @@ def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], .
         matcher = find_competitor
         driver_prefix = 'gometry.'
     else:
-        return tuple((row,) for row in rows)
-    available = set(rows)
-    used: set[str] = set()
-    units: list[tuple[str, ...]] = []
+        for row in rows:
+            if row not in used:
+                units.append((row,))
+                used.add(row)
+        return tuple(units)
+
     for row in rows:
         if row in used:
             continue

@@ -330,9 +330,9 @@ print("offsets:", groups.offsets.tolist())
 
 ```
 
-`Groups` is generic: index hits store `int64` rows; geometry-valued ragged results wrap
-per-row [`GeometryArray`][gometry.GeometryArray] slices. The typing alias
-The result is [`Groups`][gometry.Groups], with read-only integer values and offsets.
+`Groups` is generic over the value type: index hits store `int64` rows (read-only
+`.values` / `.offsets` ndarray views over CSR storage); geometry-valued ragged
+results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
 
 !!! tip "Scalar vs array index query"
     A scalar `idx.query(geom, predicate=...)` returns a dense `int64` ndarray. Pass an
@@ -733,9 +733,9 @@ region — then run the two builds interleaved so machine drift does not favor e
 
 Choose an otherwise idle CPU; a kernel-isolated CPU is best. The harness pins itself and
 both children, alternates `A/B` and `B/A` lead order, records the
-seed/governor/frequency/affinity, and reports median, IQR, p99, and bootstrap confidence
-intervals. If it must fall back to a non-isolated CPU, it marks the run as unsuitable for
-release evidence.
+seed/governor/frequency/affinity, and reports median (p50), IQR, max block time, and
+bootstrap median confidence intervals. If it must fall back to a non-isolated CPU, it
+marks the run as unsuitable for release evidence.
 
 For release-surface checks, use the bounded harness:
 

@@ -1,27 +1,56 @@
+"""Summarize a gometry release/smoke run JSON as a domain-grouped competitive table.
+
+Reads ordered ``public_operations`` metadata embedded in the run manifest —
+never re-infers domains, labels, or pairs from raw benchmark names. Row order
+is the manifest editorial order only.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 import math
 import statistics
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
+from typing import Any
 
 import pyperf
 
 _BENCHES = Path(__file__).resolve().parents[1]
 GOMETRY_ROOT = _BENCHES.parent
-_BENCHES_PYTHON = _BENCHES / 'python'
-if str(_BENCHES_PYTHON) not in sys.path:
-    sys.path.insert(0, str(_BENCHES_PYTHON))
-from _bench_pairs import find_competitor
 
 MEAN_INTERVAL_Z = 1.96
 
+# Canonical domain order (must match embedded metadata / registry).
+DOMAIN_ORDER = (
+    'Array construction & I/O',
+    'Geometry',
+    'CRS & geodesy',
+    'Discrete global grids',
+    'Spatial index',
+    'Real-world workflows',
+)
 
-@dataclass(frozen=True)
+FOOTNOTE_MARKERS: dict[str, str] = {
+    'geodesic': '†',
+    'in_core': '‡',
+    'batched': '§',
+    'noisy': '*',
+}
+
+FOOTNOTE_LEGEND = (
+    '† geodesic/ellipsoidal work.',
+    '‡ gometry admitted in-core projection path (not arbitrary CRS transforms).',
+    '§ both sides use a full-column/batched API without a timed Python row loop.',
+    '* statistically noisy measurement (relative stdev exceeds the noise band).',
+)
+
+SMOKE_BANNER = 'Smoke/debug run — not publishable release evidence.'
+
+
+@dataclass(frozen=True, slots=True)
 class BenchStats:
     name: str
     mean: float
@@ -31,63 +60,119 @@ class BenchStats:
     samples: int
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class PublicOpMeta:
+    domain: str
+    label: str
+    workload: str
+    suite: str
+    gometry: str
+    competitor: str | None
+    competitor_label: str | None
+    footnotes: tuple[str, ...]
+
+
+@dataclass(slots=True)
 class OpRow:
-    op: str
+    meta: PublicOpMeta
     gometry: BenchStats
     competitor: BenchStats | None = None
-    lib: str = ''
     speedup: float | None = None
     rel_stdev: float = 0.0
-    notes: list[str] = field(default_factory=list)
+    noisy: bool = False
+    tie: bool = False
+
+    @property
+    def solo(self) -> bool:
+        return self.meta.competitor is None
 
 
-def _manifest_artifacts(path: Path) -> list[Path] | None:
+def _manifest_payload(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
-    artifacts = payload.get('artifacts')
-    if not isinstance(artifacts, list) or not all(
-        isinstance(artifact, str) for artifact in artifacts
-    ):
+    if not isinstance(payload, dict):
         return None
+    if 'artifacts' not in payload and 'profile' not in payload:
+        return None
+    return payload
+
+
+def _resolve_artifact_paths(payload: dict[str, Any], manifest_path: Path) -> list[Path]:
+    artifacts = payload.get('artifacts')
+    if not isinstance(artifacts, list):
+        return []
     resolved: list[Path] = []
     for artifact in artifacts:
+        if not isinstance(artifact, str):
+            raise SystemExit(
+                f'run manifest {manifest_path} has a non-string artifact entry'
+            )
         candidate = Path(artifact)
         if not candidate.is_file():
-            candidate = path.parent / candidate.name
+            candidate = manifest_path.parent / candidate.name
         if not candidate.is_file():
             raise SystemExit(
-                f'run manifest {path} references a missing artifact: {artifact}'
+                f'run manifest {manifest_path} references a missing artifact: '
+                f'{artifact}'
             )
         resolved.append(candidate)
     return resolved
 
 
-def _resolve_paths(pattern: str) -> list[Path]:
+def _resolve_run(pattern: str) -> tuple[dict[str, Any], list[Path]]:
+    """Load one run manifest and its pyperf artifact paths.
+
+    Public summaries require embedded ``public_operations`` metadata. Raw
+    pyperf globs alone are not supported for competitive presentation.
+    """
     path = Path(pattern)
     if path.is_dir():
         manifests = [
             candidate
             for candidate in sorted(path.glob('*.json'))
-            if _manifest_artifacts(candidate) is not None
+            if _manifest_payload(candidate) is not None
+            and 'profile' in (_manifest_payload(candidate) or {})
         ]
         if len(manifests) > 1:
             raise SystemExit(
                 f'{path} contains multiple benchmark runs; pass one exact '
                 '<timestamp>-<profile>.json run manifest'
             )
-        if manifests:
-            return _manifest_artifacts(manifests[0]) or []
-        return sorted(path.glob('*.json'))
-    if path.exists():
-        artifacts = _manifest_artifacts(path)
-        return artifacts if artifacts is not None else [path]
-    matched = sorted(Path(match) for match in glob(pattern))
-    if matched:
-        return matched
-    raise SystemExit(f'no benchmark result files matched: {pattern}')
+        if not manifests:
+            raise SystemExit(
+                f'{path} has no run manifest with embedded public_operations; '
+                'pass the <timestamp>-<profile>.json written by bench.py'
+            )
+        path = manifests[0]
+    if not path.exists():
+        matched = sorted(Path(match) for match in glob(pattern))
+        if len(matched) == 1 and matched[0].suffix == '.json':
+            path = matched[0]
+        elif matched:
+            raise SystemExit(
+                'summarize_bench requires a single run manifest JSON with '
+                f'embedded public_operations; matched {len(matched)} paths'
+            )
+        else:
+            raise SystemExit(f'no benchmark result files matched: {pattern}')
+
+    payload = _manifest_payload(path)
+    if payload is None or 'profile' not in payload:
+        raise SystemExit(
+            f'{path} is not a bench.py run manifest. Competitive summaries '
+            'require the run JSON so domains/labels come from embedded '
+            'public_operations metadata (never re-inferred from row names).'
+        )
+    if 'public_operations' not in payload:
+        raise SystemExit(
+            f'run manifest {path} lacks embedded public_operations metadata. '
+            'Re-run benches/drivers/bench.py so the ordered RELEASE operations '
+            'are written into the run JSON; the summarizer does not re-infer '
+            'domains or labels from raw benchmark names.'
+        )
+    return payload, _resolve_artifact_paths(payload, path)
 
 
 def _is_pyperf_suite(path: Path) -> bool:
@@ -122,14 +207,59 @@ def _load_all_stats(paths: list[Path]) -> dict[str, BenchStats]:
     return merged
 
 
-def _competitor_lib(name: str) -> str:
-    return name.split('.', 1)[0]
-
-
-def _find_competitor(
-    gometry_name: str, competitors: dict[str, BenchStats]
-) -> str | None:
-    return find_competitor(gometry_name, set(competitors))
+def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit(
+            'public_operations must be a non-empty list of operation records'
+        )
+    ops: list[PublicOpMeta] = []
+    seen_gometry: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise SystemExit(f'public_operations[{index}] is not an object')
+        try:
+            domain = str(item['domain'])
+            label = str(item['label'])
+            workload = str(item['workload'])
+            suite = str(item['suite'])
+            gometry = str(item['gometry'])
+            competitor = item.get('competitor')
+            competitor_label = item.get('competitor_label')
+            footnotes_raw = item.get('footnotes') or ()
+        except KeyError as exc:
+            raise SystemExit(
+                f'public_operations[{index}] missing field: {exc.args[0]}'
+            ) from exc
+        if competitor is not None:
+            competitor = str(competitor)
+        if competitor_label is not None:
+            competitor_label = str(competitor_label)
+        if competitor is None and competitor_label is not None:
+            raise SystemExit(
+                f'public_operations[{index}] ({gometry}): solo op has competitor_label'
+            )
+        if competitor is not None and not competitor_label:
+            raise SystemExit(
+                f'public_operations[{index}] ({gometry}): paired op missing '
+                'competitor_label'
+            )
+        footnotes = tuple(str(f) for f in footnotes_raw)
+        if gometry in seen_gometry:
+            raise SystemExit(f'duplicate public gometry row: {gometry}')
+        seen_gometry.add(gometry)
+        ops.append(
+            PublicOpMeta(
+                domain=domain,
+                label=label,
+                workload=workload,
+                suite=suite,
+                gometry=gometry,
+                competitor=competitor,
+                competitor_label=competitor_label,
+                footnotes=footnotes,
+            )
+        )
+    return ops
 
 
 def _humanize_seconds(value: float) -> str:
@@ -146,12 +276,6 @@ def _rel_stdev(mean: float, stdev: float) -> float:
     return stdev / mean
 
 
-def _intervals_overlap(
-    mean_a: float, stdev_a: float, mean_b: float, stdev_b: float
-) -> bool:
-    return mean_a - stdev_a <= mean_b + stdev_b and mean_b - stdev_b <= mean_a + stdev_a
-
-
 def _noise_radius(stats: BenchStats, noise_band: float) -> float:
     sampling_radius = (
         MEAN_INTERVAL_Z * stats.stdev / math.sqrt(stats.samples)
@@ -164,12 +288,9 @@ def _noise_radius(stats: BenchStats, noise_band: float) -> float:
 def _stats_intervals_overlap(
     a: BenchStats, b: BenchStats, *, noise_band: float
 ) -> bool:
-    return _intervals_overlap(
-        a.mean,
-        _noise_radius(a, noise_band),
-        b.mean,
-        _noise_radius(b, noise_band),
-    )
+    ra = _noise_radius(a, noise_band)
+    rb = _noise_radius(b, noise_band)
+    return a.mean - ra <= b.mean + rb and b.mean - rb <= a.mean + ra
 
 
 def _geomean(values: list[float]) -> float | None:
@@ -179,154 +300,326 @@ def _geomean(values: list[float]) -> float | None:
     return math.exp(sum(math.log(value) for value in positive) / len(positive))
 
 
+def format_speedup(row: OpRow) -> str:
+    """Public speedup cell language (ratio = competitor / gometry)."""
+    if row.solo or row.speedup is None:
+        return '—'
+    if row.tie:
+        return '≈ parity'
+    ratio = row.speedup
+    if ratio >= 1.0:
+        text = f'{ratio:.2f}× faster'  # noqa: RUF001 — intentional speedup glyph
+    else:
+        text = f'{ratio:.2f}× as fast'  # noqa: RUF001 — intentional speedup glyph
+    if row.noisy:
+        text += '*'
+    return text
+
+
+def _footnote_suffix(meta: PublicOpMeta, *, noisy: bool) -> str:
+    markers = [
+        FOOTNOTE_MARKERS[key]
+        for key in ('geodesic', 'in_core', 'batched')
+        if key in meta.footnotes
+    ]
+    if noisy or 'noisy' in meta.footnotes:
+        markers.append(FOOTNOTE_MARKERS['noisy'])
+    return ''.join(markers)
+
+
+def row_label(row: OpRow) -> str:
+    """Keep the full workload text (including any `/`); append footnote markers."""
+    base = f'{row.meta.label} — {row.meta.workload}'
+    suffix = _footnote_suffix(row.meta, noisy=row.noisy)
+    return f'{base} {suffix}'.rstrip() if suffix else base
+
+
+def format_competitor_cell(row: OpRow) -> str:
+    if row.competitor is None:
+        return '—'
+    label = row.meta.competitor_label or 'competitor'
+    return f'{label} · {_humanize_seconds(row.competitor.mean)}'
+
+
 def _build_rows(
-    gometry_stats: dict[str, BenchStats],
-    competitor_stats: dict[str, BenchStats],
+    operations: list[PublicOpMeta],
+    stats: dict[str, BenchStats],
     *,
     noise_band: float,
-    baseline_stats: dict[str, BenchStats] | None,
 ) -> list[OpRow]:
     rows: list[OpRow] = []
-    for name in sorted(gometry_stats):
-        gometry = gometry_stats[name]
+    missing: list[str] = []
+    for meta in operations:
+        gometry = stats.get(meta.gometry)
+        if gometry is None:
+            missing.append(meta.gometry)
+            continue
+        competitor: BenchStats | None = None
+        if meta.competitor is not None:
+            competitor = stats.get(meta.competitor)
+            if competitor is None:
+                missing.append(meta.competitor)
+                continue
         rel = _rel_stdev(gometry.mean, gometry.stdev)
-        comp_name = _find_competitor(name, competitor_stats)
-        competitor = competitor_stats.get(comp_name) if comp_name else None
-        notes: list[str] = []
         speedup: float | None = None
-        lib = ''
+        tie = False
         if competitor is not None:
+            if gometry.mean <= 0:
+                raise SystemExit(f'non-positive gometry mean for {meta.gometry}')
             speedup = competitor.mean / gometry.mean
-            lib = _competitor_lib(competitor.name)
             tie = _stats_intervals_overlap(gometry, competitor, noise_band=noise_band)
-            if speedup < 1.0 and (not tie):
-                notes.append('SLOW')
-            if tie:
-                notes.append('~tie')
-        if rel > noise_band:
-            notes.append('noisy')
-        if baseline_stats is not None and name in baseline_stats:
-            baseline = baseline_stats[name]
-            overlaps_baseline = _stats_intervals_overlap(
-                gometry,
-                baseline,
-                noise_band=noise_band,
-            )
-            if gometry.mean > baseline.mean and (not overlaps_baseline):
-                notes.append('regression')
-            elif gometry.mean < baseline.mean and (not overlaps_baseline):
-                notes.append('improved')
         rows.append(
             OpRow(
-                op=name,
+                meta=meta,
                 gometry=gometry,
                 competitor=competitor,
-                lib=lib,
                 speedup=speedup,
                 rel_stdev=rel,
-                notes=notes,
+                noisy=rel > noise_band,
+                tie=tie,
             )
+        )
+    if missing:
+        raise SystemExit(
+            'run is missing declared public benchmark rows (or artifacts):\n'
+            + '\n'.join(f'  - {name}' for name in missing)
+        )
+    # Reject extra public-named gometry rows not declared in the embedding.
+    declared = {op.gometry for op in operations} | {
+        op.competitor for op in operations if op.competitor
+    }
+    extras = sorted(
+        name for name in stats if name.startswith('gometry.') and name not in declared
+    )
+    if extras:
+        raise SystemExit(
+            'run contains undeclared public gometry benchmark rows:\n'
+            + '\n'.join(f'  - {name}' for name in extras)
         )
     return rows
 
 
-def _sort_rows(rows: list[OpRow], sort: str) -> list[OpRow]:
-    if sort == 'name':
-        return sorted(rows, key=lambda row: row.op)
-    if sort == 'speedup':
-        return sorted(
-            rows,
-            key=lambda row: (
-                row.speedup is None,
-                row.speedup if row.speedup is not None else math.inf,
-            ),
-        )
-    if sort == 'gometry':
-        return sorted(rows, key=lambda row: row.gometry.mean, reverse=True)
-    return sorted(rows, key=lambda row: row.gometry.mean, reverse=True)
-
-
-def _format_table(rows: list[OpRow], *, markdown: bool) -> list[str]:
-    headers = ['op', 'gometry', 'competitor', 'lib', 'speedup', '±%gometry', 'note']
-    body: list[list[str]] = []
+def domain_stats(rows: list[OpRow]) -> dict[str, dict[str, Any]]:
+    """Per-domain geomean and W/T/L, excluding solo rows from all speedup stats."""
+    by_domain: dict[str, list[OpRow]] = {domain: [] for domain in DOMAIN_ORDER}
     for row in rows:
-        speedup = '' if row.speedup is None else f'{row.speedup:.2f}x'
-        comp_time = (
-            '' if row.competitor is None else _humanize_seconds(row.competitor.mean)
-        )
-        body.append([
-            row.op,
-            _humanize_seconds(row.gometry.mean),
-            comp_time,
-            row.lib,
-            speedup,
-            f'{row.rel_stdev * 100:.1f}%',
-            ','.join(row.notes),
-        ])
+        by_domain.setdefault(row.meta.domain, []).append(row)
+
+    out: dict[str, dict[str, Any]] = {}
+    for domain in DOMAIN_ORDER:
+        domain_rows = by_domain.get(domain, [])
+        paired = [
+            row for row in domain_rows if not row.solo and row.speedup is not None
+        ]
+        ratios = [row.speedup for row in paired if row.speedup is not None]
+        wins = sum(1 for row in paired if not row.tie and (row.speedup or 0) > 1.0)
+        losses = sum(1 for row in paired if not row.tie and (row.speedup or 0) < 1.0)
+        parity = sum(1 for row in paired if row.tie)
+        out[domain] = {
+            'geomean': _geomean(ratios),
+            'wins': wins,
+            'parity': parity,
+            'losses': losses,
+            'n_paired': len(paired),
+            'n_rows': len(domain_rows),
+        }
+    return out
+
+
+def overall_geomean(domain_summaries: dict[str, dict[str, Any]]) -> float | None:
+    """Equal-domain-weight overall: geomean of domain geomeans (not row-weighted)."""
+    domain_means = [
+        summary['geomean']
+        for domain in DOMAIN_ORDER
+        for summary in (domain_summaries.get(domain),)
+        if summary is not None and summary['geomean'] is not None
+    ]
+    return _geomean(domain_means)
+
+
+def _is_publishable_run(payload: dict[str, Any]) -> bool:
+    return bool(payload.get('publishable'))
+
+
+def _format_geomean(value: float | None) -> str:
+    if value is None:
+        return '—'
+    return f'{value:.2f}×'  # noqa: RUF001 — intentional speedup glyph
+
+
+def _header_table(
+    domain_summaries: dict[str, dict[str, Any]], *, markdown: bool
+) -> list[str]:
+    headers = ['Domain', 'Geomean', 'Wins / parity / losses']
+    body: list[list[str]] = []
+    for domain in DOMAIN_ORDER:
+        summary = domain_summaries.get(domain)
+        if summary is None or summary['n_rows'] == 0:
+            continue
+        wtl = f'{summary["wins"]} / {summary["parity"]} / {summary["losses"]}'
+        body.append([domain, _format_geomean(summary['geomean']), wtl])
+    overall = overall_geomean(domain_summaries)
+    total_w = sum(s['wins'] for s in domain_summaries.values())
+    total_p = sum(s['parity'] for s in domain_summaries.values())
+    total_l = sum(s['losses'] for s in domain_summaries.values())
+    body.append([
+        '**Overall, equal domain weight**'
+        if markdown
+        else 'Overall, equal domain weight',
+        (f'**{_format_geomean(overall)}**' if markdown else _format_geomean(overall)),
+        f'**{total_w} / {total_p} / {total_l}**'
+        if markdown
+        else f'{total_w} / {total_p} / {total_l}',
+    ])
     if markdown:
         lines = [
             '| ' + ' | '.join(headers) + ' |',
-            '|' + '|'.join(['---'] * len(headers)) + '|',
+            '|---|---:|---:|',
         ]
         lines.extend('| ' + ' | '.join(cells) + ' |' for cells in body)
         return lines
-    widths = [len(header) for header in headers]
+    widths = [len(h) for h in headers]
     for cells in body:
-        for index, cell in enumerate(cells):
-            widths[index] = max(widths[index], len(cell))
-    numeric_cols = {1, 2, 4, 5}
+        for i, cell in enumerate(cells):
+            # strip markdown bold for width
+            plain = cell.replace('**', '')
+            widths[i] = max(widths[i], len(plain))
     lines = [
         '  '.join(
-            (
-                header.rjust(widths[index])
-                if index in numeric_cols
-                else header.ljust(widths[index])
-                for index, header in enumerate(headers)
-            )
+            h.rjust(widths[i]) if i else h.ljust(widths[i])
+            for i, h in enumerate(headers)
         ),
-        '  '.join('-' * widths[index] for index in range(len(headers))),
+        '  '.join('-' * widths[i] for i in range(len(headers))),
     ]
     for cells in body:
+        plain = [c.replace('**', '') for c in cells]
         lines.append(
             '  '.join(
-                (
-                    cell.rjust(widths[index])
-                    if index in numeric_cols
-                    else cell.ljust(widths[index])
-                    for index, cell in enumerate(cells)
-                )
+                plain[i].rjust(widths[i]) if i else plain[i].ljust(widths[i])
+                for i in range(len(headers))
             )
         )
     return lines
 
 
-def _header_summary(rows: list[OpRow], *, noise_band: float) -> str:
-    paired = sum(1 for row in rows if row.competitor is not None)
-    gometry_only = len(rows) - paired
-    speedups = [row.speedup for row in rows if row.speedup is not None]
-    geomean = _geomean(speedups)
-    geomean_text = f'{geomean:.2f}x' if geomean is not None else 'n/a'
-    noisy = sum(1 for row in rows if row.rel_stdev > noise_band)
-    slow = sum(1 for row in rows if 'SLOW' in row.notes)
-    return f'{len(rows)} ops, {paired} paired, {gometry_only} gometry-only, overall geomean {geomean_text}, {noisy} noisy, {slow} slow'
+def _section_table(rows: list[OpRow], *, markdown: bool) -> list[str]:
+    headers = ['Operation', 'gometry', 'competitor', 'Speedup']
+    body = [
+        [
+            row_label(row),
+            _humanize_seconds(row.gometry.mean),
+            format_competitor_cell(row),
+            format_speedup(row),
+        ]
+        for row in rows
+    ]
+    if markdown:
+        lines = [
+            '| ' + ' | '.join(headers) + ' |',
+            '|---|---:|---:|---:|',
+        ]
+        lines.extend('| ' + ' | '.join(cells) + ' |' for cells in body)
+        return lines
+    widths = [len(h) for h in headers]
+    for cells in body:
+        for i, cell in enumerate(cells):
+            widths[i] = max(widths[i], len(cell))
+    numeric = {1, 2, 3}
+    lines = [
+        '  '.join(
+            h.rjust(widths[i]) if i in numeric else h.ljust(widths[i])
+            for i, h in enumerate(headers)
+        ),
+        '  '.join('-' * widths[i] for i in range(len(headers))),
+    ]
+    for cells in body:
+        lines.append(
+            '  '.join(
+                cells[i].rjust(widths[i]) if i in numeric else cells[i].ljust(widths[i])
+                for i in range(len(headers))
+            )
+        )
+    return lines
+
+
+def _used_footnotes(rows: list[OpRow]) -> list[str]:
+    used: set[str] = set()
+    for row in rows:
+        for key in row.meta.footnotes:
+            if key in FOOTNOTE_MARKERS:
+                used.add(key)
+        if row.noisy:
+            used.add('noisy')
+    return [
+        next(line for line in FOOTNOTE_LEGEND if line.startswith(FOOTNOTE_MARKERS[key]))
+        for key in ('geodesic', 'in_core', 'batched', 'noisy')
+        if key in used
+    ]
+
+
+def render(
+    rows: list[OpRow],
+    *,
+    markdown: bool,
+    publishable: bool,
+) -> list[str]:
+    lines: list[str] = []
+    if not publishable:
+        if markdown:
+            lines.append(f'> **{SMOKE_BANNER}**')
+        else:
+            lines.append(SMOKE_BANNER)
+        lines.append('')
+
+    summaries = domain_stats(rows)
+    lines.extend(_header_table(summaries, markdown=markdown))
+    lines.append('')
+
+    by_domain: dict[str, list[OpRow]] = {}
+    for row in rows:
+        by_domain.setdefault(row.meta.domain, []).append(row)
+
+    for domain in DOMAIN_ORDER:
+        domain_rows = by_domain.get(domain)
+        if not domain_rows:
+            continue
+        if markdown:
+            lines.append(f'### {domain}')
+            lines.append('')
+        else:
+            lines.append(domain)
+            lines.append('=' * len(domain))
+        lines.extend(_section_table(domain_rows, markdown=markdown))
+        lines.append('')
+
+    lines.extend(_used_footnotes(rows))
+    while lines and lines[-1] == '':
+        lines.pop()
+    return lines
+
+
+def summarize_payload(
+    payload: dict[str, Any],
+    stats: dict[str, BenchStats],
+    *,
+    noise_band: float = 0.03,
+    markdown: bool = True,
+) -> list[str]:
+    operations = _parse_public_operations(payload.get('public_operations'))
+    rows = _build_rows(operations, stats, noise_band=noise_band)
+    return render(rows, markdown=markdown, publishable=_is_publishable_run(payload))
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description='Summarize and compare Gometry pyperf benchmark results.'
+        description=(
+            'Summarize a gometry bench.py run JSON as a domain-grouped '
+            'competitive table (manifest order; embedded public_operations).'
+        )
     )
     parser.add_argument(
-        'results', help='results directory or glob pattern for pyperf JSON files'
-    )
-    parser.add_argument(
-        '--baseline',
-        help='prior run directory with gometry pyperf JSONs for regression flags',
-    )
-    parser.add_argument(
-        '--sort',
-        choices=['speedup', 'gometry', 'name'],
-        default='gometry',
-        help='row sort order (default: slowest gometry mean first)',
+        'results',
+        help='path to a <timestamp>-<profile>.json run manifest (or its directory)',
     )
     parser.add_argument(
         '--format', choices=['table', 'md'], default='table', help='output format'
@@ -335,41 +628,20 @@ def main(argv: list[str] | None = None) -> None:
         '--noise-band',
         type=float,
         default=0.03,
-        help='relative stdev threshold for noisy/regression flags',
+        help='relative stdev threshold for the noisy-row marker',
     )
     args = parser.parse_args(argv)
-    paths = _resolve_paths(args.results)
-    all_stats = _load_all_stats(paths)
-    gometry_stats = {
-        name: stats for name, stats in all_stats.items() if name.startswith('gometry.')
-    }
-    competitor_stats = {
-        name: stats
-        for name, stats in all_stats.items()
-        if not name.startswith('gometry.')
-    }
-    if not gometry_stats:
-        raise SystemExit('no gometry benchmark rows found in the result files')
-    baseline_stats: dict[str, BenchStats] | None = None
-    if args.baseline is not None:
-        baseline_paths = _resolve_paths(args.baseline)
-        baseline_all = _load_all_stats(baseline_paths)
-        baseline_stats = {
-            name: stats
-            for name, stats in baseline_all.items()
-            if name.startswith('gometry.')
-        }
-    rows = _build_rows(
-        gometry_stats,
-        competitor_stats,
+    payload, artifact_paths = _resolve_run(args.results)
+    stats = _load_all_stats(artifact_paths)
+    if not stats and not payload.get('plan_only'):
+        raise SystemExit('no pyperf benchmark rows found in the run artifacts')
+    lines = summarize_payload(
+        payload,
+        stats,
         noise_band=args.noise_band,
-        baseline_stats=baseline_stats,
+        markdown=args.format == 'md',
     )
-    rows = _sort_rows(rows, args.sort)
-    lines = [_header_summary(rows, noise_band=args.noise_band), '']
-    lines.extend(_format_table(rows, markdown=args.format == 'md'))
-    output = '\n'.join(lines)
-    print(output)
+    print('\n'.join(lines))
 
 
 if __name__ == '__main__':
