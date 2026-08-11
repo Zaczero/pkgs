@@ -58,8 +58,14 @@ What gometry **does** guarantee:
 
 - Memory and work stay **bounded relative to the input** you actually supplied
   (no attacker leverage from tiny forged declarations).
-- Malformed layout/data raises typed domain errors — never a panic across the
-  FFI for ABI-conforming input that is not proportionally huge.
+- For ABI-conforming Arrow input, gometry copies the selected geometry schema
+  and every visible buffer span it will validate or decode into owned storage.
+  Validation and decoding then use only that snapshot. Native Arrow-C providers
+  must not modify exported structs, pointer tables, schema memory, or buffers
+  before gometry invokes their release callback; direct PyArrow objects must not
+  be mutated while `from_arrow` is importing them. Malformed owned layout or
+  data raises a typed domain error. Forged pointers, false capacities, and
+  non-conforming release callbacks remain outside the threat model.
 - Coverage factories expose one overridable size knob, `max_cells` (default
   `1_000_000` on H3, S2, geohash, and tile cover; pass `None` for unlimited).
   S2's adaptive coverer (when `level` is omitted) additionally takes

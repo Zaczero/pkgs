@@ -103,7 +103,9 @@ is rejected because it cannot say which frame those numbers occupy.
 
 !!! note "`.center` and `.polygon` are properties; `parent`/`children` step by one by default"
     On both `H3Cell` and `S2Cell`, `.center` and `.polygon` are *properties* (no
-    parentheses) returning a real [`Geometry`][gometry.Geometry]. `parent()` defaults to one
+    parentheses) returning a WGS84 [`Geometry`][gometry.Geometry]. For H3 and
+    S2 it is a planar lon/lat chord proxy for display and interoperability, not
+    the spherical cell boundary. `parent()` defaults to one
     step coarser and `children()` to one step finer; pass a target
     (`cell.parent(resolution)`, `cell.children(level)`) to jump straight to it. A
     maximum-depth cell yields an empty `CellArray` from `children()`; a depth-0 cell
@@ -111,7 +113,7 @@ is rejected because it cannot say which frame those numbers occupy.
 
 ### The geometry behind a cell ID
 
-A cell ID is shorthand for a real polygon on the ground. Convert one back to geometry
+A cell ID is shorthand for an area on the ground. Convert one back to geometry
 to sanity-check it before partitioning a dataset — scalar cells expose `.polygon`,
 and `CellArray.polygon` returns a whole batch:
 
@@ -125,7 +127,8 @@ print('batch:', type(cell.grid_disk(1).polygon).__name__)
 
 ```
 
-That polygon is what the resolution-6 cell actually means as an area. Adjacency and
+For H3 and S2 that polygon is a planar lon/lat chord proxy rather than the
+spherical cell boundary. Adjacency and
 local indexing are first-class on the cell: `neighbors` lists the edge-adjacent ring,
 `is_neighbor` tests one candidate, and `local_ij`/`cell_from_local_ij` move through
 the local grid-algebra space around an anchor. Resolution metadata lives in the
@@ -372,9 +375,10 @@ print("tile   :", gm.tile_bounding_cell(berlin))
 
 ```
 
-Each returns the *smallest* single cell whose extent still covers the whole input
-(for H3, the coarsest ancestor that contains it). Pass a geometry, an array, or a
-raw `(minx, miny, maxx, maxy)` bounds tuple.
+Each returns the *deepest* single cell whose extent still covers the whole input
+(for H3, the highest-resolution cell that still contains every corner — res 15 for
+a point-sized input, coarser only when no finer single cell fits). Pass a geometry,
+an array, or a raw `(minx, miny, maxx, maxy)` bounds tuple.
 
 ### Dissolving a covering back to one outline
 
@@ -425,7 +429,15 @@ Every grid family exposes the same **factories + set-algebra** shape: prefixed
 `union`, `intersection`, and `difference` functions on cell sets (H3, S2,
 geohash, and tiles). Hierarchy behavior still differs per system (S2 range nesting,
 H3 resolution parents, geohash/tile prefix parents), but you do **not** drop
-to plain Python `set` for H3.
+to plain Python `set` for H3 — use the hierarchy-aware free functions.
+
+**H3 resolution normalization** (`gm.h3_union` / `gm.h3_intersection` /
+`gm.h3_difference`): inputs may mix resolutions. The result is cell-ID algebra
+under the compact contract — sorted, with descendants absorbed by ancestors and
+complete sibling groups merged into parents — so mixed-resolution operands are
+normalized rather than rejected. This is identity algebra (an H3 child's *geometry*
+does not nest exactly inside its parent, but its id does). S2 algebra is
+range-nesting exact (see below); geohash/tile algebra is prefix-based.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -433,6 +445,8 @@ import gometry as gm
 a = gm.h3_cover(gm.box(20.0, 51.0, 22.0, 53.0, crs=4326), resolution=5).cells
 b = gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=5).cells
 print("h3 intersection:", len(gm.h3_intersection(a, b)))
+mixed = gm.h3_union(a, gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=6).cells)
+print("h3 mixed-res union resolutions:", sorted({c.resolution for c in mixed}))
 print("s2 union sample:", len(gm.s2_union(
     gm.s2_cover(gm.box(20.0, 51.0, 21.0, 52.0, crs=4326), level=8).cells,
     gm.s2_cover(gm.box(21.0, 52.0, 22.0, 53.0, crs=4326), level=8).cells,
@@ -463,12 +477,12 @@ print('exact membership anyway:', cov.covers(gm.Point(21.0, 52.0, crs=4326)))
 
 ```
 
-`max_cells` is the universal hard cap on every cover factory (H3, S2, geohash,
-tiles), defaulting to `1_000_000`; pass `max_cells=None` for unlimited (bounded
-only by memory). On S2, omit `level` for an adaptive multi-level covering guided
-by `target_cells` (default `8`, the S2-idiomatic approximation target), where a
-tighter hard cap may yield a coarser, cheaper result. A fixed `level` never
-coarsens: if its exact covering exceeds `max_cells`, the factory raises.
+`max_cells` is the hard cap on fixed-depth cover factories (H3, geohash, tiles,
+and fixed-level S2), defaulting to `1_000_000`; pass `max_cells=None` for an
+unlimited fixed-depth cover (bounded only by memory). On S2, omit `level` for an
+adaptive multi-level covering guided by `target_cells` (default `8`, the
+S2-idiomatic approximation target). A fixed `level` never coarsens: if its
+exact covering exceeds `max_cells`, the factory raises.
 The cells are a true spatial key — exactly the cells satisfying `cell_rule` — and
 `interior_cells`/`boundary_cells` expose the same certified core-vs-fringe
 split as H3. The membership methods (`covers`/`contains`/`intersects` and the
@@ -494,8 +508,11 @@ print('difference:  ', len(gm.s2_difference([cell], children[:1])), 'cells remai
 
 ```
 
-H3 cells hash by id, so plain Python `set` arithmetic is the idiomatic H3 cell-set
-algebra at a fixed resolution; use `compact`/`uncompact` to align resolutions first.
+Prefer [`gm.h3_union`][gometry.h3_union] / [`gm.h3_intersection`][gometry.h3_intersection]
+/ [`gm.h3_difference`][gometry.h3_difference] over plain Python `set` arithmetic:
+those free functions already normalize mixed resolutions under the compact
+contract. A fixed-resolution `set` of raw ids is fine only when you intentionally
+want identity equality with no parent/child absorption.
 
 ## Geohash and XYZ tiles
 
@@ -532,8 +549,9 @@ same algebra over a raw cell list.
 and `CellArray` adds the set operations (`cells.compact()` /
 `cells.uncompact(depth)`) while H3 vertex/edge arrays expose only their valid
 topological surfaces. `Tile` keeps the quadkey constructor
-(`gm.Tile('0313102310')`). Tiles clamp
-latitude to the Web Mercator domain (±85.0511°), the limit where the projection stays finite.
+(`gm.Tile('0313102310')`). Tiles reject latitudes outside the Web Mercator
+domain (±85.0511°), the limit where the projection stays finite; they do not
+clamp coordinates.
 
 ## Aggregate by cell, then refine
 

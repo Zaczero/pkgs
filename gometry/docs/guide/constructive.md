@@ -272,13 +272,18 @@ print(panels([
 
 ## Snap and segmentize
 
-These reshape a geometry's **vertices** without changing what it represents —
-aligning almost-coincident edges before an overlay, or adding intermediate
-vertices so a later planar reproject or overlay tracks a curve more closely.
+These reshape a geometry's **vertices** — aligning almost-coincident edges before
+an overlay, or adding intermediate vertices so a later planar reproject or overlay
+tracks a curve more closely. They do **not** promise a bit-identical representation
+or an unchanged geometry kind: snapped coordinates may collapse duplicates, and
+related repair paths (for example `snap_to_grid(..., repair=True)`) can change kind
+when a shell pinches.
 
 [`snap`][gometry.snap] moves vertices of `geom` onto a `reference` geometry's
-vertices when they fall within `tolerance` (planar units). It is the standard
-fix for two layers whose shared border is *almost* but not exactly coincident:
+vertices when they fall within `tolerance` (planar units). Kind is preserved for the
+typed free function (`LineString` in → `LineString` out); only the vertex
+coordinates change. It is the standard fix for two layers whose shared border is
+*almost* but not exactly coincident:
 
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices

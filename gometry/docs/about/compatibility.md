@@ -22,13 +22,25 @@ when one exists.
 
 ## Numeric parsing guarantees
 
-WKT ingest parses ordinates bit-exactly (shortest-round-trip output re-imports
-to the identical `float64`). GeoJSON ingest uses serde_json's fast float path:
-decimal literals with more than 17 significant digits may round 1 ULP
-differently than a bit-exact parser (about 1 part in 10^16 — far below any
-physical coordinate precision). This is a deliberate trade: the bit-exact mode
-measured 10-13% slower on FeatureCollection ingest. Coordinates written by
-gometry always round-trip exactly in both formats.
+WKT and GeoJSON ingest both parse ordinates bit-exactly: a finite decimal that
+gometry writes (shortest round-trip) re-imports to the identical `float64`, and
+hostile long decimals match correctly-rounded binary64 (no silent 1 ULP drift).
+GeoJSON uses serde_json's `float_roundtrip` parser on read and `zmij` on write.
+
+**Geometry coordinates** are binary64. Decimal text is correctly rounded, and
+mapping / `__geo_interface__` integers are admitted only when exactly
+representable as binary64 — every integer with magnitude ≤ 2⁵³, plus larger
+integers whose lower bits are zero under the 53-bit significand (for example
+2⁵³+2 and 2⁶⁰). A non-exact mapping integer raises `ParseError`; an integer
+token outside the signed/unsigned 64-bit text parser range follows ordinary
+finite binary64 JSON-number parsing.
+
+**Feature properties and ids are opaque Python side data, not geometry
+coordinates.** Text and one-byte-buffer `from_features` preserve every JSON
+integer lexeme as an arbitrary-precision Python `int`, at every nesting depth;
+mapping input retains its original Python integer. Their finite decimal leaves
+use the same correctly-rounded parser as coordinates. No Feature side-data
+number is staged through binary64 merely because it arrived as GeoJSON text.
 
 ## No legacy aliases
 

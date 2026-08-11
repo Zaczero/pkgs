@@ -130,8 +130,12 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | `field` | `CRSMismatchError` | Which metadata disagreed: `'crs'` or `'epoch'` |
 | `left` / `right` | `CRSMismatchError` | Raw conflicting values (CRS identifiers or epoch floats; not quoted presentation strings) |
 | `index` | `CRSMismatchError` | Collection item that disagreed (when applicable) |
-| `format` | `ParseError` | Lowercase space-free codec key: `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, `'h3'`, `'s2'`, `'geohash'`, `'tile'`, `'quadkey'`, `'polyline'`, `'pluscode'`, `'osm_shortlink'` |
+| `format` | `ParseError` | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
+| `position` | `ParseError` | WKT reports the UTF-8 input length for every failure; cursor-based codecs such as WKB report the byte offset where parsing detected it |
 | `param` / `value` | `GeometryError` (value lanes) | Offending keyword and value |
+| `parameter` / `produced` / `limit` | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
+| `expected` / `got` | `GeometryTypeError` | Required and received geometry kinds |
+| `source` / `target` | `TransformError` | Source and target CRS of a failed transform |
 | `operation` | `InvalidGeometryError` (overlay) | Overlay op name |
 | `crs` | `CRSError` | CRS involved in a unit/authority mismatch |
 

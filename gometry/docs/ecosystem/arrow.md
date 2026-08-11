@@ -55,13 +55,22 @@ print("crs preserved:", restored.crs.to_authority())
 
 Homogeneous **XY / XYZ / XYM / XYZM** point, multipoint, linestring,
 multilinestring, polygon, and multipolygon arrays use the native GeoArrow
-coordinate layout with separated `x`/`y`/`z`/`m` children. Export can share
-gometry-owned buffers with a consumer; import validates and copies coordinates and
-offsets into gometry-owned storage. Mixed geometry types, mixed coordinate axes, and geometry collections fall
-back to GeoArrow **WKB** encoding so nothing is lost.
+coordinate layout with separated `x`/`y`/`z`/`m` children. Gometry exports may
+share immutable gometry-owned buffers with a consumer. Import does not retain
+shared views of foreign memory. PyArrow arrays, chunked arrays, tables, and
+record batches are imported through PyArrow’s buffer-copy APIs. Other
+`__arrow_c_array__` and `__arrow_c_stream__` providers use the native Arrow-C
+path: gometry moves the one-shot base structure, snapshots the selected schema
+plus visible validity, offset, view, referenced variadic-size, coordinate, and WKB spans,
+invokes the producer release callback, and validates and decodes only the owned
+snapshot. Unrelated table columns, BinaryView size entries, and payload ranges
+are not retained. Mixed geometry types, mixed coordinate axes, and geometry
+collections fall back to GeoArrow **WKB** encoding so nothing is lost.
 
-`from_arrow` accepts Arrow PyCapsule arrays/streams first, then falls back to
-pyarrow arrays, chunked arrays, and tables/record batches with a geometry column.
+`from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
+batches through the PyArrow path. Other objects implementing
+`__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
+capsule path.
 
 ### Arrow C capsule trust model
 
@@ -73,13 +82,21 @@ consumer alone. Every Arrow consumer works this way (including pyarrow).
 
 gometry therefore draws an explicit line:
 
-- **Data and layout are validated defensively.** Schema formats, nested offset
-  monotonicity **including null slots**, null bitmaps, BinaryView prefix and
-  inline padding, coordinate finiteness, and GeoArrow encoding/storage pairs
-  are checked; malformed *data* raises a clean domain error rather than
-  panicking or accepting garbage. Zero-length chunks/batches are discarded
-  after type/frame validation so empty storage is not retained for a zero-row
-  result.
+- **ABI-conforming means** that the exported structures, pointer tables,
+  layout-implied readable capacities, and release callbacks obey the Arrow C
+  Data Interface. It does **not** mean that gometry has exclusive buffer
+  ownership or that retained aliases are immutable. A native producer must not
+  modify exported memory before its release callback runs; a PyArrow object
+  must not be modified during `from_arrow`. Changes after native admission and
+  release cannot affect the result. A provider that forges pointers or
+  capacities is outside the threat model.
+- **Data and layout are validated defensively on the owned snapshot.** Schema
+  formats, nested offset monotonicity **including null slots**, null bitmaps,
+  BinaryView prefix and inline padding, coordinate finiteness, and GeoArrow
+  encoding/storage pairs are checked; malformed *owned* data raises a clean
+  domain error rather than panicking or accepting garbage. Zero-length
+  chunks/batches are discarded after type/frame validation so empty storage is
+  not retained for a zero-row result.
 - **No amplification.** Import work and retained memory stay bounded relative
   to the input you supplied. Like every native extension, a proportionally
   huge valid column can still OOM the process — callers parsing untrusted
@@ -92,22 +109,28 @@ gometry therefore draws an explicit line:
   the same posture as pyarrow itself. Do not expect gometry to harden against
   that class of producer.
 
-## CRS as PROJJSON, epoch alongside
+## CRS as PROJJSON, epoch as a gometry extension
 
 The GeoArrow extension metadata writes the CRS as **PROJJSON** — GeoArrow's
 recommended encoding, and the one [GeoParquet](https://geoparquet.org/) 1.1
 requires when columns land in a lakehouse. It reads back both PROJJSON objects and
-plain authority strings from other producers, and the **coordinate epoch travels
-alongside** in the same metadata (the one channel where the epoch survives across a
-columnar boundary — WKB/EWKB and GeoJSON cannot carry it).
+plain authority strings from other producers.
+
+The **coordinate epoch** is **not** part of the GeoArrow extension-types
+standard; gometry stores it as an additional JSON member in the same extension
+metadata blob so it can survive a columnar round-trip when both sides are
+gometry (or another reader that understands this extension). Other producers may
+omit `epoch` entirely. WKB/EWKB and GeoJSON still cannot carry epoch — only this
+gometry GeoArrow extension field and GeoParquet column metadata do.
 
 ## Capsule consumers without pyarrow
 
 For dependency-free producers, pass the gometry object itself to any consumer that
 understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
-or `__arrow_c_stream__` and imports the GeoArrow buffers **zero-copy**. When gometry
-is the consumer, `from_arrow` accepts those capsules too and copies the
-coordinates/offsets into gometry-owned storage.
+or `__arrow_c_stream__` and imports the GeoArrow buffers **zero-copy**. When
+gometry is the consumer, `from_arrow` accepts those capsules too and copies the
+selected schema plus visible validity, offset, view, variadic-size, coordinate,
+and WKB spans into gometry-owned storage before validation and decode.
 
 DuckDB, raw `polars.from_arrow(...)` calls, and lonboard can consume these
 capsules directly. gometry's supported `to_polars()` / `from_polars()` adapter

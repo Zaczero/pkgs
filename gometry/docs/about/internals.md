@@ -65,9 +65,10 @@ print("3857 is projected: ", gm.CRS(3857).is_projected)
 
 A conservative **in-core** projection registry admits exact closed-form kernels for
 selected horizontal methods (Transverse Mercator including UTM, spherical
-Pseudo-Mercator, LCC 1SP/2SP, polar stereographic) when datum, units, and method
+Pseudo-Mercator, LCC 1SP/2SP, polar stereographic, Lambert azimuthal equal-area,
+Albers equal-area, and oblique stereographic) when datum, units, and method
 gates pass — including datum-matched NAD83/ETRS cases, not only WGS 84. Anything
-outside that admission gate (grids, Helmert, non-meter axes, unlisted methods)
+outside that admission gate (grids, Helmert, or unlisted methods)
 falls back to the bundled PROJ database. Because PROJ travels inside the wheel,
 there is no system PROJ shared library and no `PROJ_LIB` to configure. See the
 [CRS, units & measurement](../guide/crs.md).

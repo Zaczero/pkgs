@@ -27,22 +27,37 @@ Two ideas carry almost all of the weight:
 ## The frame doctrine at a glance
 
 A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
-into a few families rather than one exception-free slogan:
+into a few families rather than one exception-free slogan. Keep **exact geodesic
+measures** separate from **planar constructive** work that only *sizes* inputs in
+CRS-natural units:
 
-| Family | Examples | Frame / unit behavior |
+| Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **Metric** | `area`, `length`, `distance`, `buffer`, LRS | CRS-natural units; optional `unit=` override |
-| **Topology** | predicates, overlay, `relate` | strict frame match; geographic seams auto-split |
+| **Exact geodesic measures** | `area`, `length`, `distance`, `dwithin`, LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian |
+| **Metric constructive** | `buffer`, `offset_curve` | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
+| **Topology** | predicates, overlay, `relate`, `clip_by_rect` | strict frame match; geographic seams auto-split-normalize |
 | **Coordinate edit** | `quantize`, `snap_to_grid`, affine | raw coordinate space; no metric conversion |
-| **Planar constructive** | `convex_hull`, `simplify`, `offset_curve` | operate on stored XY; may need local projection or `split_antimeridian` |
+| **Planar constructive** | `convex_hull`, `concave_hull`, `simplify`, Voronoi, Delaunay | operate on stored XY; may need local projection or `split_antimeridian` |
+
+`buffer`/`offset_curve` are *not* exact geodesic buffers: on a geographic CRS the
+distance is metres, but the produced outline is a local-projection approximation
+(see [Across the antimeridian](#across-the-antimeridian)).
 
 The CRS-units table and the candidate-vs-exact doctrine live in
 [the mental model](../get-started/mental-model.md). The shared frame rules:
 
-- **Binary operations require one frame.** Mixing CRSs — or mixing epochs on the
-  same CRS — raises [`CRSMismatchError`][gometry.CRSMismatchError] up
-  front; nothing is silently reinterpreted. Reproject (`to_crs`) or relabel
-  (`set_crs`, if the metadata is what's wrong) first.
+- **Everything requires one frame — but a frame, not a spelling.** Mixing CRSs —
+  or mixing epochs on the same CRS — raises
+  [`CRSMismatchError`][gometry.CRSMismatchError] up front; nothing is silently
+  reinterpreted. Reproject (`to_crs`) or relabel (`set_crs`, if the metadata is
+  what's wrong) first. Two labels that name the *same* frame and differ only in
+  axis order — `EPSG:4326` and `OGC:CRS84`, or a projected CRS in N/E versus E/N
+  — are accepted everywhere: predicates, measures, overlays, and equally when
+  building a `GeometryArray`, concatenating, filling missing rows, or inserting
+  into a `SpatialIndex`. The result keeps the left operand's (or the receiver's,
+  or the first item's) label. What is *not* accepted is a genuine difference:
+  `EPSG:2180` and `EPSG:2177` share datum, ellipsoid and units yet place the
+  same coordinate about 3000 km apart, so they still raise.
 - **Derived geometries inherit the input frame** — every constructive result
   (`buffer`, `centroid`, `simplify`, overlays, …) carries the CRS *and* epoch of
   its inputs, so metadata never silently drops out of a pipeline.
@@ -381,10 +396,9 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
 
 !!! note "Coordinate-space tolerances stay in raw units"
     A few operations take a tolerance that is always interpreted in raw coordinate
-    units, regardless of CRS — they reshape geometry rather than measure it, and
-    reprojecting would move the surviving vertices:
-    [`simplify`][gometry.Geometry.simplify],
-    [`segmentize`][gometry.Geometry.segmentize], [`snap`][gometry.snap],
+    units, regardless of CRS — they *remove or move* vertices, and reprojecting
+    would move the survivors:
+    [`simplify`][gometry.Geometry.simplify], [`snap`][gometry.snap],
     [`snap_to_grid`][gometry.Geometry.snap_to_grid],
     [`quantize`][gometry.Geometry.quantize], and
     [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]. On lon/lat
@@ -397,6 +411,24 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     [`minimum_clearance`][gometry.Geometry.minimum_clearance], and
     [`nearest_points`][gometry.nearest_points] — is CRS-aware with a
     `unit='planar'` escape (and `unit='meters'` for forced SI).
+
+!!! note "`segmentize` is CRS-aware, because it only inserts"
+    [`segmentize`][gometry.Geometry.segmentize] does **not** belong to the list
+    above: it only *inserts* vertices along existing segments, so every original
+    survives untouched and the reprojection argument never applied to it. Its
+    `max_length` is therefore a real-world distance measured exactly like
+    [`length`][gometry.length] — meters along the ellipsoid on a geographic CRS,
+    native units on a projected one, coordinate units when CRS-free — with the
+    same `unit='planar'` / `unit='meters'` escapes as every other metric.
+
+    ```python exec="on" source="block" result="text"
+    import gometry as gm
+
+    line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    print(f"length: {gm.length(line):,.0f} m")
+    print(f"segmentize(20_000): {len(list(line.segmentize(20_000).coords))} vertices")
+    print(f"unit='planar':      {len(list(line.segmentize(0.25, unit='planar').coords))} vertices")
+    ```
 
 ## Picking a projected CRS automatically
 
@@ -664,6 +696,12 @@ print("local EPSG:", gm.box(20, 51, 22, 53, crs=4326).estimate_local_crs().to_ep
 
 ```
 
+`CRS.__eq__` is structural and compares the stored canonical label. Use
+`same_as(..., mode="ignore_axis_order")` when asking whether two labels are
+operationally interchangeable; `EPSG:4326` and `OGC:CRS84` remain unequal as
+stored CRS values even though geometry operations accept their shared X/Y
+frame.
+
 Per-CRS introspection lives on the object as properties — `is_geographic`,
 `is_projected`, `kind`, `name`, `authority`, `code`, `axis_order`, `axes`,
 `area_of_use`, `ellipsoid`, `datum`, and more — plus methods like
@@ -736,6 +774,32 @@ returned. [`gm.crs_apply`][gometry.crs_apply] runs an explicit PROJ
 operation/pipeline string. For everyday geometry work prefer
 [`geom.to_crs`][gometry.Geometry.to_crs]; reach for the raw functions only when you
 are moving bare numbers.
+
+Transforms sometimes need regional grid files. If the best operation's grid is
+unavailable, every Python-visible transform surface — `geom.to_crs(...)`,
+`GeometryArray.to_crs(...)`, `gm.crs_transform(...)`, and
+`gm.crs_transform_bounds(...)` — uses PROJ's valid lower-accuracy fallback and emits
+[`AccuracyWarning`][gometry.AccuracyWarning] once for that call. The warning names
+the missing grid and links to PROJ's resource-file guidance. Pass
+`only_best=True` when fallback is unacceptable: the same condition then raises
+[`TransformError`][gometry.TransformError].
+
+[`CRS.operations`][gometry.CRS.operations] deliberately enumerates PROJ's
+ranked candidates even when their grids are not installed. This keeps the
+operation list complete; each grid's `available` field states whether that
+candidate can run in the current configuration. [`gm.crs_grid`][gometry.crs_grid]
+adds the database `url` and `direct_download` flag so callers can locate an
+unavailable resource. Configure local grid directories with
+[`gm.crs_configure`][gometry.crs_configure]; `gm.crs_engine()['paths']` reports
+those effective per-context search paths.
+
+For performance diagnostics, [`gm.crs_cache_info`][gometry.crs_cache_info]
+reports ``last_transform_engine`` as ``'in_core'`` or ``'proj'`` for the most
+recent transform on the current thread, plus ``transform_invocations`` since
+the last cache clear/reset. The count records actual in-core batches and PROJ
+calls, so empty or validation-rejected input does not claim an execution. This
+observes the engine selected by the transform itself; it does not infer
+execution from whether a PROJ cache entry remains.
 
 [PROJ](https://proj.org/) is the bundled authority backend, so [EPSG](https://epsg.org/)
 codes, datum pipelines, grid-aware transforms, [WKT](https://www.ogc.org/standard/sfa/),

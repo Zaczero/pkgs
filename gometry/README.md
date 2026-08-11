@@ -7,9 +7,10 @@ one coherent, fast, typed API.
 
 - **Apache-2.0 OR MIT** · **Python ≥ 3.11** · **Docs:** <https://gometry.monicz.dev/>
 
-It is designed around one rule: **the CRS decides the measure.** Distance and
-area operations return geodesic meters on a geographic CRS, native units on a projected one, and raw coordinate units on a CRS-free geometry — with a
-per-call `unit='planar'` escape. Grid coverage uses `gm.h3_cover` /
+It is designed around one rule: **the CRS decides the measure.** Distance returns
+geodesic metres and area returns geodesic **square metres** on a geographic CRS,
+native units on a projected one, and raw coordinate units on a CRS-free geometry —
+with a per-call `unit='planar'` escape. Grid coverage uses `gm.h3_cover` /
 `gm.s2_cover` / `gm.geohash_cover` / `gm.tile_cover`.
 
 ```python
@@ -74,10 +75,11 @@ print(gm.area(area, unit='planar'))
 
 ```
 
-The default measures for the CRS — geodesic meters on a geographic CRS, native
-linear units on a projected one, coordinate units when CRS-free. Pass
-`unit='meters'` for SI on a non-meter projected CRS, `unit='planar'` for raw
-coordinate math, or `to_crs(geom.estimate_local_crs())` for a local metric frame.
+The default measures for the CRS — geodesic metres (and square metres for area) on
+a geographic CRS, native linear units on a projected one, coordinate units when
+CRS-free. Pass `unit='meters'` for SI on a non-meter projected CRS, `unit='planar'`
+for raw coordinate math, or `to_crs(geom.estimate_local_crs())` for a local metric
+frame.
 
 ## What it replaces
 

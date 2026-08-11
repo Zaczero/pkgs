@@ -36,8 +36,22 @@ print('from EWKB crs:', gm.from_wkb(ewkb).crs)
 !!! warning "ISO WKB drops the CRS; EWKB carries an integer SRID"
     `from_wkb(to_wkb(...))` returns geometry with **no CRS** — ISO WKB has nowhere
     to store one. EWKB can embed an integer EPSG SRID when the geometry's CRS has
-    an EPSG authority code (`to_wkb(include_srid=True)` rejects CRS values without
-    one). Epoch never rides either WKB flavour.
+    an EPSG authority code, or when it is one of the exact **PostGIS wire aliases**
+    `OGC:CRS84` → SRID 4326 and `OGC:CRS84h` → SRID 4979
+    (`to_wkb(include_srid=True)` rejects other non-EPSG CRS values). These aliases
+    are a deliberate PostGIS serialization convention (lon/lat storage matches
+    EPSG:4326 on the wire), **not** universal CRS identity: object equality
+    `CRS(4326) == CRS("OGC:CRS84")` stays `False`, and a bare EWKB round-trip
+    therefore loses the OGC spelling:
+
+    ```python
+    from_wkb(Point(10, 50, crs="OGC:CRS84").to_wkb(include_srid=True)).crs
+    # EPSG:4326
+    ```
+
+    Pass `crs="OGC:CRS84"` at decode to restore the alias when the embedded SRID
+    is exactly 4326 (a genuine SRID/CRS conflict still raises). Epoch never rides
+    either WKB flavour.
 
 ### The database boundary
 
@@ -178,10 +192,11 @@ print("round-trip:", back.to_wkt(), "| from Feature:", feat.to_wkt())
 
 [`gm.from_geojson`][gometry.from_geojson] is the one entry point for everything
 GeoJSON-shaped: JSON strings, mappings, Features, FeatureCollections, and any object
-exposing `__geo_interface__`. GeoJSON is [WGS 84](https://epsg.org/crs_4326/WGS-84.html)
-by specification, so decoded geometry declares `EPSG:4326` by default; pass
-`crs=None` to opt out, or `crs=4979` to declare a WGS84-family 3D frame. A
-`FeatureCollection` is a feature *set* and decodes to a
+exposing `__geo_interface__`. GeoJSON is WGS 84 lon/lat by specification
+([RFC 7946](https://www.rfc-editor.org/info/rfc7946) / OGC:CRS84), so decoded
+geometry declares `OGC:CRS84` by default (matching GeoParquet); pass
+`crs=4326` for EPSG:4326, `crs=None` to opt out, or `crs=4979` for a
+WGS84-family 3D frame. A `FeatureCollection` is a feature *set* and decodes to a
 [`GeometryArray`][gometry.GeometryArray], one geometry per feature (use
 [`gm.from_features`][gometry.from_features] to keep properties and ids).
 
@@ -226,9 +241,12 @@ drift after parsing; individual property dictionaries remain editable. A missing
 
 The inverse is [`gm.to_feature_collection`][gometry.to_feature_collection] — give it
 geometries plus keyword-only `properties` (and optional `ids`) and it assembles a
-`FeatureCollection` mapping ready for `json.dumps`. `to_geojson` honors the WGS84
-contract on the way out too: reproject with `to_crs(4326)` first if your geometry is
-in another frame.
+`FeatureCollection` mapping whose geometry members are JSON-ready. The mapping is
+suitable for `json.dumps` **only when every property value is JSON-serializable**
+(strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
+Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
+the WGS84 contract on the way out too: reproject with `to_crs(4326)` first if your
+geometry is in another frame.
 
 Pass one mapping to broadcast shared metadata across every row (each feature gets
 an independent outer dictionary), or pass an aligned iterable of mappings/`None`.
@@ -265,7 +283,7 @@ print(restored == point, restored.crs, restored.epoch)
 | EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
 | WKT | `to_wkt(output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes (default; `output_dimension=2` drops) | yes (`M`/`ZM` tags) |
 | EWKT | `to_wkt(include_srid=True, output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes (default) | yes |
-| GeoJSON | `to_geojson(include_z=, drop_epoch=True)` | [`from_geojson`][gometry.from_geojson] | declares WGS84 on read (default attaches `EPSG:4326`; pass `crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
+| GeoJSON | `to_geojson(include_z=, drop_epoch=True)` | [`from_geojson`][gometry.from_geojson] | declares WGS84 on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no | yes (when present) | no (silently stripped) |
 | GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes | yes | yes (packed Z/M children for homogeneous axes; WKB fallback for mixed axes) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of `Geometry` | yes (on each geometry) | yes (on each geometry object) | yes | yes |

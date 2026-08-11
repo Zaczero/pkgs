@@ -340,7 +340,7 @@ pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
 WGS 84 ellipsoidal geodesy) maps onto `gm.bearing`, `gm.destination`,
 `gm.point_between`, and the geometry metrics. On a **geographic** CRS these compute
 geodesically on the ellipsoid; there is no `Geod` object to construct. For a
-non-WGS 84 ellipsoid, [`gm.CRS(code)`][gometry.CRS]`.geodesic(...)` runs the
+non-WGS 84 ellipsoid, [`gm.CRS`][gometry.CRS]`(code).geodesic(...)` runs the
 geodesic problem on that CRS's own ellipsoid.
 
 === "pyproj Geod"

@@ -433,9 +433,15 @@ Z and M are not just carried — gometry measures with them directly.
 `distance_3d(other)` include the vertical component, and `min_z` / `max_z` /
 `z_range` (properties) plus `bounds_3d` (a 6-tuple `(minx, miny, minz, maxx, maxy,
 maxz)`, or `None` when empty) summarize the Z extent. Because a 3D length only makes
-sense when every axis shares one linear unit, these require a **projected** CRS in
-meters (or no CRS); a geographic CRS mixes degrees and meters and raises — reproject
-first.
+sense when every axis shares one linear unit, these require a **projected** CRS (or no
+CRS); a geographic CRS mixes degrees and metre heights and raises under every `unit=` —
+reproject first.
+
+They report the CRS's own linear unit, exactly like their 2D siblings: a US-survey-foot
+CRS gives feet from `length_3d` just as it does from `length`. The free functions
+[`gm.length_3d`][gometry.length_3d] and [`gm.distance_3d`][gometry.distance_3d] take the
+same `unit=` override as [`gm.length`][gometry.length] and
+[`gm.distance`][gometry.distance] when you want SI metres or raw coordinate units.
 
 On a geometry that carries no Z, the two halves of the family answer differently, by
 design. The **accessors** (`min_z` / `max_z` / `z_range` / `bounds_3d`) describe what is
@@ -588,21 +594,25 @@ print("set_m: ", flat.set_m(0.0).coordinate_axes)
 ## IO and the limits of each format
 
 Z and M are first-class for storage, but the wire formats differ in what they can carry.
-gometry never silently loses M:
+Native storage and WKT/WKB/EWKB/GeoArrow preserve M; **GeoJSON-shaped surfaces do not**
+(GeoJSON has no M ordinate):
 
 | Format | Z | M | Notes |
 |---|---|---|---|
 | [WKT](https://www.ogc.org/standard/sfa/) (`Z`/`M`/`ZM` tags) | yes | yes | Human/debug/interchange format. Dimensional empties (`POINT Z EMPTY`) round-trip. |
 | ISO WKB / SQL-MM | yes | yes | Portable binary (`+1000/+2000/+3000` type codes); no SRID. Use `to_wkb()`. Dimensional empties round-trip. |
 | EWKB (PostGIS-specific) | yes | yes | High-bit flags + optional SRID. Use `to_wkb(include_srid=True)`. |
-| [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) (RFC 7946) | optional | **no** | Third element is altitude only; M-carrying input to `to_geojson` errors. |
+| [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) (RFC 7946) | optional | **no** | Third element is altitude only; M-carrying input to `to_geojson` **raises**. |
+| `__geo_interface__` | optional | **no** | GeoJSON-shaped protocol mapping; **silently strips M** (keeps Z when present). |
 | [GeoArrow](https://geoarrow.org/) | yes | yes | Separated `x`/`y`/`z`/`m` child arrays — the preferred Z/M columnar contract. |
 
-!!! warning "GeoJSON is not M-preserving"
+!!! warning "GeoJSON-shaped surfaces are not M-preserving"
     [RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946) defines a position as lon/lat plus an optional altitude, and treats any fourth
-    element as ambiguous. gometry follows the spec: `to_geojson()` writes XY or XYZ, and
-    M-carrying input is an explicit error. For M-rich data, use WKB/EWKB/WKT or
-    GeoArrow. See [Arrow & storage](../ecosystem/arrow.md).
+    element as ambiguous. gometry follows the spec: `to_geojson()` writes XY or XYZ and
+    **raises** on M-carrying input; `__geo_interface__` **silently omits M** because the
+    protocol is GeoJSON-shaped and has no M slot. For M-rich data, use WKB/EWKB/WKT or
+    GeoArrow. See [Text & binary formats](../ecosystem/text-formats.md) and
+    [Arrow & storage](../ecosystem/arrow.md).
 
 !!! note "Dimensional empties"
     WKT/WKB preserve empty **axes** (`POINT Z EMPTY` stays XYZ; `equals_identical`

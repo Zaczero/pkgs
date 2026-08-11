@@ -409,10 +409,11 @@ A condensed restatement of the rules that govern new API:
 - **Operations:** unary → methods (`g.buffer(d)`, `g.centroid()`); binary → free functions
   (`gm.intersection(a, b)`, `gm.distance(a, b)`).
 - **Measurement:** the CRS is the single knob and results are **native** (geographic →
-  geodesic meters; projected → native linear units; none → coordinate units) — state as
-  properties (`g.area` / `g.length`), free `gm.area`/`gm.length` only with `unit=`,
-  and free functions for binary operands (`gm.distance(a, b)`); `unit=` overrides the
-  unit system, `to_crs(...)` changes the frame.
+  geodesic metres / square metres; projected → native linear units; none → coordinate
+  units) — state as properties (`g.area` / `g.length`); free `gm.area`/`gm.length`
+  default to the same CRS-natural result as the properties and accept an optional
+  `unit=` override (`gm.area(g) == g.area`); free functions for binary operands
+  (`gm.distance(a, b)`); `to_crs(...)` changes the frame.
 - **Index/grid results:** typed and semantic — `candidates` is the prefilter,
   `query` is refined, coverage answers `covers`/`contains`/`intersects` exactly.
 - **Validation/repair:** `validate()` returns a structured report; `repair` is the

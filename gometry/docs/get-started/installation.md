@@ -49,9 +49,10 @@ afternoon. gometry removes that failure mode by design.
 
 - The geometry, geodesy, indexing, and grid kernels are **implemented in Rust**, not bound
   to GEOS or GDAL.
-- The CRS authority backend is **[libPROJ](https://proj.org/), bundled inside the wheel**. You get full PROJ
-  datum pipelines, [EPSG](https://epsg.org/)/WKT/PROJJSON parsing, and grid-aware transforms without a system
-  PROJ shared library or a `PROJ_LIB` data directory to configure.
+- The CRS authority backend is **[libPROJ](https://proj.org/), bundled inside the wheel**. You get the
+  bundled PROJ database, supported datum pipelines, and the grid files shipped with the package without a
+  system PROJ shared library or a `PROJ_LIB` data directory. Additional caller-supplied grids can be made
+  visible with `gm.crs_configure(search_paths=...)`; gometry does not download grids at runtime.
 
 !!! note "Why this matters"
     A gometry wheel is self-contained. CI images, slim containers, and lambda-style
