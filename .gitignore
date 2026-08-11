@@ -452,6 +452,8 @@ Cargo.lock
 .claude/
 .agents/
 .codex/
+**/AGENTS.md
+**/CLAUDE.md
 .uv-cache/
 repomix-output.xml
 uv.lock
