@@ -1,4 +1,4 @@
-use super::*;
+use crate::geometry::arrangement::*;
 use crate::geometry::*;
 
 fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
@@ -230,4 +230,28 @@ fn from_loops_bails_on_shared_vertex() {
         (2.0, 4.0),
     ]);
     assert!(Arrangement::<i32>::from_loops(&segments, &ranges, |_| 1).is_none());
+}
+
+#[test]
+fn positional_fan_order_survives_opposite_finite_extremes() {
+    let extreme = 1e308;
+    let points = [
+        XY::new(extreme, extreme),
+        XY::new(-extreme, extreme),
+        XY::new(-extreme, -extreme),
+        XY::new(extreme, -extreme),
+        XY::new(0.0, -extreme),
+    ];
+    let starts = [0, 4, 6, 8, 10, 12];
+    let mut targets = [1, 2, 3, 4, 0, 2, 0, 1, 0, 4, 0, 3];
+    let mut multiplicities = [1_i32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+    assert!(order_single_loop_rows(
+        &points,
+        &starts,
+        &mut targets,
+        &mut multiplicities,
+    ));
+    assert_eq!(targets[..4], [1, 2, 4, 3]);
+    assert_eq!(multiplicities[..4], [1, 2, 4, 3]);
 }

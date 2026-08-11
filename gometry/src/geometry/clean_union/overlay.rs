@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Clean-case exact binary overlay fast path (outside-arc reassembly).
 //!
 //! For two SIMPLE polygons — shells AND holes — whose boundaries meet at proper
@@ -22,13 +18,18 @@
 //! model: same-operand shared/cross contacts, unexplained vertex/endpoint
 //! touches, 3+ coincident boundaries, T-junctions inside shared runs, ambiguous
 //! membership reseeds, a pinch vertex, a hole not nesting in its shell, or a
-//! multi-shell-with-holes nesting. A debug differential test (`union` /
-//! `difference` / `symmetric_difference` / `intersection`, convex +
-//! non-convex + HOLED + shared-edge fixtures) pins it to the engine.
+//! multi-shell-with-holes nesting. Deterministic differential fixtures
+//! (`union` / `difference` / `symmetric_difference` / `intersection`, convex +
+//! non-convex + HOLED + shared-edge) pin it to the engine.
 
-use super::*;
 use crate::collections::HashMap;
+use crate::geometry::clean_union::{
+    ArcAction, ArcSection, BoundaryContacts, OverlayOp, SectionEnd, arc_rule, assemble_rings,
+    collect_boundary_contacts, keep_arcs, reassemble, sort_dedup_cuts, strict_section_membership,
+    symmetric_difference_shape,
+};
 use crate::geometry::topology::{self, Operand, OperandPool, OrientedRing};
+use crate::geometry::{HashMapExt as _, PointKey, Polygon, Shape, XY, same_point};
 
 pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     a: &[P],

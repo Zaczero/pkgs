@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::super::*;
+use crate::{Predicate, predicate_broadcast, xy_predicate};
 /// Test whether ``left`` contains ``right``.
 ///
 /// Returns ``True`` if no points of ``right`` lie outside ``left`` and at least

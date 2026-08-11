@@ -26,6 +26,21 @@ impl De9im {
         }
     }
 
+    /// Force one cell empty (`F`).
+    ///
+    /// Named access so consumers stop poking `matrix.0[3] = b'F'` directly:
+    /// the ASCII `[u8; 9]` layout is an implementation detail, and a raw index
+    /// gives no hint whether `3` is `(B,I)` or `(I,B)`. Every external writer
+    /// now goes through here or [`Self::set_at_least`].
+    pub(crate) const fn clear(&mut self, row: Loc, col: Loc) {
+        self.0[row as usize * 3 + col as usize] = b'F';
+    }
+
+    /// Whether one cell holds exactly `dim`.
+    pub(crate) const fn is_dimension(self, row: Loc, col: Loc, dim: Dimension) -> bool {
+        self.0[row as usize * 3 + col as usize] == b'0' + dim.code()
+    }
+
     pub(crate) fn left_dimension(self) -> Option<Dimension> {
         [self.0[0], self.0[1], self.0[2]]
             .into_iter()

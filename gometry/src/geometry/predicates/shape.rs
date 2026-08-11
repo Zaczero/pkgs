@@ -1,6 +1,17 @@
-use super::*;
 use crate::error::Result;
-use crate::geometry::*;
+use crate::geometry::predicates::{
+    bounds_cover, bounds_equal_topological, convex_covers_all_vertices, disjoint_de9im,
+    exterior_part_uniform, has_collection_operand, interior_part_uniform, interiors_meet_uniform,
+    intersection_contact, isolated_point_contact, line_contains_point, multiline_contains_point,
+    option_bounds_disjoint, point_is_geographic_pole, pole_position, strict_interior_witness,
+    vertex_witness,
+};
+use crate::geometry::{
+    Bounds, Coordinates as _, DimMode, Dimension, EmptyKind, GeometryErrorKind, Point,
+    SegmentContact, Shape, dimension, lineal_relate_shapes, linework_contact, mixed_relate_shapes,
+    native_relate_pattern_shapes, native_relate_shapes, point_equals_exact, point_on_segment,
+    points_equal_exact, relate_ng, same_point, topology_split,
+};
 
 impl Shape {
     /// Strict OGC ``contains`` for a point candidate: boundary points are
@@ -80,8 +91,8 @@ impl Shape {
     /// `ShapeData::contains_cached`).
     /// `WITNESS = false` callers MUST have already run the
     /// uncovered-vertex refutation themselves (the cached shadows probe
-    /// through the handle's band-indexed tester — same budget, cheaper
-    /// raycasts).
+    /// through the handle's hierarchical `PointBatchTester` — same budget,
+    /// cheaper membership probes).
     pub(crate) fn contains_with_bounds<const WITNESS: bool>(
         &self,
         other: &Self,
@@ -454,6 +465,11 @@ impl Shape {
         if has_collection_operand(self, other) {
             return native_relate_shapes(self, other).is_crosses_by_dimension();
         }
+        // A single Point never crosses anything (OGC; MultiPoint can). Kind
+        // gate — not topological dimension — so MultiPoint×Area stays real.
+        if matches!(self, Self::Point(_)) || matches!(other, Self::Point(_)) {
+            return false;
+        }
         // OGC crosses exists only where the intersection can sit BELOW
         // both operands' dimensions: point/line, point/area, line/line,
         // line/area. Puntal x puntal and areal x areal are false by
@@ -515,6 +531,10 @@ impl Shape {
         if has_collection_operand(self, other) {
             return native_relate_shapes(self, other).is_overlaps_by_dimension();
         }
+        // A single Point never overlaps anything (OGC; MultiPoint can).
+        if matches!(self, Self::Point(_)) || matches!(other, Self::Point(_)) {
+            return false;
+        }
         // OGC overlaps requires EQUAL dimensions (mixed pairs are false by
         // definition) and disjoint bounds cannot overlap. Areal pairs ride
         // the contact classifier: only tangential contact ever reaches the
@@ -570,6 +590,12 @@ impl Shape {
     }
 
     pub fn relate(&self, other: &Self) -> String {
+        // Geographic pole/±180 seam: grade from the unsplit container (same
+        // tri-state as `try_geographic_point_membership`). Split-only relate
+        // mislabels seam interiors as fabricated-boundary contact.
+        if let Some(matrix) = geographic_point_relate_matrix(self, other) {
+            return matrix;
+        }
         // Bbox-disjoint, both non-empty, non-collection: the DE-9IM is fully
         // determined by each operand's interior + boundary dimensions — no
         // noding/arrangement engine. (Empties and collections keep the general
@@ -582,7 +608,79 @@ impl Shape {
         }
         native_relate_shapes(self, other).text()
     }
+}
 
+/// Point×container DE-9IM for pole / ±180 seam membership on the unsplit
+/// container. Returns `None` when the pair is not a geographic pole/seam
+/// probe (caller falls through to planar relate).
+pub(crate) fn geographic_point_relate_matrix(left: &Shape, right: &Shape) -> Option<String> {
+    use crate::geometry::PolePosition::{Boundary, Exterior, Interior};
+
+    let (container, point, point_is_right) = match (left, right) {
+        (container, Shape::Point(point)) => (container, *point, true),
+        (Shape::Point(point), container) => (container, *point, false),
+        _ => return None,
+    };
+    if !container.has_area_parts() {
+        return None;
+    }
+    let position = if let Some(north) = point_is_geographic_pole(point) {
+        pole_position(container, north)
+    } else if point.x.to_bits() == (-180.0_f64).to_bits()
+        || point.x.to_bits() == 180.0_f64.to_bits()
+    {
+        // Exact ±180 seam longitudes (bit identity — not a fuzzy compare).
+        // Seam probe: works on both the original crossing shape and the
+        // already-split multipolygon that `geo_split_pair` hands to relate.
+        // (After split, `crosses_antimeridian` is false, so a gate that
+        // required it would miss and native relate would grade fabricated
+        // seam edges as boundary.)
+        let probe = if container.crosses_antimeridian() {
+            topology_split(container)
+        } else {
+            container.clone()
+        };
+        let west = point.with_xy((-180.0_f64).next_up(), point.y).ok()?;
+        let east = point.with_xy(180.0_f64.next_down(), point.y).ok()?;
+        let west_seam = point.with_xy(-180.0, point.y).ok()?;
+        let east_seam = point.with_xy(180.0, point.y).ok()?;
+        let seam_covered = probe.covers_point(west_seam) || probe.covers_point(east_seam);
+        // Interior iff both sides of the meridian are in the areal interior
+        // (or the point itself is strictly contained — covers-but-not-on-
+        // fabricated-boundary after split still counts).
+        let area_interior = (probe.contains_point(west) && probe.contains_point(east))
+            || (seam_covered && probe.contains_point(point));
+        if !seam_covered && !probe.covers_point(point) {
+            // Not a seam-relevant container for this longitude — fall through.
+            return None;
+        }
+        if !seam_covered {
+            Exterior
+        } else if area_interior {
+            Interior
+        } else {
+            Boundary
+        }
+    } else {
+        return None;
+    };
+    // Point-in-polygon DE-9IM (shapely/JTS): interior 0F2FF1FF2, boundary
+    // FF20F1FF2, exterior FF2FF10F2.
+    let matrix = match position {
+        Interior => "0F2FF1FF2",
+        Boundary => "FF20F1FF2",
+        Exterior => "FF2FF10F2",
+    };
+    Some(if point_is_right {
+        matrix.to_owned()
+    } else {
+        let b = matrix.as_bytes();
+        String::from_utf8_lossy(&[b[0], b[3], b[6], b[1], b[4], b[7], b[2], b[5], b[8]])
+            .into_owned()
+    })
+}
+
+impl Shape {
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
         // Canonical single-pattern predicates dispatch to the fast kernels
         // (GEOS's RelateNG does the same): each listed pattern IS the

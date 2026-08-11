@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use super::operation::Operation;
 use crate::array::{GeometryArrayStorage, RowSelection, RowSelectionRef};
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{
-    CollectRows, degrade_linref_linestring, degrade_linref_point_between, rows_err,
+    CollectRows as _, degrade_linref_linestring, degrade_linref_point_between, rows_err,
 };
 use crate::crs::MetricModel;
+use crate::dispatch::operation::Operation;
 use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, is_geographic_frame,
 };
@@ -129,7 +129,9 @@ pub(crate) fn try_unary_packed_f64(
         Operation::Length => {
             packed_f64_lane(py, array, array.length_unary_packed(py, unit, op_name))
         },
-        Operation::Length3d => packed_f64_lane(py, array, array.length_3d_unary_packed(py)),
+        Operation::Length3d => {
+            packed_f64_lane(py, array, array.length_3d_unary_packed(py, unit, op_name))
+        },
         _ => None,
     }
 }
@@ -140,6 +142,9 @@ fn packed_bool_lane(
     values: Option<Vec<bool>>,
 ) -> Option<PyResult<Py<PyAny>>> {
     let mut values = values?;
+    // Belt-and-braces: kernels that already skip missing rows still get the
+    // shape-lane missing sentinel (`false`) applied here. Cheap when the
+    // kernel already wrote false for masked slots.
     if let Some(mask) = array.missing() {
         for (value, missing) in values.iter_mut().zip(mask.iter()) {
             if *missing {
@@ -156,12 +161,11 @@ pub(crate) fn try_unary_packed_bool(
     array: &PyGeometryArray,
     op: Operation,
 ) -> Option<PyResult<Py<PyAny>>> {
-    // The predicate kernels read every physical row. Nullable packed columns
-    // retain NaN placeholders, so use the existing shape lane until a
-    // predicate owns a mask-aware kernel rather than exposing placeholders.
-    if array.has_missing() {
-        return None;
-    }
+    // Packed bool kernels run over physical rows (including NaN placeholders
+    // on missing slots). [`packed_bool_lane`] then writes the missing-row
+    // sentinel (`false`) from the mask — identical to the shape-lane answer
+    // for masked rows. No blanket `has_missing()` bail: that forced a 10–500×
+    // shape-lane cliff on nullable is_valid/is_simple.
     if matches!(
         op,
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
@@ -181,8 +185,14 @@ pub(crate) fn try_unary_packed_bool(
         Operation::IsClosed => packed_bool_lane(py, array, Some(array.is_closed_unary_packed())),
         Operation::IsRing => packed_bool_lane(py, array, Some(array.is_ring_unary_packed())),
         Operation::IsCcw => packed_bool_lane(py, array, Some(array.is_ccw_unary_packed())),
-        Operation::IsSimple => packed_bool_lane(py, array, array.is_simple_unary_packed()),
-        Operation::IsValid => packed_bool_lane(py, array, array.is_valid_unary_packed()),
+        // is_simple / is_valid kernels are mask-aware (skip placeholders, write
+        // false for missing); skip the second mask pass in packed_bool_lane.
+        Operation::IsSimple => array
+            .is_simple_unary_packed()
+            .map(|values| bool_array(py, values)),
+        Operation::IsValid => array
+            .is_valid_unary_packed()
+            .map(|values| bool_array(py, values)),
         Operation::IsConvex => packed_bool_lane(py, array, Some(array.is_convex_unary_packed())),
         Operation::CrossesAntimeridian => match require_antimeridian_crs(array.crs_str()) {
             Ok(()) => packed_bool_lane(py, array, array.crosses_antimeridian_unary_packed()),
@@ -225,13 +235,19 @@ pub(crate) fn try_unary_packed_array(
     py: Python<'_>,
     array: &PyGeometryArray,
     op: Operation,
+    resolver: super::MetricResolver,
     packed: Option<&PackedUnary>,
 ) -> Option<PyResult<PyGeometryArray>> {
     // Most constructive packed kernels consume every physical coordinate.
-    // Missing rows deliberately carry NaN placeholders, so retain their
-    // established present-row/scatter lane unless the operation can preserve
-    // the packed structure without inspecting coordinates (boundary below).
-    if array.has_missing() && op != Operation::Boundary {
+    // Missing rows deliberately carry NaN placeholders; ops that would feed
+    // those NaNs into geometry construction stay on the present-row/scatter
+    // lane. `Boundary` preserves packed structure without inspecting missing
+    // coordinates; `Segmentize` owns its own mask-aware fallback so one
+    // generated-work budget spans every present row. Other
+    // constructive ops (affine, simplify, centroid, …) would need per-op
+    // skip-or-scatter logic — not the same shape as bool mask overlay — and
+    // stay bailed here.
+    if array.has_missing() && !matches!(op, Operation::Boundary | Operation::Segmentize) {
         return None;
     }
     // param-less lanes: the operation alone says everything
@@ -252,7 +268,15 @@ pub(crate) fn try_unary_packed_array(
             Some(array.point_on_surface_unary_packed())
         },
         (Operation::Segmentize, PackedUnary::Segmentize { max_segment_length }) => {
-            Some(array.segmentize_unary_packed(max_segment_length))
+            // `segmentize` measures and places under the array's metric, so
+            // the ellipsoid is resolved ONCE here and cloned into the kernels
+            // rather than re-derived per row.
+            match segmentize_metric(array, resolver) {
+                Ok((geodesic, to_metre)) => {
+                    Some(array.segmentize_unary_packed(max_segment_length, geodesic, to_metre))
+                },
+                Err(error) => Some(Err(error)),
+            }
         },
         (Operation::Segmentize, PackedUnary::Densify { fraction }) => {
             Some(array.densify_unary_packed(fraction))
@@ -517,5 +541,24 @@ fn linref_substring_packed_inner(
                 degrade_linref_linestring(line_substring_coordseq(model, &line, range, normalized))
             })
             .collect_rows()
+    }
+}
+
+/// `segmentize`'s resolved metric for the packed lane: the ellipsoid to place
+/// along (`None` = planar), and the coordinate-units-per-input-unit divisor.
+///
+/// Must stay the exact counterpart of `kernels::unary_segmentize` — a packed
+/// array and a scalar geometry in the same CRS have to subdivide identically.
+fn segmentize_metric(
+    array: &PyGeometryArray,
+    resolver: super::MetricResolver,
+) -> PyResult<(Option<geographiclib_rs::Geodesic>, f64)> {
+    let super::MetricResolver::Metric { unit } = resolver else {
+        return Ok((None, 1.0));
+    };
+    let model = crate::broadcast::resolve_metric(array.crs_str(), unit, "segmentize")?;
+    match crate::crs::ResolvedMetric::from_model(&model)? {
+        crate::crs::ResolvedMetric::Geodesic { geodesic, .. } => Ok((Some(*geodesic), 1.0)),
+        crate::crs::ResolvedMetric::Planar { to_metre } => Ok((None, to_metre.get())),
     }
 }

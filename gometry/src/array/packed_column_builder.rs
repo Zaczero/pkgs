@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::column_window;
+use crate::array::column_window;
 use crate::error::Result as CrateResult;
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn};
 
@@ -53,12 +53,11 @@ impl PackedColumnBuilder {
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
-        subdivide: &impl Fn(&CoordSeq) -> CrateResult<CoordSeq>,
+        subdivide: &impl Fn(&CoordSeq, &mut crate::geometry::ExpansionBudget) -> CrateResult<CoordSeq>,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> CrateResult<()> {
-        let input_len = window.len();
-        let result = subdivide(&coords.view(CoordWindow::trusted(window, coords.len())))?;
-        budget.add(result.len().saturating_sub(input_len))?;
+        let row = coords.view(CoordWindow::trusted(window, coords.len()));
+        let result = subdivide(&row, budget)?;
         self.xs.extend_from_slice(result.xs());
         self.ys.extend_from_slice(result.ys());
         if let (Some(out), Some(column)) = (self.zs.as_mut(), result.zs()) {

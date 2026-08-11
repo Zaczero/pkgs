@@ -2,10 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! The public coordinate-transform API (`transform`/`transform_coordinates`/
 //! `transform_bounds`/`transform_bounds_3d`).
 //!
@@ -13,7 +9,11 @@
 //! raw-pointer helpers (which stay private in the parent `crs` module) via
 //! `use super::*`; re-exported at `crs` so `crs::transform` callers resolve.
 
-use super::*;
+use crate::crs::{
+    CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, Shape,
+    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformOptions, Transformer, coordinate_identity_crs, info,
+    normalize_pair, proj_error_message, with_proj_operation, with_proj_pipeline,
+};
 use crate::error::Result;
 use crate::geometry::{LineSeq, MOrdinate, ZOrdinate};
 
@@ -112,6 +112,7 @@ fn transform_bounds_row<B: BoundsTransform>(
     options: TransformOptions,
 ) -> Result<B> {
     B::validate(source, bounds)?;
+    reject_bounds_epochs(&options)?;
     if coordinate_identity_crs(source, target) {
         return Ok(bounds);
     }
@@ -139,6 +140,7 @@ fn transform_bounds_rows<B: BoundsTransform>(
     for &bounds in rows {
         B::validate(source, bounds)?;
     }
+    reject_bounds_epochs(&options)?;
     if coordinate_identity_crs(source, target) {
         return Ok(rows.to_vec());
     }
@@ -154,6 +156,15 @@ fn transform_bounds_rows<B: BoundsTransform>(
         rows,
         densify,
     )
+}
+
+fn reject_bounds_epochs(options: &TransformOptions) -> Result<()> {
+    if options.source_epoch.is_some() || options.target_epoch.is_some() {
+        return Err(CrsError::message(
+            "bounds transform does not support coordinate epochs until time-aware bounds are implemented",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn transform_bounds(
@@ -295,10 +306,7 @@ pub(crate) fn all_finite(values: &[f64]) -> bool {
 }
 
 pub(crate) fn validate_bounds(bounds: (f64, f64, f64, f64)) -> Result<()> {
-    if all_finite(&[bounds.0, bounds.1, bounds.2, bounds.3])
-        && bounds.0 <= bounds.2
-        && bounds.1 <= bounds.3
-    {
+    if all_finite(&<[f64; 4]>::from(bounds)) && bounds.0 <= bounds.2 && bounds.1 <= bounds.3 {
         return Ok(());
     }
     Err(CrsError::invalid(BOUNDS_2D_ERROR.to_owned()))
@@ -306,7 +314,7 @@ pub(crate) fn validate_bounds(bounds: (f64, f64, f64, f64)) -> Result<()> {
 
 pub(crate) fn validate_transform_bounds(source: &str, bounds: (f64, f64, f64, f64)) -> Result<()> {
     if is_geographic_crs(source)? {
-        if all_finite(&[bounds.0, bounds.1, bounds.2, bounds.3])
+        if all_finite(&<[f64; 4]>::from(bounds))
             && (-180.0..=180.0).contains(&bounds.0)
             && (-180.0..=180.0).contains(&bounds.2)
             && (-90.0..=90.0).contains(&bounds.1)
@@ -322,7 +330,7 @@ pub(crate) fn validate_transform_bounds(source: &str, bounds: (f64, f64, f64, f6
 }
 
 pub(crate) fn validate_bounds_3d(bounds: (f64, f64, f64, f64, f64, f64)) -> Result<()> {
-    if all_finite(&[bounds.0, bounds.1, bounds.2, bounds.3, bounds.4, bounds.5])
+    if all_finite(&<[f64; 6]>::from(bounds))
         && bounds.0 <= bounds.3
         && bounds.1 <= bounds.4
         && bounds.2 <= bounds.5
@@ -337,7 +345,7 @@ pub(crate) fn validate_transform_bounds_3d(
     bounds: (f64, f64, f64, f64, f64, f64),
 ) -> Result<()> {
     if is_geographic_crs(source)? {
-        if all_finite(&[bounds.0, bounds.1, bounds.2, bounds.3, bounds.4, bounds.5])
+        if all_finite(&<[f64; 6]>::from(bounds))
             && (-180.0..=180.0).contains(&bounds.0)
             && (-180.0..=180.0).contains(&bounds.3)
             && (-90.0..=90.0).contains(&bounds.1)
@@ -353,11 +361,11 @@ pub(crate) fn validate_transform_bounds_3d(
     Err(CrsError::invalid(BOUNDS_3D_GEO_ERROR.to_owned()))
 }
 
+/// Whether `value` is geographic — including compound CRSs whose horizontal
+/// component is geographic (e.g. EPSG:9707). Uses the same recursive kind
+/// walk as [`CrsInfo::is_geographic`].
 pub(crate) fn is_geographic_crs(value: &str) -> Result<bool> {
-    Ok(matches!(
-        info(value)?.kind,
-        "geographic" | "geographic_2d" | "geographic_3d"
-    ))
+    Ok(info(value)?.is_geographic())
 }
 
 pub(crate) fn transform_coordinates_with_pipeline(

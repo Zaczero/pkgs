@@ -3,16 +3,21 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::sync::Arc;
 
-use super::*;
+use crate::array::{
+    ArrayRows, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn, ElementBounds,
+    Frame, GeometryArrayStorage, InvalidGeometryError, MissingMask, OriginSpec, PackedColumns,
+    Point, PointColumnBuilder, PolygonLevel, Py, PyAny, PyErr, PyGeometry, PyGeometryArray,
+    PyResult, Python, RingLevel, RowSelection, RowSelectionRef, Shape, TotalBoundsCache,
+    affine_about, contiguous_physical_range, fresh_prepared_cache, line_logical_len,
+    packed_per_row_self_origin_affine_columns, physical_row, point_logical_len,
+    polygon_logical_len, prepared, row_map_is_identity, row_ord_extremes,
+    row_selection_from_logical_rows,
+};
 use crate::geometry::CoordWindow;
 
 /// Build a dense bool mask from sparse missing-row indices (`None` when no
@@ -195,6 +200,10 @@ impl PyGeometryArray {
 
     /// Attach a missing mask, normalizing the all-present case back to the
     /// dense representation so downstream fast paths stay mask-free.
+    ///
+    /// Invalidates mask-dependent aggregates (`total_bounds_cache`): a shared
+    /// clone's warm cache would otherwise report bounds over rows that are
+    /// now masked out.
     pub(crate) fn with_missing_mask(mut self, mask: Option<MissingMask>) -> Self {
         if let Some(mask) = &mask {
             assert_eq!(
@@ -204,6 +213,8 @@ impl PyGeometryArray {
             );
         }
         self.rows = self.rows.with_missing(mask);
+        // Mask changes which rows contribute to array-wide aggregates.
+        self.total_bounds_cache = std::sync::Arc::new(std::sync::OnceLock::new());
         self
     }
 
@@ -272,20 +283,19 @@ impl PyGeometryArray {
             ),
             GeometryArrayStorage::Mixed(_) => {
                 let mut rows = present.storage().iter_shapes();
-                let items: Vec<PyGeometry> = mask
+                let shapes: Vec<Shape> = mask
                     .iter()
                     .map(|&missing| {
-                        let shape = if missing {
+                        if missing {
                             Self::missing_placeholder()
                         } else {
                             rows.next()
                                 .expect("present count checked before scatter")
                                 .into_owned()
-                        };
-                        PyGeometry::with_frame(shape, frame.clone())
+                        }
                     })
                     .collect();
-                Self::pack_or_mixed(items, frame)
+                Self::from_shapes(shapes, frame)
             },
         };
         scattered.with_missing_mask(Some(mask))
@@ -413,24 +423,33 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn from_storage_arc(storage: Arc<GeometryArrayStorage>, frame: Frame) -> Self {
-        Self::from_result_storage(storage, frame, None, Arc::new(std::sync::OnceLock::new()))
+        Self::from_result_storage(
+            storage,
+            frame,
+            None,
+            Arc::new(std::sync::OnceLock::new()),
+            Arc::new(std::sync::OnceLock::new()),
+        )
     }
 
     /// Canonical lifecycle for newly-computed geometry rows. Bounds may be
     /// carried only when the caller proves them unchanged; prepared,
     /// frame-dependent, and gathered caches are always fresh because their
-    /// invalidation rules differ.
+    /// invalidation rules differ. `total_bounds_cache` follows the same share
+    /// rule as `bounds_cache` (geometry-derived and frame-dependent aggregate).
     pub(crate) fn from_result_storage(
         storage: Arc<GeometryArrayStorage>,
         frame: Frame,
         missing: Option<MissingMask>,
         bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+        total_bounds_cache: TotalBoundsCache,
     ) -> Self {
         let len = storage.len();
         Self {
             rows: ArrayRows::new(storage, missing),
             frame,
             bounds_cache,
+            total_bounds_cache,
             prepared_cache: fresh_prepared_cache(),
             frame_caches: prepared::fresh_frame_caches(len),
             gathered_memo: Arc::new(std::sync::OnceLock::new()),
@@ -453,25 +472,28 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn retag_frame(&self, frame: Frame) -> Self {
-        if !matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
-            return Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
-                .with_missing_mask(self.missing().cloned());
-        }
-        Self::mixed(
-            self.items()
-                .iter()
-                .map(|item| PyGeometry::with_frame(item.shape.clone(), frame.clone()))
-                .collect(),
-            frame,
-        )
-        .with_missing_mask(self.missing().cloned())
+        // Mixed rows no longer carry per-row frames — shape storage is shared
+        // and only the array-level frame + frame-cache sidecars refresh.
+        Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
+            .with_missing_mask(self.missing().cloned())
+    }
+
+    /// Wrap plain shapes as `Mixed` storage with an explicit array frame.
+    pub(crate) fn mixed_shapes(shapes: Vec<Shape>, frame: Frame) -> Self {
+        Self::from_storage(GeometryArrayStorage::Mixed(shapes), frame)
     }
 
     /// Wrap `PyGeometry` elements as `Mixed` storage with an explicit frame.
-    /// The single constructor through which `Vec<PyGeometry>` becomes an array;
-    /// `pack_or_mixed` adds the homogeneous-packing decision on top.
+    /// Extracts shapes only (prepared state is not retained — use
+    /// [`Self::from_shapes`] / [`Self::mixed_shapes`] at bulk sinks).
     pub(crate) fn mixed(items: Vec<PyGeometry>, frame: Frame) -> Self {
-        Self::from_storage(GeometryArrayStorage::Mixed(items), frame)
+        Self::mixed_shapes(
+            items
+                .into_iter()
+                .map(|item| item.shape.shape().clone())
+                .collect(),
+            frame,
+        )
     }
 
     /// Wrap a homogeneous point column as packed `Points` storage — no per-row
@@ -631,40 +653,19 @@ impl PyGeometryArray {
     /// `array([points])`, line-returning ops, and polygon-returning ops
     /// auto-pack), otherwise `Mixed`.
     pub(crate) fn pack_or_mixed(items: Vec<PyGeometry>, frame: Frame) -> Self {
-        // The first row's kind decides which single packer runs: a uniform
-        // batch can only match its own kind, so probing the other packers
-        // (each of which speculatively allocates) is pure waste.
-        match items.first().map(|item| item.shape.shape()) {
-            Some(Shape::Point(_)) => {
-                if let Some(seq) =
-                    Self::uniform_point_column(items.iter().map(|item| item.shape.shape()))
-                {
-                    return Self::packed_points(seq, frame);
-                }
-            },
-            Some(Shape::LineString(_)) => {
-                if let Some((coords, offsets)) =
-                    Self::uniform_line_column(items.iter().map(|item| item.shape.shape()))
-                {
-                    return Self::packed_lines(coords, offsets, frame);
-                }
-            },
-            Some(Shape::Polygon(_)) => {
-                if let Some((coords, ring_offsets, polygon_offsets)) =
-                    Self::uniform_polygon_column(items.iter().map(|item| item.shape.shape()))
-                {
-                    return Self::packed_polygons(coords, ring_offsets, polygon_offsets, frame);
-                }
-            },
-            _ => {},
-        }
-        Self::mixed(items, frame)
+        Self::from_shapes(
+            items
+                .into_iter()
+                .map(|item| item.shape.shape().clone())
+                .collect(),
+            frame,
+        )
     }
 
     /// Build an array straight from kernel-output `Shape`s: all-`Point`
     /// uniform-axes results pack into one shared `CoordSeq` without ever
-    /// materializing per-row wrappers; anything else wraps into `Mixed` rows
-    /// carrying the frame.
+    /// materializing per-row wrappers; anything else lands in array-owned
+    /// `Mixed` shape storage (no per-row `PyGeometry` / `ShapeData`).
     pub(crate) fn from_shapes(shapes: Vec<Shape>, frame: Frame) -> Self {
         // First-kind dispatch, exactly like `pack_or_mixed`.
         match shapes.first() {
@@ -687,13 +688,7 @@ impl PyGeometryArray {
             },
             _ => {},
         }
-        Self::mixed(
-            shapes
-                .into_iter()
-                .map(|shape| PyGeometry::with_frame(shape, frame.clone()))
-                .collect(),
-            frame,
-        )
+        Self::mixed_shapes(shapes, frame)
     }
 
     /// Wrap homogeneous `LineString` rows as packed `Lines` storage: one

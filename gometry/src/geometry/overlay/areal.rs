@@ -3,15 +3,15 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::geometry::*;
+use crate::geometry::overlay::{OverlayOp, self_node_segments_sourced};
+use crate::geometry::{
+    Arrangement, Bounds, Coordinates, HashMapExt as _, Point, Polygon, RingWinding, Segment,
+    SegmentIndex, Shape, XY, assemble_region_polygons, orient_ring, ray_crossing_is_right,
+    ring_winding, same_point, winding_region, wrap_index,
+};
 pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     left: &[P],
     right: &[Q],
@@ -229,12 +229,27 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     })
     .unwrap_or_else(|| {
         let (atomic, sources) = self_node_segments_sourced(&segments);
+        // Multi-source provenance: sum every original ordinal's unit weight,
+        // flipping sign when that ordinal owned the reverse of the noded
+        // representative. Exact undirected dedup keeps `atomic` unique-sized
+        // so stacked multiparts never re-expand into O(E) weighted pieces.
         Arrangement::<[i32; 2]>::weighted(&atomic, |piece| {
-            if tags[sources[piece] as usize] == 0 {
-                [1, 0]
-            } else {
-                [0, 1]
+            let mut weight = [0_i32, 0_i32];
+            for &(ordinal, reversed) in &sources[piece] {
+                let unit = if tags[ordinal as usize] == 0 {
+                    [1, 0]
+                } else {
+                    [0, 1]
+                };
+                if reversed {
+                    weight[0] -= unit[0];
+                    weight[1] -= unit[1];
+                } else {
+                    weight[0] += unit[0];
+                    weight[1] += unit[1];
+                }
             }
+            weight
         })
     });
     // Outside-winding seed per component and per operand: every loop

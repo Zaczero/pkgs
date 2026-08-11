@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -294,8 +290,10 @@ macro_rules! doc_extremes {
 
 Returns
 -------
-Extremes
-    The ``(west, south, east, north)`` named tuple.
+Extremes or None
+    The ``(west, south, east, north)`` named tuple, or ``None`` for an empty
+    geometry — the same contract as ``bounds`` and the other extent
+    accessors.
 
 ", doc_extremes!(@tail))
     };
@@ -326,6 +324,7 @@ Examples
 --------
 >>> import gometry as gm
 >>> extremes = gm.box(0, 0, 2, 4).extremes()
+>>> assert extremes is not None  # None only for an empty geometry
 >>> (extremes.west.to_wkt(), extremes.north.to_wkt())
 ('POINT (0 0)', 'POINT (2 4)')"
     };
@@ -980,7 +979,9 @@ the higher one is degenerate (a zero-area polygon samples its boundary),
 like centroid. Deterministic: the same input and ``seed`` always produce
 the same points (an explicit seed is required — no hidden global RNG). Array
 rows draw distinct deterministic streams derived from ``seed`` and the row
-index. Sampled points are invented interior points, so they cannot carry the
+index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
+and ``arr[0].sample_points(n, seed=s)`` agree. An empty row yields an empty
+group rather than failing the batch; an empty SCALAR raises. Sampled points are invented interior points, so they cannot carry the
 source geometry's Z/M and are returned in XY.
 
 Parameters
@@ -1253,11 +1254,15 @@ method : {'earcut', 'delaunay', 'constrained'}
     Required algorithm choice: ``earcut`` triangulates polygon interiors,
     ``delaunay`` triangulates input vertices, and ``constrained`` preserves
     polygon boundaries.
-min_angle, max_area : float, optional
-    Constrained-mesh quality targets; each enables refinement and is valid only
-    with ``method='constrained'``.
-    Without refinement, triangle corners preserve input ordinates. Refinement
-    inserts Steiner vertices and therefore returns XY.
+min_angle : float, optional
+    Minimum triangle angle in degrees; valid only with
+    ``method='constrained'``.
+
+max_area : float, optional
+    Maximum triangle area in square coordinate units; valid only with
+    ``method='constrained'``. Setting either option enables refinement;
+    without either option, triangle corners preserve input ordinates.
+    Refinement inserts Steiner vertices and therefore returns XY.
 
 Returns
 -------
@@ -1286,9 +1291,14 @@ Parameters
 ----------
 method : {'earcut', 'delaunay', 'constrained'}
     Required triangulation algorithm.
-min_angle, max_area : float or sequence of float, optional
-    Constrained-mesh options, valid only with ``method='constrained'``;
-    refinement can return XY when it inserts Steiner vertices.
+min_angle : float or sequence of float, optional
+    Minimum triangle angle in degrees; valid only with
+    ``method='constrained'``.
+
+max_area : float or sequence of float, optional
+    Maximum triangle area in square coordinate units; valid only with
+    ``method='constrained'``. Setting either option enables refinement;
+    inserted Steiner vertices can return XY.
 
 Returns
 -------

@@ -25,6 +25,7 @@ from typing import (
     Literal,
     Never,
     Self,
+    SupportsIndex,
     TypeAlias,
     final,
     overload,
@@ -155,6 +156,7 @@ __version__: Final[str]
 
 __all__ = [
     'CRS',
+    'AccuracyWarning',
     'CRSError',
     'CRSMismatchError',
     'CellArray',
@@ -280,6 +282,7 @@ __all__ = [
     'intersects_xy',
     'join',
     'length',
+    'length_3d',
     'line_strings',
     'multi_line_strings',
     'multi_points',
@@ -365,6 +368,9 @@ _ArrowInput: TypeAlias = (
     | PyArrowRecordBatch
 )
 
+class AccuracyWarning(UserWarning):
+    """A CRS transform used a lower-accuracy fallback because a required grid is unavailable."""
+
 class GeometryError(ValueError):
     """Base class for every error gometry raises about your data or parameters."""
 
@@ -372,6 +378,14 @@ class GeometryError(ValueError):
     """The offending parameter's name, for value-lane errors (else ``None``)."""
     value: float | None
     """The offending numeric value, for value-lane errors (else ``None``)."""
+    operation: str | None
+    """The operation associated with a bounded-output error (else ``None``)."""
+    parameter: str | None
+    """The parameter that controls bounded output (else ``None``)."""
+    produced: int | None
+    """The number of produced items for a bounded-output error (else ``None``)."""
+    limit: int | None
+    """The configured output limit, for bounded-output errors (else ``None``)."""
 
 class InvalidGeometryError(GeometryError):
     """A geometry violates a structural or numeric rule."""
@@ -381,6 +395,11 @@ class InvalidGeometryError(GeometryError):
 
 class GeometryTypeError(GeometryError, TypeError):
     """An operation received a geometry of the wrong kind."""
+
+    expected: str | None
+    """The expected geometry kind, for wrong-kind errors (else ``None``)."""
+    got: str | None
+    """The received geometry kind when known (else ``None``)."""
 
 class CRSError(GeometryError):
     """A CRS could not be created, identified, exported, or used."""
@@ -403,16 +422,42 @@ class CRSMismatchError(CRSError):
 class TransformError(CRSError):
     """A coordinate transform could not be built or failed to run."""
 
-class ParseError(GeometryError):
-    """Serialized input (WKT, WKB, GeoJSON, GeoArrow) is malformed."""
+    source: str | None
+    """The source CRS of the failed transform (else ``None``)."""
+    target: str | None
+    """The target CRS of the failed transform (else ``None``)."""
 
-    format: Literal['wkt', 'wkb', 'geojson', 'geoarrow', 'geoparquet', 'h3', 's2', 'geohash', 'tile', 'quadkey', 'polyline', 'pluscode', 'osm_shortlink'] | None
+class ParseError(GeometryError):
+    """Serialized input (WKT, WKB, GeoJSON, GeoArrow, or pickle) is malformed."""
+
+    format: (
+        Literal[
+            'wkt',
+            'wkb',
+            'geojson',
+            'geoarrow',
+            'geoparquet',
+            'h3',
+            's2',
+            'geohash',
+            'tile',
+            'quadkey',
+            'polyline',
+            'pluscode',
+            'osm_shortlink',
+            'pickle',
+        ]
+        | None
+    )
     """Which codec rejected the input."""
+    position: int | None
+    """WKT UTF-8 input length; WKB true detection byte offset; otherwise None when unavailable."""
 
 @final
 class CoordinatesIterator:
     """Lazy iterator over a ``Coordinates`` view, yielding one coordinate tuple per
-    step.
+    step. Holds a cursor into the view (O(1) construct, O(1) next on storage-
+    shaped owners) rather than materializing all points up front.
     """
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
@@ -429,6 +474,10 @@ class CoordinatesIterator:
 class Coordinates(Sequence[tuple[float | None, ...]]):
     """Flat, indexable coordinate sequence behind `geom.coords`:
     coordinates flattened depth-first across parts/rings, with per-axis columns.
+
+    Random access (`coords[i]`) is storage-shaped O(1)/O(log runs) on packed
+    columns and single-run shapes; iteration is a view-owning cursor (O(1)
+    construct, O(1) next) rather than an eager materialization of every vertex.
 
     For `GeometryArray.coords`, missing rows contribute no vertices. The view is
     a flattened vertex stream, not a row-aligned container; use
@@ -467,20 +516,20 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         dtype: type[np.floating[Any] | float] | np.dtype[np.floating[Any]],
         copy: bool | None = None,
     ) -> npt.NDArray[np.floating[Any]]:
-        """NumPy array protocol: export as a ``(N, dims)`` ``float64`` ndarray.
+        """NumPy array protocol: export as a ``(N, dims)`` floating ndarray.
 
         Parameters
         ----------
-        dtype : float, optional
-            ``None`` or ``numpy.float64`` (the native layout); other floating
-            dtypes are cast with ``astype``.
+        dtype : float dtype, optional
+            ``None`` or any floating dtype (native export is ``float64``;
+            other floating dtypes are cast with ``astype``).
         copy : bool, optional
             When ``False``, raises — coordinate export always copies.
 
         Returns
         -------
         numpy.ndarray
-            The ``(N, dims)`` coordinate matrix.
+            The ``(N, dims)`` coordinate matrix (``float64`` by default).
 
         Raises
         ------
@@ -498,10 +547,11 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         """
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-        coordinate heap retained by this view. Array-backed coordinate views
-        include logical coordinate payload and structural row metadata; shared
-        backing buffers are reported like NumPy views, not as the full parent
-        allocation.
+        coordinate heap retained by this view (ordinate payload and structural
+        row metadata for array-backed views). Shared backing buffers are
+        reported like NumPy views, not as the full parent allocation. Parent
+        geometry/array sidecars (prepared caches, coverage membership, …) are
+        not owned by the view and are not counted here.
         """
     def __reduce__(self) -> Never: ...
     def __copy__(self) -> Self: ...
@@ -509,21 +559,23 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     @property
     def nbytes(self) -> int:
         """Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
-        the stored ``f64`` ordinate values behind this view. Slices and
-        array-backed views report only their logical rows; temporary NumPy
-        matrices produced by ``numpy.asarray(coords)`` are not included.
+        the stored ``f64`` ordinate values behind this view only. Slices and
+        array-backed views report only their logical rows. Temporary NumPy
+        matrices from ``numpy.asarray(coords)`` and any lazy prepared-geometry
+        or membership sidecars on the parent geometry/array are not included —
+        those live on the owner, not on this view.
 
         Returns
         -------
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> tuple[float | None, ...]: ...
+    def __getitem__(self, index: SupportsIndex, /) -> tuple[float | None, ...]: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[tuple[float | None, ...]]: ...
     @overload
     def __getitem__(
-        self, index: int | slice, /
+        self, index: SupportsIndex | slice, /
     ) -> tuple[float | None, ...] | list[tuple[float | None, ...]]:
         """Select vertices by integer or slice.
 
@@ -581,7 +633,8 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
             If no coordinate in the window equals ``value``.
         """
     def count(self, value: object) -> int:
-        """Number of coordinates equal to ``value``.
+        """Number of coordinates equal to ``value`` under the visible layout
+        (same representation as iteration / ``select``).
 
         Parameters
         ----------
@@ -650,6 +703,11 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         arrays → one entry per present geometry) — the ``__geo_interface__``-style
         nesting, as Python lists. Missing array rows are skipped. The flat
         columns do not preserve this shape.
+
+        Returns
+        -------
+        list
+            Nested Python lists and coordinate tuples matching the topology.
 
         Examples
         --------
@@ -766,8 +824,27 @@ class Geometry:
         ISO WKB. Display only — the geometry is unchanged.
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus the Rust-side coordinate
-        payload (shared backing storage is attributed to every holder).
+        """Retained native cost of this geometry for ``sys.getsizeof``.
+
+        Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
+        (including the ``Shape`` payload — coordinate columns **and**
+        container allocations such as multipart ``Vec``s, polygon hole
+        ``Arc``s, and nested collection members — plus any
+        *already-initialized* prepared caches), and the Arc-owned
+        frame-cache sidecar with any products already built on it.
+        Uninitialized lazy caches are not counted and this method never
+        builds them — so two cold ``__sizeof__`` reads report the same
+        size, and warming (``bounds``, ``prepare``, distance, …) can only
+        increase it. Container geometries therefore scale with part/member
+        count even when members carry no ordinate payload (e.g. empty
+        points in a ``GeometryCollection``).
+
+        ``nbytes`` remains the coordinate-only payload (numpy convention);
+        use ``__sizeof__`` when measuring object retention.
+
+        Returns
+        -------
+        int
         """
     @property
     def nbytes(self) -> int:
@@ -1123,12 +1200,13 @@ class Geometry:
         """
     @property
     def coords(self) -> Coordinates:
-        """Lazy coordinate view over this geometry's vertices.
+        """Coordinate view over this geometry's vertices (storage-shaped index /
+        cursor iteration — not an eagerly materialized vertex list).
 
         Returns
         -------
         Coordinates
-            A lazy view of vertex coordinates (X/Y and active Z/M).
+            Flat, indexable view of vertex coordinates (X/Y and active Z/M).
         """
     @property
     def num_coordinates(self) -> int:
@@ -1359,19 +1437,23 @@ class Geometry:
             dynamic (time-dependent). A static target clears it.
 
         authority : str, optional
-            Restrict candidate transforms to this authority (e.g. ``'EPSG'``).
+            Restrict candidate coordinate operations to this authority
+            (e.g. ``'EPSG'``).
 
         accuracy : float, optional
-            Maximum acceptable transformation accuracy, in meters.
+            Maximum acceptable operation accuracy, in meters.
 
         allow_ballpark : bool, optional
-            Allow low-accuracy ballpark transforms when no precise one exists.
+            Allow low-accuracy ballpark operations when no precise one exists.
 
         only_best : bool, optional
-            Use only the single best transform; no fallback.
+            Use only the single best operation; no fallback.
 
         force_over : bool, optional
-            Keep coordinates on the source side of the antimeridian (no wrap).
+            Keep coordinates on the source side of the antimeridian instead of
+            wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+            ``only_best``, this also collapses operation selection to a single
+            candidate, so enumerating surfaces return exactly one operation.
 
         Returns
         -------
@@ -1614,9 +1696,7 @@ class Geometry:
         'LINESTRING (0 0, 0 2)'
         """
 
-    def to_geojson(
-        self, *, include_z: bool = True, drop_epoch: bool = False
-    ) -> str:
+    def to_geojson(self, *, include_z: bool = True, drop_epoch: bool = False) -> str:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
         ``to_crs(4326)`` first. CRS-free input is serialized as-is.
@@ -1705,11 +1785,15 @@ class Geometry:
             Required algorithm choice: ``earcut`` triangulates polygon interiors,
             ``delaunay`` triangulates input vertices, and ``constrained`` preserves
             polygon boundaries.
-        min_angle, max_area : float, optional
-            Constrained-mesh quality targets; each enables refinement and is valid only
-            with ``method='constrained'``.
-            Without refinement, triangle corners preserve input ordinates. Refinement
-            inserts Steiner vertices and therefore returns XY.
+        min_angle : float, optional
+            Minimum triangle angle in degrees; valid only with
+            ``method='constrained'``.
+
+        max_area : float, optional
+            Maximum triangle area in square coordinate units; valid only with
+            ``method='constrained'``. Setting either option enables refinement;
+            without either option, triangle corners preserve input ordinates.
+            Refinement inserts Steiner vertices and therefore returns XY.
 
         Returns
         -------
@@ -1813,7 +1897,7 @@ class Geometry:
         curve: SpatialCurve = 'hilbert',
         level: int = 16,
         bounds: Iterable[float] | None = None,
-    ) -> int:
+    ) -> int | None:
         """Space-filling-curve key of this geometry's bbox center.
         Discretizes the center into a ``2^level x 2^level`` grid over ``bounds``
         and returns its distance along the selected curve.
@@ -1833,15 +1917,15 @@ class Geometry:
 
         Returns
         -------
-        int
-            Spatial curve key.
+        int or None
+            Spatial curve key, or ``None`` for an empty geometry — the same
+            contract as ``bounds`` and the other extent accessors.
 
         Raises
         ------
-        InvalidGeometryError
-            If the geometry is empty.
         GeometryError
-            If ``level`` or ``bounds`` is invalid.
+            If ``level`` or ``bounds`` is invalid (a bad parameter is an error
+            whatever the geometry).
 
         Examples
         --------
@@ -2799,14 +2883,16 @@ class Geometry:
         (0.0, 0.0, 2.0, 2.0)
         """
 
-    def extremes(self) -> Extremes:
+    def extremes(self) -> Extremes | None:
         """Return the west, south, east, and north extreme vertices of the
         geometry (numeric X/Y; ties keep the first vertex in storage order).
 
         Returns
         -------
-        Extremes
-            The ``(west, south, east, north)`` named tuple.
+        Extremes or None
+            The ``(west, south, east, north)`` named tuple, or ``None`` for an empty
+            geometry — the same contract as ``bounds`` and the other extent
+            accessors.
 
 
         Raises
@@ -2818,16 +2904,32 @@ class Geometry:
         --------
         >>> import gometry as gm
         >>> extremes = gm.box(0, 0, 2, 4).extremes()
+        >>> assert extremes is not None  # None only for an empty geometry
         >>> (extremes.west.to_wkt(), extremes.north.to_wkt())
         ('POINT (0 0)', 'POINT (2 4)')
         """
 
     @overload
-    def segmentize(self, max_length: float, /, *, fraction: None = None) -> Self: ...
+    def segmentize(
+        self,
+        max_length: float,
+        /,
+        *,
+        fraction: None = None,
+        unit: DistanceUnit | None = None,
+    ) -> Self: ...
     @overload
-    def segmentize(self, max_length: None = None, /, *, fraction: float) -> Self:
+    def segmentize(
+        self, max_length: None = None, /, *, fraction: float, unit: None = None
+    ) -> Self:
         """Densify linework by inserting vertices so no segment exceeds
-        ``max_length`` (or a fraction of its length) (planar).
+        ``max_length`` (or a fraction of its length).
+
+        ``max_length`` is a real-world distance measured for the CRS, exactly like
+        ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
+        projected CRS uses its native linear units, and a CRS-free geometry uses
+        coordinate units. Every original vertex survives unchanged — this operation
+        only inserts.
 
         Parameters
         ----------
@@ -2839,6 +2941,12 @@ class Geometry:
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; use when
             the subdivision is naturally relative rather than expressed in units.
 
+        unit : {'planar', 'meters'} or None, default None
+            ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
+            (degrees-as-Cartesian on a geographic CRS — only for deliberate
+            coordinate-space math); ``'meters'`` forces the CRS metric and raises
+            without a CRS. Cannot be combined with ``fraction``, which is already
+            relative to each segment.
 
         Returns
         -------
@@ -2848,15 +2956,23 @@ class Geometry:
 
         Raises
         ------
+        CRSError
+            If ``unit='meters'`` is requested and the CRS lacks linear axis units.
         GeometryError
             If neither or both constraints are supplied, ``max_length`` is not a
-            positive finite number, or ``fraction`` is outside ``(0, 1]``.
+            positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
+            combined with ``fraction``, or ``unit='meters'`` is requested for a
+            CRS-free geometry.
 
         Examples
         --------
         >>> import gometry as gm
         >>> gm.LineString([(0, 0), (4, 0)]).segmentize(2).to_wkt()
         'LINESTRING (0 0, 2 0, 4 0)'
+        >>> # On a geographic CRS the bound is meters along the ellipsoid.
+        >>> line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+        >>> len(list(line.segmentize(20_000).coords))
+        7
         """
 
     def voronoi_polygons(
@@ -3037,7 +3153,9 @@ class Geometry:
         like centroid. Deterministic: the same input and ``seed`` always produce
         the same points (an explicit seed is required — no hidden global RNG). Array
         rows draw distinct deterministic streams derived from ``seed`` and the row
-        index. Sampled points are invented interior points, so they cannot carry the
+        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
+        and ``arr[0].sample_points(n, seed=s)`` agree. An empty row yields an empty
+        group rather than failing the batch; an empty SCALAR raises. Sampled points are invented interior points, so they cannot carry the
         source geometry's Z/M and are returned in XY.
 
         Parameters
@@ -3471,12 +3589,14 @@ class Geometry:
         Parameters
         ----------
         output_dimension : int, optional
-            Force the written ordinate count (2, 3, or 4); defaults to the
-            geometry's own dimensionality.
+            Cap the written ordinate count (2, 3, or 4) to at most the
+            geometry's own dimensionality; defaults to writing all present
+            ordinates. Cannot invent Z/M that the geometry does not carry.
 
         include_srid : bool, default False
-            Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix (requires an
-            EPSG-authority CRS).
+            Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
+            aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
+            decoding either alias yields that EPSG identity.
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
@@ -3524,7 +3644,9 @@ class Geometry:
         Parameters
         ----------
         include_srid : bool, default False
-            Embed the EPSG code as an EWKB SRID (requires an EPSG-authority CRS).
+            Embed the EPSG code as an EWKB SRID. The PostGIS wire aliases
+            ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979; decoding
+            either alias yields that EPSG identity.
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
@@ -3705,7 +3827,57 @@ class Point(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
+
+        Pass ``z`` and/or ``m`` for higher-dimensional points; to build many
+        points at once use ``points``.
+
+        Parameters
+        ----------
+        x, y : float, optional
+            Finite coordinates (lon, lat for a geographic ``crs``). Omit both for
+            an empty point.
+
+        z : float, optional
+            Z (elevation) ordinate, producing an ``XYZ`` or ``XYZM`` point.
+
+        m : float, optional
+            M (measure) ordinate, producing an ``XYM`` or ``XYZM`` point.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        Point
+            A point geometry — empty when ``x``/``y`` are omitted.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If any coordinate is not finite.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.Point(1, 2).to_wkt()
+        'POINT (1 2)'
+        >>> gm.Point(1, 2, z=3).to_wkt()
+        'POINT Z (1 2 3)'
+        >>> gm.Point(1, 2, m=9).to_wkt()
+        'POINT M (1 2 9)'
+        >>> gm.Point(13.4, 52.5, crs=4326).crs
+        CRS("EPSG:4326")
+        >>> gm.Point().to_wkt()
+        'POINT EMPTY'
+        """
 
     @property
     def x(self) -> float:
@@ -3732,7 +3904,9 @@ class Point(Geometry):
         Raises
         ------
         GeometryTypeError
-            If the point is empty or has no Z ordinate.
+            If the point has no Z ordinate.
+        AttributeError
+            If the point is empty (``POINT EMPTY``).
         """
     @property
     def m(self) -> float:
@@ -3741,7 +3915,9 @@ class Point(Geometry):
         Raises
         ------
         GeometryTypeError
-            If the point is empty or has no M ordinate.
+            If the point has no M ordinate.
+        AttributeError
+            If the point is empty (``POINT EMPTY``).
         """
     def __replace__(
         self,
@@ -3837,7 +4013,49 @@ class MultiPoint(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``MultiPoint`` geometry from a coordinate sequence.
+
+        Parameters
+        ----------
+        coordinates : sequence, optional
+            Member coordinate tuples ``(x, y[, z[, m]])``. Mutually exclusive with
+            the ``x``/``y`` column form. Omit all inputs for an empty multipoint.
+
+        x, y : sequence of float, optional
+            Per-point X and Y ordinates as parallel columns, as an alternative to
+            ``coordinates``. Both are required together.
+
+        z, m : sequence of float, optional
+            Per-point Z and M ordinates, as an alternative to inline tuples.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        MultiPoint
+            A multipoint geometry — empty when no coordinates are given.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If any coordinate is non-finite or has mixed dimensionality.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.MultiPoint([(0, 0), (1, 1)]).to_wkt()
+        'MULTIPOINT ((0 0), (1 1))'
+        >>> gm.MultiPoint().to_wkt()
+        'MULTIPOINT EMPTY'
+        """
     __match_args__: Final = ('parts',)
 
     @property
@@ -3851,11 +4069,11 @@ class MultiPoint(Geometry):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> Point: ...
+    def __getitem__(self, index: SupportsIndex, /) -> Point: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[Point]: ...
     @overload
-    def __getitem__(self, index: int | slice, /) -> Point | list[Point]:
+    def __getitem__(self, index: SupportsIndex | slice, /) -> Point | list[Point]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -3929,7 +4147,50 @@ class LineString(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a LineString from an ordered coordinate sequence.
+
+        Parameters
+        ----------
+        coordinates : sequence, optional
+            Ordered ``(x, y[, z[, m]])`` tuples, or an ``(N, 2..4)`` array.
+            Mutually exclusive with the ``x``/``y`` column form. Omit all inputs
+            for an empty linestring.
+
+        x, y : sequence of float, optional
+            Per-vertex X and Y ordinates as parallel columns, as an alternative to
+            ``coordinates``. Both are required together.
+
+        z, m : sequence of float, optional
+            Per-vertex Z and M ordinates, as an alternative to inline tuples.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        LineString
+            A linestring geometry — empty when no coordinates are given.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If coordinates are non-finite, ragged, or fewer than two vertices.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.LineString([(0, 0), (1, 1)]).to_wkt()
+        'LINESTRING (0 0, 1 1)'
+        >>> gm.LineString().to_wkt()
+        'LINESTRING EMPTY'
+        """
 
     __match_args__: Final = ('coords',)
 
@@ -3953,7 +4214,42 @@ class MultiLineString(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``MultiLineString`` from a sequence of line coordinate sequences.
+
+        Parameters
+        ----------
+        lines : sequence, optional
+            Each member is an ordered coordinate sequence (a line) or an
+            already-built ``LineString``. Omit for an empty multilinestring.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        MultiLineString
+            A multilinestring geometry — empty when ``lines`` is omitted.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If a member line has fewer than two vertices or non-finite coordinates.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.MultiLineString([[(0, 0), (1, 1)], [(2, 2), (3, 3)]]).to_wkt()
+        'MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))'
+        >>> gm.MultiLineString().to_wkt()
+        'MULTILINESTRING EMPTY'
+        """
     __match_args__: Final = ('parts',)
 
     @property
@@ -3967,11 +4263,11 @@ class MultiLineString(Geometry):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> LineString: ...
+    def __getitem__(self, index: SupportsIndex, /) -> LineString: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[LineString]: ...
     @overload
-    def __getitem__(self, index: int | slice, /) -> LineString | list[LineString]:
+    def __getitem__(self, index: SupportsIndex | slice, /) -> LineString | list[LineString]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -4050,7 +4346,52 @@ class Polygon(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``Polygon`` from an exterior ring and optional holes.
+
+        Parameters
+        ----------
+        shell : sequence, optional
+            Exterior ring coordinates; closed automatically (needs ≥3 corners).
+            Mutually exclusive with the ``x``/``y`` column form.
+
+        holes : sequence of sequence, optional
+            Interior ring (hole) coordinate sequences, each closed automatically.
+
+        x, y : sequence of float, optional
+            Per-vertex X and Y ordinates for the exterior ring, as an alternative
+            to ``shell``. Both are required together.
+
+        z, m : sequence of float, optional
+            Per-vertex Z and M ordinates for the exterior ring.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        Polygon
+            A polygon geometry.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If a ring has fewer than three corners or any coordinate is non-finite.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]).to_wkt()
+        'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'
+        >>> gm.Polygon().to_wkt()
+        'POLYGON EMPTY'
+        """
     __match_args__: Final = ('exterior', 'interiors')
 
     @property
@@ -4080,7 +4421,44 @@ class MultiPolygon(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``MultiPolygon`` from a sequence of polygons.
+
+        Parameters
+        ----------
+        polygons : sequence, optional
+            Each member is ``[shell]`` or ``[shell, *holes]`` of coordinate rings,
+            or an already-built ``Polygon``. Omit for an empty multipolygon.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        MultiPolygon
+            A multipolygon geometry — empty when ``polygons`` is omitted.
+
+        Raises
+        ------
+        InvalidGeometryError
+            If any ring has fewer than three corners or non-finite coordinates.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> left = [[(0, 0), (1, 0), (1, 1)]]
+        >>> right = [[(2, 2), (3, 2), (3, 3)]]
+        >>> len(gm.MultiPolygon([left, right]).parts)
+        2
+        >>> gm.MultiPolygon().to_wkt()
+        'MULTIPOLYGON EMPTY'
+        """
     __match_args__: Final = ('parts',)
 
     @property
@@ -4094,11 +4472,11 @@ class MultiPolygon(Geometry):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> Polygon: ...
+    def __getitem__(self, index: SupportsIndex, /) -> Polygon: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[Polygon]: ...
     @overload
-    def __getitem__(self, index: int | slice, /) -> Polygon | list[Polygon]:
+    def __getitem__(self, index: SupportsIndex | slice, /) -> Polygon | list[Polygon]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -4143,7 +4521,44 @@ class GeometryCollection(Geometry):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Create a ``GeometryCollection`` from a sequence of geometries.
+
+        Parameters
+        ----------
+        geometries : sequence of Geometry, optional
+            Member geometries; may be of mixed types. Omit for an empty collection.
+
+        crs : str or int, optional
+            CRS as an EPSG code or authority/WKT. Declares; no transform.
+
+        epoch : float, optional
+            Coordinate epoch (decimal year) for time-dependent frames.
+
+        Returns
+        -------
+        GeometryCollection
+            A geometry collection — empty when ``geometries`` is omitted.
+
+        Raises
+        ------
+        TypeError
+            If any member is not a Geometry.
+        CRSError
+            If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+        CRSMismatchError
+            If members carry conflicting CRS/epoch metadata.
+        GeometryError
+            If ``epoch`` is not a finite decimal year.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gc = gm.GeometryCollection([gm.Point(0, 0), gm.Point(1, 1)])
+        >>> gc.geometry_type
+        'GeometryCollection'
+        >>> gm.GeometryCollection().to_wkt()
+        'GEOMETRYCOLLECTION EMPTY'
+        """
     __match_args__: Final = ('parts',)
 
     @property
@@ -4157,11 +4572,11 @@ class GeometryCollection(Geometry):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> Geometry: ...
+    def __getitem__(self, index: SupportsIndex, /) -> Geometry: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[Geometry]: ...
     @overload
-    def __getitem__(self, index: int | slice, /) -> Geometry | list[Geometry]:
+    def __getitem__(self, index: SupportsIndex | slice, /) -> Geometry | list[Geometry]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -4236,11 +4651,11 @@ class GeometryParts(Sequence[_GeometryT_co], Generic[_GeometryT_co]):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> _GeometryT_co: ...
+    def __getitem__(self, index: SupportsIndex, /) -> _GeometryT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> list[_GeometryT_co]: ...
     @overload
-    def __getitem__(self, index: int | slice, /) -> _GeometryT_co | list[_GeometryT_co]:
+    def __getitem__(self, index: SupportsIndex | slice, /) -> _GeometryT_co | list[_GeometryT_co]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -4425,7 +4840,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """
     def __sizeof__(self) -> int:
         """`sys.getsizeof` support: the wrapper plus this array's logical
-        Rust-side heap (coordinate payload, CSR offsets, and row maps).
+        Rust-side heap — coordinate payload, CSR offsets, row maps, missing
+        mask, and any already-materialized prepared-geometry / frame sidecars.
+        Lazy cache slots that have not been populated do not inflate the total.
         Shared backing buffers are accounted like NumPy views: the logical view
         is reported, not the whole shared parent allocation.
         """
@@ -4475,9 +4892,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     def nbytes(self) -> int:
         """Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
         the stored ``f64`` ordinate columns for this array's selected rows.
-        Slices and fancy-indexed arrays report only their logical rows; object
-        headers, CSR offset columns, row maps, caches, and CRS metadata are
-        excluded.
+        Slices and fancy-indexed arrays report only their logical rows. Object
+        headers, CSR offset columns, row maps, prepared-geometry / frame
+        sidecars, gather memos, and CRS metadata are excluded (``nbytes`` is
+        payload-only, matching NumPy).
 
         Returns
         -------
@@ -4503,6 +4921,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         str
             The SVG grid preview markup.
         """
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[None],
+        *,
+        crs: CrsInput | None = None,
+        epoch: float | None = None,
+    ) -> GeometryArray[Geometry]: ...
     @overload
     def __new__(
         cls,
@@ -4962,7 +5388,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         | _IndexLane
         | npt.NDArray[np.int64],
         /,
-    ) -> _GeometryT_co | None | GeometryArray[_GeometryT_co]:
+    ) -> _GeometryT_co | GeometryArray[_GeometryT_co] | None:
         """Select rows by integer, slice, or fancy index.
 
         An ``int`` returns one typed geometry (or raises ``IndexError``).
@@ -5036,7 +5462,6 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         self,
         *,
         name: str = 'geometry',
-        include_srid: bool = True,
         drop_epoch: bool = False,
         drop_crs: bool = False,
     ) -> PolarsSeries:
@@ -5046,13 +5471,12 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         ----------
         name : str, default "geometry"
             Output Series name.
-        include_srid : bool, default True
-            Embed the CRS as an EWKB SRID when possible.
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which WKB cannot encode.
         drop_crs : bool, default False
             Permit losing a CRS that EWKB cannot embed (no EPSG authority
-            code); restore it via ``from_polars(..., crs=...)``.
+            code); restore it via ``from_polars(..., crs=...)``. EPSG SRIDs
+            are always embedded when available.
 
         Returns
         -------
@@ -5089,8 +5513,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         self,
         path: str | PathLike[str],
         *,
-        attributes: Any | None = None,
-        crs: CrsInput | None = None,
+        attributes: PyArrowTable | Mapping[str, Any] | None = None,
         encoding: Literal['wkb', 'native'] = 'wkb',
         **kwargs: Any,
     ) -> None:
@@ -5103,8 +5526,6 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         attributes : pyarrow.Table or mapping, optional
             Per-row attribute columns written beside the geometry column
             (lengths must match).
-        crs : str or int, optional
-            CRS to record when the array itself carries none.
         encoding : str, default "wkb"
             Geometry encoding: ``'wkb'`` (portable default) or ``'native'``
             (GeoArrow separated coordinates for homogeneous arrays).
@@ -5117,8 +5538,6 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Raises
         ------
-        CRSError
-            If crs is not a valid CRS identifier.
         GeometryError
             If encoding is unknown, or attributes clash with the geometry
             column or mismatch the row count.
@@ -5268,19 +5687,23 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             dynamic (time-dependent). A static target clears it.
 
         authority : str, optional
-            Restrict candidate transforms to this authority (e.g. ``'EPSG'``).
+            Restrict candidate coordinate operations to this authority
+            (e.g. ``'EPSG'``).
 
         accuracy : float, optional
-            Maximum acceptable transformation accuracy, in meters.
+            Maximum acceptable operation accuracy, in meters.
 
         allow_ballpark : bool, optional
-            Allow low-accuracy ballpark transforms when no precise one exists.
+            Allow low-accuracy ballpark operations when no precise one exists.
 
         only_best : bool, optional
-            Use only the single best transform; no fallback.
+            Use only the single best operation; no fallback.
 
         force_over : bool, optional
-            Keep coordinates on the source side of the antimeridian (no wrap).
+            Keep coordinates on the source side of the antimeridian instead of
+            wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+            ``only_best``, this also collapses operation selection to a single
+            candidate, so enumerating surfaces return exactly one operation.
 
         Returns
         -------
@@ -5624,6 +6047,27 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         >>> arr.fill_missing(gm.Point(9, 9)).to_wkt()[1]
         'POINT (9 9)'
         """
+    def _replace_at(
+        self,
+        positions: Iterable[int],
+        values: Iterable[_GeometryOtherT | None],
+    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]:
+        """Private batch scatter used by the pandas adapter: replace selected
+        positions in one native call (never rebuilds the column through Python
+        per row). ``positions`` and ``values`` are equal-length sequences;
+        each value is a ``Geometry`` or missing (``None``).
+
+        Parameters
+        ----------
+        positions : sequence of int
+            Non-negative logical row indices (already bounds-normalized).
+        values : sequence of Geometry or None
+            Replacement values aligned with ``positions``.
+
+        Returns
+        -------
+        GeometryArray
+        """
     def _with_missing(self, mask: Sequence[bool] | npt.NDArray[np.bool_]) -> Self:
         """Attach a missing mask to this array's rows (internal; the pandas
         bridge builds masked arrays without a rebuild). Length-checked;
@@ -5879,9 +6323,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         ----------
         method : {'earcut', 'delaunay', 'constrained'}
             Required triangulation algorithm.
-        min_angle, max_area : float or sequence of float, optional
-            Constrained-mesh options, valid only with ``method='constrained'``;
-            refinement can return XY when it inserts Steiner vertices.
+        min_angle : float or sequence of float, optional
+            Minimum triangle angle in degrees; valid only with
+            ``method='constrained'``.
+
+        max_area : float or sequence of float, optional
+            Maximum triangle area in square coordinate units; valid only with
+            ``method='constrained'``. Setting either option enables refinement;
+            inserted Steiner vertices can return XY.
 
         Returns
         -------
@@ -7121,18 +7570,32 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         --------
         >>> import gometry as gm
         >>> extremes = gm.box(0, 0, 2, 4).extremes()
+        >>> assert extremes is not None  # None only for an empty geometry
         >>> (extremes.west.to_wkt(), extremes.north.to_wkt())
         ('POINT (0 0)', 'POINT (2 4)')
         """
 
     @overload
     def segmentize(
-        self, max_length: FloatInput, /, *, fraction: None = None
+        self,
+        max_length: FloatInput,
+        /,
+        *,
+        fraction: None = None,
+        unit: DistanceUnit | None = None,
     ) -> Self: ...
     @overload
-    def segmentize(self, max_length: None = None, /, *, fraction: FloatInput) -> Self:
+    def segmentize(
+        self, max_length: None = None, /, *, fraction: FloatInput, unit: None = None
+    ) -> Self:
         """Densify linework by inserting vertices so no segment exceeds
-        ``max_length`` (or a fraction of its length) (planar).
+        ``max_length`` (or a fraction of its length).
+
+        ``max_length`` is a real-world distance measured for the CRS, exactly like
+        ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
+        projected CRS uses its native linear units, and a CRS-free geometry uses
+        coordinate units. Every original vertex survives unchanged — this operation
+        only inserts.
 
         Parameters
         ----------
@@ -7145,6 +7608,12 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; a scalar
             applies to every geometry, or pass one value per geometry.
 
+        unit : {'planar', 'meters'} or None, default None
+            ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
+            (degrees-as-Cartesian on a geographic CRS — only for deliberate
+            coordinate-space math); ``'meters'`` forces the CRS metric and raises
+            without a CRS. Cannot be combined with ``fraction``, which is already
+            relative to each segment.
 
         Returns
         -------
@@ -7154,15 +7623,23 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Raises
         ------
+        CRSError
+            If ``unit='meters'`` is requested and the CRS lacks linear axis units.
         GeometryError
             If neither or both constraints are supplied, ``max_length`` is not a
-            positive finite number, or ``fraction`` is outside ``(0, 1]``.
+            positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
+            combined with ``fraction``, or ``unit='meters'`` is requested for a
+            CRS-free geometry.
 
         Examples
         --------
         >>> import gometry as gm
         >>> gm.LineString([(0, 0), (4, 0)]).segmentize(2).to_wkt()
         'LINESTRING (0 0, 2 0, 4 0)'
+        >>> # On a geographic CRS the bound is meters along the ellipsoid.
+        >>> line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+        >>> len(list(line.segmentize(20_000).coords))
+        7
         """
 
     def voronoi_polygons(
@@ -7346,7 +7823,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         like centroid. Deterministic: the same input and ``seed`` always produce
         the same points (an explicit seed is required — no hidden global RNG). Array
         rows draw distinct deterministic streams derived from ``seed`` and the row
-        index. Sampled points are invented interior points, so they cannot carry the
+        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
+        and ``arr[0].sample_points(n, seed=s)`` agree. An empty row yields an empty
+        group rather than failing the batch; an empty SCALAR raises. Sampled points are invented interior points, so they cannot carry the
         source geometry's Z/M and are returned in XY.
 
         Parameters
@@ -7716,7 +8195,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POLYGON ((0 0, 1 0, 1 1, 0 0))'
         """
 
-    def convex_hull(self) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]:
+    def convex_hull(
+        self,
+    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
         ``split_antimeridian`` first. Hull vertices are input vertices, so Z/M
@@ -7827,12 +8308,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Parameters
         ----------
         output_dimension : int, optional
-            Force the written ordinate count (2, 3, or 4); defaults to the
-            geometry's own dimensionality.
+            Cap the written ordinate count (2, 3, or 4) to at most the
+            geometry's own dimensionality; defaults to writing all present
+            ordinates. Cannot invent Z/M that the geometry does not carry.
 
         include_srid : bool, default False
-            Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix (requires an
-            EPSG-authority CRS).
+            Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
+            aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
+            decoding either alias yields that EPSG identity.
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
@@ -7880,7 +8363,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Parameters
         ----------
         include_srid : bool, default False
-            Embed the EPSG code as an EWKB SRID (requires an EPSG-authority CRS).
+            Embed the EPSG code as an EWKB SRID. The PostGIS wire aliases
+            ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979; decoding
+            either alias yields that EPSG identity.
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
@@ -8044,8 +8529,9 @@ class PreparedGeometry:
         """
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the wrapper plus the source geometry's
-        retained coordinate payload and any prepared caches already built on
-        that shared geometry handle. Calling this does not build new caches.
+        retained native cost (``ShapeData`` Arc, shape payload, and any
+        prepared/frame caches already built on that shared handle). Calling
+        this does not build new caches.
         """
     def __copy__(self) -> Self:
         """``copy.copy`` returns the object itself — the prepared handle is an
@@ -8624,7 +9110,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     __array_ufunc__: ClassVar[None]
     __hash__: ClassVar[None]  # type: ignore[assignment]
     def __new__(cls, _nonconstructible: Never, /) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Not constructed directly — the error points at the producers."""
     def __class_getitem__(cls, key: Any) -> types.GenericAlias:
         """See PEP 585"""
     def __sizeof__(self) -> int:
@@ -8724,12 +9210,12 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         int
         """
     @overload
-    def __getitem__(self, index: int, /) -> _GroupValuesT_co: ...
+    def __getitem__(self, index: SupportsIndex, /) -> _GroupValuesT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> Groups[_GroupValuesT_co]: ...
     @overload
     def __getitem__(
-        self, index: int | slice, /
+        self, index: SupportsIndex | slice, /
     ) -> _GroupValuesT_co | Groups[_GroupValuesT_co]:
         """Select groups by integer or slice.
 
@@ -8751,6 +9237,11 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @overload
     def to_list(self) -> list[list[int]] | list[list[Geometry]] | list[list[Cell]]:
         """Copy into a plain nested Python list.
+
+        Returns
+        -------
+        list of list
+            Materialized rows of the grouped values.
 
         Examples
         --------
@@ -8833,7 +9324,33 @@ class SpatialIndex(Mapping[int, Geometry]):
         cls,
         values: Geometry | GeometryArray | Iterable[_GeometryLike | None] | None = None,
     ) -> SpatialIndex:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Build a spatial index (STR-tree) over present geometries.
+
+        Parameters
+        ----------
+        values : GeometryArray, iterable of Geometry or None, default None
+            Geometries to index. ``None`` builds an empty mutable index for
+            later ``insert`` calls. Every indexed geometry must share one CRS
+            and coordinate epoch. Missing rows are skipped but retain their
+            original positions as stable, non-live handles, so query and join
+            results always refer to the input row ids.
+
+        Raises
+        ------
+        CRSMismatchError
+            If items carry conflicting CRS or coordinate-epoch metadata.
+
+        See Also
+        --------
+        join : High-level spatial join built on the index.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(5, 5, 6, 6)])
+        >>> [int(i) for i in idx.query(gm.Point(0.5, 0.5), predicate='intersects')]
+        [0]
+        """
     def __sizeof__(self) -> int:
         """`sys.getsizeof` support: the wrapper plus the retained Rust-side
         index payload — packed or boxed row geometry coordinates, the immutable
@@ -9495,9 +10012,11 @@ class CRS:
     to geometries via ``to_crs``. Accepts an authority string, EPSG code,
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
-    Equality is semantic — a ``CRS`` compares equal to any spelling
-    ``same_as`` accepts (``crs == 4326``, ``crs == 'EPSG:4326'``). It is
-    therefore unhashable; key mappings by ``crs.canonical`` instead.
+    Equality is structural — a ``CRS`` compares equal only to the same
+    canonical stored label (``crs == 4326`` and ``crs == 'EPSG:4326'``).
+    Operational equivalence, including axis-order-only differences, is the
+    explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
+    unhashable; key mappings by ``crs.canonical`` instead.
     """
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
@@ -9521,13 +10040,32 @@ class CRS:
     def _repr_html_(self) -> str:
         """HTML preview for notebooks: a compact table of `info` fields."""
     def __new__(cls, value: CrsInput) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Build a CRS from any accepted input.
+
+        Parameters
+        ----------
+        value : CRS-like or CRS
+            Authority string, EPSG code, authority tuple, PROJJSON/CF mapping,
+            WKT/PROJ string, CRS-holder object, or another ``CRS``.
+
+        Returns
+        -------
+        CRS
+
+        Raises
+        ------
+        CRSError
+            If the value is not a recognized CRS.
+        """
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
     __hash__: ClassVar[None]  # type: ignore[assignment]
     @property
     def is_geographic(self) -> bool:
         """Whether this CRS is geographic (lon/lat on an ellipsoid).
+
+        For a compound CRS this is ``True`` when **any component** is
+        geographic (not root-kind only) — e.g. ``EPSG:9707`` (WGS 84 + height).
 
         Returns
         -------
@@ -9537,6 +10075,9 @@ class CRS:
     def is_projected(self) -> bool:
         """Whether this CRS is projected (planar, metric).
 
+        For a compound CRS this is ``True`` when **any component** is
+        projected (not root-kind only).
+
         Returns
         -------
         bool
@@ -9545,6 +10086,9 @@ class CRS:
     def is_vertical(self) -> bool:
         """Whether this CRS is vertical (height/depth only).
 
+        For a compound CRS this is ``True`` when **any component** is
+        vertical (not root-kind only).
+
         Returns
         -------
         bool
@@ -9552,6 +10096,9 @@ class CRS:
     @property
     def is_geocentric(self) -> bool:
         """Whether this CRS is geocentric (earth-centered Cartesian).
+
+        For a compound CRS this is ``True`` when **any component** is
+        geocentric (not root-kind only).
 
         Returns
         -------
@@ -9850,9 +10397,7 @@ class CRS:
         >>> '+proj=longlat' in gm.CRS(4326).to_proj()
         True
         """
-    def to_projjson(
-        self, *, pretty: bool = False, indentation_width: int = 2
-    ) -> str:
+    def to_projjson(self, *, pretty: bool = False, indentation_width: int = 2) -> str:
         """Serialize this CRS to a PROJJSON string.
 
         Parameters
@@ -10042,22 +10587,35 @@ class CRS:
         *,
         radians: bool = False,
     ) -> CrsProjectionFactorsBatch:
-        """Map-projection factors (scale, distortion, ...) at a point.
+        """Map-projection factors (scale, distortion, Tissot, …) at a lon/lat.
+
+        For a **projected** CRS the evaluation point is geographic lon/lat on
+        the base ellipsoid and the returned scales/distortions describe the
+        projection at that location. For a pure geographic CRS the factors are
+        near-identity (meridional/parallel scale ≈ 1).
 
         Parameters
         ----------
-        lon : float
-            Longitude (or easting) of the evaluation point.
+        lon : float or sequence of float
+            Longitude of the evaluation point(s), degrees unless
+            ``radians=True``.
 
-        lat : float
-            Latitude (or northing) of the evaluation point.
+        lat : float or sequence of float
+            Latitude of the evaluation point(s), degrees unless
+            ``radians=True``.
 
         radians : bool, optional
             Interpret angular inputs as radians (default ``False``).
 
         Returns
         -------
-        CrsProjectionFactors or CrsProjectionFactorsBatch
+        dict
+            Scalar call: mapping of factor names to floats
+            (``meridional_scale``, ``parallel_scale``, ``areal_scale``,
+            ``angular_distortion``, ``meridian_parallel_angle``,
+            ``meridian_convergence``, ``tissot_semimajor``,
+            ``tissot_semiminor``, ``dx_dlam``, ``dx_dphi``, ``dy_dlam``,
+            ``dy_dphi``). Array call: same keys with float arrays.
 
         Raises
         ------
@@ -10067,8 +10625,9 @@ class CRS:
         Examples
         --------
         >>> import gometry as gm
-        >>> round(gm.CRS(4326).factors(-122.4, 37.8)['meridional_scale'], 5)
-        1.00294
+        >>> f = gm.CRS(3857).factors(0.0, 0.0)
+        >>> round(f['meridional_scale'], 5)
+        1.0
         """
     @overload
     def geodesic(
@@ -10280,19 +10839,25 @@ class CRS:
             Coordinate epochs for dynamic CRS.
 
         authority : str, optional
-            Restrict to operations from this authority.
+            Restrict candidate coordinate operations to this authority
+            (e.g. ``'EPSG'``).
 
         accuracy : float, optional
-            Maximum acceptable accuracy, in meters.
+            Maximum acceptable operation accuracy, in meters.
 
         allow_ballpark : bool, optional
-            Permit low-accuracy ballpark operations.
+            Allow low-accuracy ballpark operations when no precise one exists.
 
         only_best : bool, optional
-            Return only the single best operation.
+            Require PROJ's best operation. If a required transformation grid is
+            unavailable, raise ``TransformError`` instead of using a less
+            accurate fallback operation.
 
         force_over : bool, optional
-            Prefer operations that keep coordinates in a continuous range.
+            Keep coordinates on the source side of the antimeridian instead of
+            wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+            ``only_best``, this also collapses operation selection to a single
+            candidate, so enumerating surfaces return exactly one operation.
 
         Returns
         -------
@@ -10336,19 +10901,25 @@ class CRS:
             Coordinate epochs for dynamic CRS.
 
         authority : str, optional
-            Restrict to operations from this authority.
+            Restrict candidate coordinate operations to this authority
+            (e.g. ``'EPSG'``).
 
         accuracy : float, optional
-            Maximum acceptable accuracy, in meters.
+            Maximum acceptable operation accuracy, in meters.
 
         allow_ballpark : bool, optional
-            Permit low-accuracy ballpark operations.
+            Allow low-accuracy ballpark operations when no precise one exists.
 
         only_best : bool, optional
-            Return only the single best operation.
+            Require PROJ's best operation. If a required transformation grid is
+            unavailable, raise ``TransformError`` instead of using a less
+            accurate fallback operation.
 
         force_over : bool, optional
-            Prefer operations that keep coordinates in a continuous range.
+            Keep coordinates on the source side of the antimeridian instead of
+            wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+            ``only_best``, this also collapses operation selection to a single
+            candidate, so enumerating surfaces return exactly one operation.
 
         Returns
         -------
@@ -10598,7 +11169,7 @@ class CellArray(Sequence[_CellT_co]):
         Returns
         -------
         GeometryArray
-            One ``Point`` (lon/lat, ``EPSG:4326``) per cell.
+            One ``Point`` (lon/lat, ``OGC:CRS84``) per cell.
 
         Examples
         --------
@@ -10628,12 +11199,60 @@ class CellArray(Sequence[_CellT_co]):
         True
         """
     @property
+    def is_missing(self) -> npt.NDArray[np.bool_]:
+        """Per-row missing mask as a read-only boolean NumPy array.
+
+        Bulk cell factories set a missing row when the corresponding geometry
+        was missing; dense constructions return all-``False``.
+
+        Returns
+        -------
+        numpy.ndarray of bool
+        """
+    @property
     def polygon(self) -> GeometryArray[Polygon]:
         """Filled WGS84 polygon of every cell, as a geometry array.
 
         Returns
         -------
         GeometryArray
+        """
+    def children_count(self, depth: int | None = None, /) -> npt.NDArray[np.uint64]:
+        """Number of descendant cells each cell has at ``depth``.
+
+        The columnar mirror of the scalar ``children_count`` — the count only,
+        without materializing the children (which ``children`` does, as ragged
+        rows). Counts are exact and can be very large at a coarse-to-fine
+        depth gap, so they are returned as ``uint64``.
+
+        Parameters
+        ----------
+        depth : int, optional
+            Target depth (resolution / level / precision / zoom). Omitted means
+            one step finer than each cell.
+
+        Returns
+        -------
+        numpy.ndarray
+            Read-only ``uint64`` ``numpy.ndarray`` of shape ``(n,)``.
+
+        Raises
+        ------
+        GeometryError
+            If ``depth`` is out of range for the grid.
+
+        See Also
+        --------
+        children : The descendant cells themselves, as ragged rows.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
+        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+        >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
+        >>> cells.children_count(9).tolist()
+        [49, 49]
         """
     def parent(self, depth: int | None = None, /) -> CellArray[_CellT_co]:
         """Parent cell of every input cell.
@@ -10751,7 +11370,7 @@ class CellArray(Sequence[_CellT_co]):
 
         For H3, S2, and tiles this is the text form of the numeric id exposed
         by `to_numpy()`. For Geohash it is the public string identity itself;
-        Geohash `to_numpy() instead returns typed GeohashCell` objects.
+        Geohash `to_numpy()` instead returns typed `GeohashCell` objects.
 
         Returns
         -------
@@ -11006,7 +11625,7 @@ class H3VertexArray(Sequence[H3Vertex]):
         Returns
         -------
         GeometryArray
-            One ``Point`` (lon/lat, ``EPSG:4326``) per vertex.
+            One ``Point`` (lon/lat, ``OGC:CRS84``) per vertex.
         """
     @property
     def nbytes(self) -> int:
@@ -11288,7 +11907,7 @@ class H3EdgeArray(Sequence[H3Edge]):
         Returns
         -------
         GeometryArray
-            One ``LineString`` (lon/lat, ``EPSG:4326``) per edge.
+            One ``LineString`` (lon/lat, ``OGC:CRS84``) per edge.
         """
     @property
     def length(self) -> npt.NDArray[np.float64]:
@@ -11983,7 +12602,24 @@ class H3Vertex:
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: H3 vertices are heap-free value ids."""
     def __new__(cls, value: H3Vertex | int | str) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One H3 vertex from an existing `H3Vertex`, a 64-bit id, or a token.
+
+        Parameters
+        ----------
+        value : H3Vertex, int, or str
+            The vertex, its 64-bit id, or its token.
+
+        Returns
+        -------
+        H3Vertex
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid H3 vertex id or token.
+        TypeError
+            If ``value`` is not an `H3Vertex`, int, or str.
+        """
 
     @property
     def id(self) -> int:
@@ -12008,7 +12644,7 @@ class H3Vertex:
         Returns
         -------
         Point
-            Longitude/latitude point tagged ``EPSG:4326``.
+            Longitude/latitude point tagged ``OGC:CRS84``.
         """
     def __int__(self) -> int:
         """int(self)"""
@@ -12065,7 +12701,24 @@ class H3Edge:
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: H3 edges are heap-free value ids."""
     def __new__(cls, value: H3Edge | int | str) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One H3 directed edge from an existing `H3Edge`, a 64-bit id, or a token.
+
+        Parameters
+        ----------
+        value : H3Edge, int, or str
+            The edge, its 64-bit id, or its token.
+
+        Returns
+        -------
+        H3Edge
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid H3 directed-edge id or token.
+        TypeError
+            If ``value`` is not an `H3Edge`, int, or str.
+        """
 
     @property
     def id(self) -> int:
@@ -12129,7 +12782,7 @@ class H3Edge:
         Returns
         -------
         LineString
-            Longitude/latitude line tagged ``EPSG:4326``.
+            Longitude/latitude line tagged ``OGC:CRS84``.
         """
     @property
     def length(self) -> float:
@@ -12204,7 +12857,34 @@ class GeohashCell(_Cell):
     def __new__(cls, value: Point, /, *, precision: int) -> GeohashCell: ...
     @overload
     def __new__(cls, value: float, /, lat: float, *, precision: int) -> GeohashCell:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One geohash cell from a token, lon/lat pair, or point geometry.
+
+        Parameters
+        ----------
+        lon : GeohashCell, str, float, or Point
+            A cell token, the longitude of a ``lon, lat`` pair, or a point
+            geometry.
+
+        lat : float, optional
+            Latitude when ``lon`` is a scalar longitude.
+
+        precision : int, optional
+            Geohash precision (``1``-``12``); required for coordinate
+            construction.
+
+        Returns
+        -------
+        GeohashCell
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid geohash token.
+        GeometryError
+            If ``precision`` is out of range.
+        InvalidGeometryError
+            If a scalar coordinate is non-finite or out of range.
+        """
     def parent(self, precision: int | None = None) -> GeohashCell:
         """Parent cell at a coarser precision.
 
@@ -12462,7 +13142,39 @@ class H3Cell(_NumericCell):
     def __new__(cls, value: Point, /, *, resolution: int) -> H3Cell: ...
     @overload
     def __new__(cls, value: float, /, lat: float, *, resolution: int) -> H3Cell:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One H3 cell from an id, token, lon/lat pair, or point geometry.
+
+        Parameters
+        ----------
+        lon : H3Cell, int, str, float, or Point
+            A cell id/token, the longitude of a ``lon, lat`` pair, or a point
+            geometry.
+
+        lat : float, optional
+            Latitude when ``lon`` is a scalar longitude.
+
+        resolution : int, optional
+            H3 resolution (``0``-``15``); required for coordinate construction.
+
+        Returns
+        -------
+        H3Cell
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid H3 cell id or token.
+        GeometryError
+            If ``resolution`` is out of range.
+        InvalidGeometryError
+            If a scalar coordinate is non-finite.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> gm.H3Cell(13.4, 52.5, resolution=7).resolution
+        7
+        """
     def parent(self, resolution: int | None = None) -> H3Cell:
         """Parent cell at a coarser resolution.
 
@@ -12914,8 +13626,9 @@ class S2Coverage(_Coverage['S2Cell']):
         """
     @property
     def max_cells(self) -> int | None:
-        """Maximum number of cells in the covering (the hard emission cap from
-        the factory). ``None`` means unlimited.
+        """Configured fixed-level emission cap from the factory. Adaptive covers
+        retain this value for introspection but use ``target_cells`` instead.
+        ``None`` means unlimited for fixed-level construction.
 
         Returns
         -------
@@ -12924,7 +13637,7 @@ class S2Coverage(_Coverage['S2Cell']):
     @property
     def target_cells(self) -> int:
         """Adaptive refinement target from the factory. It guides optional
-        subdivision only; ``max_cells`` remains the hard emission cap.
+        subdivision and does not affect fixed-level construction.
 
         Returns
         -------
@@ -13044,7 +13757,33 @@ class S2Cell(_NumericCell):
     def __new__(cls, value: Point, /, *, level: int) -> S2Cell: ...
     @overload
     def __new__(cls, value: float, /, lat: float, *, level: int) -> S2Cell:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One S2 cell from an id, token, lon/lat pair, or point geometry.
+
+        Parameters
+        ----------
+        lon : S2Cell, int, str, float, or Point
+            A cell id/token, the longitude of a ``lon, lat`` pair, or a point
+            geometry.
+
+        lat : float, optional
+            Latitude when ``lon`` is a scalar longitude.
+
+        level : int, optional
+            S2 level (``0``-``30``); required for coordinate construction.
+
+        Returns
+        -------
+        S2Cell
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid S2 cell id or token.
+        GeometryError
+            If ``level`` is out of range.
+        InvalidGeometryError
+            If a scalar coordinate is non-finite or out of range.
+        """
     def parent(self, level: int | None = None) -> S2Cell:
         """Parent cell at a coarser level.
 
@@ -13162,7 +13901,42 @@ class Tile(_NumericCell):
     def __new__(cls, /, *, lon: float, lat: float, zoom: int) -> Tile: ...
     @overload
     def __new__(cls, /, *, x: int, y: int, zoom: int) -> Tile:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """One XYZ tile from a packed id, quadkey, lon/lat keywords, point geometry,
+        or explicit ``x=``/``y=`` tile coordinates.
+
+        Parameters
+        ----------
+        value : Tile, int, str, or Point, optional
+            A tile id/quadkey, or a point geometry when paired with ``zoom``.
+
+        lon, lat : float, optional
+            Geographic coordinates, supplied together with ``zoom``. They are
+            keyword-only because two bare numbers do not select a coordinate
+            frame.
+
+        zoom : int, optional
+            Zoom level (``0``-``29``); keyword-only, required for every
+            coordinate form.
+
+        x, y : int, optional
+            Explicit tile column/row (keyword-only, with ``zoom``) — never
+            inferred from a positional pair, so lon/lat can't be misread as
+            tile coordinates.
+
+        Returns
+        -------
+        Tile
+
+        Raises
+        ------
+        ParseError
+            If ``value`` is not a valid tile id or quadkey.
+        GeometryError
+            If ``zoom`` is out of range, or ``x``/``y`` is outside
+            ``[0, 2**zoom)``.
+        InvalidGeometryError
+            If a scalar coordinate is non-finite or out of range.
+        """
     def parent(self, zoom: int | None = None) -> Tile:
         """Parent cell at a coarser zoom.
 
@@ -13898,7 +14672,9 @@ def area(
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    *,
+    unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
     """Compute area in CRS-natural units or with a ``unit`` override.
 
@@ -13947,7 +14723,9 @@ def length(
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    *,
+    unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
     """Compute length in CRS-natural units or with a ``unit`` override.
 
@@ -13981,6 +14759,60 @@ def length(
     --------
     >>> import gometry as gm
     >>> gm.length(gm.LineString([(0, 0), (3, 4)]), unit='planar')
+    5.0
+    """
+
+@overload
+def length_3d(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
+@overload
+def length_3d(
+    geom: GeometryArray, *, unit: DistanceUnit | None = None
+) -> npt.NDArray[np.float64]: ...
+@overload
+def length_3d(
+    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+) -> npt.NDArray[np.float64]: ...
+@overload
+def length_3d(
+    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    *,
+    unit: DistanceUnit | None = None,
+) -> float | npt.NDArray[np.float64]:
+    """Compute 3D length in CRS-natural units or with a ``unit`` override.
+
+    Parameters
+    ----------
+    geom : Geometry, GeometryArray, or iterable of geometry-like values
+        Input geometry, array, or iterable materialized as an array.
+    unit : {'planar', 'meters'} or None, default None
+        ``None`` follows the geometry's CRS, exactly like ``geom.length_3d``.
+        ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
+        metric and raises without a CRS.
+
+    Returns
+    -------
+    float or numpy.ndarray
+        Scalar 3D length or one value per row.
+
+    Raises
+    ------
+    CRSError
+        If the CRS lacks linear axis units for a metric result.
+    GeometryError
+        If ``unit='meters'`` is requested for a CRS-free geometry.
+    InvalidGeometryError
+        If a scalar geometry lacks Z on every vertex.
+
+    See Also
+    --------
+    length_3d : CRS-natural property form.
+    length : The 2D sibling, with the same ``unit`` override.
+    distance_3d : Pairwise 3D distance under the same metric.
+
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> gm.length_3d(gm.from_wkt('LINESTRING Z (0 0 0, 3 4 0)'), unit='planar')
     5.0
     """
 
@@ -14504,7 +15336,7 @@ def from_polyline(
     data: str,
     *,
     precision: int = 5,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Point | LineString: ...
 @overload
@@ -14512,7 +15344,7 @@ def from_polyline(
     data: Iterable[str | None],
     *,
     precision: int = 5,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray[Point | LineString]:
     """Decode polyline text into ``LineString``/``Point`` geometries.
@@ -14521,7 +15353,7 @@ def from_polyline(
     route encoding used by Google Maps, OSRM, and Valhalla. Accepts one
     string (returns a ``Point`` for one coordinate, otherwise a ``LineString``)
     or an iterable of strings/``None`` rows (returns a `GeometryArray` with
-    missing rows). Polylines are WGS84 by definition, so results carry EPSG:4326
+    missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
     unless ``crs=None`` explicitly requests a CRS-free result;
     ``epoch`` restores coordinate-epoch metadata on round-trip.
 
@@ -14532,7 +15364,7 @@ def from_polyline(
     precision : int, default 5
         Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
         classic default, 6 the high-resolution variant.
-    crs : str or int or None, default 4326
+    crs : str or int or None, default 'OGC:CRS84'
         Frame for the decoded longitude/latitude coordinates. Only WGS84
         longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
     epoch : float, optional
@@ -14540,8 +15372,9 @@ def from_polyline(
 
     Returns
     -------
-    LineString or GeometryArray
-        One line per input string.
+    Point, LineString, or GeometryArray
+        A ``Point`` when the encoding has one coordinate, a ``LineString``
+        for two or more, or a `GeometryArray` for iterable input.
 
     Raises
     ------
@@ -15437,19 +16270,29 @@ def distance(
     """
 
 @overload
-def distance_3d(left: Geometry, right: Geometry) -> float: ...
+def distance_3d(
+    left: Geometry, right: Geometry, *, unit: DistanceUnit | None = None
+) -> float: ...
 @overload
 def distance_3d(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray,
+    right: Geometry | GeometryArray,
+    *,
+    unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
-def distance_3d(left: Geometry, right: GeometryArray) -> npt.NDArray[np.float64]: ...
+def distance_3d(
+    left: Geometry, right: GeometryArray, *, unit: DistanceUnit | None = None
+) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: Geometry | GeometryArray,
+    right: Geometry | GeometryArray,
+    *,
+    unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
-    """Compute the minimum 3D (Euclidean) distance between two geometries, in
-    meters (axes must share a linear unit; geographic CRS rejected).
+    """Compute the minimum 3D (Euclidean) distance between two geometries,
+    measured for their CRS.
 
     Distance is over linework: points/multipoints as degenerate segments,
     polygons via their boundary rings. Part of the 3D Euclidean family with
@@ -15457,15 +16300,20 @@ def distance_3d(
     and have no 3D form; ``bounds_3d`` gives the 3D extent (there is no
     ``envelope_3d``).
 
-    Every vertex on both operands must carry a Z ordinate and they must share
-    a CRS whose axes use one linear unit (or no CRS); a geographic CRS or a
-    missing Z raises — reproject with ``to_crs`` to a projected CRS.
+    A projected CRS gives native linear units and a CRS-free geometry gives
+    coordinate units — the same defaults as the 2D ``distance``. A geographic
+    CRS raises under every ``unit``: a Euclidean norm cannot combine degrees
+    with meter heights. Every vertex on both operands must carry a Z ordinate.
 
     Parameters
     ----------
     left, right : Geometry or GeometryArray
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
+    unit : {'planar', 'meters'} or None, default None
+        ``None`` follows the CRS, exactly like ``distance``. ``'planar'``
+        forces raw coordinate units; ``'meters'`` forces SI meters and raises
+        without a CRS.
 
     Returns
     -------
@@ -15478,8 +16326,15 @@ def distance_3d(
         If the CRS lacks linear axis units for a metric result.
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    GeometryError
+        If ``unit='meters'`` is requested for a CRS-free geometry.
     InvalidGeometryError
         If either operand lacks a Z ordinate on every vertex.
+
+    See Also
+    --------
+    distance : The 2D sibling, with the same ``unit`` override.
+    length_3d : Total 3D length under the same metric.
 
     Examples
     --------
@@ -15520,7 +16375,7 @@ def hausdorff_distance(
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
-    """Compute the Hausdorff (set-to-set) similarity distance between ``left``
+    """Compute the continuous Hausdorff (set-to-set) distance between ``left``
     and ``right``.
 
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
@@ -15532,10 +16387,10 @@ def hausdorff_distance(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     densify : float, optional
-        Subdivide every segment into pieces no longer than this
-        fraction of its length (in ``(0, 1]``) before measuring,
-        tightening the discrete vertex metric toward the continuous
-        one. Omitted measures vertices only.
+        Subdivide every segment into pieces no longer than this fraction of
+        its length (in ``(0, 1]``) before measuring. The metric remains the
+        continuous Hausdorff distance; gometry does not offer a discrete,
+        vertex-only Hausdorff variant.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
@@ -16384,9 +17239,9 @@ def coverage_is_valid(
     ----------
     values : Geometry, GeometryArray, or iterable of Geometry
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
+
     gap_width : float, default 0.0
-        Also flag boundaries that face a neighbor across a gap narrower
-        than this (0 disables gap detection).
+        Gap width in coordinate units; 0 disables gap detection.
 
     Returns
     -------
@@ -16435,9 +17290,9 @@ def coverage_invalid_edges(
     ----------
     values : Geometry, GeometryArray, or iterable of Geometry
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
+
     gap_width : float, default 0.0
-        Also flag boundaries that face a neighbor across a gap narrower
-        than this (0 disables gap detection).
+        Gap width in coordinate units; 0 disables gap detection.
 
     Returns
     -------
@@ -16678,8 +17533,9 @@ def coverage_clean(
     grid_size : float, default 0.0
         Vertex snapping grid in coordinate units; ``0`` preserves input
         coordinates and disables snapping.
+
     gap_width : float, default 0.0
-        Merge enclosed gaps narrower than this into a neighbor (0 keeps
+        Merge enclosed gaps narrower than this coordinate-space width (0 keeps
         gaps).
     overlap_rule : str, default 'longest_border'
         Which row keeps a region covered more than once:
@@ -16891,13 +17747,15 @@ def parts(
     geom: Polygon | MultiPolygon | GeometryArray[Polygon | MultiPolygon],
 ) -> GeometryArray[Polygon]: ...
 @overload
-def parts(geom: Geometry | GeometryArray) -> GeometryArray[Geometry]:
+def parts(
+    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+) -> GeometryArray[Geometry]:
     """Component geometries of a multipart geometry.
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        The geometry (or array of geometries) to operate on.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values
+        The geometry, array, or iterable materialized as an array.
 
     Returns
     -------
@@ -16915,13 +17773,15 @@ def parts(geom: Geometry | GeometryArray) -> GeometryArray[Geometry]:
     POINT (1 1)
     """
 
-def rings(geom: Geometry | GeometryArray) -> GeometryArray[LineString]:
+def rings(
+    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+) -> GeometryArray[LineString]:
     """Return the rings (exterior + interiors) of a polygonal geometry.
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        The geometry (or array of geometries) to operate on.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values
+        The geometry, array, or iterable materialized as an array.
 
     Returns
     -------
@@ -17077,12 +17937,27 @@ def _parse_geoarrow_extension_metadata(
     """Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch)."""
 
 def _parse_geoparquet_column_frame(
-    metadata: bytes,
+    metadata: Mapping[str, Any],
     column_name: str,
 ) -> tuple[str | None, float | None]:
-    """Private Python entry: parse one GeoParquet column metadata object for the
-    shared CRS/epoch/edges frame (defaults missing CRS to OGC:CRS84; CRS must
+    """Private Python entry: parse one already-decoded GeoParquet column mapping for
+    the shared CRS/epoch/edges frame (defaults missing CRS to OGC:CRS84; CRS must
     be a PROJJSON object or null when present).
+    """
+
+def _admit_geoparquet_geometry_storage(
+    arrow_type: Any,
+    encoding: str,
+    column_name: str,
+    field: Any | None = None,
+) -> tuple[bool, str | None, float | None]:
+    """Admit GeoParquet geometry storage against a declared encoding.
+
+    Dictionary-wrapped WKB is accepted. ExtensionType and Field metadata are
+    reconciled together (name + frame) so raw-field frame metadata is never
+    discarded. Returns ``(has_extension, crs, epoch)`` — when
+    ``has_extension`` is true the frame came from reconciled extension
+    metadata (possibly both-None for empty metadata).
     """
 
 def from_arrow(
@@ -17125,12 +18000,18 @@ def from_arrow(
 
     Notes
     -----
-    Schema, offsets, and encoding are validated defensively. Arrow C capsule
-    producers (``__arrow_c_array__`` / ``__arrow_c_stream__``) are trusted to be
-    ABI-conforming — a deliberately hostile duck-typed producer that forges its
-    own buffers is out of the threat model (same line as pyarrow; the C Data
+    Import copies the selected geometry schema and every span it validates or
+    decodes (validity, offsets, views, referenced BinaryView size entries,
+    coordinates, WKB payload) into owned storage, then validates and decodes
+    only that snapshot. Native
+    Arrow-C providers must not modify exported structs, pointer tables, schema
+    memory, or buffers before gometry invokes their release callback; direct
+    PyArrow objects must not be mutated while ``from_arrow`` is running. Arrow C
+    capsule producers (``__arrow_c_array__`` / ``__arrow_c_stream__``) are trusted
+    to be ABI-conforming — a deliberately hostile duck-typed producer that forges
+    its own buffers is out of the threat model (same line as pyarrow; the C Data
     Interface carries no buffer capacity except BinaryView's mandatory
-    variadic-sizes buffer, which is enforced. See ``docs/ecosystem/arrow.md``.
+    variadic-sizes buffer, which is enforced). See ``docs/ecosystem/arrow.md``.
 
     See Also
     --------
@@ -17152,7 +18033,7 @@ def from_features(
     | Mapping[str, Any]
     | Iterable[Mapping[str, Any]],
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Features:
     """Parse GeoJSON features into geometries plus parallel properties and ids.
@@ -17168,9 +18049,10 @@ def from_features(
     features : str, bytes, mapping, or iterable of mapping
         A ``FeatureCollection``/``Feature`` mapping, JSON text of one, or an
         iterable of ``Feature`` mappings.
-    crs : str or int, default 4326
+    crs : str or int, default 'OGC:CRS84'
         CRS to attach. GeoJSON coordinates are WGS84 by specification, so the
-        default declares ``EPSG:4326``; pass ``None`` for CRS-free geometries.
+        default declares OGC:CRS84 (lon/lat); pass ``None`` for CRS-free
+        geometries or ``crs=4326`` for EPSG:4326.
     epoch : float, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
 
@@ -17186,6 +18068,9 @@ def from_features(
         If the input is not a Feature/FeatureCollection/iterable, a feature is
         malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
         unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
+    InvalidGeometryError
+        If a position is outside the WGS84 lon/lat domain or a ring fails
+        structural ring admission.
     CRSError
         If ``crs`` is not recognized or is outside the WGS84 family, or
         ``epoch`` is set with ``crs=None``.
@@ -17194,10 +18079,11 @@ def from_features(
 
     Notes
     -----
-    Text input is decoded in Rust. Signed and unsigned 64-bit JSON integers are
-    exact; wider numbers follow JSON floating-point semantics, and object keys
-    are returned sorted. Mapping input keeps Python integer precision, key
-    order, and object values.
+    Text input is decoded in Rust. Coordinate numbers follow the same admission
+    as ``from_geojson``: correctly-rounded binary64 floats, and integers only
+    when exactly representable as ``float`` (non-exact integers raise). Object
+    keys in text input are returned sorted; mapping input keeps key order and
+    opaque property values.
 
     See Also
     --------
@@ -17245,8 +18131,15 @@ def to_feature(
         If ``geom`` is not a Geometry or ``None``.
     GeometryError
         If properties are not a string-keyed mapping, or the id is invalid.
+    InvalidGeometryError
+        If a WGS84-tagged geometry has coordinates outside the lon/lat domain.
     CRSError
-        If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
+        If a CRS-tagged geometry is not in the WGS84 lon/lat family.
+
+    Notes
+    -----
+    Coordinate epoch metadata is not representable in GeoJSON Feature mappings
+    and is **silently dropped** (same contract as ``to_geojson(..., drop_epoch=True)``).
 
     Examples
     --------
@@ -17262,7 +18155,7 @@ def to_feature_collection(
 ) -> GeoJsonFeatureCollection: ...
 @overload
 def to_feature_collection(
-    values: Geometry | None | GeometryArray | Iterable[Geometry | None],
+    values: Geometry | GeometryArray | Iterable[Geometry | None] | None,
     *,
     properties: Mapping[str, Any] | Iterable[Mapping[str, Any] | None] | None = None,
     ids: Iterable[FeatureId] | None = None,
@@ -17307,35 +18200,35 @@ def to_feature_collection(
 def from_geojson(
     data: GeoJsonFeatureCollection,
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray: ...
 @overload
 def from_geojson(
     data: GeoJsonGeometry | GeoJsonFeatureNonNull,
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry: ...
 @overload
 def from_geojson(
     data: _GeoJsonScalar,
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry | GeometryArray: ...
 @overload
 def from_geojson(
     data: Iterable[_GeoJsonScalar | None],
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray: ...
 @overload
 def from_geojson(
     data: _GeoJsonScalar | Iterable[_GeoJsonScalar | None],
     *,
-    crs: CrsInput | None = 4326,
+    crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry | GeometryArray:
     """Parse `geojson` from a string or mapping.
@@ -17358,14 +18251,14 @@ def from_geojson(
     data : str or mapping
         A `geojson` string or mapping (Feature/FeatureCollection ok).
 
-    crs : str or int, default 4326
+    crs : str or int, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
-        the default declares ``EPSG:4326``; pass ``None`` for a CRS-free
-        geometry. Only the WGS84 family (``EPSG:4326``, ``EPSG:4979``,
-        ``OGC:CRS84``, ``OGC:CRS84h``) is accepted — reproject first for
-        other CRS. A legacy top-level ``crs`` member (pre-RFC 7946) is ignored
-        when it agrees with ``crs=`` — typically CRS84/EPSG:4326 under the
-        default — and raises on conflict or unsupported declarations.
+        the default declares OGC:CRS84 (lon/lat, matching GeoParquet);
+        pass ``None`` for a CRS-free geometry or ``crs=4326`` for EPSG:4326.
+        Only the WGS84 family (``EPSG:4326``, ``EPSG:4979``, ``OGC:CRS84``,
+        ``OGC:CRS84h``) is accepted — reproject first for other CRS. A legacy
+        top-level ``crs`` member (pre-RFC 7946) is ignored when it agrees with
+        ``crs=`` and raises on conflict or unsupported declarations.
 
     epoch : float, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
@@ -17380,13 +18273,24 @@ def from_geojson(
     ------
     ParseError
         If the `geojson` is malformed or an unsupported type, a coordinate
-        sequence mixes axes (XY with XYZ), or a legacy ``crs`` member is
-        unsupported or conflicts with ``crs`` (``format`` is ``"geojson"``).
+        sequence mixes axes (XY with XYZ), a coordinate integer is not exactly
+        representable as binary64, or a legacy ``crs`` member is unsupported or
+        conflicts with ``crs`` (``format`` is ``"geojson"``).
+    InvalidGeometryError
+        If a position is outside the WGS84 lon/lat domain or a ring fails
+        structural ring admission.
     CRSError
         If ``crs`` is not a recognized CRS or is outside the WGS84 family, or
         ``epoch`` is set with ``crs=None``.
     GeometryError
         If ``epoch`` is not a finite decimal year.
+
+    Notes
+    -----
+    Finite decimals parse as correctly-rounded binary64 (bit-exact round-trip
+    with ``to_geojson``). Integer tokens and Python ``int`` values are admitted
+    only when exactly representable as ``float``; non-exact integers raise
+    rather than silently rounding. Text and mapping inputs share this rule.
 
     See Also
     --------
@@ -17488,7 +18392,8 @@ def crs_engine() -> CrsEngineInfo:
     Returns
     -------
     dict
-        Engine metadata (backend, version, PROJ paths, local grid directory).
+        Engine metadata. ``paths`` is the effective per-context grid search
+        path configured through :func:`crs_configure`.
 
     Examples
     --------
@@ -17666,8 +18571,8 @@ def crs_catalog(
     *,
     authority: str | None = None,
     kind: CrsCatalogKind | None = None,
-    area: CrsAreaInput | None = None,
-    contains_area: bool = False,
+    area_of_interest: CrsAreaInput | None = None,
+    contains_area_of_interest: bool = False,
     allow_deprecated: bool = False,
     celestial_body: str | None = None,
 ) -> list[CrsCatalogInfo]:
@@ -17679,10 +18584,12 @@ def crs_catalog(
         Registry authority to search (default ``"EPSG"``).
     kind : str, optional
         Restrict to a CRS kind.
-    area : sequence of float, optional
-        ``(minx, miny, maxx, maxy)`` filter area.
-    contains_area : bool, optional
-        Require the CRS area to contain ``area`` (default ``False``).
+    area_of_interest : sequence of float, dict, or object, optional
+        Filter area as ``(west, south, east, north)`` in DEGREES, an area
+        mapping, or an AreaOfInterest-like object.
+    contains_area_of_interest : bool, optional
+        Require the CRS area to contain ``area_of_interest``
+        (default ``False``).
     allow_deprecated : bool, optional
         Include deprecated CRS (default ``False``).
     celestial_body : str, optional
@@ -17744,8 +18651,8 @@ def crs_codes(
 def crs_utm_zones(
     *,
     datum_name: str | None = None,
-    area: CrsAreaInput | None = None,
-    contains_area: bool = False,
+    area_of_interest: CrsAreaInput | None = None,
+    contains_area_of_interest: bool = False,
     allow_deprecated: bool = False,
 ) -> list[CrsCatalogInfo]:
     """UTM-zone CRS from the catalog.
@@ -17754,10 +18661,12 @@ def crs_utm_zones(
     ----------
     datum_name : str, optional
         Restrict to this datum.
-    area : sequence of float, optional
-        ``(minx, miny, maxx, maxy)`` filter area.
-    contains_area : bool, optional
-        Require the zone area to contain ``area`` (default ``False``).
+    area_of_interest : sequence of float, dict, or object, optional
+        Filter area as ``(west, south, east, north)`` in DEGREES, an area
+        mapping, or an AreaOfInterest-like object.
+    contains_area_of_interest : bool, optional
+        Require the zone area to contain ``area_of_interest``
+        (default ``False``).
     allow_deprecated : bool, optional
         Include deprecated zones (default ``False``).
 
@@ -17999,12 +18908,32 @@ def crs_roundtrip(
         How many forward+inverse passes to apply.
     direction : {'forward', 'inverse'}, default 'forward'
         Which leg runs first.
-    area_of_interest : dict or object, optional
-        Area of interest guiding operation selection.
+    area_of_interest : sequence of float, dict, or object, optional
+        Area of interest guiding operation selection, as
+        ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+        AreaOfInterest-like object.
     source_epoch, target_epoch : float, optional
         Coordinate epochs for dynamic CRS.
-    authority, accuracy, allow_ballpark, only_best, force_over : optional
-        PROJ operation-selection options (see ``crs_transform``).
+    authority : str, optional
+        Restrict candidate coordinate operations to this authority
+        (e.g. ``'EPSG'``).
+
+    accuracy : float, optional
+        Maximum acceptable operation accuracy, in meters.
+
+    allow_ballpark : bool, optional
+        Allow low-accuracy ballpark operations when no precise one exists.
+
+    only_best : bool, optional
+        Require PROJ's best operation. If a required transformation grid is
+        unavailable, raise ``TransformError`` instead of using a less accurate
+        fallback operation.
+
+    force_over : bool, optional
+        Keep coordinates on the source side of the antimeridian instead of
+        wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+        ``only_best``, this also collapses operation selection to a single
+        candidate, so enumerating surfaces return exactly one operation.
 
     Returns
     -------
@@ -18298,12 +19227,32 @@ def crs_transform(
         Vertical column for 3D transforms.
     t : float or sequence of float, optional
         Coordinate epoch column.
-    area_of_interest : dict or object, optional
-        Area of interest guiding operation selection.
+    area_of_interest : sequence of float, dict, or object, optional
+        Area of interest guiding operation selection, as
+        ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+        AreaOfInterest-like object.
     source_epoch, target_epoch : float, optional
         Coordinate epochs for dynamic CRS.
-    authority, accuracy, allow_ballpark, only_best, force_over : optional
-        PROJ operation-selection options.
+    authority : str, optional
+        Restrict candidate coordinate operations to this authority
+        (e.g. ``'EPSG'``).
+
+    accuracy : float, optional
+        Maximum acceptable operation accuracy, in meters.
+
+    allow_ballpark : bool, optional
+        Allow low-accuracy ballpark operations when no precise one exists.
+
+    only_best : bool, optional
+        Require PROJ's best operation. If a required transformation grid is
+        unavailable, raise ``TransformError`` instead of using a less accurate
+        fallback operation.
+
+    force_over : bool, optional
+        Keep coordinates on the source side of the antimeridian instead of
+        wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+        ``only_best``, this also collapses operation selection to a single
+        candidate, so enumerating surfaces return exactly one operation.
 
     Returns
     -------
@@ -18415,12 +19364,32 @@ def crs_transform_bounds(
         maxy, maxz)``) box in the source CRS.
     densify : int, default 21
         Points added per edge before transforming, to track curved edges.
-    area_of_interest : dict or object, optional
-        Area of interest guiding operation selection.
+    area_of_interest : sequence of float, dict, or object, optional
+        Area of interest guiding operation selection, as
+        ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+        AreaOfInterest-like object.
     source_epoch, target_epoch : float, optional
         Coordinate epochs for dynamic CRS.
-    authority, accuracy, allow_ballpark, only_best, force_over : optional
-        PROJ operation-selection options (see ``crs_transform``).
+    authority : str, optional
+        Restrict candidate coordinate operations to this authority
+        (e.g. ``'EPSG'``).
+
+    accuracy : float, optional
+        Maximum acceptable operation accuracy, in meters.
+
+    allow_ballpark : bool, optional
+        Allow low-accuracy ballpark operations when no precise one exists.
+
+    only_best : bool, optional
+        Require PROJ's best operation. If a required transformation grid is
+        unavailable, raise ``TransformError`` instead of using a less accurate
+        fallback operation.
+
+    force_over : bool, optional
+        Keep coordinates on the source side of the antimeridian instead of
+        wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+        ``only_best``, this also collapses operation selection to a single
+        candidate, so enumerating surfaces return exactly one operation.
 
     Returns
     -------
@@ -18744,6 +19713,11 @@ def tile_cover(
     GeometryError
         If the geometry, depth, or a coverage parameter is invalid, or if
         the covering would exceed ``max_cells``.
+    InvalidGeometryError
+        If any vertex latitude is outside the Web Mercator domain
+        (±85.05112878°). Tile coverings cannot extend past that edge; out-of-
+        domain geometries are rejected (same typed error as ``Tile`` /
+        ``tile_cells``), never silently clipped.
 
     Examples
     --------
@@ -18771,7 +19745,8 @@ def tile_cells(
     lat : float or sequence of float, optional
         WGS84 latitude per row when ``values`` supplies longitudes. Scalars
         broadcast numpy-style; at least one coordinate column must be sequence of float.
-        Latitudes clamp to the Web Mercator domain (±85.051129°), mercantile-style.
+        Latitudes outside the Web Mercator domain (±85.051129°) raise
+        ``InvalidGeometryError`` (no silent clamp).
 
     zoom : int or sequence of int
         Zoom level (0-29; finer at higher values). A scalar broadcasts to
@@ -18799,7 +19774,8 @@ def tile_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> Til
 
     The mercantile ``bounding_tile``: walks corner tiles up to their common
     ancestor. Bounds spanning hemispheres bottom out at the ``z0`` root.
-    Latitudes clamp to the Web Mercator domain, mercantile-style.
+    Latitudes outside the Web Mercator domain raise
+    ``InvalidGeometryError`` (no silent clamp).
 
     Parameters
     ----------
@@ -18984,12 +19960,11 @@ def pluscode_encode(
 
     Notes
     -----
-    Bare longitude/latitude inputs follow the canonical Open Location Code
-    convention: latitude is clipped to ``[-90, 90]`` and longitude is wrapped
-    into ``[-180, 180)`` before encoding (so ``lon=181`` or ``lat=91`` encode
-    rather than raise). Only non-finite coordinates are rejected. Geometry and
-    `GeometryArray` inputs carry real spatial data and are still validated
-    against the WGS84 lon/lat domain.
+    Bare longitude/latitude and geometry inputs are validated against the
+    WGS84 lon/lat domain before encoding. Out-of-domain finite coordinates
+    raise ``InvalidGeometryError`` rather than silent clip/wrap (the OLC
+    reference clips, but gometry rejects so huge finite inputs cannot mint
+    a code for a different location).
 
     Examples
     --------
@@ -19014,7 +19989,7 @@ def pluscode_polygon(
     Returns
     -------
     Polygon or GeometryArray
-        The code cell(s), CRS EPSG:4326.
+        The code cell(s), CRS ``OGC:CRS84``.
 
     Raises
     ------
@@ -19553,13 +20528,13 @@ def s2_cover(
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
-        Hard cap on emitted cells for fixed and adaptive coverings. Pass
-        ``None`` for unlimited (bounded only by memory).
+        Hard cap on emitted cells when ``level`` fixes the cover depth. It is
+        retained as metadata for adaptive covers, whose size is instead guided
+        by ``target_cells``. Pass ``None`` for an unlimited fixed-level cover.
 
     target_cells : int, default 8
         S2-idiomatic approximation target for optional adaptive refinement
-        when ``level`` is omitted. It never relaxes ``max_cells`` and does not
-        affect fixed-level coverings.
+        when ``level`` is omitted. It does not affect fixed-level coverings.
 
     min_level, max_level : int, optional
         Coarsest/finest S2 levels allowed (default to ``level``).
@@ -19577,7 +20552,7 @@ def s2_cover(
     ------
     GeometryError
         If the geometry, depth, or a coverage parameter is invalid, or if
-        the covering would exceed ``max_cells``.
+        a fixed-level covering would exceed ``max_cells``.
 
     See Also
     --------

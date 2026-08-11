@@ -2,19 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Poder/Engsager exact transverse Mercator — the algorithm behind PROJ's
 //! `utm`/`etmerc` (ported from PROJ 9.8 `src/projections/tmerc.cpp`).
 
-use super::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel};
-use super::params::{
+use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel};
+use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
     admit_projection, epsg, param_field,
 };
-use super::{Pole, UtmZone, adjlon};
+use crate::crs::in_core::{Pole, UtmZone, adjlon};
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
 
@@ -82,6 +78,7 @@ pub(super) fn wgs84_utm_projected(zone: UtmZone) -> Projected<Tmerc> {
                 Pole::North => 0.0,
                 Pole::South => 10_000_000.0,
             },
+            ..ProjectionFrame::ZERO
         },
         setup,
     }
@@ -411,6 +408,7 @@ mod tests {
                 lon_0_rad: lon_0 * DEG_TO_RAD,
                 x_0,
                 y_0,
+                ..ProjectionFrame::ZERO
             },
             setup: tmerc_setup(
                 Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_222_101),

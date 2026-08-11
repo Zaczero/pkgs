@@ -1,10 +1,13 @@
-//! Exact-orientation fallbacks and unfused double-double arithmetic for the
-//! segment kernel. Ordinary coordinates stay on robust::orient2d's fast path;
-//! exponent normalization is reserved for overflow/underflow lanes.
+//! Certified orientation and unfused double-double arithmetic for segments.
+//! Orientation uses an outward interval and exact stored-dyadic fallback over
+//! the complete finite binary64 domain.
 
-use robust::{Coord, orient2d};
+use crate::geometry::segments::{Orientation, Segment, XY, interpolate_segment_point};
+use crate::geometry::tessellation::exact::{Interval, two_sum};
 
-use super::{Orientation, Segment, XY};
+#[path = "exact_orientation.rs"]
+mod exact_orientation;
+use exact_orientation::orientation_xy as certified_orientation_xy;
 
 // Dekker's split constant for binary64: 2^ceil(53 / 2) + 1.
 const SPLITTER: f64 = 134_217_729.0;
@@ -50,18 +53,74 @@ fn two_product_safe(lhs: f64, rhs: f64, head: f64) -> (f64, f64) {
     (head, lhs_lo * rhs_lo - error_3)
 }
 
+/// Dekker product with an explicit representability certificate for every
+/// intermediate that the error-free-transform proof depends on. A subnormal
+/// intermediate is not rejected for its magnitude; it is rejected because its
+/// exact rounding residual may itself be below binary64 and therefore cannot
+/// be carried by the returned tail.
+fn two_product_certified(lhs: f64, rhs: f64) -> Option<(f64, f64)> {
+    if !lhs.is_normal() || !rhs.is_normal() {
+        return None;
+    }
+    let head = lhs * rhs;
+    if !head.is_normal() {
+        return None;
+    }
+    // Multiplication by an exact power of two only shifts the exponent. A
+    // normal result therefore has no rounding tail and needs none of
+    // Dekker's split intermediates.
+    if normal_power_of_two(lhs) || normal_power_of_two(rhs) {
+        return Some((head, 0.0));
+    }
+    let (lhs_hi, lhs_lo) = split_certified(lhs)?;
+    let (rhs_hi, rhs_lo) = split_certified(rhs)?;
+    let high_high = certified_product(lhs_hi, rhs_hi)?;
+    let error_1 = certified_difference(head, high_high)?;
+    let low_high = certified_product(lhs_lo, rhs_hi)?;
+    let error_2 = certified_difference(error_1, low_high)?;
+    let high_low = certified_product(lhs_hi, rhs_lo)?;
+    let error_3 = certified_difference(error_2, high_low)?;
+    let low_low = certified_product(lhs_lo, rhs_lo)?;
+    let tail = certified_difference(low_low, error_3)?;
+    Some((head, tail))
+}
+
+const fn normal_power_of_two(value: f64) -> bool {
+    let bits = value.to_bits() & 0x7FFF_FFFF_FFFF_FFFF;
+    let exponent = bits >> 52;
+    exponent != 0 && exponent != 0x7FF && bits & ((1_u64 << 52) - 1) == 0
+}
+
+fn split_certified(value: f64) -> Option<(f64, f64)> {
+    let scaled = SPLITTER * value;
+    if !scaled.is_normal() {
+        return None;
+    }
+    let large = certified_difference(scaled, value)?;
+    let high = certified_difference(scaled, large)?;
+    let low = certified_difference(value, high)?;
+    Some((high, low))
+}
+
+fn certified_product(left: f64, right: f64) -> Option<f64> {
+    let product = left * right;
+    (product.is_normal() || binary_zero(left) || binary_zero(right)).then_some(product)
+}
+
+fn certified_difference(left: f64, right: f64) -> Option<f64> {
+    let difference = left - right;
+    (difference.is_normal() || same_stored_value(left, right)).then_some(difference)
+}
+
+const fn same_stored_value(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits() || (binary_zero(left) && binary_zero(right))
+}
+
 fn split(value: f64) -> (f64, f64) {
     let scaled = SPLITTER * value;
     let large = scaled - value;
     let high = scaled - large;
     (high, value - high)
-}
-
-/// Error-free sum (Knuth two-sum): `head + tail == lhs + rhs` exactly.
-fn two_sum(lhs: f64, rhs: f64) -> (f64, f64) {
-    let sum = lhs + rhs;
-    let rhs_part = sum - lhs;
-    (sum, (lhs - (sum - rhs_part)) + (rhs - rhs_part))
 }
 
 pub(super) fn dd_diff(end: f64, start: f64) -> (f64, f64) {
@@ -91,6 +150,316 @@ pub(super) fn dd_div(numerator: (f64, f64), denominator: (f64, f64)) -> f64 {
     let (residual, residual_err) = two_sum(numerator.0, -product.0);
     let residual = residual + (residual_err + (numerator.1 - product.1));
     estimate + residual / denominator.0
+}
+
+#[derive(Clone, Copy)]
+struct DdInterval {
+    head: f64,
+    tail: Interval,
+}
+
+impl DdInterval {
+    const fn exact(value: f64) -> Self {
+        Self {
+            head: value,
+            tail: Interval::exact(0.0),
+        }
+    }
+
+    fn difference(left: f64, right: f64) -> Option<Self> {
+        let (head, tail) = two_sum(left, -right);
+        head.is_finite().then_some(Self {
+            head,
+            tail: Interval::exact(tail),
+        })
+    }
+
+    fn add(self, other: Self) -> Option<Self> {
+        let (head, tail) = two_sum(self.head, other.head);
+        if !head.is_finite() {
+            return None;
+        }
+        let tail = interval_add_nonzero(Interval::exact(tail), self.tail);
+        let tail = interval_add_nonzero(tail, other.tail);
+        tail.is_finite().then_some(Self { head, tail })
+    }
+
+    fn sub(self, other: Self) -> Option<Self> {
+        let (head, tail) = two_sum(self.head, -other.head);
+        if !head.is_finite() {
+            return None;
+        }
+        let tail = interval_add_nonzero(Interval::exact(tail), self.tail);
+        let tail = if interval_is_exact_zero(other.tail) {
+            tail
+        } else {
+            tail.sub(other.tail)
+        };
+        tail.is_finite().then_some(Self { head, tail })
+    }
+
+    /// Outward enclosure of the exact product of the two represented values.
+    /// The high-high product uses Dekker's error-free transform only when its
+    /// result is normal (or algebraically zero); every cross term, including
+    /// low-low, is then accumulated through the shared outward interval.
+    fn mul(self, other: Self) -> Option<Self> {
+        let head_is_zero = binary_zero(self.head) || binary_zero(other.head);
+        let high_product = self.head * other.head;
+        if !head_is_zero && !high_product.is_normal() {
+            return None;
+        }
+        if !high_product.is_finite() {
+            return None;
+        }
+        let (head, product_tail) = if head_is_zero {
+            (high_product, 0.0)
+        } else {
+            two_product_certified(self.head, other.head)?
+        };
+        let mut tail = Interval::exact(product_tail);
+        tail = interval_add_nonzero(
+            tail,
+            interval_mul_nonzero(Interval::exact(self.head), other.tail),
+        );
+        tail = interval_add_nonzero(
+            tail,
+            interval_mul_nonzero(Interval::exact(other.head), self.tail),
+        );
+        tail = interval_add_nonzero(tail, interval_mul_nonzero(self.tail, other.tail));
+        tail.is_finite().then_some(Self { head, tail })
+    }
+
+    fn square(self) -> Option<Self> {
+        let head_is_zero = binary_zero(self.head);
+        let high_product = self.head * self.head;
+        if !head_is_zero && !high_product.is_normal() {
+            return None;
+        }
+        if !high_product.is_finite() {
+            return None;
+        }
+        let (head, product_tail) = if head_is_zero {
+            (high_product, 0.0)
+        } else {
+            two_product_certified(self.head, self.head)?
+        };
+        let doubled_head = self.head * 2.0;
+        if !doubled_head.is_finite() {
+            return None;
+        }
+        let mut tail = Interval::exact(product_tail);
+        tail = interval_add_nonzero(
+            tail,
+            interval_mul_nonzero(Interval::exact(doubled_head), self.tail),
+        );
+        tail = interval_add_nonzero(tail, interval_mul_nonzero(self.tail, self.tail));
+        tail.is_finite().then_some(Self { head, tail })
+    }
+
+    fn scale(self, value: f64) -> Option<Self> {
+        self.mul(Self::exact(value))
+    }
+
+    fn bounds(self) -> Interval {
+        if interval_is_exact_zero(self.tail) {
+            Interval::exact(self.head)
+        } else {
+            Interval::exact(self.head).add(self.tail)
+        }
+    }
+
+    fn approximate_pair(self) -> (f64, f64) {
+        let midpoint = self.tail.lo * 0.5 + self.tail.hi * 0.5;
+        (self.head, midpoint)
+    }
+}
+
+const fn binary_zero(value: f64) -> bool {
+    value.to_bits().trailing_zeros() >= 63
+}
+
+const fn interval_is_exact_zero(value: Interval) -> bool {
+    binary_zero(value.lo) && binary_zero(value.hi)
+}
+
+fn interval_add_nonzero(left: Interval, right: Interval) -> Interval {
+    if interval_is_exact_zero(left) {
+        right
+    } else if interval_is_exact_zero(right) {
+        left
+    } else {
+        left.add(right)
+    }
+}
+
+fn interval_mul_nonzero(left: Interval, right: Interval) -> Interval {
+    if interval_is_exact_zero(left) || interval_is_exact_zero(right) {
+        Interval::exact(0.0)
+    } else if left.lo.to_bits() == left.hi.to_bits() && right.lo.to_bits() == right.hi.to_bits() {
+        let product = left.lo * right.lo;
+        Interval {
+            lo: product.next_down(),
+            hi: product.next_up(),
+        }
+    } else {
+        left.mul(right)
+    }
+}
+
+fn dd_interval_dot(
+    left_a: DdInterval,
+    left_b: DdInterval,
+    right_a: DdInterval,
+    right_b: DdInterval,
+) -> Option<DdInterval> {
+    left_a.mul(left_b)?.add(right_a.mul(right_b)?)
+}
+
+fn dd_interval_squared_norm(x: DdInterval, y: DdInterval) -> Option<DdInterval> {
+    x.square()?.add(y.square()?)
+}
+
+fn half_ulp_margin(value: f64) -> Option<f64> {
+    if !value.is_normal() {
+        return None;
+    }
+    let below = (value - value.next_down()) * 0.5;
+    let above = (value.next_up() - value) * 0.5;
+    let margin = below.min(above);
+    (margin > 0.0 && margin.is_finite()).then_some(margin)
+}
+
+fn residual_inside_rounding_cell(
+    residual: DdInterval,
+    denominator: DdInterval,
+    rounded: f64,
+) -> bool {
+    let Some(margin) = half_ulp_margin(rounded) else {
+        return false;
+    };
+    let residual = residual.bounds();
+    let denominator = denominator.bounds();
+    if !residual.is_finite() || !denominator.is_finite() || denominator.lo <= 0.0 {
+        return false;
+    }
+    let residual_magnitude = residual.lo.abs().max(residual.hi.abs());
+    let rounding_radius = Interval::exact(margin).mul(denominator).lo;
+    residual_magnitude < rounding_radius
+}
+
+/// Prove that `fraction` is the correctly rounded exact ratio and return the
+/// correctly rounded exact foot on both axes. The ordinary interpolation is
+/// retained when it already occupies those cells; otherwise a compensated
+/// coordinate proposal is admitted only after the same proof. The comparison
+/// is strict, so midpoint ties and every range-error ambiguity decline.
+fn certified_projection_coordinate(
+    start: f64,
+    delta: DdInterval,
+    initial: f64,
+    fraction: f64,
+    ratio_residual: DdInterval,
+    denominator: DdInterval,
+) -> Option<f64> {
+    let coordinate_residual = |rounded| {
+        let scaled_delta = delta.scale(fraction)?;
+        let affine = DdInterval::exact(start)
+            .add(scaled_delta)?
+            .sub(DdInterval::exact(rounded))?;
+        // D * (exact_foot - rounded) =
+        // D * (start + fraction * delta - rounded)
+        //   + delta * (N - fraction * D).
+        affine.mul(denominator)?.add(delta.mul(ratio_residual)?)
+    };
+
+    let initial_residual = coordinate_residual(initial)?;
+    if residual_inside_rounding_cell(initial_residual, denominator, initial) {
+        return Some(initial);
+    }
+    let correction = dd_div(
+        initial_residual.approximate_pair(),
+        denominator.approximate_pair(),
+    );
+    let corrected = initial + correction;
+    let corrected_residual = coordinate_residual(corrected)?;
+    residual_inside_rounding_cell(corrected_residual, denominator, corrected).then_some(corrected)
+}
+
+fn certified_projection_fraction(
+    fraction: f64,
+    segment: Segment,
+    dx: DdInterval,
+    dy: DdInterval,
+    numerator: DdInterval,
+    denominator: DdInterval,
+) -> Option<XY> {
+    let ratio_residual = certified_projection_ratio(fraction, numerator, denominator)?;
+
+    let foot = interpolate_segment_point(segment.start, segment.end, fraction);
+    Some(XY::new(
+        certified_projection_coordinate(
+            segment.start.x,
+            dx,
+            foot.x,
+            fraction,
+            ratio_residual,
+            denominator,
+        )?,
+        certified_projection_coordinate(
+            segment.start.y,
+            dy,
+            foot.y,
+            fraction,
+            ratio_residual,
+            denominator,
+        )?,
+    ))
+}
+
+fn certified_projection_ratio(
+    fraction: f64,
+    numerator: DdInterval,
+    denominator: DdInterval,
+) -> Option<DdInterval> {
+    if !fraction.is_normal() || !(0.0..1.0).contains(&fraction) {
+        return None;
+    }
+    let scaled_denominator = denominator.scale(fraction)?;
+    let ratio_residual = numerator.sub(scaled_denominator)?;
+    if !residual_inside_rounding_cell(ratio_residual, denominator, fraction) {
+        return None;
+    }
+    Some(ratio_residual)
+}
+
+/// Certified B-stage for opposing projection products. The raw quotient is
+/// tried first to retain ordinary ratio and witness bits. A compensated
+/// quotient is merely a second candidate, and its reconstructed coordinates
+/// cannot leave this function until the shared outward interval proves every
+/// affected rounding cell.
+pub(super) fn certified_projection(
+    point: XY,
+    segment: Segment,
+    raw_fraction: f64,
+) -> Option<(f64, XY)> {
+    let dx = DdInterval::difference(segment.end.x, segment.start.x)?;
+    let dy = DdInterval::difference(segment.end.y, segment.start.y)?;
+    let qx = DdInterval::difference(point.x, segment.start.x)?;
+    let qy = DdInterval::difference(point.y, segment.start.y)?;
+    let numerator = dd_interval_dot(qx, dx, qy, dy)?;
+    let denominator = dd_interval_squared_norm(dx, dy)?;
+
+    if certified_projection_ratio(raw_fraction, numerator, denominator).is_some() {
+        return Some((
+            raw_fraction,
+            interpolate_segment_point(segment.start, segment.end, raw_fraction),
+        ));
+    }
+    let compensated = dd_div(numerator.approximate_pair(), denominator.approximate_pair());
+    if compensated.to_bits() == raw_fraction.to_bits() {
+        return None;
+    }
+    certified_projection_fraction(compensated, segment, dx, dy, numerator, denominator)
+        .map(|foot| (compensated, foot))
 }
 
 pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, i16) {
@@ -152,59 +521,7 @@ pub(in crate::geometry) fn orientation_xy(
     cx: f64,
     cy: f64,
 ) -> Orientation {
-    let a = Coord { x: ax, y: ay };
-    let b = Coord { x: bx, y: by };
-    let c = Coord { x: cx, y: cy };
-    let raw = orient2d(a, b, c);
-    // Preserve a finite nonzero adaptive result before any scaling, which
-    // could erase a meaningful 2^-1000 offset beside a 2^1000 coordinate.
-    if raw.is_finite() && raw != 0.0 {
-        return classify_orientation(raw);
-    }
-
-    let largest_x = [ax, bx, cx]
-        .into_iter()
-        .map(f64::abs)
-        .fold(0.0_f64, f64::max);
-    let largest_y = [ay, by, cy]
-        .into_iter()
-        .map(f64::abs)
-        .fold(0.0_f64, f64::max);
-    let x_shift = scale_shift_for_magnitude(largest_x);
-    let y_shift = scale_shift_for_magnitude(largest_y);
-    if raw == 0.0 && x_shift == 0 && y_shift == 0 {
-        // In the normal exponent frame, adaptive zero certifies collinearity;
-        // avoid two more predicates for every point on a shared edge.
-        return Orientation::Collinear;
-    }
-
-    // A far third point can make two mixed-exponent products `inf - inf`.
-    // Cyclic permutations preserve orientation while changing that origin.
-    for translated in [orient2d(b, c, a), orient2d(c, a, b)] {
-        if translated.is_finite() && translated != 0.0 {
-            return classify_orientation(translated);
-        }
-    }
-
-    let (ax, ay, bx, by, cx, cy) = if x_shift == 0 && y_shift == 0 {
-        (ax, ay, bx, by, cx, cy)
-    } else {
-        let x_scale = exact_power_of_two(x_shift);
-        let y_scale = exact_power_of_two(y_shift);
-        (
-            ax * x_scale,
-            ay * y_scale,
-            bx * x_scale,
-            by * y_scale,
-            cx * x_scale,
-            cy * y_scale,
-        )
-    };
-    classify_orientation(orient2d(
-        Coord { x: ax, y: ay },
-        Coord { x: bx, y: by },
-        Coord { x: cx, y: cy },
-    ))
+    certified_orientation_xy(ax, ay, bx, by, cx, cy)
 }
 
 pub(crate) fn orientation(a: impl Into<XY>, b: impl Into<XY>, c: impl Into<XY>) -> Orientation {
@@ -240,16 +557,16 @@ pub(in crate::geometry) fn ray_crossing_is_right(
     py: f64,
 ) -> bool {
     debug_assert!((ay > py) != (by > py), "ray-crossing straddle precondition");
-    // A-stage filter first, textually matching the SIMD `ray_crossing_lanes`
-    // kernel: a determinant whose magnitude clears the Shewchuk bound has the
-    // exact sign, so the common case never pays the adaptive `orient2d` call.
+    // All-input Ozaki filter first, textually matching the SIMD kernel. The
+    // minimum-normal term covers underflow; uncertainty reaches the exact
+    // stored-dyadic predicate.
     // Every escape hatch falls through the same comparison: a NaN or +-inf
     // `det` (term overflow) and a zero/near-tie `det` all fail `>`, taking
     // the exponent-normalized exact route below.
     let t1 = (bx - ax) * (py - ay);
     let t2 = (px - ax) * (by - ay);
     let det = t1 - t2;
-    if det.abs() > (t1.abs() + t2.abs()) * CCW_ERRBOUND_A {
+    if det.abs() > ((t1.abs() + t2.abs()) + f64::MIN_POSITIVE) * CCW_ERRBOUND_A {
         return (det > 0.0) == (by > ay);
     }
     match orientation_xy(ax, ay, bx, by, px, py) {
@@ -258,12 +575,23 @@ pub(in crate::geometry) fn ray_crossing_is_right(
     }
 }
 
-fn classify_orientation(value: f64) -> Orientation {
-    if value == 0.0 {
-        Orientation::Collinear
-    } else if value > 0.0 {
-        Orientation::CounterClockwise
-    } else {
-        Orientation::Clockwise
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ray_filter_declines_wrong_nonzero_underflow_sign() {
+        let mu = f64::from_bits(1);
+        let a = (1.0, -4096.0 * mu);
+        let b = (-2.0_f64.powi(-12), 6144.0 * mu);
+        let p = (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
+        assert_ne!(a.1 > p.1, b.1 > p.1);
+        let t1 = (b.0 - a.0) * (p.1 - a.1);
+        let t2 = (p.0 - a.0) * (b.1 - a.1);
+        let determinant = t1 - t2;
+        let bound = ((t1.abs() + t2.abs()) + f64::MIN_POSITIVE) * CCW_ERRBOUND_A;
+        assert_eq!(determinant.to_bits(), (-mu).to_bits());
+        assert!(determinant.abs() <= bound);
+        assert!(ray_crossing_is_right(a.0, a.1, b.0, b.1, p.0, p.1));
     }
 }

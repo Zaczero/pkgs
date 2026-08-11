@@ -1,4 +1,4 @@
-use super::*;
+use crate::array::{Bound, Py, PyAny, PyGeometryArray, PyResult, Python, SpatialCurve, pymethods};
 
 #[pymethods]
 impl PyGeometryArray {

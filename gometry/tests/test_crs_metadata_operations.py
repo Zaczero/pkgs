@@ -273,9 +273,9 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
         == local_operation['description']
     )
     assert (
-        gm.crs_catalog(authority='EPSG', kind='projected', area=local_area_dict)[0][
-            'kind'
-        ]
+        gm.crs_catalog(
+            authority='EPSG', kind='projected', area_of_interest=local_area_dict
+        )[0]['kind']
         == 'projected'
     )
     remote_operation = gm.CRS(2263).operation(

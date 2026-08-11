@@ -1,13 +1,11 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::arrangement::{WindingWeight, departure_angle, departure_scales};
+use crate::geometry::{PointKey, Segment, XY, same_point};
 
 #[derive(Clone, Copy)]
 pub(crate) struct LoopCut {
@@ -48,6 +46,20 @@ pub(crate) fn positional_loop_cuts(
             PointKey::new(segments[index as usize].end)
                 != PointKey::new(segments[next as usize].start)
         }) {
+            return None;
+        }
+    }
+    // Key-coincident vertices across loops (exact duplicate multiparts,
+    // shared endpoints, T-junctions) make positional identity impossible —
+    // bail BEFORE the O(E²) noding pass. Previously this check ran after
+    // full_noding_events, so stacked multiparts paid a full quadratic node
+    // only to fall back to the general path that dedups first.
+    {
+        let mut seen = crate::collections::HashSet::with_capacity(n);
+        if !segments
+            .iter()
+            .all(|segment| seen.insert(PointKey::new(segment.start)))
+        {
             return None;
         }
     }
@@ -121,12 +133,7 @@ pub(crate) fn positional_loop_cuts(
         let origin = segments[ordinal as usize].start;
         let slice = &mut cuts[slice_start..slice_end];
         slice.sort_by(|left, right| {
-            crate::geometry::segments::point_distance_squared(origin, left.point)
-                .partial_cmp(&crate::geometry::segments::point_distance_squared(
-                    origin,
-                    right.point,
-                ))
-                .unwrap_or(Ordering::Equal)
+            crate::geometry::segments::distance_order_from_origin(origin, left.point, right.point)
         });
         // Same-coordinate neighbors are impossible here: `same_point` and
         // `PointKey` share one canonicalization, so topologically equal
@@ -285,11 +292,13 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
             }
         } else {
             let origin = points[vertex];
+            let (scale_x, scale_y) =
+                departure_scales(points, origin, row.clone().map(|slot| targets[slot]));
             let mut entries = [(0.0_f64, 0_u32, W::UNSET); 4];
             for (entry, slot) in std::iter::zip(&mut entries, row.clone()) {
                 let to = points[targets[slot] as usize];
                 *entry = (
-                    crate::geometry::predicates::pseudo_angle(to.x - origin.x, to.y - origin.y),
+                    departure_angle(origin, to, scale_x, scale_y),
                     targets[slot],
                     multiplicities[slot],
                 );

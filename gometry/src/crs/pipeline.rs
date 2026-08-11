@@ -8,8 +8,25 @@
 //! (XY/XYZ/XYZT lanes). Reaches the FFI primitives, thread-local caches, and
 //! error helpers in the parent `crs` module via `use super::*`.
 
-use super::*;
+use crate::crs::runtime::{begin_proj_operation, publish_accuracy_diagnostic};
+use crate::crs::{
+    CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
+    ProjPipeline, ProjTransformOptions, TransformOptions, coordinates_are_finite,
+    create_crs_transform_object, cstring, operation_info_from_pj, proj_context_error_message,
+    proj_transform_error, ptr,
+};
 use crate::error::Result;
+
+fn begin_accuracy_diagnostics_for_batch() {
+    if let Some(message) = super::take_accuracy_diagnostic() {
+        // A batch may invoke the pipeline once per row (mixed arrays and
+        // densified bounds). Preserve an earlier affected-row diagnostic so
+        // the Python boundary still emits exactly one warning for the batch.
+        publish_accuracy_diagnostic(message);
+    } else {
+        super::begin_accuracy_diagnostics();
+    }
+}
 
 impl ProjPipeline {
     pub(crate) fn new(source: &str, target: &str, options: &TransformOptions) -> Result<Self> {
@@ -19,21 +36,12 @@ impl ProjPipeline {
         let transform_options = ProjTransformOptions::new(options)?;
         let context = ProjContext::new()
             .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
-        let source_transform_object = create_crs_transform_object(
-            context.as_ptr(),
-            source_crs.as_ptr(),
-            source,
-            options.source_epoch,
-        )?;
-        let target_transform_object = create_crs_transform_object(
-            context.as_ptr(),
-            target_crs.as_ptr(),
-            target,
-            options.target_epoch,
-        )?;
-        // SAFETY: `context`, `source_transform_object`, and `target_transform_object`
-        // are valid, non-null PJ pointers owned by live RAII guards for this call;
-        // `area` and `transform_options` are valid-or-null per PROJ's C API.
+        let source_transform_object =
+            create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
+        let target_transform_object =
+            create_crs_transform_object(&context, &target_crs, target, options.target_epoch)?;
+        // SAFETY: DOC-H. Typed live context/objects; area/options valid-or-null
+        // per PROJ C API; returns uniquely owned PJ or null.
         let raw = unsafe {
             proj_sys::proj_create_crs_to_crs_from_pj(
                 context.as_ptr(),
@@ -43,30 +51,28 @@ impl ProjPipeline {
                 transform_options.as_ptr(),
             )
         };
-        if raw.is_null() {
-            let message = proj_context_error_message(context.as_ptr());
+        // SAFETY: non-null return is uniquely owned by the caller.
+        let Some(raw) = (unsafe { OwnedPj::try_from_owned(raw) }) else {
+            let message = proj_context_error_message(&context);
             return Err(CrsError::transform_create(source, target, message));
-        }
-        // SAFETY: `raw` was just checked non-null and is owned by this guard.
-        let raw = unsafe { OwnedPj::from_owned(raw) };
-        // SAFETY: `context` and `raw` are valid, non-null PJ pointers (`raw` was just
-        // null-checked) owned by live guards for the duration of the call.
+        };
+        // SAFETY: DOC-H. Typed context + owned raw; returns uniquely owned
+        // normalized transform or null.
         let transform =
             unsafe { proj_sys::proj_normalize_for_visualization(context.as_ptr(), raw.as_ptr()) };
-        if transform.is_null() {
+        // SAFETY: non-null return is uniquely owned.
+        let Some(transform) = (unsafe { OwnedPj::try_from_owned(transform) }) else {
             return Err(CrsError::transform_create(
                 source,
                 target,
                 "PROJ could not normalize the CRS operation for X/Y order",
             ));
-        }
-        // SAFETY: `transform` was just checked non-null and is owned by this guard.
-        let transform = unsafe { OwnedPj::from_owned(transform) };
+        };
         Ok(Self { transform, context })
     }
 
     pub(crate) fn requires_coordinate_epoch(&self) -> bool {
-        // SAFETY: self.context and self.transform are valid PROJ handles.
+        // SAFETY: DOC-H. Typed self owners on creating thread.
         unsafe {
             proj_sys::proj_coordoperation_requires_per_coordinate_input_time(
                 self.context.as_ptr(),
@@ -89,18 +95,17 @@ impl ProjPipeline {
         let context = ProjContext::new().map_err(|error| {
             CrsError::crs_create(definition.to_string_lossy().into_owned(), error.to_string())
         })?;
-        // SAFETY: `context` is a valid live PJ_CONTEXT and `definition` is a valid
-        // NUL-terminated C string that outlives this call.
+        // SAFETY: DOC-H. Typed live context; definition is a live CString;
+        // returns uniquely owned PJ or null.
         let transform = unsafe { proj_sys::proj_create(context.as_ptr(), definition.as_ptr()) };
-        if transform.is_null() {
-            let message = proj_context_error_message(context.as_ptr());
+        // SAFETY: non-null return is uniquely owned.
+        let Some(transform) = (unsafe { OwnedPj::try_from_owned(transform) }) else {
+            let message = proj_context_error_message(&context);
             return Err(CrsError::crs_create(
                 definition.to_string_lossy().into_owned(),
                 message,
             ));
-        }
-        // SAFETY: `transform` was just checked non-null and is owned by this guard.
-        let transform = unsafe { OwnedPj::from_owned(transform) };
+        };
         Ok(Self { transform, context })
     }
 
@@ -109,6 +114,8 @@ impl ProjPipeline {
         bounds: (f64, f64, f64, f64),
         densify: u32,
     ) -> Result<(f64, f64, f64, f64)> {
+        super::record_transform_engine(false);
+        begin_accuracy_diagnostics_for_batch();
         let densify = densify as i32;
         let mut out_xmin = f64::NAN;
         let mut out_ymin = f64::NAN;
@@ -116,8 +123,8 @@ impl ProjPipeline {
         let mut out_ymax = f64::NAN;
         let context = self.context.as_ptr();
         let transform = self.transform.as_ptr();
-        // SAFETY: self owns a valid PROJ context/transform. Output pointers
-        // reference local f64 storage for PROJ to fill.
+        // SAFETY: DOC-H + OUT. Typed self owners; six initialized local f64
+        // slots exclusive for the call; no Python callback.
         let ok = unsafe {
             proj_sys::proj_errno_reset(transform);
             proj_sys::proj_trans_bounds(
@@ -142,8 +149,7 @@ impl ProjPipeline {
         {
             Ok((out_xmin, out_ymin, out_xmax, out_ymax))
         } else {
-            // SAFETY: self owns the live PROJ transform queried immediately after
-            // the failed bounds transform on the same object.
+            // SAFETY: DOC-H. Live transform queried immediately after the failed call.
             let error = unsafe { proj_sys::proj_errno(transform) };
             Err(GeometryErrorKind::projection(proj_transform_error(error)))
         }
@@ -157,6 +163,8 @@ impl ProjPipeline {
         if densify == 0 {
             return self.transform_bounds_3d_corners(bounds);
         }
+        super::record_transform_engine(false);
+        begin_accuracy_diagnostics_for_batch();
         let densify = densify as i32;
         let mut out_xmin = f64::NAN;
         let mut out_ymin = f64::NAN;
@@ -166,8 +174,8 @@ impl ProjPipeline {
         let mut out_zmax = f64::NAN;
         let context = self.context.as_ptr();
         let transform = self.transform.as_ptr();
-        // SAFETY: self owns a valid PROJ context/transform. Output pointers
-        // reference local f64 storage for PROJ to fill.
+        // SAFETY: DOC-H + OUT. Typed self owners; six initialized local f64
+        // slots exclusive for the call; no Python callback.
         let ok = unsafe {
             proj_sys::proj_errno_reset(transform);
             proj_sys::proj_trans_bounds_3D(
@@ -196,8 +204,7 @@ impl ProjPipeline {
         {
             Ok((out_xmin, out_ymin, out_zmin, out_xmax, out_ymax, out_zmax))
         } else {
-            // SAFETY: self owns the live PROJ transform queried immediately after
-            // the failed bounds transform on the same object.
+            // SAFETY: DOC-H. Live transform queried immediately after the failed call.
             let error = unsafe { proj_sys::proj_errno(transform) };
             Err(GeometryErrorKind::projection(proj_transform_error(error)))
         }
@@ -248,6 +255,11 @@ impl ProjPipeline {
         mut t: Option<&mut [f64]>,
         direction: ProjDirection,
     ) -> Result<()> {
+        // Every lane transform converges here before entering PROJ. Starting
+        // diagnostics at the FFI seam means a future public or internal
+        // consumer cannot accidentally bypass callback capture; Python
+        // boundaries drain the captured message once per enclosing call.
+        begin_accuracy_diagnostics_for_batch();
         // The `unsafe` `proj_trans_generic` call below reads/writes each lane
         // up to `x.len()` elements, so a length mismatch would be an
         // out-of-bounds FFI access (UB). Keep those safety preconditions
@@ -277,11 +289,13 @@ impl ProjPipeline {
         if x.is_empty() {
             return Ok(());
         }
-        // SAFETY: x/y (and any present z/t) are same-length mutable f64 slices;
-        // strides are expressed in bytes as PROJ requires; absent lanes pass a
-        // null pointer with zero stride/count so PROJ neither reads nor writes
-        // them. The raw lane pointers alias the slices only for the duration of
-        // the FFI call, after which the slices are re-borrowed for validation.
+        super::record_transform_engine(false);
+        begin_proj_operation();
+        // SAFETY: DOC-LANE. The fallible checks above prove x/y/z equality and a
+        // t lane of len x or 1. All pointers come from exclusive Rust-owned f64
+        // slices and remain live for this synchronous call; null/count-zero
+        // lanes are absent. The PJ is thread-confined and PROJ cannot suspend
+        // into Python.
         unsafe {
             let transform = self.transform.as_ptr();
             proj_sys::proj_errno_reset(transform);
@@ -330,12 +344,11 @@ impl ProjPipeline {
         z: Option<f64>,
         t: Option<f64>,
     ) -> Result<OperationInfo> {
-        // SAFETY: self owns a valid PROJ context/transform. proj_trans operates
-        // on a value coordinate, and the last-used operation returned by PROJ is
-        // owned by the caller and destroyed below.
+        let transform = self.transform.as_ptr();
+        // SAFETY: DOC-H. Typed self owners; proj_trans takes coordinates by
+        // value; returned last-used operation is uniquely owned when non-null.
+        // No Python callback.
         unsafe {
-            let context = self.context.as_ptr();
-            let transform = self.transform.as_ptr();
             proj_sys::proj_errno_reset(transform);
             let output = proj_sys::proj_trans(
                 transform,
@@ -346,35 +359,28 @@ impl ProjPipeline {
             if error != 0 || !output.v[0].is_finite() || !output.v[1].is_finite() {
                 return Err(GeometryErrorKind::projection(proj_transform_error(error)));
             }
-            let operation = proj_sys::proj_trans_get_last_used_operation(transform);
-            if operation.is_null() {
-                return Ok(self.operation_info(source, target, source_epoch, target_epoch));
-            }
-            // SAFETY: `operation` was just checked non-null and is owned by this guard.
-            let operation = OwnedPj::from_owned(operation);
-            let normalized =
-                proj_sys::proj_normalize_for_visualization(context, operation.as_ptr());
-            let normalized = if normalized.is_null() {
-                None
-            } else {
-                // SAFETY: `normalized` was just checked non-null and is owned by this guard.
-                Some(OwnedPj::from_owned(normalized))
-            };
-            let operation_for_info = normalized
-                .as_ref()
-                .map_or(operation.as_ptr(), OwnedPj::as_ptr);
-            let operation_for_info = BorrowedPj::from_borrowed(operation_for_info)
-                .expect("operation_for_info is non-null");
-            let info = operation_info_from_pj(
-                context,
-                operation_for_info.as_ptr(),
-                source,
-                target,
-                source_epoch,
-                target_epoch,
-            );
-            Ok(info)
         }
+        // SAFETY: DOC-H. Live transform; returns uniquely owned PJ or null.
+        let operation = unsafe { proj_sys::proj_trans_get_last_used_operation(transform) };
+        // SAFETY: non-null is uniquely owned.
+        let Some(operation) = (unsafe { OwnedPj::try_from_owned(operation) }) else {
+            return Ok(self.operation_info(source, target, source_epoch, target_epoch));
+        };
+        // SAFETY: DOC-H. Typed context + owned operation.
+        let normalized = unsafe {
+            proj_sys::proj_normalize_for_visualization(self.context.as_ptr(), operation.as_ptr())
+        };
+        // SAFETY: non-null normalized is uniquely owned.
+        let normalized = unsafe { OwnedPj::try_from_owned(normalized) };
+        let operation_for_info = normalized.as_ref().unwrap_or(&operation);
+        Ok(operation_info_from_pj(
+            &self.context,
+            operation_for_info,
+            source,
+            target,
+            source_epoch,
+            target_epoch,
+        ))
     }
 
     pub(crate) fn operation_info(
@@ -385,8 +391,8 @@ impl ProjPipeline {
         target_epoch: Option<f64>,
     ) -> OperationInfo {
         operation_info_from_pj(
-            self.context.as_ptr(),
-            self.transform.as_ptr(),
+            &self.context,
+            &self.transform,
             source,
             target,
             source_epoch,

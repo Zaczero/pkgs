@@ -1,5 +1,14 @@
-use super::*;
-use crate::crs::*;
+use std::ffi::CString;
+use std::ptr;
+
+use crate::crs::introspect::{
+    area_of_use, crs_type_name, grids, method_info, operation_parameters, operation_steps,
+};
+use crate::crs::{
+    AuthorityObjectInfo, CrsCoordinateOperationInfo, CrsError, DatumInfo, EllipsoidInfo,
+    OperationInfo, OwnedPj, PrimeMeridianInfo, ProjContext, copy_proj_c_string,
+    proj_context_error_message,
+};
 use crate::error::Result;
 
 #[repr(transparent)]
@@ -44,64 +53,71 @@ pub(crate) const fn validate_min_confidence(value: Confidence) {
 }
 
 pub(crate) fn create_crs_transform_object(
-    context: *mut proj_sys::PJ_CONTEXT,
-    definition: *const c_char,
+    context: &ProjContext,
+    definition: &CString,
     crs: &str,
     epoch: Option<f64>,
 ) -> Result<OwnedPj> {
-    // SAFETY: definition is a valid C string for the duration of the call, and a
-    // non-null returned object is owned by the guard below.
-    let raw = unsafe { proj_sys::proj_create(context, definition) };
-    if raw.is_null() {
+    // SAFETY: DOC-H. Typed live context; definition is a live NUL-terminated
+    // CString; non-null return is uniquely owned. Creating-thread confined.
+    let raw = unsafe { proj_sys::proj_create(context.as_ptr(), definition.as_ptr()) };
+    // SAFETY: non-null return is uniquely owned by the caller per PROJ.
+    let Some(object) = (unsafe { OwnedPj::try_from_owned(raw) }) else {
         return Err(CrsError::crs_create(
             crs,
             proj_context_error_message(context),
         ));
-    }
-    // SAFETY: `raw` was just checked non-null and is owned by this guard.
-    let object = unsafe { OwnedPj::from_owned(raw) };
+    };
     if let Some(epoch) = epoch {
-        // SAFETY: context/object are valid. PROJ returns owned metadata or null.
-        let metadata =
-            unsafe { proj_sys::proj_coordinate_metadata_create(context, object.as_ptr(), epoch) };
-        if metadata.is_null() {
+        // SAFETY: DOC-H. Typed context + owned object; returns owned metadata or null.
+        let metadata = unsafe {
+            proj_sys::proj_coordinate_metadata_create(context.as_ptr(), object.as_ptr(), epoch)
+        };
+        // SAFETY: non-null return is uniquely owned.
+        let Some(metadata) = (unsafe { OwnedPj::try_from_owned(metadata) }) else {
             return Err(CrsError::crs_create(
                 crs,
                 proj_context_error_message(context),
             ));
-        }
-        // SAFETY: `metadata` was just checked non-null and is owned by this guard.
-        Ok(unsafe { OwnedPj::from_owned(metadata) })
+        };
+        Ok(metadata)
     } else {
         Ok(object)
     }
 }
 
 pub(crate) fn operation_info_from_pj(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *mut proj_sys::PJ,
+    context: &ProjContext,
+    operation: &OwnedPj,
     source: String,
     target: String,
     source_epoch: Option<f64>,
     target_epoch: Option<f64>,
 ) -> OperationInfo {
-    // SAFETY: operation is a valid PROJ coordinate operation. The returned info
-    // struct contains borrowed C strings copied immediately.
+    // SAFETY: DOC-H. Typed live context/operation on creating thread. Returned
+    // info struct contains borrowed C strings copied immediately. No Python
+    // callback.
     unsafe {
-        let info = proj_sys::proj_pj_info(operation);
+        let info = proj_sys::proj_pj_info(operation.as_ptr());
         OperationInfo {
-            name: string_from_ptr(info.id),
-            definition: string_from_ptr(info.definition),
-            description: string_from_ptr(info.description),
+            name: copy_proj_c_string(info.id),
+            definition: copy_proj_c_string(info.definition),
+            description: copy_proj_c_string(info.description),
             accuracy: finite_nonnegative(info.accuracy),
             has_inverse: info.has_inverse != 0,
             has_ballpark_transformation: proj_sys::proj_coordoperation_has_ballpark_transformation(
-                context, operation,
+                context.as_ptr(),
+                operation.as_ptr(),
             ) != 0,
             requires_coordinate_epoch:
-                proj_sys::proj_coordoperation_requires_per_coordinate_input_time(context, operation)
-                    != 0,
-            instantiable: proj_sys::proj_coordoperation_is_instantiable(context, operation) != 0,
+                proj_sys::proj_coordoperation_requires_per_coordinate_input_time(
+                    context.as_ptr(),
+                    operation.as_ptr(),
+                ) != 0,
+            instantiable: proj_sys::proj_coordoperation_is_instantiable(
+                context.as_ptr(),
+                operation.as_ptr(),
+            ) != 0,
             method: method_info(context, operation),
             parameters: operation_parameters(context, operation),
             grids: grids(context, operation),
@@ -116,33 +132,30 @@ pub(crate) fn operation_info_from_pj(
 }
 
 pub(crate) fn exported_owned_crs(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *mut proj_sys::PJ,
+    context: &ProjContext,
+    object: Option<OwnedPj>,
     crs: String,
     format: &'static str,
 ) -> Result<String> {
-    if object.is_null() {
+    let Some(object) = object else {
         return Err(CrsError::export(
             crs,
             format,
             proj_context_error_message(context),
         ));
-    }
-    let authority = id_authority(object).map(|(authority, code)| format!("{authority}:{code}"));
-    // SAFETY: object/context are valid; PROJ returns an object-lifetime string.
+    };
+    let authority = id_authority(&object).map(|(authority, code)| format!("{authority}:{code}"));
+    // SAFETY: DOC-H. Typed owners; PROJ returns object-lifetime WKT string.
     let wkt = unsafe {
-        string_from_ptr(proj_sys::proj_as_wkt(
-            context,
-            object,
+        copy_proj_c_string(proj_sys::proj_as_wkt(
+            context.as_ptr(),
+            object.as_ptr(),
             proj_sys::PJ_WKT_TYPE_PJ_WKT2_2019,
             ptr::null(),
         ))
     };
-    // SAFETY: object was returned by PROJ for this call and is no longer used
-    // after all metadata/export strings have been copied.
-    unsafe {
-        proj_sys::proj_destroy(object);
-    }
+    // `object` drops here after strings are copied (OwnedPj Drop).
+    drop(object);
     if let Some(authority) = authority {
         return Ok(authority);
     }
@@ -157,112 +170,111 @@ pub(crate) fn split_authority(pair: Option<(String, String)>) -> (Option<String>
     })
 }
 
-pub(crate) fn id_authority(object: *const proj_sys::PJ) -> Option<(String, String)> {
-    // SAFETY: object is a valid PROJ object and index zero is the primary
-    // authority identifier when present.
+pub(crate) fn id_authority(object: &OwnedPj) -> Option<(String, String)> {
+    // SAFETY: DOC-H. Typed live object; index zero is the primary authority
+    // identifier when present; strings copied immediately.
     unsafe {
-        let auth = string_from_ptr(proj_sys::proj_get_id_auth_name(object, 0))?;
-        let code = string_from_ptr(proj_sys::proj_get_id_code(object, 0))?;
+        let auth = copy_proj_c_string(proj_sys::proj_get_id_auth_name(object.as_ptr(), 0))?;
+        let code = copy_proj_c_string(proj_sys::proj_get_id_code(object.as_ptr(), 0))?;
         Some((auth, code))
     }
 }
 
 pub(crate) fn authority_object_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
+    context: &ProjContext,
+    object: &OwnedPj,
 ) -> AuthorityObjectInfo {
-    // SAFETY: object is valid for immediate metadata inspection.
+    // SAFETY: DOC-H. Typed live object for immediate metadata inspection.
     unsafe {
-        let authority = string_from_ptr(proj_sys::proj_get_id_auth_name(object, 0));
-        let code = string_from_ptr(proj_sys::proj_get_id_code(object, 0));
+        let authority = copy_proj_c_string(proj_sys::proj_get_id_auth_name(object.as_ptr(), 0));
+        let code = copy_proj_c_string(proj_sys::proj_get_id_code(object.as_ptr(), 0));
         let crs = match (&authority, &code) {
             (Some(authority), Some(code)) => format!("{authority}:{code}"),
-            _ => string_from_ptr(proj_sys::proj_get_name(object))
+            _ => copy_proj_c_string(proj_sys::proj_get_name(object.as_ptr()))
                 .unwrap_or_else(|| "unknown".to_owned()),
         };
         AuthorityObjectInfo {
             crs,
             authority,
             code,
-            name: string_from_ptr(proj_sys::proj_get_name(object)),
-            kind: crs_type_name(proj_sys::proj_get_type(object)),
-            deprecated: proj_sys::proj_is_deprecated(object) != 0,
+            name: copy_proj_c_string(proj_sys::proj_get_name(object.as_ptr())),
+            kind: crs_type_name(proj_sys::proj_get_type(object.as_ptr())),
+            deprecated: proj_sys::proj_is_deprecated(object.as_ptr()) != 0,
             area_of_use: area_of_use(context, object),
         }
     }
 }
 
 pub(crate) fn owned_authority_object_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *mut proj_sys::PJ,
+    context: &ProjContext,
+    object: Option<OwnedPj>,
 ) -> Option<AuthorityObjectInfo> {
-    if object.is_null() {
-        return None;
-    }
-    let info = authority_object_info(context, object);
-    // SAFETY: object is owned by the caller and no longer used after metadata is
-    // copied into the Rust value.
-    unsafe {
-        proj_sys::proj_destroy(object);
-    }
+    let object = object?;
+    let info = authority_object_info(context, &object);
+    // Drop destroys the owned PJ after metadata copy.
+    drop(object);
     Some(info)
 }
 
-pub(crate) fn sub_crs_infos(
-    context: *mut proj_sys::PJ_CONTEXT,
-    crs: *const proj_sys::PJ,
-) -> Vec<AuthorityObjectInfo> {
+pub(crate) fn sub_crs_infos(context: &ProjContext, crs: &OwnedPj) -> Vec<AuthorityObjectInfo> {
+    // Dynamic length: walk until PROJ returns null. A fixed 32-cap silently
+    // truncated compound trees (never acceptable); there is no practical
+    // compound with hundreds of components, but growth is fallible via Vec.
     let mut items = Vec::new();
-    for index in 0..32 {
-        // SAFETY: crs is a valid CRS object. PROJ returns an owned sub-CRS
-        // object or null when the index is out of range/not applicable.
-        let object = unsafe { proj_sys::proj_crs_get_sub_crs(context, crs, index) };
+    let mut index = 0_i32;
+    loop {
+        // SAFETY: DOC-H. Typed owners; returns uniquely owned sub-CRS or null.
+        let object =
+            unsafe { proj_sys::proj_crs_get_sub_crs(context.as_ptr(), crs.as_ptr(), index) };
+        // SAFETY: non-null returns are uniquely owned.
+        let object = unsafe { OwnedPj::try_from_owned(object) };
         let Some(info) = owned_authority_object_info(context, object) else {
             break;
         };
         items.push(info);
+        index = index.saturating_add(1);
     }
     items
 }
 
 pub(crate) fn owned_crs_coordinate_operation_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *mut proj_sys::PJ,
+    context: &ProjContext,
+    operation: Option<OwnedPj>,
 ) -> Option<CrsCoordinateOperationInfo> {
-    if operation.is_null() {
-        return None;
-    }
-    let info = crs_coordinate_operation_info_from_pj(context, operation);
-    // SAFETY: operation is owned by this helper and metadata has been copied.
-    unsafe {
-        proj_sys::proj_destroy(operation);
-    }
+    let operation = operation?;
+    let info = crs_coordinate_operation_info_from_pj(context, &operation);
+    drop(operation);
     Some(info)
 }
 
 pub(crate) fn crs_coordinate_operation_info_from_pj(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *mut proj_sys::PJ,
+    context: &ProjContext,
+    operation: &OwnedPj,
 ) -> CrsCoordinateOperationInfo {
-    // SAFETY: operation is a valid PROJ coordinate operation. Returned C strings
-    // are copied immediately into Rust-owned values.
+    // SAFETY: DOC-H. Typed live operation; returned C strings copied immediately.
     unsafe {
-        let pj = proj_sys::proj_pj_info(operation);
-        let id = string_from_ptr(pj.id);
-        let description = string_from_ptr(pj.description);
+        let pj = proj_sys::proj_pj_info(operation.as_ptr());
+        let id = copy_proj_c_string(pj.id);
+        let description = copy_proj_c_string(pj.description);
         CrsCoordinateOperationInfo {
             name: description.clone().or(id),
-            definition: string_from_ptr(pj.definition),
+            definition: copy_proj_c_string(pj.definition),
             description,
             accuracy: finite_nonnegative(pj.accuracy),
             has_inverse: pj.has_inverse != 0,
             has_ballpark_transformation: proj_sys::proj_coordoperation_has_ballpark_transformation(
-                context, operation,
+                context.as_ptr(),
+                operation.as_ptr(),
             ) != 0,
             requires_coordinate_epoch:
-                proj_sys::proj_coordoperation_requires_per_coordinate_input_time(context, operation)
-                    != 0,
-            instantiable: proj_sys::proj_coordoperation_is_instantiable(context, operation) != 0,
+                proj_sys::proj_coordoperation_requires_per_coordinate_input_time(
+                    context.as_ptr(),
+                    operation.as_ptr(),
+                ) != 0,
+            instantiable: proj_sys::proj_coordoperation_is_instantiable(
+                context.as_ptr(),
+                operation.as_ptr(),
+            ) != 0,
             method: method_info(context, operation),
             parameters: operation_parameters(context, operation),
             grids: grids(context, operation),
@@ -272,152 +284,145 @@ pub(crate) fn crs_coordinate_operation_info_from_pj(
     }
 }
 
-pub(crate) fn datum_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    crs: *const proj_sys::PJ,
-) -> Option<DatumInfo> {
-    // SAFETY: crs is a valid PROJ CRS object. PROJ returns owned objects or null.
-    unsafe {
-        let ensemble = proj_sys::proj_crs_get_datum_ensemble(context, crs);
-        if !ensemble.is_null() {
-            let info = datum_ensemble_info(context, ensemble);
-            proj_sys::proj_destroy(ensemble);
-            return Some(info);
-        }
-        let datum = proj_sys::proj_crs_get_datum(context, crs);
-        if datum.is_null() {
-            return None;
-        }
-        let info = datum_object_info(context, datum);
-        proj_sys::proj_destroy(datum);
-        Some(info)
+pub(crate) fn datum_info(context: &ProjContext, crs: &OwnedPj) -> Option<DatumInfo> {
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned ensemble/datum or null.
+    let ensemble = unsafe { proj_sys::proj_crs_get_datum_ensemble(context.as_ptr(), crs.as_ptr()) };
+    // SAFETY: non-null is uniquely owned; Drop after metadata.
+    if let Some(ensemble) = unsafe { OwnedPj::try_from_owned(ensemble) } {
+        return Some(datum_ensemble_info(context, &ensemble));
+    }
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned datum or null.
+    let datum = unsafe { proj_sys::proj_crs_get_datum(context.as_ptr(), crs.as_ptr()) };
+    // SAFETY: non-null is uniquely owned.
+    let datum = unsafe { OwnedPj::try_from_owned(datum)? };
+    Some(datum_object_info(context, &datum))
+}
+
+pub(crate) fn datum_ensemble_info(context: &ProjContext, ensemble: &OwnedPj) -> DatumInfo {
+    // SAFETY: DOC-H. Typed live ensemble on creating thread.
+    let count = unsafe {
+        proj_sys::proj_datum_ensemble_get_member_count(context.as_ptr(), ensemble.as_ptr())
+    };
+    let mut members = Vec::with_capacity(count.max(0) as usize);
+    for index in 0..count {
+        // SAFETY: DOC-H. Index in range; returns uniquely owned member or null.
+        let member = unsafe {
+            proj_sys::proj_datum_ensemble_get_member(context.as_ptr(), ensemble.as_ptr(), index)
+        };
+        // SAFETY: non-null is uniquely owned; Drop after copy.
+        let Some(member) = (unsafe { OwnedPj::try_from_owned(member) }) else {
+            continue;
+        };
+        members.push(datum_object_info(context, &member));
+    }
+    let (authority, code) = split_authority(id_authority(ensemble));
+    // SAFETY: DOC-H. Ensemble is a live typed owner for the duration of these calls.
+    let (type_, accuracy, name) = unsafe {
+        (
+            proj_sys::proj_get_type(ensemble.as_ptr()),
+            proj_sys::proj_datum_ensemble_get_accuracy(context.as_ptr(), ensemble.as_ptr()),
+            copy_proj_c_string(proj_sys::proj_get_name(ensemble.as_ptr())),
+        )
+    };
+    DatumInfo {
+        name,
+        authority,
+        code,
+        kind: crs_type_name(type_),
+        frame_reference_epoch: None,
+        ensemble_accuracy: finite_nonnegative(accuracy),
+        ensemble_members: members,
     }
 }
 
-pub(crate) fn datum_ensemble_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    ensemble: *const proj_sys::PJ,
-) -> DatumInfo {
-    // SAFETY: ensemble is a valid PROJ datum ensemble object.
-    unsafe {
-        let count = proj_sys::proj_datum_ensemble_get_member_count(context, ensemble);
-        let mut members = Vec::with_capacity(count.max(0) as usize);
-        for index in 0..count {
-            let member = proj_sys::proj_datum_ensemble_get_member(context, ensemble, index);
-            if member.is_null() {
-                continue;
-            }
-            members.push(datum_object_info(context, member));
-            proj_sys::proj_destroy(member);
-        }
-        let (authority, code) = split_authority(id_authority(ensemble));
-        DatumInfo {
-            name: string_from_ptr(proj_sys::proj_get_name(ensemble)),
-            authority,
-            code,
-            kind: crs_type_name(proj_sys::proj_get_type(ensemble)),
-            frame_reference_epoch: None,
-            ensemble_accuracy: finite_nonnegative(proj_sys::proj_datum_ensemble_get_accuracy(
-                context, ensemble,
-            )),
-            ensemble_members: members,
-        }
-    }
-}
-
-pub(crate) fn datum_object_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    datum: *const proj_sys::PJ,
-) -> DatumInfo {
-    // SAFETY: datum is a valid PROJ datum object.
-    unsafe {
-        let type_ = proj_sys::proj_get_type(datum);
-        let frame_reference_epoch = if matches!(
+pub(crate) fn datum_object_info(context: &ProjContext, datum: &OwnedPj) -> DatumInfo {
+    // SAFETY: DOC-H. Typed live datum on creating thread.
+    let (type_, name, epoch) = unsafe {
+        let type_ = proj_sys::proj_get_type(datum.as_ptr());
+        let name = copy_proj_c_string(proj_sys::proj_get_name(datum.as_ptr()));
+        let epoch = matches!(
             type_,
             proj_sys::PJ_TYPE_PJ_TYPE_DYNAMIC_GEODETIC_REFERENCE_FRAME
                 | proj_sys::PJ_TYPE_PJ_TYPE_DYNAMIC_VERTICAL_REFERENCE_FRAME
-        ) {
-            finite_nonnegative(proj_sys::proj_dynamic_datum_get_frame_reference_epoch(
-                context, datum,
-            ))
-        } else {
-            None
-        };
-        let (authority, code) = split_authority(id_authority(datum));
-        DatumInfo {
-            name: string_from_ptr(proj_sys::proj_get_name(datum)),
-            authority,
-            code,
-            kind: crs_type_name(type_),
-            frame_reference_epoch,
-            ensemble_accuracy: None,
-            ensemble_members: Vec::new(),
-        }
+        )
+        .then(|| {
+            proj_sys::proj_dynamic_datum_get_frame_reference_epoch(context.as_ptr(), datum.as_ptr())
+        });
+        (type_, name, epoch)
+    };
+    let (authority, code) = split_authority(id_authority(datum));
+    DatumInfo {
+        name,
+        authority,
+        code,
+        kind: crs_type_name(type_),
+        frame_reference_epoch: epoch.and_then(finite_nonnegative),
+        ensemble_accuracy: None,
+        ensemble_members: Vec::new(),
     }
 }
 
-pub(crate) fn ellipsoid_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
-) -> Option<EllipsoidInfo> {
-    // SAFETY: object is valid and PROJ returns an owned ellipsoid object or null.
-    unsafe {
-        let ellipsoid = proj_sys::proj_get_ellipsoid(context, object);
-        if ellipsoid.is_null() {
-            return None;
-        }
-        let mut semi_major_metre = f64::NAN;
-        let mut semi_minor_metre = f64::NAN;
-        let mut is_semi_minor_computed = 0;
-        let mut inverse_flattening = f64::NAN;
-        let ok = proj_sys::proj_ellipsoid_get_parameters(
-            context,
-            ellipsoid,
+pub(crate) fn ellipsoid_info(context: &ProjContext, object: &OwnedPj) -> Option<EllipsoidInfo> {
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned ellipsoid or null.
+    let ellipsoid = unsafe { proj_sys::proj_get_ellipsoid(context.as_ptr(), object.as_ptr()) };
+    // SAFETY: non-null is uniquely owned; Drop after parameter copy.
+    let ellipsoid = unsafe { OwnedPj::try_from_owned(ellipsoid)? };
+    let mut semi_major_metre = f64::NAN;
+    let mut semi_minor_metre = f64::NAN;
+    let mut is_semi_minor_computed = 0;
+    let mut inverse_flattening = f64::NAN;
+    // SAFETY: DOC-H. Live owned ellipsoid; OUT slots exclusive locals.
+    let ok = unsafe {
+        proj_sys::proj_ellipsoid_get_parameters(
+            context.as_ptr(),
+            ellipsoid.as_ptr(),
             &raw mut semi_major_metre,
             &raw mut semi_minor_metre,
             &raw mut is_semi_minor_computed,
             &raw mut inverse_flattening,
-        );
-        let info = (ok != 0).then(|| EllipsoidInfo {
-            name: string_from_ptr(proj_sys::proj_get_name(ellipsoid)),
+        )
+    };
+    (ok != 0).then(|| {
+        let name = proj_c_string!(proj_sys::proj_get_name(ellipsoid.as_ptr()));
+        EllipsoidInfo {
+            name,
             semi_major_metre,
             semi_minor_metre,
             inverse_flattening,
             is_semi_minor_computed: is_semi_minor_computed != 0,
-        });
-        proj_sys::proj_destroy(ellipsoid);
-        info
-    }
+        }
+    })
 }
 
 pub(crate) fn prime_meridian_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
+    context: &ProjContext,
+    object: &OwnedPj,
 ) -> Option<PrimeMeridianInfo> {
-    // SAFETY: object is valid and PROJ returns an owned prime meridian object or
-    // null.
-    unsafe {
-        let prime_meridian = proj_sys::proj_get_prime_meridian(context, object);
-        if prime_meridian.is_null() {
-            return None;
-        }
-        let mut longitude = f64::NAN;
-        let mut unit_conversion_factor = f64::NAN;
-        let mut unit_name = ptr::null();
-        let ok = proj_sys::proj_prime_meridian_get_parameters(
-            context,
-            prime_meridian,
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned PM or null.
+    let prime_meridian =
+        unsafe { proj_sys::proj_get_prime_meridian(context.as_ptr(), object.as_ptr()) };
+    // SAFETY: non-null is uniquely owned; Drop after copy.
+    let prime_meridian = unsafe { OwnedPj::try_from_owned(prime_meridian)? };
+    let mut longitude = f64::NAN;
+    let mut unit_conversion_factor = f64::NAN;
+    let mut unit_name = ptr::null();
+    // SAFETY: DOC-H. Live owned PM; OUT slots exclusive locals.
+    let ok = unsafe {
+        proj_sys::proj_prime_meridian_get_parameters(
+            context.as_ptr(),
+            prime_meridian.as_ptr(),
             &raw mut longitude,
             &raw mut unit_conversion_factor,
             &raw mut unit_name,
-        );
-        let info = (ok != 0).then(|| PrimeMeridianInfo {
-            name: string_from_ptr(proj_sys::proj_get_name(prime_meridian)),
+        )
+    };
+    (ok != 0).then(|| {
+        let name = proj_c_string!(proj_sys::proj_get_name(prime_meridian.as_ptr()));
+        PrimeMeridianInfo {
+            name,
             longitude,
-            unit_name: string_from_ptr(unit_name),
+            unit_name: proj_c_string!(unit_name),
             unit_conversion_factor,
-        });
-        proj_sys::proj_destroy(prime_meridian);
-        info
-    }
+        }
+    })
 }

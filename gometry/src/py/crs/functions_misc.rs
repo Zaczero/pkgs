@@ -1,10 +1,11 @@
-use crate::py::crs::*;
+use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner, pyfunction};
 /// Name/version of the underlying CRS engine (PROJ).
 ///
 /// Returns
 /// -------
 /// dict
-///     Engine metadata (backend, version, PROJ paths, local grid directory).
+///     Engine metadata. ``paths`` is the effective per-context grid search
+///     path configured through :func:`crs_configure`.
 #[pyfunction]
 ///
 /// Examples
@@ -13,7 +14,9 @@ use crate::py::crs::*;
 /// >>> gm.crs_engine()['version']
 /// '9.8.1'
 pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
-    Ok(crs::engine_info()?)
+    let mut info = crs::engine_info()?;
+    info.paths = crs::runtime_config()?.search_paths.unwrap_or_default();
+    Ok(info)
 }
 
 /// One required-CRS parser: borrowed `Crs`/text through the shared
@@ -22,32 +25,19 @@ pub(crate) fn crs_parse_required(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
     parse_crs_inner(value, 0)?.ok_or_else(|| CRSError::new_err("CRS is required"))
 }
 
-/// Normalize a CRS specification to a canonical form.
-///
-/// Parameters
-/// ----------
-/// value : CRS-like
-///     CRS as an EPSG code or authority/WKT string. Authority prefixes are
-///     case-insensitive (``Epsg:4326`` is accepted and canonicalizes to
-///     ``EPSG:4326``).
-///
-/// Returns
-/// -------
-/// str
-///     The canonical CRS string.
-///
-/// Raises
-/// ------
-/// CRSError
-///     If the value is not a recognized CRS.
-#[pyfunction]
+// Canonical CRS identifier: the same parser as `crs_parse_required` / geometry
+// `to_crs`, so equivalent spellings ("Epsg:4326", "EPSG:4326") share one cached
+// pipeline and the in-core fast path.
+//
+// Crate-internal only.  This carried `#[pyfunction]` and a full user-facing
+// numpydoc block, but was registered nowhere — absent from `register()`, from
+// `__init__.py`, from `_lib.pyi`, and from the runtime.  It was the crate's only
+// unregistered `#[pyfunction]`, and the family-inventory gate is a hard-coded
+// allowlist so it could not catch that.  Registering it would also duplicate
+// `str(gm.CRS(v))`, which already returns the canonical string.
+//
+// A byte-identical twin named `crs_canonical` used to sit beside this and was
+// called interchangeably within a single file; it has been folded in here.
 pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(crs_parse_required(value)?.to_string())
-}
-
-/// Canonical CRS identifier for the raw-transform cache key — same parser as
-/// [`crs_parse_required`] / geometry `to_crs`, so equivalent spellings share
-/// one cached pipeline and the in-core fast path.
-pub(crate) fn crs_canonical(value: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(crs_parse_required(value)?.to_string())
 }

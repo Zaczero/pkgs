@@ -2,13 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::num::NonZeroU32;
 
-use super::*;
+use crate::geometry::constructive::{Arc, Result, WalkJoinRule, WalkPlan, materialize_walk};
+use crate::geometry::{
+    BufferJoinStyle, CoordSeq, CoordinateAxes, Coordinates, ExpansionBudget, GeometryErrorKind,
+    LineSeq, MOrdinate, Point, Polygon, RepairMethod, Ring, Segment, Shape, Strictness, XY,
+    ZOrdinate, column_all_finite, dedup_consecutive_points, interpolate_segment_point,
+    push_distinct_point, same_point, same_topological_coordinate, wrap_index,
+};
 use crate::{Finite, Positive};
 
 /// when it is already valid (the overwhelmingly common case), otherwise the
@@ -200,24 +202,30 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Vec<Point>> {
-    let source = offset_source(points)?;
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Vec<Point>>> {
+    let Some(source) = offset_source(points) else {
+        return Ok(None);
+    };
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments.get());
     let left = distance > 0.0;
     let mut walk = source.vertices;
     if left {
         walk.reverse();
     }
-    let plan = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle)?;
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let mut sources = Vec::new();
-    plan.emit_tracked(step_angle, &mut xs, &mut ys, &mut sources);
+    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle) else {
+        return Ok(None);
+    };
+    let Some(columns) = materialize_walk(&plan, step_angle, true, budget)? else {
+        return Ok(None);
+    };
+    let (xs, ys, sources) = columns.into_columns();
+    let sources = sources.expect("tracked walk columns retain a source per emitted vertex");
     // Coordinates at the f64 edge overflow the offset arithmetic — no
     // offset curve (the alternate emitter's guard agrees, so the surface
     // yields the documented empty line).
     if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return None;
+        return Ok(None);
     }
     // Each output vertex inherits the ordinates of the source vertex it
     // derives from (arc and join points belong to their corner) — the same
@@ -231,12 +239,16 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     if source.closed
         && let Some(&first) = result.first()
     {
+        // `WalkPlan` is open for the offset/winding shared representation;
+        // this public closed curve owns one more coordinate and admits it
+        // before appending, rather than reviving the old input-size estimate.
+        budget.add(1)?;
         result.push(first);
     }
     if left {
         result.reverse();
     }
-    (result.len() >= 2).then_some(result)
+    Ok((result.len() >= 2).then_some(result))
 }
 
 pub(crate) fn offset_line<C: Coordinates + ?Sized>(
@@ -309,15 +321,19 @@ pub(crate) struct OffsetEdge {
 pub(crate) fn offset_segment(start: Point, end: Point, distance: f64) -> Option<OffsetEdge> {
     let dx = end.x - start.x;
     let dy = end.y - start.y;
-    // Plain sqrt over hypot's libm call; the finite guard keeps hypot's
-    // overflow behavior (an overflowed length must drop the segment, not
-    // silently offset by zero).
-    let length = (dx * dx + dy * dy).sqrt();
-    if length == 0.0 || !length.is_finite() {
+    // Normalize direction via max-abs first so extreme-but-finite segments
+    // (length² overflow) still get a unit normal instead of being dropped.
+    let scale = dx.abs().max(dy.abs());
+    if scale == 0.0 || !scale.is_finite() {
         return None;
     }
-    let offset_x = -dy / length * distance;
-    let offset_y = dx / length * distance;
+    let (ndx, ndy) = (dx / scale, dy / scale);
+    let inv_len = 1.0 / (ndx * ndx + ndy * ndy).sqrt();
+    if !inv_len.is_finite() {
+        return None;
+    }
+    let offset_x = -ndy * inv_len * distance;
+    let offset_y = ndx * inv_len * distance;
     // Offsetting coordinates near f64::MAX by a same-sign distance can overflow;
     // drop such a segment rather than panicking on the finite-coordinate assert.
     Some(OffsetEdge {
@@ -379,6 +395,10 @@ impl OffsetJoin {
     }
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn offset_join(previous: OffsetEdge, current: OffsetEdge, vertex: Point) -> OffsetJoin {
     let squared = |a: Point, b: Point| {
         let dx = a.x - b.x;
@@ -425,8 +445,33 @@ pub(crate) fn line_intersection(left: Segment, right: Segment) -> Option<XY> {
     let right_dx = right.end.x - right.start.x;
     let right_dy = right.end.y - right.start.y;
     let denominator = left_dx * right_dy - left_dy * right_dx;
-    if denominator.abs() <= 1e-12 {
-        return None;
+    // Nonzero finite determinants stay on the fast path. Zero / subnormal /
+    // nonfinite (near-parallel or scale-collapsed) reject without an absolute
+    // epsilon — a fixed 1e-12 bevelled valid right-angle miters at 1e-6 scale.
+    if denominator == 0.0 || !denominator.is_normal() {
+        // Subnormal-but-nonzero can still yield a usable fraction after
+        // max-abs normalization of the two direction vectors.
+        let scale = left_dx
+            .abs()
+            .max(left_dy.abs())
+            .max(right_dx.abs())
+            .max(right_dy.abs());
+        if scale == 0.0 || !scale.is_finite() {
+            return None;
+        }
+        let (ldx, ldy) = (left_dx / scale, left_dy / scale);
+        let (rdx, rdy) = (right_dx / scale, right_dy / scale);
+        let denom = ldx * rdy - ldy * rdx;
+        if denom == 0.0 || !denom.is_finite() {
+            return None;
+        }
+        let offset_x = (right.start.x - left.start.x) / scale;
+        let offset_y = (right.start.y - left.start.y) / scale;
+        let fraction = (offset_x * rdy - offset_y * rdx) / denom;
+        if !fraction.is_finite() {
+            return None;
+        }
+        return Some(interpolate_segment_point(left.start, left.end, fraction));
     }
     let offset_x = right.start.x - left.start.x;
     let offset_y = right.start.y - left.start.y;
@@ -452,6 +497,24 @@ impl Shape {
         quadrant_segments: NonZeroU32,
         miter_limit: Positive,
     ) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
+        self.offset_curve_budgeted(
+            distance,
+            join_style,
+            quadrant_segments,
+            miter_limit,
+            &mut budget,
+        )
+    }
+
+    pub(crate) fn offset_curve_budgeted(
+        &self,
+        distance: f64,
+        join_style: BufferJoinStyle,
+        quadrant_segments: NonZeroU32,
+        miter_limit: Positive,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         let distance = Finite::try_new("distance", distance)?.get();
         if same_topological_coordinate(distance, 0.0) {
             return match self {
@@ -460,11 +523,12 @@ impl Shape {
                     geometries
                         .iter()
                         .map(|geometry| {
-                            geometry.offset_curve(
+                            geometry.offset_curve_budgeted(
                                 distance,
                                 join_style,
                                 quadrant_segments,
                                 miter_limit,
+                                budget,
                             )
                         })
                         .collect::<Result<_, _>>()?,
@@ -472,18 +536,19 @@ impl Shape {
                 _ => Err(GeometryErrorKind::LinealRequired.into()),
             };
         }
-        validate_offset_expansion(self, quadrant_segments)?;
         let rule = WalkJoinRule::new(join_style, miter_limit.get());
-        let offset = |line: &CoordSeq| -> Option<Vec<Point>> {
+        let mut offset = |line: &CoordSeq| -> Result<Option<Vec<Point>>> {
             // The planned walk owns every style; degenerate plans
             // (near-folds the robust orientation rejects) fall back to the
             // raw miter emitter, exactly like the buffer falls back to the
             // geo engine.
-            offset_curve_points(line, distance, rule, quadrant_segments)
-                .or_else(|| offset_line(line, distance))
+            Ok(
+                offset_curve_points(line, distance, rule, quadrant_segments, budget)?
+                    .or_else(|| offset_line(line, distance)),
+            )
         };
         Ok(match self {
-            Self::LineString(points) => offset(points).map_or_else(
+            Self::LineString(points) => offset(points)?.map_or_else(
                 || Self::LineString(LineSeq::empty(CoordinateAxes::XY)),
                 |line| {
                     Self::LineString(
@@ -495,7 +560,10 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 let offsets = lines
                     .iter()
-                    .filter_map(|line| offset(line))
+                    .map(|line| offset(line.as_coords()))
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
                     .map(CoordSeq::from)
                     .map(|line| {
                         LineSeq::try_new(line).expect("offset curve has at least two vertices")
@@ -507,7 +575,13 @@ impl Shape {
                 geometries
                     .iter()
                     .map(|geometry| {
-                        geometry.offset_curve(distance, join_style, quadrant_segments, miter_limit)
+                        geometry.offset_curve_budgeted(
+                            distance,
+                            join_style,
+                            quadrant_segments,
+                            miter_limit,
+                            budget,
+                        )
                     })
                     .collect::<Result<_, _>>()?,
             ),

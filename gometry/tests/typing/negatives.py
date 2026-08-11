@@ -99,8 +99,8 @@ if TYPE_CHECKING:
     def _reject_cross_grid_after_widening(
         cells: gm.CellArray[gm.Cell], other: gm.S2Cell
     ) -> None:
-        cells.contains(other)  # type: ignore
-        cells.intersects(other)  # type: ignore
+        cells.contains(other)  # type: ignore[misc]
+        cells.intersects(other)  # type: ignore[misc]
 
     _reject_cross_grid_after_widening(H3_CELLS, S2_CELLS[0])
 

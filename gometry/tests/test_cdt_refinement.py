@@ -90,7 +90,7 @@ def test_param_validation(
         sliver.triangulate(method='constrained', **kwargs)
 
 
-@pytest.mark.parametrize('kwargs', [{'min_angle': 25.0}, {'max_area': 3.0}])
+@pytest.mark.parametrize('kwargs', [{'min_angle': 25.0}, {'max_area': 1.0}])
 def test_quality_constraint_implies_refine(
     sliver: gm.Polygon, kwargs: dict[str, float]
 ) -> None:

@@ -1,328 +1,171 @@
-use spade::handles::VoronoiVertex::{Inner, Outer};
+#![allow(
+    clippy::option_if_let_else,
+    clippy::unwrap_used,
+    reason = "the compact deterministic selector maintains the option invariant in the adjacent match"
+)]
 
-use super::*;
 use crate::error::Result;
+use crate::geometry::tessellation::{CertifiedDelaunay, Site, exact};
+use crate::geometry::{GeometryErrorKind, HashMap, HashMapExt as _};
 
-pub(crate) fn voronoi_triangulation(
-    sites: &[Point],
-    tolerance: f64,
-) -> Result<DelaunayTriangulation<Point2<f64>>> {
-    // tolerance>0 snaps near-coincident sites before insertion (geo configures
-    // spade's snap_radius for the same effect). A uniform grid of cell-size
-    // `tolerance` buckets the candidates, so each snap probes only the 3×3
-    // neighbourhood — O(n) overall, versus geo's O(n²) all-pairs scan.
-    // Single collect into spade points: tolerance==0 maps XY in one pass;
-    // tolerance>0 still needs the snap staging buffer first.
-    let sites = if tolerance > 0.0 {
-        snap_sites(sites, tolerance)
-            .into_iter()
-            .map(spade_point)
-            .collect()
-    } else {
-        sites.iter().map(|point| spade_point(point.xy())).collect()
+pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
+    let ordered = |value: f64| {
+        let bits = value.to_bits();
+        if bits >> 63 == 0 {
+            bits ^ (1_u64 << 63)
+        } else {
+            !bits
+        }
     };
-    DelaunayTriangulation::<Point2<f64>>::bulk_load(sites)
-        .map_err(|error| GeometryErrorKind::voronoi(error.to_string()))
-}
-
-/// Snap sites within `radius` to a shared representative via a uniform grid
-/// (cell size = `radius`): each point probes its 3×3 neighbour cells for an
-/// existing representative, snapping to the nearest within range or seeding a
-/// new one. First-seen order is preserved, matching geo's snap semantics at
-/// O(n) instead of O(n²).
-pub(crate) fn snap_sites(sites: &[Point], radius: f64) -> Vec<XY> {
-    let inverse = 1.0 / radius;
-    let cell = |value: f64| (value * inverse).floor() as i64;
-    let mut buckets: HashMap<(i64, i64), Vec<XY>> = HashMap::with_capacity(sites.len());
+    let mut by_x: std::collections::BTreeMap<u64, Vec<Site>> = std::collections::BTreeMap::new();
     let mut snapped = Vec::with_capacity(sites.len());
     for site in sites {
-        let point = site.xy();
-        let (cx, cy) = (cell(point.x), cell(point.y));
-        let mut best: Option<(f64, XY)> = None;
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let Some(entries) = buckets.get(&(cx + dx, cy + dy)) else {
-                    continue;
-                };
-                for &existing in entries {
-                    let distance = point_distance(existing, point);
-                    if distance < radius && best.is_none_or(|(closest, _)| distance < closest) {
-                        best = Some((distance, existing));
-                    }
+        let point = site.point.xy();
+        let mut best: Option<Site> = None;
+        let min_x = ordered(point.x - radius);
+        let max_x = ordered(point.x + radius);
+        for entries in by_x.range(min_x..=max_x) {
+            for &existing in entries.1 {
+                let comparison = best.map(|closest| {
+                    exact::squared_distance_cmp(point, existing.point.xy(), closest.point.xy())
+                });
+                if exact::distance_within(existing.point.xy(), point, radius)
+                    && comparison.is_none_or(|order| {
+                        order.is_lt() || (order.is_eq() && existing.id < best.unwrap().id)
+                    })
+                {
+                    best = Some(existing);
                 }
             }
         }
-        let representative = if let Some((_, existing)) = best {
+        let representative = if let Some(existing) = best {
             existing
         } else {
-            buckets.entry((cx, cy)).or_default().push(point);
-            point
+            by_x.entry(ordered(point.x)).or_default().push(*site);
+            *site
         };
         snapped.push(representative);
     }
     snapped
 }
 
-/// The tight envelope of a triangulation's vertices.
-pub(crate) fn triangulation_bounds(triangulation: &DelaunayTriangulation<Point2<f64>>) -> Bounds {
-    Bounds::from_xy_iter(triangulation.vertices().map(|vertex| {
-        let position = vertex.position();
-        XY::new(position.x, position.y)
-    }))
+/// The certified Delaunay complex with triangulation-only diagonals removed.
+///
+/// `face_component` is deliberately the only face-to-dual-vertex mapping:
+/// every maximal fan joined by exact cocircular diagonals owns one exact
+/// circumcenter, so a later embedding cannot accidentally materialize the
+/// same geometric Voronoi vertex once per triangulation face.
+#[derive(Debug)]
+pub(super) struct DelaunayComplex {
+    face_component: Vec<usize>,
+    centers: Vec<exact::ExactPoint>,
 }
 
-/// Padded bounds: each side grown by `factor * max(width, height)`. A factor of
-/// 0.5 is the `PostGIS` / geo default for the unbounded-cell clip.
-pub(crate) fn padded_bounds(base: Bounds, factor: f64) -> Bounds {
-    base.pad_by_span(factor)
-}
-
-/// Raw Voronoi cells from the Delaunay dual: per site, the circumcenters of its
-/// incident faces plus, for hull sites, a point far along each unbounded edge's
-/// ray, sorted by angle around the site. Callers clip these oversized cells.
-/// Returns `(cells, base_bounds)`; `None`-equivalent collinear input yields a
-/// `Voronoi` error (no 2-D cells exist). Ported from geo's
-/// `build_raw_voronoi_cells`.
-pub(crate) fn build_raw_voronoi_cells(
-    sites: &[Point],
-    tolerance: f64,
-) -> Result<(Vec<Polygon>, [f64; 4])> {
-    let triangulation = voronoi_triangulation(sites, tolerance)?;
-    if triangulation.num_vertices() < 2 {
-        return Ok((Vec::new(), [0.0; 4]));
+impl DelaunayComplex {
+    pub(super) fn component_of_face(&self, face: usize) -> usize {
+        self.face_component[face]
     }
-    let base = triangulation_bounds(&triangulation);
-    let padded = padded_bounds(base, 0.5);
-    let extension = ((padded.maxx() - padded.minx()) + (padded.maxy() - padded.miny())) * 2.0;
 
-    let mut cells = Vec::new();
-    for face in triangulation.voronoi_faces() {
-        let site = face.as_delaunay_vertex().position();
-        let mut vertices: Vec<XY> = Vec::new();
-        let mut rays: Vec<(XY, XY)> = Vec::new();
-        for edge in face.adjacent_edges() {
-            for vertex in [edge.from(), edge.to()] {
-                if let Inner(inner) = vertex {
-                    let center = inner.circumcenter();
-                    let point = XY::new(center.x, center.y);
-                    if !vertices.contains(&point) {
-                        vertices.push(point);
+    pub(super) fn center(&self, component: usize) -> &exact::ExactPoint {
+        &self.centers[component]
+    }
+
+    pub(super) const fn component_count(&self) -> usize {
+        self.centers.len()
+    }
+}
+
+const fn complex_root(parents: &mut [usize], mut node: usize) -> usize {
+    while parents[node] != node {
+        parents[node] = parents[parents[node]];
+        node = parents[node];
+    }
+    node
+}
+
+/// Collapse every exact-cocircular connected face fan in the certified mesh.
+/// The representative and its defining triple depend only on canonical site
+/// ids, never on candidate face order or on a floating circumcenter.
+pub(super) fn delaunay_complex(
+    mesh: &CertifiedDelaunay,
+    sites: &[Site],
+) -> Result<DelaunayComplex> {
+    let triangles = mesh.triangles();
+    let mut parents: Vec<_> = (0..triangles.len()).collect();
+    for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
+        if reverse == delaunator::EMPTY || edge > reverse {
+            continue;
+        }
+        let left = edge / 3;
+        let right = reverse / 3;
+        if mesh.edge_is_cocircular(edge) {
+            let left = complex_root(&mut parents, left);
+            let right = complex_root(&mut parents, right);
+            if left != right {
+                let (keep, merge) = (left.min(right), left.max(right));
+                parents[merge] = keep;
+            }
+        }
+    }
+
+    let mut sites_by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (face, triangle) in triangles.iter().enumerate() {
+        let root = complex_root(&mut parents, face);
+        sites_by_root.entry(root).or_default().extend(triangle);
+    }
+    let mut roots: Vec<_> = sites_by_root.keys().copied().collect();
+    for root in &roots {
+        let component_sites = sites_by_root
+            .get_mut(root)
+            .expect("root was collected from this map");
+        component_sites.sort_unstable();
+        component_sites.dedup();
+    }
+
+    roots.sort_unstable_by(|&left, &right| sites_by_root[&left].cmp(&sites_by_root[&right]));
+    let component_by_root: HashMap<_, _> = roots
+        .iter()
+        .enumerate()
+        .map(|(component, &root)| (root, component))
+        .collect();
+    let mut centers = Vec::with_capacity(roots.len());
+    for root in roots {
+        let component_sites = &sites_by_root[&root];
+        let mut defining = None;
+        'triples: for first in 0..component_sites.len() {
+            for second in first + 1..component_sites.len() {
+                for third in second + 1..component_sites.len() {
+                    let triple = [
+                        component_sites[first],
+                        component_sites[second],
+                        component_sites[third],
+                    ];
+                    if exact::orient2d(
+                        sites[triple[0]].point.xy(),
+                        sites[triple[1]].point.xy(),
+                        sites[triple[2]].point.xy(),
+                    ) != exact::ExactSign::Zero
+                    {
+                        defining = Some(triple);
+                        break 'triples;
                     }
                 }
             }
-            // An inner→outer (or outer→inner) edge is an unbounded ray from the
-            // inner circumcenter along the outer edge's direction.
-            let ray = match (edge.from(), edge.to()) {
-                (Inner(inner), Outer(outer)) | (Outer(outer), Inner(inner)) => {
-                    let origin = inner.circumcenter();
-                    let direction = outer.direction_vector();
-                    Some((
-                        XY::new(origin.x, origin.y),
-                        XY::new(direction.x, direction.y),
-                    ))
-                },
-                _ => None,
-            };
-            if let Some(ray) = ray {
-                rays.push(ray);
-            }
         }
-        for (origin, direction) in &rays {
-            let length = (direction.x * direction.x + direction.y * direction.y).sqrt();
-            if length == 0.0 || !length.is_finite() {
-                continue;
-            }
-            vertices.push(XY::new(
-                origin.x + direction.x / length * extension,
-                origin.y + direction.y / length * extension,
-            ));
-        }
-        if vertices.len() < 3 {
-            continue;
-        }
-        vertices.sort_by(|left, right| {
-            pseudo_angle(left.x - site.x, left.y - site.y)
-                .total_cmp(&pseudo_angle(right.x - site.x, right.y - site.y))
-        });
-        let mut shell: Vec<Point> = Vec::with_capacity(vertices.len() + 1);
-        shell.extend(
-            vertices
-                .iter()
-                .map(|vertex| Point::new_unchecked_xy(vertex.x, vertex.y)),
-        );
-        shell.push(shell[0]);
-        cells.push(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()));
+        let [a, b, c] = defining.ok_or_else(|| {
+            GeometryErrorKind::voronoi("certified Delaunay component has no non-collinear face")
+        })?;
+        centers.push(exact::circumcenter(
+            sites[a].point.xy(),
+            sites[b].point.xy(),
+            sites[c].point.xy(),
+        )?);
     }
-
-    // Collinear input has no 2-D cells (only bisector lines) — surface it as a
-    // Voronoi error, mirroring geo's `CollinearInput`.
-    if cells.is_empty() {
-        return Err(GeometryErrorKind::voronoi(
-            "input points are collinear; Voronoi cells cannot be computed",
-        ));
-    }
-    Ok((cells, base.into_array()))
-}
-
-/// Clip raw (oversized) Voronoi cells to the boundary. Rect modes use the
-/// Sutherland-Hodgman rectangle clip; the polygon mode intersects each cell
-/// against the clip polygon. Cells already inside the clip rectangle skip the
-/// clip entirely (geo's interior-cell fast path).
-pub(crate) fn clip_voronoi_cells(
-    raw_cells: Vec<Polygon>,
-    base: [f64; 4],
-    boundary: VoronoiBoundary<'_>,
-) -> Vec<Polygon> {
-    let base_bounds = Bounds::new_unchecked(base[0], base[1], base[2], base[3]);
-    let rect = match boundary {
-        VoronoiBoundary::Padded => padded_bounds(base_bounds, 0.5),
-        VoronoiBoundary::Envelope => base_bounds,
-        VoronoiBoundary::Polygon(polygon) => polygon.bounds().unwrap_or(base_bounds),
-    };
-    // Clip each cell INDIVIDUALLY — adjacent cells share edges, so a batched
-    // overlay would dissolve them and lose the 1:1 site→cell correspondence
-    // (the reason geo intersects cell-by-cell). Cells already inside the clip
-    // rectangle skip clipping entirely (geo's interior-cell fast path).
-    match boundary {
-        VoronoiBoundary::Padded | VoronoiBoundary::Envelope => raw_cells
-            .into_iter()
-            .flat_map(|cell| {
-                if cell_inside_rect(&cell, rect) {
-                    vec![cell]
-                } else {
-                    clip_polygonal_parts(std::slice::from_ref(&cell), rect)
-                }
-            })
-            .collect(),
-        VoronoiBoundary::Polygon(clip) => {
-            let clip = std::slice::from_ref(clip);
-            raw_cells
-                .into_iter()
-                .flat_map(|cell| {
-                    binary_areal_overlay(std::slice::from_ref(&cell), clip, OverlayOp::Intersection)
-                })
-                .collect()
-        },
-    }
-}
-
-/// Whether a cell's envelope is fully within the clip rectangle — then the
-/// clip is a no-op and is skipped.
-pub(crate) fn cell_inside_rect(cell: &Polygon, rect: Bounds) -> bool {
-    cell.bounds().is_some_and(|bounds| {
-        bounds.minx() >= rect.minx()
-            && bounds.maxx() <= rect.maxx()
-            && bounds.miny() >= rect.miny()
-            && bounds.maxy() <= rect.maxy()
-    })
-}
-
-/// Voronoi edges as segment endpoints, clipped to the 50%-padded bounds
-/// (`PostGIS` `ST_VoronoiLines`). Ported from geo's
-/// `voronoi_edges_with_params`: inner-inner edges are emitted directly,
-/// inner-outer rays are clipped to the box, and outer-outer edges (collinear
-/// input) become perpendicular bisectors.
-pub(crate) fn voronoi_edge_segments(sites: &[Point], tolerance: f64) -> Result<Vec<[XY; 2]>> {
-    let triangulation = voronoi_triangulation(sites, tolerance)?;
-    let base = triangulation_bounds(&triangulation);
-    let bounds = padded_bounds(base, 0.5);
-    let width = base.maxx() - base.minx();
-    let height = base.maxy() - base.miny();
-    let reach = width + height;
-
-    let mut sorted_sites: Vec<XY> = triangulation
-        .vertices()
-        .map(|vertex| {
-            let position = vertex.position();
-            XY::new(position.x, position.y)
-        })
+    let face_component = (0..triangles.len())
+        .map(|face| component_by_root[&complex_root(&mut parents, face)])
         .collect();
-    sorted_sites.sort_by(|left, right| {
-        left.x
-            .total_cmp(&right.x)
-            .then_with(|| left.y.total_cmp(&right.y))
-    });
-
-    let mut edges: Vec<[XY; 2]> = Vec::new();
-    let mut outer_edge_counter = 0;
-    for edge in triangulation.undirected_voronoi_edges() {
-        match edge.vertices() {
-            [Inner(from), Inner(to)] => {
-                let from = from.circumcenter();
-                let to = to.circumcenter();
-                edges.push([XY::new(from.x, from.y), XY::new(to.x, to.y)]);
-            },
-            [Inner(from), Outer(outer)] | [Outer(outer), Inner(from)] => {
-                let start = from.circumcenter();
-                let direction = outer.direction_vector();
-                let extended =
-                    XY::new(start.x + direction.x * reach, start.y + direction.y * reach);
-                let start = XY::new(start.x, start.y);
-                if let Some(hit) = closest_rect_intersection(start, extended, bounds) {
-                    edges.push([start, hit]);
-                }
-            },
-            [Outer(first), Outer(_)] => {
-                // Collinear input: N-1 perpendicular bisectors between sorted
-                // sites; `outer_edge_counter` indexes the next consecutive pair.
-                if outer_edge_counter + 1 >= sorted_sites.len() {
-                    continue;
-                }
-                let mid = XY::new(
-                    f64::midpoint(
-                        sorted_sites[outer_edge_counter].x,
-                        sorted_sites[outer_edge_counter + 1].x,
-                    ),
-                    f64::midpoint(
-                        sorted_sites[outer_edge_counter].y,
-                        sorted_sites[outer_edge_counter + 1].y,
-                    ),
-                );
-                let direction = first.direction_vector();
-                edges.push([
-                    XY::new(mid.x - direction.x * reach, mid.y - direction.y * reach),
-                    XY::new(mid.x + direction.x * reach, mid.y + direction.y * reach),
-                ]);
-                outer_edge_counter += 1;
-            },
-        }
-    }
-    Ok(edges)
-}
-
-/// Monotone pseudo-angle around the origin — same cyclic order as `atan2` for
-/// convex Voronoi cells, without a libm call.
-pub(crate) fn pseudo_angle(dx: f64, dy: f64) -> f64 {
-    let ratio = dy / (dx.abs() + dy.abs());
-    if dx < 0.0 {
-        if dy < 0.0 { ratio - 2.0 } else { ratio + 2.0 }
-    } else {
-        ratio
-    }
-}
-
-/// The intersection of segment `start`→`extended` with the boundary rectangle
-/// closest to `start` — the clip point for an unbounded Voronoi ray. The ray is
-/// extended well past the box, so a crossing always exists for finite input.
-pub(crate) fn closest_rect_intersection(start: XY, extended: XY, bounds: Bounds) -> Option<XY> {
-    let corners = bounds.corners().map(|corner| XY::new(corner[0], corner[1]));
-    let ray = Segment {
-        start,
-        end: extended,
-    };
-    (0..4)
-        .filter_map(|index| {
-            let side = Segment {
-                start: corners[index],
-                end: corners[(index + 1) % 4],
-            };
-            // Only proper crossings (not collinear overlaps), matching geo's
-            // SinglePoint-only filter.
-            (segment_contact(ray, side) != SegmentContact::None)
-                .then(|| line_intersection(ray, side))
-                .flatten()
-        })
-        .min_by(|left, right| {
-            point_distance_squared(start, *left).total_cmp(&point_distance_squared(start, *right))
-        })
+    Ok(DelaunayComplex {
+        face_component,
+        centers,
+    })
 }

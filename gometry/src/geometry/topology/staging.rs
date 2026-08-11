@@ -1,5 +1,6 @@
-use super::*;
 use crate::HeapSize;
+use crate::geometry::topology::{CoordSeq, Polygon, XY, wrap_index};
+use crate::geometry::{Coordinates as _, Ring, closed_columns_winding, open_xy_cycle_winding};
 
 /// One operand's rings, oriented and de-duplicated ONCE.
 ///
@@ -30,6 +31,10 @@ pub(super) struct StagedRing {
 }
 
 impl StagedRings {
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(in crate::geometry) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
     }
@@ -93,8 +98,8 @@ impl HeapSize for StagedRings {
 
 /// A representative interior point of a polygon (shell `rings[0]`, holes
 /// `rings[1..]`): the midpoint of the first interior span of the bbox-midline
-/// scanline — the SAME point the relate interior-face probe would pick, so
-/// caching it changes nothing but the cost. `None` for a degenerate polygon.
+/// scanline — the same first candidate the relate interior-face probe tries,
+/// so caching avoids recomputing the common case. `None` for a degenerate polygon.
 pub(super) fn representative_interior_point(rings: &[&[XY]]) -> Option<XY> {
     let shell = *rings.first()?;
     let (mut miny, mut maxy) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -155,4 +160,131 @@ pub(super) fn oriented_open_ring(coords: &CoordSeq, is_hole: bool) -> Option<Box
         points.reverse();
     }
     Some(points.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::relate_ng::{AreaTesters, polygon_interior_probe};
+    use crate::geometry::topology::{Operand, build_operand_pool};
+    use crate::geometry::{Point, Shape};
+
+    fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {
+        let ring = |points: &[(f64, f64)]| {
+            Ring::from_trusted_closed(
+                points
+                    .iter()
+                    .map(|&(x, y)| Point::new_unchecked_xy(x, y))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        Polygon::new(
+            ring(shell),
+            holes.iter().map(|points| ring(points)).collect(),
+        )
+    }
+
+    fn staging_probe(polygon: &Polygon) -> XY {
+        StagedRings::build(std::slice::from_ref(polygon)).rings[0]
+            .probe
+            .expect("non-degenerate polygon probe")
+    }
+
+    fn uncached_relate_probe(polygon: &Polygon) -> XY {
+        let pool = build_operand_pool(std::slice::from_ref(polygon), &[] as &[Polygon]);
+        polygon_interior_probe(
+            &pool,
+            Operand::Left,
+            0,
+            Operand::Right,
+            AreaTesters::default(),
+        )
+        .expect("non-degenerate relate probe")
+    }
+
+    fn surface_point(shape: &Shape) -> XY {
+        let point = match shape.point_on_surface().expect("point on surface") {
+            Shape::Point(point) => point,
+            other => panic!("expected point, got {other:?}"),
+        };
+        assert!(shape.covers(&Shape::Point(point)));
+        point.xy()
+    }
+
+    fn assert_staging_matches_relate(polygon: &Polygon, expected: XY) {
+        assert_eq!(staging_probe(polygon), expected);
+        assert_eq!(uncached_relate_probe(polygon), expected);
+    }
+
+    #[test]
+    fn scanline_representatives_pin_first_vs_widest_span_tie_breaks() {
+        // At y=5 the U-shaped polygon has spans [0, 2] and [7, 10]. Relate
+        // deliberately starts with the first usable interior candidate, while
+        // point_on_surface chooses the widest chord for a more central point.
+        let c_shape = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (7.0, 10.0),
+                (7.0, 2.0),
+                (2.0, 2.0),
+                (2.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+        assert_staging_matches_relate(&c_shape, XY::new(1.0, 5.0));
+        assert_eq!(surface_point(&Shape::Polygon(c_shape)), XY::new(8.5, 5.0));
+
+        // Equal-width spans pin Iterator::max_by's last-maximum tie-break:
+        // staging/relate take [0, 3], while point_on_surface takes [7, 10].
+        let annulus = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
+        );
+        assert_staging_matches_relate(&annulus, XY::new(1.5, 5.0));
+        assert_eq!(surface_point(&Shape::Polygon(annulus)), XY::new(8.5, 5.0));
+
+        let convex = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+        assert_staging_matches_relate(&convex, XY::new(5.0, 5.0));
+        assert_eq!(surface_point(&Shape::Polygon(convex)), XY::new(5.0, 5.0));
+
+        let left = polygon(
+            &[(0.0, 0.0), (2.0, 0.0), (2.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+            &[],
+        );
+        let right = polygon(
+            &[
+                (6.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (6.0, 10.0),
+                (6.0, 0.0),
+            ],
+            &[],
+        );
+        assert_staging_matches_relate(&left, XY::new(1.0, 5.0));
+        assert_staging_matches_relate(&right, XY::new(8.0, 5.0));
+        assert_eq!(
+            surface_point(&Shape::MultiPolygon(vec![left, right])),
+            XY::new(8.0, 5.0),
+        );
+    }
 }

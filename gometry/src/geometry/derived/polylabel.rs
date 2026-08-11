@@ -1,15 +1,15 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::geometry::*;
+use crate::geometry::{
+    AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeqBuilder, Coordinates as _,
+    ExpansionBudget, FacetBvh, GeometryErrorKind, Point, PolylabelCell, PreparedLinework, Segment,
+    Shape, XY,
+};
 impl Eq for PolylabelCell {}
 
 impl PartialEq for PolylabelCell {
@@ -147,10 +147,66 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
 /// replaces (the whole fixed `maximum_inscribed_circle` tail).
 struct PolylabelFrame {
     shape: Shape,
-    midpoint: Point,
-    scale: f64,
+    frame: AxisFrame,
     default_tolerance: f64,
     max_inradius: f64,
+}
+
+/// Euclidean distance in an [`AxisFrame`]'s local coordinates.
+///
+/// The frame intentionally has a distinct scale for each axis.  That keeps a
+/// reciprocal rectangle representable, but it also means its local space is
+/// *not* Euclidean: a plain local nearest-point query would choose a vertical
+/// edge over the physically-near horizontal one.  Keep the metric here, next
+/// to the only consumer that needs it, rather than silently changing the
+/// geometry it is measuring.
+fn framed_metric_distance(frame: AxisFrame, left: XY, right: XY) -> f64 {
+    ((left.x - right.x) / frame.scale_x()).hypot((left.y - right.y) / frame.scale_y())
+}
+
+/// Nearest point on a local-frame segment under the frame's original
+/// Euclidean metric.  Normalizing the segment direction before its dot
+/// product avoids both the huge-axis overflow and the tiny-axis false zero.
+fn framed_metric_nearest_on_segment(
+    frame: AxisFrame,
+    point: Point,
+    segment: Segment,
+) -> (Point, f64) {
+    let ux = (point.x - segment.start.x) / frame.scale_x();
+    let uy = (point.y - segment.start.y) / frame.scale_y();
+    let vx = (segment.end.x - segment.start.x) / frame.scale_x();
+    let vy = (segment.end.y - segment.start.y) / frame.scale_y();
+    let magnitude = vx.abs().max(vy.abs());
+    let fraction = if magnitude == 0.0 {
+        0.0
+    } else {
+        let nx = vx / magnitude;
+        let ny = vy / magnitude;
+        // Do not form `infinity * 0.0` for a probe very far along the other
+        // axis of a short horizontal/vertical segment.
+        let dot = if nx == 0.0 {
+            0.0
+        } else {
+            (ux / magnitude) * nx
+        } + if ny == 0.0 {
+            0.0
+        } else {
+            (uy / magnitude) * ny
+        };
+        (dot / (nx * nx + ny * ny)).clamp(0.0, 1.0)
+    };
+    let nearest = Point::new_unchecked_xy(
+        segment.start.x + (segment.end.x - segment.start.x) * fraction,
+        segment.start.y + (segment.end.y - segment.start.y) * fraction,
+    );
+    (
+        nearest,
+        framed_metric_distance(frame, point.xy(), nearest.xy()),
+    )
+}
+
+fn framed_metric_cell_radius(frame: AxisFrame, half_size: f64) -> f64 {
+    (half_size / frame.scale_x()).hypot(half_size / frame.scale_y())
 }
 
 fn normalized_polylabel_frame(
@@ -163,17 +219,18 @@ fn normalized_polylabel_frame(
     );
     let half_width = bounds.maxx() / 2.0 - bounds.minx() / 2.0;
     let half_height = bounds.maxy() / 2.0 - bounds.miny() / 2.0;
-    let scale = half_width.max(half_height);
-    if scale <= 0.0 {
+    let Some(frame) = AxisFrame::from_origin_extents(
+        midpoint,
+        half_width
+            .abs()
+            .max(bounds.minx().abs())
+            .max(bounds.maxx().abs()),
+        half_height
+            .abs()
+            .max(bounds.miny().abs())
+            .max(bounds.maxy().abs()),
+    ) else {
         return Ok(None);
-    }
-    let normalize = |value: f64, middle: f64| {
-        let delta = value - middle;
-        if delta.is_finite() {
-            delta / scale
-        } else {
-            value / scale - middle / scale
-        }
     };
     let xy = shape.force_2d();
     let normalized = xy.try_map_coordseqs(
@@ -183,18 +240,14 @@ fn normalized_polylabel_frame(
                 GeometryErrorKind::message("polylabel could not allocate normalized coordinates")
             })?;
             for point in seq.iter_coords() {
-                builder.push(point.with_xy(
-                    normalize(point.x, midpoint.x),
-                    normalize(point.y, midpoint.y),
-                )?);
+                let xy = frame.frame_xy(point.x, point.y);
+                builder.push(point.with_xy(xy.x, xy.y)?);
             }
             builder.finish()
         },
         |point| {
-            point.with_xy(
-                normalize(point.x, midpoint.x),
-                normalize(point.y, midpoint.y),
-            )
+            let xy = frame.frame_xy(point.x, point.y);
+            point.with_xy(xy.x, xy.y)
         },
     )?;
     let normalized_bounds = normalized
@@ -202,11 +255,17 @@ fn normalized_polylabel_frame(
         .expect("non-empty normalized polygon retains bounds");
     Ok(Some(PolylabelFrame {
         shape: normalized,
-        midpoint,
-        scale,
-        default_tolerance: half_width.min(half_height) / 500.0,
-        max_inradius: (normalized_bounds.maxx() - normalized_bounds.minx())
-            .min(normalized_bounds.maxy() - normalized_bounds.miny())
+        frame,
+        // Tolerances and bounds are public Euclidean distances.  The local
+        // frame is only a representation rescue, so convert each axis back
+        // independently before comparing them.
+        default_tolerance: ((normalized_bounds.maxx() - normalized_bounds.minx()).abs()
+            / frame.scale_x())
+        .min((normalized_bounds.maxy() - normalized_bounds.miny()).abs() / frame.scale_y())
+            / 500.0,
+        max_inradius: ((normalized_bounds.maxx() - normalized_bounds.minx()).abs()
+            / frame.scale_x())
+        .min((normalized_bounds.maxy() - normalized_bounds.miny()).abs() / frame.scale_y())
             / 2.0,
     }))
 }
@@ -223,7 +282,7 @@ pub(crate) fn polylabel_point(
     // representative point is the answer and its boundary projection the
     // witness. Build the original-frame field only on this rare branch.
     let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
-        let original_field = PolylabelField::new(shape, 0.0);
+        let original_field = PolylabelField::new(shape, 0.0, None);
         let center = representative_point(shape, bounds);
         return Ok((
             center,
@@ -234,17 +293,16 @@ pub(crate) fn polylabel_point(
         .shape
         .bounds()
         .expect("non-empty normalized polygon retains bounds");
-    let mut field = PolylabelField::new(&frame.shape, frame.max_inradius);
+    let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame));
     if field.is_empty() {
         let center = representative_point(shape, bounds);
         return Ok((center, center));
     }
 
-    // Omitted tolerance scales with the geometry's narrow span. The floor is
-    // the normalized frame's practical floating-point resolution; requesting
-    // a smaller explicit value cannot make subdivision stop making progress.
+    // Tolerance remains in public Euclidean coordinates.  The framed field
+    // measures in that same metric, so an explicit tolerance is not silently
+    // reinterpreted as a coordinate-space tolerance.
     let tolerance = tolerance.unwrap_or(frame.default_tolerance);
-    let tolerance = (tolerance / frame.scale).max(f64::EPSILON * 8.0);
 
     let mut best = field.cell(
         representative_point(&frame.shape, normalized_bounds),
@@ -287,10 +345,8 @@ pub(crate) fn polylabel_point(
     }
 
     let denormalize = |point: Point| {
-        Point::new_unchecked_xy(
-            frame.midpoint.x + point.x * frame.scale,
-            frame.midpoint.y + point.y * frame.scale,
-        )
+        let world = frame.frame.unframe_xy(point.xy());
+        Point::new_unchecked_xy(world.x, world.y)
     };
     let center = denormalize(best.center);
     let witness = field
@@ -314,9 +370,10 @@ pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
 /// `O(log segments)` SIMD branch-and-bound descent rather than the per-cell
 /// `O(segments)` scan it replaces. Containment (the distance sign) rides a
 /// direct ray cast — needed for only the seed and boundary-straddling cells,
-/// far below the banded-raycaster build's payoff. The same BVH then yields
-/// the inscribed circle's boundary contact point, so `maximum_inscribed_circle`
-/// never rebuilds or rescans the boundary for its radius.
+/// far below a full hierarchical `PointBatchTester` build's payoff. The same
+/// BVH then yields the inscribed circle's boundary contact point, so
+/// `maximum_inscribed_circle` never rebuilds or rescans the boundary for its
+/// radius.
 struct PolylabelField<'a> {
     shape: &'a Shape,
     linework: PreparedLinework,
@@ -324,14 +381,17 @@ struct PolylabelField<'a> {
     /// Branch-and-bound traversal stack, reused across every cell probe.
     stack: Vec<u32>,
     max_inradius: f64,
+    /// `Some` keeps nearest-point and cell bounds in the original Euclidean
+    /// metric while the stored shape remains in its lossless local frame.
+    frame: Option<AxisFrame>,
 }
 
 impl<'a> PolylabelField<'a> {
-    fn new(shape: &'a Shape, max_inradius: f64) -> Self {
+    fn new(shape: &'a Shape, max_inradius: f64, frame: Option<AxisFrame>) -> Self {
         let linework = PreparedLinework::build(shape);
         // Below the indexing crossover the flat SIMD facet scan beats a tree
         // descent (its stack churn does not pay for a handful of facets).
-        let bvh = (linework.segment_count() >= BVH_MIN_INDEXED_SEGMENTS)
+        let bvh = (frame.is_none() && linework.segment_count() >= BVH_MIN_INDEXED_SEGMENTS)
             .then(|| FacetBvh::build(&linework))
             .flatten();
         Self {
@@ -340,6 +400,7 @@ impl<'a> PolylabelField<'a> {
             bvh,
             stack: Vec::new(),
             max_inradius,
+            frame,
         }
     }
 
@@ -353,6 +414,19 @@ impl<'a> PolylabelField<'a> {
     /// nothing like the brute scan it replaces. `None` only when there is no
     /// linework.
     fn nearest_boundary(&self, center: Point) -> Option<Point> {
+        if let Some(frame) = self.frame {
+            let mut nearest = None;
+            let mut best = f64::INFINITY;
+            self.linework.for_each_segment(|segment| {
+                let (candidate, distance) =
+                    framed_metric_nearest_on_segment(frame, center, segment);
+                if distance < best {
+                    best = distance;
+                    nearest = Some(candidate);
+                }
+            });
+            return nearest;
+        }
         let candidate = self.bvh.as_ref().map_or_else(
             || {
                 self.linework
@@ -374,6 +448,13 @@ impl<'a> PolylabelField<'a> {
     /// outset (the true nearest is never pruned — it lies at or below the
     /// bound). `f64::INFINITY` means "no prior knowledge" (the seed cells).
     fn boundary_distance(&mut self, point: Point, bound_squared: f64) -> f64 {
+        if let Some(frame) = self.frame {
+            let mut best = f64::INFINITY;
+            self.linework.for_each_segment(|segment| {
+                best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
+            });
+            return best;
+        }
         let squared = match &self.bvh {
             Some(bvh) => bvh.min_point_distance_with_stack::<true>(
                 &self.linework,
@@ -397,8 +478,8 @@ impl<'a> PolylabelField<'a> {
     /// boundary provably cannot reach across that gap
     /// (`|parent.distance| >` the gap) the child shares the parent's side and
     /// the containment probe is skipped. The search spends most of its cells
-    /// refining deep inside the optimum, where this holds — so the banded
-    /// raycaster runs only for the few cells straddling the boundary.
+    /// refining deep inside the optimum, where this holds — so the
+    /// containment probe runs only for the few cells straddling the boundary.
     fn cell(
         &mut self,
         center: Point,
@@ -412,7 +493,10 @@ impl<'a> PolylabelField<'a> {
         // prunes the true nearest facet). The same gap decides the sign for
         // free when the boundary cannot reach across it.
         let (bound_squared, inherited_sign) = parent.map_or((f64::INFINITY, None), |parent| {
-            let gap = parent.half_size * std::f64::consts::FRAC_1_SQRT_2;
+            let gap = self.frame.map_or(
+                parent.half_size * std::f64::consts::FRAC_1_SQRT_2,
+                |frame| framed_metric_cell_radius(frame, parent.half_size / 2.0),
+            );
             let bound = (parent.distance.abs() + gap) * (1.0 + 1e-9);
             let sign = (parent.distance.abs() > gap).then_some(parent.distance > 0.0);
             (bound * bound, sign)
@@ -420,15 +504,51 @@ impl<'a> PolylabelField<'a> {
         let distance = self.boundary_distance(center, bound_squared);
         // Containment is needed only for the seed cells and the few cells that
         // straddle the boundary (deep cells inherit their parent's sign), so a
-        // direct even-odd ray cast beats building a banded raycaster whose
-        // O(segments·log) sort never amortizes over so few probes.
+        // direct even-odd ray cast beats building a hierarchical
+        // `PointBatchTester` whose O(segments·log) sort never amortizes over
+        // so few probes.
         let inside = inherited_sign.unwrap_or_else(|| self.shape.contains_point(center));
         let signed = if inside { distance } else { -distance };
+        let cell_radius = self
+            .frame
+            .map_or(half_size * std::f64::consts::SQRT_2, |frame| {
+                framed_metric_cell_radius(frame, half_size)
+            });
         PolylabelCell {
             center,
             half_size,
             distance: signed,
-            max_distance: (half_size * std::f64::consts::SQRT_2 + signed).min(self.max_inradius),
+            max_distance: (cell_radius + signed).min(self.max_inradius),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Polygon, Ring};
+
+    #[test]
+    fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
+        let extent = 1.0e162;
+        let half_height = 1.0 / extent;
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(vec![
+                Point::new_unchecked_xy(-extent, -half_height),
+                Point::new_unchecked_xy(extent, -half_height),
+                Point::new_unchecked_xy(extent, half_height),
+                Point::new_unchecked_xy(-extent, half_height),
+                Point::new_unchecked_xy(-extent, -half_height),
+            ]),
+            Vec::new(),
+        ));
+        let (center, witness) = polylabel_point(&shape, None).expect("finite ribbon");
+        assert_eq!(center, Point::new_unchecked_xy(0.0, 0.0));
+        assert_eq!(center.y.hypot(witness.y).to_bits(), half_height.to_bits());
+        assert_eq!(
+            center.x.to_bits(),
+            witness.x.to_bits(),
+            "nearest edge is horizontal"
+        );
     }
 }

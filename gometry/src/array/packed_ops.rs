@@ -1,15 +1,19 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::*;
+use crate::array::{
+    Bound, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, FrameCacheRows, GeometryArrayStorage,
+    MissingMask, PackedColumnBuilder, Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, RowSelectionRef, Shape,
+    column_window, concat_coord_columns, curves, line_logical_len, note_array_row,
+    packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
+    parse_curve_bounds, physical_row, point_logical_len, polygon_logical_len, prepared,
+    row_selection_from_logical_rows, rows_err,
+};
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -226,10 +230,9 @@ impl PyGeometryArray {
     pub(crate) fn logical_coordinate_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {
         debug_assert!(rows.end <= self.storage().len());
         match self.storage() {
-            GeometryArrayStorage::Mixed(items) => items[rows]
-                .iter()
-                .map(|item| item.shape.shape().coordinate_bytes())
-                .sum(),
+            GeometryArrayStorage::Mixed(shapes) => {
+                shapes[rows].iter().map(Shape::coordinate_bytes).sum()
+            },
             GeometryArrayStorage::Points { coords, .. } => coords.axes().byte_width(rows.len()),
             GeometryArrayStorage::Lines {
                 coords,
@@ -270,7 +273,7 @@ impl PyGeometryArray {
         let coordinate_bytes = self.logical_coordinate_bytes_range(rows.clone());
         match self.storage() {
             GeometryArrayStorage::Mixed(_) => {
-                coordinate_bytes + rows.len() * std::mem::size_of::<PyGeometry>()
+                coordinate_bytes + rows.len() * std::mem::size_of::<Shape>()
             },
             GeometryArrayStorage::Points { row_map, .. } => {
                 coordinate_bytes + selected_row_map_heap_bytes(row_map.as_deref(), rows)
@@ -537,9 +540,9 @@ impl PyGeometryArray {
         offsets: &[i32],
         tolerance: f64,
     ) -> PyResult<Self> {
-        let area_tolerance = crate::geometry::vw_area_tolerance(tolerance);
         self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
-            crate::geometry::vw_keep(xs, ys, area_tolerance, keep)
+            // Distance-scale threshold; area form is derived after framing.
+            crate::geometry::vw_keep(xs, ys, tolerance, keep)
         })
     }
 
@@ -549,8 +552,11 @@ impl PyGeometryArray {
         offsets: &[i32],
         tolerance: f64,
     ) -> PyResult<Self> {
+        // One batch-local DP work stack reused across rows (clear+push, no
+        // per-row allocation). Free-threading: not a receiver cache / lock.
+        let mut stack: Vec<(usize, usize)> = Vec::new();
         self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
-            crate::geometry::rdp_keep(xs, ys, tolerance, keep)
+            crate::geometry::rdp_keep(xs, ys, tolerance, keep, &mut stack)
         })
     }
 
@@ -595,21 +601,6 @@ impl PyGeometryArray {
         ))
     }
 
-    /// Build an array from elements produced by a metadata-checked per-element
-    /// operation, deriving the shared frame from the outputs. The elements are
-    /// uniform by construction (each carries its op's `binary_output_*` frame).
-    pub fn from_items(items: Vec<PyGeometry>) -> Self {
-        let frame = Frame::of_uniform(&items, "array output")
-            .expect("metadata-checked output items share one frame");
-        Self::pack_or_mixed(items, frame)
-    }
-
-    /// Row-wrapper accessor for cold / Python-boundary code that needs
-    /// `PyGeometry` objects. `Mixed` borrows its backing `Vec` (zero cost);
-    /// `Points` materializes wrappers on demand (`Cow::Owned`) carrying the
-    /// shared frame. Hot paths must instead use the storage seam
-    /// (`point_rows`/`detached_shapes`/`iter_shapes`) to avoid this
-    /// per-row allocation.
     /// Shared curve-key engine: one frame for the whole array (explicit
     /// bounds or total bounds), one key per row. Empty and missing rows use
     /// `u64::MAX`, the documented sort-last sentinel.
@@ -659,39 +650,13 @@ impl PyGeometryArray {
     }
 
     pub fn items(&self) -> std::borrow::Cow<'_, [PyGeometry]> {
-        match self.storage() {
-            GeometryArrayStorage::Mixed(items) => std::borrow::Cow::Borrowed(items),
-            GeometryArrayStorage::Points { .. }
-            | GeometryArrayStorage::Lines { .. }
-            | GeometryArrayStorage::Polygons { .. } => std::borrow::Cow::Owned(
-                (0..self.storage().len())
-                    .map(|index| {
-                        self.storage().geometry_at(
-                            index,
-                            self.frame.clone(),
-                            self.row_frame_cache(index),
-                        )
-                    })
-                    .collect(),
-            ),
-        }
-    }
-
-    /// Map every element to zero or more output shapes, flattening the results
-    /// into one array carrying this array's frame (triangulations, polygonized
-    /// faces, split pieces).
-    pub fn flat_map_shapes(
-        &self,
-        transform: impl Fn(&Shape) -> PyResult<Vec<Shape>>,
-    ) -> PyResult<Self> {
-        let mut items = Vec::new();
-        for (row, shape) in self.present_shape_rows() {
-            let outputs = transform(&shape).map_err(|err| note_array_row(err, row))?;
-            for output in outputs {
-                items.push(PyGeometry::with_frame(output, self.frame.clone()));
-            }
-        }
-        Ok(Self::pack_or_mixed(items, self.frame.clone()))
+        // Mixed no longer stores PyGeometry; materialize through the array
+        // geometry_at cache so repeated items()/arr[i] share ShapeData.
+        std::borrow::Cow::Owned(
+            (0..self.storage().len())
+                .map(|index| self.geometry_at(index))
+                .collect(),
+        )
     }
 
     /// Map each row's shape to a `Vec<Shape>` and collect into a per-row
@@ -731,34 +696,71 @@ impl PyGeometryArray {
         crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
     }
 
-    /// [`flat_map_packed_triangles_detached`](Self::flat_map_packed_triangles_detached)
-    /// into a per-row [`Groups`](crate::py::vectors::Groups): the packed
-    /// triangle build is unchanged (one shared coords column, no per-triangle
-    /// materialization); the per-row `offsets` are the running triangle counts
-    /// (each triangle is a 4-point closed ring), so grouping costs nothing.
-    pub(crate) fn flat_map_packed_triangles_groups(
+    /// Budgeted group flattening for operations that synthesize a variable
+    /// number of geometries.  One detached row walk owns the counter across
+    /// mixed rows, missing masks, and every output group.
+    pub(crate) fn flat_map_shapes_groups_budgeted(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape) -> Result<Vec<Point>> + Send + Sync,
+        operation: &'static str,
+        parameter: &'static str,
+        mut transform: impl FnMut(
+            usize,
+            &Shape,
+            &mut crate::geometry::ExpansionBudget,
+        ) -> Result<Vec<Shape>>
+        + Send,
     ) -> PyResult<crate::py::vectors::Groups> {
-        self.flat_map_packed_triangles_groups_indexed(py, move |_, shape| transform(shape))
+        let storage = Arc::clone(self.storage_arc());
+        let missing = self.missing().cloned();
+        let frame = self.frame.clone();
+        let (shapes, offsets) = py
+            .detach(move || {
+                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
+                let mut items = Vec::new();
+                let mut offsets = vec![0_i64];
+                for (row, shape) in storage.iter_shapes().enumerate() {
+                    if !missing.as_ref().is_some_and(|mask| mask[row]) {
+                        items.extend(
+                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?,
+                        );
+                    }
+                    offsets.push(items.len() as i64);
+                }
+                Ok((items, offsets))
+            })
+            .map_err(rows_err)?;
+        crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
     }
 
-    pub(crate) fn flat_map_packed_triangles_groups_indexed(
+    /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`].  The
+    /// same array-wide budget is charged by the triangle vertex emitter before
+    /// its columns are appended.
+    pub(crate) fn flat_map_packed_triangles_groups_budgeted(
         &self,
         py: Python<'_>,
-        transform: impl Fn(usize, &Shape) -> Result<Vec<Point>> + Send + Sync,
+        operation: &'static str,
+        parameter: &'static str,
+        mut transform: impl FnMut(
+            usize,
+            &Shape,
+            &mut crate::geometry::ExpansionBudget,
+        ) -> Result<Vec<Point>>
+        + Send,
     ) -> PyResult<crate::py::vectors::Groups> {
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
         let frame = self.frame.clone();
         let (vertices, offsets) = py
             .detach(move || {
+                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut vertices = Vec::new();
                 let mut offsets = vec![0_i64];
                 for (row, shape) in storage.iter_shapes().enumerate() {
                     if !missing.as_ref().is_some_and(|mask| mask[row]) {
-                        vertices.extend(transform(row, &shape).map_err(|error| (row, error))?);
+                        vertices.extend(
+                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?,
+                        );
                     }
                     offsets.push((vertices.len() / 4) as i64);
                 }

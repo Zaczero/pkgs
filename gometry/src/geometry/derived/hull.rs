@@ -1,4 +1,7 @@
-use crate::geometry::*;
+use crate::geometry::{
+    CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
+    same_topological_coordinate, scaled_residual,
+};
 /// Reduce an open monotone-chain hull (0–2 vertices degenerate to
 /// point/line; 3+ close into a polygon shell).
 pub(crate) fn shape_from_open_hull(hull: &[Point], empty: impl FnOnce() -> Shape) -> Shape {
@@ -91,14 +94,32 @@ fn akl_toussaint_filter(points: &mut Vec<XY>) {
         }
         extent = extent.max(point.x.abs()).max(point.y.abs());
     }
-    // Margin >> the cross-product rounding bound at this magnitude.
-    let margin = extent * extent * 1e-10;
+    // One power-of-two frame keeps the filter arithmetic finite even when
+    // stored coordinates are near f64::MAX. A non-finite intermediate is not
+    // a negative certificate: fail open into the robust monotone chain.
+    if !extent.is_finite() {
+        return;
+    }
+    let origin = XY::new(
+        f64::midpoint(quad[0].x, quad[2].x),
+        f64::midpoint(quad[1].y, quad[3].y),
+    );
+    let scale = axis_pow2_scale(extent);
+    let normalize = |point: XY| {
+        XY::new(
+            scaled_residual(point.x, origin.x, scale),
+            scaled_residual(point.y, origin.y, scale),
+        )
+    };
+    quad = quad.map(normalize);
+    let margin = 1e-10;
     points.retain(|&point| {
+        let point = normalize(point);
         for edge in 0..4 {
             let a = quad[edge];
             let b = quad[(edge + 1) % 4];
             let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
-            if cross <= margin {
+            if !cross.is_finite() || cross <= margin {
                 return true; // on, outside, or too close to call: keep
             }
         }

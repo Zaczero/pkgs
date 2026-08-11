@@ -1,14 +1,24 @@
-use super::*;
 use crate::error::Result;
-use crate::geometry::{closed_ring, same_point};
+use crate::geometry::types::{CoordIter, CoordSeq, CoordSeqBuilder, GeometryErrorKind, Point, XY};
+use crate::geometry::{same_active_position, same_point};
 
 /// A polygon ring: a closed (first == last) vertex sequence with ≥3 corners,
 /// stored as a [`CoordSeq`].
 ///
 /// [`Polygon`] holds `Ring`s so a too-short or unclosed ring is
-/// unrepresentable. Construct via [`Ring::closed`] at input boundaries and
+/// unrepresentable. Construct via [`Ring::closed`] / [`Ring::closed_coordseq`]
+/// at **every** input boundary (constructors, WKT, WKB, GeoArrow, pickle) and
 /// [`Ring::from_trusted_closed`] for coordinate-preserving transforms of an
 /// existing ring. Read access mirrors a slice via the delegating accessors.
+///
+/// **Admission policy (one owner, all ingresses):**
+/// - fewer than [`Ring::MIN_VERTICES_OPEN`] corners → reject
+/// - first and last match on **every active ordinate** and length ≥
+///   [`Ring::MIN_VERTICES_CLOSED`] → accept as closed
+/// - XY-closed but Z/M-open (active-ordinate mismatch) → reject (never invent a
+///   closing Z/M)
+/// - otherwise XY-open with ≥3 corners → **silently close** by appending the
+///   first vertex (all ordinates)
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ring(CoordSeq);
 
@@ -18,23 +28,37 @@ impl Ring {
     /// Minimum stored vertices for a closed ring (includes repeated endpoint).
     pub const MIN_VERTICES_CLOSED: usize = 4;
 
-    /// Validate and close `points` (≥3 corners; appends the first point if the
-    /// ring is not already closed). The boundary constructor for parsed input.
+    /// Validate and close `points` under the shared ring-admission policy.
+    /// The boundary constructor for parsed / constructed input.
     pub fn closed(points: Vec<Point>) -> Result<Self> {
-        closed_ring(points).map(|points| Self(points.into()))
+        Self::closed_coordseq(CoordSeq::from(points))
     }
 
     /// Validate and close a columnar coordinate sequence without staging it
     /// through `Vec<Point>`, preserving explicit empty/non-empty Z/M lanes.
+    ///
+    /// This is the **single** untrusted ring admission owner — constructors,
+    /// WKT/WKB, GeoArrow, and pickle all route here (via [`crate::io::admit_closed_ring`]
+    /// or directly).
     pub(crate) fn closed_coordseq(coords: CoordSeq) -> Result<Self> {
         if coords.len() < Self::MIN_VERTICES_OPEN {
             return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
         }
         let first = coords.point_at(0);
         let last = coords.point_at(coords.len() - 1);
-        if same_point(first, last) {
+        if same_active_position(first, last) {
+            if coords.len() < Self::MIN_VERTICES_CLOSED {
+                return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
+            }
             return Ok(Self(coords));
         }
+        // XY closed / Z-or-M open: reject rather than invent a closing ordinate.
+        if same_point(first, last) {
+            return Err(GeometryErrorKind::message(
+                "polygon ring must be closed on all active ordinates",
+            ));
+        }
+        // XY-open: silent-close (WKT/WKB/shapely/constructor convention).
         let mut closed = CoordSeqBuilder::like_coords(&coords, 0);
         closed
             .try_reserve_exact(coords.len() + 1)

@@ -1,4 +1,7 @@
-use super::*;
+use crate::geometry::relate_ng::{
+    AreaTesters, Loc, Operand, OperandPool, RingClass, TopologyComputer, XY,
+    operand_covers_boundary, other_contains, topology, wrap_index,
+};
 
 pub(crate) fn probe_interior_faces(
     pool: &OperandPool,
@@ -138,8 +141,8 @@ pub(crate) fn polygon_interior_probe(
         [0.5, 0.25, 0.75].into_iter().find_map(|weight| {
             let point = XY::new(span[0] * (1.0 - weight) + span[1] * weight, y);
             // Confirm the candidate is interior to this operand via its cached
-            // banded raycaster (O(band)); only fall back to the O(n) ring scan
-            // when no tester is prepared.
+            // hierarchical `PointBatchTester`; only fall back to the O(n) ring
+            // scan when no tester is prepared.
             let inside = testers.for_operand(operand).map_or_else(
                 || topology::polygon_rings_contain_interior(rings.iter().copied(), point),
                 |tester| {

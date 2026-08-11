@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! The S2 cell identity layer: the canonical 64-bit Hilbert-curve cell id,
 //! its token codec, hierarchy moves, ranges, and grid neighbors.
 //!
@@ -11,7 +7,7 @@
 //! Hilbert curve, so sorted ids group spatial neighbors and every cell's
 //! descendants form one contiguous `range_min..=range_max` interval.
 
-use super::projection::{
+use crate::grid::s2::projection::{
     MAX_LEVEL, MAX_SIZE, Point3, face_uv_to_xyz, ij_to_st_min, lonlat_to_point, st_to_ij, st_to_uv,
     uv_to_st, xyz_to_face_uv,
 };
@@ -166,6 +162,10 @@ impl CellId {
     }
 
     /// The token: 16 hex nibbles with trailing zeros stripped.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn token(self) -> String {
         format!("{:016x}", self.0).trim_end_matches('0').to_owned()
     }
@@ -257,6 +257,10 @@ impl CellId {
 
     /// The ancestor at `level`; `None` when `level` is finer than this
     /// cell's (same level returns the cell itself).
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn parent(self, level: u8) -> Option<Self> {
         (level <= self.level()).then(|| {
             let lsb = lsb_for_level(level);
@@ -265,6 +269,10 @@ impl CellId {
     }
 
     /// The four immediate children, in Hilbert order; `None` for a leaf.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) const fn children(self) -> Option<[Self; 4]> {
         if self.is_leaf() {
             return None;
@@ -298,16 +306,28 @@ impl CellId {
     }
 
     /// The smallest leaf id contained in this cell.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) const fn range_min(self) -> Self {
         Self(self.0 - (self.lsb() - 1))
     }
 
     /// The largest leaf id contained in this cell.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) const fn range_max(self) -> Self {
         Self(self.0 + (self.lsb() - 1))
     }
 
     /// Whether this cell contains `other` (itself included).
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.range_min() <= other && other <= self.range_max()
     }
@@ -377,13 +397,32 @@ impl CellId {
 
     /// The cell's (u, v) bounds on its face.
     pub(crate) fn bound_uv(self) -> (f64, f64, f64, f64) {
+        let (u_lo, u_hi, v_lo, v_hi, ..) = self.bound_uv_with_spans();
+        (u_lo, u_hi, v_lo, v_hi)
+    }
+
+    /// UV bounds plus cancellation-free axis spans (area-local only).
+    pub(crate) fn bound_uv_with_spans(self) -> (f64, f64, f64, f64, f64, f64) {
         let (_, i, j, _) = self.face_ij_orientation();
         let size = size_ij(self.level());
-        let u_lo = st_to_uv(ij_to_st_min(i & -size));
-        let u_hi = st_to_uv(ij_to_st_min((i & -size) + size));
-        let v_lo = st_to_uv(ij_to_st_min(j & -size));
-        let v_hi = st_to_uv(ij_to_st_min((j & -size) + size));
-        (u_lo, u_hi, v_lo, v_hi)
+        let s_lo = ij_to_st_min(i & -size);
+        let s_hi = ij_to_st_min((i & -size) + size);
+        let t_lo = ij_to_st_min(j & -size);
+        let t_hi = ij_to_st_min((j & -size) + size);
+        let u_lo = st_to_uv(s_lo);
+        let u_hi = st_to_uv(s_hi);
+        let v_lo = st_to_uv(t_lo);
+        let v_hi = st_to_uv(t_hi);
+        let span = |lo: f64, hi: f64| {
+            if lo >= 0.5 {
+                (4.0 / 3.0) * (hi - lo) * (hi + lo)
+            } else if hi <= 0.5 {
+                (4.0 / 3.0) * (hi - lo) * (2.0 - hi - lo)
+            } else {
+                st_to_uv(hi) - st_to_uv(lo)
+            }
+        };
+        (u_lo, u_hi, v_lo, v_hi, span(s_lo, s_hi), span(t_lo, t_hi))
     }
 }
 

@@ -1,5 +1,6 @@
-use super::*;
+use crate::geometry::clean_union::*;
 use crate::geometry::overlay::{OverlayOp, binary_areal_overlay, polygon_parts_to_shape};
+use crate::geometry::{CoordSeq, Point, Polygon, Ring};
 /// One closed radial ring: vertices at evenly-spaced angles with per-vertex
 /// radii (always SIMPLE; non-convex when the radii vary). `clockwise`
 /// reverses the winding for use as a hole.

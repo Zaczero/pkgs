@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::*;
+use crate::array::{GeometryArrayStorage, PyGeometryArray};
 
 impl PyGeometryArray {
     /// Gather logical rows into a new array (packed remap or mixed
@@ -50,15 +50,16 @@ impl PyGeometryArray {
                 rows.iter().copied(),
             );
         }
-        let items = rows
-            .iter()
-            .copied()
-            .map(|row| {
-                self.storage()
-                    .geometry_at(row, self.frame.clone(), self.row_frame_cache(row))
-            })
-            .collect();
-        Self::mixed(items, self.frame.clone())
+        let shapes = match self.storage() {
+            GeometryArrayStorage::Mixed(existing) => {
+                rows.iter().map(|&row| existing[row].clone()).collect()
+            },
+            _ => rows
+                .iter()
+                .map(|&row| self.storage().row(row).with_shape(std::clone::Clone::clone))
+                .collect(),
+        };
+        Self::mixed_shapes(shapes, self.frame.clone())
     }
 
     fn gather_logical_row_range_dense(&self, rows: std::ops::Range<usize>) -> Self {
@@ -88,12 +89,12 @@ impl PyGeometryArray {
                 rows,
             );
         }
-        let items = rows
-            .map(|row| {
-                self.storage()
-                    .geometry_at(row, self.frame.clone(), self.row_frame_cache(row))
-            })
-            .collect();
-        Self::mixed(items, self.frame.clone())
+        let shapes = match self.storage() {
+            GeometryArrayStorage::Mixed(existing) => existing[rows].to_vec(),
+            _ => rows
+                .map(|row| self.storage().row(row).with_shape(std::clone::Clone::clone))
+                .collect(),
+        };
+        Self::mixed_shapes(shapes, self.frame.clone())
     }
 }

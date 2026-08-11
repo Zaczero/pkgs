@@ -1,11 +1,7 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::metric::MetricResolver;
 use crate::DistanceUnit;
+use crate::dispatch::metric::MetricResolver;
 use crate::geometry::OverlayOp;
-use crate::py::functions::predicate::Predicate;
+use crate::predicates::engine::Predicate;
 
 macro_rules! define_operation {
     (
@@ -58,7 +54,7 @@ define_operation! {
     CrossesAntimeridian => { name: "crosses_antimeridian", resolver: MetricResolver::Antimeridian },
     Difference => { name: "difference", resolver: MetricResolver::None },
     Distance => { name: "distance", resolver: MetricResolver::Metric { unit: None } },
-    Distance3d => { name: "distance_3d", resolver: MetricResolver::None },
+    Distance3d => { name: "distance_3d", resolver: MetricResolver::Metric3d { unit: None } },
     Dwithin => { name: "dwithin", resolver: MetricResolver::Metric { unit: None } },
     Envelope => { name: "envelope", resolver: MetricResolver::None },
     Force2d => { name: "force_2d", resolver: MetricResolver::None },
@@ -75,7 +71,7 @@ define_operation! {
     IsSimple => { name: "is_simple", resolver: MetricResolver::None },
     IsValid => { name: "is_valid", resolver: MetricResolver::None },
     Length => { name: "length", resolver: MetricResolver::Metric { unit: None } },
-    Length3d => { name: "length_3d", resolver: MetricResolver::None },
+    Length3d => { name: "length_3d", resolver: MetricResolver::Metric3d { unit: None } },
     LineInterpolate => { name: "line_interpolate", resolver: MetricResolver::LineMetric { unit: None, normalized: false } },
     LineLocate => { name: "line_locate", resolver: MetricResolver::LineMetric { unit: None, normalized: false } },
     LineSubstring => { name: "line_substring", resolver: MetricResolver::LineMetric { unit: None, normalized: false } },
@@ -98,7 +94,7 @@ define_operation! {
     Reverse => { name: "reverse", resolver: MetricResolver::None },
     Rotate => { name: "rotate", resolver: MetricResolver::None },
     Scale => { name: "scale", resolver: MetricResolver::None },
-    Segmentize => { name: "segmentize", resolver: MetricResolver::None },
+    Segmentize => { name: "segmentize", resolver: MetricResolver::Metric { unit: None } },
     Skew => { name: "skew", resolver: MetricResolver::None },
     Snap => { name: "snap", resolver: MetricResolver::None },
     SetM => { name: "set_m", resolver: MetricResolver::None },

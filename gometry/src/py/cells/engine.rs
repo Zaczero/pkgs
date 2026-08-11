@@ -4,13 +4,16 @@
 )]
 use pyo3::exceptions::{PyIndexError, PyTypeError};
 
-use super::*;
 use crate::geometry::LineSeq;
+use crate::py::cells::{
+    Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult,
+    PySliceMethods as _, Python, Shape, lonlat_shape,
+};
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
 use crate::{
-    PointRows, PyGeometry, PyGeometryArray, Typed, crs_arc_static, exact_geometry,
-    exact_geometry_array, expected_geometry_or_array, py_bool, validate_lonlat_shape,
+    PointRows, PyGeometry, PyGeometryArray, Typed, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, py_bool, validate_lonlat_shape,
 };
 
 pub(super) fn uncompact_budget_err(err: crate::grid::UncompactBudgetExceeded) -> PyErr {
@@ -184,15 +187,11 @@ impl GridPointRows<'_> {
         }
     }
 
-    fn get(&self, row: usize) -> Point {
+    pub(crate) fn get(&self, row: usize) -> Point {
         match self {
             Self::Source(points) => points.get(row),
             Self::Columns { xs, ys } => Point::new_unchecked_xy(xs[row], ys[row]),
         }
-    }
-
-    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = Point> + '_ {
-        (0..self.len()).map(|row| self.get(row))
     }
 }
 
@@ -207,7 +206,12 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         .ok_or_else(|| crate::py::errors::geometry_type_err("expected Point geometry"))?;
     let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
     if lonlat_frame || points.is_empty() {
-        for point in points.iter() {
+        // Skip lon/lat validation on missing rows (NaN placeholders) — factories
+        // carry them as a missing mask instead of rejecting the whole batch.
+        for (row, point) in points.iter().enumerate() {
+            if array.is_row_missing(row) {
+                continue;
+            }
             crate::boundary::geographic::validate_lonlat_point(point)?;
         }
         return Ok(GridPointRows::Source(points));
@@ -222,13 +226,24 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         xs.push(point.x);
         ys.push(point.y);
     }
-    crate::crs::Transformer::new(crs, "EPSG:4326").transform_coordinates(
-        &mut xs,
-        &mut ys,
-        crate::Zt::None,
-    )?;
-    for (&x, &y) in xs.iter().zip(&ys) {
-        crate::boundary::geographic::validate_lonlat_xy(x, y)?;
+    // Transform present rows only: missing placeholders may be non-finite and
+    // must not trip domain validation on the identity/real path.
+    let present: Vec<usize> = (0..points.len())
+        .filter(|&row| !array.is_row_missing(row))
+        .collect();
+    if !present.is_empty() {
+        let mut px: Vec<f64> = present.iter().map(|&r| xs[r]).collect();
+        let mut py: Vec<f64> = present.iter().map(|&r| ys[r]).collect();
+        crate::crs::Transformer::new(crs, "EPSG:4326").transform_coordinates(
+            &mut px,
+            &mut py,
+            crate::Zt::None,
+        )?;
+        for (i, &row) in present.iter().enumerate() {
+            crate::boundary::geographic::validate_lonlat_xy(px[i], py[i])?;
+            xs[row] = px[i];
+            ys[row] = py[i];
+        }
     }
     Ok(GridPointRows::Columns { xs, ys })
 }
@@ -329,7 +344,7 @@ where
 }
 
 /// Dissolve a coverage's per-cell boundary polygons into one outline geometry
-/// (shared cell edges removed), tagged EPSG:4326. Single-part results collapse
+/// (shared cell edges removed), tagged OGC:CRS84. Single-part results collapse
 /// to a plain `Polygon` (the buffer output-seam convention).
 pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
     if shapes.is_empty() {
@@ -344,11 +359,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         },
         shape => shape,
     };
-    Ok(PyGeometry::typed_with_epoch(
-        shape,
-        Some(crs_arc_static("EPSG:4326")),
-        None,
-    ))
+    Ok(PyGeometry::typed_wgs84(shape))
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /
@@ -413,11 +424,7 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     } else {
         Shape::MultiPolygon(polygons)
     };
-    Ok(Some(PyGeometry::typed_with_epoch(
-        shape,
-        Some(crs_arc_static("EPSG:4326")),
-        None,
-    )))
+    Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 
 /// Dissolve an arbitrary slice of rect-grid cells (geohash / tiles) into one
@@ -459,6 +466,7 @@ pub(super) fn coverage_geometry_hash(geometry: &PyGeometry) -> u64 {
         &geometry.shape,
     ))
 }
+use pyo3::IntoPyObjectExt as _;
 
 #[cfg(test)]
 mod tests {

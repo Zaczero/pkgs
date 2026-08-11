@@ -74,15 +74,11 @@ def test_free_area_length_accept_raw_iterables():
     boxes = [gm.box(0, 0, 2, 2), gm.box(2, 0, 4, 2)]
     lines = [gm.LineString([(0, 0), (3, 4)]), gm.LineString([(0, 0), (0, 2)])]
 
-    np.testing.assert_array_equal(
-        gm.area(boxes), gm.area(gm.GeometryArray(boxes))
-    )
+    np.testing.assert_array_equal(gm.area(boxes), gm.area(gm.GeometryArray(boxes)))
     np.testing.assert_array_equal(
         gm.area(box for box in boxes), gm.area(gm.GeometryArray(boxes))
     )
-    np.testing.assert_array_equal(
-        gm.length(lines), gm.length(gm.GeometryArray(lines))
-    )
+    np.testing.assert_array_equal(gm.length(lines), gm.length(gm.GeometryArray(lines)))
     np.testing.assert_array_equal(
         gm.length(line for line in lines), gm.length(gm.GeometryArray(lines))
     )
@@ -166,3 +162,34 @@ def test_geodesic_array_nearest_points_match_scalar():
     ]
     for row, expected in zip(array, scalar, strict=True):
         assert gm.equals_exact(row, expected, 1e-09)
+
+
+def test_sample_points_scalar_is_row_zero_and_empty_rows_degrade() -> None:
+    """A scalar geometry IS row 0 of a one-row array, seed included.
+
+    The two spellings of one operation must agree for the same input. The
+    scalar surface used the raw seed while the array derived row 0's stream
+    from it, so identical inputs produced different points. Rows must still
+    draw independent streams, so the fix is that the scalar derives row 0's
+    stream too — not that the array stops deriving.
+    """
+    poly = gm.box(0, 0, 10, 10)
+    array = gm.GeometryArray([poly, poly])
+
+    assert (
+        poly.sample_points(5, seed=42).to_wkt()
+        == array.sample_points(5, seed=42)[0].to_wkt()
+    )
+    # ...while rows remain independent of each other
+    sampled = array.sample_points(5, seed=42)
+    assert sampled[0].to_wkt() != sampled[1].to_wkt()
+    # ...and determinism itself is unchanged
+    assert (
+        poly.sample_points(4, seed=7).to_wkt() == poly.sample_points(4, seed=7).to_wkt()
+    )
+
+    # An empty row yields an empty group; the scalar still raises.
+    mixed = gm.GeometryArray([poly, gm.from_wkt('POLYGON EMPTY'), poly])
+    assert [len(group) for group in mixed.sample_points(3, seed=1)] == [3, 0, 3]
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.from_wkt('POLYGON EMPTY').sample_points(3, seed=1)

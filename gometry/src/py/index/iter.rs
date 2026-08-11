@@ -1,12 +1,15 @@
 //! Lazy handle iterator over a `SpatialIndex`, kept beside its pymethods.
 
-use super::*;
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::{Py, PyRef, PyResult, Python, pyclass, pymethods};
+
+use crate::py::index::PySpatialIndex;
 
 /// Lazy ascending-handle iterator over a live index. It scans the sparse handle
 /// table on demand instead of collecting and sorting the live entries before
 /// the first result. Mutation invalidates iteration, matching mapping iterator
 /// semantics and keeping ``__length_hint__`` exact.
-#[pyclass(name = "SpatialIndexIterator", module = "gometry")]
+#[pyclass(name = "SpatialIndexIterator", module = "gometry", immutable_type)]
 pub(crate) struct PySpatialIndexIter {
     pub(super) source: Py<PySpatialIndex>,
     pub(super) next_handle: usize,

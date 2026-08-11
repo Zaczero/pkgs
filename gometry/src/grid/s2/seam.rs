@@ -13,43 +13,21 @@
 //! disjoint verdict here is a certificate, antimeridian and poles included
 //! (wrapped rects test as two intervals; polar rects span all longitudes).
 
-use super::cell::LatLngRect;
 use crate::geometry::{Shape, ShapePart};
+use crate::grid::s2::cell::LatLngRect;
 
 /// The per-part lon/lat windows of the source geometry. Parts are planar
 /// `[-180, 180]` boxes (gometry validates the lon/lat domain; seam-crossing
 /// sources arrive split into parts hugging each side).
 pub(crate) struct SourceWindows {
     parts: Vec<(f64, f64, f64, f64)>, // (lon_lo, lat_lo, lon_hi, lat_hi)
-    /// True when some part (or the collective cover) spans all longitudes
-    /// — a genuine full-longitude polar cap / world-wide band. Polar cell
-    /// rects expand to full-lng via pole closure; fail-open Boundary for
-    /// those is only sound when the source itself is full-longitude.
-    full_longitude: bool,
 }
 
 impl SourceWindows {
     pub(crate) fn new(source: &Shape) -> Self {
         let mut parts = Vec::new();
-        // Borrowed part visitor (no coordinate cloning); the always-false
-        // predicate makes `any_part` a plain for-each.
-        source.any_part(|part: ShapePart<'_>| {
-            if let Some(bounds) = part.bounds() {
-                parts.push((bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy()));
-            }
-            false
-        });
-        let full_longitude = parts_span_full_longitude(&parts);
-        Self {
-            parts,
-            full_longitude,
-        }
-    }
-
-    /// Whether the source spans all longitudes (full polar cap / world band).
-    #[inline]
-    pub(crate) const fn is_full_longitude(&self) -> bool {
-        self.full_longitude
+        collect_windows(source, &mut parts);
+        Self { parts }
     }
 
     /// Whether any part's window may overlap the cell's exact bound.
@@ -63,31 +41,27 @@ impl SourceWindows {
             lng_windows_overlap_part(first, second, lon_lo, lon_hi)
         })
     }
+}
 
-    /// Lon-only overlap of `lng_windows` against source parts (lat already ok).
-    /// Used to classify polar-expanded full-lng cell rects against a
-    /// partial-longitude source via the cell's true vertex lon span.
-    ///
-    /// Lon intervals are closed on the circle where ±180 is one meridian: a
-    /// cell that only spells the boundary as −180 still meets a source that
-    /// only spells it as +180 (and vice versa). True opposite wedges with no
-    /// shared interior or shared seam stay Outside.
-    pub(crate) fn may_overlap_lng(
-        &self,
-        first: (f64, f64),
-        second: Option<(f64, f64)>,
-        lat_lo: f64,
-        lat_hi: f64,
-    ) -> bool {
-        self.parts
-            .iter()
-            .any(|&(lon_lo, lat_lo_s, lon_hi, lat_hi_s)| {
-                if lat_hi < lat_lo_s || lat_lo > lat_hi_s {
-                    return false;
-                }
-                lng_windows_overlap_part(first, second, lon_lo, lon_hi)
-            })
-    }
+/// Retain each primitive normalized part as its own window.  Antimeridian
+/// splitting can leave a `Multi*` inside a `GeometryCollection`; treating
+/// that nested collection's aggregate as one window recreates a full-world
+/// seam band and defeats the sound bounds gate.
+fn collect_windows(source: &Shape, windows: &mut Vec<(f64, f64, f64, f64)>) {
+    // Borrowed traversal avoids cloning the normalized coordinate storage.
+    // Returning false makes `any_part` a plain for-each.
+    source.any_part(|part: ShapePart<'_>| match part {
+        ShapePart::Nested(shape) => {
+            collect_windows(shape, windows);
+            false
+        },
+        primitive => {
+            if let Some(bounds) = primitive.bounds() {
+                windows.push((bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy()));
+            }
+            false
+        },
+    });
 }
 
 /// Closed lon-interval overlap, antimeridian-aware (±180 is one point).
@@ -103,7 +77,6 @@ fn lng_windows_overlap_part(
 
 /// Two closed lon intervals on `[-180, 180]` overlap, counting the shared
 /// ±180 meridian as contact (same geographic point, two spellings).
-#[inline]
 fn lng_interval_overlap(a_lo: f64, a_hi: f64, b_lo: f64, b_hi: f64) -> bool {
     // Standard closed interval overlap on the unwrapped line.
     if a_hi >= b_lo && a_lo <= b_hi {
@@ -114,22 +87,9 @@ fn lng_interval_overlap(a_lo: f64, a_hi: f64, b_lo: f64, b_hi: f64) -> bool {
 }
 
 /// Whether a closed lon interval includes the antimeridian (±180).
-#[inline]
 fn touches_antimeridian(lo: f64, hi: f64) -> bool {
     // Endpoints exactly at the seam, or a full/near-full band that covers it.
     lo <= -180.0 + 1e-12 || hi >= 180.0 - 1e-12 || lo >= 180.0 - 1e-12 || hi <= -180.0 + 1e-12
-}
-
-/// A part spans full longitude when its lon interval is the closed world
-/// band `[-180, 180]` (canonical box spelling of a full-longitude cap).
-fn parts_span_full_longitude(parts: &[(f64, f64, f64, f64)]) -> bool {
-    const FULL_SPAN: f64 = 360.0 - 1e-9;
-    parts.iter().any(|&(lon_lo, _, lon_hi, _)| {
-        // Non-wrapped full band.
-        (lon_lo <= -180.0 + 1e-9 && lon_hi >= 180.0 - 1e-9)
-            // Or a part whose width is essentially 360°.
-            || (lon_hi - lon_lo) >= FULL_SPAN
-    })
 }
 
 #[cfg(test)]
@@ -188,5 +148,21 @@ mod tests {
         // True opposite (no shared seam) stay disjoint.
         assert!(!lng_interval_overlap(0.0, 10.0, -180.0, -90.0));
         assert!(!lng_interval_overlap(170.0, 175.0, -170.0, -160.0));
+    }
+
+    #[test]
+    fn normalized_seam_components_do_not_reunite_into_a_world_window() {
+        let raw = box_shape(179.0, -1.0, -179.0, 1.0);
+        let split = raw
+            .split_antimeridian()
+            .expect("the exact seam rectangle splits into normalized components");
+        // Antimeridian normalization can place the split MultiPolygon below
+        // a collection member; windows must retain its primitive parts rather
+        // than use that nested member's aggregate full-world bounds.
+        let nested = Shape::GeometryCollection(vec![Shape::GeometryCollection(vec![split])]);
+        let windows = SourceWindows::new(&nested);
+        assert!(windows.may_overlap(rect(179.5, 0.0, 8)));
+        assert!(!windows.may_overlap(rect(179.5, 45.0, 8)));
+        assert!(!windows.may_overlap(rect(0.0, 0.0, 8)));
     }
 }

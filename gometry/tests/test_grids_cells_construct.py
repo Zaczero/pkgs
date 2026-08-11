@@ -95,9 +95,14 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
     with pytest.raises(TypeError):
         gm.CellArray([packed], type=gm.GeohashCell)
     with pytest.raises(TypeError, match='constructed from tokens'):
-        gm.CellArray(np.array([15043922711510253572], dtype=np.uint64), type=gm.GeohashCell)
+        gm.CellArray(
+            np.array([15043922711510253572], dtype=np.uint64), type=gm.GeohashCell
+        )
     with pytest.raises(TypeError, match='constructed from tokens'):
-        gm.CellArray(memoryview(np.array([15043922711510253572], dtype=np.uint64)), type=gm.GeohashCell)
+        gm.CellArray(
+            memoryview(np.array([15043922711510253572], dtype=np.uint64)),
+            type=gm.GeohashCell,
+        )
     with pytest.raises(TypeError, match='constructed from tokens'):
         gm.CellArray([15043922711510253572], type=gm.GeohashCell)
     with pytest.raises(TypeError, match=r'integers.*not floats'):
@@ -424,7 +429,12 @@ def test_cell_collections_reject_byte_payloads_before_numeric_iteration() -> Non
     h3 = gm.H3Cell(13.4, 52.5, resolution=7)
     vertex = h3.vertices[0]
     edge = h3.edges[0]
-    payloads = (b'104', bytearray(b'104'), memoryview(b'104'), memoryview(b'104').cast('c'))
+    payloads = (
+        b'104',
+        bytearray(b'104'),
+        memoryview(b'104'),
+        memoryview(b'104').cast('c'),
+    )
     for payload in payloads:
         with pytest.raises(TypeError, match=r'payload\.decode\(\).*list/uint64 array'):
             gm.s2_union(payload, [s2])
@@ -436,7 +446,9 @@ def test_cell_collections_reject_byte_payloads_before_numeric_iteration() -> Non
             gm.H3VertexArray(payload)
         with pytest.raises(TypeError, match=r'payload\.decode\(\).*list/uint64 array'):
             gm.H3EdgeArray(payload)
-    assert list(gm.CellArray(np.array([s2.id], dtype=np.uint64), type=gm.S2Cell)) == [s2]
+    assert list(gm.CellArray(np.array([s2.id], dtype=np.uint64), type=gm.S2Cell)) == [
+        s2
+    ]
     assert list(gm.H3VertexArray(np.array([vertex.id], dtype=np.uint64))) == [vertex]
     assert list(gm.H3EdgeArray(np.array([edge.id], dtype=np.uint64))) == [edge]
 

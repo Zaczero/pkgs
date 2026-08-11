@@ -1,19 +1,24 @@
 """Private typed structures and token vocabularies of the ``gometry._lib`` API.
 
-These live in a dependency-free module so the top-level facade and native stub
-(``gometry/_lib.pyi``) can import them without creating an import cycle. They
-are the single source of truth for
-the shapes of CRS metadata dictionaries and the ``Literal`` token unions the
-API accepts; do not redeclare them elsewhere. Public users receive these types
-through precise signatures rather than a separate annotation catalog.
+This is the private single source of truth for stub token aliases, protocols,
+and structured return types. The top-level facade and native stub
+(``gometry/_lib.pyi``) import it. NumPy is an unconditional runtime dependency
+and is imported here eagerly for precise ``ndarray`` spellings
+(``BoolArray`` / ``Float64Array``).
+
+Do not redeclare these types elsewhere. Public users receive them through
+precise signatures rather than a separate annotation catalog. Public
+re-exports from this module are the cross-grid protocols ``Cell`` and
+``Coverage`` plus the structured result records ``Extremes``, ``Features``,
+and ``PolygonizeResult``.
 """
 
 from __future__ import annotations
 
 import itertools
+import math
 import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from typing import (
     Any,
     Generic,
@@ -27,10 +32,17 @@ from typing import (
     TypeVar,
 )
 
+import numpy as np
+import numpy.typing as npt
+
 if sys.version_info >= (3, 12):
     from collections.abc import Buffer
 else:  # Python 3.11: Buffer predates collections.abc
     from typing_extensions import Buffer
+
+# NumPy is core: precise array aliases are real at runtime and for checkers.
+BoolArray: TypeAlias = npt.NDArray[np.bool_]
+Float64Array: TypeAlias = npt.NDArray[np.float64]
 
 TYPE_CHECKING = False
 
@@ -58,6 +70,7 @@ if TYPE_CHECKING:
     GeoPandasSeries: TypeAlias = gpd.GeoSeries
     PandasDataFrame: TypeAlias = pd.DataFrame
     PandasSeries: TypeAlias = pd.Series
+    PandasIndex: TypeAlias = pd.Index
     PolarsSeries: TypeAlias = pl.Series
 else:
     PyArrowArray = Any
@@ -69,12 +82,10 @@ else:
     GeoPandasSeries = Any
     PandasDataFrame = Any
     PandasSeries = Any
+    PandasIndex = Any
     PolarsSeries = Any
     PyprojCrs = Any
     PyprojAreaOfInterest = Any
-
-import numpy as np
-import numpy.typing as npt
 
 from gometry._lib import (
     CellArray,
@@ -89,12 +100,12 @@ from gometry._lib import (
 
 
 def mapping_as_dict(value: Any) -> dict[Any, Any]:
-    """Copy a mapping via ``keys()`` + seen-set + reported-length (keystone).
+    """Copy a mapping via ``keys()`` + seen-set (keystone).
 
     Matches ``dict(value)`` key enumeration: iterate ``keys()`` through the
     iterator protocol (accepts ``__iter__`` *and* legacy ``__getitem__``
-    sequences), then ``value[key]``. Rejects a repeated key and more keys than
-    a reported ``__len__`` with :class:`GeometryError`. Honest ``dict``
+    sequences), then ``value[key]``. Rejects repeated keys; ``__len__`` is
+    advisory and never limits a provider's key stream. Honest ``dict``
     instances take a shallow-copy fast path.
     """
     if isinstance(value, dict):
@@ -113,19 +124,12 @@ def mapping_as_dict(value: Any) -> dict[Any, Any]:
     except TypeError:
         raise TypeError('mapping keys() must return an iterable of keys') from None
     out: dict[Any, Any] = {}
-    try:
-        reported: int | None = len(value)
-    except TypeError:
-        reported = None
-    for count, key in enumerate(key_iter, start=1):
-        if reported is not None and count > reported:
-            raise GeometryError(
-                f'mapping reports length {reported} but yields more keys'
-            )
+    for key in key_iter:
         if key in out:
             raise GeometryError('mapping has duplicate key')
         out[key] = value[key]
     return out
+
 
 if TYPE_CHECKING:
     if sys.version_info >= (3, 15):
@@ -212,6 +216,7 @@ __all__ = [
     'NestedCoordinates',
     'Origin',
     'PandasDataFrame',
+    'PandasIndex',
     'PandasSeries',
     'PolarsSeries',
     'PolygonizeResult',
@@ -340,21 +345,11 @@ class Coverage(Protocol[CellT_co]):
     def interior_cells(self) -> CellArray[CellT_co]: ...
     @property
     def boundary_cells(self) -> CellArray[CellT_co]: ...
-    def covers(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]: ...
-    def contains(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]: ...
-    def intersects(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]: ...
-    def contains_xy(
-        self, x: FloatInput, y: FloatInput
-    ) -> bool | npt.NDArray[np.bool_]: ...
-    def intersects_xy(
-        self, x: FloatInput, y: FloatInput
-    ) -> bool | npt.NDArray[np.bool_]: ...
+    def covers(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
+    def contains(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
+    def intersects(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
+    def contains_xy(self, x: FloatInput, y: FloatInput) -> bool | BoolArray: ...
+    def intersects_xy(self, x: FloatInput, y: FloatInput) -> bool | BoolArray: ...
     def to_polygon(self) -> Polygon | MultiPolygon: ...
     def compact(self) -> Self: ...
     def uncompact(self, depth: int, /) -> Self: ...
@@ -389,7 +384,7 @@ CrsKind: TypeAlias = Literal[
     'unknown',
 ]
 
-#: ``kind=`` filter accepted by ``crs.search`` / ``crs.catalog``
+#: ``kind=`` filter accepted by ``gm.crs_search`` / ``gm.crs_catalog``
 #: (``CrsObjectKind::parse_crs`` — CRS types only).
 CrsCatalogKind: TypeAlias = Literal[
     'crs',
@@ -407,7 +402,7 @@ CrsCatalogKind: TypeAlias = Literal[
     'other',
 ]
 
-#: ``kind=`` filter accepted by ``crs.codes`` (``CrsObjectKind::parse`` — full
+#: ``kind=`` filter accepted by ``gm.crs_codes`` (``CrsObjectKind::parse`` — full
 #: PROJ database object vocabulary, including non-CRS kinds and aliases).
 CrsDatabaseKind: TypeAlias = (
     CrsCatalogKind
@@ -502,7 +497,6 @@ GeoJsonPosition: TypeAlias = list[float] | tuple[float, ...]
 FeatureId: TypeAlias = str | int | float | None
 
 
-@dataclass(frozen=True, slots=True, init=False)
 class Features:
     """Parsed GeoJSON features: geometries plus parallel properties and ids.
 
@@ -513,18 +507,17 @@ class Features:
     ``len(features.geometries)`` for the row count. The
     outer metadata tuples cannot drift out of alignment; property dictionaries
     remain editable.
+
+    Hand-written frozen slots (not ``@dataclass``) so cold ``import gometry``
+    never pays the ``dataclasses``/``inspect`` import chain.
     """
 
-    geometries: GeometryArray[Geometry]
-    """One geometry per feature."""
-
-    properties: tuple[dict[str, Any] | None, ...]
-    """Per-feature mappings; explicit GeoJSON ``null`` remains ``None``."""
-
-    ids: tuple[FeatureId, ...]
-    """Per-feature ``id`` values (``None`` where absent)."""
-
+    __slots__ = ('geometries', 'ids', 'properties')
     __match_args__ = ('geometries', 'properties', 'ids')
+
+    geometries: GeometryArray[Geometry]
+    properties: tuple[dict[str, Any] | None, ...]
+    ids: tuple[FeatureId, ...]
 
     def __init__(
         self,
@@ -600,7 +593,7 @@ class Features:
                     identifier, (str, int, float)
                 ):
                     raise TypeError('feature ids must be strings, numbers, or None')
-                elif isinstance(identifier, float) and not np.isfinite(identifier):
+                elif isinstance(identifier, float) and not math.isfinite(identifier):
                     raise ValueError('numeric feature ids must be finite')
                 else:
                     collected_ids.append(identifier)
@@ -613,9 +606,51 @@ class Features:
             raise ValueError(
                 f'ids length {len(id_rows)} does not match geometries length {rows}'
             )
+        # ``object.__setattr__`` bypasses the frozen instance ``__setattr__``.
         object.__setattr__(self, 'geometries', geometries)
         object.__setattr__(self, 'properties', property_rows)
         object.__setattr__(self, 'ids', id_rows)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f'cannot set attribute {name!r} on frozen Features')
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f'cannot delete attribute {name!r} on frozen Features')
+
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        if not isinstance(other, Features):
+            return NotImplemented
+        return (
+            self.geometries == other.geometries
+            and self.properties == other.properties
+            and self.ids == other.ids
+        )
+
+    # Unhashable: property dicts are mutable. Frozen dataclass would also
+    # refuse hashing when a field is unhashable at use time; be explicit.
+    __hash__ = None  # type: ignore[assignment]
+
+    def __replace__(self, /, **changes: Any) -> Features:
+        """Return a new ``Features`` with the given fields replaced.
+
+        Matches frozen-dataclass / ``copy.replace`` semantics: only the three
+        column fields are accepted; unknown keywords raise ``TypeError``.
+        Unspecified fields keep the receiver's values (re-validated by
+        ``__init__`` so row alignment stays enforced).
+        """
+        known = ('geometries', 'properties', 'ids')
+        for key in changes:
+            if key not in known:
+                raise TypeError(
+                    f'Features.__replace__() got an unexpected keyword argument {key!r}'
+                )
+        return type(self)(
+            changes.get('geometries', self.geometries),
+            changes.get('properties', self.properties),
+            changes.get('ids', self.ids),
+        )
 
     def __reduce__(self):
         return (type(self), (self.geometries, self.properties, self.ids))
@@ -686,6 +721,63 @@ class PolygonizeResult(NamedTuple):
 
     invalid_rings: GeometryArray[LineString]
     """Rings that close but bound no valid polygon area."""
+
+
+class SupportsGeoInterface(Protocol):
+    """Any object exposing a GeoJSON-like ``__geo_interface__`` mapping."""
+
+    @property
+    def __geo_interface__(self) -> Mapping[str, Any]: ...
+
+
+class SupportsArrowArray(Protocol):
+    """An object exporting Arrow C Data ``(schema, array)`` capsules."""
+
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowSchemaCapsule | None = None, /
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]: ...
+
+
+class SupportsArrowStream(Protocol):
+    """An object exporting an Arrow C stream capsule."""
+
+    def __arrow_c_stream__(
+        self, requested_schema: PyArrowSchemaCapsule | None = None, /
+    ) -> PyArrowCapsule: ...
+
+
+class SupportsToWkt(Protocol):
+    """An object that serializes itself to WKT — e.g. a ``gometry.CRS`` or
+    ``pyproj.CRS``.
+    """
+
+    def to_wkt(self) -> str: ...
+
+
+#: A float lane: any iterable of floats, or a zero-copy buffer exporter
+#: (numpy arrays — float32 included — ``array.array``, memoryviews).
+FloatColumn: TypeAlias = Iterable[float] | Buffer
+
+#: One float per geometry: a scalar broadcasts, or pass an iterable /
+#: zero-copy buffer with one value per element.
+FloatInput: TypeAlias = float | FloatColumn
+
+#: Anything accepted where a CRS is expected: an authority string
+#: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,
+#: a PROJJSON/CF mapping, or any object exposing ``to_wkt()`` (``gometry.CRS``,
+#: ``pyproj.CRS``).
+CrsInput: TypeAlias = (
+    str
+    | int
+    | tuple[str, str | int]
+    | list[str | int]
+    | Mapping[str, Any]
+    | SupportsToWkt
+)
+
+# ---------------------------------------------------------------------------
+# Structured return shapes (GeoJSON + CRS metadata TypedDict catalog).
+# ---------------------------------------------------------------------------
 
 
 class GeoJsonPointGeometry(TypedDict):
@@ -785,59 +877,6 @@ class GeoJsonFeatureCollection(TypedDict):
     features: list[GeoJsonFeature]
 
 
-class SupportsGeoInterface(Protocol):
-    """Any object exposing a GeoJSON-like ``__geo_interface__`` mapping."""
-
-    @property
-    def __geo_interface__(self) -> Mapping[str, Any]: ...
-
-
-class SupportsArrowArray(Protocol):
-    """An object exporting Arrow C Data ``(schema, array)`` capsules."""
-
-    def __arrow_c_array__(
-        self, requested_schema: PyArrowSchemaCapsule | None = None, /
-    ) -> tuple[PyArrowCapsule, PyArrowCapsule]: ...
-
-
-class SupportsArrowStream(Protocol):
-    """An object exporting an Arrow C stream capsule."""
-
-    def __arrow_c_stream__(
-        self, requested_schema: PyArrowSchemaCapsule | None = None, /
-    ) -> PyArrowCapsule: ...
-
-
-class SupportsToWkt(Protocol):
-    """An object that serializes itself to WKT — e.g. a ``gometry.CRS`` or
-    ``pyproj.CRS``.
-    """
-
-    def to_wkt(self) -> str: ...
-
-
-#: A float lane: any iterable of floats, or a zero-copy buffer exporter
-#: (numpy arrays — float32 included — ``array.array``, memoryviews).
-FloatColumn: TypeAlias = Iterable[float] | Buffer
-
-#: One float per geometry: a scalar broadcasts, or pass an iterable /
-#: zero-copy buffer with one value per element.
-FloatInput: TypeAlias = float | FloatColumn
-
-#: Anything accepted where a CRS is expected: an authority string
-#: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,
-#: a PROJJSON/CF mapping, or any object exposing ``to_wkt()`` (``gometry.CRS``,
-#: ``pyproj.CRS``).
-CrsInput: TypeAlias = (
-    str
-    | int
-    | tuple[str, str | int]
-    | list[str | int]
-    | Mapping[str, Any]
-    | SupportsToWkt
-)
-
-
 class CrsAreaBounds(TypedDict):
     west: float
     south: float
@@ -931,9 +970,16 @@ class CrsCfInfo(TypedDict, total=False):
     grid_mapping_name: str
     latitude_of_projection_origin: float
     longitude_of_central_meridian: float
+    longitude_of_projection_origin: float
     false_easting: float
     false_northing: float
     scale_factor_at_central_meridian: float
+    scale_factor_at_projection_origin: float
+    standard_parallel: float | list[float]
+    straight_vertical_longitude_from_pole: float
+    # Native projected linear unit token for CF→PROJ parse (m / ft / us-ft).
+    units: str
+    proj_units: str
 
 
 class CrsDomainInfo(TypedDict):
@@ -968,9 +1014,11 @@ class CrsGridInfo(TypedDict):
 
 
 class CrsGridDatabaseInfo(TypedDict):
-    name: str | None
+    name: str
     full_name: str | None
     package_name: str | None
+    url: str | None
+    direct_download: bool
     available: bool
 
 
@@ -1047,10 +1095,20 @@ class CrsCacheBucketInfo(TypedDict):
 
 
 class CrsCacheInfo(TypedDict):
+    """CRS cache state and current-thread transform-engine observations.
+
+    ``last_transform_engine`` answers whether the most recent transform used
+    the accelerated ``'in_core'`` engine or bundled ``'proj'``;
+    ``transform_invocations`` counts actual in-core batches and PROJ calls
+    since the last cache clear/reset.
+    """
+
     generation: int
     total_entries: int
     total_capacity: int
     buckets: list[CrsCacheBucketInfo]
+    last_transform_engine: Literal['in_core', 'proj'] | None
+    transform_invocations: int
 
 
 class CrsRuntimeConfig(TypedDict):
@@ -1108,18 +1166,18 @@ class CrsProjectionFactors(TypedDict):
 
 
 class CrsProjectionFactorsBatch(TypedDict):
-    meridional_scale: npt.NDArray[np.float64]
-    parallel_scale: npt.NDArray[np.float64]
-    areal_scale: npt.NDArray[np.float64]
-    angular_distortion: npt.NDArray[np.float64]
-    meridian_parallel_angle: npt.NDArray[np.float64]
-    meridian_convergence: npt.NDArray[np.float64]
-    tissot_semimajor: npt.NDArray[np.float64]
-    tissot_semiminor: npt.NDArray[np.float64]
-    dx_dlam: npt.NDArray[np.float64]
-    dx_dphi: npt.NDArray[np.float64]
-    dy_dlam: npt.NDArray[np.float64]
-    dy_dphi: npt.NDArray[np.float64]
+    meridional_scale: Float64Array
+    parallel_scale: Float64Array
+    areal_scale: Float64Array
+    angular_distortion: Float64Array
+    meridian_parallel_angle: Float64Array
+    meridian_convergence: Float64Array
+    tissot_semimajor: Float64Array
+    tissot_semiminor: Float64Array
+    dx_dlam: Float64Array
+    dx_dphi: Float64Array
+    dy_dlam: Float64Array
+    dy_dphi: Float64Array
 
 
 class CrsGeodesicInfo(TypedDict):
@@ -1130,10 +1188,10 @@ class CrsGeodesicInfo(TypedDict):
 
 
 class CrsGeodesicBatchInfo(TypedDict):
-    distance: npt.NDArray[np.float64]
-    distance_3d: npt.NDArray[np.float64]
-    forward_azimuth: npt.NDArray[np.float64]
-    reverse_azimuth: npt.NDArray[np.float64]
+    distance: Float64Array
+    distance_3d: Float64Array
+    forward_azimuth: Float64Array
+    reverse_azimuth: Float64Array
 
 
 class CrsGeodesicDirectInfo(TypedDict):
@@ -1143,9 +1201,9 @@ class CrsGeodesicDirectInfo(TypedDict):
 
 
 class CrsGeodesicDirectBatchInfo(TypedDict):
-    longitude: npt.NDArray[np.float64]
-    latitude: npt.NDArray[np.float64]
-    final_azimuth: npt.NDArray[np.float64]
+    longitude: Float64Array
+    latitude: Float64Array
+    final_azimuth: Float64Array
 
 
 class CrsGeodesicInterpolateInfo(TypedDict):
@@ -1156,10 +1214,10 @@ class CrsGeodesicInterpolateInfo(TypedDict):
 
 
 class CrsGeodesicInterpolateBatchInfo(TypedDict):
-    longitude: npt.NDArray[np.float64]
-    latitude: npt.NDArray[np.float64]
-    final_azimuth: npt.NDArray[np.float64]
-    distance: npt.NDArray[np.float64]
+    longitude: Float64Array
+    latitude: Float64Array
+    final_azimuth: Float64Array
+    distance: Float64Array
 
 
 class CrsProjOperationCatalogInfo(TypedDict):

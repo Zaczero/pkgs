@@ -19,8 +19,8 @@
 //! and batch plumbing only** so Hausdorff/Fréchet never duplicate `row_map`
 //! resolution or identity semantics.
 
-use super::CoordSeq;
 use crate::array::RowSelectionRef;
+use crate::geometry::CoordSeq;
 
 /// Borrowed packed `Lines` CSR columns for batch similarity kernels.
 #[derive(Clone, Copy)]

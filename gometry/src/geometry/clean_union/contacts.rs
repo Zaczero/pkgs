@@ -2,7 +2,16 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::clean_union::{
+    Cut, HashSet, OperandPool, OverlayOp, RUN_NODING_MIN, SharedSection, add_cut,
+    for_each_candidate_pair, shared_section, sort_dedup_cuts,
+};
+use crate::geometry::{
+    Contact, PointKey, SharedSpan, XY, same_point, segment_contact_exact,
+    segment_envelopes_disjoint, undirected_edge_key,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct SharedArc {

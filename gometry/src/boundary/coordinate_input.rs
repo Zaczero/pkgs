@@ -1,11 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Coordinate-vertex argument parsing and broadcasting for the column-form
 //! constructors (`line_string(x=, y=, …)`, `multi_point(...)`, etc.).
 //!
@@ -13,6 +5,10 @@
 //! Python sequences/scalars, broadcast scalar lanes to a common length, and
 //! validate equal column lengths. Re-exported at the crate root via `use
 //! super::*`.
+#![allow(
+    clippy::absolute_paths,
+    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+)]
 
 use std::sync::Arc;
 
@@ -24,7 +20,7 @@ use pyo3::{Borrowed, FromPyObject};
 use crate::boundary::buffer_endian::{buffer_to_arc_f64, buffer_to_vec_f64};
 use crate::geometry::column_all_finite;
 use crate::py::errors::InvalidGeometryError;
-use crate::*;
+use crate::{CoordSeq, CoordinateAxes, PyBuffer, collect_py_iter, collect_py_iter_exact};
 
 pub(crate) struct CoordinateInput {
     pub values: Vec<f64>,
@@ -234,7 +230,6 @@ impl F64Param {
     /// The value for row `row`. Trusts `row < len` (the caller iterates the
     /// array it was parsed against), so `PerElement` indexes
     /// unchecked-in-spirit via the validated slice.
-    #[must_use]
     pub(crate) fn get(&self, row: usize) -> f64 {
         match self {
             Self::Scalar(value) => *value,
@@ -255,7 +250,6 @@ impl F64Param {
     /// The single value when scalar — lets a method keep its columnar/packed
     /// fast path for the common broadcast case, falling to the per-row lane
     /// only for a genuine per-element array.
-    #[must_use]
     pub(crate) const fn as_scalar(&self) -> Option<f64> {
         match self {
             Self::Scalar(value) => Some(*value),
@@ -345,8 +339,9 @@ pub(crate) fn integer_values_exact(
 
 /// Copy a C-contiguous `f64` buffer into a freshly allocated `Arc<[f64]>` —
 /// one allocation, no `Vec`→`Arc` realloc. Non-native endian is bulk-byteswapped
-/// into that allocation (still one alloc). Non-contiguous buffers and
-/// non-buffer inputs fall back to [`coordinate_values`] + `into()`.
+/// into that allocation (still one alloc). Non-contiguous buffers use a direct
+/// stride-to-Arc fill (no `Vec` intermediate). Non-buffer inputs fall back to
+/// [`coordinate_values`] + `into()`.
 pub(crate) fn coordinate_arc_values(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -354,11 +349,251 @@ pub(crate) fn coordinate_arc_values(
 ) -> PyResult<Arc<[f64]>> {
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         if buffer.is_c_contiguous() {
-            return Ok(buffer_to_arc_f64(&buffer));
+            return Ok(buffer_to_arc_f64(py, &buffer));
         }
-        return buffer_to_vec_f64(py, &buffer).map(Into::into);
+        // Strided 1-D (or flattened multi-D): fill Arc directly via strided walk.
+        return strided_buffer_to_arc_f64(py, &buffer);
     }
     coordinate_values(py, value, name).map(Into::into)
+}
+
+/// Fill an `Arc<[f64]>` from a non-contiguous buffer without a `Vec` bounce.
+///
+/// Each element is read through [`pyo3::buffer::ReadOnlyCell`] — never as a
+/// plain `&f64` / `&[f64]` over buffer memory another free-threaded mutator may
+/// write (aliasing UB). `ReadOnlyCell::get` is a non-atomic load: the producer
+/// must stay quiescent until this capture returns, after which only the owned
+/// `Arc` is retained.
+fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Arc<[f64]>> {
+    use pyo3::buffer::ReadOnlyCell;
+
+    let len = buffer.item_count();
+    // Indirect (PIL-style) buffers store pointers in the strided slots;
+    // `suboffsets[n] >= 0` requires a pointer dereference before adding the
+    // suboffset. The flat `buf_ptr + i*stride` arithmetic would read the
+    // pointer-table bytes as f64 coordinates. Route through PyO3's safe
+    // contiguous copy which honors suboffsets via `PyBuffer_GetPointer`.
+    if buffer.suboffsets().is_some() {
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
+    }
+    // `to_vec` handles arbitrary strides/endian via pyo3; then Arc without
+    // realloc when capacity == len (usual). Prefer exact Arc fill when the
+    // buffer is a simple 1-D strided native-endian column.
+    if buffer.dimensions() == 1
+        && crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format())
+    {
+        let stride = buffer.strides()[0];
+        let item = std::mem::size_of::<f64>() as isize;
+        if stride % item == 0 {
+            let step = stride / item;
+            let mut arc: Arc<[std::mem::MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
+            let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
+            // ReadOnlyCell is transparent over T; treating each strided slot as
+            // a cell matches PyBuffer::as_slice for the contiguous case.
+            let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
+            // SAFETY: PyBuffer is held for this scope; length/stride validated;
+            // no suboffsets (checked above), so step indexes elements within
+            // the declared buffer range for CPython buffer objects (NumPy
+            // strided views included). ReadOnlyCell::get is a plain non-atomic
+            // load — the producer must stay quiescent for this finite capture.
+            unsafe {
+                for (i, slot) in uninit.iter_mut().enumerate() {
+                    let offset = (i as isize)
+                        .checked_mul(step)
+                        .expect("stride index overflow");
+                    slot.write((*base.offset(offset)).get());
+                }
+                return Ok(arc.assume_init());
+            }
+        }
+    }
+    buffer_to_vec_f64(py, buffer).map(Into::into)
+}
+
+/// Build a [`CoordSeq`] from an indirect (suboffset) N×D `f64` buffer via
+/// PyO3's safe contiguous copy, then de-interleave into SoA columns.
+fn coordseq_from_indirect_nd_buffer(
+    py: Python<'_>,
+    buffer: &PyBuffer<f64>,
+    n: usize,
+    d: usize,
+    z: Option<&Bound<'_, PyAny>>,
+    m: Option<&Bound<'_, PyAny>>,
+) -> PyResult<CoordSeq> {
+    let flat = buffer_to_vec_f64(py, buffer)?;
+    if flat.len() != n * d {
+        return Err(InvalidGeometryError::new_err(
+            "indirect buffer item count does not match N×D shape",
+        ));
+    }
+    let mut xs = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    let mut zs_col = (d >= 3).then(|| Vec::with_capacity(n));
+    let mut ms_col = (d >= 4).then(|| Vec::with_capacity(n));
+    for row in 0..n {
+        let base = row * d;
+        xs.push(flat[base]);
+        ys.push(flat[base + 1]);
+        if let Some(zs) = zs_col.as_mut() {
+            zs.push(flat[base + 2]);
+        }
+        if let Some(ms) = ms_col.as_mut() {
+            ms.push(flat[base + 3]);
+        }
+    }
+    let mut zs: Option<Arc<[f64]>> = zs_col.map(Into::into);
+    let mut ms: Option<Arc<[f64]>> = ms_col.map(Into::into);
+    if let Some(z_col) = z {
+        zs = Some(coordinate_arc_values_exact(
+            z_col.py(),
+            z_col,
+            "z",
+            n,
+            |got| {
+                InvalidGeometryError::new_err(format!(
+                    "z must have the same length as x/y coordinates (got length {got})"
+                ))
+            },
+        )?);
+    }
+    if let Some(m_col) = m {
+        ms = Some(coordinate_arc_values_exact(
+            m_col.py(),
+            m_col,
+            "m",
+            n,
+            |got| {
+                InvalidGeometryError::new_err(format!(
+                    "m must have the same length as x/y coordinates (got length {got})"
+                ))
+            },
+        )?);
+    }
+    Ok(CoordSeq::from_arc_columns(xs.into(), ys.into(), zs, ms)?)
+}
+
+/// Try to build a final SoA [`CoordSeq`] from a contiguous (or regularly
+/// strided) N×D numeric buffer — one pass into Arc columns, no nested
+/// `Vec`→`Vec<Point>`→Arc. Returns `Ok(None)` when the value is not an N×D
+/// float buffer (caller falls back to the general extractor).
+///
+/// `z`/`m` optional columns override inline ordinates and cannot combine with
+/// D>2 buffers (same rule as [`crate::py::support::extract::extract_points`]).
+pub(crate) fn try_coordseq_from_nd_buffer(
+    value: &Bound<'_, PyAny>,
+    z: Option<&Bound<'_, PyAny>>,
+    m: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<CoordSeq>> {
+    let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+        return Ok(None);
+    };
+    if buffer.dimensions() != 2 {
+        return Ok(None);
+    }
+    let shape = buffer.shape();
+    let n = shape[0];
+    let d = shape[1];
+    if !(2..=4).contains(&d) {
+        return Ok(None);
+    }
+    // Empty (0, D): axes from width / optional z,m — matches extract_points empty.
+    if n == 0 {
+        let axes = if z.is_some() || m.is_some() {
+            if d > 2 {
+                return Err(InvalidGeometryError::new_err(
+                    "inline Z/M coordinates cannot be combined with z/m arrays",
+                ));
+            }
+            CoordinateAxes::new(
+                crate::geometry::HasZ(z.is_some()),
+                crate::geometry::HasM(m.is_some()),
+            )
+        } else {
+            match d {
+                2 => CoordinateAxes::XY,
+                3 => CoordinateAxes::XYZ,
+                4 => CoordinateAxes::XYZM,
+                _ => unreachable!(),
+            }
+        };
+        return Ok(Some(CoordSeq::empty(axes)));
+    }
+    if d > 2 && (z.is_some() || m.is_some()) {
+        return Err(InvalidGeometryError::new_err(
+            "inline Z/M coordinates cannot be combined with z/m arrays",
+        ));
+    }
+    // Indirect (PIL-style) N×D buffers need pointer indirection via suboffsets;
+    // the flat row/col stride arithmetic would read the pointer table as
+    // coordinates. Snapshot through PyO3's safe contiguous copy.
+    if buffer.suboffsets().is_some() {
+        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
+    }
+    let strides = buffer.strides();
+    let row_stride = strides[0];
+    let col_stride = strides[1];
+    let item = std::mem::size_of::<f64>() as isize;
+    if row_stride % item != 0 || col_stride % item != 0 {
+        return Ok(None);
+    }
+    let row_step = row_stride / item;
+    let col_step = col_stride / item;
+    let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
+    let swap = !native;
+
+    let fill_column = |col: usize| -> Arc<[f64]> {
+        use pyo3::buffer::ReadOnlyCell;
+
+        let mut arc: Arc<[std::mem::MaybeUninit<f64>]> = Arc::new_uninit_slice(n);
+        let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
+        // Never form `&[f64]` over a buffer another free-threaded mutator may
+        // write — load each element through ReadOnlyCell (non-atomic; producer
+        // must stay quiescent for this finite capture).
+        let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
+        // SAFETY: buffer held; N×D shape and strides validated; no suboffsets
+        // (checked above); col < d. ReadOnlyCell::get is a plain load — the
+        // provider must not write until capture returns.
+        unsafe {
+            for (i, slot) in uninit.iter_mut().enumerate() {
+                let offset = (i as isize)
+                    .checked_mul(row_step)
+                    .and_then(|row| row.checked_add((col as isize).checked_mul(col_step)?))
+                    .expect("nd buffer index overflow");
+                let mut value = (*base.offset(offset)).get();
+                if swap {
+                    value = crate::boundary::buffer_endian::swap_f64_endian(value);
+                }
+                slot.write(value);
+            }
+            arc.assume_init()
+        }
+    };
+
+    let xs = fill_column(0);
+    let ys = fill_column(1);
+    let mut zs = (d >= 3).then(|| fill_column(2));
+    let mut ms = (d >= 4).then(|| fill_column(3));
+
+    // Optional parallel z/m columns (only valid when D == 2).
+    if let Some(z_col) = z {
+        let values = coordinate_arc_values_exact(z_col.py(), z_col, "z", n, |got| {
+            InvalidGeometryError::new_err(format!(
+                "z must have the same length as x/y coordinates (got length {got})"
+            ))
+        })?;
+        zs = Some(values);
+    }
+    if let Some(m_col) = m {
+        let values = coordinate_arc_values_exact(m_col.py(), m_col, "m", n, |got| {
+            InvalidGeometryError::new_err(format!(
+                "m must have the same length as x/y coordinates (got length {got})"
+            ))
+        })?;
+        ms = Some(values);
+    }
+
+    // Finite check + axes from column presence.
+    Ok(Some(CoordSeq::from_arc_columns(xs, ys, zs, ms)?))
 }
 
 /// Like [`coordinate_arc_values`], but stop after `expected + 1` items when
@@ -376,7 +611,7 @@ pub(crate) fn coordinate_arc_values_exact(
             return Err(on_len(got));
         }
         if buffer.is_c_contiguous() {
-            return Ok(buffer_to_arc_f64(&buffer));
+            return Ok(buffer_to_arc_f64(py, &buffer));
         }
         return buffer_to_vec_f64(py, &buffer).map(Into::into);
     }

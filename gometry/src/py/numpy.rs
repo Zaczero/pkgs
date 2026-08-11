@@ -9,7 +9,7 @@
 //! shape rather than each spelling out rust-numpy mechanics.
 
 use numpy::ndarray::{Array2, ArrayView1};
-use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ToPyArray};
+use numpy::{IntoPyArray as _, PyArray1, PyArrayMethods as _, ToPyArray as _};
 use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -120,7 +120,7 @@ pub(crate) fn bounds_array(py: Python<'_>, values: Vec<f64>) -> PyResult<Py<PyAn
 
 pub(crate) fn bounds3d_array(
     py: Python<'_>,
-    values: impl IntoIterator<Item = Option<crate::py::support::Bounds3D>>,
+    values: impl IntoIterator<Item = Option<crate::geometry::Bounds3D>>,
 ) -> PyResult<Py<PyAny>> {
     let values = values.into_iter();
     let mut out = Vec::with_capacity(values.size_hint().0.saturating_mul(6));
@@ -141,20 +141,41 @@ pub(crate) fn bounds3d_array(
     float64_matrix(py, out, rows, 6)
 }
 
-/// Safe read-only `NumPy` view: the closure ties `slf` and the returned slice
-/// lifetimes so the backing storage cannot outlive its owner.
+// Production seal lives in a std-only module so compile-fail fixtures can
+// `#[path]`-include it (see `compile_fail/item_c_mutable_pyclass.rs`).
+#[path = "frozen_i64_bound.rs"]
+mod frozen_i64_bound;
+
+use frozen_i64_bound::require_immutable_i64_owner;
+pub(crate) use frozen_i64_bound::{ImmutableI64Owner, frozen_i64_owner};
+
+/// Safe read-only `NumPy` view over immutable Arc i64 storage.
+///
+/// The closure ties `slf` and the returned slice lifetimes so the backing
+/// cannot outlive its owner. Two independent bounds enforce the safety claim:
+///
+/// 1. **`PyClass<Frozen = True>`** — the language-level PyO3 frozen marker; a
+///    mutable `#[pyclass]` cannot satisfy this bound at all.
+/// 2. **`ImmutableI64Owner`** — sealed opt-in for immutable Arc i64 backing
+///    (only `Groups` implements it today).
+///
+/// The [`require_immutable_i64_owner`] call couples this function to the seal
+/// module so the where-clause cannot silently drop that half of the bound.
 pub(crate) fn frozen_i64_view<T>(
     slf: Bound<'_, T>,
     pick: impl for<'a> FnOnce(&'a T) -> &'a [i64],
 ) -> PyResult<Py<PyAny>>
 where
-    T: PyClass,
+    T: ImmutableI64Owner + PyClass<Frozen = pyo3::pyclass::boolean_struct::True>,
 {
     let owner = slf.clone().into_any();
     let borrowed = slf.borrow();
+    // Production seal gate — same trait the compile-fail fixture path-includes.
+    require_immutable_i64_owner(&*borrowed);
     let values = pick(&borrowed);
-    // SAFETY: `pick` ties the slice lifetime to `slf`, and `owner` is that same
-    // object pinned as the array base.
+    // SAFETY: `ImmutableI64Owner` + frozen `PyClass` prove immutable Arc
+    // backing; `pick` ties the slice lifetime to `slf`; `owner` is that same
+    // object pinned as the NumPy base.
     unsafe { int64_slice_array(owner, values) }
 }
 

@@ -1,8 +1,7 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::Segment;
+use crate::geometry::distance::hausdorff::{
+    EquidistantRootSink, HausdorffFeature, hausdorff_feature_distance_squared_at,
+};
 
 /// Squared-distance quadratic `Q(t) = a·t² + b·t + c` on a fixed regime
 /// interval.

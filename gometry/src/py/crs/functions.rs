@@ -1,4 +1,35 @@
-use super::*;
+use crate::py::crs::{
+    Borrowed, Bound, CRSError, FromPyObject, Py, PyAny, PyDict, PyErr, PyInt, PyList, PyResult,
+    Python, Value, crs, crs_normalize, json_to_py, pyfunction,
+};
+
+pub(crate) enum MinConfidence {
+    Default,
+    Supplied(u8),
+}
+
+impl MinConfidence {
+    pub(crate) const DEFAULT: Self = Self::Default;
+
+    const fn value(self) -> u8 {
+        match self {
+            Self::Default => 70,
+            Self::Supplied(value) => value,
+        }
+    }
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for MinConfidence {
+    type Error = PyErr;
+
+    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let value = value
+            .cast::<PyInt>()?
+            .extract::<u8>()
+            .map_err(|_| CRSError::new_err("min_confidence must be between 0 and 100"))?;
+        Ok(Self::Supplied(value))
+    }
+}
 
 /// Serialize a CRS to WKT.
 ///
@@ -168,8 +199,11 @@ pub(crate) fn crs_proj_version(value: i64) -> PyResult<crs::ProjStringVersion> {
 /// >>> gm.crs_info(4326)['name']
 /// 'WGS 84'
 #[pyfunction]
-pub(crate) fn crs_info(value: &Bound<'_, PyAny>) -> PyResult<crs::CrsInfo> {
-    Ok((*crs::info(&crs_normalize(value)?)?).clone())
+pub(crate) fn crs_info<'py>(
+    py: Python<'py>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    super::list_cache::crs_info_py_dict(py, &crs_normalize(value)?)
 }
 /// Identify candidate CRS matches for a definition.
 ///
@@ -201,7 +235,7 @@ pub(crate) fn crs_identify(
 pub(crate) fn crs_to_authority(
     value: &Bound<'_, PyAny>,
     authority: Option<&str>,
-    min_confidence: u8,
+    min_confidence: MinConfidence,
 ) -> PyResult<Option<(String, String)>> {
     let crs = crs_normalize(value)?;
     Ok(crs::to_authority(
@@ -221,13 +255,16 @@ pub(crate) fn crs_to_authority(
 /// Returns
 /// -------
 /// int or None
-pub(crate) fn crs_to_epsg(value: &Bound<'_, PyAny>, min_confidence: u8) -> PyResult<Option<i32>> {
+pub(crate) fn crs_to_epsg(
+    value: &Bound<'_, PyAny>,
+    min_confidence: MinConfidence,
+) -> PyResult<Option<i32>> {
     let crs = crs_normalize(value)?;
     Ok(crs::to_epsg(&crs, crs_min_confidence(min_confidence)?)?)
 }
 
-pub(crate) fn crs_min_confidence(value: u8) -> PyResult<crs::Confidence> {
-    Ok(crs::Confidence::try_new("min_confidence", value)?)
+pub(crate) fn crs_min_confidence(value: MinConfidence) -> PyResult<crs::Confidence> {
+    Ok(crs::Confidence::try_new("min_confidence", value.value())?)
 }
 
 /// Whether two CRS denote the same system.
@@ -296,12 +333,15 @@ pub(crate) fn crs_unit(authority: &str, code: &str) -> PyResult<crs::UnitInfo> {
 /// >>> import gometry as gm
 /// >>> gm.crs_units('EPSG')[0]['name']
 /// '(bin)'
-pub(crate) fn crs_units(
+pub(crate) fn crs_units<'py>(
+    py: Python<'py>,
     authority: &str,
     category: Option<&str>,
     allow_deprecated: bool,
-) -> PyResult<Vec<crs::UnitInfo>> {
-    Ok(crs::units(authority, category, allow_deprecated)?)
+) -> PyResult<Bound<'py, PyList>> {
+    // Warm path returns a shallow list.copy of a cached PyList (dict objects
+    // reused); PROJ work lives in the Rust CRS_UNITS_CACHE LRU.
+    super::list_cache::units_py_list(py, authority, category, allow_deprecated)
 }
 
 /// List PROJ operations available.

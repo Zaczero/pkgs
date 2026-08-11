@@ -12,7 +12,6 @@ use crate::geometry::{CoordSeq, CoordinateAxes, Polygon, Ring, same_active_posit
 pub(crate) const MIN_PACK_RING_VERTICES: usize = Ring::MIN_VERTICES_CLOSED;
 
 /// Whether a closed-ring vertex count meets the pack floor (≥4).
-#[inline]
 pub(crate) const fn packable_closed_ring_len(len: usize) -> bool {
     len >= MIN_PACK_RING_VERTICES
 }
@@ -20,7 +19,6 @@ pub(crate) const fn packable_closed_ring_len(len: usize) -> bool {
 /// Whether a coordinate sequence is a packable closed ring: ≥4 vertices and
 /// first == last on every active ordinate (X/Y/Z/M), matching GeoJSON RFC
 /// ring-closure admission.
-#[inline]
 pub(crate) fn ring_seq_is_packable(seq: &CoordSeq) -> bool {
     if !packable_closed_ring_len(seq.len()) {
         return false;

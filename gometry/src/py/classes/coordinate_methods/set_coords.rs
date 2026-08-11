@@ -7,9 +7,13 @@ use std::sync::Arc;
 
 use pyo3::types::{PyDict, PyTuple};
 
-use super::*;
 use crate::boundary::coordinate_input::coordinate_arc_values;
 use crate::geometry::{MOrdinate, Ring, ZOrdinate};
+use crate::py::classes::coordinate_methods::{
+    Bound, CoordSeq, CoordinateAxes, CoordinateAxis, CoordinateReplacement, Point, PyAny,
+    PyAnyMethods as _, PyCoordinates, PyDictMethods as _, PyErr, PyRef, PyResult,
+    PyTupleMethods as _, Python, ReplacementAxis, Shape, coordinate_axis_order,
+};
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 
 fn replacement_len_error(expected: usize, got: usize) -> PyErr {

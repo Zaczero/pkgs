@@ -117,12 +117,23 @@ def test_from_geoparquet_preserves_attribute_columns(parquet_path: str) -> None:
     assert b'geo' not in (attributes.schema.metadata or {})
 
 
-def test_to_geoparquet_crs_kwarg_attaches_metadata(parquet_path: str) -> None:
+def test_to_geoparquet_array_crs_attaches_metadata(parquet_path: str) -> None:
+    """GeometryArray CRS is written into geo metadata (no separate crs= kwarg)."""
     geometries = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
     geometries.set_crs(4326).to_geoparquet(parquet_path)
     restored = _read_geometry(parquet_path)
     assert restored.crs == 'EPSG:4326'
     assert canon(restored) == ['POINT (0 0)', 'POINT (1 1)']
+
+
+def test_geoparquet_mixed_xy_xyz_bbox_keeps_xy_extent(parquet_path: str) -> None:
+    """A 3D column's bbox still covers every XY geometry row (C18)."""
+    import pyarrow.parquet as pq
+
+    geometries = gm.GeometryArray([gm.Point(100, 100), gm.Point(0, 0, z=5)])
+    geometries.to_geoparquet(parquet_path)
+    metadata = json.loads(pq.read_metadata(parquet_path).metadata[b'geo'])
+    assert metadata['columns']['geometry']['bbox'] == [0.0, 0.0, 5.0, 100.0, 100.0, 5.0]
 
 
 def test_geoparquet_geometry_types_labels(parquet_path: str) -> None:
@@ -338,7 +349,9 @@ def test_geoparquet_rejects_non_utf8_reserved_arrow_extension_name(
         geometry_types=['LineString'],
         field_extension=b'\xff',
     )
-    with pytest.raises(gm.ParseError, match='extension name metadata is not UTF-8') as exc:
+    with pytest.raises(
+        gm.ParseError, match='extension name metadata is not UTF-8'
+    ) as exc:
         _read_geometry(parquet_path)
     assert exc.value.format == 'geoparquet'
 
@@ -747,9 +760,7 @@ def test_r15_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> No
     assert restored.crs == values.crs
 
     # Exact audit option: read_dictionary=['geometry'].
-    restored_dict, _ = gm.from_geoparquet(
-        parquet_path, read_dictionary=['geometry']
-    )
+    restored_dict, _ = gm.from_geoparquet(parquet_path, read_dictionary=['geometry'])
     assert restored_dict.to_wkt() == values.to_wkt()
 
     # Retained: non-dictionary WKB still works.
@@ -763,6 +774,268 @@ def test_r15_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> No
         _decode_geometry_column(
             pa, bad, {'geometry_types': ['Point']}, 'geometry', 'WKB', None, None
         )
+
+
+def _write_field_wkb_geoparquet(
+    path: str,
+    *,
+    physical: str = 'binary',
+    field_crs: int | None = None,
+    field_epoch: float | None = None,
+    declared_crs: int,
+    declared_epoch: float | None = None,
+    field_extension: str | None = 'full',
+) -> None:
+    """Write a WKB GeoParquet file with independent field vs declared frames.
+
+    ``field_extension`` controls Arrow field tags:
+    - ``'full'``: geoarrow.wkb name + CRS/epoch metadata (requires field_crs)
+    - ``'name_only'``: geoarrow.wkb name, no ARROW:extension:metadata
+    - ``'empty_meta'``: geoarrow.wkb name + empty ``{}`` metadata
+    - ``None``: no field extension metadata at all
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    field_metadata: dict[bytes, bytes] | None
+    if field_extension is None:
+        field_metadata = None
+    elif field_extension == 'name_only':
+        field_metadata = {b'ARROW:extension:name': b'geoarrow.wkb'}
+    elif field_extension == 'empty_meta':
+        field_metadata = {
+            b'ARROW:extension:name': b'geoarrow.wkb',
+            b'ARROW:extension:metadata': b'{}',
+        }
+    elif field_extension == 'full':
+        if field_crs is None:
+            raise ValueError('field_crs is required when field_extension is full')
+        ext_meta: dict[str, object] = {
+            'crs': gm.CRS(field_crs).to_projjson_dict(),
+            'crs_type': 'projjson',
+        }
+        if field_epoch is not None:
+            ext_meta['epoch'] = field_epoch
+        field_metadata = {
+            b'ARROW:extension:name': b'geoarrow.wkb',
+            b'ARROW:extension:metadata': json.dumps(
+                ext_meta, separators=(',', ':')
+            ).encode(),
+        }
+    else:
+        raise ValueError(f'unknown field_extension: {field_extension!r}')
+    values = pa.array(
+        [gm.Point(1, 2).to_wkb(), gm.Point(3, 4).to_wkb(), gm.Point(1, 2).to_wkb()],
+        type=pa.binary(),
+    )
+    if physical == 'dictionary':
+        values = values.dictionary_encode()
+        field = pa.field('geometry', values.type, metadata=field_metadata)
+    else:
+        field = pa.field('geometry', pa.binary(), metadata=field_metadata)
+    col_meta: dict[str, object] = {
+        'encoding': 'WKB',
+        'geometry_types': ['Point'],
+        'crs': gm.CRS(declared_crs).to_projjson_dict(),
+    }
+    if declared_epoch is not None:
+        col_meta['epoch'] = declared_epoch
+    geo = {
+        'version': '1.1.0',
+        'primary_column': 'geometry',
+        'columns': {'geometry': col_meta},
+    }
+    schema = pa.schema(
+        [field],
+        metadata={b'geo': json.dumps(geo, separators=(',', ':')).encode()},
+    )
+    pq.write_table(pa.Table.from_arrays([values], schema=schema), path)
+
+
+def _from_geoparquet_subprocess(
+    path: str,
+    *,
+    register_extensions: bool,
+    read_dictionary: bool,
+) -> dict[str, object]:
+    """Isolate Arrow extension registration (process-global) per case."""
+    import subprocess
+    import sys
+
+    prelude = 'gm.Point(0, 0).to_arrow()\n' if register_extensions else ''
+    options = "read_dictionary=['geometry']" if read_dictionary else ''
+    code = f"""
+import json
+import gometry as gm
+{prelude}try:
+    result, _ = gm.from_geoparquet({path!r}, {options})
+except Exception as error:
+    print(json.dumps({{
+        "status": "error",
+        "class": type(error).__name__,
+        "message": str(error),
+        "format": getattr(error, "format", None),
+    }}, sort_keys=True))
+else:
+    print(json.dumps({{
+        "status": "accepted",
+        "crs": str(result.crs) if result.crs is not None else None,
+        "epoch": result.epoch,
+        "wkt": result.to_wkt(drop_epoch=True),
+    }}, sort_keys=True))
+"""
+    completed = subprocess.run(
+        [sys.executable, '-c', code],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize('physical', ['binary', 'dictionary'])
+@pytest.mark.parametrize('register_extensions', [False, True], ids=['unreg', 'reg'])
+@pytest.mark.parametrize(
+    'read_dictionary', [False, True], ids=['default', 'read-dictionary']
+)
+def test_wkb_field_vs_declared_frame_mismatch_raises(
+    parquet_path: str,
+    physical: str,
+    register_extensions: bool,
+    read_dictionary: bool,
+) -> None:
+    """Field-tagged EPSG:3857/epoch 2020 must never silently become declared 4326.
+
+    Eight-way matrix: physical binary|dictionary x extension registration x
+    read_dictionary. Disagreement is a typed GeoParquet ParseError in every cell.
+    """
+    _write_field_wkb_geoparquet(
+        parquet_path,
+        physical=physical,
+        field_crs=3857,
+        field_epoch=2020.0,
+        declared_crs=4326,
+    )
+    outcome = _from_geoparquet_subprocess(
+        parquet_path,
+        register_extensions=register_extensions,
+        read_dictionary=read_dictionary,
+    )
+    assert outcome['status'] == 'error'
+    assert outcome['class'] == 'ParseError'
+    assert outcome['format'] == 'geoparquet'
+    assert 'conflicts with Arrow extension metadata' in str(outcome['message'])
+
+
+@pytest.mark.parametrize('physical', ['binary', 'dictionary'])
+@pytest.mark.parametrize('register_extensions', [False, True], ids=['unreg', 'reg'])
+@pytest.mark.parametrize(
+    'read_dictionary', [False, True], ids=['default', 'read-dictionary']
+)
+def test_wkb_field_and_declared_frame_agreement_preserves_frame(
+    parquet_path: str,
+    physical: str,
+    register_extensions: bool,
+    read_dictionary: bool,
+) -> None:
+    """Matching field + declared frames keep EPSG:3857 and epoch 2020 intact."""
+    _write_field_wkb_geoparquet(
+        parquet_path,
+        physical=physical,
+        field_crs=3857,
+        field_epoch=2020.0,
+        declared_crs=3857,
+        declared_epoch=2020.0,
+    )
+    outcome = _from_geoparquet_subprocess(
+        parquet_path,
+        register_extensions=register_extensions,
+        read_dictionary=read_dictionary,
+    )
+    assert outcome == {
+        'status': 'accepted',
+        'crs': 'EPSG:3857',
+        'epoch': 2020.0,
+        'wkt': ['POINT (1 2)', 'POINT (3 4)', 'POINT (1 2)'],
+    }
+
+
+def test_registered_dictionary_wkb_matching_frame_accepted(parquet_path: str) -> None:
+    """geoarrow.wkb over dictionary<binary> survives extension registration."""
+    _write_field_wkb_geoparquet(
+        parquet_path,
+        physical='dictionary',
+        field_crs=3857,
+        field_epoch=2020.0,
+        declared_crs=3857,
+        declared_epoch=2020.0,
+    )
+    outcome = _from_geoparquet_subprocess(
+        parquet_path, register_extensions=True, read_dictionary=False
+    )
+    assert outcome['status'] == 'accepted'
+    assert outcome['crs'] == 'EPSG:3857'
+    assert outcome['epoch'] == 2020.0
+    assert outcome['wkt'] == ['POINT (1 2)', 'POINT (3 4)', 'POINT (1 2)']
+
+
+@pytest.mark.parametrize(
+    'field_extension',
+    [None, 'name_only', 'empty_meta', 'full'],
+    ids=['no-field-meta', 'name-only', 'empty-meta', 'agrees'],
+)
+def test_wkb_extension_without_frame_opinion_accepts_declared(
+    parquet_path: str,
+    field_extension: str | None,
+) -> None:
+    """GeoArrow extension NAME without a CRS opinion must not conflict.
+
+    Writers commonly tag ``geoarrow.wkb`` while leaving CRS to GeoParquet
+    ``geo`` metadata. Silence is not disagreement: only an extension that
+    *declares* a disagreeing CRS/epoch is a conflict.
+    """
+    _write_field_wkb_geoparquet(
+        parquet_path,
+        declared_crs=3857,
+        field_extension=field_extension,
+        field_crs=3857 if field_extension == 'full' else None,
+    )
+    outcome = _from_geoparquet_subprocess(
+        parquet_path, register_extensions=False, read_dictionary=False
+    )
+    assert outcome == {
+        'status': 'accepted',
+        'crs': 'EPSG:3857',
+        'epoch': None,
+        'wkt': ['POINT (1 2)', 'POINT (3 4)', 'POINT (1 2)'],
+    }
+
+
+def test_native_geoarrow_extension_without_frame_opinion_accepts_declared() -> None:
+    """Native path: geoarrow.point name / empty meta do not conflict with declared CRS."""
+    import pyarrow as pa
+    from gometry._geoparquet import _native_geoarrow_column
+
+    storage = pa.StructArray.from_arrays(
+        [pa.array([1.0]), pa.array([2.0])], names=['x', 'y']
+    )
+    chunked = pa.chunked_array([storage])
+    for meta in (
+        {b'ARROW:extension:name': b'geoarrow.point'},
+        {
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    ):
+        field = pa.field('geometry', storage.type, metadata=meta)
+        labeled = _native_geoarrow_column(
+            pa, chunked, 'point', 'EPSG:3857', None, field=field
+        )
+        restored = gm.from_arrow(labeled)
+        assert restored.crs == 'EPSG:3857'
+        assert restored.to_wkt() == ['POINT (1 2)']
 
 
 # --- D10: never silently relabel geometry kind via metadata ---
@@ -797,9 +1070,7 @@ def test_d10_polygon_multilinestring_relabel_rejected() -> None:
             pa, pa.chunked_array([poly]), 'multilinestring', None, None
         )
 
-    mls = gm.GeometryArray([
-        gm.MultiLineString([[(0, 0), (1, 1), (2, 0)]])
-    ]).to_arrow()
+    mls = gm.GeometryArray([gm.MultiLineString([[(0, 0), (1, 1), (2, 0)]])]).to_arrow()
     with pytest.raises(
         gm.GeometryError,
         match=r"encoding 'polygon' conflicts with embedded Arrow extension "
@@ -864,14 +1135,14 @@ def _forge_geo_column_metadata(
                 field = pa.field(field.name, storage_type, nullable=field.nullable)
             columns.append(column)
             fields.append(field)
-        table = pa.Table.from_arrays(columns, schema=pa.schema(fields, metadata=table.schema.metadata))
+        table = pa.Table.from_arrays(
+            columns, schema=pa.schema(fields, metadata=table.schema.metadata)
+        )
     meta = json.loads(table.schema.metadata[b'geo'])
     column = meta['columns']['geometry']
     column['encoding'] = encoding
     column['geometry_types'] = geometry_types
-    table = table.replace_schema_metadata({
-        b'geo': json.dumps(meta).encode('utf-8')
-    })
+    table = table.replace_schema_metadata({b'geo': json.dumps(meta).encode('utf-8')})
     pq.write_table(table, parquet_path)
 
 
@@ -884,7 +1155,9 @@ def test_d10_public_path_rejects_multipoint_relabeled_as_linestring(
     _forge_geo_column_metadata(
         parquet_path, encoding='linestring', geometry_types=['LineString']
     )
-    with pytest.raises(gm.GeometryError, match=r'linestring|multipoint|physical storage'):
+    with pytest.raises(
+        gm.GeometryError, match=r'linestring|multipoint|physical storage'
+    ):
         gm.from_geoparquet(parquet_path)
 
 
@@ -1186,9 +1459,7 @@ def test_d12_filtered_subset_of_declared_types_decodes() -> None:
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
 
-    column = pa.chunked_array([
-        pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())
-    ])
+    column = pa.chunked_array([pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())])
     out = _decode_geometry_column(
         pa,
         column,
@@ -1206,9 +1477,7 @@ def test_d12_actual_type_outside_declared_set_errors() -> None:
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
 
-    column = pa.chunked_array([
-        pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())
-    ])
+    column = pa.chunked_array([pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())])
     with pytest.raises(
         gm.GeometryError,
         match=r"geometry_types \['LineString'\] do not cover \['Point'\]",
@@ -1229,9 +1498,7 @@ def test_d12_exact_match_and_empty_declaration_still_work() -> None:
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
 
-    column = pa.chunked_array([
-        pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())
-    ])
+    column = pa.chunked_array([pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())])
     exact = _decode_geometry_column(
         pa, column, {'geometry_types': ['Point']}, 'geometry', 'WKB', None, None
     )
@@ -1414,7 +1681,7 @@ def test_d19_empty_native_xy_declared_z_still_rejects() -> None:
     empty = pa.chunked_array([pa.array([], type=xy)])
     with pytest.raises(
         gm.GeometryError,
-        match=r"exceeds structural storage axes|do not cover",
+        match=r'exceeds structural storage axes|do not cover',
     ):
         _decode_geometry_column(
             pa,
@@ -1693,9 +1960,7 @@ def test_p19_declared_geometry_validation_is_subquadratic() -> None:
         }
     }
 
-    validated = _validate_declared_geometry_columns(
-        pa, schema, metadata
-    )
+    validated = _validate_declared_geometry_columns(pa, schema, metadata)
     assert validated == frozenset(names)
     # One materialization pass may walk names once (list(schema.names) does
     # not call count/index/contains). Super-linear would call count+index per
@@ -1787,9 +2052,7 @@ def test_d14_3_generator_columns_honored_by_validator() -> None:
             'geometry': {'encoding': 'WKB', 'geometry_types': []},
         }
     }
-    selected = _validate_attribute_columns(
-        schema, metadata, (x for x in ['id'])
-    )
+    selected = _validate_attribute_columns(schema, metadata, (x for x in ['id']))
     assert selected == ['id']
 
 
@@ -1836,9 +2099,7 @@ def test_d12_d14_public_roundtrips_wkb_and_native(parquet_path: str) -> None:
     attributes = pa.table({'id': [1, 2], 'label': ['x', 'y']})
 
     for encoding in ('wkb', 'native'):
-        values.to_geoparquet(
-            parquet_path, attributes=attributes, encoding=encoding
-        )
+        values.to_geoparquet(parquet_path, attributes=attributes, encoding=encoding)
         restored, restored_attrs = gm.from_geoparquet(parquet_path)
         _assert_roundtrip(values, restored)
         assert restored.epoch == 2020.5
@@ -1938,7 +2199,9 @@ def test_f6_native_point_z_over_xy_storage_rejected(parquet_path: str) -> None:
         metadata={b'geo': json.dumps(md).encode()},
     )
     pq.write_table(pa.table({'geometry': column}, schema=schema), parquet_path)
-    with pytest.raises(gm.GeometryError, match=r'Point Z|exceeds|storage axes|geometry_types'):
+    with pytest.raises(
+        gm.GeometryError, match=r'Point Z|exceeds|storage axes|geometry_types'
+    ):
         gm.from_geoparquet(parquet_path)
 
 
@@ -2000,3 +2263,141 @@ def test_f6_wkb_point_z_declaration_still_trusted(parquet_path: str) -> None:
     pq.write_table(pa.table({'geometry': column}, schema=schema), parquet_path)
     restored, _ = gm.from_geoparquet(parquet_path)
     assert restored.to_wkt() == ['POINT (1 2)']
+
+
+# --- R9-L2: native admission + mapping column-frame ---
+
+
+def test_admit_preserves_raw_field_extension_frame() -> None:
+    """Field-only extension metadata CRS must not be discarded on rewrap.
+
+    Before R9-L2 the Python path reconciled extension *names* from field
+    metadata but only read frame (crs/epoch) from ExtensionType serialize —
+    field-only CRS was dropped. Native admission returns has_extension + frame.
+    """
+    import json
+
+    import pyarrow as pa
+    from gometry._geoparquet import _native_geoarrow_column
+    from gometry._lib import _admit_geoparquet_geometry_storage
+
+    # Plain point struct (no ExtensionType) with field-level geoarrow metadata.
+    storage = pa.StructArray.from_arrays(
+        [pa.array([1.0]), pa.array([2.0])], names=['x', 'y']
+    )
+    meta = {
+        b'ARROW:extension:name': b'geoarrow.point',
+        b'ARROW:extension:metadata': json.dumps({
+            'crs': gm.CRS(4326).to_projjson_dict(),
+            'crs_type': 'projjson',
+        }).encode(),
+    }
+    field = pa.field('geometry', storage.type, metadata=meta)
+    has_ext, crs, epoch = _admit_geoparquet_geometry_storage(
+        storage.type, 'point', 'geometry', field
+    )
+    assert has_ext is True
+    assert crs == 'EPSG:4326'
+    assert epoch is None
+
+    # Rewrap with matching geoparquet frame succeeds; mismatched raises.
+    chunked = pa.chunked_array([storage])
+    labeled = _native_geoarrow_column(
+        pa, chunked, 'point', 'EPSG:4326', None, field=field
+    )
+    restored = gm.from_arrow(labeled)
+    assert restored.crs == 'EPSG:4326'
+    assert restored.to_wkt() == ['POINT (1 2)']
+
+    with pytest.raises(
+        gm.GeometryError, match='conflicts with Arrow extension metadata'
+    ):
+        _native_geoarrow_column(pa, chunked, 'point', 'EPSG:3857', None, field=field)
+
+
+def test_parse_geoparquet_column_frame_mapping_contract() -> None:
+    """Column-frame accepts a decoded mapping (no JSON dump round trip)."""
+    from gometry._lib import _parse_geoparquet_column_frame
+
+    # Absent CRS → CRS84; explicit null → CRS-free.
+    assert _parse_geoparquet_column_frame({}, 'geometry') == ('OGC:CRS84', None)
+    assert _parse_geoparquet_column_frame({'crs': None}, 'geometry') == (None, None)
+
+    # Finite epoch + -0 normalization; non-boolean numeric.
+    crs, epoch = _parse_geoparquet_column_frame(
+        {'crs': gm.CRS(4326).to_projjson_dict(), 'epoch': -0.0}, 'geometry'
+    )
+    assert crs == 'EPSG:4326'
+    assert epoch == 0.0
+    assert str(epoch) == '0.0'  # not -0.0
+
+    with pytest.raises(gm.ParseError, match='epoch must be finite'):
+        _parse_geoparquet_column_frame({'epoch': float('nan')}, 'geometry')
+    with pytest.raises(gm.ParseError, match='epoch must be a number'):
+        _parse_geoparquet_column_frame({'epoch': True}, 'geometry')
+    with pytest.raises(gm.ParseError, match='epoch requires crs'):
+        _parse_geoparquet_column_frame({'crs': None, 'epoch': 2020.0}, 'geometry')
+
+    # PROJJSON-only identity; planar edges ok; spherical rejected with pinned text.
+    crs, _ = _parse_geoparquet_column_frame(
+        {'crs': gm.CRS(4326).to_projjson_dict(), 'edges': 'planar'}, 'geometry'
+    )
+    assert crs == 'EPSG:4326'
+    with pytest.raises(
+        gm.ParseError,
+        match=r"edges 'spherical' are unsupported; only planar edges are accepted",
+    ):
+        _parse_geoparquet_column_frame({'edges': 'spherical'}, 'geometry')
+
+
+def test_geoparquet_invalid_field_extension_metadata_is_geoparquet_format() -> None:
+    """Field-only extension metadata parse failures keep format=geoparquet.
+
+    Admit maps parse_geoarrow_extension_metadata errors through
+    geoparquet_meta_error so the GeoParquet reader boundary stays one class
+    (not bare geoarrow). Drive the shipped validation entry
+    ``_validate_declared_geometry_columns`` (same path as from_geoparquet)
+    with a hand-built schema so a process that already registered GeoArrow
+    ExtensionTypes cannot re-route the failure through pyarrow's
+    ``__arrow_ext_deserialize__`` (geoarrow format) during parquet read.
+    """
+    import json
+
+    import pyarrow as pa
+    from gometry._geoparquet import _validate_declared_geometry_columns
+    from gometry._lib import _admit_geoparquet_geometry_storage
+
+    storage = pa.StructArray.from_arrays(
+        [pa.array([1.0]), pa.array([2.0])], names=['x', 'y']
+    )
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': b'{not-json',
+        },
+    )
+    with pytest.raises(
+        gm.ParseError, match=r'malformed GeoParquet geo metadata'
+    ) as exc:
+        _admit_geoparquet_geometry_storage(storage.type, 'point', 'geometry', field)
+    assert exc.value.format == 'geoparquet'
+
+    # Shipped schema-validation path (from_geoparquet calls this before decode).
+    geo = {
+        'version': '1.1.0',
+        'primary_column': 'geometry',
+        'columns': {
+            'geometry': {
+                'encoding': 'point',
+                'geometry_types': ['Point'],
+            }
+        },
+    }
+    schema = pa.schema([field], metadata={b'geo': json.dumps(geo).encode()})
+    with pytest.raises(
+        gm.ParseError, match=r'malformed GeoParquet geo metadata'
+    ) as pub:
+        _validate_declared_geometry_columns(pa, schema, geo)
+    assert pub.value.format == 'geoparquet'

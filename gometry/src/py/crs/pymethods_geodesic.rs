@@ -1,4 +1,8 @@
-use super::*;
+use crate::py::crs::{
+    Bound, Py, PyAny, PyCrs, PyDict, PyResult, Python, crs, crs_factors, crs_geodesic,
+    crs_geodesic_direct, crs_geodesic_interpolate, crs_geoid_models, crs_identify,
+    crs_non_deprecated, crs_same, pymethods,
+};
 #[pymethods]
 impl PyCrs {
     /// Test whether this CRS describes the same system as ``other``.
@@ -93,22 +97,35 @@ impl PyCrs {
         crs_geoid_models(slf.as_any())
     }
 
-    /// Map-projection factors (scale, distortion, ...) at a point.
+    /// Map-projection factors (scale, distortion, Tissot, …) at a lon/lat.
+    ///
+    /// For a **projected** CRS the evaluation point is geographic lon/lat on
+    /// the base ellipsoid and the returned scales/distortions describe the
+    /// projection at that location. For a pure geographic CRS the factors are
+    /// near-identity (meridional/parallel scale ≈ 1).
     ///
     /// Parameters
     /// ----------
-    /// lon : float
-    ///     Longitude (or easting) of the evaluation point.
+    /// lon : float or sequence of float
+    ///     Longitude of the evaluation point(s), degrees unless
+    ///     ``radians=True``.
     ///
-    /// lat : float
-    ///     Latitude (or northing) of the evaluation point.
+    /// lat : float or sequence of float
+    ///     Latitude of the evaluation point(s), degrees unless
+    ///     ``radians=True``.
     ///
     /// radians : bool, optional
     ///     Interpret angular inputs as radians (default ``False``).
     ///
     /// Returns
     /// -------
-    /// CrsProjectionFactors or CrsProjectionFactorsBatch
+    /// dict
+    ///     Scalar call: mapping of factor names to floats
+    ///     (``meridional_scale``, ``parallel_scale``, ``areal_scale``,
+    ///     ``angular_distortion``, ``meridian_parallel_angle``,
+    ///     ``meridian_convergence``, ``tissot_semimajor``,
+    ///     ``tissot_semiminor``, ``dx_dlam``, ``dx_dphi``, ``dy_dlam``,
+    ///     ``dy_dphi``). Array call: same keys with float arrays.
     ///
     /// Raises
     /// ------
@@ -119,8 +136,9 @@ impl PyCrs {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> round(gm.CRS(4326).factors(-122.4, 37.8)['meridional_scale'], 5)
-    /// 1.00294
+    /// >>> f = gm.CRS(3857).factors(0.0, 0.0)
+    /// >>> round(f['meridional_scale'], 5)
+    /// 1.0
     fn factors(
         slf: &Bound<'_, Self>,
         py: Python<'_>,

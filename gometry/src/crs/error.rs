@@ -44,16 +44,28 @@ pub enum CrsError {
 }
 
 impl CrsError {
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn invalid(message: impl Into<Box<str>>) -> CrateError {
         Self::message(message)
     }
 
     /// A pre-formatted, self-contained message (token rejections, domain
     /// violations) surfaced verbatim — no `invalid CRS` envelope.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn message(message: impl Into<Box<str>>) -> CrateError {
         Self::Message(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn crs_create(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
         Self::Create {
             crs: crs.into(),
@@ -62,6 +74,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn export(
         crs: impl Into<Box<str>>,
         format: &'static str,
@@ -75,6 +91,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn identify(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
         Self::Identify {
             crs: crs.into(),
@@ -83,6 +103,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn transform_create(
         from: impl Into<Box<str>>,
         to: impl Into<Box<str>>,
@@ -96,6 +120,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn transform(
         from: impl Into<Box<str>>,
         to: impl Into<Box<str>>,
@@ -109,6 +137,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn vertical_units(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
         Self::VerticalUnits {
             crs: crs.into(),
@@ -117,6 +149,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn metric_units(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
         Self::MetricUnits {
             crs: crs.into(),
@@ -125,6 +161,10 @@ impl CrsError {
         .into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn geodesic_units(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
         Self::GeodesicUnits {
             crs: crs.into(),

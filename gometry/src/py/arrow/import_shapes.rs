@@ -1,8 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::py::arrow::*;
+use crate::py::arrow::{
+    ArrowListLevel, ArrowStorage, Bound, CoordSeq, GeometryEncoding, LineSeq, Py, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyModule, PyResult, PyTypeError, Python, Shape,
+    append_arrow_multilinestrings, append_arrow_multipolygons, append_arrow_polygons,
+    append_arrow_wkb, arrow_coordinate_values, arrow_storage_array, arrow_validity,
+    arrow_value_frame, coordinate_span, crs_arc_str, push_geometry_level_missing,
+};
 
 fn append_arrow_coordseq_rows(
     py: Python<'_>,

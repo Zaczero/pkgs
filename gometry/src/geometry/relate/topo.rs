@@ -1,10 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-use crate::HeapSize;
-use crate::geometry::*;
+use crate::HeapSize as _;
+use crate::geometry::relate::{
+    Loc, collection_has_overlapping_lineal_members, effective_dimension,
+    polygon_has_nondegenerate_area, shape_has_polygonal_members, shape_has_puntal_support,
+};
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates as _, DimMode, Dimension, HashMap, HashMapExt as _, HashSet,
+    Point, PointKey, Polygon, Segment, Shape, XY, dimension, overlay, point_on_segment, same_point,
+    segment_midpoint, segment_projection, undirected_segment_edge_key,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct TopoPoint {
@@ -288,9 +291,9 @@ impl EdgeBundle {
 }
 
 pub(crate) fn source_direction(piece: Segment, source: Segment) -> i32 {
-    let start = segment_projection_fraction(piece.start, source);
-    let end = segment_projection_fraction(piece.end, source);
-    if end >= start { 1 } else { -1 }
+    let start = segment_projection(piece.start, source);
+    let end = segment_projection(piece.end, source);
+    if end.cmp_along(&start).is_ge() { 1 } else { -1 }
 }
 
 pub(crate) fn finalize_topology_edges(
@@ -304,7 +307,7 @@ pub(crate) fn finalize_topology_edges(
     let (atomic, sources) = overlay::self_node_segments_sourced(&segments);
     let mut bundles: HashMap<(PointKey, PointKey), EdgeBundle> =
         HashMap::with_capacity(atomic.len());
-    for (piece, source) in atomic.into_iter().zip(sources) {
+    for (piece, owners) in atomic.into_iter().zip(sources.iter()) {
         if same_point(piece.start, piece.end) {
             continue;
         }
@@ -316,14 +319,18 @@ pub(crate) fn finalize_topology_edges(
                 area_count: 0,
                 area_net: 0,
             });
-        match raw_edges[source as usize].kind {
-            RawTopoEdgeKind::Line => {
-                bundle.line = true;
-            },
-            RawTopoEdgeKind::Area => {
-                bundle.area_count += 1;
-                bundle.area_net += source_direction(piece, raw_edges[source as usize].segment);
-            },
+        for &(source, _reversed) in owners {
+            match raw_edges[source as usize].kind {
+                RawTopoEdgeKind::Line => {
+                    bundle.line = true;
+                },
+                RawTopoEdgeKind::Area => {
+                    bundle.area_count += 1;
+                    // `source_direction` compares piece vs original segment,
+                    // so reverse-of-representative is already reflected.
+                    bundle.area_net += source_direction(piece, raw_edges[source as usize].segment);
+                },
+            }
         }
     }
     bundles

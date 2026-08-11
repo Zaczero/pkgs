@@ -88,7 +88,9 @@ def test_fill_missing_accepts_row_aligned_arrays(masked: gm.GeometryArray) -> No
                 gm.Point(2.0, 2.0, crs=3857),
             ])
         )
-    with pytest.raises(gm.GeometryError, match='fill array contains missing geometries'):
+    with pytest.raises(
+        gm.GeometryError, match='fill array contains missing geometries'
+    ):
         masked.fill_missing(
             gm.GeometryArray([gm.Point(0.0, 0.0), None, gm.Point(2.0, 2.0)])
         )
@@ -276,6 +278,18 @@ def test_predicate_fast_paths_force_missing_rows_false(
     right = gm.GeometryArray([gm.Point(0.0, 0.0), gm.Point(9.0, 9.0), None])
     assert gm.intersects(masked, right).tolist() == [True, False, False]
     assert gm.disjoint(masked, right).tolist() == [False, False, False]
+
+
+def test_scalar_polygon_predicates_skip_missing_packed_polygon_rows() -> None:
+    rows = gm.GeometryArray([
+        gm.box(0.0, 0.0, 1.0, 1.0),
+        None,
+        gm.box(2.0, 2.0, 3.0, 3.0),
+    ])
+    window = gm.box(-1.0, -1.0, 2.0, 2.0)
+
+    assert gm.contains(window, rows).tolist() == [True, False, False]
+    assert gm.intersects(window, rows).tolist() == [True, False, True]
 
 
 def test_prepared_predicates_mask_missing_rows_like_free_functions() -> None:
@@ -737,6 +751,29 @@ def test_masked_repr_ignores_placeholder_geometry_type() -> None:
     rows = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(2, 2, 3, 3)])
 
     assert repr(rows) == '<GeometryArray[Polygon] len=3 missing=1>'
+
+
+def test_geographic_packed_bounds_preserve_missing_and_antimeridian_rows() -> None:
+    lines = gm.GeometryArray([
+        gm.LineString([(170.0, 10.0), (-170.0, 20.0)], crs='OGC:CRS84'),
+        None,
+        gm.LineString([(1.0, 2.0), (3.0, 4.0)], crs='OGC:CRS84'),
+    ])
+    polygons = gm.GeometryArray([
+        gm.Polygon(
+            [(170.0, 0.0), (-170.0, 0.0), (-170.0, 5.0), (170.0, 0.0)],
+            crs='OGC:CRS84',
+        ),
+        None,
+        gm.box(1.0, 2.0, 3.0, 4.0, crs='OGC:CRS84'),
+    ])
+
+    for values in (lines, polygons):
+        expected = [row.bounds if row is not None else None for row in values]
+        actual = values.bounds.tolist()
+        assert actual[0] == list(expected[0])
+        assert all(np.isnan(value) for value in actual[1])
+        assert actual[2] == list(expected[2])
 
 
 def test_arrow_c_export_preserves_missing_rows_as_nulls() -> None:

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Declarative string-token enums: one macro generates the enum, its canonical
 //! token table, `parse`, and the canonical `unknown <concept> <value>;
 //! expected ...` message — so every token surface shares one spelling and the

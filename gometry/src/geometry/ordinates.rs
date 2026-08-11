@@ -1,16 +1,16 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Z/M ordinate carry — rebuilding Z/M on XY-only geometry-engine output from
 //! the operation's input vertices and segments (`carry_ordinates`/`carry_each`
 //! and the `OrdinateSource` lookup), shared by overlay and decomposition.
 
 use rstar::{AABB, RTree, RTreeObject};
 
-use super::*;
-use crate::collections::{HashMap, HashMapExt};
+use crate::collections::HashMap;
 use crate::error::Result;
+use crate::geometry::{
+    GeometryErrorKind, HashMapExt as _, MOrdinate, ON_SEGMENT_EPSILON, Point, PointKey, Segment,
+    Shape, XY, ZOrdinate, axis_pow2_scale, point_distance, same_point, scaled_residual,
+    segment_projection,
+};
 
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact
@@ -164,31 +164,80 @@ pub(super) fn segment_ordinate_at(
     // Plain ops: scalar `mul_add` is a libm call below x86-64-v3.
     let squared_length = dx * dx + dy * dy;
     if squared_length == 0.0 {
-        return same_point(start, point).then_some((start.z(), start.m()));
+        if dx == 0.0 && dy == 0.0 {
+            return same_point(start, point).then_some((start.z(), start.m()));
+        }
+        // A live reciprocal axis can have a zero squared length.  Reuse the
+        // segment owner's anisotropic residual rescue, then certify the
+        // projected witness in source distance space before carrying Z/M.
+        let segment = Segment {
+            start: start.xy(),
+            end: end.xy(),
+        };
+        let projection = segment_projection(point, segment);
+        let witness = projection.interpolate_xy(segment);
+        let length = point_distance(segment.start, segment.end);
+        let allowed = (ON_SEGMENT_EPSILON * length).max(tolerance);
+        if point_distance(point.xy(), witness) > allowed {
+            return None;
+        }
+        let lifted = projection.interpolate_point(start, end);
+        return Some((lifted.z(), lifted.m()));
     }
     // The perpendicular slack combines the per-segment relative epsilon
     // with the caller's ABSOLUTE engine-snap tolerance: short segments in
     // a large extent would otherwise reject the engine's jittered copies
     // of their own vertices.
-    let length = squared_length.sqrt();
+    let (dx, dy, px, py, length, tolerance) = if squared_length.is_finite() {
+        let length = squared_length.sqrt();
+        (
+            dx,
+            dy,
+            point.x - start.x,
+            point.y - start.y,
+            length,
+            tolerance,
+        )
+    } else {
+        // The overlay engine returns ordinary finite XY vertices, but the
+        // source segment can span opposite-sign extremes.  Frame the ORIGINAL
+        // operands before every subtraction: `(x * s) - (origin * s)`, never
+        // `(x - origin) * s`, whose first subtraction is already infinite.
+        let max_abs = start
+            .x
+            .abs()
+            .max(start.y.abs())
+            .max(end.x.abs())
+            .max(end.y.abs())
+            .max(point.x.abs())
+            .max(point.y.abs());
+        let scale = axis_pow2_scale(max_abs);
+        let dx = scaled_residual(end.x, start.x, scale);
+        let dy = scaled_residual(end.y, start.y, scale);
+        let px = scaled_residual(point.x, start.x, scale);
+        let py = scaled_residual(point.y, start.y, scale);
+        let length = point_distance(XY::new(0.0, 0.0), XY::new(dx, dy));
+        (dx, dy, px, py, length, tolerance * scale)
+    };
+    if length == 0.0 || !length.is_finite() {
+        return same_point(start, point).then_some((start.z(), start.m()));
+    }
     let allowed = (ON_SEGMENT_EPSILON * length).max(tolerance);
-    if (cross_magnitude(dx, dy, start, point) / length) > allowed {
+    if (dx * py - dy * px).abs() / length > allowed {
         return None;
     }
-    let fraction = ((point.x - start.x) * dx + (point.y - start.y) * dy) / squared_length;
+    let denominator = (dx * dx) + (dy * dy);
+    let fraction = ((px * dx) + (py * dy)) / denominator;
     let slack = ON_SEGMENT_EPSILON.max(tolerance / length);
     if !(-slack..=1.0 + slack).contains(&fraction) {
         return None;
     }
-    let interpolated = lerp_point(start, end, fraction.clamp(0.0, 1.0));
-    Some((interpolated.z(), interpolated.m()))
-}
-
-fn cross_magnitude(dx: f64, dy: f64, start: Point, point: Point) -> f64 {
-    // Plain ops: compared against a slack floored at ON_SEGMENT_EPSILON, so
-    // fused rounding buys nothing and scalar `mul_add` is a libm call below
-    // x86-64-v3.
-    (dx * (point.y - start.y) - dy * (point.x - start.x)).abs()
+    let projection = segment_projection(point, Segment {
+        start: start.xy(),
+        end: end.xy(),
+    });
+    let lifted = projection.interpolate_point(start, end);
+    Some((lifted.z(), lifted.m()))
 }
 
 /// Carry Z/M from an operation's inputs onto a single XY output shape. In
@@ -243,5 +292,24 @@ fn carry_or_degrade(
         Ok(carried) => Ok(carried),
         Err(_) if !strict => Ok(output.force_2d()),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reciprocal_axis_segment_interpolates_live_ordinate() {
+        let large = 1e162;
+        let tiny = 1e-162;
+        let start =
+            Point::new_axes(large, 0.0, ZOrdinate(Some(2.0)), MOrdinate(Some(4.0))).unwrap();
+        let end = Point::new_axes(large, tiny, ZOrdinate(Some(6.0)), MOrdinate(Some(8.0))).unwrap();
+        let midpoint = Point::new_unchecked_xy(large, tiny / 2.0);
+        assert_eq!(
+            segment_ordinate_at(start, end, midpoint, 0.0),
+            Some((Some(4.0), Some(6.0)))
+        );
     }
 }

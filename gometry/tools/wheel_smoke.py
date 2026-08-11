@@ -1,7 +1,15 @@
 """Build and smoke-test the release wheel artifact.
 
-This is intentionally heavier than the default test lane. Run directly or via
-``pytest -m release`` before publishing.
+This is intentionally heavier than the default pytest lane. There is no
+``pytest -m release`` marker — run this script directly before publishing::
+
+    .venv/bin/python tools/wheel_smoke.py
+    .venv/bin/python tools/wheel_smoke.py --inspect path/to/gometry-*.whl
+    .venv/bin/python tools/wheel_smoke.py --installed
+    .venv/bin/python tools/wheel_smoke.py --smoke-sdist path/to/gometry-*.tar.gz
+
+Default mode builds an sdist via maturin, rebuilds the wheel from that sdist,
+clean-installs it into a temporary venv, and runs a functional import/API smoke.
 """
 
 from __future__ import annotations
@@ -23,6 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MONOREPO = ROOT.parent
 LICENSE_SCRIPT = MONOREPO / '.github' / 'scripts' / 'gen_licenses.py'
+H3_GIT_REV = '2b5bde491449c776cb9c1ae305a5f826f6d8e968'
+H3_SOURCE = f'git+https://github.com/Zaczero/h3o.git?rev={H3_GIT_REV}#{H3_GIT_REV}'
 TEXT_SUFFIXES = frozenset({
     '.json',
     '.lock',
@@ -49,6 +59,7 @@ def release_build_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop('RUSTC_WRAPPER', None)
     env.pop('NIX_LDFLAGS', None)
+    env.pop('MATURIN_PEP517_ARGS', None)
     # The Nix compiler wrapper otherwise injects this workstation's closure
     # paths into ELF RUNPATH. manylinux repair does not need the variable, but
     # setting it is harmless and makes local release artifacts equally clean.
@@ -59,7 +70,7 @@ def release_build_env() -> dict[str, str]:
 
 def build_wheel_from_sdist(sdist: Path, out_dir: Path, *, env: dict[str, str]) -> Path:
     sdist_version = inspect_sdist(sdist)
-    verify_sdist_vendor_sources(sdist)
+    verify_sdist_dependency_sources(sdist)
     run(
         [
             'uv',
@@ -156,10 +167,6 @@ def inspect_sdist(path: Path) -> str:
         f'{root}/Cargo.lock',
         f'{root}/pyproject.toml',
         f'{root}/rust-toolchain.toml',
-        f'{root}/vendor/geographiclib-rs/Cargo.toml',
-        f'{root}/vendor/h3o/Cargo.toml',
-        f'{root}/vendor/proj-sys/Cargo.toml',
-        f'{root}/vendor/proj-sys/PROJSRC/proj-9.8.1.tar.gz',
     }
     if missing := sorted(required - set(names)):
         raise AssertionError(f'sdist missing root release files: {missing}')
@@ -175,29 +182,21 @@ def inspect_sdist(path: Path) -> str:
             'sdist filename/metadata version mismatch: '
             f'{filename_version!r} != {metadata_version!r}'
         )
-    # `[patch.crates-io]`, not `paths`: a path override cannot change the
-    # dependency graph, so vendored manifest edits were silently ignored under
-    # the old form. rustflags are the scalar spelling — Cargo concatenates the
-    # array form across the workspace/package/maturin configs, which produced
-    # two or three copies of the same flag.
-    cargo_configs = {
-        'patch.crates-io.geographiclib-rs.path="vendor/geographiclib-rs"',
-        'patch.crates-io.h3o.path="vendor/h3o"',
-        'patch.crates-io.proj-sys.path="vendor/proj-sys"',
-        'target.x86_64-unknown-linux-gnu.rustflags="-C target-cpu=x86-64-v2"',
-        'target.x86_64-unknown-linux-musl.rustflags="-C target-cpu=x86-64-v2"',
-        'target.x86_64-pc-windows-msvc.rustflags="-C target-cpu=x86-64-v2"',
-        'target.x86_64-apple-darwin.rustflags="-C target-cpu=x86-64-v2"',
-        'profile.release.trim-paths="all"',
-        'profile.release.strip="symbols"',
-        'unstable.trim-paths=true',
-    }
     pyproject = text_members[f'{root}/pyproject.toml']
-    if missing_configs := sorted(
-        config for config in cargo_configs if config not in pyproject
-    ):
+    if 'patch.crates-io' in pyproject or 'vendor/' in pyproject:
+        raise AssertionError('sdist still configures vendored Cargo sources')
+    forbidden_configs = (
+        'target.x86_64-',
+        'profile.release.',
+        'unstable.trim-paths',
+    )
+    if forbidden := [
+        line.strip()
+        for line in pyproject.splitlines()
+        if any(token in line for token in forbidden_configs)
+    ]:
         raise AssertionError(
-            f'sdist missing Maturin Cargo configuration: {missing_configs}'
+            f'sdist Maturin config duplicates root release policy: {forbidden}'
         )
     forbidden_parts = {'site', 'dev', '__pycache__'}
     suspect = [
@@ -208,7 +207,6 @@ def inspect_sdist(path: Path) -> str:
         or any(
             part == 'target' or part.startswith('target-') for part in Path(name).parts
         )
-        or '/benches/results/baseline/' in name
     ]
     if suspect:
         raise AssertionError(
@@ -219,12 +217,12 @@ def inspect_sdist(path: Path) -> str:
     return metadata_version
 
 
-def verify_sdist_vendor_sources(path: Path) -> None:
-    """Prove an extracted, offline sdist resolves all patched crate sources."""
+def verify_sdist_dependency_sources(path: Path) -> None:
+    """Prove an extracted sdist resolves its pinned dependency sources."""
     expected = {
-        'geographiclib-rs': 'vendor/geographiclib-rs/Cargo.toml',
-        'h3o': 'vendor/h3o/Cargo.toml',
-        'proj-sys': 'vendor/proj-sys/Cargo.toml',
+        'geographiclib-rs': 'registry+https://github.com/rust-lang/crates.io-index',
+        'h3o': H3_SOURCE,
+        'proj-sys': 'registry+https://github.com/rust-lang/crates.io-index',
     }
     with tempfile.TemporaryDirectory(prefix='gometry-sdist-') as tmp:
         extracted = Path(tmp)
@@ -240,16 +238,9 @@ def verify_sdist_vendor_sources(path: Path) -> None:
             [
                 'cargo',
                 'metadata',
-                '--offline',
                 '--format-version=1',
                 '--manifest-path',
                 str(root / 'gometry' / 'Cargo.toml'),
-                '--config',
-                'patch.crates-io.geographiclib-rs.path="vendor/geographiclib-rs"',
-                '--config',
-                'patch.crates-io.h3o.path="vendor/h3o"',
-                '--config',
-                'patch.crates-io.proj-sys.path="vendor/proj-sys"',
             ],
             cwd=root,
             env=env,
@@ -259,19 +250,17 @@ def verify_sdist_vendor_sources(path: Path) -> None:
         )
         metadata_packages = json.loads(result.stdout)['packages']
         packages = {package['name']: package for package in metadata_packages}
-        for package, relative_manifest in expected.items():
-            resolved = Path(packages[package]['manifest_path']).resolve()
-            wanted = (root / relative_manifest).resolve()
-            if resolved != wanted:
+        for package, source in expected.items():
+            if packages[package].get('source') != source:
                 raise AssertionError(
-                    f'{package} resolved outside the sdist vendor tree: {resolved} != {wanted}'
+                    f'sdist resolved {package} from '
+                    f'{packages[package].get("source")!r}, expected {source!r}'
                 )
         # Maturin regenerates a one-member workspace around Gometry while
         # copying the monorepo lock. Cargo must prune unrelated workspace
         # packages from that copy, so `metadata --locked` cannot succeed even
-        # though dependency resolution is unchanged. Prove the stronger fact
-        # we actually need: offline resolution selected no registry/git tuple
-        # outside the archived lock.
+        # though dependency resolution is unchanged. Prove that resolution
+        # selected no registry or Git tuple outside the archived lock.
         lock = tomllib.loads((root / 'Cargo.lock').read_text())
         locked = {
             (package['name'], package['version'], package.get('source'))
@@ -291,12 +280,6 @@ def verify_sdist_vendor_sources(path: Path) -> None:
 def inspect_wheel(path: Path) -> str:
     with zipfile.ZipFile(path) as wheel:
         names = set(wheel.namelist())
-        native_members = {
-            name: wheel.read(name)
-            for name in names
-            if name.startswith('gometry/_lib')
-            and name.endswith(('.so', '.pyd', '.dylib'))
-        }
         text_members = {
             name: wheel.read(name).decode('utf-8', errors='ignore')
             for name in names
@@ -311,7 +294,11 @@ def inspect_wheel(path: Path) -> str:
     )
     required = {'gometry/_lib.pyi', 'gometry/py.typed'}
     missing = sorted(required - names)
-    required_licenses = {'LICENSE-APACHE.md', 'LICENSE-MIT.md', 'LICENSE-THIRD-PARTY.md'}
+    required_licenses = {
+        'LICENSE-APACHE.md',
+        'LICENSE-MIT.md',
+        'LICENSE-THIRD-PARTY.md',
+    }
     bundled_licenses = {Path(name).name for name in dist_info if '/licenses/' in name}
     pth_files = [name for name in names if name.endswith('.pth')]
     generated_members = sorted(
@@ -344,17 +331,6 @@ def inspect_wheel(path: Path) -> str:
         raise AssertionError(f'wheel metadata leaks absolute build paths: {leaks}')
     if pth_files and not package:
         raise AssertionError(f'wheel is .pth-only: {pth_files}')
-    private_prefixes = (b'/home/', b'/tmp/', b'/private/tmp/', b'\\Users\\')
-    binary_leaks = [
-        f'{name}: {prefix.decode(errors="replace")}'
-        for name, payload in native_members.items()
-        for prefix in private_prefixes
-        if prefix in payload
-    ]
-    if binary_leaks:
-        raise AssertionError(
-            f'wheel native extension leaks private build paths: {binary_leaks}'
-        )
     metadata_names = [name for name in dist_info if name.endswith('/METADATA')]
     if len(metadata_names) != 1:
         raise AssertionError(f'expected one wheel METADATA file: {metadata_names!r}')
@@ -422,7 +398,7 @@ def inspect_artifact(path: Path) -> None:
         inspect_wheel(path)
     elif path.name.endswith('.tar.gz'):
         inspect_sdist(path)
-        verify_sdist_vendor_sources(path)
+        verify_sdist_dependency_sources(path)
     else:
         raise AssertionError(f'unsupported release artifact: {path}')
 

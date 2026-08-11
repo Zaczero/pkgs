@@ -180,6 +180,40 @@ def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
         assert exc_info.value.operation in {'coverage_union', 'coverage_simplify'}
 
 
+def test_coverage_union_rejects_tjunction() -> None:
+    """T-junction coverages fail the precondition through coverage_union too."""
+    tjoin = gm.GeometryArray([
+        gm.box(0, 0, 1, 2),
+        gm.from_wkt('POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))'),
+        gm.from_wkt('POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))'),
+    ])
+    assert not tjoin.coverage_is_valid()
+    for operation in (tjoin.coverage_union, lambda: gm.coverage_union(list(tjoin))):
+        with pytest.raises(
+            gm.InvalidGeometryError,
+            match=r'valid polygonal coverage.*coverage_invalid_edges.*coverage_clean',
+        ) as exc_info:
+            operation()
+        assert exc_info.value.operation == 'coverage_union'
+
+
+def test_coverage_union_rejects_gap_under_width() -> None:
+    """gap_width is a coverage_is_valid concern; union always uses exact match.
+
+    A narrow gap is still a *valid* exact coverage (no shared edge required
+    across a gap), so coverage_union dissolves the disjoint parts. Document
+    that union does not apply gap_width — rejection for gap is only via
+    coverage_is_valid(gap_width=...).
+    """
+    gap = gm.GeometryArray([gm.box(0, 0, 0.999, 1), gm.box(1, 0, 2, 1)])
+    assert gap.coverage_is_valid()
+    assert not gap.coverage_is_valid(gap_width=0.01)
+    # Exact-match union still accepts (two components); not a rejection class.
+    union = gap.coverage_union()
+    assert union.geometry_type == 'MultiPolygon'
+    assert union.area == pytest.approx(0.999 + 1.0)
+
+
 def test_coverage_simplify_preserves_topology() -> None:
     left = gm.from_wkt(
         'POLYGON ((0 0, 1 0, 1.05 0.25, 0.95 0.5, 1.05 0.75, 1 1, 0 1, 0 0))'

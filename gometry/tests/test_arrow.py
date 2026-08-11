@@ -949,9 +949,12 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
         names=['x', 'y'],
     )
     off_list = pa.array([0, 2, 0, 2], type=pa.int32()).buffers()[1]
-    mp_type = gm.GeometryArray(
-        [gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])], crs=4326
-    ).to_arrow().type
+    mp_type = (
+        gm
+        .GeometryArray([gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])], crs=4326)
+        .to_arrow()
+        .type
+    )
     bad_list = pa.ListArray.from_buffers(
         mp_type.storage_type, 3, [validity, off_list], children=[coords]
     )
@@ -986,9 +989,7 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
         assert 'offset' in str(ei.value).lower() or 'ordered' in str(ei.value).lower()
 
     # Positive: legitimate null row with monotonic offsets still imports.
-    good = gm.GeometryArray(
-        [gm.Point(1, 2), None, gm.Point(3, 4)], crs=4326
-    )
+    good = gm.GeometryArray([gm.Point(1, 2), None, gm.Point(3, 4)], crs=4326)
     for source in (
         good.to_arrow(),
         CapsuleOnly(good.to_arrow()),
@@ -1073,13 +1074,15 @@ def test_from_arrow_empty_malformed_start_offset_rejected_all_frontends() -> Non
     assert len(cast('gm.GeometryArray', gm.from_arrow(sliced_empty))) == 0
 
 
-def test_from_arrow_nested_nonmono_offsets_under_null_slice_rejected() -> None:
-    """D17: non-monotonic inner offsets hidden by null/slice must still reject.
+def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
+    """D17: selected nested offsets reject; sliced-away payload is ignored.
 
-    Exact layout: ring offsets ``[0,4,2,2,7,11]`` (4→2), outer ``[0,2,3,5]``,
-    validity ``0x05``, outer sliced ``[1:3]``. Direct PyArrow
-    ``validate(full=True)`` rejects; capsule/stream/pyarrow frontends must too.
-    A valid sliced polygon array still imports the correct two geometries.
+    Ring offsets are ``[0,4,2,2,7,11]`` (4→2), outer offsets are
+    ``[0,2,3,5]`` and validity is ``0x05``. The selected ``[0:2]`` parent
+    span includes the malformed transition even though row 1 is null, so all
+    frontends reject. The ``[1:3]`` slice starts after that transition and all
+    frontends import it: a visible-span import must not retain or validate a
+    physical child it cannot reach.
     """
 
     class CapsuleOnly:
@@ -1112,10 +1115,15 @@ def test_from_arrow_nested_nonmono_offsets_under_null_slice_rejected() -> None:
     )
     outer_off = pa.array([0, 2, 3, 5], type=pa.int32()).buffers()[1]
     validity = pa.py_buffer(bytes([0x05]))
-    poly_type = gm.GeometryArray(
-        [gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)])],
-        crs=4326,
-    ).to_arrow().type
+    poly_type = (
+        gm
+        .GeometryArray(
+            [gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)])],
+            crs=4326,
+        )
+        .to_arrow()
+        .type
+    )
     poly_storage = pa.ListArray.from_buffers(
         poly_type.storage_type,
         3,
@@ -1126,16 +1134,29 @@ def test_from_arrow_nested_nonmono_offsets_under_null_slice_rejected() -> None:
     with pytest.raises(Exception):
         poly_storage.validate(full=True)
     bad = pa.ExtensionArray.from_storage(poly_type, poly_storage)
-    sliced = bad.slice(1, 2)
+    selected_bad = bad.slice(0, 2)
     with pytest.raises(Exception):
-        sliced.validate(full=True)
-
-    for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
+        selected_bad.validate(full=True)
+    for source in (
+        selected_bad,
+        CapsuleOnly(selected_bad),
+        StreamOnly(selected_bad),
+    ):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
             gm.from_arrow(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'offset' in msg or 'ordered' in msg
+
+    sliced = bad.slice(1, 2)
+    with pytest.raises(Exception):
+        sliced.validate(full=True)
+    for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
+        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        assert out.is_missing.tolist() == [True, False]
+        assert out.to_wkt()[1] == (
+            'POLYGON ((2 2, 3 3, 4 4, 5 5, 6 6, 2 2), (7 7, 8 8, 9 9, 10 10, 7 7))'
+        )
 
     # Positive: valid 3-row polygon array sliced [1:3] imports correctly.
     good = gm.GeometryArray(
@@ -1158,31 +1179,33 @@ def test_from_arrow_nested_nonmono_offsets_under_null_slice_rejected() -> None:
     # Positive: nested multipolygon round-trip (all nesting levels).
     mp = gm.GeometryArray(
         [
-            gm.MultiPolygon(
-                [
-                    gm.Polygon([(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]),
-                    gm.Polygon([(3.0, 3.0), (4.0, 3.0), (4.0, 4.0), (3.0, 3.0)]),
-                ]
-            ),
-            gm.MultiPolygon(
-                [gm.Polygon([(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 5.0)])]
-            ),
+            gm.MultiPolygon([
+                gm.Polygon([(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]),
+                gm.Polygon([(3.0, 3.0), (4.0, 3.0), (4.0, 4.0), (3.0, 3.0)]),
+            ]),
+            gm.MultiPolygon([
+                gm.Polygon([(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 5.0)])
+            ]),
         ],
         crs=4326,
     )
-    for source in (mp.to_arrow(), CapsuleOnly(mp.to_arrow()), StreamOnly(mp.to_arrow())):
+    for source in (
+        mp.to_arrow(),
+        CapsuleOnly(mp.to_arrow()),
+        StreamOnly(mp.to_arrow()),
+    ):
         restored = cast('gm.GeometryArray', gm.from_arrow(source))
         assert restored.to_wkt() == mp.to_wkt()
 
 
-def test_from_arrow_terminal_offset_past_child_rejected_all_frontends() -> None:
-    """N2: list terminal offset past child length is OOB-adjacent and must reject.
+def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None:
+    """N2: selected terminal past child length is rejected on every frontend.
 
     Exact repro: MultiLineString list-of-list with inner offsets ``[0, 2, 100]``
     against only 4 coordinates. PyArrow ``validate(full=True)`` rejects
-    (``terminal > child length``); gometry must reject on pyarrow / capsule /
-    stream. A valid nested MultiLineString and a valid sliced nested array
-    still import correctly; D17/D18 remain covered by sibling tests.
+    (``terminal > child length``). Full input and the second-row slice select
+    that terminal and must reject. The first-row slice does not reach it and
+    imports: visible-span admission must not scan or copy sibling payload.
     """
 
     class CapsuleOnly:
@@ -1203,9 +1226,12 @@ def test_from_arrow_terminal_offset_past_child_rejected_all_frontends() -> None:
         def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
             return self._chunks.__arrow_c_stream__(requested_schema)
 
-    typ = gm.GeometryArray(
-        [gm.MultiLineString([[(0.0, 0.0), (1.0, 1.0)]])]
-    ).to_arrow().type
+    typ = (
+        gm
+        .GeometryArray([gm.MultiLineString([[(0.0, 0.0), (1.0, 1.0)]])])
+        .to_arrow()
+        .type
+    )
     coord_type = typ.storage_type.value_type.value_type
     coords = pa.array(
         [
@@ -1234,11 +1260,17 @@ def test_from_arrow_terminal_offset_past_child_rejected_all_frontends() -> None:
     inner[8:12] = struct.pack('<i', 100)
     with pytest.raises(Exception):
         arrx.storage.validate(full=True)
-    sliced = arrx.slice(0, 1)
+    selected_bad = arrx.slice(1, 1)
     with pytest.raises(Exception):
-        sliced.storage.validate(full=True)
-
-    for source in (arrx, sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
+        selected_bad.storage.validate(full=True)
+    for source in (
+        arrx,
+        CapsuleOnly(arrx),
+        StreamOnly(arrx),
+        selected_bad,
+        CapsuleOnly(selected_bad),
+        StreamOnly(selected_bad),
+    ):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
             gm.from_arrow(source)
         assert 'PanicException' not in type(ei.value).__name__
@@ -1251,12 +1283,17 @@ def test_from_arrow_terminal_offset_past_child_rejected_all_frontends() -> None:
             or 'bound' in msg
         )
 
+    sliced = arrx.slice(0, 1)
+    with pytest.raises(Exception):
+        sliced.storage.validate(full=True)
+    for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
+        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        assert out.to_wkt() == ['MULTILINESTRING ((0 0, 1 1))']
+
     # Positive: valid nested MultiLineString (full + sliced).
     good = gm.GeometryArray(
         [
-            gm.MultiLineString(
-                [[(0.0, 0.0), (1.0, 1.0)], [(2.0, 2.0), (3.0, 3.0)]]
-            ),
+            gm.MultiLineString([[(0.0, 0.0), (1.0, 1.0)], [(2.0, 2.0), (3.0, 3.0)]]),
             gm.MultiLineString([[(4.0, 4.0), (5.0, 5.0)]]),
         ],
         crs=4326,
@@ -1274,12 +1311,10 @@ def test_from_arrow_terminal_offset_past_child_rejected_all_frontends() -> None:
     # Positive: nested MultiPolygon round-trip still imports.
     mp = gm.GeometryArray(
         [
-            gm.MultiPolygon(
-                [
-                    gm.Polygon([(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]),
-                    gm.Polygon([(3.0, 3.0), (4.0, 3.0), (4.0, 4.0), (3.0, 3.0)]),
-                ]
-            ),
+            gm.MultiPolygon([
+                gm.Polygon([(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]),
+                gm.Polygon([(3.0, 3.0), (4.0, 3.0), (4.0, 4.0), (3.0, 3.0)]),
+            ]),
         ],
         crs=4326,
     )
@@ -1336,10 +1371,15 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
         gm.from_arrow(mixed_bad)
 
     # ExtensionType multi-empty with forged binary storage under WKB extension.
-    wkb_typ = gm.GeometryArray([
-        gm.Point(0.0, 0.0),
-        gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
-    ]).to_arrow().type
+    wkb_typ = (
+        gm
+        .GeometryArray([
+            gm.Point(0.0, 0.0),
+            gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
+        ])
+        .to_arrow()
+        .type
+    )
     assert wkb_typ.extension_name == 'geoarrow.wkb'
     assert pa.types.is_binary(wkb_typ.storage_type)
     bad_ext = pa.ExtensionArray.from_storage(wkb_typ, bad)
@@ -1348,9 +1388,16 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
         gm.from_arrow(ext_chunks)
 
     # Nested MultiPolygon empty chunks with bad outer start offset.
-    mp_typ = gm.GeometryArray(
-        [gm.MultiPolygon([gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)])])]
-    ).to_arrow().type
+    mp_typ = (
+        gm
+        .GeometryArray([
+            gm.MultiPolygon([
+                gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)])
+            ])
+        ])
+        .to_arrow()
+        .type
+    )
     # Empty multipolygon list: length 0, one start offset.
     empty_mp_storage = pa.ListArray.from_buffers(
         mp_typ.storage_type,
@@ -1368,7 +1415,9 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     except Exception as exc:  # construction may already reject; either is fine
         if not (
             'offset' in str(exc).lower()
-            or isinstance(exc, (gm.ParseError, gm.GeometryError, TypeError, pa.ArrowInvalid))
+            or isinstance(
+                exc, (gm.ParseError, gm.GeometryError, TypeError, pa.ArrowInvalid)
+            )
         ):
             raise
 
@@ -1413,7 +1462,6 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     rows; non-empty chunk import stays unchanged.
     """
     import resource
-    import time
 
     arr = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326).to_arrow()
     empty = arr.slice(0, 0)
@@ -1424,16 +1472,14 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     many_empty = pa.chunked_array([empty] * n_empty, type=arr.type)
     assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
     max_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    t0 = time.perf_counter()
     out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
-    elapsed = time.perf_counter() - t0
     max_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     assert len(out) == 0
     assert out.crs == 'EPSG:4326'
     assert out.to_wkt() == []
-    # len==0 short-circuit: no O(chunk) walk — must finish well under 0.1s and
-    # not grow peak RSS by O(chunk) (~tens of MiB from retaining wrappers).
-    assert elapsed < 0.1, f'all-empty from_arrow too slow: {elapsed:.3f}s'
+    # len==0 short-circuit: no O(chunk) walk — must not grow peak RSS by
+    # O(chunk) (~tens of MiB from retaining wrappers). Wall-clock is not a
+    # pytest gate (host-sensitive under -n auto).
     assert (max_after - max_before) < 4096, (
         f'from_arrow peak RSS grew {max_after - max_before} KiB (expected ~0)'
     )
@@ -1470,7 +1516,9 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
         reader = pa.RecordBatchReader.from_batches(schema, batches)
 
         class StreamOnly:
-            def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+            def __arrow_c_stream__(
+                self, requested_schema: object | None = None
+            ) -> object:
                 return reader.__arrow_c_stream__(requested_schema)
 
         return StreamOnly()
@@ -1508,7 +1556,9 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
         reader = pa.RecordBatchReader.from_batches(schema, gen())
 
         class StreamOnly:
-            def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+            def __arrow_c_stream__(
+                self, requested_schema: object | None = None
+            ) -> object:
                 return reader.__arrow_c_stream__(requested_schema)
 
         return StreamOnly()
@@ -1607,13 +1657,11 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
     assert empty_pt[0].coordinate_axes == 'XY'
 
     # POINT Z EMPTY: all active ordinates NaN
-    xyz = pa.struct(
-        [
-            pa.field('x', pa.float64()),
-            pa.field('y', pa.float64()),
-            pa.field('z', pa.float64()),
-        ]
-    )
+    xyz = pa.struct([
+        pa.field('x', pa.float64()),
+        pa.field('y', pa.float64()),
+        pa.field('z', pa.float64()),
+    ])
     pt_z = pa.array(
         [{'x': float('nan'), 'y': float('nan'), 'z': float('nan')}], type=xyz
     )
@@ -1666,14 +1714,12 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
     assert empty_mls.to_wkt() == ['MULTILINESTRING Z EMPTY']
     assert empty_mls[0].coordinate_axes == 'XYZ'
 
-    xyzm = pa.struct(
-        [
-            pa.field('x', pa.float64()),
-            pa.field('y', pa.float64()),
-            pa.field('z', pa.float64()),
-            pa.field('m', pa.float64()),
-        ]
-    )
+    xyzm = pa.struct([
+        pa.field('x', pa.float64()),
+        pa.field('y', pa.float64()),
+        pa.field('z', pa.float64()),
+        pa.field('m', pa.float64()),
+    ])
     mp = pa.array([[]], type=pa.list_(pa.list_(pa.list_(xyzm))))
     empty_mp = gm.from_arrow(
         pa.ExtensionArray.from_storage(
@@ -1754,7 +1800,9 @@ def test_from_arrow_outer_null_parity_pyarrow_capsule_stream() -> None:
         [None, [{'x': 0.0, 'y': 0.0}, {'x': 1.0, 'y': 1.0}]],
         type=pa.list_(c),
     )
-    typ = _extension_type_from_storage(pa, 'geoarrow.linestring', storage.type, None, None)
+    typ = _extension_type_from_storage(
+        pa, 'geoarrow.linestring', storage.type, None, None
+    )
     ext = pa.ExtensionArray.from_storage(typ, storage)
 
     via_pyarrow = cast('gm.GeometryArray', gm.from_arrow(ext))
@@ -1808,13 +1856,13 @@ def _list_geom_with_hidden_nan_span(
         )
     else:
         storage = pa.ListArray.from_arrays(offsets, coords, mask=mask)
-    typ = _extension_type_from_storage(
-        pa, extension_name, storage.type, None, None
-    )
+    typ = _extension_type_from_storage(pa, extension_name, storage.type, None, None)
     return pa.ExtensionArray.from_storage(typ, storage)
 
 
-def _assert_arrow_three_frontend_parity(ext: object, expected_wkt: list[str | None]) -> None:
+def _assert_arrow_three_frontend_parity(
+    ext: object, expected_wkt: list[str | None]
+) -> None:
     class CapsuleOnly:
         def __arrow_c_array__(self, requested_schema=None):
             return ext.__arrow_c_array__()  # type: ignore[attr-defined]
@@ -1857,9 +1905,7 @@ def test_from_arrow_hidden_null_nan_span_parity_all_list_encodings() -> None:
         [pa.array([nan, nan]), pa.array([nan, nan])],
         names=['x', 'y'],
     )
-    present_nan = pa.ListArray.from_arrays(
-        pa.array([0, 2], type=pa.int32()), coords
-    )
+    present_nan = pa.ListArray.from_arrays(pa.array([0, 2], type=pa.int32()), coords)
     from gometry._arrow import _extension_type_from_storage
 
     typ = _extension_type_from_storage(
@@ -1877,6 +1923,128 @@ def test_from_arrow_hidden_null_nan_span_parity_all_list_encodings() -> None:
         gm.from_arrow(CapsuleOnly())
 
 
+def _sliced_nested_child_null_geometry(
+    extension_name: str,
+    nesting: int,
+    *,
+    large_list: bool,
+    fixed_size_coordinates: bool,
+    outer_null: bool,
+    child_null: bool,
+) -> object:
+    """A nonzero parent slice whose first row may mask an invalid child span."""
+    from gometry._arrow import _extension_type_from_storage
+
+    points_per_geometry = 3 if 'polygon' in extension_name else 2
+    values: list[float | None] = []
+    for row in range(3):
+        for point in range(points_per_geometry):
+            if row == 1 and child_null:
+                values.extend((None, None))
+            else:
+                coordinate = float(row * 10 + point)
+                values.extend((coordinate, coordinate))
+    if fixed_size_coordinates:
+        coordinates = pa.FixedSizeListArray.from_arrays(
+            pa.array(values, type=pa.float64()), 2
+        )
+    else:
+        coordinates = pa.StructArray.from_arrays(
+            [
+                pa.array(values[::2], type=pa.float64()),
+                pa.array(values[1::2], type=pa.float64()),
+            ],
+            names=['x', 'y'],
+        )
+
+    storage: object = coordinates
+    array_type = pa.LargeListArray if large_list else pa.ListArray
+    offset_type = pa.int64() if large_list else pa.int32()
+    for depth in range(nesting):
+        offsets = (
+            pa.array(
+                [
+                    0,
+                    points_per_geometry,
+                    2 * points_per_geometry,
+                    3 * points_per_geometry,
+                ],
+                type=offset_type,
+            )
+            if depth == 0
+            else pa.array([0, 1, 2, 3], type=offset_type)
+        )
+        storage = array_type.from_arrays(
+            offsets,
+            storage,
+            mask=pa.array([False, outer_null, False]) if depth == nesting - 1 else None,
+        )
+    typ = _extension_type_from_storage(pa, extension_name, storage.type, None, None)
+    # ``slice(1, 2)`` is essential: parent-relative masks must propagate from
+    # a nonzero physical offset, not only from an array that begins at zero.
+    return pa.ExtensionArray.from_storage(typ, storage).slice(1, 2)
+
+
+@pytest.mark.parametrize(
+    ('extension_name', 'nesting'),
+    [
+        ('geoarrow.linestring', 1),
+        ('geoarrow.multipoint', 1),
+        ('geoarrow.multilinestring', 2),
+        ('geoarrow.polygon', 2),
+        ('geoarrow.multipolygon', 3),
+    ],
+)
+@pytest.mark.parametrize('large_list', [False, True])
+@pytest.mark.parametrize('fixed_size_coordinates', [False, True])
+@pytest.mark.parametrize(
+    ('outer_null', 'child_null'),
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+def test_from_arrow_ancestor_masks_cover_struct_list_large_list_and_fixed_size_list(
+    extension_name: str,
+    nesting: int,
+    large_list: bool,
+    fixed_size_coordinates: bool,
+    outer_null: bool,
+    child_null: bool,
+) -> None:
+    """Null validity is relative to every parent, consistently on all lanes."""
+    ext = _sliced_nested_child_null_geometry(
+        extension_name,
+        nesting,
+        large_list=large_list,
+        fixed_size_coordinates=fixed_size_coordinates,
+        outer_null=outer_null,
+        child_null=child_null,
+    )
+
+    class CapsuleOnly:
+        def __arrow_c_array__(self, requested_schema=None):
+            return ext.__arrow_c_array__()
+
+    class StreamOnly:
+        def __arrow_c_stream__(self, requested_schema=None):
+            return pa.table({'geometry': ext}).__arrow_c_stream__()
+
+    frontends = (ext, CapsuleOnly(), StreamOnly())
+    if child_null and not outer_null:
+        for frontend in frontends:
+            with pytest.raises(
+                gm.ParseError,
+                match=r'(nested geometry values must not contain nulls|geometry arrays require non-null geometry values)',
+            ):
+                gm.from_arrow(frontend)
+        return
+
+    restored = [
+        cast('gm.GeometryArray', gm.from_arrow(frontend)) for frontend in frontends
+    ]
+    expected_missing = [outer_null, False]
+    assert [value.is_missing.tolist() for value in restored] == [expected_missing] * 3
+    assert restored[0].to_wkt() == restored[1].to_wkt() == restored[2].to_wkt()
+
+
 def test_from_arrow_outer_null_points_and_non_null_positive() -> None:
     """D04 positives: non-null linestrings still import; point outer nulls
     (native capsule) become missing without rejecting the batch.
@@ -1888,7 +2056,9 @@ def test_from_arrow_outer_null_points_and_non_null_positive() -> None:
         [[{'x': 0.0, 'y': 0.0}, {'x': 1.0, 'y': 1.0}]],
         type=pa.list_(c),
     )
-    typ = _extension_type_from_storage(pa, 'geoarrow.linestring', dense.type, None, None)
+    typ = _extension_type_from_storage(
+        pa, 'geoarrow.linestring', dense.type, None, None
+    )
     dense_ext = pa.ExtensionArray.from_storage(typ, dense)
 
     class CapsuleDense:
@@ -1931,7 +2101,9 @@ def test_from_arrow_inner_list_null_rejected_not_empty_member() -> None:
         pa, 'geoarrow.multilinestring', storage.type, None, None
     )
     ext = pa.ExtensionArray.from_storage(typ, storage)
-    with pytest.raises(gm.ParseError, match='nested geometry values must not contain nulls'):
+    with pytest.raises(
+        gm.ParseError, match='nested geometry values must not contain nulls'
+    ):
         gm.from_arrow(ext)
 
     # Capsule frontend must agree (not resurrect via a different path).
@@ -1939,7 +2111,9 @@ def test_from_arrow_inner_list_null_rejected_not_empty_member() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return ext.__arrow_c_array__()
 
-    with pytest.raises(gm.ParseError, match='nested geometry values must not contain nulls'):
+    with pytest.raises(
+        gm.ParseError, match='nested geometry values must not contain nulls'
+    ):
         gm.from_arrow(CapsuleOnly())
 
 
@@ -2029,9 +2203,7 @@ def test_from_arrow_parent_struct_nulls_sliced_and_non_null_positive() -> None:
     """
     pts = gm.points([1.0, 9.0, 3.0], [2.0, 8.0, 4.0]).to_arrow()
     # All-valid parent: full round-trip.
-    full = pa.StructArray.from_arrays(
-        [pts], fields=[pa.field('geometry', pts.type)]
-    )
+    full = pa.StructArray.from_arrays([pts], fields=[pa.field('geometry', pts.type)])
 
     class CapsuleFull:
         def __arrow_c_array__(self, requested_schema=None):

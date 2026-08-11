@@ -1,4 +1,11 @@
-use super::*;
+use crate::geometry::distance::{
+    Result, geodesic_nearest_points_with_parts, nearest_probe_to_parts, parts_boundary_witness,
+    quick_area_overlap, squared_space_safe,
+};
+use crate::geometry::{
+    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, ShapeData, same_point,
+    squared_norm_is_trustworthy,
+};
 impl ShapeData {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
     /// (the disjoint-pair minimum is always a vertex projection; see
@@ -40,6 +47,19 @@ impl ShapeData {
         }
         let best = nearest_probe_to_parts(self_parts, other_parts, None, false);
         let best = nearest_probe_to_parts(other_parts, self_parts, best, true);
+        // Squared-space ordering cannot distinguish a false-zero or quantized
+        // subnormal candidate from another tiny witness. Re-run the rare
+        // untrustworthy class through the shape-level hypot reduction, whose
+        // segment witness now comes from the certified projection owner.
+        if best.as_ref().is_some_and(|oriented| {
+            let candidate = &oriented.candidate;
+            !squared_norm_is_trustworthy(
+                candidate.distance_squared,
+                same_point(candidate.probe, candidate.target),
+            )
+        }) {
+            return self.shape().nearest_points(other.shape());
+        }
         best.map(|oriented| {
             let candidate = oriented.candidate;
             if oriented.swapped {

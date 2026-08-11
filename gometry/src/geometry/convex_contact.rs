@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! O(n + m) boundary-contact discovery for two single-ring convex shells.
 //!
 //! When [`try_collect`]'s gates pass, cross-operand crossings are found by a
@@ -10,10 +6,10 @@
 //! overlap, or any gate failure returns `None` so the caller falls back to the
 //! general noding path.
 
-use super::predicates::shell_is_convex;
-use super::segments::{Contact, segment_contact_exact, segment_envelopes_disjoint};
-use super::topology::{Operand, OperandPool, OrientedRing};
-use super::{Bounds, Segment, XY, wrap_index};
+use crate::geometry::predicates::shell_is_convex;
+use crate::geometry::segments::{Contact, segment_contact_exact, segment_envelopes_disjoint};
+use crate::geometry::topology::{Operand, OperandPool, OrientedRing};
+use crate::geometry::{Bounds, Segment, XY, wrap_index};
 
 /// Per-segment crossing cuts ready to merge into
 /// [`super::clean_union::BoundaryContacts`].

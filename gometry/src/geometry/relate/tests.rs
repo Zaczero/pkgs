@@ -1,5 +1,7 @@
-use super::*;
-use crate::geometry::{Point, Shape};
+use crate::geometry::relate::native::mod2_relate;
+use crate::geometry::relate::topo::source_direction;
+use crate::geometry::relate::*;
+use crate::geometry::{Point, Segment, Shape, XY};
 use crate::io::parse_wkt;
 
 fn wkt(value: &str) -> Shape {
@@ -157,4 +159,23 @@ fn mod2_relate_handles_lineal_collection_residuals() {
         let right = wkt(right);
         assert_eq!(native_relate_shapes(&left, &right).text(), expected);
     }
+}
+
+#[test]
+fn source_direction_orders_subpieces_by_exact_projection() {
+    let source = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(2.0_f64.powi(1022), 0.0),
+    };
+    let forward = Segment {
+        start: XY::new(2.0_f64.powi(-55), 0.0),
+        end: XY::new(2.0_f64.powi(-54), 0.0),
+    };
+    let reverse = Segment {
+        start: forward.end,
+        end: forward.start,
+    };
+
+    assert_eq!(source_direction(forward, source), 1);
+    assert_eq!(source_direction(reverse, source), -1);
 }

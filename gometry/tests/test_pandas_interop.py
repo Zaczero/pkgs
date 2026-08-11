@@ -232,9 +232,9 @@ def test_missing_rows_via_mask() -> None:
     assert len(series.dropna()) == 2
 
 
-def test_explicit_mask_cannot_unmask_core_missing_row() -> None:
+def test_core_missing_rows_are_first_class() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0), None])
-    data = GeometryExtensionArray(arr, mask=[False, False])
+    data = GeometryExtensionArray(arr)
 
     assert data.isna().tolist() == [False, True]
     assert data[1] is None

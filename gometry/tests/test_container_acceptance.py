@@ -82,7 +82,7 @@ def test_mappings_accepted_everywhere_dicts_are() -> None:
     })
     moved = gm.Point(10, 50, crs=4326).to_crs(3857, area_of_interest=area)
     assert moved.crs == 'EPSG:3857'
-    assert gm.from_geojson(geojson).crs == 'EPSG:4326'
+    assert gm.from_geojson(geojson).crs == 'OGC:CRS84'
 
 
 def test_transform_bounds_accepts_any_float_sequence() -> None:

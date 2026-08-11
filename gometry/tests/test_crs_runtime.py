@@ -53,7 +53,9 @@ def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) ->
                 ]
                 == search_paths
             )
-        configured = gm.crs_configure(search_paths=search_paths, user_writable_directory=tmp_path)
+        configured = gm.crs_configure(
+            search_paths=search_paths, user_writable_directory=tmp_path
+        )
         assert configured == {
             'search_paths': search_paths,
             'user_writable_directory': str(tmp_path),
@@ -62,6 +64,7 @@ def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) ->
         assert native_configured['user_writable_directory'] == str(tmp_path)
         configured_engine = gm.crs_engine()
         assert configured_engine['user_writable_directory'] == str(tmp_path)
+        assert configured_engine['paths'] == (search_paths or [])
         if search_paths is not None:
             assert configured_engine['database_path'] == engine['database_path']
         assert gm.crs_info(4326) == before
@@ -89,6 +92,8 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
         'proj_operation',
         'crs_info',
         'crs_catalog',
+        'crs_units',
+        'crs_celestial_bodies',
         'crs_non_deprecated',
         'crs_authority_matches',
         'crs_search',

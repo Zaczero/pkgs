@@ -3,14 +3,14 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::operation::Operation;
 use crate::array::line_locate_point_on_lines;
 use crate::array::missing::{is_missing_row, union_pair};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    CollectRows, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
+    CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
     paired_arrays,
 };
+use crate::dispatch::operation::Operation;
 use crate::{
     DistanceUnit, GeometryArrayStorage, InterpolatePlan, PyGeometry, PyGeometryArray,
     crs_line_locate_point, geometry_array_line_locate_point_geometry,
@@ -42,7 +42,7 @@ fn line_locate_geometry_points(
         )?
         .require_model(op_name)?
         .clone();
-    let line = geometry.shape.clone();
+    let line = Arc::clone(&geometry.shape);
     let missing = points.missing().cloned();
     detach_collect_f64(py, move || {
         queries
@@ -172,7 +172,7 @@ pub(crate) fn line_locate_point_m_input(
                 op_name,
             )?;
             let queries = require_locate_points(points, op_name)?;
-            let line = geometry.shape.clone();
+            let line = Arc::clone(&geometry.shape);
             let missing = points.missing().cloned();
             detach_collect_f64(py, move || {
                 queries

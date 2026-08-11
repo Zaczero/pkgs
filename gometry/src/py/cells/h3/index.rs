@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! One boundary contract for H3 cell, vertex, and directed-edge indexes.
 //!
 //! The foreign `h3o` index types deliberately do not share a public trait.
@@ -10,7 +6,7 @@
 //! index type.
 
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
-use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -138,6 +134,35 @@ pub(super) fn parse_h3_index<I: H3Index>(
     I::from_token(&token).ok_or_else(|| invalid_token::<I>(&token))
 }
 
+fn owned_h3_ids_from_tobytes<I: H3Index, T>(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>>
+where
+    T: Copy + TryInto<u64>,
+{
+    use pyo3::types::PyBytes;
+    let py_bytes = ids.call_method0("tobytes")?;
+    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
+    let width = std::mem::size_of::<T>();
+    if width == 0 || !bytes.len().is_multiple_of(width) {
+        return Err(PyTypeError::new_err(format!(
+            "{} ids buffer length is invalid",
+            I::ARRAY_ENTITY
+        )));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / width);
+    for chunk in bytes.chunks_exact(width) {
+        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
+        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
+        let id = value.try_into().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "{} ids must be unsigned 64-bit integers",
+                I::ARRAY_ENTITY
+            ))
+        })?;
+        out.push(id);
+    }
+    Ok(out)
+}
+
 fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
@@ -151,21 +176,10 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
     macro_rules! try_array {
         ($($ty:ty),* $(,)?) => {
             $(
-                if let Ok(values) = ids.extract::<PyReadonlyArrayDyn<'_, $ty>>() {
-                    return Ok(Some(
-                        values
-                            .as_array()
-                            .iter()
-                            .map(|&value| {
-                                u64::try_from(value).map_err(|_| {
-                                    PyTypeError::new_err(format!(
-                                        "{} ids must be unsigned 64-bit integers",
-                                        I::ARRAY_ENTITY
-                                    ))
-                                })
-                            })
-                            .collect::<PyResult<Vec<_>>>()?,
-                    ));
+                if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
+                    // Owned capture via `tobytes()` — never ArrayView over
+                    // writable NumPy memory.
+                    return Ok(Some(owned_h3_ids_from_tobytes::<I, $ty>(ids)?));
                 }
             )*
         };

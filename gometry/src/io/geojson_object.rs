@@ -1,7 +1,10 @@
 //! The serde value model for whole GeoJSON documents (objects,
 //! features, ragged coordinate payloads). Child module of [`super`].
 
-use super::*;
+use crate::io::geojson::{
+    Cow, Deserialize, Deserializer, IgnoredAny, IoError, MapAccess, Result, SeqAccess, Shape,
+    Value, Visitor, de, feature_geometry, fmt, geojson_object_to_shape,
+};
 
 pub(super) struct GeoJsonObject {
     pub(super) geometry_type: String,
@@ -248,26 +251,46 @@ impl<'de> Deserialize<'de> for JsonCoordinates {
 
 pub(super) struct JsonCoordinatesVisitor;
 
-/// Largest magnitude representable exactly as an ``f64`` (2^53).
-const F64_MAX_EXACT_INT: i64 = 1_i64 << 53;
-
-pub(super) fn reject_inexact_json_integer(value: i64) -> Result<()> {
-    if !(-F64_MAX_EXACT_INT..=F64_MAX_EXACT_INT).contains(&value) {
-        return Err(IoError::geojson(format!(
-            "GeoJSON coordinate {value} exceeds f64 exact integer range"
-        )));
+/// Admit a signed integer coordinate only when it is exactly representable as
+/// binary64 (every integer with magnitude ≤ 2^53, and larger ones whose lower
+/// bits are zero under the f64 significand). Non-exact integers are rejected —
+/// never silently rounded — so text and mapping admission stay aligned.
+pub(crate) fn i64_to_exact_f64(value: i64) -> Result<f64> {
+    let float = value as f64;
+    // Do NOT cast `float as i64` for the round-trip check: Rust saturates
+    // out-of-range floats to i64::MAX/MIN, so i64::MAX (which rounds to 2^63
+    // as f64) would false-pass. Compare via i128, which cannot saturate for
+    // any finite binary64 integer magnitude.
+    if float as i128 == i128::from(value) {
+        Ok(float)
+    } else {
+        Err(IoError::geojson(format!(
+            "GeoJSON coordinate {value} is not exactly representable as f64"
+        )))
     }
-    Ok(())
 }
 
-pub(super) fn json_number_to_f64(number: &serde_json::Number) -> Result<f64> {
+/// Same exactness rule as [`i64_to_exact_f64`] for unsigned JSON integer tokens
+/// (including values above `i64::MAX` that still fit in `u64`).
+pub(crate) fn u64_to_exact_f64(value: u64) -> Result<f64> {
+    let float = value as f64;
+    // Same saturation trap as i64: u64::MAX rounds to 2^64 as f64, and
+    // `2^64 as u64` saturates back to u64::MAX. Use u128 for the check.
+    if float as u128 == u128::from(value) {
+        Ok(float)
+    } else {
+        Err(IoError::geojson(format!(
+            "GeoJSON coordinate {value} is not exactly representable as f64"
+        )))
+    }
+}
+
+pub(crate) fn json_number_to_f64(number: &serde_json::Number) -> Result<f64> {
     if let Some(value) = number.as_i64() {
-        reject_inexact_json_integer(value)?;
-        return Ok(value as f64);
+        return i64_to_exact_f64(value);
     }
     if let Some(value) = number.as_u64() {
-        reject_inexact_json_integer(i64::try_from(value).unwrap_or(i64::MAX))?;
-        return Ok(value as f64);
+        return u64_to_exact_f64(value);
     }
     number
         .as_f64()
@@ -293,16 +316,18 @@ impl<'de> Visitor<'de> for JsonCoordinatesVisitor {
     where
         E: de::Error,
     {
-        reject_inexact_json_integer(value).map_err(E::custom)?;
-        Ok(JsonCoordinates::Number(value as f64))
+        Ok(JsonCoordinates::Number(
+            i64_to_exact_f64(value).map_err(E::custom)?,
+        ))
     }
 
     fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        reject_inexact_json_integer(i64::try_from(value).unwrap_or(i64::MAX)).map_err(E::custom)?;
-        Ok(JsonCoordinates::Number(value as f64))
+        Ok(JsonCoordinates::Number(
+            u64_to_exact_f64(value).map_err(E::custom)?,
+        ))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -314,5 +339,41 @@ impl<'de> Visitor<'de> for JsonCoordinatesVisitor {
             values.push(value);
         }
         Ok(JsonCoordinates::Array(values))
+    }
+}
+
+#[cfg(test)]
+mod exact_int_cast_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_i64_max_cast_saturation_edge() {
+        i64_to_exact_f64(i64::MAX).unwrap_err();
+    }
+
+    #[test]
+    fn rejects_u64_max_cast_saturation_edge() {
+        u64_to_exact_f64(u64::MAX).unwrap_err();
+    }
+
+    #[test]
+    fn admits_i64_min_power_of_two() {
+        // -2^63 is exact in binary64.
+        let f = i64_to_exact_f64(i64::MIN).expect("i64::MIN is exact");
+        assert_eq!(f.to_bits(), (i64::MIN as f64).to_bits());
+    }
+
+    #[test]
+    fn admits_exact_beyond_2_pow_53() {
+        let a = i64_to_exact_f64((1_i64 << 53) + 2).unwrap();
+        assert_eq!(a.to_bits(), (((1_i64 << 53) + 2) as f64).to_bits());
+        let b = u64_to_exact_f64(1_u64 << 60).unwrap();
+        assert_eq!(b.to_bits(), ((1_u64 << 60) as f64).to_bits());
+    }
+
+    #[test]
+    fn rejects_inexact_beyond_2_pow_53() {
+        i64_to_exact_f64((1_i64 << 53) + 1).unwrap_err();
+        u64_to_exact_f64((1_u64 << 53) + 1).unwrap_err();
     }
 }

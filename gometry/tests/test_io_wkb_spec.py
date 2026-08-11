@@ -48,56 +48,19 @@ def _mls_type_codes(wkb: bytes) -> list[int]:
     return codes
 
 
-def test_mixed_axis_multiline_promotes_members_to_union_axes() -> None:
-    """A mixed XY/XYZ MULTILINESTRING must serialize with the union axes on the
-    outer AND every child header (standards-valid WKB), filling promoted Z with
-    0.0 rather than fabricating NaN in WKT.
-    """
-    mixed = gm.MultiLineString([[(0, 0), (1, 1)], [(2, 2, 3), (3, 3, 4)]])
-    assert mixed.coordinate_axes == 'XYZ'
-
-    # WKT: promoted ordinate is 0.0, never NaN.
-    assert format(mixed) == 'MULTILINESTRING Z ((0 0 0, 1 1 0), (2 2 3, 3 3 4))'
-    assert 'nan' not in format(mixed).lower()
-
-    # WKB: outer and both children carry the ISO-Z type code (1005 / 1002).
-    wkb = mixed.to_wkb()
-    assert _mls_type_codes(wkb) == [1005, 1002, 1002]
-
-    # Round-trips to the fully-promoted shape (first member gains z == 0.0).
-    promoted = gm.MultiLineString([[(0, 0, 0), (1, 1, 0)], [(2, 2, 3), (3, 3, 4)]])
-    assert gm.from_wkb(wkb) == promoted
-
-    # Shapely parses the promoted bytes and sees both parts as 3D.
-    import shapely
-
-    parsed = shapely.from_wkb(wkb)
-    assert parsed.geom_type == 'MultiLineString'
-    assert shapely.has_z(parsed)
-    assert all(shapely.has_z(part) for part in parsed.geoms)
+def test_mixed_axis_multiline_rejects_at_construction() -> None:
+    """Mixed XY/XYZ MULTILINESTRING is rejected at construction (writer parity)."""
+    with pytest.raises(gm.InvalidGeometryError, match=r'share one coordinate axes'):
+        gm.MultiLineString([[(0, 0), (1, 1)], [(2, 2, 3), (3, 3, 4)]])
 
 
-def test_mixed_axis_multipolygon_promotes_members_to_union_axes() -> None:
-    """MULTIPOLYGON mirrors MULTILINESTRING: XY members promote to the union
-    XYZ, children carrying the ISO-Z type code (1006 / 1003).
-    """
-    mixed = gm.MultiPolygon([
-        [[(0, 0), (1, 0), (1, 1), (0, 0)]],
-        [[(2, 2, 1), (3, 2, 2), (3, 3, 3), (2, 2, 1)]],
-    ])
-    assert mixed.coordinate_axes == 'XYZ'
-    wkb = mixed.to_wkb()
-    assert wkb[0] == 1
-    assert struct.unpack_from('<I', wkb, 1)[0] == 1006  # WKBMultiPolygonZ
-
-    import shapely
-
-    parsed = shapely.from_wkb(wkb)
-    assert parsed.geom_type == 'MultiPolygon'
-    assert all(shapely.has_z(part) for part in parsed.geoms)
-    # First polygon's shell gained z == 0.0 on promotion.
-    first = gm.from_wkb(wkb).parts[0]
-    assert first.coordinate_axes == 'XYZ'
+def test_mixed_axis_multipolygon_rejects_at_construction() -> None:
+    """Mixed-axis MULTIPOLYGON is rejected at construction (writer parity)."""
+    with pytest.raises(gm.InvalidGeometryError, match=r'share one coordinate axes'):
+        gm.MultiPolygon([
+            [[(0, 0), (1, 0), (1, 1), (0, 0)]],
+            [[(2, 2, 1), (3, 2, 2), (3, 3, 3), (2, 2, 1)]],
+        ])
 
 
 def _ewkb(type_base: int, srid: int | None, payload: bytes) -> bytes:
@@ -135,9 +98,9 @@ def test_nested_ewkb_srid_accepts_matching_and_rejects_conflict() -> None:
     message = str(excinfo.value)
     assert '4326' in message and '3857' in message
     assert 'member 0' in message
-    assert not isinstance(excinfo.value, BaseException) or type(excinfo.value).__name__ != (
-        'PanicException'
-    )
+    assert not isinstance(excinfo.value, BaseException) or type(
+        excinfo.value
+    ).__name__ != ('PanicException')
 
 
 def test_nested_ewkb_srid_zero_is_unknown_before_reconcile() -> None:
@@ -152,11 +115,7 @@ def test_nested_ewkb_srid_zero_is_unknown_before_reconcile() -> None:
     outer0_child4326 = _ewkb(7, 0, struct.pack('<I', 1) + _ewkb(1, 4326, point_body))
     # Hand-built wire (SRID flag on outer type 7, srid=0, one member).
     assert outer0_child4326 == bytes.fromhex(
-        '010700002000000000'
-        '01000000'
-        '0101000020e6100000'
-        '000000000000f03f'
-        '0000000000000040'
+        '010700002000000000010000000101000020e6100000000000000000f03f0000000000000040'
     )
     g = gm.from_wkb(outer0_child4326)
     assert g.crs == 'EPSG:4326'

@@ -2,19 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! WGS84 Web Mercator (EPSG:3857) — spherical closed-form formulas.
 
-use super::super::WEB_MERCATOR_RADIUS;
-use super::kernel::{Ellipsoid, ProjectionKernel, RAD_TO_DEG};
-use super::params::{
+use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
+use crate::crs::WEB_MERCATOR_RADIUS;
+use crate::crs::in_core::kernel::{Ellipsoid, ProjectionKernel, RAD_TO_DEG};
+use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
     admit_projection, epsg, param_assume_degrees, param_assume_unity,
 };
-use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
 
@@ -48,22 +44,30 @@ pub(super) fn web_mercator_to_lonlat_xy(x: f64, y: f64) -> (f64, f64) {
         .unwrap_or((f64::NAN, f64::NAN))
 }
 
-fn forward_unframed_setup(setup: &Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {
+fn forward_unframed_setup(setup: Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {
     let lat_deg = lat_rad * RAD_TO_DEG;
     if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {
         return Err(GeometryErrorKind::WebMercatorLatitude(lat_deg).into());
     }
     let x = setup.radius * lam_rad;
-    let y = setup.radius * ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln();
+    let y = if lat_rad == 0.0 {
+        lat_rad
+    } else {
+        setup.radius * ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln()
+    };
     if !x.is_finite() || !y.is_finite() {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
     Ok((x, y))
 }
 
-fn inverse_unframed_setup(setup: &Setup, x: f64, y: f64) -> (f64, f64) {
+fn inverse_unframed_setup(setup: Setup, x: f64, y: f64) -> (f64, f64) {
     let lam_rad = x / setup.radius;
-    let lat_rad = 2.0 * (y * setup.inv_radius).exp().atan() - std::f64::consts::FRAC_PI_2;
+    let lat_rad = if y == 0.0 {
+        y
+    } else {
+        2.0 * (y * setup.inv_radius).exp().atan() - std::f64::consts::FRAC_PI_2
+    };
     (lam_rad, lat_rad)
 }
 
@@ -112,11 +116,11 @@ impl ProjectionKernel for WebMerc {
     }
 
     fn forward_unframed(setup: &Self::Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {
-        forward_unframed_setup(setup, lam_rad, lat_rad)
+        forward_unframed_setup(*setup, lam_rad, lat_rad)
     }
 
     fn inverse_unframed(setup: &Self::Setup, x: f64, y: f64) -> Result<(f64, f64)> {
-        Ok(inverse_unframed_setup(setup, x, y))
+        Ok(inverse_unframed_setup(*setup, x, y))
     }
 }
 

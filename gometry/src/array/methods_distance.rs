@@ -3,16 +3,17 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::needless_pass_by_value,
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
-use super::packed_columns::XyColumns;
-use super::*;
+use crate::array::packed_columns::XyColumns;
+use crate::array::{
+    Arc, Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, EmptyKind, Frame, GeometryArrayStorage,
+    PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
+    line_crosses_antimeridian, packed_centroid_xy, packed_surface_point, row_bounds_values,
+};
 use crate::geometry::{CoordWindow, LineSeq};
 
 fn point_from_unary_shape(shape: Shape) -> Point {
@@ -81,8 +82,8 @@ where
         + Send
         + Sync,
 {
-    array.map_packed_columns_detached(py, frame, |columns| match columns {
-        PackedColumns::Lines(ref line_columns) => {
+    array.map_packed_columns_detached(py, frame, |columns| match &columns {
+        PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.xy();
             let row_crosses_antimeridian =
@@ -125,7 +126,7 @@ where
                 builder.finish().map_err(PackedColumnError::Batch)?,
             ))
         },
-        PackedColumns::Polygons(ref polygon_columns) => {
+        PackedColumns::Polygons(polygon_columns) => {
             let coords = polygon_columns.coords();
             let XyColumns { xs, ys } = polygon_columns.xy();
             let ring_offsets = polygon_columns.ring_offsets();
@@ -314,6 +315,7 @@ impl PyGeometryArray {
                 // over — but they are DIFFERENT geometry, so the prepared
                 // handles must NOT alias the input's lazily-filled slots.
                 Arc::clone(&self.bounds_cache),
+                Arc::clone(&self.total_bounds_cache),
             ));
         }
         // Packed polygons/lines: build each box from its coordinate window

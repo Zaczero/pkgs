@@ -1,12 +1,8 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::*;
 use crate::error::Result;
+use crate::geometry::types::{EmptyKind, GeometryErrorKind, Shape};
 
 /// The seven geometry kinds, as a `Copy` discriminant of [`Shape`]. Used to
 /// pick the typed Python subclass for a returned geometry without cloning the
@@ -212,24 +208,45 @@ impl<Level> CsrOffsetColumn<Level> {
         Self::try_new(ends, combined_vertex_cap)
     }
 
-    /// Trusted-path concat: prefix and tail are already validated frozen
-    /// columns. One `Vec<i32>` allocation, i32 rebase via `checked_add`, and
-    /// lightweight CSR validation without a `usize` roundtrip.
+    /// Fast-path concat of two CSR columns: one exact `i32` allocation, prefix
+    /// copy, one rebase pass over the tail (skipping its leading zero).
+    ///
+    /// Every addition is **checked** — a safe caller cannot drive overflow into
+    /// `unchecked_add` UB by supplying naked non-monotonic or near-`i32::MAX`
+    /// slices. Monotonicity of the rebased tail is also checked so a non-CSR
+    /// input cannot produce a column that only *looks* valid at the ends.
     pub fn rebase_concat_trusted(prefix: &[i32], tail: &[i32], end_cap: usize) -> Result<Self> {
+        if prefix.first().copied() != Some(0) {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        }
         let base = *prefix
             .last()
             .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
-        let mut offsets = Vec::with_capacity(prefix.len() + tail.len().saturating_sub(1));
-        offsets.extend_from_slice(prefix);
-        for &offset in tail.iter().skip(1) {
-            offsets.push(
-                base.checked_add(offset)
-                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?,
-            );
+        if base < 0 || (base as usize) > end_cap {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
         }
-        validate_csr_offsets_i32(&offsets, end_cap)?;
+        let tail_rest = tail.get(1..).unwrap_or(&[]);
+        let len = prefix.len() + tail_rest.len();
+        // Fallible i32 materialization: checked_add per tail end so intermediate
+        // non-monotonic / overflowing values cannot hit `unchecked_add` UB.
+        let mut out = Vec::with_capacity(len);
+        out.extend_from_slice(prefix);
+        let mut prev = base;
+        for &offset in tail_rest {
+            let rebased = base
+                .checked_add(offset)
+                .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+            if rebased < prev {
+                return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+            }
+            if (rebased as usize) > end_cap {
+                return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
+            }
+            out.push(rebased);
+            prev = rebased;
+        }
         Ok(Self {
-            offsets: arc_csr_offsets_from_i32(offsets.into()),
+            offsets: arc_csr_offsets_from_i32(Arc::from(out)),
             _level: PhantomData,
         })
     }

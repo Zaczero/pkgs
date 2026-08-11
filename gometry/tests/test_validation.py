@@ -61,23 +61,37 @@ def test_geojson_rejects_dimensionally_mixed_coordinate_sequences() -> None:
 
 
 def test_validation_reports_wkb_boundary_ring_location_and_path() -> None:
-    """Short WKB rings (< MIN_VERTICES_CLOSED) are rejected at parse (R03).
+    """Sub-open WKB rings reject at parse; ≥3 open corners silent-close (A1).
 
-    Previously accepted then diagnosed by validate(); empty/short rings are now
-    a structural parse failure with a typed ParseError (never PanicException).
+    Rings with fewer than MIN_VERTICES_OPEN coordinates raise ParseError.
+    XY-open rings with ≥3 corners silent-close under shared admission and are
+    valid after admit. Topology diagnosis still runs for self-cross content.
     """
-    wkb = (
+    # 2 vertices — below MIN_VERTICES_OPEN.
+    short = (
+        b'\x01'
+        + struct.pack('<I', 3)
+        + struct.pack('<I', 1)
+        + struct.pack('<I', 2)
+        + struct.pack('<4d', 0, 0, 1, 0)
+    )
+    with pytest.raises(gm.ParseError, match=r'ring|coordinates|vertices') as raised:
+        gm.from_wkb(short)
+    assert type(raised.value).__name__ != 'PanicException'
+
+    # 3 open corners — silent-close (uniform with WKT).
+    open3 = (
         b'\x01'
         + struct.pack('<I', 3)
         + struct.pack('<I', 1)
         + struct.pack('<I', 3)
-        + struct.pack('<6d', 0, 0, 1, 0, 1, 1)
+        + struct.pack('<6d', 0, 0, 1, 0, 0, 1)
     )
-    with pytest.raises(gm.ParseError, match=r'ring|coordinates|vertices') as raised:
-        gm.from_wkb(wkb)
-    assert type(raised.value).__name__ != 'PanicException'
-    # Content-level shell diagnosis still works for rings that clear the
-    # structural floor but fail topology (unclosed ≥4 vertices).
+    tri = gm.from_wkb(open3)
+    assert tri.to_wkt() == 'POLYGON ((0 0, 1 0, 0 1, 0 0))'
+    assert tri.is_valid
+
+    # XY-open ≥4-vertex rings silent-close (A1) so they are valid after admit.
     unclosed = (
         b'\x01'
         + struct.pack('<I', 3)
@@ -85,7 +99,12 @@ def test_validation_reports_wkb_boundary_ring_location_and_path() -> None:
         + struct.pack('<I', 4)
         + struct.pack('<8d', 0, 0, 1, 0, 1, 1, 0.5, 1)
     )
-    report = gm.from_wkb(unclosed).validate()
+    closed = gm.from_wkb(unclosed)
+    assert closed.is_valid
+    assert closed.validate().valid
+    # Bowtie shell: content-level self-intersection after a closed ring.
+    bowtie_wkb = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)]).to_wkb()
+    report = gm.from_wkb(bowtie_wkb).validate()
     assert not report
     assert report.reason is not None
 
@@ -328,9 +347,7 @@ def test_pickle_and_copy_round_trip_all_data_types() -> None:
         epoch=2020.5,
     )
     restored_polygons = pickle.loads(pickle.dumps(polygons))
-    assert [str(item) for item in restored_polygons] == [
-        str(item) for item in polygons
-    ]
+    assert [str(item) for item in restored_polygons] == [str(item) for item in polygons]
     assert (restored_polygons.crs, restored_polygons.epoch) == ('EPSG:4326', 2020.5)
     assert restored_polygons.to_arrow().type.extension_name == 'geoarrow.polygon'
     mixed = gm.GeometryArray([gm.box(0, 0, 1, 1, crs=4326), gm.Point(2, 3, crs=4326)])

@@ -132,14 +132,13 @@ def test_free_threading_stress() -> None:
         pytest.fail('\n'.join(errors))
 
     gil = _gil_enabled()
-    if gil is False:
-        # Real parallelism path exercised above.
-        assert True
-    elif gil is True:
-        # Serialized smoke on a GIL build — still must be correct.
-        assert True
-    else:
+    if gil is None:
         pytest.skip('sys._is_gil_enabled unavailable on this interpreter')
+    # Threads completed without errors above (errors → pytest.fail). On a
+    # free-threaded build this exercised real parallel shared-state access; on a
+    # GIL build it is still a correctness smoke of the same entry points.
+    assert not errors
+    assert gil in (True, False)
 
 
 def test_prepared_geometry_is_sendable() -> None:

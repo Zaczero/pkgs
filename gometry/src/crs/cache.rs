@@ -1,14 +1,40 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-//! Thread-local CRS cache machinery — the cached-entry types, the 14
+//! Thread-local CRS cache machinery — the cached-entry types, the
 //! move-to-back LRU caches with their capacities, generation-based
 //! invalidation, `cache_info`, and the `with_proj_pipeline`/
 //! `with_proj_operation` cached accessors. Reached via `use super::*`.
 
-use super::*;
+use crate::crs::runtime::{finish_proj_operation, publish_accuracy_diagnostic};
+use crate::crs::{
+    AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
+    CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
+    CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
+    ProjPipeline, ProjStringVersion, RefCell, TransformOptions, UnitInfo, WktVersion,
+    runtime_config_generation,
+};
 use crate::error::Result;
+
+thread_local! {
+    static TRANSFORM_OBSERVATION: std::cell::Cell<(Option<&'static str>, usize)> = const {
+        std::cell::Cell::new((None, 0))
+    };
+}
+
+pub(super) fn record_transform_engine(in_core: bool) {
+    TRANSFORM_OBSERVATION.with(|observation| {
+        let (_, invocations) = observation.get();
+        observation.set((
+            Some(if in_core { "in_core" } else { "proj" }),
+            invocations.saturating_add(1),
+        ));
+    });
+}
+
+pub(super) fn begin_transform_observation() {
+    TRANSFORM_OBSERVATION.with(|observation| {
+        let (_, invocations) = observation.get();
+        observation.set((None, invocations));
+    });
+}
 
 pub(super) struct CachedProjPipeline {
     pub source: String,
@@ -34,6 +60,20 @@ pub(super) struct CachedCrsCatalog {
     pub authority: Option<String>,
     pub options: CrsCatalogOptions,
     pub items: Vec<CrsCatalogInfo>,
+}
+
+pub(super) struct CachedUnits {
+    pub authority: String,
+    pub category: Option<String>,
+    pub allow_deprecated: bool,
+    /// Shared so warm hits clone an `Arc`, not the owned unit list.
+    pub items: std::sync::Arc<[UnitInfo]>,
+}
+
+pub(super) struct CachedCelestialBodies {
+    pub authority: Option<String>,
+    /// Shared so warm hits clone an `Arc`, not the owned body list.
+    pub items: std::sync::Arc<[CelestialBodyInfo]>,
 }
 
 pub(super) struct CachedAuthorityObjects {
@@ -63,9 +103,13 @@ pub(super) struct CachedCrsOperations {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct CrsComparisonKey {
+    /// Canonically ordered first CRS string (`min(left, right)` by `str` order).
     pub left: String,
+    /// Canonically ordered second CRS string (`max(left, right)` by `str` order).
     pub right: String,
-    pub criterion: proj_sys::PJ_COMPARISON_CRITERION,
+    /// Gometry comparison mode — not a raw PROJ criterion — so normalize+compare
+    /// and strict paths cannot collide under the same cache key.
+    pub mode: CrsComparison,
 }
 
 pub(super) struct CachedCrsComparison {
@@ -140,6 +184,7 @@ macro_rules! crs_cache {
         $($capacities)*
         pub(crate) fn clear_thread_caches() {
             $($clear)*
+            TRANSFORM_OBSERVATION.with(|observation| observation.set((None, 0)));
         }
         fn crs_reported_cache_buckets() -> Vec<CacheBucketInfo> {
             vec![ $($buckets)* ]
@@ -228,6 +273,8 @@ crs_cache! {
     reported PROJ_OPERATION_CACHE, PROJ_OPERATION_CACHE_CAPACITY, CachedProjOperation, 16, "proj_operation";
     reported CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY, CachedCrsInfo, 256, "crs_info";
     reported CRS_CATALOG_CACHE, CRS_CATALOG_CACHE_CAPACITY, CachedCrsCatalog, 8, "crs_catalog";
+    reported CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedUnits, 16, "crs_units";
+    reported CRS_CELESTIAL_BODIES_CACHE, CRS_CELESTIAL_BODIES_CACHE_CAPACITY, CachedCelestialBodies, 8, "crs_celestial_bodies";
     reported NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, CachedAuthorityObjects, 16, "crs_non_deprecated";
     reported CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CachedCrsAuthorityMatches, 32, "crs_authority_matches";
     reported CRS_SEARCH_CACHE, CRS_SEARCH_CACHE_CAPACITY, CachedCrsSearch, 16, "crs_search";
@@ -255,11 +302,15 @@ pub(super) fn ensure_thread_caches_current() {
 pub(crate) fn cache_info() -> CacheInfo {
     ensure_thread_caches_current();
     let buckets = crs_reported_cache_buckets();
+    let (last_transform_engine, transform_invocations) =
+        TRANSFORM_OBSERVATION.with(std::cell::Cell::get);
     CacheInfo {
         generation: runtime_config_generation(),
         total_entries: buckets.iter().map(|bucket| bucket.entries).sum(),
         total_capacity: buckets.iter().map(|bucket| bucket.capacity).sum(),
         buckets,
+        last_transform_engine,
+        transform_invocations,
     }
 }
 
@@ -268,7 +319,7 @@ pub(crate) fn cache_info() -> CacheInfo {
 /// The entry matching `matches` is moved to the back (most-recently-used); on a
 /// miss the front entry is evicted when the cache is at `capacity` and `make()`
 /// is pushed. The match closure borrows the key, so the hot hit path clones no
-/// key — the single source of truth for the move-to-back caching all 14 CRS
+/// key — the single source of truth for the move-to-back caching all CRS
 /// thread-local caches share (instead of re-implementing the dance per cache).
 pub(crate) fn lru_resolve<E>(
     cache: &mut Vec<E>,
@@ -314,8 +365,20 @@ pub(super) fn with_proj_pipeline<R>(
                 })
             },
         )?;
-        transform(&cache[index].pipeline)
-            .map_err(|error| CrsError::transform(source, target, error.to_string()))
+        let result = transform(&cache[index].pipeline);
+        if let Some(message) = finish_proj_operation() {
+            // PROJ disables this diagnostic after the first attempted
+            // coordinate on a PJ. Retaining that PJ would make a later call in
+            // another region repeat the first grid name. Evict only degraded
+            // pipelines so the next call gets a coordinate-correct selection;
+            // a batch still makes one FFI call and one failed attempt total.
+            cache.remove(index);
+            publish_accuracy_diagnostic(message.clone());
+            result
+                .map_err(|error| CrsError::transform(source, target, format!("{error}; {message}")))
+        } else {
+            result.map_err(|error| CrsError::transform(source, target, error.to_string()))
+        }
     })
 }
 
@@ -377,15 +440,28 @@ pub(super) fn with_proj_operation<R>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::{Arc, Barrier};
 
-    fn thread_cache_lengths() -> [usize; 16] {
+    use super::*;
+    use crate::crs::catalog::authority_matches;
+    use crate::crs::runtime::bump_runtime_config_generation;
+    use crate::crs::{
+        CrsObjectKind, ProjDirection, WGS84_A, apply_operation, catalog, clear_cache,
+        configure_runtime, factors, geodesic_direct_columns, geodesic_interpolates,
+        geodesic_inverse, geodesic_inverses, info, non_deprecated, operation_info_at,
+        operations_info, reset_runtime_config, rhumb_distance_crs, same, search,
+        to_wkt_with_options, transform_coordinates,
+    };
+
+    fn thread_cache_lengths() -> [usize; 18] {
         [
             PROJ_CACHE.with(|cache| cache.borrow().len()),
             PROJ_DIAGNOSTIC_CACHE.with(|cache| cache.borrow().len()),
             PROJ_OPERATION_CACHE.with(|cache| cache.borrow().len()),
             CRS_INFO_CACHE.with(|cache| cache.borrow().len()),
             CRS_CATALOG_CACHE.with(|cache| cache.borrow().len()),
+            CRS_UNITS_CACHE.with(|cache| cache.borrow().len()),
+            CRS_CELESTIAL_BODIES_CACHE.with(|cache| cache.borrow().len()),
             NON_DEPRECATED_CACHE.with(|cache| cache.borrow().len()),
             CRS_AUTHORITY_MATCH_CACHE.with(|cache| cache.borrow().len()),
             CRS_SEARCH_CACHE.with(|cache| cache.borrow().len()),
@@ -401,7 +477,7 @@ mod tests {
     }
 
     fn assert_thread_caches_are_empty() {
-        assert_eq!(thread_cache_lengths(), [0; 16]);
+        assert_eq!(thread_cache_lengths(), [0; 18]);
     }
 
     fn assert_some_thread_cache_is_warm() {
@@ -495,6 +571,26 @@ mod tests {
 
         reset_runtime_config().unwrap();
         assert_thread_caches_are_empty();
+    }
+
+    #[test]
+    fn generation_bump_during_cached_context_creation_cannot_reenter_cache_clear() {
+        let entered = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let worker_entered = Arc::clone(&entered);
+        let worker_resume = Arc::clone(&resume);
+        let worker = std::thread::spawn(move || {
+            super::super::context::install_context_creation_hook(worker_entered, worker_resume);
+            operations_info("EPSG:4267", "EPSG:4326", &TransformOptions::default())
+        });
+        entered.wait();
+        bump_runtime_config_generation();
+        resume.wait();
+
+        worker
+            .join()
+            .expect("context creation must not panic")
+            .unwrap();
     }
 
     #[test]

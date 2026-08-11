@@ -1,4 +1,4 @@
-use super::*;
+use crate::geometry::{Coordinates, MOrdinate, Point, ZOrdinate, interpolate_optional, same_point};
 
 /// Upstream's `math.isclose` (relative 1e-9) against ±180 — the seam
 /// snapping tolerance for a coordinate's own longitude.

@@ -2,9 +2,17 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::geometry::{HasM, HasZ, MOrdinate, ZOrdinate};
 use crate::py::errors::parameter_error;
+use crate::py::functions::constructors::{
+    Bound, CRSError, CoordSeq, CoordinateAxes, Crs, EmptyKind, Frame, FrameAdoption, GeometryError,
+    InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
+    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
+    coordinate_arc_values, coordinate_epoch_option, crs, ensure_homogeneous_axes, exact_geometry,
+    extract_coordinate, extract_lines, extract_points, extract_polygons,
+    finite_coordinate_required, optional_coordinate_arc_values, optional_coordinates, parse_crs,
+    parse_crs_epoch, wrapped_box,
+};
 
 /// The direct equal-chord limit calibrated to the wide-band materiality cases.
 const BOX_PARALLEL_MAX_CHORD_DEGREES: f64 = 0.247 * 180.0 / std::f64::consts::PI;
@@ -156,9 +164,12 @@ pub(super) fn coordinate_vertices(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<CoordSeq> {
     match (coordinates, x, y) {
-        // Point-tuple input must round-trip through `Point` (it is AoS by
-        // nature); `CoordSeq::from` gathers it into columns.
+        // Contiguous / strided N×D buffer → final SoA Arcs (no Vec<Point>).
+        // Nested lists / iterators keep the extract_points path.
         (Some(coordinates), None, None) => {
+            if let Some(seq) = crate::try_coordseq_from_nd_buffer(coordinates, z, m)? {
+                return Ok(seq);
+            }
             let points = extract_points(coordinates, z, m)?;
             if points.is_empty() {
                 let axes = if z.is_some() || m.is_some() {
@@ -257,10 +268,9 @@ pub(crate) fn build_polygon(
         );
     }
     let shell = Ring::closed_coordseq(shell_coords)?;
-    // Cross-ring axes may differ (XY shell + XYZ hole): keep per-ring storage
-    // and expose the union via `coordinate_axes` / the coords view with NaN for
-    // absent ordinates — same policy as `from_geojson`. Within one ring,
-    // `coordinate_vertices` still rejects mixed-dim vertices.
+    // Rings must share one axes layout at construction (same rule as WKT/WKB
+    // writers via `require_serializable_axes`) — never admit mixed XY/XYZ that
+    // would invent Z/M on serialize. Promote with force_3d/set_m first.
     let holes = match holes {
         // Fallible growth (D10): `holes=itertools.repeat(...)` → MemoryError.
         Some(value) => crate::collect_py_iter(value, |item| {
@@ -274,7 +284,9 @@ pub(crate) fn build_polygon(
         })?,
         None => Vec::new(),
     };
-    geometry_with_crs_epoch(Shape::Polygon(Polygon::new(shell, holes)), crs, epoch)
+    let shape = Shape::Polygon(Polygon::new(shell, holes));
+    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    geometry_with_crs_epoch(shape, crs, epoch)
 }
 
 /// Build a ``MultiPoint`` geometry from a coordinate sequence.
@@ -299,6 +311,10 @@ pub(crate) fn build_multi_point(
         );
     }
     let coordinates = coordinates.expect("non-empty multipart input checked above");
+    // N×D buffer is a flat multipoint, not a sequence of Point members.
+    if let Some(seq) = crate::try_coordseq_from_nd_buffer(coordinates, None, None)? {
+        return geometry_with_crs_epoch(Shape::MultiPoint(seq), crs, epoch);
+    }
     let (members, frame) = multipart_members(
         coordinates,
         crs,
@@ -346,24 +362,30 @@ pub(crate) fn build_multi_line_string(
             _ => None,
         },
         |item| {
+            let seq = if let Some(seq) = crate::try_coordseq_from_nd_buffer(item, None, None)? {
+                seq
+            } else {
+                CoordSeq::from(extract_points(item, None, None)?)
+            };
             Ok(Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(extract_points(item, None, None)?))
-                    .map_err(PyErr::from)?,
+                LineSeq::try_new(seq).map_err(PyErr::from)?,
             ))
         },
     )?;
-    Ok(PyGeometry::with_frame(
-        Shape::MultiLineString(
-            members
-                .into_iter()
-                .map(|shape| match shape {
-                    Shape::LineString(line) => line,
-                    _ => unreachable!("multipart member type checked above"),
-                })
-                .collect(),
-        ),
-        frame,
-    ))
+    let shape = Shape::MultiLineString(
+        members
+            .into_iter()
+            .map(|shape| match shape {
+                Shape::LineString(line) => line,
+                _ => unreachable!("multipart member type checked above"),
+            })
+            .collect(),
+    );
+    // Match writers (`require_serializable_axes`): reject heterogeneous XY/XYZ
+    // members at construction rather than admit a shape that cannot serialize
+    // without inventing Z/M.
+    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    Ok(PyGeometry::with_frame(shape, frame))
 }
 
 /// Build a ``MultiPolygon`` from a sequence of polygons.
@@ -388,18 +410,17 @@ pub(crate) fn build_multi_polygon(
         },
         polygon_from_coordinates_item,
     )?;
-    Ok(PyGeometry::with_frame(
-        Shape::MultiPolygon(
-            members
-                .into_iter()
-                .map(|shape| match shape {
-                    Shape::Polygon(polygon) => polygon,
-                    _ => unreachable!("multipart member type checked above"),
-                })
-                .collect(),
-        ),
-        frame,
-    ))
+    let shape = Shape::MultiPolygon(
+        members
+            .into_iter()
+            .map(|shape| match shape {
+                Shape::Polygon(polygon) => polygon,
+                _ => unreachable!("multipart member type checked above"),
+            })
+            .collect(),
+    );
+    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    Ok(PyGeometry::with_frame(shape, frame))
 }
 
 pub(super) fn build_box_shape(
@@ -523,7 +544,7 @@ pub(super) fn multi_point_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Sh
 /// A `MultiLineString` array member from raw line coordinate sequences.
 pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiLineString", |item| {
-        Ok(Shape::MultiLineString(
+        let shape = Shape::MultiLineString(
             extract_lines(item)?
                 .into_iter()
                 .map(|line| {
@@ -531,19 +552,27 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
                     LineSeq::try_new(line).map_err(PyErr::from)
                 })
                 .collect::<PyResult<_>>()?,
-        ))
+        );
+        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+        Ok(shape)
     })
 }
 
 /// A `MultiPolygon` array member from raw polygon coordinate sequences.
 pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPolygon", |item| {
-        Ok(Shape::MultiPolygon(extract_polygons(item)?))
+        let shape = Shape::MultiPolygon(extract_polygons(item)?);
+        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+        Ok(shape)
     })
 }
 
 pub(super) fn polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
-    geometry_from_data_item(item, "Polygon", polygon_from_coordinates_item)
+    geometry_from_data_item(item, "Polygon", |item| {
+        let shape = polygon_from_coordinates_item(item)?;
+        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+        Ok(shape)
+    })
 }
 
 fn geometry_from_data_item(

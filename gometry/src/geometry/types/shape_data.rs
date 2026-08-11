@@ -1,17 +1,15 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::*;
 use crate::HeapSize;
 use crate::error::Result;
+use crate::geometry::types::{
+    Bounds, Coordinates as _, GeodesicSegment, Point, Segment, Shape, XY,
+};
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
     PlanarMetric, PointBatchTester, SegmentMetric, bounds_to_shape, ring_winding, shell_is_convex,
@@ -100,32 +98,49 @@ impl HeapSize for FrameDependentEntry {
 /// behind one `Arc`, so an index built by any operation amortizes across
 /// every later operation on the same geometry.
 ///
+/// Large prepared working sets (`DistanceParts`, `PointBatchTester`,
+/// `LineIndexSlot`, `ValidationIssue`) live behind `OnceLock<Box<_>>` so a
+/// cold handle does not reserve hundreds of bytes of inline `OnceLock`
+/// storage per geometry. Hot scalar paths that never touch those products
+/// keep a small `ShapeData` header; first use allocates the product once.
 /// The caches are pure functions of `shape` (which is immutable), so
 /// identity, equality, and hashing delegate to the shape alone. The geo-rs
 /// prepared relation deliberately lives elsewhere (it is `!Send`; this
 /// handle crosses into detached work).
 pub struct ShapeData {
     shape: Shape,
-    bounds: std::sync::OnceLock<Option<Bounds>>,
+    bounds: OnceLock<Option<Bounds>>,
     /// Structured validity verdict, computed once — the shape is frozen,
-    /// so the answer can never change.
-    validity: std::sync::OnceLock<Option<ValidationIssue>>,
+    /// so the answer can never change. Boxed: the issue payload is large
+    /// relative to a cold handle and rare on the hot path.
+    validity: OnceLock<Box<Option<ValidationIssue>>>,
     /// OGC simplicity verdict, computed once (see `validity`).
-    simplicity: std::sync::OnceLock<bool>,
+    simplicity: OnceLock<bool>,
     /// Antimeridian-crossing verdict, computed once — the geographic split
     /// gate consults it on every topology op, often repeatedly per handle.
-    antimeridian_crossing: std::sync::OnceLock<bool>,
-    distance: std::sync::OnceLock<DistanceParts>,
-    point_tester: std::sync::OnceLock<Option<PointBatchTester>>,
+    antimeridian_crossing: OnceLock<bool>,
+    /// Distance working set — boxed so cold `OnceLock` is pointer-sized.
+    distance: OnceLock<Box<DistanceParts>>,
+    /// Prepared point-membership tester — boxed (large hierarchical index).
+    point_tester: OnceLock<Box<Option<PointBatchTester>>>,
     /// `Some(shell_is_ccw)` when the shape is a hole-free CONVEX polygon
     /// — such a region is exactly the intersection of its edge
     /// halfplanes, so point membership is pure `orient2d` sign tests.
-    convex_shell: std::sync::OnceLock<Option<bool>>,
-    line_index: std::sync::OnceLock<LineIndexSlot>,
+    convex_shell: OnceLock<Option<bool>>,
+    /// Planar LRS index — boxed (large prefix tables).
+    line_index: OnceLock<Box<LineIndexSlot>>,
     /// Rarely-used lazy caches (geodesic, areal relate) boxed behind one
     /// `OnceLock` so transient and persistent handles stay small.
     cold: OnceLock<Box<ColdCaches>>,
 }
+
+// Large lazy products are `OnceLock<Box<_>>` (~16 B cold) rather than inline
+// `OnceLock`s of 128-280 B values; the pre-shrink header was ~968 B, which cost
+// ~1.1 KB per scalar geometry. These were `#[cfg(test)]` assertions, so they
+// only fired under `cargo test`; as `const _` they fail the BUILD, like the
+// other size contracts in this crate.
+const _: () = assert!(size_of::<ShapeData>() < 400);
+const _: () = assert!(size_of::<ShapeData>() > size_of::<Shape>());
 
 impl ShapeData {
     pub(crate) fn retained_heap_bytes(&self) -> usize {
@@ -135,14 +150,14 @@ impl ShapeData {
     pub const fn new(shape: Shape) -> Self {
         Self {
             shape,
-            bounds: std::sync::OnceLock::new(),
-            validity: std::sync::OnceLock::new(),
-            simplicity: std::sync::OnceLock::new(),
-            antimeridian_crossing: std::sync::OnceLock::new(),
-            distance: std::sync::OnceLock::new(),
-            point_tester: std::sync::OnceLock::new(),
-            convex_shell: std::sync::OnceLock::new(),
-            line_index: std::sync::OnceLock::new(),
+            bounds: OnceLock::new(),
+            validity: OnceLock::new(),
+            simplicity: OnceLock::new(),
+            antimeridian_crossing: OnceLock::new(),
+            distance: OnceLock::new(),
+            point_tester: OnceLock::new(),
+            convex_shell: OnceLock::new(),
+            line_index: OnceLock::new(),
             cold: OnceLock::new(),
         }
     }
@@ -179,7 +194,10 @@ impl ShapeData {
     /// The cached validity verdict (`None` = valid). Shapely re-validates
     /// every call; a frozen handle answers repeats for free.
     pub fn validate_cached(&self) -> Option<&ValidationIssue> {
-        self.validity.get_or_init(|| self.shape.validate()).as_ref()
+        self.validity
+            .get_or_init(|| Box::new(self.shape.validate()))
+            .as_ref()
+            .as_ref()
     }
 
     /// The cached OGC simplicity verdict (see [`Self::validate_cached`]).
@@ -235,7 +253,8 @@ impl ShapeData {
     /// facet BVH), built once and shared by every distance/dwithin/intersects
     /// call on this geometry.
     pub fn distance_parts(&self) -> &DistanceParts {
-        self.distance.get_or_init(|| self.shape.distance_parts())
+        self.distance
+            .get_or_init(|| Box::new(self.shape.distance_parts()))
     }
 
     /// The 3D segment working set (packed segments + lazy AABB BVH), built
@@ -251,7 +270,7 @@ impl ShapeData {
     /// error.
     pub fn line_index(&self) -> Result<&LineIndex> {
         self.line_index
-            .get_or_init(|| LineIndexSlot::build(&self.shape, &PlanarMetric))
+            .get_or_init(|| Box::new(LineIndexSlot::build(&self.shape, &PlanarMetric)))
             .get()
     }
 
@@ -275,7 +294,7 @@ impl ShapeData {
         // cheaper than holding the lock across it.
         let index = Arc::new(LineIndex::build(&self.shape, metric)?);
         let entry = frame_cache.merge(key, |entry| {
-            entry.line_index.get_or_insert_with(|| index.clone());
+            entry.line_index.get_or_insert_with(|| Arc::clone(&index));
         });
         Ok(entry.and_then(|entry| entry.line_index).unwrap_or(index))
     }
@@ -303,7 +322,7 @@ impl ShapeData {
         }
         let parts = Arc::new(self.shape.geodesic_parts(metric)?);
         let entry = frame_cache.merge(key, |entry| {
-            entry.parts.get_or_insert_with(|| parts.clone());
+            entry.parts.get_or_insert_with(|| Arc::clone(&parts));
         });
         Ok(entry.and_then(|entry| entry.parts).unwrap_or(parts))
     }
@@ -351,6 +370,15 @@ impl ShapeData {
     /// then the cached native path (reusing each side's staged rings + point
     /// tester). Shared by [`Self::relate`] and [`Self::relate_pattern`].
     fn relate_matrix(&self, other: &Self) -> crate::geometry::relate::De9im {
+        if let Some(text) =
+            crate::geometry::predicates::geographic_point_relate_matrix(&self.shape, &other.shape)
+        {
+            let mut bytes = [b'F'; 9];
+            for (slot, byte) in bytes.iter_mut().zip(text.bytes()) {
+                *slot = byte;
+            }
+            return crate::geometry::relate::De9im(bytes);
+        }
         if let (Some(left), Some(right)) = (self.bounds(), other.bounds())
             && !left.intersects(right)
             && let Some(matrix) =
@@ -376,14 +404,18 @@ impl ShapeData {
         compiled.matches(self.relate_matrix(other))
     }
 
-    /// The prepared point-membership tester (band-indexed raycasters for
-    /// polygonal shapes; `None` otherwise), built once.
+    /// The prepared point-membership tester (hierarchical
+    /// [`PointBatchTester`] / Y-stabbing for polygonal shapes; `None`
+    /// otherwise), built once.
     pub(crate) fn point_tester(&self) -> Option<&PointBatchTester> {
         self.point_tester
             .get_or_init(|| {
-                matches!(self.shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
-                    .then(|| PointBatchTester::new(&self.shape))
+                Box::new(
+                    matches!(self.shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
+                        .then(|| PointBatchTester::new(&self.shape)),
+                )
             })
+            .as_ref()
             .as_ref()
     }
 }
@@ -407,10 +439,15 @@ impl HeapSize for ColdCaches {
 
 impl HeapSize for ShapeData {
     fn heap_bytes(&self) -> usize {
-        self.shape.coordinate_bytes()
+        // Shape payload (coordinates + container Vec/Arc structure) plus any
+        // *initialized* prepared products. Uninitialized `OnceLock`s
+        // contribute 0 and are never forced here. Boxed product allocations
+        // are counted via `HeapSize for Box<T>`.
+        self.shape.heap_bytes()
             + self.distance.heap_bytes()
             + self.point_tester.heap_bytes()
             + self.line_index.heap_bytes()
+            + self.validity.heap_bytes()
             + self.cold.heap_bytes()
     }
 }
@@ -470,8 +507,35 @@ impl PartialEq for ShapeData {
 }
 
 #[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    // The footprint bounds this test used to assert are now `const _`
+    // assertions beside the struct definition, so they fail the build rather
+    // than only `cargo test`.
+
+    #[test]
+    fn retained_heap_bytes_does_not_force_caches() {
+        let data = ShapeData::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
+        let cold = data.retained_heap_bytes();
+        assert!(data.distance.get().is_none());
+        assert!(data.point_tester.get().is_none());
+        assert_eq!(data.retained_heap_bytes(), cold);
+        assert!(data.distance.get().is_none());
+        let _ = data.bounds();
+        // bounds is inline OnceLock — still no boxed products forced
+        assert!(data.distance.get().is_none());
+        assert_eq!(data.retained_heap_bytes(), cold);
+        let _ = data.distance_parts();
+        assert!(data.distance.get().is_some());
+        assert!(data.retained_heap_bytes() > cold);
+    }
+}
+
+#[cfg(test)]
 mod frame_cache_tests {
     use super::*;
+    use crate::geometry::{CoordSeq, LineSeq};
 
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
@@ -621,6 +685,10 @@ pub trait GeodesicMetric {
     /// far: implementations may skip expensive along-track refinement and
     /// return any value `>= best` once a cheap lower bound proves the segment
     /// cannot improve on it.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn point_to_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> f64;
 
     /// Whether the geodesic segments `a`–`b` and `c`–`d` properly cross on the
@@ -643,6 +711,10 @@ pub trait GeodesicMetric {
     /// far: implementations may skip the expensive along-track refinement
     /// and return any distance `>= best` once a cheap lower bound proves the
     /// segment cannot improve on it.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn locate_on_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> (f64, f64);
 
     /// The full nearest-point witness of `point` on segment `a`–`b`: distance,
@@ -650,6 +722,10 @@ pub trait GeodesicMetric {
     /// along-track offset. `best` enables the same lower-bound pruning as
     /// [`point_to_segment`](Self::point_to_segment). Drives geodesic
     /// `nearest_points`/`shortest_line` and `minimum_clearance`.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn point_segment_witness(
         &self,
         point: Point,

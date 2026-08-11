@@ -1,5 +1,6 @@
-use super::*;
 use crate::error::Result;
+use crate::geometry::tessellation::polygon_triangles;
+use crate::geometry::{Coordinates as _, GeometryErrorKind, Point, Shape};
 
 /// A common power-of-two factor that keeps weight products finite for
 /// huge-but-valid coordinates (exact in binary floating point; weights

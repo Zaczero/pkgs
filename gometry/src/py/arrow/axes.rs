@@ -1,14 +1,4 @@
-use crate::py::arrow::*;
-
-pub(crate) fn homogeneous_geometry_axes(geometries: &[&PyGeometry]) -> Option<CoordinateAxes> {
-    let mut axes = None;
-    for geometry in geometries {
-        if !accumulate_geometry_axes(geometry.shape.shape(), &mut axes) {
-            return None;
-        }
-    }
-    Some(axes.unwrap_or(CoordinateAxes::XY))
-}
+use crate::py::arrow::{CoordinateAxes, Shape};
 
 /// Fold a shape's coordinate axes into `axes`, returning `false` on the first
 /// axes mismatch (the array is not packable into one fixed-layout `GeoArrow`

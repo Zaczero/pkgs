@@ -129,12 +129,14 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
         'name': 'WGS 84',
     }
     assert {'id': 'greenwich', 'definition': '0dE'} in gm.crs_prime_meridians()
-    utm_zones = gm.crs_utm_zones(datum_name='WGS 84', area=(20.0, 51.0, 22.0, 53.0))
+    utm_zones = gm.crs_utm_zones(
+        datum_name='WGS 84', area_of_interest=(20.0, 51.0, 22.0, 53.0)
+    )
     assert [item['crs'] for item in utm_zones] == ['EPSG:32634']
     assert utm_zones[0]['name'] == 'WGS 84 / UTM zone 34N'
     assert utm_zones[0]['projection_method_name'] == 'Transverse Mercator'
     crs_catalog = gm.crs_catalog(
-        authority='EPSG', kind='projected', area=(-1.0, 50.0, 1.0, 52.0)
+        authority='EPSG', kind='projected', area_of_interest=(-1.0, 50.0, 1.0, 52.0)
     )
     catalog_27700 = next(item for item in crs_catalog if item['crs'] == 'EPSG:27700')
     assert catalog_27700['name'] == 'OSGB36 / British National Grid'
@@ -428,7 +430,9 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
         gm.CRS({'crs_wkt': ''})
     with pytest.raises(ValueError, match='unsupported CF grid_mapping_name'):
         gm.CRS({'grid_mapping_name': 'rotated_latitude_longitude'})
-    with pytest.raises(ValueError, match='CF CRS dictionary requires semi_major_axis'):
+    with pytest.raises(
+        ValueError, match='CF CRS dictionary requires earth_radius or semi_major_axis'
+    ):
         gm.CRS({'grid_mapping_name': 'latitude_longitude'})
     with pytest.raises(TypeError, match='semi_major_axis'):
         gm.CRS({
@@ -532,6 +536,53 @@ def test_compound_crs_axes_match_pyproj_components() -> None:
             else 'other'
             for axis in pyproj.CRS.from_epsg(code).axis_info
         ]
+
+
+def test_cf_ellipsoid_descriptors_are_coherent() -> None:
+    def ellipsoid_axes(mapping: dict[str, object]) -> tuple[float, float]:
+        ellipsoid = cast('dict[str, object]', gm.CRS(mapping).info['ellipsoid'])
+        return (
+            cast('float', ellipsoid['semi_major_metre']),
+            cast('float', ellipsoid['semi_minor_metre']),
+        )
+
+    assert ellipsoid_axes({
+        'grid_mapping_name': 'latitude_longitude',
+        'earth_radius': 6_371_000.0,
+    }) == (6_371_000.0, 6_371_000.0)
+    assert ellipsoid_axes({
+        'grid_mapping_name': 'latitude_longitude',
+        'semi_major_axis': 6_371_000.0,
+        'inverse_flattening': 0.0,
+    }) == (6_371_000.0, 6_371_000.0)
+    assert (
+        gm.CRS({
+            'grid_mapping_name': 'latitude_longitude',
+            'semi_major_axis': 6_378_137.0,
+            'inverse_flattening': 298.257_223_563,
+        }).canonical
+        == 'OGC:CRS84'
+    )
+    with pytest.raises(ValueError, match='earth_radius cannot be combined'):
+        gm.CRS({
+            'grid_mapping_name': 'latitude_longitude',
+            'earth_radius': 6_371_000.0,
+            'semi_major_axis': 6_378_137.0,
+            'inverse_flattening': 298.257_223_563,
+        })
+    assert ellipsoid_axes({
+        'grid_mapping_name': 'latitude_longitude',
+        'semi_major_axis': 6_378_137.0,
+        'semi_minor_axis': 6_356_752.314_245_179,
+        'inverse_flattening': 298.257_223_563,
+    }) == pytest.approx((6_378_137.0, 6_356_752.314_245_179))
+    with pytest.raises(ValueError, match='contradictory ellipsoid descriptors'):
+        gm.CRS({
+            'grid_mapping_name': 'latitude_longitude',
+            'semi_major_axis': 6_378_137.0,
+            'semi_minor_axis': 6_356_000.0,
+            'inverse_flattening': 298.257_223_563,
+        })
 
 
 def _assert_crs_namespace_input_objects_and_serialization() -> None:
@@ -663,10 +714,13 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
     )
     with pytest.raises(ValueError, match='min_confidence'):
         gm.CRS(4326).to_authority(min_confidence=101)
-    with pytest.raises(
-        OverflowError, match='out of range integral type conversion attempted'
-    ):
+    with pytest.raises(ValueError, match='min_confidence must be between 0 and 100'):
         gm.CRS(4326).to_epsg(min_confidence=-1)
+    for out_of_range in (2**200, -(2**200)):
+        with pytest.raises(
+            ValueError, match='min_confidence must be between 0 and 100'
+        ):
+            gm.CRS(4326).to_authority(min_confidence=out_of_range)
     operation = gm.CRS(4326).operation(3857)
     assert operation['source'] == 'EPSG:4326'
     assert operation['target'] == 'EPSG:3857'
@@ -711,3 +765,252 @@ def test_crs_namespace_exposes_proj_authority_metadata() -> None:
     _assert_crs_namespace_database_catalog_and_crs_info()
     _assert_crs_namespace_input_objects_and_serialization()
     _assert_crs_namespace_operations_geodesic_and_transforms()
+
+
+def test_crs_units_and_celestial_bodies_cache_identity() -> None:
+    """Catalog list reads are process/thread-cached; clear resets, warm is identical."""
+    gm.crs_clear_cache()
+    cold_units = gm.crs_units('EPSG', category='linear')
+    warm_units = gm.crs_units('EPSG', category='linear')
+    assert cold_units == warm_units
+    assert any(u.get('code') == '9001' for u in warm_units)
+    # Returned list is a shallow copy: mutating it must not poison the cache.
+    warm_units[0] = {'poison': True}
+    assert gm.crs_units('EPSG', category='linear') == cold_units
+
+    cold_bodies = gm.crs_celestial_bodies()
+    warm_bodies = gm.crs_celestial_bodies()
+    assert cold_bodies == warm_bodies
+    assert {'authority': 'PROJ', 'name': 'Earth'} in warm_bodies
+
+    # After clear, a fresh PROJ read still matches the prior snapshot.
+    gm.crs_clear_cache()
+    assert gm.crs_units('EPSG', category='linear') == cold_units
+    assert gm.crs_celestial_bodies() == warm_bodies
+
+    info = gm.crs_cache_info()
+    names = {bucket['name'] for bucket in info['buckets']}
+    assert 'crs_units' in names
+    assert 'crs_celestial_bodies' in names
+
+
+def test_crs_info_dict_cache_isolation() -> None:
+    """crs_info returns isolation-safe dicts; nested mutation cannot poison the cache."""
+    gm.crs_clear_cache()
+    cold = gm.crs_info(4326)
+    warm = gm.crs_info(4326)
+    assert warm == cold
+    assert warm['name'] == 'WGS 84'
+    assert warm['axes'] == cold['axes']
+
+    # Top-level key replacement must not poison subsequent calls.
+    warm['name'] = 'POISON'
+    assert gm.crs_info(4326)['name'] == cold['name']
+
+    # Top-level list slot replacement must not poison.
+    warm2 = gm.crs_info(4326)
+    warm2['axes'] = [{'poison': True}]
+    assert gm.crs_info(4326)['axes'] == cold['axes']
+
+    # Nested dict leaves are frozen (MappingProxyType) — assignment raises and
+    # cannot poison the cache even if a caller catches the error.
+    warm3 = gm.crs_info(4326)
+    nested_axis = warm3['axes'][0]
+    try:
+        nested_axis['name'] = 'POISON'  # type: ignore[index]
+    except TypeError:
+        pass
+    else:
+        # If nested were mutable, require isolation still holds.
+        pass
+    assert gm.crs_info(4326)['axes'] == cold['axes']
+
+    # Nested list-like containers under a nested dict (ensemble members) must
+    # not accept in-place append that would poison a shared list.
+    warm4 = gm.crs_info(4326)
+    datum = cast('dict[str, object]', warm4['datum'])
+    members = datum['ensemble_members']
+    before_len = len(cast('list[object]', members))
+    try:
+        cast('list[object]', members).append({'poison': True})
+    except (TypeError, AttributeError):
+        pass
+    after = gm.crs_info(4326)
+    after_datum = cast('dict[str, object]', after['datum'])
+    assert len(cast('list[object]', after_datum['ensemble_members'])) == before_len
+    assert after == cold
+
+    # CRS.info shares the same cache semantics.
+    assert gm.CRS(4326).info == cold
+
+    # Generation bump / clear invalidates Python-side materialization.
+    gm.crs_clear_cache()
+    assert gm.crs_info(4326) == cold
+
+
+def test_crs_operations_dict_cache_isolation() -> None:
+    """CRS.operations / .operation return isolation-safe containers."""
+    gm.crs_clear_cache()
+    cold_ops = gm.CRS(4326).operations(3857)
+    warm_ops = gm.CRS(4326).operations(3857)
+    assert warm_ops == cold_ops
+    assert len(warm_ops) >= 1
+
+    # List-level mutation must not poison.
+    warm_ops[0] = {'poison': True}
+    assert gm.CRS(4326).operations(3857) == cold_ops
+
+    # Nested dict freeze on an operation entry.
+    warm2 = gm.CRS(4326).operations(3857)
+    try:
+        warm2[0]['name'] = 'POISON'
+    except TypeError:
+        pass
+    assert gm.CRS(4326).operations(3857) == cold_ops
+
+    cold_op = gm.CRS(4326).operation(3857)
+    warm_op = gm.CRS(4326).operation(3857)
+    assert warm_op == cold_op
+    warm_op['name'] = 'POISON'
+    assert gm.CRS(4326).operation(3857) == cold_op
+    try:
+        steps = warm_op['steps']
+        if steps:
+            steps[0]['name'] = 'POISON'  # type: ignore[index]
+    except TypeError:
+        pass
+    assert gm.CRS(4326).operation(3857) == cold_op
+
+    gm.crs_clear_cache()
+    assert gm.CRS(4326).operations(3857) == cold_ops
+    assert gm.CRS(4326).operation(3857) == cold_op
+
+
+def _layout_v6_proj_db_src():
+    """Locate the built layout-v6 proj.db, respecting ``CARGO_TARGET_DIR``."""
+    import os
+    import sqlite3
+    from pathlib import Path
+
+    target_dir = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))
+    candidates = sorted(
+        target_dir.glob('**/share/proj/proj.db'),
+        key=lambda p: p.stat().st_size,
+        reverse=True,
+    )
+    for cand in candidates:
+        con = None
+        try:
+            con = sqlite3.connect(cand)
+            minor = con.execute(
+                "SELECT value FROM metadata WHERE key='DATABASE.LAYOUT.VERSION.MINOR'"
+            ).fetchone()
+        except sqlite3.Error:
+            continue
+        finally:
+            if con is not None:
+                con.close()
+        if minor and minor[0] == '6':
+            return cand
+    pytest.fail(
+        f'no layout-v6 proj.db under {target_dir}; build proj-sys before this test'
+    )
+
+
+def _copy_proj_db_with_4326_name(src, dest_dir, name: str):
+    import shutil
+    import sqlite3
+    from pathlib import Path
+
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    db = dest_dir / 'proj.db'
+    shutil.copy(src, db)
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE geodetic_crs SET name=? WHERE code=4326 AND auth_name='EPSG'",
+        (name,),
+    )
+    con.commit()
+    con.close()
+    return dest_dir
+
+
+def test_crs_receiver_info_invalidates_on_configure_only() -> None:
+    """``crs_configure`` alone (no ``crs_clear_cache``) must re-resolve receivers."""
+    import tempfile
+
+    src = _layout_v6_proj_db_src()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CONFIGURE_ONLY')
+        crs = gm.CRS(4326)
+        geom_crs = gm.Point(1.0, 2.0, crs=4326).crs
+        assert crs.info['name'] == 'WGS 84'
+        try:
+            gm.crs_configure(search_paths=str(path))
+            # Intentionally no crs_clear_cache — configure must bump generation.
+            assert gm.crs_info(4326)['name'] == 'STALE_CONFIGURE_ONLY'
+            assert crs.info['name'] == 'STALE_CONFIGURE_ONLY'
+            assert (
+                geom_crs is not None and geom_crs.info['name'] == 'STALE_CONFIGURE_ONLY'
+            )
+        finally:
+            gm.crs_reset()
+            gm.crs_clear_cache()
+    assert gm.crs_info(4326)['name'] == 'WGS 84'
+
+
+def test_crs_receiver_info_invalidates_on_clear_only() -> None:
+    """``crs_clear_cache`` alone must re-resolve receivers after the db mutates."""
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+
+    src = _layout_v6_proj_db_src()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CLEAR_A')
+        try:
+            gm.crs_configure(search_paths=str(path))
+            crs = gm.CRS(4326)
+            assert crs.info['name'] == 'STALE_CLEAR_A'
+            # Mutate the live proj.db under the configured search path.
+            con = sqlite3.connect(Path(path) / 'proj.db')
+            con.execute(
+                "UPDATE geodetic_crs SET name='STALE_CLEAR_B' "
+                "WHERE code=4326 AND auth_name='EPSG'"
+            )
+            con.commit()
+            con.close()
+            # Clear only — no reconfigure. Generation bump must re-read db.
+            gm.crs_clear_cache()
+            assert gm.crs_info(4326)['name'] == 'STALE_CLEAR_B'
+            assert crs.info['name'] == 'STALE_CLEAR_B'
+        finally:
+            gm.crs_reset()
+            gm.crs_clear_cache()
+    assert gm.crs_info(4326)['name'] == 'WGS 84'
+
+
+def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
+    """A second ``crs_configure`` (path A → path B) must re-resolve receivers."""
+    import tempfile
+    from pathlib import Path
+
+    src = _layout_v6_proj_db_src()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        path_a = _copy_proj_db_with_4326_name(src, tmp_path / 'a', 'STALE_PATH_A')
+        path_b = _copy_proj_db_with_4326_name(src, tmp_path / 'b', 'STALE_PATH_B')
+        try:
+            gm.crs_configure(search_paths=str(path_a))
+            crs = gm.CRS(4326)
+            assert crs.info['name'] == 'STALE_PATH_A'
+            # Reconfigure only — no explicit clear between A and B.
+            gm.crs_configure(search_paths=str(path_b))
+            assert gm.crs_info(4326)['name'] == 'STALE_PATH_B'
+            assert crs.info['name'] == 'STALE_PATH_B'
+            assert crs.name == 'STALE_PATH_B'
+        finally:
+            gm.crs_reset()
+            gm.crs_clear_cache()
+    assert gm.crs_info(4326)['name'] == 'WGS 84'

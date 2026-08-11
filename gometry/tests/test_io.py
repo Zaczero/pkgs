@@ -153,7 +153,7 @@ def test_geojson_legacy_wgs84_crs_member_is_ignored() -> None:
         }
         point = gm.from_geojson(payload)
         assert point.to_wkt() == 'POINT (1 2)'
-        assert point.crs == 'EPSG:4326'
+        assert point.crs == 'OGC:CRS84'
         assert gm.from_geojson(json.dumps(payload)).to_wkt() == 'POINT (1 2)'
 
 
@@ -174,7 +174,7 @@ def test_geojson_reader_rejects_non_wgs84_crs() -> None:
         gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}, crs=4326).crs
         == 'EPSG:4326'
     )
-    assert gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}).crs == 'EPSG:4326'
+    assert gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}).crs == 'OGC:CRS84'
 
 
 def test_foreign_decoders_reject_already_decoded_geometries() -> None:
@@ -325,8 +325,14 @@ def test_ewkt_roundtrip_preserves_crs() -> None:
     recovered = gm.from_wkt(ewkt)
     assert recovered.crs == 'EPSG:4326'
     assert gm.equals_exact(recovered, point)
-    with pytest.raises(gm.CRSError, match='EWKT SRID requires an EPSG-authority CRS'):
-        gm.Point(0, 0, crs='OGC:CRS84').to_wkt(include_srid=True)
+    # PostGIS wire alias: CRS84 encodes as SRID 4326 (identity loss on bare decode).
+    crs84 = gm.Point(0, 0, crs='OGC:CRS84')
+    ewkt84 = crs84.to_wkt(include_srid=True)
+    assert ewkt84.startswith('SRID=4326;')
+    assert gm.from_wkt(ewkt84).crs == 'EPSG:4326'
+    restored = gm.from_wkt(ewkt84, crs='OGC:CRS84')
+    assert restored.crs == 'OGC:CRS84'
+    assert gm.equals(restored, crs84)
 
 
 def test_wkt_wkb_and_geojson_roundtrip() -> None:
@@ -422,7 +428,7 @@ def test_geojson_feature_and_feature_collection_inputs() -> None:
         gm.from_geojson([GeoInterfaceObject(), gm.Point(3, 4)], crs=4326)
     parsed = gm.from_geojson(collection)
     assert isinstance(parsed, gm.GeometryArray)
-    assert parsed.crs == 'EPSG:4326'
+    assert parsed.crs == 'OGC:CRS84'
     assert parsed.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
     with pytest.raises(ValueError, match='Feature requires geometry'):
         gm.from_geojson({'type': 'Feature'})
@@ -524,7 +530,11 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         'type': 'FeatureCollection',
         'features': [dual],
     }
-    for frontend in (collection, json.dumps(collection), json.dumps(collection).encode()):
+    for frontend in (
+        collection,
+        json.dumps(collection),
+        json.dumps(collection).encode(),
+    ):
         with pytest.raises(gm.ParseError, match=r'coordinates|RFC 7946'):
             gm.from_features(frontend)
 
@@ -702,10 +712,14 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
     assert not hasattr(parse_error.value, '__notes__')
     points = gm.GeometryArray([gm.Point(1, 2), gm.Point(3, 4)])
     assert points.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
-    with pytest.raises(TypeError, match=r'GeometryArray\(\[geom\]\).*GeometryArray\(geom.parts\)'):
+    with pytest.raises(
+        TypeError, match=r'GeometryArray\(\[geom\]\).*GeometryArray\(geom.parts\)'
+    ):
         gm.GeometryArray(gm.Point(1, 2))
     multipart = gm.MultiPoint([(0, 0), (1, 1), (2, 2)])
-    with pytest.raises(TypeError, match=r'GeometryArray\(\[geom\]\).*GeometryArray\(geom.parts\)'):
+    with pytest.raises(
+        TypeError, match=r'GeometryArray\(\[geom\]\).*GeometryArray\(geom.parts\)'
+    ):
         gm.GeometryArray(multipart)
     mixed = gm.GeometryArray([wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)])
     assert mixed.to_wkt() == ['POINT (1 2)', 'POINT (3 4)', 'POINT (5 6)']
@@ -1248,7 +1262,10 @@ def test_serializer_methods_agree_across_scalar_and_array() -> None:
 
 
 def test_geojson_rejects_integer_coordinates_beyond_f64_exact_range() -> None:
-    with pytest.raises(gm.ParseError, match='exceeds f64 exact integer range'):
+    # 2^53+1 is not exactly representable as binary64 — reject, never round.
+    # (Exact integers beyond 2^53, e.g. 2^53+2, are admitted; see
+    # test_geojson_numeric_fidelity.py.)
+    with pytest.raises(gm.ParseError, match='not exactly representable as f64'):
         gm.from_geojson({'type': 'Point', 'coordinates': [9007199254740993, 0]})
 
 
@@ -1256,7 +1273,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     canonical = '_p~iF~ps|U_ulLnnqC_mqNvxq`@'
     line = gm.from_polyline(canonical)
     assert line.to_wkt() == 'LINESTRING (-120.2 38.5, -120.95 40.7, -126.453 43.252)'
-    assert line.crs == 'EPSG:4326'
+    assert line.crs == 'OGC:CRS84'
     assert line.geometry_type == 'LineString'
     assert line.to_polyline() == canonical
     assert line.to_polyline() == canonical
@@ -1267,7 +1284,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     singleton = gm.from_polyline('_p~iF~ps|U')
     assert singleton.geometry_type == 'Point'
     assert singleton.to_wkt() == 'POINT (-120.2 38.5)'
-    assert singleton.crs == 'EPSG:4326'
+    assert singleton.crs == 'OGC:CRS84'
     assert singleton.to_polyline() == '_p~iF~ps|U'
     half = gm.LineString([(-5e-06, 5e-06), (0, 0)])
     assert list(gm.from_polyline(half.to_polyline()).coords) == [
@@ -1289,7 +1306,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     restored_route = gm.from_polyline(
         framed_route.to_polyline(drop_epoch=True), epoch=2020.0
     )
-    assert restored_route.crs == 'EPSG:4326'
+    assert restored_route.crs == 'OGC:CRS84'
     assert restored_route.epoch == 2020.0
     assert gm.equals(restored_route, framed_route)
     bare_route = gm.from_polyline(framed_route.to_polyline(drop_epoch=True), crs=None)
@@ -1311,7 +1328,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     assert gm.from_polyline(measured.force_2d().to_polyline()).to_wkt() == (
         'LINESTRING (0 0, 1 1)'
     )
-    with pytest.raises(gm.CRSError, match='requires EPSG:4326'):
+    with pytest.raises(gm.CRSError, match=r'requires WGS84|EPSG:4326'):
         gm.LineString([(0, 0), (1, 1)], crs=3857).to_polyline()
     assert gm.Point(0, 0).to_polyline() == '??'
     with pytest.raises(gm.GeometryTypeError, match='requires a LineString or Point'):
@@ -1323,7 +1340,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     with pytest.raises(gm.ParseError) as poly_ctrl:
         gm.from_polyline('\x01')
     # Python-style escapes (not Rust Debug '\u{1}'); echo the offending input.
-    assert str(poly_ctrl.value) == "invalid polyline character '\\x01' in \"\\x01\""
+    assert str(poly_ctrl.value) == 'invalid polyline character \'\\x01\' in "\\x01"'
     assert r'\u{' not in str(poly_ctrl.value)
     with pytest.raises(gm.ParseError, match='mid-value'):
         gm.from_polyline('_p~iF~ps|')

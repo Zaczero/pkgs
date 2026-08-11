@@ -1,4 +1,11 @@
-use super::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::coverage::{AABB, HashMap, HashMapExt as _, HashSet, RTreeObject, Result};
+use crate::geometry::{
+    Bounds, BulkRTree, CoordSeq, CoordinateAxes, EmptyKind, GeometryErrorKind, LineSeq, Point,
+    PointKey, Polygon, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, line_segments,
+    same_point, segment_cross_point, undirected_segment_edge_key,
+};
 
 /// One row's boundary segments plus the prepared per-row machinery the
 /// validator probes (envelope filter, segment index, point membership).
@@ -95,6 +102,13 @@ pub(crate) fn edge_row_occurrences(rows: &[CoverageRow<'_>]) -> HashMap<(PointKe
     map
 }
 
+/// Successful validation product for check-and-do ops: prepared rows plus the
+/// raw edge incidence map dissolve consumes (occurrence==1 = exterior).
+pub(crate) struct ValidCoverage<'a> {
+    pub(crate) rows: Vec<CoverageRow<'a>>,
+    pub(crate) edge_incidences: HashMap<(PointKey, PointKey), (Segment, u32)>,
+}
+
 /// Per-row invalid boundary segments (empty everywhere on a valid coverage).
 ///
 /// A row's segment is invalid when it is not exactly matched by another
@@ -117,6 +131,19 @@ pub(crate) fn coverage_invalid_segments_prepared(
     gap_width: f64,
 ) -> Vec<Vec<Segment>> {
     let occurrences = edge_row_occurrences(rows);
+    coverage_invalid_with_count(rows, |key| occurrences[&key], gap_width)
+}
+
+/// Core validator given a count lookup: matched interface when count==2.
+#[expect(
+    clippy::iter_over_hash_type,
+    reason = "bucket iteration only marks per-row coincidence flags; its order cannot affect the returned rows"
+)]
+fn coverage_invalid_with_count(
+    rows: &[CoverageRow<'_>],
+    mut count_of: impl FnMut((PointKey, PointKey)) -> u32,
+    gap_width: f64,
+) -> Vec<Vec<Segment>> {
     let envelope_tree = BulkRTree::bulk_load_with_params(
         rows.iter()
             .enumerate()
@@ -136,24 +163,49 @@ pub(crate) fn coverage_invalid_segments_prepared(
     // Two coincident polygon rows are an overlap, not a valid shared
     // interface. Their edges occur exactly twice, which otherwise looks just
     // like two adjacent polygons and would take the fast shared-edge path
-    // below. Detect topologically-equal rows through the existing envelope
-    // broad phase and mark both complete boundaries invalid. This also catches
-    // equivalent rings with different start vertices or orientation.
+    // below. Coincident pairs always share exact bounds (the probe below
+    // previously required `bounds ==`), so group by bit-exact bounds instead of
+    // an all-row envelope scan — unique-bounds coverages (parcels) pay one
+    // HashMap insert each and never call `equals`.
     let mut coincident = vec![false; rows.len()];
+    // Group by canonical bounds bits so +0.0/−0.0 land in one bucket
+    // (`f64::to_bits` alone splits them and misses coincident duplicates —
+    // edges then all look like shared interfaces and coverage_union empties).
+    let mut by_bounds: HashMap<[u64; 4], Vec<usize>> = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         let Some(bounds) = row.bounds else { continue };
-        let envelope =
-            AABB::from_corners([bounds.minx() - gap_width, bounds.miny() - gap_width], [
-                bounds.maxx() + gap_width,
-                bounds.maxy() + gap_width,
-            ]);
-        for candidate in envelope_tree.locate_in_envelope_intersecting(envelope) {
-            if candidate.row <= index || rows[candidate.row].bounds != row.bounds {
+        let key = [
+            canonical_f64_bits(bounds.minx()),
+            canonical_f64_bits(bounds.miny()),
+            canonical_f64_bits(bounds.maxx()),
+            canonical_f64_bits(bounds.maxy()),
+        ];
+        by_bounds.entry(key).or_default().push(index);
+    }
+    // Within a bounds bucket, fingerprint each row by its sorted undirected
+    // edge multiset (PointKey already canonicalizes ±0). Identical fingerprints
+    // are coincident without O(g²) `equals` scans.
+    for group in by_bounds.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut by_edges: HashMap<Vec<(PointKey, PointKey)>, Vec<usize>> = HashMap::new();
+        for &index in group {
+            let mut edges: Vec<(PointKey, PointKey)> = rows[index]
+                .segments
+                .iter()
+                .copied()
+                .map(undirected_segment_edge_key)
+                .collect();
+            edges.sort_unstable();
+            by_edges.entry(edges).or_default().push(index);
+        }
+        for members in by_edges.values() {
+            if members.len() < 2 {
                 continue;
             }
-            if row.shape.equals(rows[candidate.row].shape) {
+            for &index in members {
                 coincident[index] = true;
-                coincident[candidate.row] = true;
             }
         }
     }
@@ -163,7 +215,7 @@ pub(crate) fn coverage_invalid_segments_prepared(
             continue;
         }
         for &segment in &row.segments {
-            if occurrences[&undirected_segment_edge_key(segment)] == 2 {
+            if count_of(undirected_segment_edge_key(segment)) == 2 {
                 continue; // exactly shared interface — the valid case
             }
             let query = AABB::from_corners(
@@ -191,19 +243,46 @@ pub(crate) fn coverage_invalid_segments_prepared(
 }
 
 /// Prepare and require a valid coverage for a public check-and-do operation.
+///
+/// On success the edge incidence map is retained so dissolve can consume the
+/// same prepared boundary product without rewalking polygons.
 pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
     rows: &'a [S],
     operation: &'static str,
-) -> Result<Vec<CoverageRow<'a>>> {
+) -> Result<ValidCoverage<'a>> {
     let prepared = coverage_rows(rows, 0.0)?;
-    if coverage_invalid_segments_prepared(&prepared, 0.0)
+    // One raw incidence map serves both roles on the check-and-do path:
+    // count==2 is the matched interface (same as distinct-row count on any
+    // valid simple coverage; a within-row duplicate also lands at 2 and is a
+    // safe skip — the edge cancels in dissolve too), and count==1 survivors
+    // feed XOR dissolve. The is_valid path keeps the lighter distinct-row
+    // map via `edge_row_occurrences` (no dissolve product needed).
+    let mut incidences: HashMap<(PointKey, PointKey), (Segment, u32)> = HashMap::new();
+    for row in &prepared {
+        for &segment in &row.segments {
+            let key = undirected_segment_edge_key(segment);
+            incidences
+                .entry(key)
+                .and_modify(|entry| entry.1 += 1)
+                .or_insert((segment, 1));
+        }
+    }
+    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0)
         .iter()
         .any(|segments| !segments.is_empty())
     {
         return Err(GeometryErrorKind::InvalidCoverage { operation }.into());
     }
-    Ok(prepared)
+    Ok(ValidCoverage {
+        rows: prepared,
+        edge_incidences: incidences,
+    })
 }
+
+/// Small boundaries (parcel rectangles, admin tiles) brute-force the few
+/// segments — building a SegmentIndex R-tree for 4 edges is pure overhead on
+/// the valid-coverage exterior-probe path. Larger rings keep the lazy index.
+const BRUTE_OFFEND_SEGMENTS: usize = 32;
 
 /// Whether an unmatched boundary segment interacts with `other`'s area or
 /// boundary in a way a valid coverage forbids.
@@ -227,16 +306,25 @@ pub(crate) fn segment_offends_row(
     // THIS segment: a shared corner vertex is legal, and a neighbor vertex
     // landing mid-segment (the T-join) is each side's own interior contact,
     // so both rows flag symmetrically.
-    let crossing = other.index().intersecting_candidates(segment).any(|entry| {
-        segment_cross_point(segment, entry.segment).is_some_and(|point| {
-            !same_point(point, segment.start) && !same_point(point, segment.end)
+    let crossing = if other.segments.len() <= BRUTE_OFFEND_SEGMENTS {
+        other.segments.iter().any(|&other_seg| {
+            segment_cross_point(segment, other_seg).is_some_and(|point| {
+                !same_point(point, segment.start) && !same_point(point, segment.end)
+            })
         })
-    });
+    } else {
+        other.index().intersecting_candidates(segment).any(|entry| {
+            segment_cross_point(segment, entry.segment).is_some_and(|point| {
+                !same_point(point, segment.start) && !same_point(point, segment.end)
+            })
+        })
+    };
     if crossing {
         return true;
     }
     // Narrow gap: the segment faces another row's unmatched boundary closer
-    // than gap_width without touching it.
+    // than gap_width without touching it. Nearest-segment needs the index
+    // (or a full scan); only pay when gap_width is active.
     if gap_width > 0.0 {
         let near = |point: XY| {
             other

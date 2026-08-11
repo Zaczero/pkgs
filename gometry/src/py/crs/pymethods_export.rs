@@ -1,4 +1,8 @@
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, MinConfidence, Py, PyCrs, PyDict, PyResult, Python, crs, crs_arc, crs_to_authority,
+    crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict, crs_to_wkt,
+    pymethods,
+};
 #[pymethods]
 impl PyCrs {
     /// EPSG integer code, or ``None`` if it cannot be determined.
@@ -22,8 +26,8 @@ impl PyCrs {
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).to_epsg()
     /// 4326
-    #[pyo3(signature = (*, min_confidence = 70), text_signature = "($self, *, min_confidence=70)")]
-    fn to_epsg(slf: &Bound<'_, Self>, min_confidence: u8) -> PyResult<Option<i32>> {
+    #[pyo3(signature = (*, min_confidence = MinConfidence::DEFAULT), text_signature = "($self, *, min_confidence=70)")]
+    fn to_epsg(slf: &Bound<'_, Self>, min_confidence: MinConfidence) -> PyResult<Option<i32>> {
         crs_to_epsg(slf.as_any(), min_confidence)
     }
 
@@ -51,11 +55,11 @@ impl PyCrs {
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).to_authority()
     /// ('EPSG', '4326')
-    #[pyo3(signature = (*, authority = None, min_confidence = 70), text_signature = "($self, *, authority=None, min_confidence=70)")]
+    #[pyo3(signature = (*, authority = None, min_confidence = MinConfidence::DEFAULT), text_signature = "($self, *, authority=None, min_confidence=70)")]
     fn to_authority(
         slf: &Bound<'_, Self>,
         authority: Option<&str>,
-        min_confidence: u8,
+        min_confidence: MinConfidence,
     ) -> PyResult<Option<(String, String)>> {
         crs_to_authority(slf.as_any(), authority, min_confidence)
     }

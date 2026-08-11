@@ -2,17 +2,13 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Ellipsoidal polar stereographic (EPSG methods 9810/9829).
 
-use super::adjlon;
-use super::kernel::{
+use crate::crs::in_core::adjlon;
+use crate::crs::in_core::kernel::{
     EPS10, Ellipsoid, ProjectionKernel, eccentricity, eccentricity_squared, phi2, tsfn,
 };
-use super::params::{
+use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, Requirement, admit_projection, epsg,
     param_field,
 };
@@ -133,9 +129,14 @@ pub(super) fn polar_stereo_to_geographic_unframed(
         Pole::North => -y,
         Pole::South => y,
     };
-    let rho = (x * x + yy * yy).sqrt();
+    let squared = x * x + yy * yy;
+    let rho = if squared.is_finite() && (squared != 0.0 || (x == 0.0 && yy == 0.0)) {
+        squared.sqrt()
+    } else {
+        x.hypot(yy)
+    };
 
-    let phi_abs = if rho <= EPS10 {
+    let phi_abs = if rho == 0.0 {
         std::f64::consts::FRAC_PI_2
     } else {
         phi2(rho / setup.akm1, setup.e).ok_or_else(|| {
@@ -273,4 +274,20 @@ pub(super) fn admit(
     ellipsoid: Ellipsoid,
 ) -> Option<Projected<PolarStereo>> {
     admit_projection::<PolarStereo>(operation, ellipsoid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polar_setup_refuses_oblique_latitude() {
+        let ellipsoid = Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_223_563);
+        let params = PolarStereoParams {
+            lat_0_deg: 52.156,
+            lat_ts_deg: 52.156,
+            k0: 1.0,
+        };
+        assert!(polar_stereo_setup(ellipsoid, params).is_none());
+    }
 }

@@ -4,7 +4,12 @@
 )]
 use pyo3::exceptions::{PyTypeError, PyValueError};
 
-use super::*;
+use crate::py::classes::coordinate_methods::{
+    Bound, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, Py, PyAny,
+    PyAnyMethods as _, PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef,
+    PyResult, Python, RowIndexOrSlice, Shape, column_axis_to_py, coordinates, coordinates_object,
+    parse_row_index_or_slice, py_bool, pymethods,
+};
 
 #[pymethods]
 impl PyCoordinates {
@@ -24,9 +29,11 @@ impl PyCoordinates {
     }
 
     /// Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
-    /// the stored ``f64`` ordinate values behind this view. Slices and
-    /// array-backed views report only their logical rows; temporary NumPy
-    /// matrices produced by ``numpy.asarray(coords)`` are not included.
+    /// the stored ``f64`` ordinate values behind this view only. Slices and
+    /// array-backed views report only their logical rows. Temporary NumPy
+    /// matrices from ``numpy.asarray(coords)`` and any lazy prepared-geometry
+    /// or membership sidecars on the parent geometry/array are not included —
+    /// those live on the owner, not on this view.
     ///
     /// Returns
     /// -------
@@ -37,10 +44,11 @@ impl PyCoordinates {
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-    /// coordinate heap retained by this view. Array-backed coordinate views
-    /// include logical coordinate payload and structural row metadata; shared
-    /// backing buffers are reported like NumPy views, not as the full parent
-    /// allocation.
+    /// coordinate heap retained by this view (ordinate payload and structural
+    /// row metadata for array-backed views). Shared backing buffers are
+    /// reported like NumPy views, not as the full parent allocation. Parent
+    /// geometry/array sidecars (prepared caches, coverage membership, …) are
+    /// not owned by the view and are not counted here.
     pub fn __sizeof__(&self) -> usize {
         std::mem::size_of::<Self>() + self.view.logical_heap_bytes()
     }
@@ -64,6 +72,7 @@ impl PyCoordinates {
                 // slices collect ascending and reverse at the end.
                 let mut tuples = Vec::with_capacity(count);
                 if count > 0 {
+                    use std::ops::ControlFlow;
                     let (first, last, stride) = if step > 0 {
                         (start, start + step * (count as isize - 1), step)
                     } else {
@@ -75,15 +84,28 @@ impl PyCoordinates {
                     // progression instead of testing `(position - first) % stride`
                     // per coordinate — the modulo compiled to a per-row `idiv`.
                     let mut next = first;
-                    self.view.for_each_point(|coord| {
+                    let _ = self.view.try_for_each_point(&mut |coord| {
                         position += 1;
-                        if error.is_some() || position != next || position > last {
-                            return;
+                        if error.is_some() || position > last {
+                            return ControlFlow::Break(());
+                        }
+                        if position != next {
+                            return ControlFlow::Continue(());
                         }
                         next += stride;
                         match self.tuple(py, coord.point) {
-                            Ok(tuple) => tuples.push(tuple),
-                            Err(err) => error = Some(err),
+                            Ok(tuple) => {
+                                tuples.push(tuple);
+                                if tuples.len() == count {
+                                    ControlFlow::Break(())
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            },
+                            Err(err) => {
+                                error = Some(err);
+                                ControlFlow::Break(())
+                            },
                         }
                     });
                     if let Some(err) = error {
@@ -112,9 +134,10 @@ impl PyCoordinates {
     /// -------
     /// iterator of tuple
     pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
-        let mut points = Vec::with_capacity(slf.view.len());
-        slf.view.for_each_point(|coord| points.push(coord.point));
-        Py::new(py, PyCoordinatesIter::new(points, slf.layout, false))
+        Py::new(
+            py,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
+        )
     }
 
     /// Iterate coordinate tuples in reverse vertex order.
@@ -123,9 +146,10 @@ impl PyCoordinates {
     /// -------
     /// iterator of tuple
     pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
-        let mut points = Vec::with_capacity(slf.view.len());
-        slf.view.for_each_point(|coord| points.push(coord.point));
-        Py::new(py, PyCoordinatesIter::new(points, slf.layout, true))
+        Py::new(
+            py,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
+        )
     }
 
     pub fn __reduce__(&self) -> PyResult<Py<PyAny>> {
@@ -263,20 +287,20 @@ impl PyCoordinates {
         Ok(dict)
     }
 
-    /// NumPy array protocol: export as a ``(N, dims)`` ``float64`` ndarray.
+    /// NumPy array protocol: export as a ``(N, dims)`` floating ndarray.
     ///
     /// Parameters
     /// ----------
-    /// dtype : float, optional
-    ///     ``None`` or ``numpy.float64`` (the native layout); other floating
-    ///     dtypes are cast with ``astype``.
+    /// dtype : float dtype, optional
+    ///     ``None`` or any floating dtype (native export is ``float64``;
+    ///     other floating dtypes are cast with ``astype``).
     /// copy : bool, optional
     ///     When ``False``, raises — coordinate export always copies.
     ///
     /// Returns
     /// -------
     /// numpy.ndarray
-    ///     The ``(N, dims)`` coordinate matrix.
+    ///     The ``(N, dims)`` coordinate matrix (``float64`` by default).
     ///
     /// Raises
     /// ------
@@ -320,6 +344,11 @@ impl PyCoordinates {
     /// nesting, as Python lists. Missing array rows are skipped. The flat
     /// columns do not preserve this shape.
     ///
+    /// Returns
+    /// -------
+    /// list
+    ///     Nested Python lists and coordinate tuples matching the topology.
+    ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
@@ -330,11 +359,11 @@ impl PyCoordinates {
             coordinates::CoordinateSource::Shape(shape) => coordinates_object(py, shape),
             coordinates::CoordinateSource::Array(storage, missing) => {
                 let nested = match storage {
-                    GeometryArrayStorage::Mixed(items) => items
+                    GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
                         .filter(|(row, _)| !missing.is_some_and(|mask| mask[*row]))
-                        .map(|(_, item)| coordinates_object(py, &item.shape))
+                        .map(|(_, shape)| coordinates_object(py, shape))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Points { coords, row_map } => {
                         let map = row_map.as_deref();
@@ -365,37 +394,46 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``.
-    pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
+    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
+    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
+    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
-            return py_bool(py, self.coordinates_equal(&other_coords));
+            return Ok(py_bool(py, self.coordinates_equal(&other_coords)));
         }
-        if other.try_iter().is_ok() {
-            return match self.coordinates_equal_sequence(other) {
-                Ok(equal) => py_bool(py, equal),
-                Err(_) => return py.NotImplemented(),
-            };
+        // Do not call `try_iter` merely to probe — that drains one-shot
+        // generators. Attempt equality once; a TypeError (not iterable)
+        // becomes NotImplemented, other errors propagate.
+        match self.coordinates_equal_sequence(other) {
+            Ok(equal) => Ok(py_bool(py, equal)),
+            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                Ok(py.NotImplemented())
+            },
+            Err(err) => Err(err),
         }
-        py.NotImplemented()
     }
 
-    /// ``coord in coords`` — whether a coordinate tuple appears in the
-    /// sequence.
-    /// Whether a coordinate tuple appears among the vertices.
+    /// Whether a coordinate tuple appears among the vertices, using the same
+    /// visible layout as iteration / ``select``.
     ///
     /// Returns
     /// -------
     /// bool
-    pub fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
-        parse_coordinate_member(item).is_some_and(|needle| {
-            let mut found = false;
-            self.view.for_each_point(|coord| {
-                if !found && coord.point == needle {
-                    found = true;
-                }
-            });
-            found
-        })
+    pub fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        use std::ops::ControlFlow;
+        let found = self
+            .view
+            .try_for_each_point(
+                &mut |coord| match self.visible_equals(py, coord.point, item) {
+                    Ok(true) => ControlFlow::Break(Ok(true)),
+                    Ok(false) => ControlFlow::Continue(()),
+                    Err(err) => ControlFlow::Break(Err(err)),
+                },
+            );
+        match found {
+            ControlFlow::Break(result) => result,
+            ControlFlow::Continue(()) => Ok(false),
+        }
     }
 
     /// First index of an equal coordinate in ``[start, stop)``.
@@ -421,11 +459,12 @@ impl PyCoordinates {
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
     pub fn index(
         &self,
+        py: Python<'_>,
         value: &Bound<'_, PyAny>,
         start: i64,
         stop: Option<i64>,
     ) -> PyResult<usize> {
-        let needle = parse_coordinate_member(value);
+        use std::ops::ControlFlow;
         let len = self.view.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
@@ -437,19 +476,25 @@ impl PyCoordinates {
         };
         let start = clamp(start);
         let stop = stop.map_or(len, clamp);
-        if let Some(needle) = needle {
-            let mut position = 0_usize;
-            let mut found = None;
-            self.view.for_each_point(|coord| {
-                if found.is_none() && position >= start && position < stop && coord.point == needle
-                {
-                    found = Some(position);
-                }
-                position += 1;
-            });
-            if let Some(position) = found {
-                return Ok(position);
+        let mut position = 0_usize;
+        let found = self.view.try_for_each_point(&mut |coord| {
+            if position >= stop {
+                return ControlFlow::Break(Ok(None));
             }
+            if position >= start {
+                match self.visible_equals(py, coord.point, value) {
+                    Ok(true) => return ControlFlow::Break(Ok(Some(position))),
+                    Ok(false) => {},
+                    Err(err) => return ControlFlow::Break(Err(err)),
+                }
+            }
+            position += 1;
+            ControlFlow::Continue(())
+        });
+        match found {
+            ControlFlow::Break(Ok(Some(position))) => return Ok(position),
+            ControlFlow::Break(Err(err)) => return Err(err),
+            ControlFlow::Break(Ok(None)) | ControlFlow::Continue(()) => {},
         }
         let value = value
             .repr()
@@ -460,7 +505,8 @@ impl PyCoordinates {
         )))
     }
 
-    /// Number of coordinates equal to ``value``.
+    /// Number of coordinates equal to ``value`` under the visible layout
+    /// (same representation as iteration / ``select``).
     ///
     /// Parameters
     /// ----------
@@ -470,17 +516,26 @@ impl PyCoordinates {
     /// Returns
     /// -------
     /// int
-    pub fn count(&self, value: &Bound<'_, PyAny>) -> usize {
-        let Some(needle) = parse_coordinate_member(value) else {
-            return 0;
-        };
+    pub fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        // Sequential run walk via the shared visible-equality abstraction —
+        // membership / index / count cannot drift from iteration.
         let mut count = 0_usize;
-        self.view.for_each_point(|coord| {
-            if coord.point == needle {
-                count += 1;
-            }
-        });
-        count
+        let walk = self
+            .view
+            .try_for_each_point(
+                &mut |coord| match self.visible_equals(py, coord.point, value) {
+                    Ok(true) => {
+                        count += 1;
+                        std::ops::ControlFlow::Continue(())
+                    },
+                    Ok(false) => std::ops::ControlFlow::Continue(()),
+                    Err(err) => std::ops::ControlFlow::Break(err),
+                },
+            );
+        match walk {
+            std::ops::ControlFlow::Break(err) => Err(err),
+            std::ops::ControlFlow::Continue(()) => Ok(count),
+        }
     }
 
     pub fn __repr__(&self) -> String {

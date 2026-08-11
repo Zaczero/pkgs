@@ -8,6 +8,8 @@ float-edge rows are defined by its integer columns, which the reference
 itself fails from degrees).
 """
 
+import math
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -42,32 +44,32 @@ def test_pluscode_encodes_canonical_vectors() -> None:
         gm.pluscode_encode(0, 0, length=16)
 
 
-def test_pluscode_clips_and_wraps_out_of_range_bare_coordinates() -> None:
-    # Regression: bare lon/lat pairs follow the canonical Open Location Code
-    # convention — latitude clipped to [-90, 90], longitude wrapped into
-    # [-180, 180) — instead of being rejected by the generic grid lon/lat
-    # domain validator. The clipped/wrapped equivalents encode identically.
-    # Longitude wraps (181 -> -179, -181 -> 179, 540 -> -180).
-    assert gm.pluscode_encode(181.0, 20.0) == gm.pluscode_encode(-179.0, 20.0)
-    assert gm.pluscode_encode(-181.0, 20.0) == gm.pluscode_encode(179.0, 20.0)
-    assert gm.pluscode_encode(540.0, 20.0) == gm.pluscode_encode(-180.0, 20.0)
-    # Latitude clips (91 -> 90, -91 -> -90).
-    assert gm.pluscode_encode(8.0, 91.0) == gm.pluscode_encode(8.0, 90.0)
-    assert gm.pluscode_encode(8.0, -91.0) == gm.pluscode_encode(8.0, -90.0)
-    # Non-finite coordinates are still rejected (only the domain gate is lifted).
+def test_pluscode_rejects_out_of_range_bare_coordinates() -> None:
+    # Bare lon/lat are domain-validated (no silent OLC clip/wrap): out-of-range
+    # finite coordinates raise InvalidGeometryError rather than mint a code for
+    # a different location. Non-finite and geometry inputs stay rejected.
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_encode(181.0, 20.0)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_encode(-181.0, 20.0)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_encode(8.0, 91.0)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_encode(8.0, -91.0)
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(float('nan'), 0.0)
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(0.0, float('inf'))
-    # Geometry inputs carry real spatial data and stay domain-validated.
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(gm.Point(181.0, 91.0, crs=4326))
+    # In-domain still encodes.
+    assert isinstance(gm.pluscode_encode(-179.0, 20.0), str)
 
 
 def test_pluscode_polygon_short_codes_and_validity() -> None:
     # decoding.csv vectors: code -> (lng_lo, lat_lo, lng_hi, lat_hi).
     area = gm.pluscode_polygon('8FVC2222+22')
-    assert area.crs == 'EPSG:4326'
+    assert area.crs == 'OGC:CRS84'
     assert area.bounds == (8.0, 47.0, 8.000125, 47.000125)
     assert gm.pluscode_polygon('62G20000+').bounds == (-180.0, 0.0, -179.0, 1.0)
     assert gm.pluscode_polygon('8FVC2222+22GG').bounds == (
@@ -84,15 +86,17 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
     # normalized.
     assert gm.pluscode_recover('2222+22', 0.0, 89.6) == 'CFX22222+22'
     assert gm.pluscode_recover('8fvc2222+22', 0, 0) == '8FVC2222+22'
-    assert gm.pluscode_shorten(
-        '9C3W9QCJ+2VX', reference=-1.217765625, lat=51.3701125
-    ) == '+2VX'
-    assert gm.pluscode_recover(
-        '9QCJ+2VX', reference=-1.217765625, lat=51.3852125
-    ) == '9C3W9QCJ+2VX'
+    assert (
+        gm.pluscode_shorten('9C3W9QCJ+2VX', reference=-1.217765625, lat=51.3701125)
+        == '+2VX'
+    )
+    assert (
+        gm.pluscode_recover('9QCJ+2VX', reference=-1.217765625, lat=51.3852125)
+        == '9C3W9QCJ+2VX'
+    )
     bulk = gm.pluscode_polygon(['8FVC2222+22', '62G20000+'])
     assert isinstance(bulk, gm.GeometryArray)
-    assert bulk.crs == 'EPSG:4326'
+    assert bulk.crs == 'OGC:CRS84'
     assert bulk.bounds.tolist() == [
         [8.0, 47.0, 8.000125, 47.000125],
         [-180.0, 0.0, -179.0, 1.0],
@@ -115,6 +119,10 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
         gm.pluscode_shorten('7FG49Q00+', 2.775, 20.375)
     with pytest.raises(gm.ParseError, match='short plus code'):
         gm.pluscode_recover('not-a-code', 0, 0)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_shorten('9C3W9QCJ+2VX', -181.0, 51.37)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.pluscode_recover('9QCJ+2VX', -1.2, 91.0)
 
 
 def test_osm_shortlink_round_trips() -> None:
@@ -169,6 +177,33 @@ def test_osm_shortlink_round_trips() -> None:
     with pytest.raises(gm.ParseError, match='too short'):
         gm.osm_shortlink_location('A')
     assert isinstance(zoom, int)
+
+
+def test_osm_shortlink_normalizes_admitted_pole_neighborhoods() -> None:
+    for pole, away_from_equator in ((90.0, math.inf), (-90.0, -math.inf)):
+        hemisphere = math.copysign(1.0, pole)
+        for latitude in (
+            pole,
+            math.nextafter(pole, 0.0),
+            math.nextafter(pole, away_from_equator),
+            hemisphere * 89.999_999_999_9,
+            hemisphere * 89.999_999,
+            hemisphere * 89.99,
+        ):
+            code = gm.osm_shortlink_encode(gm.Point(10.0, latitude, crs=4326))
+            assert math.copysign(1.0, gm.osm_shortlink_location(code)[1]) == hemisphere
+    north = gm.osm_shortlink_encode(0.0, 90.0)
+    south = gm.osm_shortlink_encode(0.0, -90.0)
+    assert north != south
+    assert gm.osm_shortlink_encode(0.0, math.nextafter(90.0, math.inf)) == north
+    assert gm.osm_shortlink_encode(0.0, 90.000_000_000_000_5) == north
+    assert gm.osm_shortlink_encode([0.0, 0.0], [90.0, 90.000_000_000_000_5]) == [
+        north,
+        north,
+    ]
+    pole = gm.Point(0.0, 90.0, crs=4326)
+    assert gm.osm_shortlink_encode(pole) == north
+    assert gm.osm_shortlink_encode(pole.to_crs(3995)) == north
 
 
 def test_geocode_encoders_broadcast_coordinate_lanes_and_propagate_missing() -> None:

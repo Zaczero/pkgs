@@ -1,10 +1,10 @@
 use std::num::NonZeroU32;
 
-use super::metric::{MetricCtx, OpCtx};
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::{CrsError, MetricModel, ResolvedMetric};
+use crate::dispatch::metric::{MetricCtx, OpCtx};
 use crate::error::Result;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, Dimension, EmptyKind, MeasureRange, Shape,
@@ -13,11 +13,11 @@ use crate::geometry::{
 use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_substring_shape, metric_concave_hull,
-    metric_constructive_shape, metric_frechet_densified, metric_hausdorff_densified,
-    metric_interpolate_m, metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
-    metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_optional_constructive_shape, pair_distance_resolved_result,
-    pair_dwithin_resolved_result,
+    metric_constructive_shape, metric_constructive_shape_budgeted, metric_frechet_densified,
+    metric_hausdorff_densified, metric_interpolate_m, metric_maximum_inscribed_radius,
+    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_optional_constructive_shape,
+    pair_distance_resolved_result, pair_dwithin_resolved_result,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -106,6 +106,52 @@ pub(crate) fn unary_buffer(
     )
 }
 
+pub(crate) fn unary_buffer_budgeted(
+    data: &ShapeData,
+    ctx: &OpCtx<'_>,
+    distance: &F64Param,
+    cap_style: BufferCapStyle,
+    join_style: BufferJoinStyle,
+    quadrant_segments: NonZeroU32,
+    miter_limit: Positive,
+    side: BufferSide,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    let distance = distance.get(ctx.lane.row());
+    if same_topological_coordinate(distance, 0.0) {
+        return match side {
+            BufferSide::Both => data.shape().buffer_with_style_budgeted(
+                distance,
+                cap_style,
+                join_style,
+                quadrant_segments,
+                miter_limit,
+                budget,
+            ),
+            side => data.shape().buffer_sided(distance, side),
+        };
+    }
+    let model = ctx.metric.require_model("buffer")?;
+    metric_constructive_shape_budgeted(
+        model,
+        ctx.frame.crs_str(),
+        data.shape(),
+        distance,
+        budget,
+        |shape, d, budget| match side {
+            BufferSide::Both => shape.buffer_with_style_budgeted(
+                d,
+                cap_style,
+                join_style,
+                quadrant_segments,
+                miter_limit,
+                budget,
+            ),
+            side => shape.buffer_sided(d, side),
+        },
+    )
+}
+
 /// Offset-curve kernel shared by the spine-routed free function.
 pub(crate) fn unary_offset_curve(
     data: &ShapeData,
@@ -128,6 +174,38 @@ pub(crate) fn unary_offset_curve(
         data.shape(),
         distance,
         |shape, d| shape.offset_curve(d, join_style, quadrant_segments, miter_limit),
+    )
+}
+
+pub(crate) fn unary_offset_curve_budgeted(
+    data: &ShapeData,
+    ctx: &OpCtx<'_>,
+    distance: &F64Param,
+    join_style: BufferJoinStyle,
+    quadrant_segments: NonZeroU32,
+    miter_limit: Positive,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    let distance = distance.get(ctx.lane.row());
+    if same_topological_coordinate(distance, 0.0) {
+        return data.shape().offset_curve_budgeted(
+            distance,
+            join_style,
+            quadrant_segments,
+            miter_limit,
+            budget,
+        );
+    }
+    let model = ctx.metric.require_model("offset_curve")?;
+    metric_constructive_shape_budgeted(
+        model,
+        ctx.frame.crs_str(),
+        data.shape(),
+        distance,
+        budget,
+        |shape, d, budget| {
+            shape.offset_curve_budgeted(d, join_style, quadrant_segments, miter_limit, budget)
+        },
     )
 }
 
@@ -364,14 +442,50 @@ pub(crate) fn unary_smooth(
     )
 }
 
+pub(crate) fn unary_smooth_budgeted(
+    data: &ShapeData,
+    ctx: &OpCtx<'_>,
+    iterations: &I64Param,
+    method: SmoothMethod,
+    keep_endpoints: bool,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    data.shape().smooth_budgeted(
+        iterations.get(ctx.lane.row()) as i32,
+        method,
+        keep_endpoints,
+        budget,
+    )
+}
+
 /// Segmentize kernel shared by the spine-routed free function.
 pub(crate) fn unary_segmentize(
     data: &ShapeData,
     ctx: &OpCtx<'_>,
     max_segment_length: &F64Param,
 ) -> Result<Shape> {
-    data.shape()
-        .segmentize(max_segment_length.get(ctx.lane.row()))
+    let metric = ctx.metric.require_resolved("segmentize")?;
+    let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_segment_length");
+    let length = max_segment_length.get(ctx.lane.row());
+    match metric {
+        // A geographic CRS measures and places along the ellipsoid: the
+        // distance the caller named is a real-world one, exactly as it is for
+        // `length`. `segmentize` only INSERTS vertices, so every original
+        // survives bit-exactly under either placement.
+        ResolvedMetric::Geodesic { geodesic, .. } => data.shape().segmentize_budgeted(
+            length,
+            crate::geometry::SegmentPlacement::Geodesic(geodesic),
+            &mut budget,
+        ),
+        // Projected: `to_metre` is 1.0 for the CRS's own units and the axis
+        // factor under `unit='meters'`, so a metre input divides into
+        // coordinate units the same way `buffer`'s distance does.
+        ResolvedMetric::Planar { to_metre } => data.shape().segmentize_budgeted(
+            length / to_metre.get(),
+            crate::geometry::SegmentPlacement::Planar,
+            &mut budget,
+        ),
+    }
 }
 
 /// Densify kernel shared by the spine-routed free function.
@@ -411,7 +525,7 @@ pub(crate) fn unary_length(data: &ShapeData, ctx: &OpCtx<'_>) -> Result<f64> {
 
 /// 3D length kernel shared by the spine-routed free function.
 pub(crate) fn unary_length_3d(data: &ShapeData, ctx: &OpCtx<'_>) -> Result<f64> {
-    let to_metre = crate::crs::ensure_3d_metric(ctx.frame.crs_str())?;
+    let to_metre = ctx.metric.require_model("length_3d")?.coordinate_scale();
     if data.shape().is_empty() || data.shape().topological_dimension() == Dimension::Point {
         return Ok(0.0);
     }
@@ -658,7 +772,7 @@ pub(crate) fn binary_distance_3d(
     right: &ShapeData,
     ctx: &OpCtx<'_>,
 ) -> Result<f64> {
-    let to_metre = crate::crs::ensure_3d_metric(ctx.frame.crs_str())?;
+    let to_metre = ctx.metric.require_model("distance_3d")?.coordinate_scale();
     if left.axes_all_z() && right.axes_all_z() {
         return Ok(scale_length(
             crate::geometry::distance_3d_with_parts(

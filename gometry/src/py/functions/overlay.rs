@@ -9,7 +9,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 pub(crate) use crate::geometry::OverlayOp;
-use crate::*;
+use crate::{
+    Frame, GeometryErrorKind, PyGeometry, PyGeometryArray, Shape, SimplifyMethod, Typed,
+    exact_geometry, exact_geometry_array, geometry,
+};
 
 fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
     if let Some(array) = exact_geometry_array(values) {
@@ -26,14 +29,19 @@ fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
 /// `intersection_all`, `symmetric_difference_all`): collect the input shapes
 /// under one shared frame and fold them with `kernel` (GIL released). The four
 /// reductions differ only in that kernel. Aggregates are always lenient
-/// (missing rows skipped; SQL/pandas semantics).
+/// (missing rows skipped; SQL/pandas semantics). Geographic frames pass
+/// `geographic=true` so antimeridian-crossing operands are split first —
+/// the same gate binary overlay uses.
 fn reduce_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
-    kernel: impl FnOnce(&[Shape], crate::geometry::Strictness) -> crate::error::Result<Shape> + Send,
+    kernel: impl FnOnce(&[Shape], bool, crate::geometry::Strictness) -> crate::error::Result<Shape>
+    + Send,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let shape = py.detach(move || kernel(&shapes, crate::geometry::Strictness::Lenient))?;
+    let geographic = crate::geometry::is_geographic_frame(&metadata);
+    let shape =
+        py.detach(move || kernel(&shapes, geographic, crate::geometry::Strictness::Lenient))?;
     Ok(PyGeometry::typed_with_epoch(
         shape,
         metadata.crs_owned(),
@@ -245,7 +253,7 @@ pub(crate) fn symmetric_difference(
 /// 'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
 #[pyfunction]
 pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::union_all)
+    reduce_all(py, values, Shape::union_all_topo)
 }
 
 /// Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -300,7 +308,8 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
             .into(),
         );
     }
-    let shape = py.detach(move || crate::geometry::coverage_union(&shapes))?;
+    let geographic = crate::geometry::is_geographic_frame(&metadata);
+    let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, geographic))?;
     Ok(PyGeometry::typed_with_epoch(
         shape,
         metadata.crs_owned(),
@@ -423,7 +432,7 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
 #[pyfunction]
 pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::intersection_all)
+    reduce_all(py, values, Shape::intersection_all_topo)
 }
 
 /// Symmetric difference of many geometries (planar overlay).
@@ -461,7 +470,7 @@ pub(crate) fn symmetric_difference_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
 ) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::symmetric_difference_all)
+    reduce_all(py, values, Shape::symmetric_difference_all_topo)
 }
 
 /// Test whether geometries form a valid polygonal coverage.
@@ -475,9 +484,9 @@ pub(crate) fn symmetric_difference_all(
 /// ----------
 /// values : Geometry, GeometryArray, or iterable of Geometry
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
+///
 /// gap_width : float, default 0.0
-///     Also flag boundaries that face a neighbor across a gap narrower
-///     than this (0 disables gap detection).
+///     Gap width in coordinate units; 0 disables gap detection.
 ///
 /// Returns
 /// -------
@@ -523,9 +532,9 @@ pub(crate) fn coverage_is_valid(values: &Bound<'_, PyAny>, gap_width: f64) -> Py
 /// ----------
 /// values : Geometry, GeometryArray, or iterable of Geometry
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
+///
 /// gap_width : float, default 0.0
-///     Also flag boundaries that face a neighbor across a gap narrower
-///     than this (0 disables gap detection).
+///     Gap width in coordinate units; 0 disables gap detection.
 ///
 /// Returns
 /// -------
@@ -656,8 +665,9 @@ pub(crate) fn coverage_simplify(
 /// grid_size : float, default 0.0
 ///     Vertex snapping grid in coordinate units; ``0`` preserves input
 ///     coordinates and disables snapping.
+///
 /// gap_width : float, default 0.0
-///     Merge enclosed gaps narrower than this into a neighbor (0 keeps
+///     Merge enclosed gaps narrower than this coordinate-space width (0 keeps
 ///     gaps).
 /// overlap_rule : str, default 'longest_border'
 ///     Which row keeps a region covered more than once:

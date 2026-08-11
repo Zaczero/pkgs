@@ -1,12 +1,16 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::borrow::Cow;
 use std::collections::BinaryHeap;
 
-use super::*;
 use crate::error::Result;
+use crate::geometry::coverage::{
+    AABB, CoverageRow, HashMap, HashMapExt as _, Reverse, edge_row_occurrences, valid_coverage_rows,
+};
+use crate::geometry::{
+    BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
+    Polygon, Ring, Segment, SegmentIndex, Shape, SimplifyMethod, XY, dedup_consecutive_points,
+    ordered_edge, orientation, same_point, same_topological_coordinate, segments_intersect,
+    undirected_segment_edge_key,
+};
 
 // --- Simplification ---------------------------------------------------------
 
@@ -434,6 +438,7 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
         return Err(GeometryErrorKind::NonNegativeFinite("tolerance", tolerance).into());
     }
     let prepared = valid_coverage_rows(rows, "coverage_simplify")?;
+    let prepared = prepared.rows;
     if same_topological_coordinate(tolerance, 0.0) {
         return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
     }

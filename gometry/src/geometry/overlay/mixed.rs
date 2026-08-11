@@ -1,5 +1,15 @@
-use super::*;
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::overlay::{
+    DimensionalParts, OverlayOp, dedup_segments_to_coordseqs, for_each_segment_overlap_point,
+    node_segments, rect_polygon, self_node_segments, self_node_segments_sourced,
+};
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates, HashSet, Orientation, Point, PointBatchTester, PointKey,
+    Polygon, RUN_NODING_MIN, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY,
+    for_each_candidate_pair, line_segments, orientation, same_point, segment_cross_point,
+    segment_midpoint, single_chain, undirected_segment_edge_key,
+};
 pub(crate) fn overlay_points(
     left_shape: &Shape,
     right_shape: &Shape,
@@ -124,12 +134,15 @@ pub(crate) fn overlay_lines_general(
 
     let mut left_keys: HashSet<(PointKey, PointKey)> = HashSet::new();
     let mut right_keys: HashSet<(PointKey, PointKey)> = HashSet::new();
-    for (atom, &source) in atoms.iter().zip(&sources) {
-        let source = source as usize;
-        if source < left_lines_end {
-            left_keys.insert(undirected_segment_edge_key(*atom));
-        } else if source < lines_end {
-            right_keys.insert(undirected_segment_edge_key(*atom));
+    for (atom, owners) in atoms.iter().zip(sources.iter()) {
+        let key = undirected_segment_edge_key(*atom);
+        for &(source, _) in owners {
+            let source = source as usize;
+            if source < left_lines_end {
+                left_keys.insert(key);
+            } else if source < lines_end {
+                right_keys.insert(key);
+            }
         }
     }
 
@@ -150,8 +163,12 @@ pub(crate) fn overlay_lines_general(
 
     let mut seen: HashSet<(PointKey, PointKey)> = HashSet::new();
     let mut selected: Vec<CoordSeq> = Vec::new();
-    for (atom, &source) in atoms.iter().zip(&sources) {
-        if source as usize >= lines_end {
+    for (atom, owners) in atoms.iter().zip(sources.iter()) {
+        // An atom is line-sourced when any owner is in the line range.
+        let line_owned = owners
+            .iter()
+            .any(|&(source, _)| (source as usize) < lines_end);
+        if !line_owned {
             continue; // boundary-sourced atoms are handled below
         }
         let key = undirected_segment_edge_key(*atom);
@@ -200,13 +217,19 @@ pub(crate) fn overlay_lines_general(
         // from the same canonical noding, so a shared border keys identically.
         let right_boundary_keys: HashSet<(PointKey, PointKey)> = atoms
             .iter()
-            .zip(&sources)
-            .filter(|(_, source)| **source as usize >= left_boundaries_end)
+            .zip(sources.iter())
+            .filter(|(_, owners)| {
+                owners
+                    .iter()
+                    .any(|&(source, _)| source as usize >= left_boundaries_end)
+            })
             .map(|(atom, _)| undirected_segment_edge_key(*atom))
             .collect();
-        for (atom, &source) in atoms.iter().zip(&sources) {
-            let source = source as usize;
-            if !(lines_end..left_boundaries_end).contains(&source) {
+        for (atom, owners) in atoms.iter().zip(sources.iter()) {
+            let left_boundary_owned = owners
+                .iter()
+                .any(|&(source, _)| (lines_end..left_boundaries_end).contains(&(source as usize)));
+            if !left_boundary_owned {
                 continue;
             }
             let key = undirected_segment_edge_key(*atom);

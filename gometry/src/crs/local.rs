@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Local conformal projection planning.
 //!
 //! The planner is deliberately extent-aware: every candidate is checked with
@@ -11,8 +7,11 @@
 
 use std::borrow::Cow;
 
-use super::*;
 use crate::crs::in_core::Pole;
+use crate::crs::{
+    AreaOfInterest, CrsError, Shape, UtmCatalogOptions, factors, info, is_wgs84_lonlat, normalize,
+    parse_epsg, to_projjson, transform, utm_crs, utm_zones,
+};
 use crate::error::Result;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).

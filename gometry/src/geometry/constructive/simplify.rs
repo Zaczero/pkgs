@@ -2,13 +2,20 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use std::simd::Select as _;
+use std::simd::cmp::SimdPartialOrd as _;
+
 use crate::NonNegative;
 use crate::error::Result;
+use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, LineSeq, Orientation, Point, Polygon,
+    REDUCE_LANES, ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, carry_ordinates,
+    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
+    point_segment_distance, point_segment_distance_squared, same_point,
+    simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area, unique_xy_points,
+    vw_area_tolerance, wrap_index,
+};
 /// One chain through iterative Douglas-Peucker as a keep-mask over the
 /// original points: surviving vertices are the INPUT vertices (bit-exact,
 /// full Z/M), endpoints always survive, and a range splits at its
@@ -21,7 +28,9 @@ use crate::error::Result;
 /// products rescue through the exact general kernel.
 pub(crate) fn rdp_chain(points: &CoordSeq, tolerance: f64) -> Option<Vec<Point>> {
     let mut keep = Vec::new();
-    let kept = rdp_keep(points.xs(), points.ys(), tolerance, &mut keep)?;
+    // Scalar callers own a one-shot work stack; the packed path reuses one.
+    let mut stack = Vec::new();
+    let kept = rdp_keep(points.xs(), points.ys(), tolerance, &mut keep, &mut stack)?;
     if kept == points.len() {
         return None;
     }
@@ -34,15 +43,17 @@ pub(crate) fn rdp_chain(points: &CoordSeq, tolerance: f64) -> Option<Vec<Point>>
     )
 }
 
-/// The Douglas-Peucker keep mask over raw columns: `keep` is cleared and
-/// refilled (reusable across rows); `Some(kept_count)` unless the chain
-/// is too short to simplify. The packed-array lane appends kept vertices
-/// straight into new CSR columns from this mask.
+/// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
+/// cleared and refilled (reusable across packed-array rows); `Some(kept_count)`
+/// unless the chain is too short to simplify. The packed-array lane appends
+/// kept vertices straight into new CSR columns from this mask. `stack` must
+/// stay batch-local — never a receiver cache or lock (free-threading).
 pub(crate) fn rdp_keep(
     xs: &[f64],
     ys: &[f64],
     tolerance: f64,
     keep: &mut Vec<bool>,
+    stack: &mut Vec<(usize, usize)>,
 ) -> Option<usize> {
     let count = xs.len();
     if count <= 2 {
@@ -54,12 +65,13 @@ pub(crate) fn rdp_keep(
     keep[0] = true;
     keep[count - 1] = true;
     let mut kept = 2_usize;
-    let mut stack = vec![(0_usize, count - 1)];
+    stack.clear();
+    stack.push((0_usize, count - 1));
     while let Some((start, end)) = stack.pop() {
         if end - start < 2 {
             continue;
         }
-        if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance_squared) {
+        if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared) {
             keep[farthest] = true;
             kept += 1;
             stack.push((start, farthest));
@@ -74,11 +86,20 @@ pub(crate) fn rdp_keep(
 /// bulk (the scalar loop compiles to serialized `mulsd`); among EQUAL
 /// maxima the surviving split vertex may differ from scalar order — any
 /// farthest vertex is a correct split.
+///
+/// `tolerance` is the raw distance-scale threshold (must stay available when
+/// `tolerance_squared` overflows to +inf — recovery from tol² alone is
+/// impossible).
+#[expect(
+    clippy::too_many_lines,
+    reason = "SIMD + unsquared cold path must stay one decision tree"
+)]
 pub(crate) fn rdp_split(
     xs: &[f64],
     ys: &[f64],
     start: usize,
     end: usize,
+    tolerance: f64,
     tolerance_squared: f64,
 ) -> Option<usize> {
     let (ax, ay) = (xs[start], ys[start]);
@@ -102,9 +123,41 @@ pub(crate) fn rdp_split(
             }
         }
     };
-    if !threshold.is_finite() || chord_squared <= 0.0 {
-        exact_scan(&mut best, &mut farthest);
-        return (best > tolerance_squared).then_some(farthest);
+    // When tolerance² underflows/overflows or the chord collapses, recover
+    // with unsquared distances against the raw (positive) tolerance. Once
+    // only tolerance² survives the public API, recovery is impossible — so
+    // callers pass both.
+    if !threshold.is_finite()
+        || threshold == 0.0
+        || !threshold.is_normal()
+        || chord_squared <= 0.0
+        || !tolerance_squared.is_normal()
+    {
+        // Prefer the raw finite distance tolerance (survives when tol² is
+        // +inf). Fall back to sqrt of a finite square; +inf/NaN/negative
+        // raw means "no finite threshold" → never split (endpoints only).
+        let tol = if tolerance > 0.0 && tolerance.is_finite() {
+            tolerance
+        } else if tolerance_squared.is_normal() {
+            tolerance_squared.sqrt()
+        } else if tolerance_squared > 0.0 && tolerance_squared.is_finite() {
+            tolerance_squared.sqrt().max(f64::MIN_POSITIVE)
+        } else {
+            return None;
+        };
+        let chord = Segment {
+            start: XY::new(ax, ay),
+            end: XY::new(bx, by),
+        };
+        let mut best_d = f64::NEG_INFINITY;
+        for index in start + 1..end {
+            let d = point_segment_distance(XY::new(xs[index], ys[index]), chord);
+            if d > best_d {
+                best_d = d;
+                farthest = index;
+            }
+        }
+        return (best_d > tol).then_some(farthest);
     }
     let mut index = start + 1;
     if end - index >= REDUCE_LANES {
@@ -210,19 +263,20 @@ pub(crate) fn raw_offset_loop(
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<(Vec<f64>, Vec<f64>)> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
-    let plan = WalkPlan::new(strict, true, distance, rule, step_angle)?;
+    let Some(plan) = WalkPlan::new(strict, true, distance, rule, step_angle) else {
+        return Ok(None);
+    };
     // Capacity: two offset points per edge, up to one reflex insert per
     // vertex, and one full turn (4 quadrants) of arc steps.
-    let mut xs = Vec::with_capacity(3 * strict.len() + 4 * quadrant_segments as usize + 2);
-    let mut ys = Vec::with_capacity(xs.capacity());
-    plan.emit(step_angle, &mut xs, &mut ys);
-    if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return None;
-    }
-    Some((xs, ys))
+    let Some(columns) = materialize_walk(&plan, step_angle, false, budget)? else {
+        return Ok(None);
+    };
+    let (xs, ys, _) = columns.into_columns();
+    Ok(Some((xs, ys)))
 }
 
 /// Validate buffer style parameters before touching the winding engine.
@@ -533,12 +587,12 @@ impl Shape {
 
     pub fn simplify_vw_raw(&self, tolerance: f64) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let area_tolerance = vw_area_tolerance(tolerance);
         // Native heap-driven Visvalingam-Whyatt — no geo round-trip, and
-        // surviving vertices KEEP their Z/M (matching the DP route).
-        let vw_line = |points: &CoordSeq| -> CoordSeq { vw_filter(points, area_tolerance) };
+        // surviving vertices KEEP their Z/M (matching the DP route). Area
+        // threshold is derived inside `vw_keep` after any scale frame.
+        let vw_line = |points: &CoordSeq| -> CoordSeq { vw_filter(points, tolerance) };
         let vw_ring = |ring: &Ring| -> Ring {
-            Ring::from_trusted_closed(vw_filter(ring.coords(), area_tolerance))
+            Ring::from_trusted_closed(vw_filter(ring.coords(), tolerance))
         };
         let vw_polygon = |polygon: &Polygon| -> Polygon {
             Polygon::new(

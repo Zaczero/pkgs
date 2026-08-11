@@ -4,7 +4,7 @@
 //! these exact transforms, so they match the C++/Go/s2sphere references
 //! bit-for-bit at the integer (IJ) layer.
 
-use super::cellid::Face;
+use crate::grid::s2::cellid::Face;
 
 /// Number of cube faces.
 pub(crate) const NUM_FACES: u8 = 6;
@@ -45,6 +45,10 @@ impl Point3 {
 
     /// The angle to `other` in radians (numerically stable for small and
     /// near-π angles, unlike plain `acos` of the dot product).
+    #[expect(
+        dead_code,
+        reason = "spherical angle helper retained for S2 identity; area path uses factored solid-angle formula"
+    )]
     pub(crate) fn angle(self, other: Self) -> f64 {
         let cross = self.cross(other);
         (cross.x * cross.x + cross.y * cross.y + cross.z * cross.z)
@@ -57,6 +61,32 @@ impl Point3 {
 pub(crate) fn lonlat_to_point(lon: f64, lat: f64) -> Point3 {
     let (sin_lon, cos_lon) = lon.to_radians().sin_cos();
     let (sin_lat, cos_lat) = lat.to_radians().sin_cos();
+    Point3::new(cos_lat * cos_lon, cos_lat * sin_lon, sin_lat)
+}
+
+/// The closed-cell owner representation of an admitted lon/lat point.
+///
+/// This is deliberately narrower than [`lonlat_to_point`]: ordinary S2 ID
+/// construction retains the upstream trig rounding, while a coverage point
+/// owner must enumerate *every* cell meeting a physical cube seam or pole.
+/// Exact face centres and accepted normalized poles therefore need literal
+/// zero/one components; `sin(90°)`'s residual is enough to select one face
+/// and silently omit its closed-set neighbours.
+pub(crate) fn lonlat_to_closed_owner_point(lon: f64, lat: f64) -> Point3 {
+    if lat.to_bits() == 90.0_f64.to_bits() {
+        return Point3::new(0.0, 0.0, 1.0);
+    }
+    if lat.to_bits() == (-90.0_f64).to_bits() {
+        return Point3::new(0.0, 0.0, -1.0);
+    }
+    let (sin_lat, cos_lat) = lat.to_radians().sin_cos();
+    let (sin_lon, cos_lon) = match lon.to_bits() {
+        0 | 0x8000_0000_0000_0000 => (0.0, 1.0),
+        bits if bits == 90.0_f64.to_bits() => (1.0, 0.0),
+        bits if bits == (-90.0_f64).to_bits() => (-1.0, 0.0),
+        bits if bits == 180.0_f64.to_bits() || bits == (-180.0_f64).to_bits() => (0.0, -1.0),
+        _ => lon.to_radians().sin_cos(),
+    };
     Point3::new(cos_lat * cos_lon, cos_lat * sin_lon, sin_lat)
 }
 

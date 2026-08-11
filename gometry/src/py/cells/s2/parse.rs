@@ -6,7 +6,7 @@ use pyo3::{PyAny, PyResult};
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Shape};
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
-use crate::py::cells::s2::*;
+use crate::py::cells::{Bound, PyAnyMethods as _};
 use crate::py::errors::{GeometryError, integer_parameter_error};
 use crate::py_i64_required;
 

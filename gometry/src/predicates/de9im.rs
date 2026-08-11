@@ -2,10 +2,13 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::super::*;
+use crate::{
+    Bound, DefaultedF64Input, Predicate, Py, PyResult, Python, broadcast2, finite_f64_required,
+    predicate_broadcast, pyfunction, relate_pattern_broadcast, relate_string_broadcast,
+    validate_equals_exact_tolerance,
+};
 /// Compute the DE-9IM intersection matrix string for ``left`` and
 /// ``right``.
 ///
@@ -152,7 +155,7 @@ pub(crate) fn equals_identical(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    use pyo3::IntoPyObjectExt;
+    use pyo3::IntoPyObjectExt as _;
 
     let left_frame = identity_frame(left);
     let right_frame = identity_frame(right);
@@ -241,7 +244,7 @@ pub(crate) fn equals_exact(
     include_z: bool,
     include_m: bool,
 ) -> PyResult<Py<PyAny>> {
-    use pyo3::IntoPyObjectExt;
+    use pyo3::IntoPyObjectExt as _;
     // Delegate any array operand to the `GeometryArray::equals_exact` method —
     // it owns the packed-polygon/line SIMD fast paths and the scalar-or-array
     // tolerance lane. `equals_exact` is symmetric, so a scalar-left/array-right

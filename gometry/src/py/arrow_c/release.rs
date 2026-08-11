@@ -1,18 +1,34 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ptr;
 
-use crate::py::arrow_c::*;
+use crate::py::arrow_c::{
+    ArrayPrivate, ArrowArray, ArrowArrayStream, ArrowReleaseSlot, ArrowSchema, SchemaPrivate,
+    StreamPrivate, array_capsule_name, c_char, c_int, c_void, capsule_destructor, empty_array, ffi,
+    schema_capsule_name, stream_capsule_name, used_array_capsule_name, used_schema_capsule_name,
+    used_stream_capsule_name,
+};
 
 trait ArrowReleaseTree: ArrowReleaseSlot {
     type Private;
 
+    /// Return the address of this live shell's `private_data` field.
+    ///
+    /// # Safety
+    /// `ptr` must point to a live, properly aligned Arrow shell of `Self`.
     unsafe fn private_data_slot(ptr: *mut Self) -> *mut *mut c_void;
+    /// Release the private ownership tree stored behind an exported shell.
+    ///
+    /// # Safety
+    /// `private` must be the unique pointer produced by `Box::into_raw` for
+    /// `Self::Private`, and none of its children may be released elsewhere.
     unsafe fn release_private(private: *mut Self::Private);
 }
 
+/// Release an exported Arrow shell's private ownership tree once.
+///
+/// # Safety
+/// `value` must be null or point to a live exported `T`. No concurrent access
+/// or release may occur, and its callback/private slots must originate from
+/// this module's exporter.
 unsafe fn release_tree<T: ArrowReleaseTree>(value: *mut T) {
     if value.is_null() {
         return;
@@ -97,24 +113,44 @@ impl ArrowReleaseTree for ArrowArrayStream {
     }
 }
 
+/// Release a schema exported by gometry.
+///
+/// # Safety
+/// `schema` must be null or a live gometry-exported Arrow schema, with no
+/// concurrent access or release.
 pub(crate) unsafe extern "C" fn release_schema(schema: *mut ArrowSchema) {
     // SAFETY: `release_tree` implements the shared Arrow release-slot/private
     // box order for exported schemas.
     unsafe { release_tree(schema) }
 }
 
+/// Release an array exported by gometry.
+///
+/// # Safety
+/// `array` must be null or a live gometry-exported Arrow array, with no
+/// concurrent access or release.
 pub(crate) unsafe extern "C" fn release_array(array: *mut ArrowArray) {
     // SAFETY: `release_tree` implements the shared Arrow release-slot/private
     // box order for exported arrays.
     unsafe { release_tree(array) }
 }
 
+/// Release a stream exported by gometry.
+///
+/// # Safety
+/// `stream` must be null or a live gometry-exported Arrow stream, with no
+/// concurrent access or release.
 pub(crate) unsafe extern "C" fn release_stream(stream: *mut ArrowArrayStream) {
     // SAFETY: `release_tree` implements the shared Arrow release-slot/private
     // box order for exported streams.
     unsafe { release_tree(stream) }
 }
 
+/// Populate `out` with an independently owned schema for this stream.
+///
+/// # Safety
+/// Non-null pointers must reference a live gometry stream and writable,
+/// uninitialized `ArrowSchema`; they must not alias.
 pub(crate) unsafe extern "C" fn stream_get_schema(
     stream: *mut ArrowArrayStream,
     out: *mut ArrowSchema,
@@ -135,6 +171,11 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
     0
 }
 
+/// Move the next array from the stream into `out`.
+///
+/// # Safety
+/// Non-null pointers must reference a live gometry stream and writable,
+/// uninitialized `ArrowArray`; they must not alias or be used concurrently.
 pub(crate) unsafe extern "C" fn stream_get_next(
     stream: *mut ArrowArrayStream,
     out: *mut ArrowArray,
@@ -158,6 +199,11 @@ pub(crate) unsafe extern "C" fn stream_get_next(
     0
 }
 
+/// Borrow the stream's last-error string.
+///
+/// # Safety
+/// `stream` must be null or a live gometry stream and must remain alive and
+/// unmodified while the returned pointer is read.
 pub(crate) unsafe extern "C" fn stream_get_last_error(
     stream: *mut ArrowArrayStream,
 ) -> *const c_char {
@@ -175,6 +221,11 @@ pub(crate) unsafe extern "C" fn stream_get_last_error(
     }
 }
 
+/// CPython destructor for a gometry-owned Arrow schema capsule.
+///
+/// # Safety
+/// `capsule` must be the live capsule supplied by CPython to its registered
+/// destructor, and this callback must run at most once for that ownership.
 pub(crate) unsafe extern "C" fn schema_capsule_destructor(capsule: *mut ffi::PyObject) {
     // SAFETY: the capsule was created with this exact name and owns a boxed
     // `ArrowSchema`. If a consumer already released it, `release` is `None`.
@@ -188,6 +239,11 @@ pub(crate) unsafe extern "C" fn schema_capsule_destructor(capsule: *mut ffi::PyO
     }
 }
 
+/// CPython destructor for a gometry-owned Arrow array capsule.
+///
+/// # Safety
+/// `capsule` must be the live capsule supplied by CPython to its registered
+/// destructor, and this callback must run at most once for that ownership.
 pub(crate) unsafe extern "C" fn array_capsule_destructor(capsule: *mut ffi::PyObject) {
     // SAFETY: same ownership shape as `schema_capsule_destructor`, for
     // `ArrowArray`.
@@ -201,6 +257,11 @@ pub(crate) unsafe extern "C" fn array_capsule_destructor(capsule: *mut ffi::PyOb
     }
 }
 
+/// CPython destructor for a gometry-owned Arrow stream capsule.
+///
+/// # Safety
+/// `capsule` must be the live capsule supplied by CPython to its registered
+/// destructor, and this callback must run at most once for that ownership.
 pub(crate) unsafe extern "C" fn stream_capsule_destructor(capsule: *mut ffi::PyObject) {
     // SAFETY: same ownership shape as `schema_capsule_destructor`, for
     // `ArrowArrayStream`.

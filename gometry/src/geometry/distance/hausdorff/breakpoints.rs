@@ -1,8 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::hausdorff::{
+    HausdorffTargetLike, push_equidistant_roots_on_interval, sqrt_distance_squared, stats,
+};
+use crate::geometry::{
+    Orientation, Segment, XY, orientation, point_distance_squared, point_segment_distance_squared,
+    try_point_distance_squared,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum HausdorffFeature {
@@ -23,6 +25,31 @@ pub(crate) fn max_point_to_target_squared_on_segment_culled<T: HausdorffTargetLi
         return target.distance_squared(source.start);
     }
 
+    // A point-only target has one shared t² coefficient. Its lower envelope
+    // is therefore the lower hull of affine terms, not the all-pairs roots
+    // used by the mixed point/segment kernel below. Keep the existing kernel
+    // as the exact fallback whenever the ordinary squared-space coefficients
+    // are not trustworthy.
+    if target.segments_len() == 0
+        && target.points_len() > 0
+        && let Some(answer) = max_point_to_point_target_squared_on_segment_envelope(source, target)
+    {
+        return answer;
+    }
+
+    max_point_to_target_squared_on_segment_culled_legacy(source, target, cmax_sq)
+}
+
+fn max_point_to_target_squared_on_segment_culled_legacy<T: HausdorffTargetLike>(
+    source: Segment,
+    target: &T,
+    cmax_sq: Option<f64>,
+) -> f64 {
+    let ax = source.start.x;
+    let ay = source.start.y;
+    let dx = source.end.x - ax;
+    let dy = source.end.y - ay;
+
     let mut params = Vec::new();
     collect_hausdorff_segment_params_culled(ax, ay, dx, dy, target, &mut params, cmax_sq);
     evaluate_max_point_to_target_squared_on_segment_culled(
@@ -34,6 +61,209 @@ pub(crate) fn max_point_to_target_squared_on_segment_culled<T: HausdorffTargetLi
         target,
         cmax_sq,
     )
+}
+
+/// One affine term of a point target's squared-distance field after removing
+/// the source segment's shared `t² * |delta|²` term.
+#[derive(Clone, Copy)]
+struct PointEnvelopeLine {
+    slope: f64,
+    intercept: f64,
+    point: XY,
+}
+
+impl PointEnvelopeLine {
+    fn from_target_point(source: Segment, point: XY) -> Option<Self> {
+        let dx = source.end.x - source.start.x;
+        let dy = source.end.y - source.start.y;
+        let intercept = try_point_distance_squared(source.start, point)?;
+        let rx = source.start.x - point.x;
+        let ry = source.start.y - point.y;
+        let dot = dx * rx + dy * ry;
+        let slope = 2.0 * dot;
+        slope.is_finite().then_some(Self {
+            slope,
+            intercept,
+            point,
+        })
+    }
+
+    fn breakpoint_after(self, next: Self) -> Option<f64> {
+        debug_assert!(self.slope > next.slope);
+        let denominator = self.slope - next.slope;
+        let numerator = next.intercept - self.intercept;
+        let t = numerator / denominator;
+        t.is_finite().then_some(t)
+    }
+}
+
+/// Exact lower-envelope maximum for a non-degenerate source segment against
+/// an isolated-point target. Every point has
+/// `|delta|² t² + slope*t + intercept`; removing the shared convex quadratic
+/// leaves affine functions. The lower hull's switches, plus the two segment
+/// endpoints, are the only possible maxima.
+///
+/// Hull membership is a decision path: `orientation` is the shared adaptive
+/// certified interval-plus-exact-dyadic orientation predicate, never a raw
+/// dual-space cross product. A
+/// breakpoint division is inexact, so each switch is sampled with its adjacent
+/// representable parameters as well as the computed value. Extra samples are
+/// conservative for a maximum; omitting one could lose the answer.
+fn max_point_to_point_target_squared_on_segment_envelope<T: HausdorffTargetLike>(
+    source: Segment,
+    target: &T,
+) -> Option<f64> {
+    // The envelope route is deliberately limited to normal squared space.
+    // The framed continuous finisher owns the subnormal/overflow cases.
+    try_point_distance_squared(source.start, source.end)?;
+    let mut lines = Vec::with_capacity(target.points_len());
+    for index in 0..target.points_len() {
+        lines.push(PointEnvelopeLine::from_target_point(
+            source,
+            target.point_xy_at(index),
+        )?);
+    }
+    let (candidate_count, hull) = point_envelope_lower_hull(lines);
+    if candidate_count == 0 {
+        return Some(f64::INFINITY);
+    }
+
+    stats::inc_point_envelope_candidates(candidate_count);
+    stats::inc_point_envelope_breakpoints(hull.len().saturating_sub(1));
+
+    // Endpoints are unconditional candidates. Retain the target query here:
+    // it preserves the existing nearest-point reduction exactly at t=0 and 1.
+    let mut best = target
+        .distance_squared(source.start)
+        .max(target.distance_squared(source.end));
+    stats::inc_point_envelope_samples(2);
+    // Every out-of-range switch clamps to one of these endpoint-neighbour
+    // parameters. Cache the full target query so a long inactive hull tail
+    // cannot turn conservative clipping into a quadratic path.
+    let mut clipped_samples = Vec::<(u64, f64)>::with_capacity(4);
+    for pair in hull.array_windows::<2>() {
+        let t = pair[0].breakpoint_after(pair[1])?;
+        let interior = t.total_cmp(&0.0).is_gt() && t.total_cmp(&1.0).is_lt();
+        // A division can round a true boundary switch just outside [0, 1].
+        // Clamp first, then include the two adjacent representable parameters.
+        // At a clipped endpoint the adjacent pair need not be the global
+        // nearest pair, so retain the target's complete reduction there.
+        let t = if t.to_bits() << 1 == 0 {
+            0.0
+        } else {
+            t.clamp(0.0, 1.0)
+        };
+        for t in [t.next_down().max(0.0), t, t.next_up().min(1.0)] {
+            let probe = XY::new(
+                source.start.x + t * (source.end.x - source.start.x),
+                source.start.y + t * (source.end.y - source.start.y),
+            );
+            let distance = if interior {
+                // The adjacent hull lines cover this switch and its immediate
+                // floating neighbours. Taking their min avoids ever promoting
+                // a non-nearest candidate into the maximum.
+                point_distance_squared(probe, pair[0].point)
+                    .min(point_distance_squared(probe, pair[1].point))
+            } else if let Some((_, distance)) = clipped_samples
+                .iter()
+                .find(|(bits, _)| *bits == t.to_bits())
+            {
+                *distance
+            } else {
+                let distance = target.distance_squared(probe);
+                clipped_samples.push((t.to_bits(), distance));
+                distance
+            };
+            if !distance.is_finite() {
+                return None;
+            }
+            best = best.max(distance);
+            stats::inc_point_envelope_samples(1);
+        }
+    }
+    Some(best)
+}
+
+/// Exact numerical slope equality for envelope grouping. Coefficients are
+/// already finite; the two zero encodings are one affine slope, while every
+/// other value must retain its own computed line.
+const fn same_envelope_slope(left: f64, right: f64) -> bool {
+    let left_bits = left.to_bits();
+    let right_bits = right.to_bits();
+    left_bits == right_bits || (left_bits << 1 == 0 && right_bits << 1 == 0)
+}
+
+/// Lower hull of affine distance terms in descending slope order. A
+/// clockwise dual turn is the only shape with a non-empty lower-envelope
+/// interval for the middle line.
+fn point_envelope_lower_hull(mut lines: Vec<PointEnvelopeLine>) -> (usize, Vec<PointEnvelopeLine>) {
+    lines.sort_unstable_by(|left, right| {
+        if same_envelope_slope(left.slope, right.slope) {
+            left.intercept.total_cmp(&right.intercept)
+        } else {
+            right.slope.total_cmp(&left.slope)
+        }
+    });
+
+    // Parallel affine terms never switch. Keep their lowest intercept.
+    let mut unique = Vec::with_capacity(lines.len());
+    for line in lines {
+        if unique.last().is_some_and(|previous: &PointEnvelopeLine| {
+            same_envelope_slope(previous.slope, line.slope)
+        }) {
+            continue;
+        }
+        unique.push(line);
+    }
+
+    let candidate_count = unique.len();
+    let mut hull: Vec<PointEnvelopeLine> = Vec::with_capacity(candidate_count);
+    for line in unique {
+        while hull.len() >= 2 {
+            let before = hull[hull.len() - 2];
+            let previous = hull[hull.len() - 1];
+            // Descending slopes: a clockwise dual turn is exactly an active
+            // lower-envelope line. Collinear/counter-clockwise middle lines
+            // have an empty interval and must be removed.
+            if orientation(
+                XY::new(before.slope, before.intercept),
+                XY::new(previous.slope, previous.intercept),
+                XY::new(line.slope, line.intercept),
+            ) == Orientation::Clockwise
+            {
+                break;
+            }
+            hull.pop();
+        }
+        hull.push(line);
+    }
+    (candidate_count, hull)
+}
+
+#[cfg(test)]
+pub(crate) fn point_envelope_dual_hull_len_for_test(lines: &[(f64, f64)]) -> usize {
+    point_envelope_lower_hull(
+        lines
+            .iter()
+            .map(|&(slope, intercept)| PointEnvelopeLine {
+                slope,
+                intercept,
+                point: XY::new(0.0, 0.0),
+            })
+            .collect(),
+    )
+    .1
+    .len()
+}
+
+#[cfg(test)]
+pub(crate) fn max_point_to_target_squared_on_segment_culled_legacy_for_test<
+    T: HausdorffTargetLike,
+>(
+    source: Segment,
+    target: &T,
+) -> f64 {
+    max_point_to_target_squared_on_segment_culled_legacy(source, target, None)
 }
 
 /// Stack buffer for breakpoint parameters on small Hausdorff targets (at most
@@ -75,15 +305,19 @@ impl HausdorffParamSink for Vec<f64> {
 }
 
 /// Stack buffer for equidistant roots on small Hausdorff targets.
+///
+/// A small line target has at most 15 segment features. Every unordered
+/// feature pair contributes at most two roots on one parameter interval, so
+/// the proved maximum is `2 * C(15, 2) = 210`.
 pub(crate) struct SmallEquidistantRoots {
-    values: [f64; 8],
+    values: [f64; 210],
     len: usize,
 }
 
 impl SmallEquidistantRoots {
     pub(crate) const fn new() -> Self {
         Self {
-            values: [0.0; 8],
+            values: [0.0; 210],
             len: 0,
         }
     }
@@ -223,7 +457,7 @@ pub(crate) fn compact_hausdorff_params(params: &mut [f64]) -> usize {
     }
     let mut write = 1_usize;
     for read in 1..params.len() {
-        if (params[read] - params[write - 1]).abs() > 1e-15 {
+        if params[read].to_bits() != params[write - 1].to_bits() {
             params[write] = params[read];
             write += 1;
         }
@@ -285,41 +519,37 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_culled<
             hausdorff_feature_bbox_disjoint_from_expanded_source(ax, ay, dx, dy, feature, margin)
         })
     };
-    let full_pairs =
-        target.feature_count().saturating_mul(params.len()) <= HAUSDORFF_EQUIDISTANT_FULL_PAIRS;
+    // Always enumerate equidistant roots. A midpoint-only fallback above a
+    // feature×param budget changes the metric (continuous max → coarse sample)
+    // and is not an optimization of the same answer.
     for &[ta, tb] in params.array_windows::<2>() {
         if tb <= ta {
             continue;
         }
-        if full_pairs {
-            interval.clear();
-            for (left, &left_feature) in features.iter().enumerate() {
-                if culled(left_feature) {
+        interval.clear();
+        for (left, &left_feature) in features.iter().enumerate() {
+            if culled(left_feature) {
+                continue;
+            }
+            for &right_feature in &features[(left + 1)..] {
+                if culled(right_feature) {
                     continue;
                 }
-                for &right_feature in &features[(left + 1)..] {
-                    if culled(right_feature) {
-                        continue;
-                    }
-                    push_equidistant_root_bisect(
-                        ax,
-                        ay,
-                        dx,
-                        dy,
-                        ta,
-                        tb,
-                        left_feature,
-                        right_feature,
-                        interval,
-                    );
-                }
+                push_equidistant_roots_on_interval(
+                    ax,
+                    ay,
+                    dx,
+                    dy,
+                    ta,
+                    tb,
+                    left_feature,
+                    right_feature,
+                    interval,
+                );
             }
-            for &t in interval.roots() {
-                best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target));
-            }
-        } else {
-            let mid = f64::midpoint(ta, tb);
-            best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, mid, target));
+        }
+        for &t in interval.roots() {
+            best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target));
         }
     }
     best

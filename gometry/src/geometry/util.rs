@@ -1,29 +1,18 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Point/coordinate utility helpers shared across the geometry kernels:
-//! ring closure, exact/tolerant coordinate equality, consecutive-vertex
-//! dedup, and the topology-coordinate bit canonicalization.
+//! exact/tolerant coordinate equality, consecutive-vertex dedup, and the
+//! topology-coordinate bit canonicalization. Ring admission lives on
+//! [`crate::geometry::Ring`] (single owner for all untrusted ingresses).
 
-use std::simd::Select;
-use std::simd::cmp::SimdPartialOrd;
-use std::simd::num::SimdFloat;
+use std::simd::Select as _;
+use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
+use std::simd::num::SimdFloat as _;
 
-use super::*;
-use crate::error::Result;
+use ahash::HashSetExt as _;
 
-pub(crate) fn closed_ring(mut points: Vec<Point>) -> Result<Vec<Point>> {
-    if points.len() < Ring::MIN_VERTICES_OPEN {
-        return Err(GeometryErrorKind::RingTooShort(points.len()).into());
-    }
-    if let (Some(first), Some(last)) = (points.first(), points.last())
-        && !same_point(*first, *last)
-    {
-        points.push(*first);
-    }
-    Ok(points)
-}
+use crate::geometry::{
+    Borrow, Bounds, CoordSeq, Coordinates, HashSet, LineSeq, Point, PointKey, REDUCE_LANES,
+    ReduceSimd, Shape, XY, rect_polygon,
+};
 
 pub(crate) const fn empty_geometry() -> Shape {
     Shape::GeometryCollection(Vec::new())

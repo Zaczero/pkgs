@@ -1,9 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
 use crate::NonNegative;
+use crate::geometry::constructive::Result;
+use crate::geometry::{
+    BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
+    LineSeq, Point, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, XY,
+    bounds_distance_squared, dedup_consecutive_points, interpolate_f64, line_segments,
+    point_distance, point_segment_distance, points_dwithin, push_distinct_point,
+    repair_shape_in_frame, same_point, same_topological_coordinate, segment_projection,
+    validate_shape_in_frame,
+};
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
 
@@ -69,21 +73,16 @@ impl SnapReference {
         // The metric (squared when the limit is representable, else distance)
         // is uniform across candidates, so `best` is a valid argmin either way.
         let mut test = |reference: XY, ordinal: u32| {
-            if let Some(limit) = self.limit {
-                let distance_squared = point_distance_squared(point, reference);
-                if distance_squared <= limit {
-                    consider(distance_squared, ordinal, reference);
-                }
-            } else {
+            // Honest dwithin — squared false-zero must not treat distinct
+            // subnormals as within a zero (or tiny) tolerance.
+            if points_dwithin(point, reference, self.tolerance) {
                 let distance = point_distance(point, reference);
-                if distance <= self.tolerance {
-                    consider(distance, ordinal, reference);
-                }
+                consider(distance, ordinal, reference);
             }
         };
         match (&self.tree, self.limit) {
-            // Indexed: the tree pre-filters to the tolerance ball.
-            (Some(tree), Some(limit)) => {
+            // Indexed with an honest squared ball (limit > 0): pre-filter.
+            (Some(tree), Some(limit)) if limit > 0.0 => {
                 for candidate in tree.locate_within_distance([point.x, point.y], limit) {
                     test(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
@@ -91,7 +90,9 @@ impl SnapReference {
                     );
                 }
             },
-            (Some(tree), None) => {
+            // Zero/underflowed limit or non-finite tolerance²: full scan +
+            // honest points_dwithin (cannot trust squared-space radius).
+            (Some(tree), _) => {
                 for candidate in tree {
                     test(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
@@ -124,36 +125,23 @@ impl SnapReference {
         };
         let tolerance = self.tolerance;
         let limit = self.limit;
-        let mut candidates: Vec<(f64, u32, Point)> = Vec::new();
+        let mut candidates: Vec<(SegmentProjection, u32, Point)> = Vec::new();
         let mut consider = |reference: XY, ordinal: u32| {
-            if let Some(limit) = limit {
-                if point_distance_squared(reference, start) <= limit
-                    || point_distance_squared(reference, end) <= limit
-                    || point_segment_distance_squared(
-                        Point::new_unchecked_xy(reference.x, reference.y),
-                        segment,
-                    ) > limit
-                {
-                    return;
-                }
-            } else if point_distance(reference, start) <= tolerance
-                || point_distance(reference, end) <= tolerance
-                || point_segment_distance(
-                    Point::new_unchecked_xy(reference.x, reference.y),
-                    segment,
-                ) > tolerance
+            let ref_pt = Point::new_unchecked_xy(reference.x, reference.y);
+            // Skip if within tolerance of either endpoint, or farther than
+            // tolerance from the open segment (honest distance, not squared).
+            if points_dwithin(reference, start, tolerance)
+                || points_dwithin(reference, end, tolerance)
+                || point_segment_distance(ref_pt, segment) > tolerance
             {
                 return;
             }
-            let fraction = segment_projection_fraction(
-                Point::new_unchecked_xy(reference.x, reference.y),
-                segment,
-            );
-            if fraction > 0.0 && fraction < 1.0 {
-                let mut point = lerp_point(start, end, fraction);
+            let projection = segment_projection(ref_pt, segment);
+            if !projection.is_start() && !projection.is_end() {
+                let mut point = projection.interpolate_point(start, end);
                 point.x = reference.x;
                 point.y = reference.y;
-                candidates.push((fraction, ordinal, point));
+                candidates.push((projection, ordinal, point));
             }
         };
         match &self.tree {
@@ -192,7 +180,7 @@ impl SnapReference {
         }
         // Fraction order with build-order ties: identical to the linear
         // scan's input-order stable sort.
-        candidates.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        candidates.sort_unstable_by(|a, b| a.0.cmp_along(&b.0).then(a.1.cmp(&b.1)));
         // Collapse only genuine duplicates — references at an identical
         // projected position. A fixed parametric epsilon would merge distinct
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
@@ -264,26 +252,17 @@ pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> Coord
     if xs.is_empty() {
         return points.clone();
     }
-    let limit = tolerance * tolerance;
     let mut keep: Vec<usize> = Vec::with_capacity(xs.len());
     keep.push(0);
     let (mut anchor_x, mut anchor_y) = (xs[0], ys[0]);
-    if limit.is_finite() {
-        for index in 1..xs.len() {
-            let (dx, dy) = (xs[index] - anchor_x, ys[index] - anchor_y);
-            if dx * dx + dy * dy > limit {
-                keep.push(index);
-                (anchor_x, anchor_y) = (xs[index], ys[index]);
-            }
-        }
-    } else {
-        // `tolerance * tolerance` overflowed: compare in distance space.
-        for index in 1..xs.len() {
-            let anchor = XY::new(anchor_x, anchor_y);
-            if point_distance(anchor, XY::new(xs[index], ys[index])) > tolerance {
-                keep.push(index);
-                (anchor_x, anchor_y) = (xs[index], ys[index]);
-            }
+    // Honest distance compare: squared false-zero must not collapse distinct
+    // subnormals under a zero (or tiny) tolerance.
+    for index in 1..xs.len() {
+        let anchor = XY::new(anchor_x, anchor_y);
+        let candidate = XY::new(xs[index], ys[index]);
+        if !points_dwithin(anchor, candidate, tolerance) {
+            keep.push(index);
+            (anchor_x, anchor_y) = (xs[index], ys[index]);
         }
     }
     if keep.len() == xs.len() {
@@ -300,33 +279,271 @@ pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> 
     cleaned
 }
 
-pub(crate) fn segmentize_points(points: &CoordSeq, max_segment_length: f64) -> Result<CoordSeq> {
-    subdivide_columns(points, "segmentize", "max_segment_length", |segment| {
-        // Guarded-sqrt distance (lengths are measurement arithmetic): the
-        // libm `hypot` call was 17% of a bulk segmentize profile.
-        let length = point_distance(segment.start, segment.end);
-        if length == 0.0 {
-            1
-        } else {
-            (length / max_segment_length).ceil() as usize
-        }
-    })
+pub(crate) fn segmentize_points_budgeted(
+    points: &CoordSeq,
+    max_segment_length: f64,
+    placement: SegmentPlacement<'_>,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
+    // Measure a segment the same way the vertices will be placed, or the step
+    // count and the geometry disagree: a geodesic placement measured planarly
+    // would emit pieces longer than requested near the poles.
+    let length_of = |segment: Segment| match placement {
+        SegmentPlacement::Planar => point_distance(segment.start, segment.end),
+        SegmentPlacement::Geodesic(geodesic) => crate::crs::geodesic_line_solution_const::<false>(
+            geodesic,
+            segment.start.x,
+            segment.start.y,
+            segment.end.x,
+            segment.end.y,
+        )
+        .map_or_else(
+            |_| point_distance(segment.start, segment.end),
+            |(_, _, _, total)| total,
+        ),
+    };
+    subdivide_columns(
+        points,
+        placement,
+        "segmentize",
+        |segment| segmentize_steps(length_of(segment), max_segment_length),
+        budget,
+    )
+}
+
+fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
+    if length == 0.0 || !length.is_finite() || max_segment_length <= 0.0 {
+        return 1;
+    }
+    // A huge quotient must not wrap to a small step count, which would admit
+    // output beyond the shared 16M generated-work budget.
+    let pieces = (length / max_segment_length).ceil();
+    if !pieces.is_finite() || pieces > GENERATED_ITEM_LIMIT as f64 {
+        // The sink charges inserted vertices (`pieces - 1`), so its sentinel
+        // must remain one past that limit rather than merely one past pieces.
+        GENERATED_ITEM_LIMIT.saturating_add(2)
+    } else {
+        pieces as usize
+    }
 }
 
 /// Insert `ceil(1 / fraction) - 1` evenly spaced vertices into every segment
 /// (the GEOS densify semantics): each segment is split into equal pieces no
-/// longer than `fraction` of its own length, so the discrete Hausdorff and
-/// Fréchet metrics converge on the continuous ones. `fraction` is in
+/// longer than `fraction` of its own length, re-segmenting continuous
+/// Hausdorff and refining the vertex sequence for discrete Fréchet. `fraction` is in
 /// `(0, 1]`; `1` keeps the vertices unchanged.
-pub(crate) fn densify_points(points: &CoordSeq, fraction: f64) -> Result<CoordSeq> {
+pub(crate) fn densify_points_budgeted(
+    points: &CoordSeq,
+    fraction: f64,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
     let steps = (1.0 / fraction).ceil() as usize;
-    subdivide_columns(points, "densify", "fraction", |segment| {
-        if same_point(segment.start, segment.end) {
-            1
-        } else {
-            steps
+    subdivide_columns(
+        points,
+        SegmentPlacement::Planar,
+        "densify",
+        |segment| densify_steps(segment, steps),
+        budget,
+    )
+}
+
+fn densify_steps(segment: Segment, steps: usize) -> usize {
+    if same_point(segment.start, segment.end) {
+        1
+    } else {
+        steps
+    }
+}
+
+trait SubdivisionSink {
+    fn source(&mut self, source_index: usize) -> Result<()>;
+    fn interior(&mut self, segment_index: usize, steps: usize) -> Result<()>;
+}
+
+/// Run the exact same segment plan through a counting sink and a materializing
+/// sink.  Keeping this as one traversal shape makes the budget admission
+/// mechanically match the coordinates subsequently emitted.
+fn emit_subdivision(steps: &[usize], sink: &mut impl SubdivisionSink) -> Result<()> {
+    sink.source(0)?;
+    for (segment_index, &segment_steps) in steps.iter().enumerate() {
+        sink.interior(segment_index, segment_steps.max(1))?;
+        sink.source(segment_index + 1)?;
+    }
+    Ok(())
+}
+
+struct SubdivisionCount {
+    emitted: usize,
+}
+
+impl SubdivisionCount {
+    const fn generated(&self, input_len: usize) -> usize {
+        self.emitted.saturating_sub(input_len)
+    }
+}
+
+impl SubdivisionSink for SubdivisionCount {
+    fn source(&mut self, _: usize) -> Result<()> {
+        self.emitted = self.emitted.saturating_add(1);
+        Ok(())
+    }
+
+    fn interior(&mut self, _: usize, steps: usize) -> Result<()> {
+        self.emitted = self.emitted.saturating_add(steps.saturating_sub(1));
+        Ok(())
+    }
+}
+
+/// How interior vertices are placed along a segment.
+///
+/// X and Y are a PAIR under a geodesic: the point at a fraction of a geodesic
+/// is not the per-axis interpolation of the endpoints. Z and M stay per-column
+/// under both placements — they are attribute ramps, not positions.
+#[derive(Clone, Copy)]
+pub(crate) enum SegmentPlacement<'a> {
+    /// Straight line in coordinate space (projected or CRS-free input).
+    Planar,
+    /// Along the geodesic on the CRS's own ellipsoid (geographic input).
+    Geodesic(&'a geographiclib_rs::Geodesic),
+}
+
+struct SubdivisionColumns<'a> {
+    points: &'a CoordSeq,
+    placement: SegmentPlacement<'a>,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    zs: Option<Vec<f64>>,
+    ms: Option<Vec<f64>>,
+}
+
+impl<'a> SubdivisionColumns<'a> {
+    fn new(
+        points: &'a CoordSeq,
+        placement: SegmentPlacement<'a>,
+        operation: &'static str,
+        total: usize,
+    ) -> Result<Self> {
+        let reserve = |column: &str| -> Result<Vec<f64>> {
+            let mut values = Vec::new();
+            values.try_reserve_exact(total).map_err(|_| {
+                GeometryErrorKind::message(format!(
+                    "{operation} could not allocate {total} output {column} ordinates"
+                ))
+            })?;
+            Ok(values)
+        };
+        Ok(Self {
+            points,
+            placement,
+            xs: reserve("x")?,
+            ys: reserve("y")?,
+            zs: points.zs().map(|_| reserve("z")).transpose()?,
+            ms: points.ms().map(|_| reserve("m")).transpose()?,
+        })
+    }
+
+    fn finish(self) -> CoordSeq {
+        CoordSeq::from_columns(
+            self.xs.into_boxed_slice().into(),
+            self.ys.into_boxed_slice().into(),
+            self.zs.map(|column| column.into_boxed_slice().into()),
+            self.ms.map(|column| column.into_boxed_slice().into()),
+        )
+    }
+
+    fn push_interpolated(
+        output: &mut Vec<f64>,
+        column: &[f64],
+        segment_index: usize,
+        steps: usize,
+    ) {
+        let (start, end) = (column[segment_index], column[segment_index + 1]);
+        for step in 1..steps {
+            let value = interpolate_f64(start, end, step as f64 / steps as f64);
+            output.push(if value.is_finite() {
+                value
+            } else if step * 2 <= steps {
+                start
+            } else {
+                end
+            });
         }
-    })
+    }
+}
+
+impl SubdivisionColumns<'_> {
+    /// Place `steps - 1` interior vertices at equal geodesic distances along
+    /// the segment. One inverse solve per segment, then one direct solve per
+    /// inserted vertex.
+    ///
+    /// A degenerate or unsolvable segment falls back to the planar lerp rather
+    /// than failing the whole geometry — the same spirit as
+    /// [`Self::push_interpolated`]'s non-finite rescue, and it keeps the vertex
+    /// COUNT identical to what the counting sink already charged.
+    fn push_geodesic(
+        &mut self,
+        geodesic: &geographiclib_rs::Geodesic,
+        segment_index: usize,
+        steps: usize,
+    ) {
+        let (xs, ys) = (self.points.xs(), self.points.ys());
+        let (x0, y0) = (xs[segment_index], ys[segment_index]);
+        let (x1, y1) = (xs[segment_index + 1], ys[segment_index + 1]);
+        let solution = crate::crs::geodesic_line_solution_const::<false>(geodesic, x0, y0, x1, y1);
+        let Ok(solution) = solution else {
+            Self::push_interpolated(&mut self.xs, xs, segment_index, steps);
+            Self::push_interpolated(&mut self.ys, ys, segment_index, steps);
+            return;
+        };
+        for step in 1..steps {
+            let fraction = step as f64 / steps as f64;
+            match crate::crs::geodesic_interpolate_on_line_const::<false, true>(
+                geodesic, solution, fraction,
+            ) {
+                Ok(info) if info.longitude.is_finite() && info.latitude.is_finite() => {
+                    self.xs.push(info.longitude);
+                    self.ys.push(info.latitude);
+                },
+                _ => {
+                    self.xs.push(if step * 2 <= steps { x0 } else { x1 });
+                    self.ys.push(if step * 2 <= steps { y0 } else { y1 });
+                },
+            }
+        }
+    }
+}
+
+impl SubdivisionSink for SubdivisionColumns<'_> {
+    fn source(&mut self, source_index: usize) -> Result<()> {
+        self.xs.push(self.points.xs()[source_index]);
+        self.ys.push(self.points.ys()[source_index]);
+        if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
+            output.push(column[source_index]);
+        }
+        if let (Some(output), Some(column)) = (&mut self.ms, self.points.ms()) {
+            output.push(column[source_index]);
+        }
+        Ok(())
+    }
+
+    fn interior(&mut self, segment_index: usize, steps: usize) -> Result<()> {
+        match self.placement {
+            SegmentPlacement::Planar => {
+                Self::push_interpolated(&mut self.xs, self.points.xs(), segment_index, steps);
+                Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
+            },
+            SegmentPlacement::Geodesic(geodesic) => {
+                self.push_geodesic(geodesic, segment_index, steps);
+            },
+        }
+        if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
+            Self::push_interpolated(output, column, segment_index, steps);
+        }
+        if let (Some(output), Some(column)) = (&mut self.ms, self.points.ms()) {
+            Self::push_interpolated(output, column, segment_index, steps);
+        }
+        Ok(())
+    }
 }
 
 /// Split every segment of a chain into `steps_for(segment)` equal pieces,
@@ -336,9 +553,10 @@ pub(crate) fn densify_points(points: &CoordSeq, fraction: f64) -> Result<CoordSe
 /// no 40-byte `Point` staging, no transpose.
 pub(crate) fn subdivide_columns(
     points: &CoordSeq,
+    placement: SegmentPlacement<'_>,
     operation: &'static str,
-    parameter: &'static str,
     steps_for: impl Fn(Segment) -> usize,
+    budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     let count = points.len();
     if count < 2 {
@@ -347,89 +565,21 @@ pub(crate) fn subdivide_columns(
     // `steps_for` runs once per segment (not per output vertex); the exact
     // output size keeps every column a single allocation.
     let steps: Vec<usize> = line_segments(points).map(steps_for).collect();
-    let mut budget = ExpansionBudget::new(operation, parameter);
-    for &segment_steps in &steps {
-        budget.add(segment_steps.saturating_sub(1))?;
-    }
-    let inserted = budget.used();
-    if inserted == 0 {
+    let mut count_sink = SubdivisionCount { emitted: 0 };
+    emit_subdivision(&steps, &mut count_sink)?;
+    let total = count_sink.emitted;
+    // Existing source vertices are input-sized work. Charge only the vertices
+    // this operation creates, once for the whole caller-owned budget.
+    budget.add(count_sink.generated(count))?;
+    if count_sink.generated(count) == 0 {
         // Nothing subdivides (every segment already satisfies the bound —
         // the common case once data is denser than the requested length):
         // the input IS the output, share it.
         return Ok(points.clone());
     }
-    let total = count.checked_add(inserted).ok_or({
-        GeometryErrorKind::GeneratedOutputTooLarge {
-            operation,
-            parameter,
-            produced: usize::MAX,
-            limit: GENERATED_ITEM_LIMIT,
-        }
-    })?;
-    // Column-independent fractions, computed once and reused across the XYZM
-    // columns: one flat `Vec<f64>` + per-segment CSR offsets instead of a
-    // `Vec<Vec<f64>>` (one allocation, not one per segment).
-    let mut fraction_offsets: Vec<usize> = Vec::new();
-    fraction_offsets
-        .try_reserve_exact(steps.len() + 1)
-        .map_err(|_| {
-            GeometryErrorKind::message(format!(
-                "{operation} could not allocate subdivision offsets"
-            ))
-        })?;
-    fraction_offsets.push(0);
-    let mut fractions: Vec<f64> = Vec::new();
-    fractions
-        .try_reserve_exact(total.saturating_sub(steps.len() + 1))
-        .map_err(|_| {
-            GeometryErrorKind::message(format!(
-                "{operation} could not allocate {total} output coordinates"
-            ))
-        })?;
-    for &segment_steps in &steps {
-        for step in 1..segment_steps {
-            // The division stays: a hoisted reciprocal shifts fractions by an
-            // ulp (changing printed vertex coordinates) for a win lost in noise.
-            fractions.push(step as f64 / segment_steps as f64);
-        }
-        fraction_offsets.push(fractions.len());
-    }
-    let interpolated = |column: &[f64]| -> Result<Box<[f64]>> {
-        let mut out = Vec::new();
-        out.try_reserve_exact(total).map_err(|_| {
-            GeometryErrorKind::message(format!(
-                "{operation} could not allocate {total} output coordinates"
-            ))
-        })?;
-        out.push(column[0]);
-        for index in 0..steps.len() {
-            let (start, end) = (column[index], column[index + 1]);
-            let segment_steps = steps[index];
-            let fracs = &fractions[fraction_offsets[index]..fraction_offsets[index + 1]];
-            for (step, &fraction) in fracs.iter().enumerate() {
-                let step = step + 1;
-                let value = interpolate_f64(start, end, fraction);
-                // Finite-input convex interpolation only overflows at the
-                // absolute f64 extreme; fall back to the nearer endpoint
-                // (the per-point rescue of `interpolate_segment_point`).
-                out.push(if value.is_finite() {
-                    value
-                } else if step * 2 <= segment_steps {
-                    start
-                } else {
-                    end
-                });
-            }
-            out.push(end);
-        }
-        Ok(out.into_boxed_slice())
-    };
-    Ok(CoordSeq::from_columns(
-        interpolated(points.xs())?.into(),
-        interpolated(points.ys())?.into(),
-        points.zs().map(interpolated).transpose()?.map(Into::into),
-        points.ms().map(interpolated).transpose()?.map(Into::into),
-    ))
+    let mut output = SubdivisionColumns::new(points, placement, operation, total)?;
+    emit_subdivision(&steps, &mut output)?;
+    Ok(output.finish())
 }
 
 impl Shape {
@@ -552,7 +702,23 @@ impl Shape {
         origin: (f64, f64),
     ) -> Result<Self, crate::error::Error> {
         let snap = |value: f64, origin: f64, size: f64| -> Result<f64, crate::error::Error> {
-            let snapped = ((value - origin) / size).round() * size + origin;
+            // Same stable form as `snap_column_simd` / `stable_snap_ordinate`.
+            let classic = ((value - origin) / size).round() * size + origin;
+            let snapped = if classic.is_finite() {
+                classic
+            } else if size != 0.0 && size.is_finite() {
+                let v_over = value / size;
+                let o_over = origin / size;
+                if v_over.is_finite() && o_over.is_finite() {
+                    let k = (v_over - o_over).round();
+                    let result = size * (o_over + k);
+                    if result.is_finite() { result } else { classic }
+                } else {
+                    classic
+                }
+            } else {
+                classic
+            };
             if snapped.is_finite() {
                 if same_topological_coordinate(value, snapped) {
                     Ok(value)

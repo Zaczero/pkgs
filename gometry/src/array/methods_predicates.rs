@@ -1,18 +1,19 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use numpy::PyArrayMethods;
+use numpy::PyArrayMethods as _;
+use pyo3::IntoPyObjectExt as _;
 
-use super::*;
+use crate::array::{
+    ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, Py, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python,
+    RowSelectionRef, SimplifyMethod, Typed, packed_points_to_arrow, pymethods,
+};
 
 impl PyGeometryArray {
     pub(crate) fn materialized_objects(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        use pyo3::IntoPyObjectExt;
+        use pyo3::IntoPyObjectExt as _;
         self.masked_shape_rows()
             .map(|(missing, shape)| {
                 if missing {
@@ -32,24 +33,9 @@ fn to_arrow_dense(
     encoding: ArrowEncoding,
 ) -> PyResult<Py<PyAny>> {
     if encoding == ArrowEncoding::Wkb {
-        // Packed storage has one frame by construction; only Mixed storage can
-        // carry per-item frame drift that needs the defensive compatibility
-        // check. Avoiding `items()` here is load-bearing: on packed arrays it
-        // would synthesize one `PyGeometry` for every row before WKB export.
-        if let GeometryArrayStorage::Mixed(items) = array.storage() {
-            // Empty framed Mixed: array CRS is authoritative (no elements).
-            if !items.is_empty() {
-                let crs = common_crs_required(items, "Arrow export")?;
-                if crs.as_deref() != array.crs_str() {
-                    return Err(crate::py::errors::crs_mismatch_error(
-                        "Arrow export requires GeometryArray CRS metadata to match every element",
-                        array.crs_str(),
-                        crs.as_deref(),
-                        None,
-                    ));
-                }
-            }
-        }
+        // Packed storage has one frame by construction. Avoiding `items()` is
+        // load-bearing: on packed arrays it would synthesize one `PyGeometry`
+        // per row before WKB export.
         return crate::py::arrow::storage_to_wkb_arrow(
             py,
             array.storage(),
@@ -57,52 +43,194 @@ fn to_arrow_dense(
             array.epoch(),
         );
     }
-    if let GeometryArrayStorage::Points { coords, row_map } = array.storage() {
-        if row_map.reorders() {
-            return to_arrow_dense(&array.materialize_packed_points(), py, encoding);
-        }
-        return packed_points_to_arrow(py, coords, array.crs_str(), array.epoch());
-    }
-    if let GeometryArrayStorage::Lines {
-        coords,
-        offsets,
-        row_map,
-    } = array.storage()
-    {
-        if row_map.reorders() {
-            return to_arrow_dense(&array.materialize_packed_lines()?, py, encoding);
-        }
-        return crate::py::arrow::packed_lines_to_arrow(
+    // Gather materializes once via the shared memo; Identity/Window share
+    // parent coordinate Arcs (Window via `CoordSeq::view` / rebased CSR).
+    let storage =
+        crate::array::normalized_gather_storage(array.storage_arc(), &array.gathered_memo)
+            .map_err(crate::array::packed_columns_err)?;
+    match storage.as_ref() {
+        GeometryArrayStorage::Points { coords, row_map } => {
+            let seq = match row_map.as_deref() {
+                RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.as_ref().clone(),
+                RowSelectionRef::Window { start, len } => coords.view(
+                    crate::geometry::CoordWindow::trusted(start..start + len, coords.len()),
+                ),
+            };
+            packed_points_to_arrow(py, &seq, array.crs_str(), array.epoch())
+        },
+        GeometryArrayStorage::Lines {
+            coords,
+            offsets,
+            row_map,
+        } => export_packed_lines_selection(
             py,
             coords,
             offsets,
+            row_map.as_deref(),
             array.crs_str(),
             array.epoch(),
-        );
-    }
-    if let GeometryArrayStorage::Polygons {
-        coords,
-        ring_offsets,
-        polygon_offsets,
-        row_map,
-    } = array.storage()
-    {
-        if row_map.reorders() {
-            return to_arrow_dense(&array.materialize_packed_polygons()?, py, encoding);
-        }
-        return crate::py::arrow::packed_polygons_to_arrow(
+        ),
+        GeometryArrayStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map,
+        } => export_packed_polygons_selection(
             py,
             coords,
             ring_offsets,
             polygon_offsets,
+            row_map.as_deref(),
             array.crs_str(),
             array.epoch(),
-        );
+        ),
+        GeometryArrayStorage::Mixed(shapes) => {
+            crate::py::arrow::shapes_to_arrow(py, shapes, array.crs_str(), array.epoch())
+        },
     }
-    let items = array.items();
-    // Shared empty/non-empty Mixed frame gate (zero-batch import re-export).
-    let _ = crate::py::arrow_c::array_frame_crs(array, items.as_ref())?;
-    geometries_to_arrow(py, items.as_ref(), array.crs_str(), array.epoch())
+}
+
+/// PyArrow packed-line export for Identity (full CSR share) or Window
+/// (rebased offsets + windowed coords that still share parent column Arcs).
+fn export_packed_lines_selection(
+    py: Python<'_>,
+    coords: &crate::geometry::CoordSeq,
+    offsets: &crate::geometry::CsrOffsetColumn,
+    row_map: RowSelectionRef<'_>,
+    crs: Option<&str>,
+    epoch: Option<f64>,
+) -> PyResult<Py<PyAny>> {
+    match row_map {
+        RowSelectionRef::Identity | RowSelectionRef::Gather(_) => {
+            crate::py::arrow::packed_lines_to_arrow(py, coords, offsets, crs, epoch)
+        },
+        RowSelectionRef::Window { start, len } => {
+            let offset_slice = offsets.as_slice();
+            let vertex_start = offset_slice[start] as usize;
+            let vertex_end = offset_slice[start + len] as usize;
+            let viewed = coords.view(crate::geometry::CoordWindow::trusted(
+                vertex_start..vertex_end,
+                coords.len(),
+            ));
+            let rebased = rebase_offsets_window(offset_slice, start, len)?;
+            crate::py::arrow::packed_lines_to_arrow(py, &viewed, &rebased, crs, epoch)
+        },
+    }
+}
+
+fn export_packed_polygons_selection(
+    py: Python<'_>,
+    coords: &crate::geometry::CoordSeq,
+    ring_offsets: &crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
+    polygon_offsets: &crate::geometry::CsrOffsetColumn<crate::geometry::PolygonLevel>,
+    row_map: RowSelectionRef<'_>,
+    crs: Option<&str>,
+    epoch: Option<f64>,
+) -> PyResult<Py<PyAny>> {
+    match row_map {
+        RowSelectionRef::Identity | RowSelectionRef::Gather(_) => {
+            crate::py::arrow::packed_polygons_to_arrow(
+                py,
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                crs,
+                epoch,
+            )
+        },
+        RowSelectionRef::Window { start, len } => {
+            let ring_slice = ring_offsets.as_slice();
+            let polygon_slice = polygon_offsets.as_slice();
+            let ring_start = polygon_slice[start] as usize;
+            let ring_end = polygon_slice[start + len] as usize;
+            let vertex_start = ring_slice[ring_start] as usize;
+            let vertex_end = ring_slice[ring_end] as usize;
+            let viewed = coords.view(crate::geometry::CoordWindow::trusted(
+                vertex_start..vertex_end,
+                coords.len(),
+            ));
+            let (out_rings, out_polygons) =
+                rebase_polygon_offsets_window(ring_slice, polygon_slice, start, len)?;
+            crate::py::arrow::packed_polygons_to_arrow(
+                py,
+                &viewed,
+                &out_rings,
+                &out_polygons,
+                crs,
+                epoch,
+            )
+        },
+    }
+}
+
+fn rebase_offsets_window(
+    offsets: &[i32],
+    start: usize,
+    len: usize,
+) -> PyResult<crate::geometry::CsrOffsetColumn> {
+    let window = &offsets[start..=(start + len)];
+    let base = window[0] as usize;
+    let rebased: Vec<usize> = window
+        .iter()
+        .map(|&offset| {
+            (offset as usize)
+                .checked_sub(base)
+                .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))
+        })
+        .collect::<PyResult<_>>()?;
+    let vertex_cap = *rebased
+        .last()
+        .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))?;
+    crate::geometry::CsrOffsetColumn::<()>::try_new(rebased, vertex_cap).map_err(PyErr::from)
+}
+
+fn rebase_polygon_offsets_window(
+    ring_offsets: &[i32],
+    polygon_offsets: &[i32],
+    start: usize,
+    len: usize,
+) -> PyResult<(
+    crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
+    crate::geometry::CsrOffsetColumn<crate::geometry::PolygonLevel>,
+)> {
+    let ring_start = polygon_offsets[start] as usize;
+    let ring_end = polygon_offsets[start + len] as usize;
+    let vertex_base = ring_offsets[ring_start] as usize;
+    let rebased_rings: Vec<usize> = ring_offsets[ring_start..=ring_end]
+        .iter()
+        .map(|&offset| {
+            (offset as usize)
+                .checked_sub(vertex_base)
+                .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))
+        })
+        .collect::<PyResult<_>>()?;
+    let ring_cap = *rebased_rings
+        .last()
+        .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))?;
+    let out_ring_offsets = crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(
+        rebased_rings,
+        ring_cap,
+    )
+    .map_err(PyErr::from)?;
+    let polygon_base = ring_start;
+    let rebased_polygons: Vec<usize> = polygon_offsets[start..=start + len]
+        .iter()
+        .map(|&offset| {
+            (offset as usize)
+                .checked_sub(polygon_base)
+                .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))
+        })
+        .collect::<PyResult<_>>()?;
+    let polygon_cap = *rebased_polygons
+        .last()
+        .ok_or_else(|| GeometryError::new_err("malformed CSR offsets for Arrow export"))?;
+    let out_polygon_offsets =
+        crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_new(
+            rebased_polygons,
+            polygon_cap,
+        )
+        .map_err(PyErr::from)?;
+    Ok((out_ring_offsets, out_polygon_offsets))
 }
 
 #[pymethods]
@@ -126,11 +254,7 @@ impl PyGeometryArray {
             if self.is_row_missing(index) {
                 values.push(py.None());
             } else {
-                let geometry = Typed(self.storage().geometry_at(
-                    index,
-                    self.frame.clone(),
-                    self.row_frame_cache(index),
-                ));
+                let geometry = Typed(self.geometry_at(index));
                 values.push(geometry.into_py_any(py)?);
             }
         }
@@ -291,37 +415,36 @@ impl PyGeometryArray {
                 row_map,
             } = self.storage()
         {
-            let result = if row_map.reorders() {
-                let materialized =
-                    self.materialize_packed_lines_parts(coords, offsets, row_map.as_deref());
-                materialized.ok().and_then(|m| {
-                    if let GeometryArrayStorage::Lines {
-                        coords, offsets, ..
-                    } = m.storage()
-                    {
-                        match method {
-                            SimplifyMethod::Vw => {
-                                m.simplify_vw_packed_lines(coords, offsets, tolerance).ok()
-                            },
-                            SimplifyMethod::Dp => {
-                                m.simplify_dp_packed_lines(coords, offsets, tolerance).ok()
-                            },
-                        }
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                match method {
-                    SimplifyMethod::Vw => self
-                        .simplify_vw_packed_lines(coords, offsets, tolerance)
-                        .ok(),
-                    SimplifyMethod::Dp => self
-                        .simplify_dp_packed_lines(coords, offsets, tolerance)
-                        .ok(),
+            // Propagate real PyResult errors from the packed kernels — never
+            // `.ok()` them into a silent fallthrough that hides the failure.
+            if row_map.reorders() {
+                let materialized = match self.materialize_packed_lines_parts(
+                    coords,
+                    offsets,
+                    row_map.as_deref(),
+                ) {
+                    Ok(m) => m,
+                    Err(err) => return Some(Err(err)),
+                };
+                if let GeometryArrayStorage::Lines {
+                    coords, offsets, ..
+                } = materialized.storage()
+                {
+                    return Some(match method {
+                        SimplifyMethod::Vw => {
+                            materialized.simplify_vw_packed_lines(coords, offsets, tolerance)
+                        },
+                        SimplifyMethod::Dp => {
+                            materialized.simplify_dp_packed_lines(coords, offsets, tolerance)
+                        },
+                    });
                 }
-            };
-            return result.map(Ok);
+                return None;
+            }
+            return Some(match method {
+                SimplifyMethod::Vw => self.simplify_vw_packed_lines(coords, offsets, tolerance),
+                SimplifyMethod::Dp => self.simplify_dp_packed_lines(coords, offsets, tolerance),
+            });
         }
         None
     }

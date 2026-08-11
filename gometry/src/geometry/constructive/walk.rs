@@ -1,12 +1,14 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
+use crate::geometry::{
+    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, ExpansionBudget, Ordering,
+    Orientation, Point, Polygon, Ring, Segment, SegmentProjection, XY, open_xy_cycle_decision,
+    orientation, ring_contains_interior, same_point, segment_cross_point, segment_projection,
+    segments_intersect, wrap_index,
+};
 
 /// One planned join of a right-offset walk, between consecutive offset
 /// edges (at the head vertex of the incoming edge).
@@ -29,7 +31,11 @@ pub(crate) enum WalkJoin {
     /// crossing, with its parameters along the incoming (`t_in`) and
     /// outgoing (`t_out`) offset edges — the edge-consumption evidence
     /// [`WalkPlan::validate`] runs on.
-    Cross { point: XY, t_in: f64, t_out: f64 },
+    Cross {
+        point: XY,
+        t_in: SegmentProjection,
+        t_out: SegmentProjection,
+    },
     /// Inside turn fallback: through the original vertex — the excursion
     /// lobe the winding selection cancels. Also the demotion target for
     /// any crossing that would traverse a consumed edge backwards.
@@ -85,15 +91,18 @@ impl WalkJoinRule {
 /// edges around the vertex cross, with the crossing's parameters along
 /// each edge. `None` when the offset edges do not meet within their
 /// extents (deep folds).
-pub(crate) fn reflex_cross(incoming: Segment, outgoing: Segment) -> Option<(XY, f64, f64)> {
+pub(crate) fn reflex_cross(
+    incoming: Segment,
+    outgoing: Segment,
+) -> Option<(XY, SegmentProjection, SegmentProjection)> {
     if !segments_intersect(incoming, outgoing) {
         return None;
     }
     let point = segment_cross_point(incoming, outgoing)?;
     Some((
         point,
-        segment_projection_fraction(point, incoming),
-        segment_projection_fraction(point, outgoing),
+        segment_projection(point, incoming),
+        segment_projection(point, outgoing),
     ))
 }
 
@@ -147,6 +156,164 @@ pub(crate) struct WalkPlan<'a> {
     pub(crate) joins: Vec<WalkJoin>,
     cyclic: bool,
     distance: f64,
+}
+
+/// Destination for one planned offset-walk vertex.  The walk deliberately
+/// owns the duplicate rule, so every destination — count-only preflight,
+/// budgeted growth, and materialized columns — sees the identical sequence.
+pub(crate) trait WalkSink {
+    fn push(&mut self, x: f64, y: f64, source: u32) -> Result<()>;
+}
+
+/// Materialized XY columns for a planned walk.  `sources` is present only on
+/// the offset-curve path, where generated vertices inherit their corner's
+/// Z/M ordinates.
+pub(crate) struct WalkColumns {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    sources: Option<Vec<u32>>,
+}
+
+impl WalkColumns {
+    pub(crate) fn new(capacity: usize, track_sources: bool) -> Self {
+        Self {
+            xs: Vec::with_capacity(capacity),
+            ys: Vec::with_capacity(capacity),
+            sources: track_sources.then(|| Vec::with_capacity(capacity)),
+        }
+    }
+
+    pub(crate) fn into_columns(self) -> (Vec<f64>, Vec<f64>, Option<Vec<u32>>) {
+        (self.xs, self.ys, self.sources)
+    }
+
+    fn needs_push(&self, x: f64, y: f64) -> bool {
+        !(self
+            .xs
+            .last()
+            .is_some_and(|last| last.to_bits() == x.to_bits())
+            && self
+                .ys
+                .last()
+                .is_some_and(|last| last.to_bits() == y.to_bits()))
+    }
+
+    fn push_known_new(&mut self, x: f64, y: f64, source: u32) {
+        debug_assert!(self.needs_push(x, y));
+        self.xs.push(x);
+        self.ys.push(y);
+        if let Some(sources) = &mut self.sources {
+            sources.push(source);
+        }
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.xs.len()
+    }
+}
+
+impl WalkSink for WalkColumns {
+    fn push(&mut self, x: f64, y: f64, source: u32) -> Result<()> {
+        // Exact adjacent duplicates (collinear runs, snapped joins meeting
+        // edge offsets bit-for-bit) never reach the loop: every duplicate
+        // here is a zero-length noding segment downstream.
+        if !self.needs_push(x, y) {
+            return Ok(());
+        }
+        self.push_known_new(x, y, source);
+        Ok(())
+    }
+}
+
+/// Count-only companion to [`WalkColumns`].  It retains only the previous
+/// vertex because duplicate suppression is part of the emitted-work count.
+pub(crate) struct WalkCount<'a> {
+    len: usize,
+    previous: Option<(u64, u64)>,
+    all_finite: bool,
+    budget: Option<&'a ExpansionBudget>,
+}
+
+impl WalkCount<'_> {
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) const fn all_finite(&self) -> bool {
+        self.all_finite
+    }
+}
+
+impl<'a> WalkCount<'a> {
+    pub(crate) const fn budgeted(budget: &'a ExpansionBudget) -> Self {
+        Self {
+            len: 0,
+            previous: None,
+            all_finite: true,
+            budget: Some(budget),
+        }
+    }
+}
+
+impl WalkSink for WalkCount<'_> {
+    fn push(&mut self, x: f64, y: f64, _: u32) -> Result<()> {
+        let point = (x.to_bits(), y.to_bits());
+        if self.previous == Some(point) {
+            return Ok(());
+        }
+        self.previous = Some(point);
+        let next = self.len.saturating_add(1);
+        if let Some(budget) = self.budget {
+            budget.check_additional(next)?;
+        }
+        self.len = next;
+        self.all_finite &= x.is_finite() && y.is_finite();
+        Ok(())
+    }
+}
+
+/// Count the sole walk emitter, admit that exact count, then materialize it
+/// with an exact final allocation.  The preflight and output are deliberately
+/// the same [`WalkPlan::emit_into`] traversal, so arc, crossing, cap, and
+/// duplicate rules cannot drift into a second estimate.
+pub(crate) fn materialize_walk(
+    plan: &WalkPlan<'_>,
+    step_angle: f64,
+    track_sources: bool,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<WalkColumns>> {
+    let count_len = {
+        let mut count = WalkCount::budgeted(budget);
+        plan.emit_into(step_angle, &mut count)?;
+        if !count.all_finite() {
+            return Ok(None);
+        }
+        count.len()
+    };
+    budget.add(count_len)?;
+    let mut columns = WalkColumns::new(count_len, track_sources);
+    plan.emit_into(step_angle, &mut columns)?;
+    debug_assert_eq!(columns.xs.len(), count_len);
+    Ok(Some(columns))
+}
+
+/// Close a materialized XY loop at the only point where the duplicate closing
+/// coordinate is actually emitted. The walk itself deliberately stays open
+/// for winding consumers; direct polygon/offset emitters must charge this
+/// final coordinate before growing their result columns.
+pub(crate) fn close_xy_loop(
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    debug_assert_eq!(xs.len(), ys.len());
+    let Some((&x, &y)) = xs.first().zip(ys.first()) else {
+        return Ok(());
+    };
+    budget.add(1)?;
+    xs.push(x);
+    ys.push(y);
+    Ok(())
 }
 
 impl<'a> WalkPlan<'a> {
@@ -280,15 +447,21 @@ impl<'a> WalkPlan<'a> {
                     Some(edge - 1)
                 };
                 let exit_join = (edge < joins).then_some(edge);
-                let entry = entry_join.map_or(0.0, |join| match self.joins[join] {
-                    WalkJoin::Cross { t_out, .. } => t_out,
-                    _ => 0.0,
+                let entry = entry_join.and_then(|join| match &self.joins[join] {
+                    WalkJoin::Cross { t_out, .. } => Some(t_out),
+                    _ => None,
                 });
-                let exit = exit_join.map_or(1.0, |join| match self.joins[join] {
-                    WalkJoin::Cross { t_in, .. } => t_in,
-                    _ => 1.0,
+                let exit = exit_join.and_then(|join| match &self.joins[join] {
+                    WalkJoin::Cross { t_in, .. } => Some(t_in),
+                    _ => None,
                 });
-                if entry >= exit {
+                let backwards = match (entry, exit) {
+                    (Some(entry), Some(exit)) => entry.cmp_along(exit) != Ordering::Less,
+                    (Some(entry), None) => entry.is_end(),
+                    (None, Some(exit)) => exit.is_start(),
+                    (None, None) => false,
+                };
+                if backwards {
                     for join in [entry_join, exit_join].into_iter().flatten() {
                         if matches!(self.joins[join], WalkJoin::Cross { .. }) {
                             self.joins[join] = WalkJoin::Excursion;
@@ -309,45 +482,11 @@ impl<'a> WalkPlan<'a> {
     /// join of that kind simply suppresses the first edge's start point
     /// (rotation of a closed loop is free). Cyclic output is the open
     /// column form — the consumer closes the loop.
-    pub(crate) fn emit(&self, step_angle: f64, xs: &mut Vec<f64>, ys: &mut Vec<f64>) {
-        self.emit_impl::<false>(step_angle, xs, ys, &mut Vec::new());
-    }
-
-    /// [`WalkPlan::emit`] also recording each emitted point's SOURCE vertex
-    /// (the walk index it derives from — join geometry, arcs, and excursion
-    /// points all belong to their corner vertex). The offset-curve surface
-    /// carries Z/M through this provenance; the buffer paths take the
-    /// untracked monomorphization at zero cost.
-    pub(crate) fn emit_tracked(
-        &self,
-        step_angle: f64,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
-        sources: &mut Vec<u32>,
-    ) {
-        self.emit_impl::<true>(step_angle, xs, ys, sources);
-    }
-
-    fn emit_impl<const TRACK: bool>(
-        &self,
-        step_angle: f64,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
-        sources: &mut Vec<u32>,
-    ) {
+    /// Emit into one materialized or count-only sink.  There is deliberately
+    /// one branch sequence for dry-run planning and realized output: keeping
+    /// two similar emitters was the source of the former undercount.
+    pub(crate) fn emit_into<S: WalkSink>(&self, step_angle: f64, sink: &mut S) -> Result<()> {
         let count = self.points.len();
-        // Exact adjacent duplicates (collinear runs, snapped joins meeting
-        // edge offsets bit-for-bit) never reach the loop: every duplicate
-        // here is a zero-length noding segment downstream.
-        let push = |xs: &mut Vec<f64>, ys: &mut Vec<f64>, x: f64, y: f64| {
-            if xs.last().is_some_and(|last| last.to_bits() == x.to_bits())
-                && ys.last().is_some_and(|last| last.to_bits() == y.to_bits())
-            {
-                return;
-            }
-            xs.push(x);
-            ys.push(y);
-        };
         for (edge, &(nx, ny)) in self.normals.iter().enumerate() {
             let previous = if edge == 0 {
                 self.cyclic.then(|| self.joins.len() - 1)
@@ -356,40 +495,46 @@ impl<'a> WalkPlan<'a> {
             };
             if !previous.is_some_and(|join| self.joins[join].replaces_endpoints()) {
                 let v = self.points[edge];
-                push(xs, ys, v.x + self.distance * nx, v.y + self.distance * ny);
+                sink.push(
+                    v.x + self.distance * nx,
+                    v.y + self.distance * ny,
+                    edge as u32,
+                )?;
             }
-            if TRACK {
-                sources.resize(xs.len(), edge as u32);
-            }
-            let w = self.points[wrap_index(edge + 1, count)];
+            let source = wrap_index(edge + 1, count) as u32;
+            let w = self.points[source as usize];
             match self.joins.get(edge) {
                 Some(
                     WalkJoin::Cross { point, .. }
                     | WalkJoin::Miter { point }
                     | WalkJoin::Snap { point },
-                ) => {
-                    push(xs, ys, point.x, point.y);
-                },
+                ) => sink.push(point.x, point.y, source)?,
                 Some(WalkJoin::MiterCut { entry, exit }) => {
-                    push(xs, ys, entry.x, entry.y);
-                    push(xs, ys, exit.x, exit.y);
+                    sink.push(entry.x, entry.y, source)?;
+                    sink.push(exit.x, exit.y, source)?;
                 },
                 Some(WalkJoin::Arc { from_angle, sweep }) => {
-                    push(xs, ys, w.x + self.distance * nx, w.y + self.distance * ny);
-                    emit_arc(w, *from_angle, *sweep, self.distance, step_angle, xs, ys);
+                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
+                    emit_arc(
+                        w,
+                        *from_angle,
+                        *sweep,
+                        self.distance,
+                        step_angle,
+                        source,
+                        sink,
+                    )?;
                 },
                 Some(WalkJoin::Excursion) => {
-                    push(xs, ys, w.x + self.distance * nx, w.y + self.distance * ny);
-                    push(xs, ys, w.x, w.y);
+                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
+                    sink.push(w.x, w.y, source)?;
                 },
                 Some(WalkJoin::Straight) | None => {
-                    push(xs, ys, w.x + self.distance * nx, w.y + self.distance * ny);
+                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
                 },
             }
-            if TRACK {
-                sources.resize(xs.len(), (wrap_index(edge + 1, count)) as u32);
-            }
         }
+        Ok(())
     }
 }
 
@@ -397,16 +542,16 @@ impl<'a> WalkPlan<'a> {
 /// arriving side's normal at the tip): round sweeps pi; flat connects
 /// directly (no points — the sides' endpoints already join); square adds
 /// the two extended corners.
-pub(crate) fn emit_cap(
+pub(crate) fn emit_cap<S: WalkSink>(
     tip: Point,
     nx: f64,
     ny: f64,
     distance: f64,
     cap_style: BufferCapStyle,
     step_angle: f64,
-    xs: &mut Vec<f64>,
-    ys: &mut Vec<f64>,
-) {
+    source: u32,
+    sink: &mut S,
+) -> Result<()> {
     match cap_style {
         BufferCapStyle::Round => {
             emit_arc(
@@ -415,21 +560,28 @@ pub(crate) fn emit_cap(
                 std::f64::consts::PI,
                 distance,
                 step_angle,
-                xs,
-                ys,
-            );
+                source,
+                sink,
+            )?;
         },
         BufferCapStyle::Flat => {},
         BufferCapStyle::Square => {
             // The tip extends along the walk direction, the right-side
             // normal rotated +90 degrees: t = (-ny, nx).
             let (tx, ty) = (-ny, nx);
-            xs.push(tip.x + distance * (nx + tx));
-            ys.push(tip.y + distance * (ny + ty));
-            xs.push(tip.x + distance * (-nx + tx));
-            ys.push(tip.y + distance * (-ny + ty));
+            sink.push(
+                tip.x + distance * (nx + tx),
+                tip.y + distance * (ny + ty),
+                source,
+            )?;
+            sink.push(
+                tip.x + distance * (-nx + tx),
+                tip.y + distance * (-ny + ty),
+                source,
+            )?;
         },
     }
+    Ok(())
 }
 
 /// Clean one raw offset loop in its own arrangement and append its
@@ -577,4 +729,35 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         .zip(assigned)
         .map(|((shell, ..), holes)| Polygon::new(Ring::from_trusted_closed(shell), holes))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::GENERATED_ITEM_LIMIT;
+
+    #[test]
+    fn loop_closure_charges_before_appending_the_public_coordinate() {
+        let mut budget = ExpansionBudget::new("test", "count");
+        budget.add(GENERATED_ITEM_LIMIT).unwrap();
+        let mut xs = vec![1.0];
+        let mut ys = vec![2.0];
+
+        assert!(close_xy_loop(&mut xs, &mut ys, &mut budget).is_err());
+        assert_eq!((xs.len(), ys.len()), (1, 1));
+    }
+
+    #[test]
+    fn walk_count_is_admitted_before_materializing_the_arc() {
+        let points = [
+            Point::new_unchecked_xy(0.0, 0.0),
+            Point::new_unchecked_xy(1.0, 0.0),
+            Point::new_unchecked_xy(1.0, 1.0),
+        ];
+        let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, 0.1).unwrap();
+        let mut budget = ExpansionBudget::new("test", "count");
+        budget.add(GENERATED_ITEM_LIMIT).unwrap();
+
+        assert!(materialize_walk(&plan, 0.1, false, &mut budget).is_err());
+    }
 }

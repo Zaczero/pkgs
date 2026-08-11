@@ -1,9 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
 use crate::error::Result;
+use crate::geometry::antimeridian::{collect_points, dedup_near, normalize, segment_coords};
+use crate::geometry::{
+    CoordSeq, CoordinateAxes, Coordinates as _, EmptyKind, GeometryErrorKind, LineSeq, MOrdinate,
+    Point, Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_winding, polygon_is_valid,
+    ring_encloses_pole, ring_winding, same_point,
+};
 
 impl Shape {
     /// Split at the antimeridian: parts that cross ±180 come back as

@@ -1,27 +1,28 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::ControlFlow;
 
-use super::super::*;
 use crate::HeapSize;
-use crate::geometry::*;
+use crate::geometry::facet_bvh::{
+    Facet, PreparedLinework, aabb_distance, aabb_distance_squared, aabb_max_distance_squared,
+    aabbs_overlap, point_aabb, segment_aabb, union_aabb,
+};
+use crate::geometry::{
+    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
+    point_segment_distance_squared, point_segment_selection, segments_intersect,
+};
 
 /// One nearest-pair candidate: a probe vertex, its projection onto the
 /// target linework, and the squared distance between them.
 pub(crate) struct NearestCandidate {
-    pub probe: Point,
-    pub target: Point,
-    pub distance_squared: f64,
+    pub(in crate::geometry) probe: Point,
+    pub(in crate::geometry) target: Point,
+    pub(in crate::geometry) distance_squared: f64,
+    pub(in crate::geometry) distance_key: SquaredDistanceKey,
 }
 
 /// Scalar-refine one facet for the argmin sweeps: full-ordinate segments,
 /// exact projection (Z/M interpolated like the brute path). The COMPARISON
-/// distance comes from [`point_segment_distance_squared`] — the same
-/// measurement the scalar tail prefilter uses — so a sub-ulp drift between
-/// two forms can never suppress a refinement the prefilter admitted; the
-/// projected witness point is built only for an improving candidate.
+/// distance and exact-selection key come from [`point_segment_selection`].
+/// The projected witness point is built only for an improving candidate.
 pub(super) fn refine_facet_nearest(
     linework: &PreparedLinework,
     facet: Facet,
@@ -34,16 +35,19 @@ pub(super) fn refine_facet_nearest(
             start: start.xy(),
             end: end.xy(),
         };
-        let distance_squared = point_segment_distance_squared(probe, segment);
-        if best
-            .as_ref()
-            .is_none_or(|b| distance_squared < b.distance_squared)
-        {
-            let foot = nearest_point_on_segment(probe, segment);
+        let selection = point_segment_selection(probe.xy(), segment);
+        if best.as_ref().is_none_or(|candidate| {
+            selection
+                .cmp(probe.xy(), segment, &candidate.distance_key)
+                .is_lt()
+        }) {
+            let projection = selection.projection(probe.xy(), segment);
+            let target = projection.interpolate_point(start, end);
             *best = Some(NearestCandidate {
                 probe,
-                target: lerp_point(start, end, segment_projection_fraction(foot, segment)),
-                distance_squared,
+                target,
+                distance_squared: selection.distance_squared,
+                distance_key: selection.distance_key(probe.xy(), segment),
             });
         }
     }
@@ -554,14 +558,16 @@ impl FacetBvh {
             stack.clear();
             stack.push(0);
             while let Some(index) = stack.pop() {
-                let limit = best.as_ref().map_or(f64::INFINITY, |b| b.distance_squared);
-                if bound(self.aabbs[index as usize]) >= limit {
+                let limit = best
+                    .as_ref()
+                    .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
+                if bound(self.aabbs[index as usize]) > limit {
                     continue;
                 }
                 match BvhCode::new(self.codes[index as usize]).decode() {
                     BvhNode::Leaf(facet_index) => {
                         let facet = linework.facets[facet_index];
-                        if linework.facet_point_distance_squared(facet, probe.x, probe.y) < limit {
+                        if linework.facet_point_distance_squared(facet, probe.x, probe.y) <= limit {
                             refine_facet_nearest(linework, facet, probe, &mut best);
                         }
                     },

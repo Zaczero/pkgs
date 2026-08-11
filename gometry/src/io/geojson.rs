@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::borrow::Cow;
 use std::fmt;
 
@@ -9,8 +5,12 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use super::*;
 use crate::geometry::{CoordSeqBuilder, MOrdinate, ZOrdinate};
+use crate::io::{
+    CoordSeq, CoordinateAxes, Coordinates, EmptyKind, GeoJsonInput, GeoJsonTextParse,
+    GeometryErrorKind, IoError, IoGeometryKind, LineSeq, ParseFormat, Point, Polygon, Result, Ring,
+    Shape, crs, parse_content,
+};
 
 #[cfg(test)]
 pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String {
@@ -51,7 +51,7 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
 /// antimeridian (a no-op that returns an owned clone for non-crossing input),
 /// and any polygonal geometry is oriented to right-hand winding. Non-polygonal
 /// planar geometry borrows through unchanged.
-fn geojson_output_shape(shape: &Shape, geographic: bool) -> Result<Cow<'_, Shape>> {
+pub(crate) fn geojson_output_shape(shape: &Shape, geographic: bool) -> Result<Cow<'_, Shape>> {
     let prepared: Cow<'_, Shape> = if geographic {
         validate_geojson_domain(shape)?;
         Cow::Owned(shape.split_antimeridian()?)
@@ -259,6 +259,7 @@ pub(crate) fn parse_geojson_text(text: &str) -> Result<GeoJsonTextParse> {
             .map_err(|error| IoError::geojson(error.to_string()))?;
         return Ok(GeoJsonTextParse {
             input: GeoJsonInput::Geometry(object.shape),
+            legacy_crs: probe.legacy_crs,
         });
     }
     let mut deserializer = serde_json::Deserializer::from_str(text);
@@ -268,14 +269,20 @@ pub(crate) fn parse_geojson_text(text: &str) -> Result<GeoJsonTextParse> {
         .end()
         .map_err(|error| IoError::geojson(error.to_string()))?;
     let input = geojson_object_to_input(object)?;
-    Ok(GeoJsonTextParse { input })
+    Ok(GeoJsonTextParse {
+        input,
+        legacy_crs: probe.legacy_crs,
+    })
 }
 
-/// The first pass records only the final ``type`` and how many duplicate
-/// ``coordinates`` members exist. The second pass can then deserialize the
-/// LAST coordinates member straight into its concrete geometry columns while
-/// skipping shadowed duplicates, preserving serde_json's map semantics and
-/// arbitrary object-key order without retaining a recursive coordinate tree.
+/// The first pass records the final ``type``, how many duplicate
+/// ``coordinates`` members exist, and every legacy ``crs`` declaration in the
+/// same order as [`collect_geojson_legacy_crs`] (own first, then nested by
+/// type). Coordinates / properties payloads are skipped via `IgnoredAny` so
+/// the probe never builds a coordinate tree. The second pass then deserializes
+/// the LAST coordinates member straight into its concrete geometry columns
+/// while skipping shadowed duplicates, preserving serde_json's map semantics
+/// and arbitrary object-key order.
 ///
 /// Final-member policy also applies to ``type`` (R18): a non-string intermediate
 /// ``type`` does not abort if a later string ``type`` wins — matching the
@@ -285,6 +292,8 @@ struct GeoJsonProbe {
     coordinate_members: usize,
     /// Defining members that must be excluded for the final type (RFC 7946 §7.1).
     members: DefiningMembers,
+    /// Legacy ``crs`` members (own then nested), reconciliation order.
+    legacy_crs: Vec<Value>,
 }
 
 fn parse_geojson_probe(text: &str) -> Result<GeoJsonProbe> {
@@ -314,9 +323,17 @@ impl<'de> Visitor<'de> for GeoJsonProbeVisitor {
         let mut geometry_type: Option<Value> = None;
         let mut coordinate_members = 0;
         let mut members = DefiningMembers::default();
+        // Own `crs` last-wins (serde_json map semantics); nested lists are
+        // collected as their containers are visited, then assembled below in
+        // collect_geojson_legacy_crs order (own first, then children).
+        let mut own_crs: Option<Value> = None;
+        let mut nested_from_geometry: Vec<Value> = Vec::new();
+        let mut nested_from_features: Vec<Value> = Vec::new();
+        let mut nested_from_geometries: Vec<Value> = Vec::new();
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             match key.as_ref() {
                 "type" => geometry_type = Some(map.next_value()?),
+                "crs" => own_crs = Some(map.next_value()?),
                 "coordinates" => {
                     coordinate_members += 1;
                     members.set(DefiningMembers::COORDINATES);
@@ -324,11 +341,11 @@ impl<'de> Visitor<'de> for GeoJsonProbeVisitor {
                 },
                 "geometries" => {
                     members.set(DefiningMembers::GEOMETRIES);
-                    let _ = map.next_value::<IgnoredAny>()?;
+                    nested_from_geometries = map.next_value_seed(LegacyCrsArraySeed)?;
                 },
                 "geometry" => {
                     members.set(DefiningMembers::GEOMETRY);
-                    let _ = map.next_value::<IgnoredAny>()?;
+                    nested_from_geometry = map.next_value_seed(LegacyCrsObjectSeed)?;
                 },
                 "properties" => {
                     members.set(DefiningMembers::PROPERTIES);
@@ -336,7 +353,7 @@ impl<'de> Visitor<'de> for GeoJsonProbeVisitor {
                 },
                 "features" => {
                     members.set(DefiningMembers::FEATURES);
-                    let _ = map.next_value::<IgnoredAny>()?;
+                    nested_from_features = map.next_value_seed(LegacyCrsArraySeed)?;
                 },
                 _ => {
                     let _ = map.next_value::<IgnoredAny>()?;
@@ -354,11 +371,201 @@ impl<'de> Visitor<'de> for GeoJsonProbeVisitor {
                 return Err(de::Error::custom("GeoJSON geometry requires a type"));
             },
         };
+        let legacy_crs = assemble_legacy_crs(
+            &geometry_type,
+            own_crs,
+            nested_from_geometry,
+            nested_from_features,
+            nested_from_geometries,
+        );
         Ok(GeoJsonProbe {
             geometry_type,
             coordinate_members,
             members,
+            legacy_crs,
         })
+    }
+}
+
+/// Assemble declarations in [`collect_geojson_legacy_crs`] order: own `crs`
+/// first (if any), then children selected by the final `type`.
+fn assemble_legacy_crs(
+    geometry_type: &str,
+    own_crs: Option<Value>,
+    nested_from_geometry: Vec<Value>,
+    nested_from_features: Vec<Value>,
+    nested_from_geometries: Vec<Value>,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Some(crs) = own_crs {
+        out.push(crs);
+    }
+    match geometry_type {
+        "Feature" => out.extend(nested_from_geometry),
+        "FeatureCollection" => out.extend(nested_from_features),
+        "GeometryCollection" => out.extend(nested_from_geometries),
+        _ => {},
+    }
+    out
+}
+
+/// Nested GeoJSON object: collect legacy CRS only (skip coordinate payloads).
+struct LegacyCrsObjectSeed;
+
+impl<'de> DeserializeSeed<'de> for LegacyCrsObjectSeed {
+    type Value = Vec<Value>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(LegacyCrsObjectVisitor)
+    }
+}
+
+struct LegacyCrsObjectVisitor;
+
+impl<'de> Visitor<'de> for LegacyCrsObjectVisitor {
+    type Value = Vec<Value>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a GeoJSON object (legacy CRS walk)")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut geometry_type: Option<String> = None;
+        let mut own_crs: Option<Value> = None;
+        let mut nested_from_geometry = Vec::new();
+        let mut nested_from_features = Vec::new();
+        let mut nested_from_geometries = Vec::new();
+        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+            match key.as_ref() {
+                "type" => {
+                    // Last-wins string type; non-string intermediate ignored
+                    // if a later string wins (same as the top-level probe).
+                    if let Value::String(s) = map.next_value::<Value>()? {
+                        geometry_type = Some(s);
+                    }
+                },
+                "crs" => own_crs = Some(map.next_value()?),
+                "geometry" => nested_from_geometry = map.next_value_seed(LegacyCrsObjectSeed)?,
+                "features" => nested_from_features = map.next_value_seed(LegacyCrsArraySeed)?,
+                "geometries" => nested_from_geometries = map.next_value_seed(LegacyCrsArraySeed)?,
+                _ => {
+                    let _ = map.next_value::<IgnoredAny>()?;
+                },
+            }
+        }
+        Ok(assemble_legacy_crs(
+            geometry_type.as_deref().unwrap_or(""),
+            own_crs,
+            nested_from_geometry,
+            nested_from_features,
+            nested_from_geometries,
+        ))
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_str<E>(self, _: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(Vec::new())
+    }
+}
+
+/// Array of nested GeoJSON objects (features / geometries): concatenate each
+/// child's CRS list in array order.
+struct LegacyCrsArraySeed;
+
+impl<'de> DeserializeSeed<'de> for LegacyCrsArraySeed {
+    type Value = Vec<Value>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(LegacyCrsArrayVisitor)
+    }
+}
+
+struct LegacyCrsArrayVisitor;
+
+impl<'de> Visitor<'de> for LegacyCrsArrayVisitor {
+    type Value = Vec<Value>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a GeoJSON array (legacy CRS walk)")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut out = Vec::new();
+        while let Some(child) = seq.next_element_seed(LegacyCrsObjectSeed)? {
+            out.extend(child);
+        }
+        Ok(out)
     }
 }
 
@@ -474,28 +681,31 @@ impl Visitor<'_> for CoordinateNumberVisitor {
     where
         E: de::Error,
     {
-        reject_inexact_json_integer(value).map_err(E::custom)?;
-        Ok(value as f64)
+        i64_to_exact_f64(value).map_err(E::custom)
     }
 
     fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        reject_inexact_json_integer(i64::try_from(value).unwrap_or(i64::MAX)).map_err(E::custom)?;
-        Ok(value as f64)
+        u64_to_exact_f64(value).map_err(E::custom)
     }
 }
 
 #[path = "geojson_seeds.rs"]
 mod geojson_seeds;
-use geojson_seeds::*;
+use geojson_seeds::ShapeCoordinatesSeed;
 
 #[path = "geojson_object.rs"]
 mod geojson_object;
-use geojson_object::*;
 // Crate-visible for from_features defining-member flags + shared §7.1 check.
-pub(crate) use geojson_object::{DefiningMembers, reject_rfc7946_cross_type_members};
+pub(crate) use geojson_object::{
+    DefiningMembers, i64_to_exact_f64, json_number_to_f64, reject_rfc7946_cross_type_members,
+    u64_to_exact_f64,
+};
+use geojson_object::{
+    FeatureGeometry, GeoJsonObject, JsonCoordinates, defining_members_from_object,
+};
 
 fn geojson_object_to_input(object: GeoJsonObject) -> Result<GeoJsonInput> {
     reject_rfc7946_cross_type_members(

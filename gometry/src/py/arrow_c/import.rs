@@ -1,11 +1,23 @@
 #![allow(
     clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "stream admit/decode loop is intentionally linear"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_question_mark,
+    reason = "stream admit/decode loop is intentionally linear"
 )]
 use std::ptr;
 
+use pyo3::exceptions::{PyMemoryError, PyOSError};
+
 use crate::Frame;
-use crate::py::arrow_c::*;
+use crate::py::arrow_c::{
+    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ImportedStreamGuard, ParseError, Py, PyAny,
+    PyAnyMethods as _, PyCapsule, PyErr, PyGeometryArray, PyResult, PyTuple, PyTupleMethods as _,
+    PyTypeError, Python, array_capsule_name, c_char, capsule_destructor, crs_arc, empty_array, ffi,
+    owned_capsule, release_imported, stream_capsule_name, used_array_capsule_name,
+};
 
 pub(crate) fn geometries_from_arrow_c(
     py: Python<'_>,
@@ -46,16 +58,6 @@ pub(crate) fn geometries_from_arrow_c(
     Ok(None)
 }
 
-pub(crate) fn owned_schema_capsule(py: Python<'_>, schema: ArrowSchema) -> PyResult<Py<PyAny>> {
-    owned_capsule(
-        py,
-        Box::new(schema),
-        schema_capsule_name(),
-        imported_schema_capsule_destructor,
-        release_imported_schema_callback,
-    )
-}
-
 pub(crate) fn owned_array_capsule(py: Python<'_>, array: ArrowArray) -> PyResult<Py<PyAny>> {
     owned_capsule(
         py,
@@ -66,22 +68,8 @@ pub(crate) fn owned_array_capsule(py: Python<'_>, array: ArrowArray) -> PyResult
     )
 }
 
-unsafe extern "C" fn imported_schema_capsule_destructor(capsule: *mut ffi::PyObject) {
-    // SAFETY: imported stream capsules use the standard Arrow capsule names.
-    // If a downstream consumer renamed one, the shell is still ours but the
-    // release slot should already be NULL.
-    unsafe {
-        capsule_destructor::<ArrowSchema>(
-            capsule,
-            schema_capsule_name(),
-            used_schema_capsule_name(),
-            release_imported_schema_callback,
-        );
-    }
-}
-
 unsafe extern "C" fn imported_array_capsule_destructor(capsule: *mut ffi::PyObject) {
-    // SAFETY: see `imported_schema_capsule_destructor`.
+    // SAFETY: imported array capsules use the standard Arrow capsule names.
     unsafe {
         capsule_destructor::<ArrowArray>(
             capsule,
@@ -92,12 +80,9 @@ unsafe extern "C" fn imported_array_capsule_destructor(capsule: *mut ffi::PyObje
     }
 }
 
-unsafe extern "C" fn release_imported_schema_callback(schema: *mut ArrowSchema) {
-    release_imported_schema(schema);
-}
-
 unsafe extern "C" fn release_imported_array_callback(array: *mut ArrowArray) {
-    release_imported_array(array);
+    // SAFETY: capsule destructor owns the shell for this one-shot release.
+    unsafe { release_imported_array(array) }
 }
 
 pub(crate) fn capsule_pointer<T>(
@@ -116,57 +101,65 @@ pub(crate) fn capsule_pointer<T>(
     Ok(ptr)
 }
 
-pub(crate) fn release_imported_schema(schema: *mut ArrowSchema) {
-    release_imported(schema);
+/// # Safety
+/// See [`release_imported`].
+pub(crate) unsafe fn release_imported_schema(schema: *mut ArrowSchema) {
+    // SAFETY: forwarded from caller.
+    unsafe { release_imported(schema) }
 }
 
-pub(crate) fn release_imported_array(array: *mut ArrowArray) {
-    release_imported(array);
+/// # Safety
+/// See [`release_imported`].
+pub(crate) unsafe fn release_imported_array(array: *mut ArrowArray) {
+    // SAFETY: forwarded from caller.
+    unsafe { release_imported(array) }
 }
 
-pub(crate) fn release_imported_stream(stream: *mut ArrowArrayStream) {
-    release_imported(stream);
+/// # Safety
+/// See [`release_imported`].
+pub(crate) unsafe fn release_imported_stream(stream: *mut ArrowArrayStream) {
+    // SAFETY: forwarded from caller.
+    unsafe { release_imported(stream) }
 }
 
-pub(crate) fn empty_stream_output(
-    py: Python<'_>,
+type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;
+
+/// Copy every Arrow schema metadata key/value pair into owned storage.
+///
+/// # Safety
+///
+/// `schema.metadata` is live and quiescent for the full copy; no producer
+/// release may run concurrently. Only the owned pairs may escape.
+pub(crate) unsafe fn schema_metadata_pairs_owned(
     schema: &ArrowSchema,
-    crs: Option<&Bound<'_, PyAny>>,
-    epoch: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Py<PyAny>> {
-    // Keystone: empty streams share the non-empty classifier — select the
-    // geometry field, validate only that subtree, preserve its CRS/epoch.
-    let classified = validate_empty_stream_schema(schema)?;
-    let crs = crate::py::arrow::reconcile_arrow_crs(classified.crs.as_deref(), crs)?;
-    let epoch = crate::py::arrow::reconcile_arrow_epoch(classified.epoch, epoch)?;
-    PyGeometryArray::mixed(Vec::new(), Frame::new(crs.map(crs_arc), epoch)?).into_py_any(py)
-}
-
-pub(crate) fn schema_metadata_value(
-    schema: &ArrowSchema,
-    target: &[u8],
-) -> PyResult<Option<Vec<u8>>> {
+) -> PyResult<OwnedMetadataPairs> {
     if schema.metadata.is_null() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     // SAFETY: Arrow C schema metadata is a contiguous native-endian key/value
     // blob owned by the producer while the schema release callback is live.
     unsafe {
         let mut cursor = schema.metadata.cast::<u8>();
         let pair_count = read_metadata_len(&mut cursor)?;
+        let mut pairs = Vec::new();
+        pairs
+            .try_reserve(pair_count)
+            .map_err(|_| ParseError::new_err("Arrow C schema metadata is too large to allocate"))?;
         for _ in 0..pair_count {
             let key_len = read_metadata_len(&mut cursor)?;
-            let key = std::slice::from_raw_parts(cursor, key_len);
+            let key = std::slice::from_raw_parts(cursor, key_len)
+                .to_vec()
+                .into_boxed_slice();
             cursor = cursor.add(key_len);
             let value_len = read_metadata_len(&mut cursor)?;
-            let value = std::slice::from_raw_parts(cursor, value_len);
+            let value = std::slice::from_raw_parts(cursor, value_len)
+                .to_vec()
+                .into_boxed_slice();
             cursor = cursor.add(value_len);
-            if key == target {
-                return Ok(Some(value.to_vec()));
-            }
+            pairs.push((key, value));
         }
+        Ok(pairs)
     }
-    Ok(None)
 }
 
 const unsafe fn read_metadata_i32(cursor: &mut *const u8) -> i32 {
@@ -186,87 +179,10 @@ unsafe fn read_metadata_len(cursor: &mut *const u8) -> PyResult<usize> {
         .map_err(|_| ParseError::new_err("Arrow C schema metadata has a negative length"))
 }
 
-/// Resolve struct child `index` from an Arrow-C array with structural bounds
-/// checks (F5): `index < n_children`, non-null `children` table, non-null child.
-///
-/// # Safety
-/// `array` is a live producer-owned `ArrowArray`. On success the returned
-/// pointer is one of `array.children[0..n_children)` and is non-null.
-unsafe fn array_struct_child_ptr(array: &ArrowArray, index: usize) -> PyResult<*mut ArrowArray> {
-    let n_children = usize::try_from(array.n_children).map_err(|_| {
-        crate::py::errors::parse_error(
-            "Arrow array n_children is negative or too large",
-            crate::py::errors::ParseFormat::GeoArrow,
-        )
-    })?;
-    if index >= n_children {
-        return Err(crate::py::errors::parse_error(
-            format!("Arrow struct child index {index} is out of range for n_children={n_children}"),
-            crate::py::errors::ParseFormat::GeoArrow,
-        ));
-    }
-    if array.children.is_null() {
-        return Err(crate::py::errors::parse_error(
-            "Arrow struct array children pointer is null",
-            crate::py::errors::ParseFormat::GeoArrow,
-        ));
-    }
-    // SAFETY: children table is non-null; index < n_children.
-    let child = unsafe { *array.children.add(index) };
-    if child.is_null() {
-        return Err(crate::py::errors::parse_error(
-            "Arrow struct array child is null",
-            crate::py::errors::ParseFormat::GeoArrow,
-        ));
-    }
-    Ok(child)
-}
-
-/// R04/D18: validate a zero-row stream batch's geometry offsets, then release
-/// the array. Encoding-driven (no live schema pointer — after the first
-/// non-empty batch the stream schema may already live in a capsule).
-///
-/// # Safety
-/// `array` is a live producer-owned `ArrowArray` for this call; on return it
-/// has been released. `stream_schema` is released only when validation fails.
-unsafe fn validate_and_discard_zero_row_batch(
-    array: &mut ArrowArray,
-    stream_schema: &mut ArrowSchema,
-    classified: &ClassifiedGeometrySchema,
-) -> PyResult<()> {
-    let geom_array = match classified.struct_child {
-        Some(index) => {
-            // F5: honor ArrowArray.n_children before any children.add(index).
-            // Schema may select geometry child index 1 while a malformed
-            // producer declares n_children=1 — OOB without this gate.
-            // SAFETY: `array` is the live producer-owned batch for this call.
-            match unsafe { array_struct_child_ptr(array, index) } {
-                Ok(child) => {
-                    // SAFETY: non-null child pointer; producer-owned for this batch.
-                    unsafe { &*child }
-                },
-                Err(error) => {
-                    release_imported_array(array);
-                    release_imported_schema(stream_schema);
-                    return Err(error);
-                },
-            }
-        },
-        None => &*array,
-    };
-    if let Err(error) = ensure_zero_row_geometry_offsets(
-        geom_array,
-        classified.encoding,
-        classified.wkb_offset_width,
-    ) {
-        release_imported_array(array);
-        release_imported_schema(stream_schema);
-        return Err(error);
-    }
-    release_imported_array(array);
-    Ok(())
-}
-
+/// Stream import (M2): admit and **decode each batch immediately**, release
+/// producer + owned admission buffers for that batch before `get_next`, and
+/// accumulate only decoded geometry shapes. Peak intermediate memory tracks
+/// one batch, not the whole stream.
 pub(crate) fn import_stream(
     py: Python<'_>,
     stream: *mut ArrowArrayStream,
@@ -286,72 +202,62 @@ pub(crate) fn import_stream(
             return Ok(None);
         };
         let mut stream_schema = empty_schema();
-        if get_schema(stream, &raw mut stream_schema) != 0 {
-            return Err(PyTypeError::new_err(
+        let schema_status = get_schema(stream, &raw mut stream_schema);
+        if schema_status != 0 {
+            return Err(stream_callback_error(
+                py,
+                stream,
+                schema_status,
                 "Arrow C stream failed to export its schema",
             ));
         }
-        // Classify once from the stream schema (field select + encoding + frame).
-        let classified = match validate_empty_stream_schema(&stream_schema) {
-            Ok(plan) => plan,
-            Err(error) => {
-                release_imported_schema(&raw mut stream_schema);
-                return Err(error);
-            },
-        };
-        // Retained non-empty batches only; fallible growth (never trust batch
-        // count with infallible with_capacity / push that panics on OOM).
-        let mut storages = Vec::new();
-        let mut schema_capsule = None::<Py<PyAny>>;
+        // Design-1: capture schema once into owned storage, release producer
+        // schema, classify only the admitted tree. Batches use admitted schema
+        // only (no borrowed raw schema capsules).
+        let (admitted_schema, classified) =
+            match crate::py::arrow_c::admit_and_classify_raw_schema(&raw mut stream_schema) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    // SAFETY: stream_schema is the live producer shell for this path;
+                    // no retained borrows. Nested under the stream unsafe block.
+                    release_imported_schema(&raw mut stream_schema);
+                    return Err(error);
+                },
+            };
+        // stream_schema was moved+released by admit_and_classify.
+
+        // Decoded rows only — never retain per-batch NativeNode/ArrowStorage
+        // across get_next. Fallible growth.
+        let mut shapes: Vec<crate::geometry::Shape> = Vec::new();
+        let mut missing_rows: Vec<usize> = Vec::new();
+        let mut row_base = 0_usize;
+        let mut batch_crs = classified.crs.clone();
+        let mut batch_epoch = classified.epoch;
+
         loop {
             let mut array = empty_array();
-            if get_next(stream, &raw mut array) != 0 {
-                release_imported_schema(&raw mut stream_schema);
-                return Err(PyTypeError::new_err(
+            let next_status = get_next(stream, &raw mut array);
+            if next_status != 0 {
+                return Err(stream_callback_error(
+                    py,
+                    stream,
+                    next_status,
                     "Arrow C stream failed to export its next array",
                 ));
             }
             if array.release.is_none() {
                 break;
             }
-            // R04: discard zero-row batches (no O(batch) retention). D18:
-            // validate the empty start offset / nested list chain first.
-            if array.length == 0 {
-                validate_and_discard_zero_row_batch(&mut array, &mut stream_schema, &classified)?;
-                continue;
-            }
-            if schema_capsule.is_none() {
-                let schema = std::mem::replace(&mut stream_schema, empty_schema());
-                schema_capsule = match owned_schema_capsule(py, schema) {
-                    Ok(capsule) => Some(capsule),
-                    Err(error) => {
-                        release_imported_array(&raw mut array);
-                        return Err(error);
-                    },
-                };
-            }
-            let array_capsule = match owned_array_capsule(py, array) {
-                Ok(capsule) => capsule,
-                Err(error) => {
-                    return Err(error);
-                },
-            };
-            let schema_capsule = schema_capsule
-                .as_ref()
-                .expect("stream schema capsule exists after non-empty batch");
-            let arrow = crate::py::arrow_c::native_arrow_from_capsules_with_borrowed_schema(
+            // Zero-row batches use the same owned admission path as nonzero
+            // (D18 offset validation lives in decode, not a raw bypass).
+            let array_capsule = owned_array_capsule(py, array)?;
+            // Admit from array capsule + owned schema (selected-span).
+            let geometry = crate::py::arrow_c::native_arrow_from_array_capsule_with_schema(
                 py,
-                schema_capsule.bind(py),
                 array_capsule.bind(py),
+                &admitted_schema,
+                classified.struct_child,
             )?;
-            let geometry = match classified.struct_child {
-                Some(index) => {
-                    crate::py::arrow_c::native_arrow_struct_child(py, arrow.bind(py), index)?
-                },
-                None => arrow,
-            };
-            // Prefer the pre-classified encoding/frame so table field metadata
-            // is preserved even when the native type reads root schema only.
             let storage = crate::py::arrow::arrow_storage_from_native_geometry(
                 geometry.bind(py),
                 classified.encoding,
@@ -359,16 +265,94 @@ pub(crate) fn import_stream(
                 classified.crs.clone(),
                 classified.epoch,
             )?;
-            crate::try_push(&mut storages, storage)?;
+            // Drop native view (owned buffers) before decoding materializes shapes.
+            drop(geometry);
+            drop(array_capsule);
+
+            // Decode this batch alone into a GeometryArray, then take shapes.
+            let batch =
+                crate::py::arrow::geometries_from_arrow_storages(py, vec![storage], None, None)?;
+            let batch_bound = batch.bind(py);
+            let batch_arr = batch_bound.cast::<crate::PyGeometryArray>()?;
+            let borrowed = batch_arr.borrow();
+            let batch_len = borrowed.__len__();
+            // Collect shapes (missing placeholders included in storage iteration).
+            for (i, shape) in borrowed.storage().iter_shapes().enumerate() {
+                if borrowed.is_row_missing(i) {
+                    crate::try_push(&mut missing_rows, row_base + i)?;
+                    crate::try_push(&mut shapes, crate::PyGeometryArray::missing_placeholder())?;
+                } else {
+                    crate::try_push(&mut shapes, shape.into_owned())?;
+                }
+            }
+            if batch_crs.is_none() {
+                batch_crs = borrowed.crs_str().map(str::to_owned);
+            }
+            if batch_epoch.is_none() {
+                batch_epoch = borrowed.epoch();
+            }
+            row_base = row_base
+                .checked_add(batch_len)
+                .ok_or_else(|| PyTypeError::new_err("Arrow stream row count overflows"))?;
+            // Drop owned batch before next get_next so peak tracks one batch.
+            drop(borrowed);
+            drop(batch);
         }
-        if storages.is_empty() {
-            let output = empty_stream_output(py, &stream_schema, crs, epoch);
-            release_imported_schema(&raw mut stream_schema);
-            return output.map(Some);
+
+        if shapes.is_empty() {
+            // Schema already released; use classified frame from owned admission.
+            let crs = crate::py::arrow::reconcile_arrow_crs(classified.crs.as_deref(), crs)?;
+            let epoch = crate::py::arrow::reconcile_arrow_epoch(classified.epoch, epoch)?;
+            return PyGeometryArray::mixed(Vec::new(), Frame::new(crs.map(crs_arc), epoch)?)
+                .into_py_any(py)
+                .map(Some);
         }
-        release_imported_schema(&raw mut stream_schema);
-        crate::py::arrow::geometries_from_arrow_storages(py, storages, crs, epoch).map(Some)
+        // Final frame reconcile with caller overrides.
+        let crs = crate::py::arrow::reconcile_arrow_crs(batch_crs.as_deref(), crs)?;
+        let epoch = crate::py::arrow::reconcile_arrow_epoch(batch_epoch, epoch)?;
+        let frame = Frame::new(crs.map(crs_arc), epoch)?;
+        // Missing mask is authoritative; placeholders keep storage rectangular.
+        let mask = crate::array::MissingMask::from_sparse(shapes.len(), &missing_rows);
+        let array = crate::PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(mask);
+        array.into_py_any(py).map(Some)
     }
+}
+
+/// Map an Arrow C Stream callback's errno-like status to Python while retaining
+/// the producer's optional diagnostic. `ENOMEM` is a resource failure, not a
+/// type error; all other status values remain errno-bearing `OSError`s.
+unsafe fn stream_callback_error(
+    py: Python<'_>,
+    stream: *mut ArrowArrayStream,
+    status: i32,
+    fallback: &str,
+) -> PyErr {
+    // SAFETY: the ImportedStreamGuard keeps this producer stream live until
+    // after the error is constructed; get_last_error is optional and checked.
+    let detail = unsafe { stream_last_error_detail(stream) }.unwrap_or_else(|| fallback.to_owned());
+    // Arrow C Stream follows errno-style return codes. These values are the
+    // specified POSIX errno numbers on gometry's Linux targets.
+    if status == 12 {
+        return PyMemoryError::new_err(format!("Arrow C stream error: {detail}"));
+    }
+    PyErr::from_type(py.get_type::<PyOSError>(), (status, detail))
+}
+
+/// Surface the producer diagnostic without discarding the callback status.
+unsafe fn stream_last_error_detail(stream: *mut ArrowArrayStream) -> Option<String> {
+    // SAFETY: stream live; get_last_error optional.
+    unsafe {
+        if let Some(get_last_error) = (*stream).get_last_error {
+            let ptr = get_last_error(stream);
+            if !ptr.is_null()
+                && let Ok(s) = std::ffi::CStr::from_ptr(ptr).to_str()
+                && !s.is_empty()
+            {
+                return Some(format!("Arrow C stream error: {s}"));
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn empty_schema() -> ArrowSchema {
@@ -384,3 +368,4 @@ pub(crate) fn empty_schema() -> ArrowSchema {
         private_data: ptr::null_mut(),
     }
 }
+use pyo3::IntoPyObjectExt as _;

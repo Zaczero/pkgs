@@ -8,9 +8,13 @@
 )]
 use std::num::NonZeroU32;
 
-use super::*;
 use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
+use crate::py::support::{
+    Bound, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny, PyAnyMethods as _,
+    PyBool, PyErr, PyInt, PyResult, PyTypeError, Python, Shape, coordinate_values,
+    finite_f64_required, non_negative_int, py_i64_bounded, py_i64_required,
+};
 
 /// Collect a typed scalar lane from any iterable (sequence, generator, ...),
 /// with one canonical error naming the lane and its element kind.
@@ -178,17 +182,25 @@ pub(crate) fn curve_frame_for(
 /// and emit the curve key. Array keys reuse the same [`CurveKind::key`] over a
 /// single total-bounds frame so scalar and array keys stay bit-identical for
 /// the same geometry under the same explicit bounds.
-pub(crate) fn spatial_key_for_shape(
+/// Curve key for a shape, or `None` when it is empty — the scalar
+/// extent-accessor contract (`bounds` and friends answer `None` too).
+pub(crate) fn spatial_key_for_shape_opt(
     shape: &Shape,
     kind: crate::curves::CurveKind,
     level: i64,
     bounds: Option<&Bound<'_, PyAny>>,
-) -> PyResult<u64> {
+) -> PyResult<Option<u64>> {
+    // `level` is still validated for an empty shape — a bad parameter is an
+    // error whatever the geometry. Emptiness is then decided BEFORE frame
+    // derivation, which would otherwise raise while deriving a frame for a
+    // shape that has no key either way.
     let level = crate::boundary::input::validate_curve_level(level)?;
+    if shape.is_empty() {
+        return Ok(None);
+    }
     let operation = kind.operation_name();
     let frame = curve_frame_for(shape, level, bounds, operation)?;
-    kind.key(&frame, shape)
-        .ok_or_else(|| empty_curve_input(operation))
+    Ok(kind.key(&frame, shape))
 }
 
 /// Parse optional explicit curve-frame bounds: four finite ordered floats.

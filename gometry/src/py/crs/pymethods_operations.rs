@@ -1,4 +1,8 @@
-use super::*;
+use crate::py::crs::{
+    Bound, GeometryError, IntoPyObject as _, PyAny, PyCrs, PyDict, PyList, PyResult, PyTuple,
+    PyTupleMethods as _, TransformOptionArgs, crs_operation, crs_operation_at, crs_operations,
+    pymethods,
+};
 
 #[pymethods]
 impl PyCrs {
@@ -21,19 +25,25 @@ impl PyCrs {
     ///     Coordinate epochs for dynamic CRS.
     ///
     /// authority : str, optional
-    ///     Restrict to operations from this authority.
+    ///     Restrict candidate coordinate operations to this authority
+    ///     (e.g. ``'EPSG'``).
     ///
     /// accuracy : float, optional
-    ///     Maximum acceptable accuracy, in meters.
+    ///     Maximum acceptable operation accuracy, in meters.
     ///
     /// allow_ballpark : bool, optional
-    ///     Permit low-accuracy ballpark operations.
+    ///     Allow low-accuracy ballpark operations when no precise one exists.
     ///
     /// only_best : bool, optional
-    ///     Return only the single best operation.
+    ///     Require PROJ's best operation. If a required transformation grid is
+    ///     unavailable, raise ``TransformError`` instead of using a less
+    ///     accurate fallback operation.
     ///
     /// force_over : bool, optional
-    ///     Prefer operations that keep coordinates in a continuous range.
+    ///     Keep coordinates on the source side of the antimeridian instead of
+    ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+    ///     ``only_best``, this also collapses operation selection to a single
+    ///     candidate, so enumerating surfaces return exactly one operation.
     ///
     /// Returns
     /// -------
@@ -44,15 +54,18 @@ impl PyCrs {
     /// CRSError
     ///     If the CRS arguments are unrecognized.
     #[pyo3(signature = (target, *, at = None, area_of_interest = None, source_epoch = None, target_epoch = None, authority = None, accuracy = None, allow_ballpark = None, only_best = None, force_over = false))]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the PyO3 method directly exposes PROJ's independent operation-selection inputs"
+    )]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).operation(3857)['name']
     /// 'pipeline'
-    fn operation(
-        slf: &Bound<'_, Self>,
+    fn operation<'py>(
+        slf: &Bound<'py, Self>,
         target: &Bound<'_, PyAny>,
         at: Option<&Bound<'_, PyAny>>,
         area_of_interest: Option<&Bound<'_, PyAny>>,
@@ -63,7 +76,7 @@ impl PyCrs {
         allow_ballpark: Option<bool>,
         only_best: Option<bool>,
         force_over: bool,
-    ) -> PyResult<crs::OperationInfo> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let options = TransformOptionArgs {
             area_of_interest,
             source_epoch,
@@ -74,8 +87,9 @@ impl PyCrs {
             only_best,
             force_over,
         };
+        let py = slf.py();
         let Some(at) = at else {
-            return crs_operation(slf.as_any(), target, options);
+            return crs_operation(py, slf.as_any(), target, options);
         };
         let at = at.cast::<PyTuple>().map_err(|_| {
             GeometryError::new_err("at must be a (x, y), (x, y, z), or (x, y, z, t) tuple")
@@ -89,7 +103,9 @@ impl PyCrs {
         let y = at.get_item(1)?;
         let z = (at.len() >= 3).then(|| at.get_item(2)).transpose()?;
         let t = (at.len() == 4).then(|| at.get_item(3)).transpose()?;
-        crs_operation_at(
+        // Spatially-selected result is deliberately not Python-dict-cached
+        // (answer depends on coordinates).
+        let info = crs_operation_at(
             slf.as_any(),
             target,
             &x,
@@ -97,7 +113,8 @@ impl PyCrs {
             z.as_ref(),
             t.as_ref(),
             options,
-        )
+        )?;
+        info.into_pyobject(py)
     }
 
     /// All candidate operations from this CRS to ``target``, best first.
@@ -114,19 +131,25 @@ impl PyCrs {
     ///     Coordinate epochs for dynamic CRS.
     ///
     /// authority : str, optional
-    ///     Restrict to operations from this authority.
+    ///     Restrict candidate coordinate operations to this authority
+    ///     (e.g. ``'EPSG'``).
     ///
     /// accuracy : float, optional
-    ///     Maximum acceptable accuracy, in meters.
+    ///     Maximum acceptable operation accuracy, in meters.
     ///
     /// allow_ballpark : bool, optional
-    ///     Permit low-accuracy ballpark operations.
+    ///     Allow low-accuracy ballpark operations when no precise one exists.
     ///
     /// only_best : bool, optional
-    ///     Return only the single best operation.
+    ///     Require PROJ's best operation. If a required transformation grid is
+    ///     unavailable, raise ``TransformError`` instead of using a less
+    ///     accurate fallback operation.
     ///
     /// force_over : bool, optional
-    ///     Prefer operations that keep coordinates in a continuous range.
+    ///     Keep coordinates on the source side of the antimeridian instead of
+    ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+    ///     ``only_best``, this also collapses operation selection to a single
+    ///     candidate, so enumerating surfaces return exactly one operation.
     ///
     /// Returns
     /// -------
@@ -138,8 +161,8 @@ impl PyCrs {
     /// >>> import gometry as gm
     /// >>> len(gm.CRS(4326).operations(3857)) >= 1
     /// True
-    fn operations(
-        slf: &Bound<'_, Self>,
+    fn operations<'py>(
+        slf: &Bound<'py, Self>,
         target: &Bound<'_, PyAny>,
         area_of_interest: Option<&Bound<'_, PyAny>>,
         source_epoch: Option<&Bound<'_, PyAny>>,
@@ -149,8 +172,8 @@ impl PyCrs {
         allow_ballpark: Option<bool>,
         only_best: Option<bool>,
         force_over: bool,
-    ) -> PyResult<Vec<crs::OperationInfo>> {
-        crs_operations(slf.as_any(), target, TransformOptionArgs {
+    ) -> PyResult<Bound<'py, PyList>> {
+        crs_operations(slf.py(), slf.as_any(), target, TransformOptionArgs {
             area_of_interest,
             source_epoch,
             target_epoch,

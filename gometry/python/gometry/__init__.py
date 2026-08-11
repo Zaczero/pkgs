@@ -52,6 +52,7 @@ del TYPE_CHECKING
 
 from gometry._lib import (
     CRS,
+    AccuracyWarning,
     CellArray,
     Coordinates,
     CRSError,
@@ -165,6 +166,7 @@ from gometry._lib import (
     intersects_xy,
     join,
     length,
+    length_3d,
     line_strings,
     multi_line_strings,
     multi_points,
@@ -239,22 +241,34 @@ del annotations
 
 # These native containers honor the full sequence protocol (len/getitem/iter/
 # reversed/in/index/count); registering makes `isinstance(value, Sequence)`
-# true AND sets CPython's Py_TPFLAGS_SEQUENCE, so sequence patterns destructure
-# them.
-_cabc.Sequence.register(GeometryArray)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(CellArray)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(Groups)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(GeometryParts)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(Coordinates)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(H3VertexArray)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(H3EdgeArray)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(H3Coverage)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(S2Coverage)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(GeohashCoverage)  # pyright: ignore[reportAttributeAccessIssue]
-_cabc.Sequence.register(TileCoverage)  # pyright: ignore[reportAttributeAccessIssue]
+# true. Each class also declares `sequence` natively so immutable type objects
+# do not need this registration to acquire Py_TPFLAGS_SEQUENCE.
+_NATIVE_SEQUENCE_TYPES = (
+    GeometryArray,
+    CellArray,
+    Groups,
+    GeometryParts,
+    Coordinates,
+    H3VertexArray,
+    H3EdgeArray,
+    H3Coverage,
+    S2Coverage,
+    GeohashCoverage,
+    TileCoverage,
+)
 
 
-__all__ = [
+def _register_native_sequences() -> None:
+    for sequence_type in _NATIVE_SEQUENCE_TYPES:
+        _cabc.Sequence.register(sequence_type)  # pyright: ignore[reportAttributeAccessIssue]
+
+
+_register_native_sequences()
+del _register_native_sequences
+
+
+__all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contract
+    'AccuracyWarning',
     'CRS',
     'CRSError',
     'CRSMismatchError',
@@ -374,6 +388,7 @@ __all__ = [
     'intersects_xy',
     'join',
     'length',
+    'length_3d',
     'line_strings',
     'multi_line_strings',
     'multi_points',
@@ -427,6 +442,10 @@ __all__ = [
 
 # Optional conversion and visualization functions stay lazy; their static
 # declarations above preserve IDE discovery without importing dependencies.
+# Resolved adapters are not written into module globals — the imported adapter
+# module is already cached by the import system, and ``dir(gometry)`` /
+# ``__all__`` stay the import-safe core surface (never force optional imports
+# via ``pydoc`` / ``inspect.getmembers``).
 _LAZY_EXPORTS: dict[str, str] = {
     'explore': 'gometry._viz',
     'from_geopandas': 'gometry._geopandas',
@@ -441,11 +460,3 @@ def __getattr__(name: str) -> object:
     if module_name is not None:
         return getattr(_importlib.import_module(module_name), name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
-
-
-def __dir__() -> list[str]:
-    # Runtime introspection must not force optional imports (``pydoc`` and
-    # ``inspect.getmembers`` resolve every name returned here). The handwritten
-    # stub and API reference advertise lazy adapters to IDEs without that side
-    # effect; ``dir(gometry)`` stays the import-safe core surface.
-    return sorted(set(globals()) | set(__all__))

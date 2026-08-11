@@ -2,8 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::py::errors::GeometryError;
+use crate::py::methods::unary_constructive_methods::{
+    Bound, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
+};
 use crate::py::support::{TriangulationMethod, VoronoiClipInput};
 
 #[pymethods]

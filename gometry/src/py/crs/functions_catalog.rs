@@ -1,6 +1,8 @@
 use std::num::NonZeroUsize;
 
-use super::*;
+use crate::py::crs::{
+    Bound, CRSError, PyAny, PyList, PyResult, Python, crs, crs_normalize, parse_area, pyfunction,
+};
 
 /// Names of all registry authorities known to PROJ.
 ///
@@ -14,8 +16,8 @@ use super::*;
 /// >>> gm.crs_authorities()[:3]
 /// ['EPSG', 'ESRI', 'IAU_2015']
 #[pyfunction]
-pub(crate) fn crs_authorities() -> PyResult<Vec<String>> {
-    Ok(crs::authorities()?)
+pub(crate) fn crs_authorities(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyList>> {
+    super::list_cache::authorities_py_list(py)
 }
 
 /// Object codes within a registry authority.
@@ -121,10 +123,12 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 ///     Registry authority to search (default ``"EPSG"``).
 /// kind : str, optional
 ///     Restrict to a CRS kind.
-/// area : sequence of float, optional
-///     ``(minx, miny, maxx, maxy)`` filter area.
-/// contains_area : bool, optional
-///     Require the CRS area to contain ``area`` (default ``False``).
+/// area_of_interest : sequence of float, dict, or object, optional
+///     Filter area as ``(west, south, east, north)`` in DEGREES, an area
+///     mapping, or an AreaOfInterest-like object.
+/// contains_area_of_interest : bool, optional
+///     Require the CRS area to contain ``area_of_interest``
+///     (default ``False``).
 /// allow_deprecated : bool, optional
 ///     Include deprecated CRS (default ``False``).
 /// celestial_body : str, optional
@@ -134,7 +138,7 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 /// -------
 /// list of CrsCatalogInfo
 #[pyfunction]
-#[pyo3(signature = (*, authority = None, kind = None, area = None, contains_area = false, allow_deprecated = false, celestial_body = None))]
+#[pyo3(signature = (*, authority = None, kind = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false, celestial_body = None))]
 ///
 /// Examples
 /// --------
@@ -144,8 +148,8 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 pub(crate) fn crs_catalog(
     authority: Option<&str>,
     kind: Option<String>,
-    area: Option<&Bound<'_, PyAny>>,
-    contains_area: bool,
+    area_of_interest: Option<&Bound<'_, PyAny>>,
+    contains_area_of_interest: bool,
     allow_deprecated: bool,
     celestial_body: Option<String>,
 ) -> PyResult<Vec<crs::CrsCatalogInfo>> {
@@ -159,8 +163,8 @@ pub(crate) fn crs_catalog(
             .as_deref()
             .map(|kind| crs::CrsObjectKind::parse_crs(Some(kind)))
             .transpose()?,
-        area: parse_area(area, "area")?,
-        contains_area,
+        area: parse_area(area_of_interest, "area_of_interest")?,
+        contains_area: contains_area_of_interest,
         allow_deprecated,
         celestial_body,
     })?)
@@ -172,10 +176,12 @@ pub(crate) fn crs_catalog(
 /// ----------
 /// datum_name : str, optional
 ///     Restrict to this datum.
-/// area : sequence of float, optional
-///     ``(minx, miny, maxx, maxy)`` filter area.
-/// contains_area : bool, optional
-///     Require the zone area to contain ``area`` (default ``False``).
+/// area_of_interest : sequence of float, dict, or object, optional
+///     Filter area as ``(west, south, east, north)`` in DEGREES, an area
+///     mapping, or an AreaOfInterest-like object.
+/// contains_area_of_interest : bool, optional
+///     Require the zone area to contain ``area_of_interest``
+///     (default ``False``).
 /// allow_deprecated : bool, optional
 ///     Include deprecated zones (default ``False``).
 ///
@@ -183,7 +189,7 @@ pub(crate) fn crs_catalog(
 /// -------
 /// list of CrsCatalogInfo
 #[pyfunction]
-#[pyo3(signature = (*, datum_name = None, area = None, contains_area = false, allow_deprecated = false))]
+#[pyo3(signature = (*, datum_name = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false))]
 ///
 /// Examples
 /// --------
@@ -192,14 +198,14 @@ pub(crate) fn crs_catalog(
 /// '10286'
 pub(crate) fn crs_utm_zones(
     datum_name: Option<String>,
-    area: Option<&Bound<'_, PyAny>>,
-    contains_area: bool,
+    area_of_interest: Option<&Bound<'_, PyAny>>,
+    contains_area_of_interest: bool,
     allow_deprecated: bool,
 ) -> PyResult<Vec<crs::CrsCatalogInfo>> {
     Ok(crs::utm_zones(&crs::UtmCatalogOptions {
         datum_name,
-        area: parse_area(area, "area")?,
-        contains_area,
+        area: parse_area(area_of_interest, "area_of_interest")?,
+        contains_area: contains_area_of_interest,
         allow_deprecated,
     })?)
 }
@@ -222,10 +228,12 @@ pub(crate) fn crs_utm_zones(
 /// >>> import gometry as gm
 /// >>> gm.crs_celestial_bodies()[0]['name']
 /// '1_Ceres'
-pub(crate) fn crs_celestial_bodies(
+pub(crate) fn crs_celestial_bodies<'py>(
+    py: Python<'py>,
     authority: Option<&str>,
-) -> PyResult<Vec<crs::CelestialBodyInfo>> {
-    Ok(crs::celestial_bodies(authority)?)
+) -> PyResult<Bound<'py, PyList>> {
+    // Warm path: shallow list.copy of a generation-stamped cached PyList.
+    super::list_cache::celestial_bodies_py_list(py, authority)
 }
 
 /// List geoid models available for a CRS.

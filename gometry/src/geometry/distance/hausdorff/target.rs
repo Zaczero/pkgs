@@ -2,13 +2,19 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-pub(crate) const HAUSDORFF_EQUIDISTANT_FULL_PAIRS: usize = 0x4000;
-
+#[cfg(test)]
+use crate::geometry::distance::hausdorff::EquidistantRootSink;
+#[cfg(not(test))]
+use crate::geometry::distance::hausdorff::EquidistantRootSink as _;
+use crate::geometry::distance::hausdorff::{
+    HausdorffFeature, HausdorffLineworkQuery, HausdorffParamSink, SmallEquidistantRoots,
+    SmallHausdorffParams, compact_hausdorff_params,
+    hausdorff_feature_bbox_disjoint_from_expanded_source, push_equidistant_roots_on_interval,
+    push_segment_projection_breakpoints, sqrt_distance_squared,
+};
+use crate::geometry::{
+    Point, Segment, Shape, XY, point_distance_squared, point_segment_distance_squared,
+};
 /// Directed Hausdorff targets with at most this many vertices skip spatial
 /// indexes and use a linear segment scan plus stack-local breakpoint buffers.
 pub(crate) const HAUSDORFF_SMALL_TARGET_MAX_VERTICES: usize = 16;
@@ -17,7 +23,6 @@ pub(crate) const HAUSDORFF_SMALL_TARGET_MAX_VERTICES: usize = 16;
 pub(crate) struct HausdorffTarget {
     pub(crate) query: HausdorffLineworkQuery,
     pub(crate) points: Vec<Point>,
-    pub(crate) point_index: Option<PointSetIndex>,
     pub(crate) features: Vec<HausdorffFeature>,
 }
 
@@ -36,26 +41,24 @@ pub(crate) const fn should_build_index(segment_count: usize, point_count: usize)
 impl HausdorffTarget {
     pub(crate) fn build(shape: &Shape) -> Self {
         let points = shape.point_only_points();
-        Self::from_query(
-            HausdorffLineworkQuery::from_shape(shape, false),
-            points,
-            None,
-        )
+        Self::from_query(HausdorffLineworkQuery::from_shape(shape, false), points)
     }
 
     pub(crate) fn from_xy_columns(xs: &[f64], ys: &[f64]) -> Self {
         Self::from_query(
             HausdorffLineworkQuery::from_open_xy_columns(xs, ys, false),
             Vec::new(),
-            None,
         )
     }
 
+    /// Test-only construction with forced BVH on/off for indexed vs unindexed
+    /// path comparison. Production always builds with `force_bvh=false` and
+    /// lets the linework query apply the normal size threshold.
     #[cfg(test)]
     pub(crate) fn from_parts(
         segments: &[Segment],
         points: Vec<Point>,
-        force_index: Option<bool>,
+        force_bvh: Option<bool>,
     ) -> Self {
         let mut xs = Vec::with_capacity(segments.len() + 1);
         let mut ys = Vec::with_capacity(segments.len() + 1);
@@ -68,21 +71,14 @@ impl HausdorffTarget {
             }
         }
         let force_bvh =
-            force_index.unwrap_or_else(|| should_build_index(segments.len(), points.len()));
+            force_bvh.unwrap_or_else(|| should_build_index(segments.len(), points.len()));
         Self::from_query(
             HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh),
             points,
-            force_index,
         )
     }
 
-    fn from_query(
-        query: HausdorffLineworkQuery,
-        points: Vec<Point>,
-        force_index: Option<bool>,
-    ) -> Self {
-        let build_point_index = force_index.is_some_and(|force| force) && !points.is_empty();
-        let point_index = build_point_index.then(|| PointSetIndex::build(points.iter().copied()));
+    fn from_query(query: HausdorffLineworkQuery, points: Vec<Point>) -> Self {
         let mut features = Vec::with_capacity(query.linework.segment_count() + points.len());
         query.linework.for_each_segment(|segment| {
             features.push(HausdorffFeature::Segment(segment));
@@ -95,7 +91,6 @@ impl HausdorffTarget {
         Self {
             query,
             points,
-            point_index,
             features,
         }
     }
@@ -104,21 +99,16 @@ impl HausdorffTarget {
         self.query.distance_squared(point)
     }
 
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn distance_squared(&self, point: XY) -> f64 {
         let mut best = self.linework_distance_squared(point);
-        if let Some(index) = &self.point_index {
-            let probe = Point::new_unchecked_xy(point.x, point.y);
-            best = best.min(index.nearest_distance_squared(probe));
-        } else {
-            for &target in &self.points {
-                best = best.min(point_distance_squared(point, target.xy()));
-            }
+        for &target in &self.points {
+            best = best.min(point_distance_squared(point, target.xy()));
         }
         best
-    }
-
-    pub(crate) const fn feature_count(&self) -> usize {
-        self.features.len()
     }
 }
 
@@ -318,37 +308,28 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_small(
     }
 
     let features = small_line_target_features_slice(target);
-    let full_pairs =
-        features.len().saturating_mul(params.len()) <= HAUSDORFF_EQUIDISTANT_FULL_PAIRS;
     for &[ta, tb] in params.array_windows::<2>() {
         if tb <= ta {
             continue;
         }
-        if full_pairs {
-            interval.clear();
-            for left in 0..features.len() {
-                for right in (left + 1)..features.len() {
-                    push_equidistant_root_bisect(
-                        ax,
-                        ay,
-                        dx,
-                        dy,
-                        ta,
-                        tb,
-                        features[left],
-                        features[right],
-                        interval,
-                    );
-                }
+        interval.clear();
+        for left in 0..features.len() {
+            for right in (left + 1)..features.len() {
+                push_equidistant_roots_on_interval(
+                    ax,
+                    ay,
+                    dx,
+                    dy,
+                    ta,
+                    tb,
+                    features[left],
+                    features[right],
+                    interval,
+                );
             }
-            for &t in interval.roots() {
-                best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
-            }
-        } else {
-            let mid = f64::midpoint(ta, tb);
-            best = best.max(sample_hausdorff_on_segment_small(
-                ax, ay, dx, dy, mid, target,
-            ));
+        }
+        for &t in interval.roots() {
+            best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
         }
     }
     best

@@ -1,4 +1,4 @@
-"""Overloaded ops must return the narrowed type their stub declares.
+"""Overloaded operations must return the narrowed type their stub declares.
 
 PyO3 already guarantees signatures (parameter names/kinds/defaults are checked
 against the runtime by ``pyo3stubs`` stubtest). What that cannot see is

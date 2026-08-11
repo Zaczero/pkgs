@@ -1,8 +1,9 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::constructive::{Arc, Result};
+use crate::geometry::{
+    CoordSeq, CoordSeqBuilder, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq,
+    MOrdinate, Point, Polygon, Ring, Shape, SmoothMethod, ZOrdinate, interpolate_f64, lerp_point,
+    point_distance,
+};
 
 /// Maximum coordinate count one `smooth` call may materialize across all of its
 /// output parts. Chaikin roughly doubles the vertex count every iteration and
@@ -87,13 +88,6 @@ fn part_output_len<const CLOSED: bool>(
     }
 }
 
-/// Add one part's projected coordinate count to the running total, rejecting an
-/// overflow or a total past [`SMOOTH_MAX_COORDS`] before any allocation.
-fn add_smooth_part(budget: &mut ExpansionBudget, part: usize) -> Result<()> {
-    budget.add(part)?;
-    Ok(())
-}
-
 /// Exact-capacity SoA builder for one smoothed part. The budget check already
 /// caps `cap` at [`SMOOTH_MAX_COORDS`]; `try_reserve_exact` only fails on a
 /// genuine out-of-memory condition at the (bounded) final allocation.
@@ -114,18 +108,21 @@ fn reserve_builder(coords: &CoordSeq, cap: usize) -> Result<CoordSeqBuilder> {
 /// than two vertices pass through unchanged; Z/M interpolate linearly along
 /// each source edge (Catmull-Rom XY follows the spline, Z/M stay edge-linear).
 ///
-/// The caller ([`Shape::smooth`]) validates the whole-geometry coordinate
-/// budget before any part is smoothed, so this only fails on a genuine
-/// allocator failure at the (already-bounded) output allocation.
+/// This same per-part output path charges the caller-owned budget before its
+/// exact-capacity emitter allocates, so rows, children, and rings share one
+/// counter without a separate estimating traversal.
 pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
     points: &CoordSeq,
     iterations: i32,
     method: SmoothMethod,
     keep_endpoints: bool,
+    budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     if iterations <= 0 || points.len() < 2 || (!CLOSED && points.len() < 3) {
         return Ok(points.clone());
     }
+    let output_len = part_output_len::<CLOSED>(points.len(), iterations, method)?;
+    budget.add(output_len.saturating_sub(points.len()))?;
     Ok(match method {
         SmoothMethod::Chaikin => {
             let mut current = points.clone();
@@ -274,28 +271,39 @@ fn catmull_control<const CLOSED: bool>(points: &CoordSeq, index: isize) -> Point
 }
 
 fn reflect_endpoint(end: Point, interior: Point) -> Point {
+    // `2*end - interior` overflows for extreme-but-finite endpoints; use the
+    // equivalent `end + (end - interior)` with a finite fallback to `end`.
+    let reflect = |e: f64, i: f64| {
+        let delta = e - i;
+        let out = e + delta;
+        if out.is_finite() { out } else { e }
+    };
     Point::new_unchecked_axes(
-        2.0 * end.x - interior.x,
-        2.0 * end.y - interior.y,
+        reflect(end.x, interior.x),
+        reflect(end.y, interior.y),
         ZOrdinate(match (end.z(), interior.z()) {
-            (Some(ez), Some(iz)) => Some(2.0 * ez - iz),
+            (Some(ez), Some(iz)) => Some(reflect(ez, iz)),
             _ => None,
         }),
         MOrdinate(match (end.m(), interior.m()) {
-            (Some(em), Some(im)) => Some(2.0 * em - im),
+            (Some(em), Some(im)) => Some(reflect(em, im)),
             _ => None,
         }),
     )
 }
 
 fn knot_increment(a: Point, b: Point) -> f64 {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let dist_sq = dx * dx + dy * dy;
-    if dist_sq == 0.0 {
+    // Centripetal α=0.5: τ = |Δ|^0.5. Squared-distance then two sqrts
+    // overflows for extreme-but-finite coords; hypot-style distance then one
+    // sqrt stays finite whenever their coordinate delta is representable.
+    // Duplicate / nonfinite spans retain the historical fallback. The tiny
+    // non-collinear case has a finite distance; preserving this branch keeps
+    // duplicate-point curves unchanged.
+    let dist = point_distance(a.xy(), b.xy());
+    if dist == 0.0 || !dist.is_finite() {
         1e-4
     } else {
-        dist_sq.sqrt().sqrt()
+        dist.sqrt()
     }
 }
 
@@ -338,15 +346,29 @@ impl PreparedCatmullRom {
         let a3 = lerp_knot(self.p2, self.p3, self.t2, self.t3, t);
         let b1 = lerp_knot(a1, a2, self.t0, self.t2, t);
         let b2 = lerp_knot(a2, a3, self.t1, self.t3, t);
-        lerp_knot(b1, b2, self.t1, self.t2, t)
+        let out = lerp_knot(b1, b2, self.t1, self.t2, t);
+        // Finite control points must yield finite samples: fall back to the
+        // chord between the segment endpoints when the knot ladder overflows.
+        if out.x.is_finite() && out.y.is_finite() {
+            out
+        } else {
+            lerp_point(self.p1, self.p2, fraction)
+        }
     }
 }
 
 fn lerp_knot(a: Point, b: Point, ta: f64, tb: f64, t: f64) -> Point {
-    if (tb - ta).abs() <= f64::EPSILON {
+    let span = tb - ta;
+    // Knot spans inherit the coordinate scale: a non-zero `1e-20` span is
+    // perfectly valid for a `1e-40` curve.  Only an actual collapsed or
+    // non-finite knot falls back to its left control point.
+    if !span.is_finite() || span == 0.0 {
         return a;
     }
-    let weight = (t - ta) / (tb - ta);
+    let weight = (t - ta) / span;
+    if !weight.is_finite() {
+        return a;
+    }
     lerp_point(a, b, weight)
 }
 
@@ -366,20 +388,22 @@ impl Shape {
         method: SmoothMethod,
         keep_endpoints: bool,
     ) -> Result<Self> {
-        // Resource budget: project the total output coordinate count across
-        // every part (collections included) with checked arithmetic and reject
-        // a blow-up BEFORE allocating anything. `iterations <= 0` is a pure
-        // pass-through (no growth), so it is exempt — a large input at zero
-        // iterations must never be rejected.
-        if iterations > 0 {
-            let mut budget = ExpansionBudget::new("smooth", "iterations");
-            self.accumulate_smooth_output(iterations, method, &mut budget)?;
-        }
+        let mut budget = ExpansionBudget::new("smooth", "iterations");
+        self.smooth_budgeted(iterations, method, keep_endpoints, &mut budget)
+    }
+
+    pub(crate) fn smooth_budgeted(
+        &self,
+        iterations: i32,
+        method: SmoothMethod,
+        keep_endpoints: bool,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                smooth_coord_seq::<false>(points, iterations, method, keep_endpoints)?,
+                smooth_coord_seq::<false>(points, iterations, method, keep_endpoints, budget)?,
             )),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
@@ -390,6 +414,7 @@ impl Shape {
                             iterations,
                             method,
                             keep_endpoints,
+                            budget,
                         )?))
                     })
                     .collect::<Result<_>>()?,
@@ -399,85 +424,27 @@ impl Shape {
                 iterations,
                 method,
                 keep_endpoints,
+                budget,
             )?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons
                     .iter()
                     .map(|polygon| {
-                        smooth_polygon_rings(polygon, iterations, method, keep_endpoints)
+                        smooth_polygon_rings(polygon, iterations, method, keep_endpoints, budget)
                     })
                     .collect::<Result<_>>()?,
             ),
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
                     .iter()
-                    .map(|geometry| geometry.smooth(iterations, method, keep_endpoints))
+                    .map(|geometry| {
+                        geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             Self::Empty(..) => self.clone(),
         })
     }
-
-    /// Accumulate this geometry's projected `smooth` output coordinate count
-    /// into `total`, failing before allocation if it (or the running total)
-    /// exceeds [`SMOOTH_MAX_COORDS`]. Points/multipoints/empties pass through
-    /// unchanged and contribute nothing; lines are open chains, polygon rings
-    /// closed; collections recurse.
-    fn accumulate_smooth_output(
-        &self,
-        iterations: i32,
-        method: SmoothMethod,
-        budget: &mut ExpansionBudget,
-    ) -> Result<()> {
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(()),
-            Self::LineString(points) => add_smooth_part(
-                budget,
-                part_output_len::<false>(points.len(), iterations, method)?,
-            ),
-            Self::MultiLineString(lines) => {
-                for line in lines {
-                    add_smooth_part(
-                        budget,
-                        part_output_len::<false>(line.len(), iterations, method)?,
-                    )?;
-                }
-                Ok(())
-            },
-            Self::Polygon(polygon) => {
-                accumulate_polygon_smooth_output(polygon, iterations, method, budget)
-            },
-            Self::MultiPolygon(polygons) => {
-                for polygon in polygons {
-                    accumulate_polygon_smooth_output(polygon, iterations, method, budget)?;
-                }
-                Ok(())
-            },
-            Self::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    geometry.accumulate_smooth_output(iterations, method, budget)?;
-                }
-                Ok(())
-            },
-        }
-    }
-}
-
-/// Sum a polygon's per-ring projected `smooth` output coordinate counts (shell
-/// then holes) into `total`, closed-chain arithmetic per ring.
-fn accumulate_polygon_smooth_output(
-    polygon: &Polygon,
-    iterations: i32,
-    method: SmoothMethod,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-        add_smooth_part(
-            budget,
-            part_output_len::<true>(ring.len(), iterations, method)?,
-        )?;
-    }
-    Ok(())
 }
 
 /// Smooth every ring (shell then holes) of a polygon, fallibly (the caller has
@@ -488,12 +455,14 @@ fn smooth_polygon_rings(
     iterations: i32,
     method: SmoothMethod,
     keep_endpoints: bool,
+    budget: &mut ExpansionBudget,
 ) -> Result<Polygon> {
     let shell = Ring::from_trusted_closed(smooth_coord_seq::<true>(
         polygon.shell.coords(),
         iterations,
         method,
         keep_endpoints,
+        budget,
     )?);
     let holes = polygon
         .holes
@@ -504,6 +473,7 @@ fn smooth_polygon_rings(
                 iterations,
                 method,
                 keep_endpoints,
+                budget,
             )?))
         })
         .collect::<Result<Arc<[Ring]>>>()?;
@@ -575,5 +545,17 @@ mod tests {
             .smooth(0, SmoothMethod::Chaikin, true)
             .expect("identity smooth");
         assert_eq!(identity, src);
+    }
+
+    #[test]
+    fn tiny_nonzero_knot_span_interpolates_instead_of_collapsing() {
+        let left = Point::new_unchecked_xy(0.0, 0.0);
+        let right = Point::new_unchecked_xy(1e-40, 2e-40);
+        let span = knot_increment(left, right);
+        assert!(span > 0.0 && span < f64::EPSILON);
+
+        let midpoint = lerp_knot(left, right, 0.0, span, span / 2.0);
+        assert_eq!(midpoint.x.to_bits(), (right.x / 2.0).to_bits());
+        assert_eq!(midpoint.y.to_bits(), (right.y / 2.0).to_bits());
     }
 }

@@ -3,28 +3,35 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 //! Predicate broadcast dispatch: the scalar/array operand routing over the
-//! unified [`Predicate`] table (`crate::py::functions::predicate`), plus the string/pattern
+//! unified [`Predicate`] table (`crate::predicates::engine`), plus the string/pattern
 //! relate broadcasts and the XY point-coordinate fast path. The generic value
 //! cores live in the parent `broadcast`.
 
-use std::simd::cmp::SimdPartialEq;
+use std::simd::cmp::SimdPartialEq as _;
 
+use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use super::*;
 use crate::array::MissingMask;
 use crate::boundary::metadata::Frame;
-use crate::broadcast::CollectRows;
+use crate::broadcast::{
+    Arc, Bound, Bounds, CollectRows as _, CoordSeq, CoordinateInput, EmptyKind,
+    GeometryArrayStorage, GeometryErrorKind, GeometryInput, Point, PointBatchTester, PredicateSpec,
+    Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData, ShapeRow,
+    broadcast_coordinate_input, broadcast2, classify_input, coordinate_input_with_expected,
+    coordinate_sequence_len_hint, expected_geometry_or_array_for, mask_missing, paired_arrays,
+    point_batch, py_bool, scalar_vs_shapes,
+};
 use crate::error::Result;
 use crate::geometry::{
-    REDUCE_LANES, is_geographic_frame, pair_select_mask, same_topological_coordinate,
-    topology_coordinate_bits_simd, topology_split,
+    REDUCE_LANES, is_geographic_frame, pair_select_mask, point_is_geographic_pole,
+    same_topological_coordinate, topology_coordinate_bits_simd, topology_split,
 };
-use crate::py::errors::{GeometryError, InvalidGeometryError};
-use crate::py::functions::predicate::{
-    geo_binary, geo_split_pair, skip_antimeridian_bounds_gate_row, topology_scalar_pair,
+use crate::predicates::engine::{
+    Predicate, geo_binary, geo_split_pair, skip_antimeridian_bounds_gate_row, topology_scalar_pair,
     try_geographic_point_membership,
 };
+use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
 
 pub(crate) fn bool_array_mask_missing(
@@ -177,8 +184,15 @@ pub(crate) fn predicate_scalar_vs_array(
     if array_has_point_kernel
         && !scalar_crosses
         && let Some(points) = array.storage().point_rows()
+        && !(geographic
+            && points
+                .iter()
+                .any(|point| point_is_geographic_pole(point).is_some()))
     {
-        let shape = scalar.shape.clone();
+        // A packed pole probe must take the same original-shape membership
+        // route as a scalar pole: longitude is a spelling there, so the batch
+        // point tester may not establish a planar negative first.
+        let shape = Arc::clone(&scalar.shape);
         return bool_array_mask_missing(
             py,
             py.detach(move || {
@@ -208,7 +222,13 @@ pub(crate) fn predicate_scalar_vs_array(
                     .enumerate()
                     .map(|(index, row)| {
                         let row_crosses = skip_antimeridian_bounds_gate_row(geographic, row);
+                        // A geographic pole probe is structurally like a seam
+                        // probe: its Cartesian X is only a spelling, so planar
+                        // row bounds cannot establish a negative before the
+                        // pole-aware membership path has run.
+                        let pole_probe = geographic && point_is_geographic_pole(point).is_some();
                         if !row_crosses
+                            && !pole_probe
                             && let Some(row_bounds) =
                                 bounds.as_ref().and_then(|cached| cached[index])
                         {
@@ -236,7 +256,7 @@ pub(crate) fn predicate_scalar_vs_array(
             missing.as_ref(),
         );
     }
-    let shape = scalar.shape.clone();
+    let shape = Arc::clone(&scalar.shape);
     let array = array.clone();
     bool_array_mask_missing(
         py,
@@ -270,6 +290,34 @@ pub(crate) fn predicate_pairwise_arrays(
     let geographic = is_geographic_frame(&left.frame) || is_geographic_frame(&right.frame);
     let spec = *spec;
     let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+    // Missing rows are placeholders, not empty geometries.  Decide this
+    // before any packed fast path, bounds cache, or row materialization so a
+    // null pair cannot enter an exact topology kernel.
+    if missing.is_some() {
+        let left_array = left.clone();
+        let right_array = right.clone();
+        return bool_array_mask_missing(
+            py,
+            py.detach(move || {
+                left_shapes
+                    .iter_rows()
+                    .zip(right_shapes.iter_rows())
+                    .enumerate()
+                    .map(|(index, (left, right))| {
+                        if left_array.is_row_missing(index) || right_array.is_row_missing(index) {
+                            return false;
+                        }
+                        left_array.with_row_data(index, left, |left| {
+                            right_array.with_row_data(index, right, |right| {
+                                topology_scalar_pair(&spec, left, right, geographic)
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            missing.as_ref(),
+        );
+    }
     // Areal × areal CROSSES is FALSE by OGC definition (crosses needs the
     // intersection's dimension strictly below BOTH operands'; two areas cannot).
     // Answer the whole vector at once — no per-element kernel (shapely is
@@ -308,10 +356,8 @@ pub(crate) fn predicate_pairwise_arrays(
                             & topology_coordinate_bits_simd(ly_chunk)
                                 .simd_eq(topology_coordinate_bits_simd(ry_chunk));
                         match predicate {
-                            crate::py::functions::predicate::Predicate::Disjoint => !same,
-                            crate::py::functions::predicate::Predicate::Touches
-                            | crate::py::functions::predicate::Predicate::Crosses
-                            | crate::py::functions::predicate::Predicate::Overlaps => {
+                            Predicate::Disjoint => !same,
+                            Predicate::Touches | Predicate::Crosses | Predicate::Overlaps => {
                                 std::simd::Mask::<i64, REDUCE_LANES>::splat(false)
                             },
                             _ => same,
@@ -343,7 +389,12 @@ pub(crate) fn predicate_pairwise_arrays(
                     .enumerate()
                     .map(|(index, (left, point))| {
                         let row_crosses = skip_antimeridian_bounds_gate_row(geographic, left);
+                        // At a physical pole longitude is only a spelling:
+                        // the planar envelope may not reject it before the
+                        // geographic membership kernel has answered.
+                        let pole_probe = geographic && point_is_geographic_pole(point).is_some();
                         if !row_crosses
+                            && !pole_probe
                             && let Some(left_bounds) =
                                 left_bounds.as_ref().and_then(|cached| cached[index])
                             && let Some(verdict) =
@@ -369,7 +420,12 @@ pub(crate) fn predicate_pairwise_arrays(
                     .enumerate()
                     .map(|(index, (point, right))| {
                         let row_crosses = skip_antimeridian_bounds_gate_row(geographic, right);
+                        // See the paired right-point lane above: the
+                        // longitude of a physical pole cannot establish a
+                        // planar negative.
+                        let pole_probe = geographic && point_is_geographic_pole(point).is_some();
                         if !row_crosses
+                            && !pole_probe
                             && let Some(right_bounds) =
                                 right_bounds.as_ref().and_then(|cached| cached[index])
                             && let Some(verdict) =
@@ -401,7 +457,17 @@ pub(crate) fn predicate_pairwise_arrays(
                     .zip(right_shapes.iter_rows())
                     .enumerate()
                     .map(|(index, (left, right))| {
-                        if !skip_antimeridian_bounds_gate_row(geographic, left)
+                        // A mixed array can carry a point row without taking
+                        // either packed-point fast lane.  Preserve the same
+                        // fail-open pole rule there as well.
+                        let pole_probe = geographic
+                            && (left.with_shape(|shape| {
+                                matches!(shape, Shape::Point(point) if point_is_geographic_pole(*point).is_some())
+                            }) || right.with_shape(|shape| {
+                                matches!(shape, Shape::Point(point) if point_is_geographic_pole(*point).is_some())
+                            }));
+                        if !pole_probe
+                            && !skip_antimeridian_bounds_gate_row(geographic, left)
                             && !skip_antimeridian_bounds_gate_row(geographic, right)
                             && let (Some(left_bounds), Some(right_bounds)) =
                                 (left_bounds[index], right_bounds[index])
@@ -589,8 +655,13 @@ pub(crate) fn xy_predicate(
     inclusive: bool,
 ) -> PyResult<Py<PyAny>> {
     let input = classify_input(geometry).ok_or_else(|| expected_geometry_or_array_for(geometry))?;
-    let mut x = coordinate_input(py, x, "x")?;
-    let mut y = coordinate_input(py, y, "y")?;
+    // Streaming owner: pin bare one-shot iterators with the sibling length when
+    // known so each coordinate column is drained once (not twice via independent
+    // `coordinate_input` + broadcast).
+    let x_hint = coordinate_sequence_len_hint(x);
+    let y_hint = coordinate_sequence_len_hint(y);
+    let mut x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
+    let mut y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
     if x.values.len() != y.values.len() && !x.scalar && !y.scalar {
         return Err(InvalidGeometryError::new_err(format!(
             "x and y must have the same length, got {} and {}",
@@ -619,8 +690,10 @@ pub(crate) fn xy_predicate_geometry(
     y: &Bound<'_, PyAny>,
     inclusive: bool,
 ) -> PyResult<Py<PyAny>> {
-    let x = coordinate_input(py, x, "x")?;
-    let y = coordinate_input(py, y, "y")?;
+    let x_hint = coordinate_sequence_len_hint(x);
+    let y_hint = coordinate_sequence_len_hint(y);
+    let x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
+    let y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
     xy_predicate_geometry_inputs(py, geometry, x, y, inclusive)
 }
 

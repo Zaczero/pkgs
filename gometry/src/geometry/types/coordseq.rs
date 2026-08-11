@@ -2,17 +2,16 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::Range;
-use std::simd::cmp::SimdPartialEq;
-use std::simd::num::SimdFloat;
+use std::simd::cmp::SimdPartialEq as _;
+use std::simd::num::SimdFloat as _;
 use std::sync::Arc;
 
-use super::*;
 use crate::error::Result;
+use crate::geometry::types::{
+    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, XY, ZOrdinate,
+    ensure_coordseq_vertex_capacity,
+};
 use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all};
 
 /// One sequence's shared column storage + row window (see
@@ -46,7 +45,12 @@ impl CoordWindow {
 
     pub(crate) fn checked(range: Range<usize>, physical_len: usize) -> Result<Self> {
         if range.start > range.end || range.end > physical_len {
-            return Err(GeometryErrorKind::CoordinateRange.into());
+            return Err(GeometryErrorKind::CoordinateRange {
+                start: range.start,
+                end: range.end,
+                length: physical_len,
+            }
+            .into());
         }
         Ok(Self::trusted(range, physical_len))
     }
@@ -153,8 +157,12 @@ impl CoordSeq {
         let Some(first) = points.first() else {
             return Ok(Self::empty(CoordinateAxes::XY));
         };
-        if points.iter().any(|point| point.axes != first.axes) {
-            return Err(GeometryErrorKind::CoordinateAxesMismatch.into());
+        if let Some(point) = points.iter().find(|point| point.axes != first.axes) {
+            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: first.axes,
+                got: point.axes,
+            }
+            .into());
         }
         Ok(Self::from_points(points))
     }
@@ -376,28 +384,27 @@ impl CoordSeq {
     /// Gather selected rows into a new sequence (column-wise, no `Point`
     /// staging) — the packed-array `take`/`filter`/slice engine. Rows must
     /// be in range (callers bounds-check at the boundary).
+    ///
+    /// When the iterator reports an exact length, columns fill an exact
+    /// final `Arc` (no `Vec`/`Box` intermediate). The fill is *checked*:
+    /// every write is bounds-gated against the allocation, and
+    /// `assume_init` runs only when the actual yield count matches the
+    /// hint. Under- or over-yielding producers (lying `size_hint`) fall
+    /// back to a growable path that returns the true yield — never UB.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the row stream is consumed once and its concrete iterator type is not part of the API"
+    )]
     pub fn select(&self, rows: impl Iterator<Item = usize>) -> Self {
         let xs_src = self.xs();
         let ys_src = self.ys();
         let zs_src = self.zs();
         let ms_src = self.ms();
         let (lower, upper) = rows.size_hint();
-        let capacity = upper.unwrap_or(lower);
-        let mut xs = Vec::with_capacity(capacity);
-        let mut ys = Vec::with_capacity(capacity);
-        let mut zs = zs_src.map(|_| Vec::with_capacity(capacity));
-        let mut ms = ms_src.map(|_| Vec::with_capacity(capacity));
-        for row in rows {
-            xs.push(xs_src[row]);
-            ys.push(ys_src[row]);
-            if let (Some(out), Some(src)) = (zs.as_mut(), zs_src) {
-                out.push(src[row]);
-            }
-            if let (Some(out), Some(src)) = (ms.as_mut(), ms_src) {
-                out.push(src[row]);
-            }
+        if upper == Some(lower) {
+            return select_exact_or_grow(xs_src, ys_src, zs_src, ms_src, rows, lower);
         }
-        Self::from_columns_unchecked(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+        select_growable(xs_src, ys_src, zs_src, ms_src, rows, upper.unwrap_or(lower))
     }
 
     /// Concatenate two sequences of identical axes (column-wise); `None` on
@@ -531,10 +538,13 @@ impl CoordSeq {
 
     /// Iterate the coordinates as `Point`s by value.
     pub fn iter(&self) -> CoordIter<'_> {
-        CoordIter {
-            seq: self,
-            index: 0,
-            end: self.len(),
+        let xs = self.xs();
+        let ys = self.ys();
+        match (self.zs(), self.ms()) {
+            (None, None) => CoordIter::Xy(CoordIterColumns::new(xs, ys, &[], &[])),
+            (Some(zs), None) => CoordIter::Xyz(CoordIterColumns::new(xs, ys, zs, &[])),
+            (None, Some(ms)) => CoordIter::Xym(CoordIterColumns::new(xs, ys, &[], ms)),
+            (Some(zs), Some(ms)) => CoordIter::Xyzm(CoordIterColumns::new(xs, ys, zs, ms)),
         }
     }
 
@@ -551,30 +561,292 @@ impl CoordSeq {
     }
 
     /// Reverse the vertex order (orientation flips, ring normalization).
+    ///
+    /// Exact-final-Arc fill (no `Vec`/`Box` intermediate): allocate the
+    /// column Arcs at the known length, write reversed values, `assume_init`.
     pub fn reversed(&self) -> Self {
-        let reverse = |column: &[f64]| -> Box<[f64]> { column.iter().rev().copied().collect() };
         Self::from_columns_unchecked(
-            reverse(self.xs()).into(),
-            reverse(self.ys()).into(),
-            self.zs().map(reverse).map(Into::into),
-            self.ms().map(reverse).map(Into::into),
+            reverse_column_arc(self.xs()),
+            reverse_column_arc(self.ys()),
+            self.zs().map(reverse_column_arc),
+            self.ms().map(reverse_column_arc),
         )
     }
 }
 
-/// By-value `Point` iterator over a [`CoordSeq`]'s columns.
-pub struct CoordIter<'a> {
-    seq: &'a CoordSeq,
+/// Exact-hint gather into final `Arc` columns, with a checked fill.
+///
+/// Allocates `expected` slots and writes only while `written < expected`.
+/// `assume_init` runs only when the iterator yields *exactly* `expected`
+/// items. Under-yield copies the initialized prefix into a correctly sized
+/// sequence; over-yield spills the prefix plus remaining items through the
+/// growable path. A lying `size_hint` therefore cannot leave uninit memory
+/// readable or write past the allocation.
+fn select_exact_or_grow(
+    xs_src: &[f64],
+    ys_src: &[f64],
+    zs_src: Option<&[f64]>,
+    ms_src: Option<&[f64]>,
+    mut rows: impl Iterator<Item = usize>,
+    expected: usize,
+) -> CoordSeq {
+    if expected == 0 {
+        // Empty hint: any yield is an over-yield → growable.
+        return rows.next().map_or_else(
+            || CoordSeq::empty(axes_from_optional_columns(zs_src, ms_src)),
+            |first| {
+                select_growable(
+                    xs_src,
+                    ys_src,
+                    zs_src,
+                    ms_src,
+                    std::iter::once(first).chain(rows),
+                    1,
+                )
+            },
+        );
+    }
+
+    let mut xs = Arc::<[f64]>::new_uninit_slice(expected);
+    let mut ys = Arc::<[f64]>::new_uninit_slice(expected);
+    let mut zs = zs_src.map(|_| Arc::<[f64]>::new_uninit_slice(expected));
+    let mut ms = ms_src.map(|_| Arc::<[f64]>::new_uninit_slice(expected));
+    let mut written = 0_usize;
+
+    // SAFETY: unique Arc slices. Every write is gated by `written < expected`,
+    // so no OOB store. `assume_init` is reached only when `written == expected`
+    // and the iterator is exhausted (no over-yield).
+    unsafe {
+        let xs_dst = Arc::get_mut(&mut xs)
+            .unwrap_unchecked()
+            .as_mut_ptr()
+            .cast::<f64>();
+        let ys_dst = Arc::get_mut(&mut ys)
+            .unwrap_unchecked()
+            .as_mut_ptr()
+            .cast::<f64>();
+        let mut zs_dst = zs.as_mut().map(|column| {
+            Arc::get_mut(column)
+                .unwrap_unchecked()
+                .as_mut_ptr()
+                .cast::<f64>()
+        });
+        let mut ms_dst = ms.as_mut().map(|column| {
+            Arc::get_mut(column)
+                .unwrap_unchecked()
+                .as_mut_ptr()
+                .cast::<f64>()
+        });
+
+        while written < expected {
+            let Some(row) = rows.next() else {
+                // Under-yield: only `0..written` is initialized.
+                return columns_from_partial_ptrs(
+                    xs_dst,
+                    ys_dst,
+                    zs_dst.as_mut().copied(),
+                    ms_dst.as_mut().copied(),
+                    written,
+                    zs_src.is_some(),
+                    ms_src.is_some(),
+                );
+            };
+            xs_dst.add(written).write(xs_src[row]);
+            ys_dst.add(written).write(ys_src[row]);
+            if let (Some(dst), Some(src)) = (zs_dst.as_mut(), zs_src) {
+                dst.add(written).write(src[row]);
+            }
+            if let (Some(dst), Some(src)) = (ms_dst.as_mut(), ms_src) {
+                dst.add(written).write(src[row]);
+            }
+            written += 1;
+        }
+
+        if let Some(extra) = rows.next() {
+            // Over-yield: prefix is fully initialized at `expected`; spill.
+            let mut xs_v = ptr_prefix_to_vec(xs_dst, expected);
+            let mut ys_v = ptr_prefix_to_vec(ys_dst, expected);
+            let mut zs_v = zs_dst.as_mut().map(|dst| ptr_prefix_to_vec(*dst, expected));
+            let mut ms_v = ms_dst.as_mut().map(|dst| ptr_prefix_to_vec(*dst, expected));
+            // Forget the uninit Arcs — their storage is abandoned; values
+            // already live in the Vecs. Dropping MaybeUninit Arcs is safe
+            // (no Drop glue for f64), but avoid double-free by mem::forget
+            // only if we assume_init… we did NOT assume_init. Dropping
+            // Arc<[MaybeUninit<f64>]> frees the allocation without dropping
+            // elements — correct for both init and uninit slots.
+            drop((xs, ys, zs, ms));
+            push_row(
+                &mut xs_v, &mut ys_v, &mut zs_v, &mut ms_v, xs_src, ys_src, zs_src, ms_src, extra,
+            );
+            for row in rows {
+                push_row(
+                    &mut xs_v, &mut ys_v, &mut zs_v, &mut ms_v, xs_src, ys_src, zs_src, ms_src, row,
+                );
+            }
+            return CoordSeq::from_columns_unchecked(
+                xs_v.into(),
+                ys_v.into(),
+                zs_v.map(Into::into),
+                ms_v.map(Into::into),
+            );
+        }
+
+        CoordSeq::from_columns_unchecked(
+            xs.assume_init(),
+            ys.assume_init(),
+            zs.map(|column| column.assume_init()),
+            ms.map(|column| column.assume_init()),
+        )
+    }
+}
+
+const fn axes_from_optional_columns(zs: Option<&[f64]>, ms: Option<&[f64]>) -> CoordinateAxes {
+    match (zs.is_some(), ms.is_some()) {
+        (false, false) => CoordinateAxes::XY,
+        (true, false) => CoordinateAxes::XYZ,
+        (false, true) => CoordinateAxes::XYM,
+        (true, true) => CoordinateAxes::XYZM,
+    }
+}
+
+/// Copy `0..len` from initialized raw column pointers into a `CoordSeq`.
+///
+/// # Safety
+/// `xs`/`ys` (and optional z/m) must each point at least `len` initialized `f64`s.
+unsafe fn columns_from_partial_ptrs(
+    xs: *mut f64,
+    ys: *mut f64,
+    zs: Option<*mut f64>,
+    ms: Option<*mut f64>,
+    len: usize,
+    has_z: bool,
+    has_m: bool,
+) -> CoordSeq {
+    // SAFETY: caller guarantees `0..len` is initialized on each present column.
+    unsafe {
+        CoordSeq::from_columns_unchecked(
+            ptr_prefix_to_vec(xs, len).into(),
+            ptr_prefix_to_vec(ys, len).into(),
+            has_z
+                .then(|| zs.expect("z column present when has_z"))
+                .map(|ptr| ptr_prefix_to_vec(ptr, len).into()),
+            has_m
+                .then(|| ms.expect("m column present when has_m"))
+                .map(|ptr| ptr_prefix_to_vec(ptr, len).into()),
+        )
+    }
+}
+
+/// # Safety
+/// `src` must point at least `len` initialized `f64` values.
+unsafe fn ptr_prefix_to_vec(src: *mut f64, len: usize) -> Vec<f64> {
+    // SAFETY: caller guarantees `src` has `len` initialized elements; the
+    // slice is therefore a valid `&[f64]` of that length.
+    unsafe { std::slice::from_raw_parts(src, len).to_vec() }
+}
+
+fn push_row(
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+    zs: &mut Option<Vec<f64>>,
+    ms: &mut Option<Vec<f64>>,
+    xs_src: &[f64],
+    ys_src: &[f64],
+    zs_src: Option<&[f64]>,
+    ms_src: Option<&[f64]>,
+    row: usize,
+) {
+    xs.push(xs_src[row]);
+    ys.push(ys_src[row]);
+    if let (Some(out), Some(src)) = (zs.as_mut(), zs_src) {
+        out.push(src[row]);
+    }
+    if let (Some(out), Some(src)) = (ms.as_mut(), ms_src) {
+        out.push(src[row]);
+    }
+}
+
+fn select_growable(
+    xs_src: &[f64],
+    ys_src: &[f64],
+    zs_src: Option<&[f64]>,
+    ms_src: Option<&[f64]>,
+    rows: impl Iterator<Item = usize>,
+    capacity: usize,
+) -> CoordSeq {
+    let mut xs = Vec::with_capacity(capacity);
+    let mut ys = Vec::with_capacity(capacity);
+    let mut zs = zs_src.map(|_| Vec::with_capacity(capacity));
+    let mut ms = ms_src.map(|_| Vec::with_capacity(capacity));
+    for row in rows {
+        push_row(
+            &mut xs, &mut ys, &mut zs, &mut ms, xs_src, ys_src, zs_src, ms_src, row,
+        );
+    }
+    CoordSeq::from_columns_unchecked(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+}
+
+/// Exact-size reverse into a fresh shared ordinate column.
+pub(crate) fn reverse_column_arc(src: &[f64]) -> Arc<[f64]> {
+    let len = src.len();
+    let mut buf = Arc::<[f64]>::new_uninit_slice(len);
+    // SAFETY: unique Arc; every slot `i` is written from `src[len - 1 - i]`.
+    // Fresh allocation is non-overlapping with `src`.
+    unsafe {
+        let dst = Arc::get_mut(&mut buf)
+            .unwrap_unchecked()
+            .as_mut_ptr()
+            .cast::<f64>();
+        for i in 0..len {
+            dst.add(i).write(src[len - 1 - i]);
+        }
+        buf.assume_init()
+    }
+}
+
+#[doc(hidden)]
+pub struct CoordIterColumns<'a, const HAS_Z: bool, const HAS_M: bool> {
+    xs: &'a [f64],
+    ys: &'a [f64],
+    zs: &'a [f64],
+    ms: &'a [f64],
+    axes: CoordinateAxes,
     index: usize,
     end: usize,
 }
 
-impl Iterator for CoordIter<'_> {
+impl<'a, const HAS_Z: bool, const HAS_M: bool> CoordIterColumns<'a, HAS_Z, HAS_M> {
+    fn new(xs: &'a [f64], ys: &'a [f64], zs: &'a [f64], ms: &'a [f64]) -> Self {
+        debug_assert!(!HAS_Z || zs.len() == xs.len());
+        debug_assert!(!HAS_M || ms.len() == xs.len());
+        Self {
+            xs,
+            ys,
+            zs,
+            ms,
+            axes: CoordinateAxes::new(HasZ(HAS_Z), HasM(HAS_M)),
+            index: 0,
+            end: xs.len(),
+        }
+    }
+
+    const fn point_at(&self, index: usize) -> Point {
+        Point {
+            x: self.xs[index],
+            y: self.ys[index],
+            z: if HAS_Z { self.zs[index] } else { 0.0 },
+            m: if HAS_M { self.ms[index] } else { 0.0 },
+            axes: self.axes,
+        }
+    }
+}
+
+impl<const HAS_Z: bool, const HAS_M: bool> Iterator for CoordIterColumns<'_, HAS_Z, HAS_M> {
     type Item = Point;
 
     fn next(&mut self) -> Option<Point> {
         (self.index < self.end).then(|| {
-            let point = self.seq.point_at(self.index);
+            let point = self.point_at(self.index);
             self.index += 1;
             point
         })
@@ -586,12 +858,56 @@ impl Iterator for CoordIter<'_> {
     }
 }
 
-impl DoubleEndedIterator for CoordIter<'_> {
+impl<const HAS_Z: bool, const HAS_M: bool> DoubleEndedIterator
+    for CoordIterColumns<'_, HAS_Z, HAS_M>
+{
     fn next_back(&mut self) -> Option<Point> {
         (self.index < self.end).then(|| {
             self.end -= 1;
-            self.seq.point_at(self.end)
+            self.point_at(self.end)
         })
+    }
+}
+
+impl<const HAS_Z: bool, const HAS_M: bool> ExactSizeIterator
+    for CoordIterColumns<'_, HAS_Z, HAS_M>
+{
+}
+
+/// By-value `Point` iterator specialized once for the sequence's axes.
+pub enum CoordIter<'a> {
+    Xy(CoordIterColumns<'a, false, false>),
+    Xyz(CoordIterColumns<'a, true, false>),
+    Xym(CoordIterColumns<'a, false, true>),
+    Xyzm(CoordIterColumns<'a, true, true>),
+}
+
+macro_rules! dispatch_coord_iter {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            CoordIter::Xy(iter) => iter.$method($($arg),*),
+            CoordIter::Xyz(iter) => iter.$method($($arg),*),
+            CoordIter::Xym(iter) => iter.$method($($arg),*),
+            CoordIter::Xyzm(iter) => iter.$method($($arg),*),
+        }
+    };
+}
+
+impl Iterator for CoordIter<'_> {
+    type Item = Point;
+
+    fn next(&mut self) -> Option<Point> {
+        dispatch_coord_iter!(self, next)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        dispatch_coord_iter!(self, size_hint)
+    }
+}
+
+impl DoubleEndedIterator for CoordIter<'_> {
+    fn next_back(&mut self) -> Option<Point> {
+        dispatch_coord_iter!(self, next_back)
     }
 }
 
@@ -618,50 +934,62 @@ impl From<Vec<XY>> for CoordSeq {
     }
 }
 
-/// Concatenate two axis-homogeneous coordinate columns in one allocation per
-/// ordinate lane — the trusted packed-storage concat fast path.
+/// Concatenate two axis-homogeneous coordinate columns in one exact allocation
+/// per ordinate lane — the trusted packed-storage concat fast path.
+///
+/// Each lane is reserved to exact length, filled with two `copy_from_slice`
+/// writes, and frozen once into an `Arc` (no builder, no double-init zero fill,
+/// no spare-capacity shrink on freeze).
 pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<CoordSeq> {
     debug_assert_eq!(left.axes(), right.axes());
     let len = left.len() + right.len();
     ensure_coordseq_vertex_capacity(len)?;
-    let mut xs = Vec::with_capacity(len);
-    xs.extend_from_slice(left.xs());
-    xs.extend_from_slice(right.xs());
-    let mut ys = Vec::with_capacity(len);
-    ys.extend_from_slice(left.ys());
-    ys.extend_from_slice(right.ys());
+    let xs = concat_f64_slices(left.xs(), right.xs());
+    let ys = concat_f64_slices(left.ys(), right.ys());
     let zs = match (left.zs(), right.zs()) {
-        (Some(left_zs), Some(right_zs)) => {
-            let mut column = Vec::with_capacity(len);
-            column.extend_from_slice(left_zs);
-            column.extend_from_slice(right_zs);
-            Some(column)
-        },
+        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
-            return Err(GeometryErrorKind::CoordinateAxesMismatch.into());
+            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: left.axes(),
+                got: right.axes(),
+            }
+            .into());
         },
     };
     let ms = match (left.ms(), right.ms()) {
-        (Some(left_ms), Some(right_ms)) => {
-            let mut column = Vec::with_capacity(len);
-            column.extend_from_slice(left_ms);
-            column.extend_from_slice(right_ms);
-            Some(column)
-        },
+        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
-            return Err(GeometryErrorKind::CoordinateAxesMismatch.into());
+            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: left.axes(),
+                got: right.axes(),
+            }
+            .into());
         },
     };
-    Ok(CoordSeq::from_columns_unchecked(
-        xs.into(),
-        ys.into(),
-        zs.map(Into::into),
-        ms.map(Into::into),
-    ))
+    Ok(CoordSeq::from_columns_unchecked(xs, ys, zs, ms))
+}
+
+/// Exact-capacity two-slice join into a shared ordinate column (one Arc
+/// allocation, two `copy_nonoverlapping` fills — no Vec/Box intermediate).
+fn concat_f64_slices(left: &[f64], right: &[f64]) -> Arc<[f64]> {
+    let len = left.len() + right.len();
+    let mut buf = Arc::<[f64]>::new_uninit_slice(len);
+    // SAFETY: both ranges are fully initialized by the copies below; the two
+    // source slices are non-overlapping with `buf` (fresh allocation).
+    // `get_mut` succeeds because we hold the only Arc reference.
+    unsafe {
+        let dst = Arc::get_mut(&mut buf)
+            .unwrap_unchecked()
+            .as_mut_ptr()
+            .cast::<f64>();
+        core::ptr::copy_nonoverlapping(left.as_ptr(), dst, left.len());
+        core::ptr::copy_nonoverlapping(right.as_ptr(), dst.add(left.len()), right.len());
+        buf.assume_init()
+    }
 }
 
 /// The two-point sequence of a witness line, keeping the ordinate columns
@@ -727,7 +1055,7 @@ pub(crate) struct CoordSeqBuilder {
     ys: Vec<f64>,
     zs: Option<Vec<f64>>,
     ms: Option<Vec<f64>>,
-    axes_mismatch: bool,
+    mismatch_axes: Option<CoordinateAxes>,
 }
 
 impl CoordSeqBuilder {
@@ -738,7 +1066,7 @@ impl CoordSeqBuilder {
             ys: Vec::with_capacity(capacity),
             zs: axes.has_z().then(|| Vec::with_capacity(capacity)),
             ms: axes.has_m().then(|| Vec::with_capacity(capacity)),
-            axes_mismatch: false,
+            mismatch_axes: None,
         }
     }
 
@@ -784,7 +1112,7 @@ impl CoordSeqBuilder {
     /// [`finish`](Self::finish)).
     pub(crate) fn push(&mut self, point: Point) {
         if point.axes != self.axes() {
-            self.axes_mismatch = true;
+            self.mismatch_axes.get_or_insert(point.axes);
         }
         self.xs.push(point.x);
         self.ys.push(point.y);
@@ -821,7 +1149,7 @@ impl CoordSeqBuilder {
     /// row/CSR validation; axes are checked when the builder is finished.
     pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) {
         if coords.axes() != self.axes() {
-            self.axes_mismatch = true;
+            self.mismatch_axes.get_or_insert_with(|| coords.axes());
         }
         self.xs.extend_from_slice(&coords.xs()[window.clone()]);
         self.ys.extend_from_slice(&coords.ys()[window.clone()]);
@@ -838,7 +1166,8 @@ impl CoordSeqBuilder {
     /// [`finish`](Self::finish).
     pub(crate) fn push_xyzm(&mut self, x: f64, y: f64, z: Option<f64>, m: Option<f64>) {
         if z.is_some() != self.zs.is_some() || m.is_some() != self.ms.is_some() {
-            self.axes_mismatch = true;
+            self.mismatch_axes
+                .get_or_insert_with(|| CoordinateAxes::new(HasZ(z.is_some()), HasM(m.is_some())));
         }
         self.xs.push(x);
         self.ys.push(y);
@@ -852,8 +1181,12 @@ impl CoordSeqBuilder {
 
     /// Seal the columns into a [`CoordSeq`].
     pub(crate) fn finish(self) -> Result<CoordSeq> {
-        if self.axes_mismatch {
-            return Err(GeometryErrorKind::CoordinateAxesMismatch.into());
+        if let Some(got) = self.mismatch_axes {
+            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: self.axes(),
+                got,
+            }
+            .into());
         }
         CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
@@ -863,7 +1196,7 @@ impl CoordSeqBuilder {
     /// and use non-finite values only for rows guarded by an external missing
     /// mask.
     pub(crate) fn finish_unchecked(self) -> CoordSeq {
-        debug_assert!(!self.axes_mismatch);
+        debug_assert!(self.mismatch_axes.is_none());
         CoordSeq::from_columns_unchecked(
             self.xs.into(),
             self.ys.into(),
@@ -886,7 +1219,7 @@ impl CoordSeqBuilder {
             ys,
             zs: None,
             ms: None,
-            axes_mismatch: false,
+            mismatch_axes: None,
         }
     }
 }
@@ -951,6 +1284,99 @@ impl std::hash::Hash for CoordSeq {
 }
 
 #[cfg(test)]
+mod select_soundness_tests {
+    use super::*;
+
+    /// Iterator that lies about its length via `size_hint` (safe trait abuse).
+    struct LyingIter {
+        items: Vec<usize>,
+        index: usize,
+        claimed: usize,
+    }
+
+    impl LyingIter {
+        fn under(items: Vec<usize>, claimed: usize) -> Self {
+            assert!(claimed > items.len());
+            Self {
+                items,
+                index: 0,
+                claimed,
+            }
+        }
+
+        fn over(items: Vec<usize>, claimed: usize) -> Self {
+            assert!(claimed < items.len());
+            Self {
+                items,
+                index: 0,
+                claimed,
+            }
+        }
+    }
+
+    impl Iterator for LyingIter {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<usize> {
+            (self.index < self.items.len()).then(|| {
+                let item = self.items[self.index];
+                self.index += 1;
+                item
+            })
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            let remaining_claimed = self.claimed.saturating_sub(self.index);
+            (remaining_claimed, Some(remaining_claimed))
+        }
+    }
+
+    fn sample_seq() -> CoordSeq {
+        CoordSeq::from_columns_unchecked(
+            Arc::from([0.0, 1.0, 2.0, 3.0]),
+            Arc::from([10.0, 11.0, 12.0, 13.0]),
+            None,
+            None,
+        )
+    }
+
+    /// Under-yielding with an inflated `size_hint` must not `assume_init`
+    /// unwritten slots — the result length is the true yield count.
+    #[test]
+    fn select_lying_under_yield_returns_true_length() {
+        let seq = sample_seq();
+        // Claims 3, yields only [0, 2].
+        let out = seq.select(LyingIter::under(vec![0, 2], 3));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.xs(), &[0.0, 2.0]);
+        assert_eq!(out.ys(), &[10.0, 12.0]);
+    }
+
+    /// Over-yielding with a deflated `size_hint` must not write past the
+    /// allocation — the result carries every yielded row.
+    #[test]
+    fn select_lying_over_yield_returns_all_items() {
+        let seq = sample_seq();
+        // Claims 2, yields [0, 1, 3].
+        let out = seq.select(LyingIter::over(vec![0, 1, 3], 2));
+        assert_eq!(out.len(), 3);
+        assert_eq!(out.xs(), &[0.0, 1.0, 3.0]);
+        assert_eq!(out.ys(), &[10.0, 11.0, 13.0]);
+    }
+
+    /// Honest exact-size iterators still take the exact-Arc path correctly.
+    #[test]
+    fn select_honest_exact_size_matches_source() {
+        let seq = sample_seq();
+        let rows = [3_usize, 1, 0];
+        let out = seq.select(rows.iter().copied());
+        assert_eq!(out.len(), 3);
+        assert_eq!(out.xs(), &[3.0, 1.0, 0.0]);
+        assert_eq!(out.ys(), &[13.0, 11.0, 10.0]);
+    }
+}
+
+#[cfg(test)]
 mod coerce_tests {
     use super::*;
 
@@ -980,5 +1406,47 @@ mod coerce_tests {
         assert!(a2.axes.has_z() && !a2.axes.has_m());
         assert_eq!(a2, a);
         assert_eq!(b2, b);
+    }
+}
+
+#[cfg(test)]
+mod coord_iter_tests {
+    use super::*;
+
+    fn sequence(zs: Option<Arc<[f64]>>, ms: Option<Arc<[f64]>>) -> CoordSeq {
+        CoordSeq::from_columns_unchecked(
+            Arc::from([1.0, 2.0, 3.0]),
+            Arc::from([4.0, 5.0, 6.0]),
+            zs,
+            ms,
+        )
+    }
+
+    #[test]
+    fn specialized_iterators_exhaust_exactly_for_every_axis_variant() {
+        for seq in [
+            sequence(None, None),
+            sequence(Some(Arc::from([7.0, 8.0, 9.0])), None),
+            sequence(None, Some(Arc::from([10.0, 11.0, 12.0]))),
+            sequence(
+                Some(Arc::from([7.0, 8.0, 9.0])),
+                Some(Arc::from([10.0, 11.0, 12.0])),
+            ),
+        ] {
+            let expected = (0..seq.len())
+                .map(|index| seq.point_at(index))
+                .collect::<Vec<_>>();
+            let mut iter = seq.iter();
+            assert_eq!(iter.len(), 3);
+            assert_eq!(iter.next(), Some(expected[0]));
+            assert_eq!(iter.len(), 2);
+            assert_eq!(iter.next_back(), Some(expected[2]));
+            assert_eq!(iter.len(), 1);
+            assert_eq!(iter.next(), Some(expected[1]));
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next_back(), None);
+            assert_eq!(seq.to_vec(), expected);
+        }
     }
 }

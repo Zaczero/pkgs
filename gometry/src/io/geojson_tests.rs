@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::*;
+use crate::io::*;
 
 fn point(x: f64, y: f64) -> Point {
     Point::new(x, y).expect("finite test coordinate")

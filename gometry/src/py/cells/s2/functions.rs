@@ -1,22 +1,21 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::sync::Arc;
-
-use super::super::{GridKind, PyCellArray, bounding_query_bounds, dispatch_grid_cell_array};
-use super::*;
 use crate::Typed;
 use crate::geometry::CoordSeq;
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::coverage_ops::{
-    CoverageCells, CoveragePartition, DissolveEdge, GridDissolver, dissolve_grid_cells,
-    parse_max_cells,
+    CoverageCells, GridDissolver, dissolve_grid_cells, parse_max_cells,
+};
+use crate::py::cells::s2::{
+    PyS2Cell, PyS2Coverage, S2Membership, cell_pole_side, parse_s2_level_budget,
+    parse_s2_level_value, s2_boundary_geometry, s2_cell_array, s2_cell_from_xy, s2_cell_id,
+};
+use crate::py::cells::{
+    Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyResult, Python, Shape,
+    bounding_query_bounds, dispatch_grid_cell_array, grid_cover_dispatch, parse_error, pyfunction,
 };
 /// Build S2 cells from parallel lon/lat columns.
 ///
@@ -91,15 +90,12 @@ pub(crate) fn _unpickle_s2_coverage(
     max_cells: Option<i64>,
     target_cells: i64,
 ) -> PyResult<PyS2Coverage> {
-    use crate::grid::s2::coverer::Coverer;
-    use crate::py::cells::coverage_ops::{
-        collect_coverage_sequence, normalize_coverage_source, unpickle_cover_budget_err,
-    };
+    use crate::py::cells::coverage_ops::{collect_coverage_sequence, normalize_coverage_source};
     use crate::py::cells::s2::parse::{
         parse_s2_level_value, parse_s2_target_cells, validate_s2_level_mod,
     };
 
-    let (geometry, shape) = normalize_coverage_source(geometry, "S2")?;
+    let (geometry, cover_shape, cover_is_split) = normalize_coverage_source(geometry, "S2")?;
     // Public parameter parsers (D28): reject out-of-range/reversed levels,
     // level_mod=0, max_cells<=0.
     let min_level = parse_s2_level_value(i64::from(min_level))?;
@@ -125,46 +121,23 @@ pub(crate) fn _unpickle_s2_coverage(
             })
             .collect()
     };
-    let owned_cells = CoverageCells::from_cells(
+    let cells = CoverageCells::from_cells(
         decode(cell_ids)?
             .into_iter()
             .map(|cell| PyS2Cell { cell })
             .collect(),
     );
 
-    // Bound recompute by the serialized factory max_cells (was incorrectly
-    // hard-coded to None — amplification for deep level pickles).
-    let covering = Coverer {
+    // Lazy membership: no coverer recompute on unpickle (same contract as H3).
+    // D07 budget applies when inspection first materializes the partition.
+    let membership = S2Membership::lazy(
+        cover_shape,
+        cover_is_split,
         min_level,
         max_level,
         level_mod,
-        max_cells,
         target_cells,
-    }
-    .cover(&shape)
-    .map_err(unpickle_cover_budget_err)?;
-    let partition = CoveragePartition::from_sorted_tagged(
-        covering
-            .into_cells()
-            .into_iter()
-            .map(|(cell, interior)| (PyS2Cell { cell }, interior)),
     );
-    let expected = s2_expected_visible(
-        &partition,
-        &shape,
-        cell_rule,
-        min_level,
-        max_level,
-        level_mod,
-        max_cells,
-        target_cells,
-    )?;
-    let cells = if owned_cells.same_ids(&expected) {
-        expected
-    } else {
-        owned_cells
-    };
-    let membership = S2Membership { partition };
     Ok(PyS2Coverage {
         geometry,
         cells,
@@ -174,51 +147,8 @@ pub(crate) fn _unpickle_s2_coverage(
         level_mod,
         max_cells,
         target_cells,
-        membership: Arc::new(membership),
+        membership,
     })
-}
-
-/// Factory-matching visible selection for S2 unpickle (rule + optional bbox cover).
-fn s2_expected_visible(
-    partition: &CoveragePartition<PyS2Cell>,
-    shape: &crate::geometry::Shape,
-    cell_rule: CellRule,
-    min_level: u8,
-    max_level: u8,
-    level_mod: u8,
-    max_cells: Option<usize>,
-    target_cells: usize,
-) -> PyResult<CoverageCells<PyS2Cell>> {
-    use crate::grid::s2::coverer::Coverer;
-    match cell_rule {
-        CellRule::Overlap => Ok(partition.all()),
-        CellRule::Within => Ok(partition.interior()),
-        CellRule::Center => Ok(partition.select(|cell| {
-            shape.covers_point(crate::grid::s2::cell::Cell::from_id(cell.cell).center_lonlat())
-        })),
-        CellRule::Bbox => {
-            let bounds = shape
-                .bounds()
-                .ok_or_else(|| crate::py::cells::coverage_ops::empty_coverage_err("S2"))?;
-            let bounds_shape = super::parse::bounds_query_shape(bounds)?;
-            let bbox_cells = Coverer {
-                min_level,
-                max_level,
-                level_mod,
-                max_cells,
-                target_cells,
-            }
-            .cover(&bounds_shape)
-            .map_err(crate::py::cells::coverage_ops::unpickle_cover_budget_err)?
-            .outer();
-            Ok(CoverageCells::from_cells(
-                bbox_cells
-                    .into_iter()
-                    .map(|cell| PyS2Cell { cell })
-                    .collect(),
-            ))
-        },
-    }
 }
 
 /// Rebuild a pickled S2Cell from its 64-bit id (internal; see
@@ -230,7 +160,7 @@ pub(crate) fn _unpickle_s2_cell(id: u64) -> PyResult<PyS2Cell> {
         .ok_or_else(|| {
             parse_error(
                 format!("invalid S2 cell id {id}"),
-                crate::py::errors::ParseFormat::S2,
+                crate::error::ParseFormat::S2,
             )
         })
 }
@@ -307,29 +237,16 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
                 "bounding cell requires a non-empty geometry",
             ));
         }
-        // One row or pure points: fold through `bounding_cell` (single-point
-        // leaf / multi-point bbox). Mixed/region rows fold envelopes to bbox.
-        if parts.len() == 1 || parts.iter().all(|part| part.segment_count() == 0) {
-            let collection = if parts.len() == 1 {
-                parts.pop().expect("one part")
-            } else {
-                Shape::GeometryCollection(parts)
-            };
-            return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&collection));
-        }
-        let mut folded = parts[0].bounds();
-        for part in &parts[1..] {
-            if let Some(b) = part.bounds() {
-                folded = Some(folded.map_or(b, |mut acc| {
-                    acc.include_bounds(b);
-                    acc
-                }));
-            }
-        }
-        let bounds = folded.ok_or_else(|| {
-            InvalidGeometryError::new_err("bounding cell requires a non-empty geometry")
-        })?;
-        return bounding_cell_result(crate::grid::s2::bounding::bounding_cell_bbox(bounds));
+        // ONE seam-aware owner for every representation: scalar, collection,
+        // and GeometryArray all fold through `bounding_cell`. The former
+        // planar envelope fold on multi-row regions dropped antimeridian
+        // handling and disagreed with GeometryCollection on seam cases (C15).
+        let collection = if parts.len() == 1 {
+            parts.pop().expect("one part")
+        } else {
+            Shape::GeometryCollection(parts)
+        };
+        return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&collection));
     }
     let bounds = bounding_query_bounds(value)?;
     bounding_cell_result(crate::grid::s2::bounding::bounding_cell_bbox(bounds))
@@ -420,14 +337,23 @@ impl GridDissolver for S2Dissolver {
             .then(|| cells.to_vec()))
     }
 
-    fn boundary_edges(cell: Self::Cell) -> Vec<DissolveEdge<Self::Cell>> {
+    fn adjacency_neighbors(cell: Self::Cell) -> impl Iterator<Item = Self::Cell> {
+        cell.edge_neighbors().into_iter()
+    }
+
+    fn exterior_edge_segments(
+        cell: Self::Cell,
+        is_member: &dyn Fn(Self::Cell) -> bool,
+    ) -> Vec<CoordSeq> {
         let vertices = S2GeomCell::from_id(cell).vertices_lonlat();
         cell.edge_neighbors()
             .into_iter()
             .enumerate()
-            .map(|(k, neighbor)| DissolveEdge {
-                neighbor,
-                segment: CoordSeq::from_points(&[vertices[k], vertices[(k + 1) % 4]]),
+            .filter_map(|(k, neighbor)| {
+                if is_member(neighbor) {
+                    return None;
+                }
+                Some(CoordSeq::from_points(&[vertices[k], vertices[(k + 1) % 4]]))
             })
             .collect()
     }
@@ -476,13 +402,13 @@ impl GridDissolver for S2Dissolver {
 ///     The rule never affects the exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Hard cap on emitted cells for fixed and adaptive coverings. Pass
-///     ``None`` for unlimited (bounded only by memory).
+///     Hard cap on emitted cells when ``level`` fixes the cover depth. It is
+///     retained as metadata for adaptive covers, whose size is instead guided
+///     by ``target_cells``. Pass ``None`` for an unlimited fixed-level cover.
 ///
 /// target_cells : int, default 8
 ///     S2-idiomatic approximation target for optional adaptive refinement
-///     when ``level`` is omitted. It never relaxes ``max_cells`` and does not
-///     affect fixed-level coverings.
+///     when ``level`` is omitted. It does not affect fixed-level coverings.
 ///
 /// min_level, max_level : int, optional
 ///     Coarsest/finest S2 levels allowed (default to ``level``).
@@ -500,7 +426,7 @@ impl GridDissolver for S2Dissolver {
 /// ------
 /// GeometryError
 ///     If the geometry, depth, or a coverage parameter is invalid, or if
-///     the covering would exceed ``max_cells``.
+///     a fixed-level covering would exceed ``max_cells``.
 ///
 /// See Also
 /// --------
@@ -529,7 +455,17 @@ pub(crate) fn s2_cover(
     max_level: Option<&Bound<'_, PyAny>>,
     level_mod: i64,
 ) -> PyResult<Py<PyAny>> {
-    let budget_cells = parse_max_cells(max_cells)?;
+    let parsed = parse_s2_level_budget(
+        level,
+        max_cells,
+        target_cells,
+        min_level,
+        max_level,
+        level_mod,
+    )?;
+    let budget_cells = (parsed.min_level == parsed.max_level)
+        .then_some(parsed.max_cells)
+        .flatten();
     grid_cover_dispatch(
         py,
         geom,

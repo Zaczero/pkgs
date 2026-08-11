@@ -1,7 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::super::*;
+use crate::{
+    Frame, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, multipoint_splitter_from_array,
+};
 
 /// Shared paths between two lineal geometries.
 ///

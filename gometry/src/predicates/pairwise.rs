@@ -1,7 +1,13 @@
-use pyo3::prelude::*;
+use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use super::super::*;
+use crate::{
+    Arc, Bound, CollectRows as _, DistanceUnit, Frame, IntoPyObject as _, Py, PyGeometryArray,
+    PyResult, Python, crs, crs_metric_binary_geometry_broadcast, exact_geometry,
+    exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
+    metric_shortest_line, py_nearest_points, pyfunction, resolve_metric, rows_err,
+    validate_distance_arg,
+};
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
 ///
@@ -78,7 +84,7 @@ pub(crate) fn shortest_line(
                 && !geometry.shape.shape().crosses_antimeridian()
                 && !array.has_missing()
             {
-                let scalar = geometry.shape.clone();
+                let scalar = Arc::clone(&geometry.shape);
                 let scalar_cache = Arc::clone(&geometry.frame_cache);
                 let array = array.clone();
                 let rows = py.detach(move || {
@@ -199,8 +205,8 @@ pub(crate) fn distance(
     crate::dispatch::dispatch_distance(py, left, right, unit)
 }
 
-/// Compute the minimum 3D (Euclidean) distance between two geometries, in
-/// meters (axes must share a linear unit; geographic CRS rejected).
+/// Compute the minimum 3D (Euclidean) distance between two geometries,
+/// measured for their CRS.
 ///
 /// Distance is over linework: points/multipoints as degenerate segments,
 /// polygons via their boundary rings. Part of the 3D Euclidean family with
@@ -208,15 +214,20 @@ pub(crate) fn distance(
 /// and have no 3D form; ``bounds_3d`` gives the 3D extent (there is no
 /// ``envelope_3d``).
 ///
-/// Every vertex on both operands must carry a Z ordinate and they must share
-/// a CRS whose axes use one linear unit (or no CRS); a geographic CRS or a
-/// missing Z raises — reproject with ``to_crs`` to a projected CRS.
+/// A projected CRS gives native linear units and a CRS-free geometry gives
+/// coordinate units — the same defaults as the 2D ``distance``. A geographic
+/// CRS raises under every ``unit``: a Euclidean norm cannot combine degrees
+/// with meter heights. Every vertex on both operands must carry a Z ordinate.
 ///
 /// Parameters
 /// ----------
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
+/// unit : {'planar', 'meters'} or None, default None
+///     ``None`` follows the CRS, exactly like ``distance``. ``'planar'``
+///     forces raw coordinate units; ``'meters'`` forces SI meters and raises
+///     without a CRS.
 ///
 /// Returns
 /// -------
@@ -229,9 +240,17 @@ pub(crate) fn distance(
 ///     If the CRS lacks linear axis units for a metric result.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryError
+///     If ``unit='meters'`` is requested for a CRS-free geometry.
 /// InvalidGeometryError
 ///     If either operand lacks a Z ordinate on every vertex.
+///
+/// See Also
+/// --------
+/// distance : The 2D sibling, with the same ``unit`` override.
+/// length_3d : Total 3D length under the same metric.
 #[pyfunction]
+#[pyo3(signature = (left, right, *, unit = None))]
 ///
 /// Examples
 /// --------
@@ -242,11 +261,12 @@ pub(crate) fn distance_3d(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_distance_3d(py, left, right)
+    crate::dispatch::dispatch_distance_3d(py, left, right, unit)
 }
 
-/// Compute the Hausdorff (set-to-set) similarity distance between ``left``
+/// Compute the continuous Hausdorff (set-to-set) distance between ``left``
 /// and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
@@ -258,10 +278,10 @@ pub(crate) fn distance_3d(
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
 /// densify : float, optional
-///     Subdivide every segment into pieces no longer than this
-///     fraction of its length (in ``(0, 1]``) before measuring,
-///     tightening the discrete vertex metric toward the continuous
-///     one. Omitted measures vertices only.
+///     Subdivide every segment into pieces no longer than this fraction of
+///     its length (in ``(0, 1]``) before measuring. The metric remains the
+///     continuous Hausdorff distance; gometry does not offer a discrete,
+///     vertex-only Hausdorff variant.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.

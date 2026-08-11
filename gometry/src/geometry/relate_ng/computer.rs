@@ -1,5 +1,8 @@
-use super::*;
 use crate::geometry::relate::De9im;
+use crate::geometry::relate_ng::{
+    BoundaryContacts, Operand, OperandPool, PointBatchTester, Polygon, StagedRings,
+    classify_boundary_sections, probe_interior_faces, scan_boundary_contacts, topology,
+};
 pub(in crate::geometry) enum RelateGoal<'a> {
     Matrix,
     Pattern(CompiledPattern<'a>),
@@ -111,11 +114,12 @@ impl<'a> TopologyComputer<'a> {
     }
 }
 
-/// Optional prepared point testers for each operand — the banded raycaster
-/// cached on `ShapeData`. When present, areal point membership is an O(band)
-/// lookup; when absent (raw `Shape` relate of a temporary), the functions fall
-/// back to the raw per-point ring scans. Both produce identical classes for the
-/// valid operands the NG path accepts, so the matrix is byte-identical.
+/// Optional prepared point testers for each operand — the hierarchical
+/// [`PointBatchTester`] cached on `ShapeData`. When present, areal point
+/// membership is a Y-stabbing lookup; when absent (raw `Shape` relate of a
+/// temporary), the functions fall back to the raw per-point ring scans. Both
+/// produce identical classes for the valid operands the NG path accepts, so
+/// the matrix is byte-identical.
 #[derive(Clone, Copy, Default)]
 pub(in crate::geometry) struct AreaTesters<'a> {
     pub(in crate::geometry) left: Option<&'a PointBatchTester>,

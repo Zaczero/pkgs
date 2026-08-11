@@ -2,7 +2,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::arrow::{
+    ArrowStorage, Bound, GeometryEncoding, ParseFormat, PyAny, PyAnyMethods as _, PyBytes, PyErr,
+    PyModule, PyResult, PyTypeError, PyTypeMethods as _, Python, Value, WkbOffsetWidth,
+    parse_error, pyfunction,
+};
 
 pub(crate) fn arrow_storage_array(
     pa: &Bound<'_, PyModule>,
@@ -34,10 +38,11 @@ pub(crate) fn arrow_storage_array(
             storage_or_self(value)?
         };
         let storage_type = storage.getattr("type")?;
-        // Exact encoding-shape gate (also rejects LargeList at each legitimate
-        // list level). Do NOT recursively walk the whole type tree first —
-        // pathological list nesting would stack-overflow (P01); geometry
-        // encodings have trivial depth and are classified exactly below.
+        // Exact encoding-shape gate (list and large_list at each legitimate
+        // list level; interleaved FixedSizeList coords). Do NOT recursively
+        // walk the whole type tree first — pathological list nesting would
+        // stack-overflow (P01); geometry encodings have trivial depth and are
+        // classified exactly below.
         ensure_pyarrow_encoding_storage(pa, &storage_type, encoding)?;
         let wkb_offset_width = if matches!(encoding, GeometryEncoding::Wkb) {
             wkb_offset_width(
@@ -47,7 +52,7 @@ pub(crate) fn arrow_storage_array(
         } else {
             WkbOffsetWidth::Int32
         };
-        let (crs, epoch) = parse_geoarrow_extension_metadata(&metadata)?;
+        let (crs, epoch) = parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
         return Ok(ArrowStorage {
             storage: storage.unbind(),
             crs,
@@ -123,7 +128,7 @@ pub(crate) fn arrow_type_frame(
         };
         // Exact shape classification only — see arrow_storage_array (P01).
         ensure_pyarrow_encoding_storage(pa, &storage_type, encoding)?;
-        return parse_geoarrow_extension_metadata(&metadata);
+        return parse_geoarrow_extension_metadata_for(&metadata, Some(encoding));
     }
 
     let types = pa.getattr("types")?;
@@ -189,10 +194,10 @@ fn ensure_pyarrow_encoding_storage(
 }
 
 fn ensure_pyarrow_list(pa: &Bound<'_, PyModule>, value_type: &Bound<'_, PyAny>) -> PyResult<()> {
+    // GeoArrow SHOULD accept LargeList (i64 offsets); List (i32) remains the
+    // common producer form. ListView is not admitted.
     if arrow_type_is_large_list(pa, value_type)? {
-        return Err(PyTypeError::new_err(
-            crate::py::arrow_c::LARGE_LIST_UNSUPPORTED,
-        ));
+        return Ok(());
     }
     let types = pa.getattr("types")?;
     let is_list = if types.hasattr("is_list")? {
@@ -204,7 +209,7 @@ fn ensure_pyarrow_list(pa: &Bound<'_, PyModule>, value_type: &Bound<'_, PyAny>) 
     };
     if !is_list {
         return Err(PyTypeError::new_err(
-            "geoarrow list geometry storage must be list (+l) with i32 offsets",
+            "geoarrow list geometry storage must be list (+l) or large_list (+L)",
         ));
     }
     Ok(())
@@ -215,6 +220,11 @@ fn ensure_pyarrow_point_struct(
     value_type: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
     let types = pa.getattr("types")?;
+    // Interleaved coordinates: FixedSizeList<float64>[n] with n in {2,3,4}
+    // and field name "xy" / "xyz" / "xym" / "xyzm" (GeoArrow format §Coordinate).
+    if arrow_type_is_fixed_size_list(pa, value_type)? {
+        return ensure_pyarrow_interleaved_coords(pa, value_type);
+    }
     let is_struct = if types.hasattr("is_struct")? {
         types
             .call_method1("is_struct", (value_type,))?
@@ -224,7 +234,7 @@ fn ensure_pyarrow_point_struct(
     };
     if !is_struct {
         return Err(PyTypeError::new_err(
-            "geoarrow point storage must be a struct of float64 ordinates",
+            "geoarrow point storage must be a struct of float64 ordinates or fixed_size_list interleaved coordinates",
         ));
     }
     // Mandatory shared classifier: exact x/y, at most z/m, float64 leaves only.
@@ -243,6 +253,77 @@ fn ensure_pyarrow_point_struct(
     }
     crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())
+}
+
+/// Validate GeoArrow interleaved coordinate storage (`FixedSizeList<f64>[n]`).
+fn ensure_pyarrow_interleaved_coords(
+    pa: &Bound<'_, PyModule>,
+    value_type: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let types = pa.getattr("types")?;
+    let list_size: i32 = value_type.getattr("list_size")?.extract()?;
+    if !(2..=4).contains(&list_size) {
+        return Err(PyTypeError::new_err(
+            "geoarrow interleaved coordinates require fixed_size_list of length 2, 3, or 4",
+        ));
+    }
+    let value_field_type = value_type.getattr("value_type")?;
+    if !pyarrow_type_is_float64(&types, &value_field_type)? {
+        return Err(PyTypeError::new_err(
+            "geoarrow interleaved coordinates require float64 value type",
+        ));
+    }
+    // Field name of the FixedSizeList encodes dimensions when present
+    // ("xy"/"xyz"/"xym"/"xyzm"); size alone is accepted when the name is
+    // absent or the generic "item" pyarrow default. Non-canonical names for
+    // any size (including size 3) are rejected — a size-3 field named
+    // "garbage"/"xy"/"xyzm" must not silently decode as XYZ.
+    if let Ok(name) = value_type
+        .getattr("value_field")
+        .and_then(|f| f.getattr("name"))
+        .and_then(|n| n.extract::<String>())
+    {
+        if name.is_empty() || name == "item" {
+            return Ok(());
+        }
+        let allowed: &[&str] = match list_size {
+            2 => &["xy"],
+            // size 3 is XYZ or XYM only (GeoArrow interleaved field names).
+            3 => &["xyz", "xym"],
+            4 => &["xyzm"],
+            _ => unreachable!("list_size gated above"),
+        };
+        if !allowed.contains(&name.as_str()) {
+            return Err(PyTypeError::new_err(format!(
+                "geoarrow interleaved fixed_size_list[{list_size}] field name must be one of {allowed:?} (or default 'item'), got {name:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn arrow_type_is_fixed_size_list(
+    pa: &Bound<'_, PyModule>,
+    value_type: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    if let Ok(format) = value_type.getattr("format")
+        && let Ok(format) = format.extract::<String>()
+    {
+        // FixedSizeList format is `+w:N`.
+        if format.starts_with("+w:") {
+            return Ok(true);
+        }
+    }
+    let types = pa.getattr("types")?;
+    if types.hasattr("is_fixed_size_list")? {
+        return types
+            .call_method1("is_fixed_size_list", (value_type,))?
+            .extract();
+    }
+    if let Ok(name) = value_type.get_type().name() {
+        return Ok(name == "FixedSizeListType");
+    }
+    Ok(false)
 }
 
 fn pyarrow_type_is_float64(
@@ -461,10 +542,15 @@ pub(crate) fn metadata_value<'py>(
     }
 }
 
-/// The `edges` member: planar is the only supported interpretation — a
-/// declared spherical-family value is real metadata that would be silently
-/// misread as planar, so it rejects rather than degrades.
-fn parse_geoarrow_edges(object: &serde_json::Map<String, Value>) -> PyResult<EdgeModel> {
+/// The `edges` member: planar is the only supported interpretation for
+/// non-point geometry — a declared spherical-family value would be silently
+/// misread as planar, so it rejects rather than degrades. On **point**
+/// encodings edge semantics are vacuous (no edges), so spherical-family
+/// values are accepted and ignored.
+fn parse_geoarrow_edges(
+    object: &serde_json::Map<String, Value>,
+    encoding: Option<GeometryEncoding>,
+) -> PyResult<EdgeModel> {
     match object.get("edges") {
         None => Ok(EdgeModel::Planar),
         Some(Value::String(value)) if value == "planar" => Ok(EdgeModel::Planar),
@@ -474,9 +560,14 @@ fn parse_geoarrow_edges(object: &serde_json::Map<String, Value>) -> PyResult<Edg
                 "spherical" | "vincenty" | "thomas" | "andoyer" | "karney"
             ) =>
         {
-            Err(geoarrow_parse_error(format!(
-                "invalid GeoArrow extension metadata: edges {value:?} are unsupported; only planar edges are accepted"
-            )))
+            if matches!(encoding, Some(GeometryEncoding::Point)) {
+                // Point geometry has no edges — accept and treat as planar.
+                Ok(EdgeModel::Planar)
+            } else {
+                Err(geoarrow_parse_error(format!(
+                    "invalid GeoArrow extension metadata: edges {value:?} are unsupported; only planar edges are accepted"
+                )))
+            }
         },
         Some(value) => Err(geoarrow_parse_error(format!(
             "invalid GeoArrow extension metadata: unknown edges value {value}"
@@ -500,6 +591,15 @@ fn parse_geoarrow_epoch(object: &serde_json::Map<String, Value>) -> PyResult<Opt
 
 pub(crate) fn parse_geoarrow_extension_metadata(
     metadata: &[u8],
+) -> PyResult<(Option<String>, Option<f64>)> {
+    parse_geoarrow_extension_metadata_for(metadata, None)
+}
+
+/// Like [`parse_geoarrow_extension_metadata`], with encoding context so
+/// vacuous `edges` on point geometry can be accepted.
+pub(crate) fn parse_geoarrow_extension_metadata_for(
+    metadata: &[u8],
+    encoding: Option<GeometryEncoding>,
 ) -> PyResult<(Option<String>, Option<f64>)> {
     if metadata.is_empty() {
         return Ok((None, None));
@@ -528,7 +628,7 @@ pub(crate) fn parse_geoarrow_extension_metadata(
             )));
         },
     };
-    let _edges = parse_geoarrow_edges(&object)?;
+    let _edges = parse_geoarrow_edges(&object, encoding)?;
     // The CRS is a PROJJSON object (this encoder's output and the GeoArrow
     // recommendation) or an authority string from other producers; both
     // canonicalize through the CRS engine. PROJJSON declaring an identity
@@ -566,8 +666,15 @@ pub(crate) fn parse_geoarrow_extension_metadata(
             let reference = identity.unwrap_or_else(|| crs.to_string());
             Some(normalize_geoarrow_crs(&reference)?)
         },
-        Some(Value::Null) | None if crs_type.is_none() => None,
-        Some(Value::Null) | None => {
+        // GeoArrow forbids explicit ``{"crs": null}`` (use absent key for
+        // CRS-free). GeoParquet keeps its own omitted-vs-null contract.
+        Some(Value::Null) => {
+            return Err(geoarrow_parse_error(
+                "invalid GeoArrow extension metadata: crs must not be null (omit the key for CRS-free)",
+            ));
+        },
+        None if crs_type.is_none() => None,
+        None => {
             return Err(geoarrow_parse_error(
                 "invalid GeoArrow extension metadata: crs_type requires crs",
             ));
@@ -614,16 +721,56 @@ pub(crate) fn py_parse_geoarrow_extension_metadata(
     parse_geoarrow_extension_metadata(metadata)
 }
 
-/// Private Python entry: parse one GeoParquet column metadata object for the
-/// shared CRS/epoch/edges frame (defaults missing CRS to OGC:CRS84; CRS must
+/// Private Python entry: parse one already-decoded GeoParquet column mapping for
+/// the shared CRS/epoch/edges frame (defaults missing CRS to OGC:CRS84; CRS must
 /// be a PROJJSON object or null when present).
 #[pyfunction]
 #[pyo3(name = "_parse_geoparquet_column_frame", signature = (metadata, column_name))]
 pub(crate) fn py_parse_geoparquet_column_frame(
-    metadata: &[u8],
+    metadata: &Bound<'_, PyAny>,
     column_name: &str,
 ) -> PyResult<(Option<String>, Option<f64>)> {
-    parse_geoparquet_column_frame(metadata, column_name)
+    let value = crate::py_to_json_value(metadata).map_err(|error| {
+        Python::attach(|py| {
+            let message = error.value(py).to_string();
+            // Non-finite numbers (epoch) surface as "JSON number must be finite".
+            if message.contains("finite") {
+                geoparquet_column_error(column_name, "epoch must be finite")
+            } else {
+                geoparquet_column_error(column_name, message)
+            }
+        })
+    })?;
+    parse_geoparquet_column_frame_value(&value, column_name)
+}
+
+/// Admit GeoParquet geometry storage against a declared encoding.
+///
+/// Dictionary-wrapped WKB is accepted. ExtensionType and Field metadata are
+/// reconciled together (name + frame) so raw-field frame metadata is never
+/// discarded. Returns ``(has_extension, crs, epoch)`` — when
+/// ``has_extension`` is true the frame came from reconciled extension
+/// metadata (possibly both-None for empty metadata).
+#[pyfunction]
+#[pyo3(
+    name = "_admit_geoparquet_geometry_storage",
+    signature = (arrow_type, encoding, column_name, field = None)
+)]
+pub(crate) fn py_admit_geoparquet_geometry_storage(
+    py: Python<'_>,
+    arrow_type: &Bound<'_, PyAny>,
+    encoding: &str,
+    column_name: &str,
+    field: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(bool, Option<String>, Option<f64>)> {
+    admit_geoparquet_geometry_storage(py, arrow_type, encoding, column_name, field)
+}
+
+fn geoparquet_meta_error(detail: impl std::fmt::Display) -> PyErr {
+    crate::py::errors::parse_error(
+        format!("malformed GeoParquet geo metadata: {detail}"),
+        crate::error::ParseFormat::GeoParquet,
+    )
 }
 
 fn geoparquet_column_error(column_name: &str, detail: impl std::fmt::Display) -> PyErr {
@@ -631,23 +778,243 @@ fn geoparquet_column_error(column_name: &str, detail: impl std::fmt::Display) ->
         format!(
             "malformed GeoParquet geo metadata: invalid GeoParquet column '{column_name}': {detail}"
         ),
-        crate::py::errors::ParseFormat::GeoParquet,
+        crate::error::ParseFormat::GeoParquet,
     )
+}
+
+/// GeoParquet field/storage admission: declared encoding vs physical type.
+///
+/// Returns ``(has_extension, crs, epoch)``. When no extension is present
+/// (plain binary WKB or untyped native list storage whose depth matches the
+/// declaration) the frame is ``(false, None, None)``.
+///
+/// Extension sources are collected **before** physical unwrap, from (1) the
+/// column/array type, (2) the schema field's type (ExtensionType after
+/// registration), and (3) field-level ``ARROW:extension:*`` metadata. PyArrow
+/// may rewrite the column to bare dictionary under ``read_dictionary`` and
+/// clear field metadata after extension registration; the schema field's type
+/// still carries the frame. Physical storage peels **extension first, then
+/// dictionary** (Arrow: extension is the outer logical type; dictionary is a
+/// physical encoding of the storage).
+fn admit_geoparquet_geometry_storage(
+    py: Python<'_>,
+    arrow_type: &Bound<'_, PyAny>,
+    encoding: &str,
+    column_name: &str,
+    field: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(bool, Option<String>, Option<f64>)> {
+    let Some(declared) = GeometryEncoding::from_geoparquet_encoding(encoding) else {
+        return Err(geoparquet_meta_error(format!(
+            "unsupported GeoParquet geometry encoding: {encoding:?}"
+        )));
+    };
+    let pa = py.import("pyarrow").map_err(|_| {
+        geoparquet_meta_error("pyarrow is required for GeoParquet geometry storage")
+    })?;
+    // Extension name/metadata decode errors (e.g. non-UTF-8) and source
+    // conflicts surface as GeoParquet metadata — one boundary class for the
+    // reader (Python previously used `_metadata_error` / format=geoparquet).
+    let as_geoparquet =
+        |error: PyErr| Python::attach(|py| geoparquet_meta_error(error.value(py).to_string()));
+
+    // Frame sources before any physical peel (see module comment above).
+    let column_type_source = type_extension_source(arrow_type).map_err(as_geoparquet)?;
+    let (field_type_source, field_meta_source) = match field {
+        Some(field) => {
+            let field_type = field.getattr("type")?;
+            (
+                type_extension_source(&field_type).map_err(as_geoparquet)?,
+                field_extension_source(field).map_err(as_geoparquet)?,
+            )
+        },
+        None => (None, None),
+    };
+    // Reconcile name+frame across all sources; any disagreement is an error.
+    let reconciled = reconcile_extension_sources(column_type_source, field_type_source)
+        .map_err(as_geoparquet)?;
+    let reconciled =
+        reconcile_extension_sources(reconciled, field_meta_source).map_err(as_geoparquet)?;
+
+    // Physical storage: extension wrapper first, then dictionary encoding.
+    let storage_type = unwrap_extension_then_dictionary(&pa, arrow_type)?;
+
+    match declared {
+        GeometryEncoding::Wkb => {
+            let is_binary = arrow_type_is_binary_family(&pa, &storage_type)?;
+            if let Some((extension_name, metadata)) = reconciled {
+                if extension_name != "geoarrow.wkb" || !is_binary {
+                    return Err(geoparquet_meta_error(format!(
+                        "column '{column_name}' encoding 'WKB' requires Binary, \
+                         LargeBinary, BinaryView, or geoarrow.wkb storage \
+                         (dictionary-encoded binary is allowed)"
+                    )));
+                }
+                // Frame parse failures stay on the GeoParquet boundary class.
+                let (crs, epoch) =
+                    parse_geoarrow_extension_metadata(&metadata).map_err(as_geoparquet)?;
+                return Ok((true, crs, epoch));
+            }
+            if !is_binary {
+                return Err(geoparquet_meta_error(format!(
+                    "column '{column_name}' encoding 'WKB' requires Binary, \
+                     LargeBinary, BinaryView, or geoarrow.wkb storage \
+                     (dictionary-encoded binary is allowed)"
+                )));
+            }
+            Ok((false, None, None))
+        },
+        native => {
+            let expected_name = native.extension_name();
+            if let Some((extension_name, metadata)) = reconciled {
+                if extension_name != expected_name {
+                    // Match Python !r quoting so pinned tests keep working.
+                    return Err(geoparquet_meta_error(format!(
+                        "native GeoParquet encoding '{encoding}' conflicts with \
+                         embedded Arrow extension '{extension_name}'"
+                    )));
+                }
+                // Frame parse failures stay on the GeoParquet boundary class.
+                let (crs, epoch) =
+                    parse_geoarrow_extension_metadata(&metadata).map_err(as_geoparquet)?;
+                return Ok((true, crs, epoch));
+            }
+            // No extension: declared encoding + exact list depth + xy struct.
+            let expected_depth = native.list_depth().expect("native encoding has list depth");
+            let depth = geoarrow_list_depth(&pa, &storage_type)?;
+            if depth != Some(expected_depth) {
+                return Err(geoparquet_meta_error(format!(
+                    "native GeoParquet encoding '{encoding}' does not match \
+                     storage layout (expected list depth {expected_depth}, \
+                     got {depth:?})"
+                )));
+            }
+            Ok((false, None, None))
+        },
+    }
+}
+
+/// Binary / LargeBinary / BinaryView physical storage (post extension+dict peel).
+fn arrow_type_is_binary_family(
+    pa: &Bound<'_, PyModule>,
+    arrow_type: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    let types = pa.getattr("types")?;
+    Ok(types
+        .call_method1("is_binary", (arrow_type,))?
+        .extract::<bool>()?
+        || arrow_type_is_large_binary(pa, arrow_type)?
+        || arrow_type_is_binary_view(pa, arrow_type)?)
+}
+
+/// Peel ExtensionType (`storage_type`) first, then dictionary (`value_type`).
+///
+/// Arrow order: extension is the outer logical type; dictionary is a physical
+/// encoding of the storage. `extension<dictionary<binary>>` therefore unwraps
+/// to binary. Bare `dictionary<binary>` and plain binary are unchanged.
+fn unwrap_extension_then_dictionary<'py>(
+    pa: &Bound<'py, PyModule>,
+    arrow_type: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut current = arrow_type.clone();
+    // ExtensionType exposes storage_type; only peel when this is actually an
+    // extension root (extension_name / type-level extension source present).
+    if type_extension_source(&current)?.is_some()
+        && let Ok(storage_type) = current.getattr("storage_type")
+    {
+        current = storage_type;
+    }
+    unwrap_dictionary_type(pa, &current)
+}
+
+fn unwrap_dictionary_type<'py>(
+    pa: &Bound<'py, PyModule>,
+    arrow_type: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let types = pa.getattr("types")?;
+    let mut current = arrow_type.clone();
+    while types
+        .call_method1("is_dictionary", (&current,))?
+        .extract::<bool>()?
+    {
+        current = current.getattr("value_type")?;
+    }
+    Ok(current)
+}
+
+/// List nesting above a coordinate struct with x/y, or None when not geoarrow-like.
+fn geoarrow_list_depth(
+    pa: &Bound<'_, PyModule>,
+    arrow_type: &Bound<'_, PyAny>,
+) -> PyResult<Option<u8>> {
+    let types = pa.getattr("types")?;
+    let storage = match arrow_type.getattr("storage_type") {
+        Ok(storage_type) => storage_type,
+        Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(arrow_type.py()) => {
+            arrow_type.clone()
+        },
+        Err(err) => return Err(err),
+    };
+    let mut depth: u8 = 0;
+    let mut current = storage;
+    loop {
+        let is_list = types
+            .call_method1("is_list", (&current,))?
+            .extract::<bool>()?
+            || arrow_type_is_large_list(pa, &current)?
+            || {
+                if types.hasattr("is_list_view")? {
+                    types
+                        .call_method1("is_list_view", (&current,))?
+                        .extract::<bool>()?
+                } else {
+                    false
+                }
+            };
+        if !is_list {
+            break;
+        }
+        depth = depth.saturating_add(1);
+        current = current.getattr("value_type")?;
+    }
+    // Terminal coordinate type: separated struct or interleaved FixedSizeList.
+    if arrow_type_is_fixed_size_list(pa, &current)? {
+        let list_size: i32 = current.getattr("list_size")?.extract()?;
+        return Ok((2..=4).contains(&list_size).then_some(depth));
+    }
+    let is_struct = if types.hasattr("is_struct")? {
+        types
+            .call_method1("is_struct", (&current,))?
+            .extract::<bool>()?
+    } else {
+        false
+    };
+    if !is_struct {
+        return Ok(None);
+    }
+    let names: Vec<String> = if let Ok(names) = current.getattr("names") {
+        names.extract()?
+    } else {
+        // Fall back to field-index name access (matches Python helper).
+        let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
+        let mut names = Vec::with_capacity(num_fields);
+        for index in 0..num_fields {
+            names.push(current.get_item(index)?.getattr("name")?.extract()?);
+        }
+        names
+    };
+    if names.iter().any(|n| n == "x") && names.iter().any(|n| n == "y") {
+        Ok(Some(depth))
+    } else {
+        Ok(None)
+    }
 }
 
 /// GeoParquet column-level CRS/epoch/edges boundary (frame only — encoding,
 /// geometry_types, orientation, and bbox stay in the Python reader).
-pub(crate) fn parse_geoparquet_column_frame(
-    metadata: &[u8],
+pub(crate) fn parse_geoparquet_column_frame_value(
+    value: &Value,
     column_name: &str,
 ) -> PyResult<(Option<String>, Option<f64>)> {
-    let value = if metadata.is_empty() {
-        Value::Object(serde_json::Map::new())
-    } else {
-        serde_json::from_slice::<Value>(metadata).map_err(|error| {
-            geoparquet_column_error(column_name, format!("invalid JSON: {error}"))
-        })?
-    };
     let Value::Object(object) = value else {
         return Err(geoparquet_column_error(
             column_name,
@@ -767,7 +1134,7 @@ fn arrow_type_is_large_list(
     if let Ok(format) = value_type.getattr("format")
         && let Ok(format) = format.extract::<String>()
     {
-        // Same token check as reject_large_list_format / ArrowFormat::parse.
+        // Match the native ArrowFormat token for LargeList.
         return Ok(format == "+L");
     }
     let types = pa.getattr("types")?;
@@ -816,7 +1183,7 @@ pub(crate) fn native_arrow_storage_array(value: &Bound<'_, PyAny>) -> PyResult<A
             return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
         };
         let storage = value.getattr("storage")?;
-        crate::py::arrow_c::validate_native_encoding_storage(&storage, encoding)?;
+        crate::py::arrow_c::validate_native_encoding_root_format(&storage, encoding)?;
         let wkb_offset_width = if matches!(encoding, GeometryEncoding::Wkb) {
             wkb_offset_width(
                 crate::py::arrow_c::native_schema_format_is_large_binary(&storage)?,
@@ -839,7 +1206,7 @@ pub(crate) fn native_arrow_storage_array(value: &Bound<'_, PyAny>) -> PyResult<A
             return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
         };
         let storage = storage_or_self(value)?;
-        crate::py::arrow_c::validate_native_encoding_storage(&storage, encoding)?;
+        crate::py::arrow_c::validate_native_encoding_root_format(&storage, encoding)?;
         let wkb_offset_width = if matches!(encoding, GeometryEncoding::Wkb) {
             wkb_offset_width(
                 crate::py::arrow_c::native_schema_format_is_large_binary(&storage)?,

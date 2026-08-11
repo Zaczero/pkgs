@@ -1,9 +1,11 @@
 use std::ops::Deref;
 
-use super::*;
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::Dimension;
+use crate::geometry::types::{
+    CoordIter, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum VoronoiBoundary<'a> {
@@ -101,9 +103,44 @@ pub enum Shape {
     Empty(EmptyKind, CoordinateAxes),
 }
 
+// `Shape` is the widest hot type and the one whose width multiplies: mixed
+// array storage is `Vec<Shape>`, and both `storage_impl.rs` and `packed_ops.rs`
+// account heap by `rows * size_of::<Shape>()`.  The `Polygon` variant alone sets
+// the width (`Ring` 72 + `Arc<[Ring]>` 16 = 88, +8 tag); every other variant is
+// 72 or less.  Boxing `Polygon` to reach 80 was measured a net loss — the packed
+// lanes never store `Shape`, so it would buy ~2% of a mixed array's footprint
+// for a per-row allocation and an indirection on the hottest structural access.
+// This bound exists so that trade cannot be silently reversed by widening a
+// variant; it is a build error, not a test failure.
+const _: () = assert!(size_of::<Shape>() <= 96);
+
 impl HeapSize for Shape {
+    /// Retained native heap: coordinate columns **plus** container allocations
+    /// (`Vec` of parts/members, `Arc<[Ring]>` hole storage) and nested shapes.
+    /// Leaf points and sequences contribute only their ordinate payload so
+    /// scalar `Point`/`LineString` sizes stay in the coordinate-class band;
+    /// multipart and collection containers scale with part/member count.
     fn heap_bytes(&self) -> usize {
-        self.coordinate_bytes()
+        match self {
+            Self::MultiLineString(lines) => {
+                lines.capacity() * std::mem::size_of::<LineSeq>()
+                    + lines
+                        .iter()
+                        .map(|line| line.coordinate_bytes())
+                        .sum::<usize>()
+            },
+            Self::Polygon(polygon) => polygon.heap_bytes(),
+            Self::MultiPolygon(polygons) => {
+                polygons.capacity() * std::mem::size_of::<Polygon>()
+                    + polygons.iter().map(HeapSize::heap_bytes).sum::<usize>()
+            },
+            Self::GeometryCollection(geometries) => {
+                geometries.capacity() * std::mem::size_of::<Self>()
+                    + geometries.iter().map(HeapSize::heap_bytes).sum::<usize>()
+            },
+            // Empty / Point / MultiPoint / LineString: ordinate payload only.
+            leaf => leaf.coordinate_bytes(),
+        }
     }
 }
 

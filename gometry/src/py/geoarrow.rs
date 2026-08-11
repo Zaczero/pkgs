@@ -41,6 +41,32 @@ impl GeometryEncoding {
             _ => return None,
         })
     }
+
+    /// GeoParquet column `encoding` token (WKB or native kind name).
+    pub(crate) fn from_geoparquet_encoding(encoding: &str) -> Option<Self> {
+        Some(match encoding {
+            "point" => Self::Point,
+            "multipoint" => Self::MultiPoint,
+            "linestring" => Self::LineString,
+            "multilinestring" => Self::MultiLineString,
+            "polygon" => Self::Polygon,
+            "multipolygon" => Self::MultiPolygon,
+            "WKB" | "geometrycollection" => Self::Wkb,
+            _ => return None,
+        })
+    }
+
+    /// Nested list levels above the coordinate struct (native GeoArrow only).
+    pub(crate) const fn list_depth(self) -> Option<u8> {
+        match self {
+            Self::Point => Some(0),
+            Self::MultiPoint | Self::LineString => Some(1),
+            Self::MultiLineString | Self::Polygon => Some(2),
+            Self::MultiPolygon => Some(3),
+            Self::Wkb => None,
+        }
+    }
+
     /// Shared error catalogue for "expected a geoarrow.* extension array".
     pub(crate) const EXPECTED_EXTENSION: &'static str = "expected a 'geoarrow.point', 'geoarrow.multipoint', 'geoarrow.linestring', \
          'geoarrow.multilinestring', 'geoarrow.polygon', 'geoarrow.multipolygon', or \
@@ -57,7 +83,8 @@ pub(crate) struct GeoarrowOrdinateLayout {
 /// Mandatory ordinate/storage classifier for geoarrow coordinate structs.
 ///
 /// Every frontend must run this **before** reading any coordinate buffer.
-/// Rules (GeoArrow interleaved-struct storage):
+/// Rules (GeoArrow **separated** struct storage — one named float64 field per
+/// ordinate, not interleaved FixedSizeList coordinates):
 /// - every leaf is exact float64
 /// - exactly one `x` and one `y`
 /// - at most one `z` and one `m`

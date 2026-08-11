@@ -1,17 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! The geometric view of an S2 cell: center, vertices, lon/lat boundary,
 //! and exact spherical area. Decoded once from a [`CellId`], all `Copy` —
 //! no heap, no wrapper types.
 
-use super::cellid::{CellId, Face};
-use super::projection::{
-    Point3, face_uv_to_xyz, point_to_lonlat, siti_to_st, st_to_uv, valid_face_uv,
-};
 use crate::boundary::geographic::EARTH_AUTHALIC_RADIUS_M;
 use crate::geometry::{Point, Polygon, Ring, Shape};
+use crate::grid::s2::cellid::{CellId, Face};
+use crate::grid::s2::projection::{
+    Point3, face_uv_to_xyz, point_to_lonlat, siti_to_st, st_to_uv, valid_face_uv,
+};
 
 /// A cell's (u, v) bounds on its face.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -194,6 +190,11 @@ impl Cell {
     /// The cell outline as a closed lon/lat `Polygon` shape, tagged by the
     /// caller (the four-corner proxy the coverer classifies, and the public
     /// ``boundary``).
+    ///
+    /// Emitted edges are **planar chord proxies** for the true spherical
+    /// cell boundary (great-circle edges on the sphere). Use cell-algebra
+    /// methods (`contains`, `parent`, set ops) for exact hierarchical work;
+    /// do not treat this polygon as a geodesic densification of the cell.
     pub(crate) fn boundary_shape(self) -> Shape {
         let vertices = self.vertices_lonlat();
         let mut shell = vertices.to_vec();
@@ -267,8 +268,23 @@ impl Cell {
 
     /// Exact spherical area in steradians (two spherical triangles).
     pub(crate) fn area_steradians(self) -> f64 {
-        let [a, b, c, d] = self.vertices_point();
-        triangle_area(a, b, c) + triangle_area(a, c, d)
+        // Spans are derived area-locally (not stored on every Cell) so
+        // coverer/containment paths stay untouched.
+        let (_, _, _, _, u_span, v_span) = self.id.bound_uv_with_spans();
+        let UvRect {
+            u_lo,
+            u_hi,
+            v_lo,
+            v_hi,
+        } = self.uv;
+        let [a, b, c, d] = [
+            face_uv_to_xyz(self.face, u_lo, v_lo),
+            face_uv_to_xyz(self.face, u_hi, v_lo),
+            face_uv_to_xyz(self.face, u_hi, v_hi),
+            face_uv_to_xyz(self.face, u_lo, v_hi),
+        ];
+        let determinant = (u_span * v_span).abs();
+        triangle_area_raw(a, b, c, determinant) + triangle_area_raw(a, c, d, determinant)
     }
 
     /// Exact geodesic area in square meters on the authalic sphere (the
@@ -278,35 +294,15 @@ impl Cell {
     }
 }
 
-/// Area of the spherical triangle `(a, b, c)` in steradians: l'Huilier by
-/// default, Girard for long skinny triangles where l'Huilier degrades, and
-/// negative numerical residue clamped to zero (canonical S2 strategy —
-/// stable from level-30 slivers up to whole faces).
-fn triangle_area(a: Point3, b: Point3, c: Point3) -> f64 {
-    let sa = b.angle(c);
-    let sb = c.angle(a);
-    let sc = a.angle(b);
-    let s = 0.5 * (sa + sb + sc);
-    if s >= 3e-4 {
-        // Consider whether the triangle is long and skinny: the spherical
-        // excess scales with s² here, so l'Huilier loses precision.
-        let s2 = s * s;
-        let dmin = s - sa.max(sb).max(sc);
-        if dmin < 1e-2 * s * s2 * s2 {
-            // Girard's formula benefits from the more accurate angles
-            // between the great-circle normals.
-            let ab = a.cross(b);
-            let bc = b.cross(c);
-            let ac = a.cross(c);
-            let girard = (ab.angle(ac) - ab.angle(bc) + bc.angle(ac)).max(0.0);
-            if dmin < s * (0.1 * girard) {
-                return girard;
-            }
-        }
-    }
-    let tangents =
-        (0.5 * s).tan() * (0.5 * (s - sa)).tan() * (0.5 * (s - sb)).tan() * (0.5 * (s - sc)).tan();
-    4.0 * tangents.max(0.0).sqrt().atan()
+/// Spherical triangle area from unnormalized face vectors. Normalization
+/// factors stay in the positive denominator; the UV-span determinant is
+/// supplied factored so leaf-cell differences never subtract rounded O(1)
+/// products.
+fn triangle_area_raw(a: Point3, b: Point3, c: Point3, determinant: f64) -> f64 {
+    let norm = |point: Point3| point.dot(point).sqrt();
+    let (na, nb, nc) = (norm(a), norm(b), norm(c));
+    let denominator = na * nb * nc + a.dot(b) * nc + b.dot(c) * na + c.dot(a) * nb;
+    2.0 * determinant.atan2(denominator)
 }
 
 #[cfg(test)]

@@ -1,9 +1,7 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-use crate::geometry::*;
+use crate::geometry::overlay::{
+    DimensionalParts, OverlayOp, Strictness, bbox_overlap_clusters_for_bounds,
+};
+use crate::geometry::{Bounds, CoordinateAxes, Dimension, HashMapExt as _, LineSeq, Result, Shape};
 pub(crate) fn has_mixed_non_empty_topological_dimensions(inputs: &[&Shape]) -> bool {
     let dimensions = inputs.iter().fold(0_u8, |mask, input| {
         mask | DimensionalParts::non_empty_dimension_mask(input)

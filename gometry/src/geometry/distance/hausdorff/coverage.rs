@@ -1,10 +1,18 @@
-use super::*;
-
-/// Merge intervals on [0, 1] and test full coverage (tolerance-safe).
-const UNIT_INTERVAL_EPS: f64 = 1e-15;
+#[cfg(test)]
+use crate::geometry::distance::hausdorff::SmallLineTarget;
+use crate::geometry::distance::hausdorff::{
+    HausdorffFeature, HausdorffParamSink as _, HausdorffQuadratic, HausdorffTargetLike,
+    SmallHausdorffParams, compact_hausdorff_params,
+    hausdorff_feature_bbox_disjoint_from_expanded_source, push_point_on_line_breakpoint,
+    push_segment_projection_breakpoints, sqrt_distance_squared,
+};
 
 pub(crate) fn unit_interval_covered(mut intervals: Vec<(f64, f64)>) -> bool {
-    if intervals.is_empty() {
+    if intervals.is_empty()
+        || intervals
+            .iter()
+            .any(|&(start, stop)| !start.is_finite() || !stop.is_finite())
+    {
         return false;
     }
     for window in &mut intervals {
@@ -16,16 +24,16 @@ pub(crate) fn unit_interval_covered(mut intervals: Vec<(f64, f64)>) -> bool {
     }
     intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
     let mut end = intervals[0].1;
-    if intervals[0].0 > UNIT_INTERVAL_EPS {
+    if intervals[0].0 > 0.0 {
         return false;
     }
     for &(start, stop) in &intervals[1..] {
-        if start > end + UNIT_INTERVAL_EPS {
+        if start > end {
             return false;
         }
         end = end.max(stop);
     }
-    end >= 1.0 - UNIT_INTERVAL_EPS
+    end >= 1.0
 }
 
 /// Parameter intervals on [0, 1] where dist²(p(t), point) ≤ cmax.
@@ -51,8 +59,11 @@ pub(crate) fn point_radius_coverage_intervals(
 #[expect(clippy::many_single_char_names, reason = "quadratic coefficient names")]
 pub(crate) fn quadratic_le_cmax_intervals(a: f64, b: f64, c: f64, cmax: f64) -> Vec<(f64, f64)> {
     let d = c - cmax;
-    if a.abs() < HAUSDORFF_QUADRATIC_EPS {
-        if b.abs() < HAUSDORFF_QUADRATIC_EPS {
+    if !a.is_finite() || !b.is_finite() || !c.is_finite() || !cmax.is_finite() || !d.is_finite() {
+        return Vec::new();
+    }
+    if a == 0.0 {
+        if b == 0.0 {
             return if d <= 0.0 {
                 vec![(0.0, 1.0)]
             } else {
@@ -77,7 +88,10 @@ pub(crate) fn quadratic_le_cmax_intervals(a: f64, b: f64, c: f64, cmax: f64) -> 
         };
     }
     let disc = b * b - 4.0 * a * d;
-    if disc < -1e-20 {
+    if !disc.is_finite() {
+        return Vec::new();
+    }
+    if disc < 0.0 {
         return if a < 0.0 && d <= 0.0 {
             vec![(0.0, 1.0)]
         } else {
@@ -86,8 +100,14 @@ pub(crate) fn quadratic_le_cmax_intervals(a: f64, b: f64, c: f64, cmax: f64) -> 
     }
     let sqrt_disc = if disc <= 0.0 { 0.0 } else { disc.sqrt() };
     let inv_2a = 0.5 / a;
+    if !sqrt_disc.is_finite() || !inv_2a.is_finite() {
+        return Vec::new();
+    }
     let mut t0 = (-b - sqrt_disc) * inv_2a;
     let mut t1 = (-b + sqrt_disc) * inv_2a;
+    if !t0.is_finite() || !t1.is_finite() {
+        return Vec::new();
+    }
     if t0 > t1 {
         std::mem::swap(&mut t0, &mut t1);
     }
@@ -122,8 +142,11 @@ pub(crate) fn segment_radius_coverage_certified<T: HausdorffTargetLike>(
     target: &T,
     cmax_sq: f64,
 ) -> bool {
-    if cmax_sq <= 0.0 || !cmax_sq.is_finite() {
+    if cmax_sq == f64::INFINITY {
         return true;
+    }
+    if cmax_sq <= 0.0 || !cmax_sq.is_finite() {
+        return false;
     }
     let radius = sqrt_distance_squared(cmax_sq);
     let prune_margin = radius;
@@ -203,4 +226,49 @@ fn segment_feature_radius_intervals(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_radius_is_not_a_coverage_certificate() {
+        let target = SmallLineTarget::from_xy_columns(&[0.0, 1.0], &[1.0, 1.0]);
+        assert!(!segment_radius_coverage_certified(
+            0.0, 0.0, 1.0, 0.0, &target, 0.0,
+        ));
+        assert!(segment_radius_coverage_certified(
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            &target,
+            f64::INFINITY,
+        ));
+    }
+
+    #[test]
+    fn interval_coverage_never_bridges_a_real_gap() {
+        assert!(!unit_interval_covered(
+            vec![(0.0, 0.5), (0.5 + 5e-16, 1.0),]
+        ));
+    }
+
+    #[test]
+    fn small_nonzero_quadratic_is_not_a_constant_coverage_certificate() {
+        assert_ne!(quadratic_le_cmax_intervals(5e-16, 0.0, 0.0, 1e-16), vec![(
+            0.0, 1.0
+        )]);
+    }
+
+    #[test]
+    fn non_finite_quadratic_arithmetic_cannot_certify_coverage() {
+        assert!(quadratic_le_cmax_intervals(f64::MAX, f64::MAX, 1.0, 1.0).is_empty());
+        assert!(quadratic_le_cmax_intervals(1.0, f64::MAX, f64::MAX, 1.0).is_empty());
+        assert!(!unit_interval_covered(vec![
+            (0.0, f64::NAN),
+            (f64::NAN, 1.0)
+        ]));
+    }
 }

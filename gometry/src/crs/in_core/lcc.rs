@@ -2,17 +2,13 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Ellipsoidal Lambert Conformal Conic (EPSG methods 9801/9802).
 
-use super::adjlon;
-use super::kernel::{
+use crate::crs::in_core::adjlon;
+use crate::crs::in_core::kernel::{
     EPS10, Ellipsoid, ProjectionKernel, eccentricity, eccentricity_squared, msfn, phi2, tsfn,
 };
-use super::params::{
+use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, Requirement, admit_projection, epsg,
     param_field,
 };

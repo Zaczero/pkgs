@@ -1,12 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::*;
-use crate::geometry::*;
+use crate::geometry::derived::monotone_chain_hull;
+use crate::geometry::{
+    HashMap, Point, PointKey, Ring, Segment, canonical_ring, delaunay_triangulation_spade,
+    point_distance, point_segment_distance, ring_winding, same_point,
+};
 
 pub(crate) fn native_concave_hull(
     points: &[Point],

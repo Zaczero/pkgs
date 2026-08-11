@@ -1,6 +1,9 @@
 use geographiclib_rs::Geodesic;
 
-use super::*;
+use crate::crs::geodesic::{
+    CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError,
+    ensure_thread_caches_current, info, lru_resolve,
+};
 use crate::error::Result;
 
 fn cached_geodesic_object(crs: &str) -> Result<CachedGeodesicObject> {

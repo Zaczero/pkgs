@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Geodesic lower-bound pruning for the spatial index.
 //!
 //! A sound, tight lower bound on the ellipsoidal geodesic distance between a
@@ -68,18 +64,6 @@ impl DwithinWindows {
     #[cfg(test)]
     fn len(&self) -> usize {
         1 + usize::from(self.second.is_some())
-    }
-}
-
-impl std::ops::Index<usize> for DwithinWindows {
-    type Output = AABB<[f64; 2]>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        match index {
-            0 => &self.first,
-            1 => self.second.as_ref().expect("window index out of range"),
-            _ => panic!("window index out of range"),
-        }
     }
 }
 
@@ -190,8 +174,8 @@ impl GeodesicPruner {
     /// any point inside the lon/lat envelope `env`.
     pub(crate) fn envelope_lower_bound(&self, env: &AABB<[f64; 2]>) -> f64 {
         let (lower, upper) = (env.lower(), env.upper());
-        let (lon_lo, lat_lo) = (lower[0], lower[1]);
-        let (lon_hi, lat_hi) = (upper[0], upper[1]);
+        let (lon_lo, lat_lo) = lower.into();
+        let (lon_hi, lat_hi) = upper.into();
         let beta_lo = reduced_latitude(Degrees(lat_lo), self.one_minus_f);
         let beta_hi = reduced_latitude(Degrees(lat_hi), self.one_minus_f);
         // Degenerate/wide longitude spans collapse to the latitude gap.
@@ -268,7 +252,7 @@ impl GeodesicPruner {
 
 #[cfg(test)]
 mod tests {
-    use geographiclib_rs::{Geodesic, InverseGeodesic};
+    use geographiclib_rs::{Geodesic, InverseGeodesic as _};
     use rstar::AABB;
 
     use super::*;
@@ -358,8 +342,9 @@ mod tests {
             .dwithin_windows(500_000.0)
             .expect("regional radius");
         assert_eq!(windows.len(), 1);
-        assert!((windows[0].lower()[0] - -180.0).abs() < f64::EPSILON);
-        assert!((windows[0].upper()[0] - 180.0).abs() < f64::EPSILON);
+        let window = windows.iter().next().expect("one window");
+        assert!((window.lower()[0] - -180.0).abs() < f64::EPSILON);
+        assert!((window.upper()[0] - 180.0).abs() < f64::EPSILON);
     }
 
     /// Every sampled point within `distance` of the query lies inside at

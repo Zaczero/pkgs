@@ -1,10 +1,15 @@
-use pyo3::IntoPyObjectExt;
+use pyo3::IntoPyObjectExt as _;
+use pyo3::prelude::{PyAnyMethods as _, PyTypeMethods as _};
 
-use super::cell::py_s2_cell_array;
-use super::*;
 use crate::Typed;
 use crate::grid::cell::CellDepth;
 use crate::py::cells::coverage_ops::{CoverageCells, HierarchicalCoverageOps};
+use crate::py::cells::s2::cell::py_s2_cell_array;
+use crate::py::cells::s2::{
+    PyS2Cell, PyS2Coverage, PyS2CoverageIter, cell_set, parse_s2_level, parse_s2_min_level_value,
+    s2_cell_id, s2_dissolve_sorted,
+};
+use crate::py::cells::{Bound, GridKind, PyAny, PyErr, PyResult, pymethods, uncompact_floor_error};
 #[pymethods]
 impl PyS2Coverage {
     /// Minimum (coarsest) cell level allowed in the covering.
@@ -37,8 +42,9 @@ impl PyS2Coverage {
         self.level_mod
     }
 
-    /// Maximum number of cells in the covering (the hard emission cap from
-    /// the factory). ``None`` means unlimited.
+    /// Configured fixed-level emission cap from the factory. Adaptive covers
+    /// retain this value for introspection but use ``target_cells`` instead.
+    /// ``None`` means unlimited for fixed-level construction.
     ///
     /// Returns
     /// -------
@@ -49,7 +55,7 @@ impl PyS2Coverage {
     }
 
     /// Adaptive refinement target from the factory. It guides optional
-    /// subdivision only; ``max_cells`` remains the hard emission cap.
+    /// subdivision and does not affect fixed-level construction.
     ///
     /// Returns
     /// -------
@@ -97,7 +103,7 @@ grid_hierarchical_coverage_common_pymethods! {
 impl HierarchicalCoverageOps for PyS2Coverage {
     type Cell = PyS2Cell;
 
-    fn cells(&self) -> &CoverageCells<Self::Cell> {
+    fn coverage_cells(&self) -> &CoverageCells<Self::Cell> {
         &self.cells
     }
 
@@ -183,11 +189,11 @@ grid_coverage_common_pymethods! {
         cell_array: py_s2_cell_array,
         parse_cell: s2_cell_id,
         parsed_key: |cell| cell.raw(),
-        interior_doc: "Cells certified entirely inside the source geometry.\n\nWith ``boundary_cells`` this is the rule-independent classification of the covering: any point in an interior cell is inside the area, no geometry test needed. Render these solid and ``boundary_cells`` outlined for a faithful core-vs-fringe picture; together with ``boundary_cells`` it partitions the ``'overlap'`` covering.\n\nReturns\n-------\nCellArray of S2Cell",
-        interior_cells: { coverage.membership.partition.interior().cell_array(GridKind::S2Cell) },
-        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nReturns\n-------\nCellArray of S2Cell",
+        interior_doc: "Cells certified entirely inside the source geometry.\n\nWith ``boundary_cells`` this is the rule-independent classification of the covering: any point in an interior cell is inside the area, no geometry test needed. Render these solid and ``boundary_cells`` outlined for a faithful core-vs-fringe picture; together with ``boundary_cells`` it partitions the ``'overlap'`` covering.\n\nThe coverer partition is computed lazily on first access (shared with ``boundary_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full coverer partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of S2Cell\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
+        interior_cells: { Ok(coverage.partition()?.interior().cell_array(GridKind::S2Cell)) },
+        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nThe coverer partition is computed lazily on first access (shared with ``interior_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full coverer partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of S2Cell\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
         boundary_cells: {
-            coverage.membership.partition.boundary().cell_array(GridKind::S2Cell)
+            Ok(coverage.partition()?.boundary().cell_array(GridKind::S2Cell))
         },
         depth_fields: [min_level, max_level, level_mod, max_cells, target_cells],
         hash_depth: (coverage.min_level, coverage.max_level, coverage.level_mod, coverage.max_cells, coverage.target_cells,),
@@ -211,9 +217,9 @@ grid_coverage_common_pymethods! {
             )
         },
         explain_cells: "cells",
-        explain_interior_len: { coverage.membership.partition.interior_len() },
-        explain_outer_len: { coverage.membership.partition.outer_len() },
-        to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nShared cell edges are removed, so the result is the coverage's region as one geometry, not one polygon per cell like ``coverage.cells.polygon``. Mixed levels dissolve too, so ``coverage.compact().to_polygon()`` works. Disjoint covered regions return a `MultiPolygon`.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n    The dissolved region, tagged ``EPSG:4326``.\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
+        explain_interior_len: { coverage.partition()?.interior_len() },
+        explain_outer_len: { coverage.partition()?.outer_len() },
+        to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nShared cell edges are removed, so the result is the coverage's region as one geometry, not one polygon per cell like ``coverage.cells.polygon``. Mixed levels dissolve too, so ``coverage.compact().to_polygon()`` works. Disjoint covered regions return a `MultiPolygon`.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n    The dissolved region, tagged ``OGC:CRS84``.\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
         to_polygon: {
             let cells: Vec<_> = coverage.cells.iter().map(|cell| cell.cell).collect();
             s2_dissolve_sorted(&cells)

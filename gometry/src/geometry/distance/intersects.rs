@@ -1,4 +1,5 @@
-use super::*;
+use crate::geometry::distance::{parts_covers_point, parts_segments_cross, quick_area_overlap};
+use crate::geometry::{Bounds, DistanceParts, Point, Shape};
 /// Coordinate magnitude below which squared-space distance kernels cannot
 /// overflow: gaps are at most `2 × 1e150`, whose square stays below
 /// `f64::MAX`.

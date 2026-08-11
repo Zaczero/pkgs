@@ -1,5 +1,12 @@
+use std::sync::{Arc, Mutex};
+
+use pyo3::types::PyDict;
+
 use crate::HeapSize;
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, Crs, IntoPyObject as _, Py, PyAny, PyResult, Python, crs, crs_parse_required, pyclass,
+    pymethods,
+};
 /// Coordinate reference system.
 ///
 /// A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
@@ -8,22 +15,33 @@ use crate::py::crs::*;
 /// to geometries via ``to_crs``. Accepts an authority string, EPSG code,
 /// authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 ///
-/// Equality is semantic — a ``CRS`` compares equal to any spelling
-/// ``same_as`` accepts (``crs == 4326``, ``crs == 'EPSG:4326'``). It is
-/// therefore unhashable; key mappings by ``crs.canonical`` instead.
-#[pyclass(name = "CRS", frozen, weakref, module = "gometry")]
+/// Equality is structural — a ``CRS`` compares equal only to the same
+/// canonical stored label (``crs == 4326`` and ``crs == 'EPSG:4326'``).
+/// Operational equivalence, including axis-order-only differences, is the
+/// explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
+/// unhashable; key mappings by ``crs.canonical`` instead.
+#[pyclass(name = "CRS", frozen, immutable_type, weakref, module = "gometry")]
 pub struct PyCrs {
     pub(crate) canonical: Crs,
     /// Shared with the process-wide CRS info cache — store the `Arc`, never
-    /// deep-clone the heavy `CrsInfo` into this cell.
-    info: OnceLock<std::sync::Arc<crs::CrsInfo>>,
+    /// deep-clone the heavy `CrsInfo` into this cell. Stamped with
+    /// [`crs::runtime_config_generation`] so ``crs_clear_cache`` /
+    /// ``crs_configure`` re-resolve instead of returning permanently stale
+    /// metadata from a prior PROJ database.
+    info: Mutex<Option<(u64, Arc<crs::CrsInfo>)>>,
+    /// Receiver-local frozen Python dict for ``CRS.info``, stamped with the
+    /// CRS runtime-config generation so ``crs_clear_cache`` invalidates it.
+    /// Kept separate from the free ``crs_info()`` bounded global LRU — held
+    /// receivers must not thrash that cache.
+    info_py: Mutex<Option<(u64, Py<PyDict>)>>,
 }
 
 impl PyCrs {
     pub(crate) const fn from_canonical(canonical: Crs) -> Self {
         Self {
             canonical,
-            info: OnceLock::new(),
+            info: Mutex::new(None),
+            info_py: Mutex::new(None),
         }
     }
 
@@ -31,12 +49,75 @@ impl PyCrs {
         Ok(Self::from_canonical(crs_parse_required(value)?))
     }
 
-    /// Lazily resolved, cached PROJ description of this CRS.
-    pub(crate) fn cached_info(&self) -> PyResult<&crs::CrsInfo> {
-        Ok(self
-            .info
-            .get_or_try_init(|| crs::info(&self.canonical))
-            .map(AsRef::as_ref)?)
+    /// Lazily resolved, generation-stamped PROJ description of this CRS.
+    ///
+    /// Returns an `Arc` so the receiver cell can be re-resolved after a
+    /// runtime-config generation bump without dangling references.
+    pub(crate) fn cached_info(&self) -> PyResult<Arc<crs::CrsInfo>> {
+        let generation = crs::runtime_config_generation();
+        {
+            let guard = self
+                .info
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((cached_gen, info)) = guard.as_ref()
+                && *cached_gen == generation
+            {
+                return Ok(Arc::clone(info));
+            }
+        }
+        // Resolve outside the lock (PROJ may take its own locks).
+        let resolved = crs::info(&self.canonical)?;
+        {
+            let mut guard = self
+                .info
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Another thread may have won the race; prefer a matching entry.
+            if let Some((cached_gen, info)) = guard.as_ref()
+                && *cached_gen == generation
+            {
+                return Ok(Arc::clone(info));
+            }
+            *guard = Some((generation, Arc::clone(&resolved)));
+        }
+        Ok(resolved)
+    }
+
+    /// Isolation-safe Python dict for ``CRS.info``, cached on this receiver.
+    pub(crate) fn cached_info_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let generation = crs::runtime_config_generation();
+        {
+            let guard = self
+                .info_py
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((cached_gen, dict)) = guard.as_ref()
+                && *cached_gen == generation
+            {
+                return super::list_cache::isolation_copy_dict(py, dict);
+            }
+        }
+        // Build outside the lock (IntoPyObject may take the GIL / call Python).
+        let info = (*self.cached_info()?).clone();
+        let built = info.into_pyobject(py)?;
+        let owned = super::list_cache::freeze_top_dict(py, built)?;
+        let out = super::list_cache::isolation_copy_dict(py, &owned)?;
+        {
+            let mut guard = self
+                .info_py
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Another thread may have won the race; prefer the first stored entry
+            // if its generation still matches.
+            if let Some((cached_gen, dict)) = guard.as_ref()
+                && *cached_gen == generation
+            {
+                return super::list_cache::isolation_copy_dict(py, dict);
+            }
+            *guard = Some((generation, owned));
+        }
+        Ok(out)
     }
 
     fn retained_heap_bytes(&self) -> usize {

@@ -1,16 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Top-level `tile_*` free functions.
 
 use pyo3::types::PyAny;
 
-use super::super::*;
-use super::cell::{PyTile, tile_arg};
-use super::coverage::tile_cell_array;
-use crate::grid::tile::{TILE_MAX_ZOOM, Tile, root as tile_root};
-use crate::py::cells::{GridKind, PyCellArray, bounding_query_bounds, dispatch_grid_cell_array};
+use crate::grid::tile::{TILE_MAX_LATITUDE, TILE_MAX_ZOOM, Tile, root as tile_root};
+use crate::py::cells::tiles::cell::{PyTile, tile_arg};
+use crate::py::cells::tiles::coverage::tile_cell_array;
+use crate::py::cells::{
+    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_bounds,
+    dispatch_grid_cell_array, pyfunction,
+};
+use crate::py::errors::InvalidGeometryError;
 
 /// Build tiles from parallel lon/lat columns.
 ///
@@ -23,7 +22,8 @@ use crate::py::cells::{GridKind, PyCellArray, bounding_query_bounds, dispatch_gr
 /// lat : float or sequence of float, optional
 ///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
 ///     broadcast numpy-style; at least one coordinate column must be sequence of float.
-///     Latitudes clamp to the Web Mercator domain (±85.051129°), mercantile-style.
+///     Latitudes outside the Web Mercator domain (±85.051129°) raise
+///     ``InvalidGeometryError`` (no silent clamp).
 ///
 /// zoom : int or sequence of int
 ///     Zoom level (0-29; finer at higher values). A scalar broadcasts to
@@ -65,9 +65,12 @@ pub(super) fn tile_cells(
         "zoom",
         super::cell::parse_tile_zoom_value,
         |lon, lat, zoom| {
-            Ok(PyTile {
-                cell: Tile::from_lonlat(lon, lat, zoom),
-            })
+            let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
+                InvalidGeometryError::new_err(format!(
+                    "latitude {lat} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees"
+                ))
+            })?;
+            Ok(PyTile { cell })
         },
     )
 }
@@ -76,7 +79,8 @@ pub(super) fn tile_cells(
 ///
 /// The mercantile ``bounding_tile``: walks corner tiles up to their common
 /// ancestor. Bounds spanning hemispheres bottom out at the ``z0`` root.
-/// Latitudes clamp to the Web Mercator domain, mercantile-style.
+/// Latitudes outside the Web Mercator domain raise
+/// ``InvalidGeometryError`` (no silent clamp).
 ///
 /// Parameters
 /// ----------
@@ -106,8 +110,15 @@ pub(super) fn tile_cells(
 #[pyfunction]
 pub(super) fn tile_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyTile> {
     let bounds = bounding_query_bounds(value)?;
-    let mut sw = Tile::from_lonlat(bounds.minx(), bounds.miny(), TILE_MAX_ZOOM);
-    let mut ne = Tile::from_lonlat(bounds.maxx(), bounds.maxy(), TILE_MAX_ZOOM);
+    let tile_at = |lon: f64, lat: f64| {
+        Tile::from_lonlat(lon, lat, TILE_MAX_ZOOM).ok_or_else(|| {
+            InvalidGeometryError::new_err(format!(
+                "latitude {lat} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees"
+            ))
+        })
+    };
+    let mut sw = tile_at(bounds.minx(), bounds.miny())?;
+    let mut ne = tile_at(bounds.maxx(), bounds.maxy())?;
     while sw != ne {
         if sw.z == 0 {
             return Ok(PyTile { cell: tile_root() });

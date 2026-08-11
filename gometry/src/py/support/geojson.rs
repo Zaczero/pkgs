@@ -1,6 +1,11 @@
 use pyo3::types::{PyDict, PyFloat, PyList, PyString};
 
-use super::*;
+use crate::py::support::{
+    Bound, CRSError, Frame, GeometryError, Py, PyAny, PyAnyMethods as _, PyBool,
+    PyBoolMethods as _, PyDictMethods as _, PyFloatMethods as _, PyInt, PyListMethods as _,
+    PyOnceLock, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _, PyTypeMethods as _,
+    Python, Shape, Value,
+};
 
 /// Borrow `value` as a dict when it is one, or convert any other mapping
 /// (`Mapping`, `MappingProxyType`, keys()-only ducks — anything with ``keys``)
@@ -11,12 +16,11 @@ use super::*;
 /// object as a sequence (which over-rejects keys()-only mappings with
 /// ``KeyError: 0``).
 ///
-/// Progress is bounded two ways:
-/// - **D15** reported-length: at most `len(value)` keys; a further yield is
-///   rejected as lying.
-/// - **N4** seen-set: a key that *repeats* is rejected immediately (a valid
-///   mapping has distinct keys). This terminates ``itertools.repeat`` key
-///   streams that report no usable ``__len__``.
+/// ``__len__`` is advisory only (ingress carrier 3): it may size a reservation
+/// hint but never becomes a hard cap or exact iteration count. Progress is
+/// bounded by the **N4** seen-set: a key that *repeats* is rejected immediately
+/// (a valid mapping has distinct keys), which terminates ``itertools.repeat``
+/// key streams without promoting ``__len__`` into authority.
 ///
 /// Exact ``dict`` inputs take a shallow ``copy()`` so callers never share
 /// identity with the returned mapping (feature properties contract).
@@ -38,21 +42,12 @@ pub(crate) fn mapping_as_dict<'py>(
     let keys = keys_attr.call0()?;
 
     let py = value.py();
+    // `__len__` is advisory only — not consulted as an iteration ceiling.
     let dict = PyDict::new(py);
-    let reported = value.len().ok();
-    let mut count = 0_usize;
     // try_iter uses PyObject_GetIter: accepts ``__iter__`` *and* legacy
     // ``__getitem__``-sequence keys (same as builtin dict(mapping)).
     for key in keys.try_iter()? {
         let key = key?;
-        count = count.saturating_add(1);
-        if let Some(reported) = reported
-            && count > reported
-        {
-            return Err(GeometryError::new_err(format!(
-                "mapping reports length {reported} but yields more keys"
-            )));
-        }
         // Distinct-key invariant: reject repeats before set_item overwrites.
         if dict.contains(&key)? {
             return Err(GeometryError::new_err("mapping has duplicate key"));
@@ -113,6 +108,54 @@ enum JsonProjection {
     /// Geometry-shaped keys only (plus nested legacy ``crs``), so feature
     /// properties stay out of the geometry coerce path.
     Geometry,
+}
+
+/// Convert a Python `int` into a JSON number.
+///
+/// - Values that fit in `i64`/`u64` stay integer-shaped `Number`s (PROJJSON
+///   codes, feature properties, GeoParquet frame metadata must not grow a
+///   trailing `.0`).
+/// - Larger magnitudes are admitted only when exactly representable as
+///   binary64 (same rule as TEXT coordinate integer tokens); non-exact
+///   integers raise rather than silently round.
+///
+/// Coordinate exactness for the i64/u64 range is enforced later by
+/// [`crate::io::json_number_to_f64`] / the text visitors — one shared rule.
+fn py_int_to_json_number(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(Value::Number(i.into()));
+    }
+    if let Ok(u) = value.extract::<u64>() {
+        return Ok(Value::Number(u.into()));
+    }
+    // Magnitude outside i64/u64: platform float conversion, then require
+    // int(float) == value so only exact binary64 integers pass.
+    let float: f64 = value
+        .call_method0(pyo3::intern!(value.py(), "__float__"))?
+        .extract()?;
+    if !float.is_finite() {
+        return Err(crate::io::IoError::geojson(format!(
+            "GeoJSON coordinate {} is not exactly representable as f64",
+            value.str()?
+        ))
+        .into());
+    }
+    let as_int = value
+        .py()
+        .import(pyo3::intern!(value.py(), "builtins"))?
+        .getattr(pyo3::intern!(value.py(), "int"))?
+        .call1((float,))?;
+    if value.eq(&as_int)? {
+        serde_json::Number::from_f64(float)
+            .map(Value::Number)
+            .ok_or_else(|| GeometryError::new_err("JSON number must be finite"))
+    } else {
+        Err(crate::io::IoError::geojson(format!(
+            "GeoJSON coordinate {} is not exactly representable as f64",
+            value.str()?
+        ))
+        .into())
+    }
 }
 
 /// Recursively convert a Python object to `serde_json::Value` without a
@@ -191,9 +234,12 @@ fn py_to_json_value_inner(
             .collect::<PyResult<_>>()
             .map(Value::Array);
     }
+    // Integers: keep i64/u64 as integer JSON numbers (CRS/PROJJSON codes, etc.);
+    // large exact PyLongs become finite binary64; non-exact large ints raise.
+    // Coordinate exactness for the i64/u64 range is shared with the TEXT path
+    // via json_number_to_f64 / visit_i64/u64.
     if value.cast::<PyInt>().is_ok() && value.cast::<PyBool>().is_err() {
-        let i = value.extract::<i64>()?;
-        return Ok(Value::Number(i.into()));
+        return py_int_to_json_number(value);
     }
     if let Ok(f) = value.cast::<PyFloat>() {
         let f = f.value();
@@ -362,15 +408,26 @@ fn select_geojson_geometry_value(
     }
 }
 
+/// True when `crs` is absent or a WGS84 lon/lat family identifier accepted by
+/// GeoJSON, polyline, and related codecs (EPSG:4326/4979 and OGC:CRS84/h).
+pub(crate) fn is_wgs84_family_crs(crs: Option<&str>) -> bool {
+    matches!(
+        crs,
+        None | Some("EPSG:4326" | "EPSG:4979" | "OGC:CRS84" | "OGC:CRS84h")
+    )
+}
+
 /// `GeoJSON` is WGS84 by specification (RFC 7946): refuse to serialize
 /// coordinates declared in any other frame — raw projected output would be
 /// read as longitude/latitude downstream. CRS-free input is trusted as-is.
 pub(crate) fn require_geojson_crs(crs: Option<&str>) -> PyResult<()> {
-    match crs {
-        None | Some("EPSG:4326" | "EPSG:4979" | "OGC:CRS84" | "OGC:CRS84h") => Ok(()),
-        Some(other) => Err(CRSError::new_err(format!(
-            "GeoJSON is WGS84 by specification (RFC 7946); got CRS {other:?} — \
-             reproject with to_crs(4326) first"
-        ))),
+    if is_wgs84_family_crs(crs) {
+        Ok(())
+    } else {
+        Err(CRSError::new_err(format!(
+            "GeoJSON is WGS84 by specification (RFC 7946); got CRS {:?} — \
+             reproject with to_crs('OGC:CRS84') or to_crs(4326) first",
+            crs.expect("non-family CRS is Some")
+        )))
     }
 }

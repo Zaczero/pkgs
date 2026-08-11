@@ -2,9 +2,25 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
-use crate::geometry::*;
+use crate::geometry::overlay::{
+    DimensionalParts, OverlayOp, OverlayWorkItem, RectSide, Strictness, axis_rectangle,
+    binary_areal_overlay, build_areal_arrangement, build_overlay_shape, clip_polygonal_parts,
+    collect_line_segments, contained_shortcut_impl, dedup_segments_to_coordseqs,
+    disjoint_overlay_combine, dissolve_polygons, empty_nary_overlay_shape, empty_overlay_shape,
+    for_each_overlapping_pair, has_mixed_non_empty_topological_dimensions, line_line_cross_points,
+    merge_chains, overlay_lines_general, overlay_points, overlay_work_clusters,
+    polygon_line_touch_points, proper_rect_intersection, rect_boundary_contact, rect_polygon,
+    self_node_segments, symmetric_difference_cluster_balanced,
+    symmetric_difference_cluster_ordered, union_lines, window_clip_large_operands,
+};
+use crate::geometry::{
+    Bounds, CoordSeq, GeometryErrorKind, HashSet, LineSeq, Point, PointKey, Polygon, Segment,
+    Shape, XY, carry_ordinates, line_segments, shared_segment_part, topology_split,
+    undirected_segment_edge_key,
+};
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
         self.overlay(other, OverlayOp::Intersection, strictness)
@@ -146,6 +162,24 @@ impl Shape {
             // policies (nothing synthesized to source or reject).
             return Ok(shape);
         }
+        // A proper intersection of two literal axis-aligned rectangles is
+        // four bound selectors, not a clipping problem.  In particular, do
+        // not manufacture an interpolation fraction here: at subnormal or
+        // near-maximal finite scales it can lose the selected edge and make
+        // `a.intersection(b)` disagree with `b.intersection(a)`.  Boundary
+        // touches stay on the general route below because they may be a line
+        // or a point rather than an areal result.
+        if op == OverlayOp::Intersection
+            && let (Some(left), Some(right)) = (axis_rectangle(self), axis_rectangle(other))
+            && let Some(bounds) = proper_rect_intersection(left, right)
+        {
+            return carry_ordinates(
+                Self::Polygon(rect_polygon(bounds)),
+                &[self, other],
+                op.name(),
+                strictness.is_strict(),
+            );
+        }
         // Clean-case exact overlay fast path: two simple 2D polygons (shells AND
         // holes) meeting only at proper transverse crossings reassemble directly from
         // their result-boundary arcs (endpoint-chained, single or multi-shell)
@@ -156,8 +190,8 @@ impl Shape {
         // difference arc sets separately and assembles the combined rings.
         // Intersection defers to the rectangle clip when a rectangle operand
         // makes that the faster specialized path. Bails to the exact arrangement
-        // on any degeneracy (the arrangement stays the oracle; a per-op fuzz pins
-        // equality). XY-only, so Z/M defers.
+        // on any degeneracy (the arrangement stays the oracle; deterministic
+        // differential fixtures pin equality). XY-only, so Z/M defers.
         let clean_op = matches!(
             op,
             OverlayOp::Union | OverlayOp::Difference | OverlayOp::SymmetricDifference
@@ -269,8 +303,24 @@ impl Shape {
     /// Polygons are dissolved in a single `unary_union`; linework is noded and
     /// clipped to the polygon-free region; points survive only where no higher
     /// dimension covers them. Z/M is restored afterwards unless `strict`.
+    ///
+    /// Planar-only internal path (no frame). Prefer
+    /// [`Self::union_all_topo`] when a geographic frame is known so
+    /// antimeridian-crossing operands are split first (same gate as binary
+    /// overlay).
     pub(crate) fn union_all<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
+        strictness: Strictness,
+    ) -> Result<Self> {
+        Self::union_all_topo(geometries, false, strictness)
+    }
+
+    /// Frame-aware n-ary union: when `geographic` is true, each
+    /// antimeridian-crossing operand is split-normalized before dissolve —
+    /// the same gate binary overlay uses via `invoke_topology_geometry_kernel`.
+    pub(crate) fn union_all_topo<S: std::borrow::Borrow<Self>>(
+        geometries: &[S],
+        geographic: bool,
         strictness: Strictness,
     ) -> Result<Self> {
         if geometries.is_empty() {
@@ -279,9 +329,31 @@ impl Shape {
             }
             .into());
         }
+        // Split crossing operands into owned shapes so dissolve never sees the
+        // false-middle planar box (west>east band that spans ~340°).
+        let split_owned: Vec<Self> = if geographic {
+            geometries
+                .iter()
+                .map(|geometry| {
+                    let shape = geometry.borrow();
+                    if shape.crosses_antimeridian() {
+                        topology_split(shape)
+                    } else {
+                        shape.clone()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let sources: Vec<&Self> = if geographic {
+            split_owned.iter().collect()
+        } else {
+            geometries.iter().map(std::borrow::Borrow::borrow).collect()
+        };
         let mut parts = DimensionalParts::default();
-        for geometry in geometries {
-            parts.push_shape(geometry.borrow());
+        for geometry in &sources {
+            parts.push_shape(geometry);
         }
         let dissolved = dissolve_polygons(
             parts
@@ -292,6 +364,8 @@ impl Shape {
         );
         let lines = union_lines(&parts.lines, &dissolved);
         let shape = build_overlay_shape(parts.points.clone(), lines, dissolved);
+        // Ordinate carry sources are the ORIGINAL inputs (pre-split), so Z/M
+        // still lifts from caller-owned vertices.
         carry_ordinates(
             shape,
             &geometries
@@ -303,43 +377,70 @@ impl Shape {
         )
     }
 
-    /// Reduce a sequence to its common intersection — `g0 ∩ g1 ∩ … ∩ gn`, the
-    /// region inside EVERY input. Mirrors `union_all`'s sequence contract
-    /// (raises on an empty sequence; one geometry returns itself). The fold
-    /// rides the same pairwise [`Self::intersection`], so mixed-dimension
-    /// narrowing, CRS handling, and the `strict`/typed-empty rules are
-    /// identical; once the running result empties, the remaining steps
-    /// short-circuit.
-    pub(crate) fn intersection_all<S: std::borrow::Borrow<Self>>(
+    /// Frame-aware n-ary intersection (see [`Self::union_all_topo`]).
+    ///
+    /// Reduces `g0 ∩ g1 ∩ … ∩ gn`, the region inside every input. The fold
+    /// shares `union_all`'s sequence contract and pairwise overlay rules.
+    pub(crate) fn intersection_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
+        geographic: bool,
         strictness: Strictness,
     ) -> Result<Self> {
-        Self::intersection_all_ordered(
-            &geometries
+        let split_owned: Vec<Self> = if geographic {
+            geometries
                 .iter()
-                .map(std::borrow::Borrow::borrow)
-                .collect::<Vec<_>>(),
-            strictness,
-        )
+                .map(|geometry| {
+                    let shape = geometry.borrow();
+                    if shape.crosses_antimeridian() {
+                        topology_split(shape)
+                    } else {
+                        shape.clone()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let refs: Vec<&Self> = if geographic {
+            split_owned.iter().collect()
+        } else {
+            geometries.iter().map(std::borrow::Borrow::borrow).collect()
+        };
+        Self::intersection_all_ordered(&refs, strictness)
     }
 
-    /// Reduce a sequence by symmetric difference — `g0 ▵ g1 ▵ … ▵ gn`, the
-    /// region covered by an ODD number of inputs. Same-dimension inputs use a
-    /// balanced, order-independent cascade; mixed-dimension inputs keep the
-    /// input-order fold because binary symdiff is not associative across
-    /// dimensions. Same sequence contract and pairwise machinery as
-    /// [`Self::intersection_all`].
-    pub(crate) fn symmetric_difference_all<S: std::borrow::Borrow<Self>>(
+    /// Frame-aware n-ary symmetric difference (see [`Self::union_all_topo`]).
+    ///
+    /// Reduces `g0 ▵ g1 ▵ … ▵ gn`, the region covered by an odd number of
+    /// inputs. Same-dimension input uses a balanced cascade; mixed dimensions
+    /// retain an input-order fold because binary symmetric difference is not
+    /// associative across dimensions.
+    pub(crate) fn symmetric_difference_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
+        geographic: bool,
         strictness: Strictness,
     ) -> Result<Self> {
-        Self::symmetric_difference_all_balanced(
-            &geometries
+        let split_owned: Vec<Self> = if geographic {
+            geometries
                 .iter()
-                .map(std::borrow::Borrow::borrow)
-                .collect::<Vec<_>>(),
-            strictness,
-        )
+                .map(|geometry| {
+                    let shape = geometry.borrow();
+                    if shape.crosses_antimeridian() {
+                        topology_split(shape)
+                    } else {
+                        shape.clone()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let refs: Vec<&Self> = if geographic {
+            split_owned.iter().collect()
+        } else {
+            geometries.iter().map(std::borrow::Borrow::borrow).collect()
+        };
+        Self::symmetric_difference_all_balanced(&refs, strictness)
     }
 
     /// Reduce intersections by combining the most selective intermediates

@@ -96,10 +96,17 @@ class GeometryDtype(_ExtensionDtype):
 
 
 def _is_missing_scalar(value: object) -> bool:
-    """None / pd.NA / float NaN — the scalars pandas treats as missing."""
+    """None / pd.NA / float NaN — the scalars pandas treats as missing.
+
+    Accepts both Python ``float`` NaN and NumPy floating scalars
+    (``np.float64``, ``np.float32``, …); ``isinstance(np.float32('nan'), float)``
+    is False on modern NumPy.
+    """
     if value is None or value is _pd.NA:
         return True
-    return isinstance(value, float) and np.isnan(value)
+    if isinstance(value, (float, np.floating)):
+        return bool(np.isnan(value))
+    return False
 
 
 def _unpickle_geometry_extension_array(
@@ -121,17 +128,7 @@ class GeometryExtensionArray(_ExtensionArray):
     __hash__ = None  # mutable container
     _dtype = GeometryDtype()
 
-    def __init__(
-        self,
-        values: GeometryArray,
-        mask: BoolArray | Sequence[bool] | None = None,
-    ) -> None:
-        if mask is not None:
-            mask = np.asarray(mask, dtype=np.bool_)
-            if len(mask) != len(values):
-                raise ValueError('mask length must match values length')
-            mask = np.logical_or(mask, values.is_missing)
-            values = values._with_missing(mask)
+    def __init__(self, values: GeometryArray) -> None:
         # one shared, mutable cell so ``view()`` twins alias the same data
         self._state = [values]
 
@@ -166,11 +163,6 @@ class GeometryExtensionArray(_ExtensionArray):
         return self._geoms
 
     @property
-    def missing_mask(self) -> BoolArray | None:
-        """The validity mask (``True`` = missing), or ``None`` when complete."""
-        return self._mask
-
-    @property
     def dtype(self) -> GeometryDtype:
         return self._dtype
 
@@ -180,7 +172,7 @@ class GeometryExtensionArray(_ExtensionArray):
     def __getitem__(
         self,
         item: int | slice | BoolArray | IndexArray | Sequence[int],
-    ) -> Geometry | None | GeometryExtensionArray:
+    ) -> Geometry | GeometryExtensionArray | None:
         from pandas.api.indexers import check_array_indexer
 
         if isinstance(item, tuple):
@@ -260,8 +252,11 @@ class GeometryExtensionArray(_ExtensionArray):
                     positions = np.where(positions < 0, positions + size, positions)
         if len(positions) == 0:
             return
+        fill_values: list[Geometry | None]
         if isinstance(value, Geometry) or _is_missing_scalar(value):
-            fill_values: list[object] = [value] * len(positions)
+            fill_values = [None if _is_missing_scalar(value) else value] * len(  # type: ignore[list-item]
+                positions
+            )
         else:
             # m08: never ``list(value)`` — CPython pre-sizes from ``__len__``
             # and a lying ``sys.maxsize`` raises MemoryError before iteration.
@@ -269,30 +264,22 @@ class GeometryExtensionArray(_ExtensionArray):
             expected = len(positions)
             fill_values = []
             for item in value:  # type: ignore[attr-defined]
-                fill_values.append(item)
+                if _is_missing_scalar(item):
+                    fill_values.append(None)
+                elif isinstance(item, Geometry):
+                    fill_values.append(item)
+                else:
+                    raise TypeError(
+                        f'expected Geometry or missing, got {type(item).__name__}'
+                    )
                 if len(fill_values) > expected:
                     break
             if len(fill_values) != expected:
                 raise ValueError(
-                    f'cannot set {expected} positions from '
-                    f'{len(fill_values)} values'
+                    f'cannot set {expected} positions from {len(fill_values)} values'
                 )
-        geoms: list[Geometry | None] = list(self._geoms)
-        for position, item in zip(positions, fill_values, strict=True):
-            if _is_missing_scalar(item):
-                geoms[position] = None
-            elif isinstance(item, Geometry):
-                geoms[position] = item
-            else:
-                raise TypeError(
-                    f'expected Geometry or missing, got {type(item).__name__}'
-                )
-        # Rebuild in the source frame even when every row becomes missing.
-        self._geoms = GeometryArray(
-            geoms,
-            crs=self._geoms.crs,
-            epoch=self._geoms.epoch,
-        )
+        # One native batch scatter — cost scales with selection size, not column.
+        self._geoms = self._geoms._replace_at(positions, fill_values)
 
     def _compare(self, other: object, *, invert: bool) -> BoolArray | None:
         """Elementwise value identity (``gometry.equals_identical`` — the
@@ -380,21 +367,36 @@ class GeometryExtensionArray(_ExtensionArray):
                 f'{type(fill_value).__name__}'
             )
 
+        # One native indexed take + mask merge (batch FFI). Fill slots are
+        # logically absent: gather with a safe stand-in index, then OR-merge
+        # fill positions into the missing mask — never rebox/reingest rows.
         safe_indices = np.where(fill_positions, 0, indices_arr)
         if len(self) == 0:
-            rows: list[Geometry | None] = [None] * len(indices_arr)
-        else:
-            # A pandas fill slot is logically absent, not a selected physical
-            # row with an additional mask.  Rebuild through the canonical
-            # nullable constructor so packed layout and pickle/Arrow format
-            # depend only on the logical values, never on take history.
-            rows = list(self._geoms[safe_indices])
-        fill: Geometry | None = None if fill_missing else cast('Geometry', fill_value)
+            n = len(indices_arr)
+            rebuilt = GeometryArray(
+                [None] * n, crs=self._geoms.crs, epoch=self._geoms.epoch
+            )
+            return type(self)(rebuilt)
+
+        gathered = self._geoms[safe_indices]
+        if fill_missing:
+            if fill_positions.any():
+                # Existing missing rows in gathered stay missing; fill positions
+                # become missing. Non-fill present rows stay present.
+                mask = np.asarray(gathered.is_missing, dtype=bool).copy()
+                mask[fill_positions] = True
+                gathered = gathered._with_missing(mask)
+            return type(self)(gathered)
+
+        fill_geom = cast('Geometry', fill_value)
+        if not fill_positions.any():
+            return type(self)(gathered)
+        # Non-missing fill: materialize only the fill slots via a one-shot
+        # dense list only when needed (fill is a real geometry, not NA).
+        rows: list[Geometry | None] = list(gathered)
         for position in np.flatnonzero(fill_positions):
-            rows[position] = fill
-        crs = self._geoms.crs
-        epoch = self._geoms.epoch
-        rebuilt = GeometryArray(rows, crs=crs, epoch=epoch)
+            rows[int(position)] = fill_geom
+        rebuilt = GeometryArray(rows, crs=self._geoms.crs, epoch=self._geoms.epoch)
         return type(self)(rebuilt)
 
     def _values_for_factorize(self) -> tuple[ObjectArray, object]:
@@ -463,9 +465,7 @@ class GeometryExtensionArray(_ExtensionArray):
 
     def _formatter(self, boxed: bool = False) -> Callable[[object], str]:
         del boxed
-        return lambda value: (
-            str(value) if isinstance(value, Geometry) else repr(value)
-        )
+        return lambda value: str(value) if isinstance(value, Geometry) else repr(value)
 
     def __arrow_array__(self, type: object | None = None) -> object:
         try:
@@ -491,7 +491,6 @@ def to_pandas(
     *,
     index: pd.Index | Sequence[Hashable] | None = None,
     name: Hashable | None = None,
-    mask: BoolArray | Sequence[bool] | None = None,
 ) -> pd.Series:
     """Build a pandas Series with ``GeometryDtype`` from a ``GeometryArray``.
 
@@ -501,20 +500,14 @@ def to_pandas(
         Geometries to wrap (zero-copy; the Series shares the array).
     index, name : optional
         Forwarded to the Series constructor.
-    mask : ndarray of bool, optional
-        Missing-row mask (``True`` = missing); rows so marked read back as
-        ``None``.
 
     Returns
     -------
     pandas.Series
         A ``gometry.geometry``-dtyped Series.
     """
-    array = GeometryExtensionArray(values)
-    if mask is not None:
-        array = GeometryExtensionArray(array.geometry_array, np.asarray(mask))
     return _pd.Series(
-        array,
+        GeometryExtensionArray(values),
         index=index,
         name=name,
         dtype=GeometryDtype(),

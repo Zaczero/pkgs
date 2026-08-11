@@ -14,6 +14,10 @@ pub(crate) enum MetricResolver {
     Antimeridian,
     /// Distance/area/length/buffer and other CRS-aware measure/constructive ops.
     Metric { unit: Option<DistanceUnit> },
+    /// 3D Euclidean measures (`distance_3d`/`length_3d`). Same unit policy as
+    /// [`Self::Metric`], but a geographic CRS is rejected rather than measured
+    /// geodesically — see [`crate::broadcast::resolve_metric_3d`].
+    Metric3d { unit: Option<DistanceUnit> },
     /// Linear-referencing distances: CRS-aware like [`Self::Metric`], but a
     /// normalized call uses fractions of line length and therefore rejects
     /// `unit=`.
@@ -29,6 +33,7 @@ impl MetricResolver {
     pub(crate) const fn with_unit(self, unit: Option<DistanceUnit>) -> Self {
         match self {
             Self::Metric { .. } => Self::Metric { unit },
+            Self::Metric3d { .. } => Self::Metric3d { unit },
             Self::LineMetric { normalized, .. } => Self::LineMetric { unit, normalized },
             Self::Antimeridian => Self::Antimeridian,
             other @ Self::None => other,
@@ -39,6 +44,7 @@ impl MetricResolver {
         match self {
             Self::LineMetric { .. } => Self::LineMetric { unit, normalized },
             Self::Metric { .. } => Self::Metric { unit },
+            Self::Metric3d { .. } => Self::Metric3d { unit },
             Self::Antimeridian => Self::Antimeridian,
             other @ Self::None => other,
         }
@@ -64,6 +70,17 @@ impl MetricResolver {
                 let model = scratch
                     .model
                     .insert(resolve_metric(frame.crs_str(), unit, op)?);
+                let metric = scratch
+                    .metric
+                    .insert(crs::ResolvedMetric::from_model(model)?);
+                Ok(MetricCtx::Metric { model, metric })
+            },
+            Self::Metric3d { unit } => {
+                let model = scratch.model.insert(crate::broadcast::resolve_metric_3d(
+                    frame.crs_str(),
+                    unit,
+                    op,
+                )?);
                 let metric = scratch
                     .metric
                     .insert(crs::ResolvedMetric::from_model(model)?);
@@ -158,6 +175,11 @@ impl Lane {
         matches!(self, Self::Array(_))
     }
 }
+
+/// A unary kernel producing one `f64` per geometry — the shape every
+/// CRS-aware measure (`area`, `length`, `length_3d`) shares.
+pub(crate) type UnaryMeasureKernel =
+    fn(&crate::geometry::ShapeData, &OpCtx<'_>) -> crate::error::Result<f64>;
 
 /// Per-call resolved context handed to unary/binary/grid kernels.
 pub(crate) struct OpCtx<'a> {

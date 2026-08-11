@@ -26,7 +26,10 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// The crate error: a boxed [`ErrorKind`], so the type is pointer-sized and
 /// large messages are heap-allocated only when an error actually occurs.
 // The `std::io::Error` naming precedent: the crate error IS named `Error`.
-#[expect(clippy::error_impl_error)]
+#[expect(
+    clippy::error_impl_error,
+    reason = "the crate's public error type deliberately follows the standard library Error naming convention"
+)]
 #[derive(Debug, ThisError)]
 #[error(transparent)]
 #[repr(transparent)]
@@ -51,6 +54,13 @@ pub(crate) enum ErrorKind {
 impl Error {
     pub(crate) fn kind(&self) -> &ErrorKind {
         &self.0
+    }
+
+    pub(crate) fn with_parse_position(mut self, position: usize) -> Self {
+        if let ErrorKind::Io(error) = self.0.as_mut() {
+            error.set_position_if_missing(position);
+        }
+        self
     }
 }
 
@@ -88,3 +98,64 @@ impl From<FrameError> for Error {
 /// register-returnable on hot per-row paths. If this trips, something put a
 /// field on `Error` itself — move it into a kind variant instead.
 const _: () = assert!(std::mem::size_of::<Error>() == std::mem::size_of::<usize>());
+
+/// A `ParseError` format tag (which codec rejected the input) — so the
+/// point/grid codecs match the WKT/WKB/GeoJSON contract. PyErr decoration lives
+/// in `crate::py::errors`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParseFormat {
+    Wkt,
+    Wkb,
+    GeoJson,
+    GeoArrow,
+    GeoParquet,
+    H3,
+    S2,
+    Geohash,
+    Tile,
+    Quadkey,
+    Polyline,
+    PlusCode,
+    OsmShortlink,
+    Pickle,
+}
+
+impl ParseFormat {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Wkt => "wkt",
+            Self::Wkb => "wkb",
+            Self::GeoJson => "geojson",
+            Self::GeoArrow => "geoarrow",
+            Self::GeoParquet => "geoparquet",
+            Self::H3 => "h3",
+            Self::S2 => "s2",
+            Self::Geohash => "geohash",
+            Self::Tile => "tile",
+            Self::Quadkey => "quadkey",
+            Self::Polyline => "polyline",
+            Self::PlusCode => "pluscode",
+            Self::OsmShortlink => "osm_shortlink",
+            Self::Pickle => "pickle",
+        }
+    }
+
+    pub(crate) const fn display(self) -> &'static str {
+        match self {
+            Self::Wkt => "WKT",
+            Self::Wkb => "WKB",
+            Self::GeoJson => "GeoJSON",
+            Self::GeoArrow => "GeoArrow",
+            Self::GeoParquet => "GeoParquet",
+            Self::H3 => "H3",
+            Self::S2 => "S2",
+            Self::Geohash => "geohash",
+            Self::Tile => "tile",
+            Self::Quadkey => "quadkey",
+            Self::Polyline => "polyline",
+            Self::PlusCode => "plus code",
+            Self::OsmShortlink => "osm shortlink",
+            Self::Pickle => "pickle",
+        }
+    }
+}

@@ -1,4 +1,4 @@
-use super::*;
+use crate::geometry::overlay::*;
 use crate::geometry::*;
 mod binary_areal_overlay_tests {
     use super::*;

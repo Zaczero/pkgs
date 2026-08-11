@@ -1,13 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use std::simd::cmp::SimdPartialEq;
-use std::simd::num::SimdFloat;
+use std::simd::cmp::SimdPartialEq as _;
+use std::simd::num::SimdFloat as _;
 
 use geographiclib_rs::{Geodesic, PolygonArea, Winding};
 
-use super::*;
+use crate::crs::geodesic::{
+    CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo, GeodesicInterpolateInfo,
+    GeodesicInverseInfo, ensure_geographic_lonlat, inverse_distance, inverse_distance_azimuths,
+    with_geodesic_erased,
+};
 use crate::error::Result;
 use crate::geometry::{
     Coordinates, Polygon, REDUCE_LANES, ReduceSimd, Shape, canonicalize_zero,
@@ -122,14 +122,16 @@ pub(crate) fn with_resolved_ellipsoid_metric<T>(
 pub(crate) fn geodesic_shape_area(geodesic: &Geodesic, shape: &Shape) -> f64 {
     canonicalize_zero(match shape {
         Shape::Polygon(polygon) => geodesic_polygon_area(geodesic, polygon),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .map(|polygon| geodesic_polygon_area(geodesic, polygon))
-            .sum(),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .map(|geometry| geodesic_shape_area(geodesic, geometry))
-            .sum(),
+        Shape::MultiPolygon(polygons) => compensated_sum(
+            polygons
+                .iter()
+                .map(|polygon| geodesic_polygon_area(geodesic, polygon)),
+        ),
+        Shape::GeometryCollection(geometries) => compensated_sum(
+            geometries
+                .iter()
+                .map(|geometry| geodesic_shape_area(geodesic, geometry)),
+        ),
         Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
@@ -142,19 +144,22 @@ pub(crate) fn geodesic_shape_length(geodesic: &Geodesic, shape: &Shape) -> f64 {
     canonicalize_zero(match shape {
         Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => 0.0,
         Shape::LineString(points) => geodesic_line_length(geodesic, points),
-        Shape::MultiLineString(lines) => lines
-            .iter()
-            .map(|line| geodesic_line_length(geodesic, line))
-            .sum(),
+        Shape::MultiLineString(lines) => compensated_sum(
+            lines
+                .iter()
+                .map(|line| geodesic_line_length(geodesic, line)),
+        ),
         Shape::Polygon(polygon) => geodesic_polygon_perimeter(geodesic, polygon),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .map(|polygon| geodesic_polygon_perimeter(geodesic, polygon))
-            .sum(),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .map(|geometry| geodesic_shape_length(geodesic, geometry))
-            .sum(),
+        Shape::MultiPolygon(polygons) => compensated_sum(
+            polygons
+                .iter()
+                .map(|polygon| geodesic_polygon_perimeter(geodesic, polygon)),
+        ),
+        Shape::GeometryCollection(geometries) => compensated_sum(
+            geometries
+                .iter()
+                .map(|geometry| geodesic_shape_length(geodesic, geometry)),
+        ),
     })
 }
 
@@ -162,21 +167,25 @@ pub(crate) fn geodesic_polygon_area(geodesic: &Geodesic, polygon: &Polygon) -> f
     // Orientation-independent, matching planar `Polygon::area`: the unsigned
     // shell area less the unsigned hole areas. `PolygonArea` returns a signed
     // value (negative for clockwise rings), so take magnitudes.
-    geodesic_ring_measure(geodesic, &polygon.shell).1.abs()
-        - polygon
-            .holes
-            .iter()
-            .map(|hole| geodesic_ring_measure(geodesic, hole).1.abs())
-            .sum::<f64>()
+    compensated_sum(
+        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell).1.abs()).chain(
+            polygon
+                .holes
+                .iter()
+                .map(|hole| -geodesic_ring_measure(geodesic, hole).1.abs()),
+        ),
+    )
 }
 
 pub(crate) fn geodesic_polygon_perimeter(geodesic: &Geodesic, polygon: &Polygon) -> f64 {
-    geodesic_ring_measure(geodesic, &polygon.shell).0
-        + polygon
-            .holes
-            .iter()
-            .map(|hole| geodesic_ring_measure(geodesic, hole).0)
-            .sum::<f64>()
+    compensated_sum(
+        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell).0).chain(
+            polygon
+                .holes
+                .iter()
+                .map(|hole| geodesic_ring_measure(geodesic, hole).0),
+        ),
+    )
 }
 
 pub(crate) fn geodesic_ring_measure<C: Coordinates + ?Sized>(
@@ -226,18 +235,32 @@ pub(crate) fn geodesic_line_length<C: Coordinates + ?Sized>(
     geodesic: &Geodesic,
     points: &C,
 ) -> f64 {
-    points
-        .segment_pairs()
-        .map(|[start, end]| geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y))
-        .sum()
+    compensated_sum(
+        points
+            .segment_pairs()
+            .map(|[start, end]| geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)),
+    )
 }
 
 pub(crate) fn geodesic_line_length_columns(geodesic: &Geodesic, xs: &[f64], ys: &[f64]) -> f64 {
     debug_assert_eq!(xs.len(), ys.len());
-    xs.array_windows::<2>()
-        .zip(ys.array_windows::<2>())
-        .map(|([x0, x1], [y0, y1])| geodesic_segment_length(geodesic, *x0, *y0, *x1, *y1))
-        .sum()
+    compensated_sum(
+        xs.array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .map(|([x0, x1], [y0, y1])| geodesic_segment_length(geodesic, *x0, *y0, *x1, *y1)),
+    )
+}
+
+fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+    let mut sum = 0.0;
+    let mut correction = 0.0;
+    for value in values {
+        let adjusted = value - correction;
+        let next = sum + adjusted;
+        correction = (next - sum) - adjusted;
+        sum = next;
+    }
+    sum
 }
 
 pub(crate) fn ensure_geographic_columns(xs: &[f64], ys: &[f64]) -> Result<()> {
@@ -431,7 +454,7 @@ pub(crate) fn geodesic_inverse_on_ellipsoid_const<const RADIANS: bool, const HEI
     let distance_3d = HEIGHT.then(|| {
         let dz = z2 - z1;
         let squared = distance * distance + dz * dz;
-        if squared.is_finite() && (squared != 0.0 || (distance == 0.0 && dz == 0.0)) {
+        if crate::geometry::squared_norm_is_trustworthy(squared, distance == 0.0 && dz == 0.0) {
             squared.sqrt()
         } else {
             distance.hypot(dz)

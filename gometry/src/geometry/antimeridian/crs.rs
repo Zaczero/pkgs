@@ -1,5 +1,5 @@
-use super::*;
 use crate::boundary::metadata::Frame;
+use crate::geometry::ShapeData;
 
 /// Whether ``frame`` carries a geographic CRS (EPSG:4326/4979 fast path, then
 /// cached PROJ lookup).

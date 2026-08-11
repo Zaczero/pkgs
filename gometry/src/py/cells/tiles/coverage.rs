@@ -1,17 +1,25 @@
 //! TileCoverage and the tile-cover backend.
 
-use pyo3::IntoPyObjectExt;
+use pyo3::prelude::{PyAnyMethods as _, PyTypeMethods as _};
 use pyo3::types::PyAny;
+use pyo3::{IntoPyObjectExt as _, pyclass, pymethods};
 
-use super::super::*;
-use super::cell::{PyTile, parse_tile_zoom, tile_arg, tile_floor};
 use crate::Typed;
-use crate::grid::tile::{self as kernel, TILE_MAX_ZOOM, Tile, root as tile_root};
-use crate::py::cells::coverage_ops::{
-    CoverageCells, build_rect_coverage_state, parse_max_cells, rect_cell_array_for,
-    rect_cell_polygon, rect_coverage_cells, unpickle_rect_coverage_state,
+use crate::grid::tile::{
+    self as kernel, TILE_MAX_LATITUDE, TILE_MAX_ZOOM, Tile, ensure_shape_in_tile_domain,
+    root as tile_root,
 };
-use crate::py::errors::GeometryError;
+use crate::py::cells::coverage_ops::{
+    CoverageCells, RectCoverSpec as _, build_rect_coverage_state, coverage_factory_shapes,
+    parse_max_cells, rect_cell_array_for, rect_cell_polygon, rect_coverage_cells,
+    unpickle_rect_coverage_state,
+};
+use crate::py::cells::tiles::cell::{PyTile, parse_tile_zoom, tile_arg, tile_floor};
+use crate::py::cells::{
+    Bound, CellRule, GridKind, Py, PyCellArray, PyGeometry, PyResult, Python, grid_cover_dispatch,
+    pyfunction,
+};
+use crate::py::errors::{GeometryError, InvalidGeometryError};
 
 /// Rebuild a pickled TileCoverage from its public fields (internal; see
 /// ``TileCoverage.__reduce__``).
@@ -116,20 +124,28 @@ grid_coverage_common_pymethods! {
         cell_array: py_tile_cell_array,
         parse_cell: tile_arg,
         parsed_key: |cell| cell.id(),
-        interior_doc: "Cells certified entirely inside the source geometry.\n\nReturns\n-------\nCellArray of Tile",
-        interior_cells: { coverage.partition.interior().cell_array(GridKind::Tile) },
-        boundary_doc: "Cells partially overlapping the source geometry (the fringe where tile membership cannot answer the geometry question).\n\nReturns\n-------\nCellArray of Tile",
-        boundary_cells: {
-            coverage.partition.boundary().cell_array(GridKind::Tile)
+        interior_doc: "Cells certified entirely inside the source geometry.\n\nThe coverer partition is computed lazily on first access (shared with ``boundary_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of Tile\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
+        interior_cells: {
+            Ok(coverage
+                .partition::<TileCoverSpec>()?
+                .interior()
+                .cell_array(GridKind::Tile))
         },
-        depth_fields: [depth],
-        hash_depth: (coverage.depth,),
+        boundary_doc: "Cells partially overlapping the source geometry (the fringe where tile membership cannot answer the geometry question).\n\nThe coverer partition is computed lazily on first access (shared with ``interior_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of Tile\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
+        boundary_cells: {
+            Ok(coverage
+                .partition::<TileCoverSpec>()?
+                .boundary()
+                .cell_array(GridKind::Tile))
+        },
+        depth_fields: [depth, max_cells],
+        hash_depth: (coverage.depth, coverage.max_cells,),
         cell_hash_key: |cell| { cell.cell.id() },
         explain_grid: "tile",
         explain_depth: { coverage.depth.explain("zoom") },
         explain_cells: "tiles",
-        explain_interior_len: { coverage.partition.interior_len() },
-        explain_outer_len: { coverage.partition.outer_len() },
+        explain_interior_len: { coverage.partition::<TileCoverSpec>()?.interior_len() },
+        explain_outer_len: { coverage.partition::<TileCoverSpec>()?.outer_len() },
         to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nDisjoint covered regions return a `MultiPolygon`; adjacent tiles dissolve shared edges into one outline.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
         to_polygon: {
             let inners: Vec<_> = coverage.cells.iter().map(|cell| cell.cell).collect();
@@ -161,21 +177,15 @@ grid_coverage_common_pymethods! {
                     Typed(coverage.geometry.clone()),
                     ids,
                     coverage.cell_rule.token(),
-                    // Factory partition zoom (recompute key).
-                    coverage
-                        .partition
-                        .all()
-                        .get(0)
-                        .map(|cell| cell.cell.z)
-                        .or_else(|| coverage.depth.uniform_level())
-                        .expect("coverage has factory or visible depth"),
+                    // Factory partition zoom (lazy recompute key).
+                    coverage.membership.factory_depth(),
                     // Visible depth when empty (cannot be inferred from cells).
                     if coverage.cells.is_empty() {
                         coverage.depth.uniform_level()
                     } else {
                         None
                     },
-                    // Factory max_cells budget for bounded unpickle recompute (D07).
+                    // Factory max_cells budget for bounded lazy partition (D07).
                     coverage.max_cells,
                 )
             }
@@ -244,6 +254,11 @@ fn tile_vec(tiles: Vec<Tile>) -> Vec<PyTile> {
 /// GeometryError
 ///     If the geometry, depth, or a coverage parameter is invalid, or if
 ///     the covering would exceed ``max_cells``.
+/// InvalidGeometryError
+///     If any vertex latitude is outside the Web Mercator domain
+///     (±85.05112878°). Tile coverings cannot extend past that edge; out-of-
+///     domain geometries are rejected (same typed error as ``Tile`` /
+///     ``tile_cells``), never silently clipped.
 ///
 /// Examples
 /// --------
@@ -283,6 +298,17 @@ pub(super) fn build_coverage(
     cell_rule: CellRule,
     max_cells: Option<usize>,
 ) -> PyResult<PyTileCoverage> {
+    // Domain check on the lon/lat cover shape (after projected→geographic
+    // conversion), not raw projected meters — projected Y is not a latitude.
+    // Reject before the rect coverer silently clips to the Web Mercator band
+    // (identical cell counts for ±84 vs ±89.9 was the defect).
+    let (_membership, cover_shape, _split) =
+        coverage_factory_shapes(geometry, TileCoverSpec::coverage_label())?;
+    if let Err(lat) = ensure_shape_in_tile_domain(&cover_shape) {
+        return Err(InvalidGeometryError::new_err(format!(
+            "latitude {lat} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees"
+        )));
+    }
     build_rect_coverage_state::<TileCoverSpec, PyTile>(geometry, zoom, cell_rule, max_cells)
         .map(PyTileCoverage)
 }

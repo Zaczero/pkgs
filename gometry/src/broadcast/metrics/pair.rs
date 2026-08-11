@@ -1,15 +1,15 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::types::PyAny;
 
-use super::*;
 use crate::NonNegative;
+use crate::broadcast::metrics::{
+    Bound, CoordinateAxes, Crs, DistanceUnit, EmptyKind, GeometryArrayStorage, GeometryError,
+    GeometryInput, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData,
+    classify_input, crs, geometry_type_err, validate_lonlat_shape,
+};
 use crate::geometry::{FrameDependentCaches, LineSeq, witness_pair};
 use crate::py::errors::InvalidGeometryError;
 
@@ -145,6 +145,34 @@ pub(crate) fn resolve_metric(
         ))),
         Some(DistanceUnit::Meters) => Ok(crs::metric_model_meters(crs.expect("checked above"))?),
         None => Ok(crs::metric_model(crs)?),
+    }
+}
+
+/// [`resolve_metric`]'s 3D sibling, for `distance_3d`/`length_3d`.
+///
+/// The unit policy is identical: omitted reports the CRS's own linear unit,
+/// `unit='meters'` scales by the axis factor, `unit='planar'` is raw coordinate
+/// units. The one divergence is what a geographic CRS means. 2D measures it
+/// geodesically; 3D cannot, because a Euclidean norm over degrees and metre
+/// heights is not dimensionally meaningful — so `ensure_3d_metric` rejects an
+/// angular horizontal under *every* unit, including `unit='planar'`. (2D
+/// `unit='planar'` stays sane there because degrees × degrees is at least
+/// homogeneous.)
+pub(crate) fn resolve_metric_3d(
+    crs: Option<&str>,
+    unit: Option<DistanceUnit>,
+    operation: &str,
+) -> PyResult<crs::MetricModel> {
+    // Validate 3D eligibility first, so an ineligible CRS reports the
+    // dimensional problem rather than a unit one, whatever `unit=` says.
+    let to_metre = crs::ensure_3d_metric(crs)?;
+    match unit {
+        None | Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
+        Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
+            "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
+             use unit='planar' for coordinate units, or set a CRS"
+        ))),
+        Some(DistanceUnit::Meters) => Ok(crs::MetricModel::Planar { to_metre }),
     }
 }
 
@@ -395,20 +423,14 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
                 })
                 .collect()
         },
-        GeometryArrayStorage::Mixed(items) => items
+        GeometryArrayStorage::Mixed(shapes) => shapes
             .iter()
-            .map(|item| {
-                if item.shape.shape().is_empty() {
-                    f64::INFINITY
-                } else {
-                    0.0
-                }
-            })
+            .map(|shape| if shape.is_empty() { f64::INFINITY } else { 0.0 })
             .collect(),
     }
 }
 
-/// CRS-aware discrete Hausdorff distance: planar coordinate/native units under
+/// CRS-aware continuous Hausdorff distance: planar coordinate/native units under
 /// `unit='planar'`/a planar frame, explicit SI meters under `unit='meters'`,
 /// or true geodesic meters on a geographic CRS.
 pub(crate) fn metric_hausdorff(
@@ -416,6 +438,12 @@ pub(crate) fn metric_hausdorff(
     a: &Shape,
     b: &Shape,
 ) -> crate::error::Result<f64> {
+    // Domain validation BEFORE the identity exit: equal operands with
+    // out-of-domain latitude must still raise on a geographic model.
+    if matches!(model, crs::MetricModel::Geodesic(_)) {
+        crs::ensure_geographic_domain(a)?;
+        crs::ensure_geographic_domain(b)?;
+    }
     if a == b {
         return Ok(if a.is_empty() { f64::INFINITY } else { 0.0 });
     }
@@ -436,16 +464,27 @@ pub(crate) fn metric_frechet(
     a: &Shape,
     b: &Shape,
 ) -> crate::error::Result<f64> {
+    // Domain validation BEFORE the identity exit (same contract as Hausdorff).
+    if matches!(model, crs::MetricModel::Geodesic(_)) {
+        crs::ensure_geographic_domain(a)?;
+        crs::ensure_geographic_domain(b)?;
+    }
+    // Emptiness is TOTAL and is decided here, once, for every lane below —
+    // planar, geodesic and identity alike. Deciding it per kernel is what let
+    // the geodesic arm keep raising after the planar one was fixed, and let an
+    // identical pair of empties raise (via `single_linework`'s `EmptyLinework`,
+    // a DATA condition) while every non-identical empty pair returned the
+    // sentinel. Domain validation stays above it: that is a real error, and an
+    // empty shape has no coordinates to validate anyway.
+    if a.is_empty() || b.is_empty() {
+        return Ok(f64::INFINITY);
+    }
     if a == b {
         // Kind check before the identity shortcut — equal polygons must still
         // raise `GeometryTypeError`, not return 0.
-        let empty = a.is_empty();
         a.single_linework()?;
-        return Ok(if empty { f64::INFINITY } else { 0.0 });
+        return Ok(0.0);
     }
-    // Fréchet requires non-empty linework: let the kernels raise `EmptyLinework`
-    // for an empty operand (do NOT short-circuit to inf — that is the
-    // distance/Hausdorff convention; Fréchet errors, matching the planar path).
     dispatch_metric_model(
         model,
         |to_metre| Ok(a.frechet_distance(b)? * to_metre),
@@ -455,8 +494,9 @@ pub(crate) fn metric_frechet(
 
 /// [`metric_hausdorff`] over `densify`-refined operands: each segment gains
 /// evenly spaced vertices (in the source coordinates — lon/lat segments
-/// densify linearly, like GEOS) before the discrete sweep, tightening the
-/// vertex metric toward the continuous one. `None` measures vertices only.
+/// densify linearly, like GEOS) before the continuous Hausdorff kernel.
+/// `None` preserves the operands' original segmentization; there is no
+/// discrete Hausdorff lane.
 pub(crate) fn metric_hausdorff_densified(
     model: &crs::MetricModel,
     a: &Shape,
@@ -466,8 +506,9 @@ pub(crate) fn metric_hausdorff_densified(
     metric_densified(model, a, b, densify, metric_hausdorff)
 }
 
-/// [`metric_frechet`] over `densify`-refined operands (see
-/// [`metric_hausdorff_densified`]).
+/// [`metric_frechet`] over `densify`-refined operands. Each segment gains
+/// evenly spaced vertices before the discrete Fréchet sweep; `None` measures
+/// the original vertices only.
 pub(crate) fn metric_frechet_densified(
     model: &crs::MetricModel,
     a: &Shape,
@@ -708,4 +749,64 @@ pub(crate) fn binary_frame_crs(left: &Bound<'_, PyAny>, right: &Bound<'_, PyAny>
         }
     }
     None
+}
+
+#[cfg(test)]
+mod dwithin_parity_tests {
+    use super::*;
+    use crate::geometry::{point_distance, points_dwithin};
+
+    fn point(x: f64, y: f64) -> Point {
+        Point::new_unchecked_xy(x, y)
+    }
+
+    fn scalar_point_dwithin(a: Point, b: Point, limit: f64) -> bool {
+        Shape::Point(a).dwithin(&Shape::Point(b), limit)
+    }
+
+    fn packed_planar_dwithin(a: Point, b: Point, limit: f64) -> bool {
+        points_dwithin(a, b, limit)
+    }
+
+    fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
+        ShapeData::new(Shape::Point(a)).dwithin(&ShapeData::new(Shape::Point(b)), limit)
+    }
+
+    #[test]
+    fn planar_dwithin_scalar_packed_and_shape_data_agree() {
+        let coords = [-1e6, -3.0, -1.0, 0.0, 1.0, 3.0, 4.0, 1e6];
+        for &ax in &coords {
+            for &ay in &coords {
+                for &bx in &coords {
+                    for &by in &coords {
+                        let (a, b) = (point(ax, ay), point(bx, by));
+                        let dist = point_distance(a, b);
+                        let limits = [
+                            0.0,
+                            f64::MIN_POSITIVE,
+                            dist * 0.5,
+                            dist,
+                            dist.next_down(),
+                            dist.next_up(),
+                            dist * 2.0,
+                            f64::INFINITY,
+                        ];
+                        for limit in limits {
+                            let scalar = scalar_point_dwithin(a, b, limit);
+                            let packed = packed_planar_dwithin(a, b, limit);
+                            let data = shape_data_dwithin(a, b, limit);
+                            assert_eq!(
+                                scalar, packed,
+                                "scalar vs packed at ({ax},{ay})-({bx},{by}) limit={limit}"
+                            );
+                            assert_eq!(
+                                scalar, data,
+                                "scalar vs ShapeData at ({ax},{ay})-({bx},{by}) limit={limit}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

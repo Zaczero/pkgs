@@ -40,20 +40,28 @@ def test_to_polars_rejects_epoch_loss_without_flag(
     assert restored.epoch is None
 
 
-def test_non_epsg_crs_requires_acknowledgement_and_can_be_restored() -> None:
-    points = gm.GeometryArray([gm.Point(1, 2)], crs='OGC:CRS84').set_epoch(2020.0)
-    with pytest.raises(ValueError, match='drop_crs=True'):
-        to_polars(points, drop_epoch=True)
-
-    series = to_polars(points, drop_crs=True, drop_epoch=True)
-    unframed = from_polars(series)
-    assert unframed.crs is None
-    assert unframed.epoch is None
-
-    restored = from_polars(series, crs='OGC:CRS84', epoch=2020.0)
+def test_crs84_encodes_via_wire_alias_and_non_alias_needs_drop() -> None:
+    # OGC:CRS84 is a PostGIS wire alias → embeds as SRID 4326 without drop_crs.
+    points = gm.GeometryArray([gm.Point(1, 2)], crs='OGC:CRS84')
+    series = to_polars(points)
+    decoded = from_polars(series)
+    assert decoded.crs == 'EPSG:4326'
+    assert canon(decoded) == canon(gm.GeometryArray([gm.Point(1, 2)], crs=4326))
+    # Explicit alias restore at decode.
+    restored = from_polars(series, crs='OGC:CRS84')
+    assert restored.crs == 'OGC:CRS84'
     assert canon(restored) == canon(points)
-    assert restored.crs == points.crs
-    assert restored.epoch == 2020.0
+
+    # A non-alias non-EPSG CRS still requires drop_crs acknowledgement.
+    custom_pts = gm.GeometryArray([gm.Point(1, 2)], crs='ESRI:102001')
+    with pytest.raises(ValueError, match='drop_crs=True'):
+        to_polars(custom_pts)
+    series_drop = to_polars(custom_pts, drop_crs=True)
+    unframed = from_polars(series_drop)
+    assert unframed.crs is None
+    back = from_polars(series_drop, crs='ESRI:102001')
+    assert canon(back) == canon(custom_pts)
+    assert back.crs == custom_pts.crs
 
 
 def test_missing_rows_round_trip_as_polars_nulls() -> None:

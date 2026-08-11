@@ -1,6 +1,16 @@
-use super::*;
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
-use crate::geometry::*;
+use crate::geometry::predicates::{
+    face_interior_point, prune_dangles, segments_contain_interior, validate_points,
+};
+use crate::geometry::{
+    AreaSign, Arrangement, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _, HashSet,
+    OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, RingDecisionArea, Segment, Shape, XY,
+    assemble_region_polygons, binary_areal_overlay, line_segments, minimal_positive_face_rings,
+    ordered_edge, polygon_parts_to_shape, polygon_winding_loops, ring_decision_area, same_point,
+    self_node_segments, winding_region, wrap_index,
+};
 ///
 /// `Linework` is even-odd parity over the DEDUPLICATED noded linework
 /// (exactly GEOS' linework `make_valid`: a same-ring retraced edge counts

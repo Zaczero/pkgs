@@ -1,16 +1,12 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::sync::OnceLock;
 
-use super::*;
 use crate::HeapSize;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
+use crate::geometry::{BvhCode, BvhNode, CoordSeq, Shape};
 
 type Aabb3d = [f64; 6];
 
@@ -32,6 +28,10 @@ struct SegmentBvh3d {
 }
 
 impl Distance3dParts {
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
     }
@@ -246,6 +246,10 @@ impl SegmentBvh3d {
         best
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn visit_with_targets(
         &self,
         probe: Segment3d,

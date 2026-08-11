@@ -1,16 +1,14 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Top-level `geohash_*` free functions.
 
 use pyo3::types::PyAny;
 
-use super::super::*;
-use super::cell::{PyGeohashCell, geohash_cell_arg};
-use super::coverage::geohash_cell_array;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
-use crate::py::cells::{GridKind, PyCellArray, bounding_query_bounds, dispatch_grid_cell_array};
+use crate::py::cells::geohash::cell::{PyGeohashCell, geohash_cell_arg};
+use crate::py::cells::geohash::coverage::geohash_cell_array;
+use crate::py::cells::{
+    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_bounds,
+    dispatch_grid_cell_array, pyfunction,
+};
 use crate::py::errors::GeometryError;
 
 /// Build geohash cells from parallel lon/lat columns.

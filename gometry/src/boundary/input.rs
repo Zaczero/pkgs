@@ -1,16 +1,12 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Scalar argument parsers shared across the `#[pyfunction]` surfaces.
 //!
 //! Small boundary helpers that coerce Python ints/floats/option values and
 //! parse affine-transform / origin / epoch / accuracy arguments. Re-exported at
 //! the crate root so every module reaches them through `use super::*`.
+#![allow(
+    clippy::absolute_paths,
+    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+)]
 
 use pyo3::FromPyObject;
 use pyo3::exceptions::PyTypeError;
@@ -18,7 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use crate::py::errors::GeometryError;
-use crate::*;
+use crate::{Positive, Shape, coordinate_values, crs};
 
 pub(crate) fn py_i64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // A non-int where an int is required is a plain `TypeError` (like the
@@ -54,13 +50,20 @@ pub(crate) fn py_i64_bounded(
 /// Optional sibling of [`py_i64_bounded`] (None/`None` → `default`,
 /// which is trusted to be in range).
 /// Canonical parameter-value violation for integer minimum bounds.
+///
+/// Attaches structured ``.param`` / ``.value`` so handlers can branch without
+/// parsing the message (AGENTS error-attribute contract).
 pub(crate) fn int_min_error(op: &str, param: &str, min: i64, got: i64) -> PyErr {
     let label = if op.is_empty() {
         param.to_owned()
     } else {
         format!("{op} {param}")
     };
-    GeometryError::new_err(format!("{label} must be >= {min}, got {got}"))
+    crate::py::errors::integer_parameter_error(
+        format!("{label} must be >= {min}, got {got}"),
+        param,
+        got,
+    )
 }
 
 /// Require ``value >= 0`` with the canonical ``{op} {param}`` message.
@@ -94,10 +97,11 @@ pub(crate) fn bounded_int(
     if value < *range.start() {
         Err(int_min_error(op, param, *range.start(), value))
     } else {
-        Err(GeometryError::new_err(format!(
-            "{op} {param} must be <= {}, got {value}",
-            range.end()
-        )))
+        Err(crate::py::errors::integer_parameter_error(
+            format!("{op} {param} must be <= {}, got {value}", range.end()),
+            param,
+            value,
+        ))
     }
 }
 
@@ -108,10 +112,13 @@ fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(
     let values = coordinate_values(value.py(), value, name)
         .map_err(|_| PyTypeError::new_err(format!("snap_to_grid {name} must be {expected}")))?;
     let [x, y] = values.as_slice() else {
-        return Err(GeometryError::new_err(format!(
-            "snap_to_grid {name} must be {expected}, got {} values",
-            values.len(),
-        )));
+        return Err(crate::py::errors::parameter_error(
+            format!(
+                "snap_to_grid {name} must be {expected}, got {} values",
+                values.len()
+            ),
+            name,
+        ));
     };
     Ok((*x, *y))
 }
@@ -135,9 +142,11 @@ pub(crate) fn validate_grid_origin(origin: (f64, f64)) -> PyResult<(f64, f64)> {
     if x.is_finite() && y.is_finite() {
         Ok((x, y))
     } else {
-        Err(GeometryError::new_err(format!(
-            "snap_to_grid origin must be finite, got ({x}, {y})"
-        )))
+        Err(crate::py::errors::float_parameter_error(
+            format!("snap_to_grid origin must be finite, got ({x}, {y})"),
+            "origin",
+            if x.is_finite() { y } else { x },
+        ))
     }
 }
 
@@ -179,13 +188,19 @@ impl<'a, 'py> FromPyObject<'a, 'py> for GridOrigin {
 /// (the GeoPandas/DuckDB-interoperable order).
 pub(crate) fn validate_curve_level(level: i64) -> PyResult<crate::curves::CurveLevel> {
     if !(1..=32).contains(&level) {
-        return Err(GeometryError::new_err(format!(
-            "curve level must be between 1 and 32, got {level}"
-        )));
+        return Err(crate::py::errors::integer_parameter_error(
+            format!("curve level must be between 1 and 32, got {level}"),
+            "level",
+            level,
+        ));
     }
     let level = u8::try_from(level).expect("level <= 32 fits u8");
     crate::curves::CurveLevel::try_new(level).map_err(|_| {
-        GeometryError::new_err(format!("curve level must be between 1 and 32, got {level}"))
+        crate::py::errors::integer_parameter_error(
+            format!("curve level must be between 1 and 32, got {level}"),
+            "level",
+            i64::from(level),
+        )
     })
 }
 
@@ -193,8 +208,13 @@ pub(crate) fn validate_curve_level(level: i64) -> PyResult<crate::curves::CurveL
 /// represent a clipped polygon part).
 pub(crate) fn validate_subdivide_max_vertices(max_vertices: i64) -> PyResult<usize> {
     bounded_int("subdivide", "max_vertices", max_vertices, 8..=i64::MAX)?;
-    usize::try_from(max_vertices)
-        .map_err(|_| GeometryError::new_err("subdivide max_vertices is too large"))
+    usize::try_from(max_vertices).map_err(|_| {
+        crate::py::errors::integer_parameter_error(
+            "subdivide max_vertices is too large",
+            "max_vertices",
+            max_vertices,
+        )
+    })
 }
 
 /// Boundary parser for `sample_points` count: any non-negative integer
@@ -202,7 +222,13 @@ pub(crate) fn validate_subdivide_max_vertices(max_vertices: i64) -> PyResult<usi
 pub(crate) fn parse_sample_count(value: &Bound<'_, PyAny>) -> PyResult<usize> {
     let count = py_i64_required("count", value)?;
     non_negative_int("sample_points", "count", count)?;
-    usize::try_from(count).map_err(|_| GeometryError::new_err("sample_points count is too large"))
+    usize::try_from(count).map_err(|_| {
+        crate::py::errors::integer_parameter_error(
+            "sample_points count is too large",
+            "count",
+            count,
+        )
+    })
 }
 
 /// Boundary parser for `sample_points` seed: any integer, folded into the
@@ -280,22 +306,6 @@ pub enum OriginSpec {
 }
 
 impl OriginSpec {
-    /// Parse a supplied origin value (string label or finite pair).
-    pub(crate) fn parse_value(origin: &Bound<'_, PyAny>) -> PyResult<Self> {
-        if let Ok(label) = origin.cast::<pyo3::types::PyString>() {
-            let label = label.to_cow()?;
-            return match label.as_ref() {
-                "centroid" => Ok(Self::Centroid),
-                "center" => Ok(Self::Center),
-                other => Err(GeometryError::new_err(format!(
-                    "origin must be 'centroid', 'center', or an (x, y) pair, got {other:?}"
-                ))),
-            };
-        }
-        let (x, y) = parse_xy_pair(origin)?;
-        Ok(Self::Fixed(x, y))
-    }
-
     pub(crate) fn resolve_shape(self, shape: &Shape) -> crate::error::Result<(f64, f64)> {
         Ok(match self {
             Self::Centroid => shape.centroid_xy()?,
@@ -312,15 +322,35 @@ impl<'a, 'py> FromPyObject<'a, 'py> for OriginSpec {
         if value.is_none() {
             return Err(PyTypeError::new_err("origin cannot be None"));
         }
-        Self::parse_value(&value)
+        if let Ok(label) = value.cast::<pyo3::types::PyString>() {
+            let label = label.to_cow()?;
+            return match label.as_ref() {
+                "centroid" => Ok(Self::Centroid),
+                "center" => Ok(Self::Center),
+                other => Err(GeometryError::new_err(format!(
+                    "origin must be 'centroid', 'center', or an (x, y) pair, got {other:?}"
+                ))),
+            };
+        }
+        let (x, y) = parse_xy_pair(&value)?;
+        Ok(Self::Fixed(x, y))
     }
 }
 
 /// Parse a 2-element `(x, y)` sequence of finite numbers.
 pub(crate) fn parse_xy_pair(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
-    let mut items = value
-        .try_iter()
-        .map_err(|_| GeometryError::new_err("origin must be an (x, y) pair of finite numbers"))?;
+    let py = value.py();
+    // Propagate provider exceptions from `__iter__` / `__next__`; only a
+    // bare "not iterable" TypeError becomes the domain message.
+    let mut items = match value.try_iter() {
+        Ok(it) => it,
+        Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+            return Err(GeometryError::new_err(
+                "origin must be an (x, y) pair of finite numbers",
+            ));
+        },
+        Err(err) => return Err(err),
+    };
     let x = items
         .next()
         .ok_or_else(|| GeometryError::new_err("origin (x, y) pair requires two values"))??;

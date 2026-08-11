@@ -2,7 +2,11 @@
 //! straight into SoA columns — no `serde_json::Value` tree, no AoS
 //! staging. Child module of [`super`] (the GeoJSON reader/writer).
 
-use super::*;
+use crate::io::geojson::{
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, CoordinateNumberSeed, DeserializeSeed, Deserializer,
+    IgnoredAny, IoGeometryKind, LineSeq, MOrdinate, Point, Polygon, Ring, SeqAccess, Shape,
+    Visitor, ZOrdinate, de, fmt, geojson_domain_violation, geojson_mixed_axes_message,
+};
 
 pub(super) fn read_position<'de, A>(
     seq: &mut A,

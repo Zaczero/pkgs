@@ -75,9 +75,13 @@ def test_catmull_rom_passes_through_original_vertices() -> None:
 
 def test_catmull_rom_rejects_dropping_endpoints() -> None:
     line = gm.LineString([(0, 0), (1, 1), (2, 0)])
-    with pytest.raises(GeometryError, match='Catmull-Rom always interpolates its endpoints'):
+    with pytest.raises(
+        GeometryError, match='Catmull-Rom always interpolates its endpoints'
+    ):
         line.smooth(method='catmull_rom', keep_endpoints=False)
-    with pytest.raises(GeometryError, match='Catmull-Rom always interpolates its endpoints'):
+    with pytest.raises(
+        GeometryError, match='Catmull-Rom always interpolates its endpoints'
+    ):
         gm.GeometryArray([line]).smooth(method='catmull_rom', keep_endpoints=False)
 
 
@@ -145,7 +149,9 @@ def test_degenerate_inputs_unchanged() -> None:
 
 def test_negative_iterations_raises() -> None:
     line = gm.LineString([(0, 0), (1, 0)])
-    with pytest.raises(GeometryError, match='iterations must be a non-negative integer'):
+    with pytest.raises(
+        GeometryError, match='iterations must be a non-negative integer'
+    ):
         line.smooth(iterations=-1)
 
 

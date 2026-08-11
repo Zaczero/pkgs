@@ -3,14 +3,27 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::geometry::distance::hausdorff::{
+    HAUSDORFF_SMALL_TARGET_MAX_VERTICES, HausdorffFeature, HausdorffProbeResult, HausdorffTarget,
+    SmallLineTarget, directed_hausdorff_distance_squared_with_target_pruned,
+    directed_hausdorff_distance_squared_with_target_pruned_initial,
+    directed_hausdorff_vertex_lower_bound_squared, hausdorff_segment_upper_bound_squared,
+    max_point_to_target_squared_on_segment_culled,
+    max_point_to_target_squared_on_segment_small_culled, small_line_target_distance_squared,
+    small_line_target_features_slice,
+};
+#[cfg(test)]
+use crate::geometry::distance::hausdorff::{
+    SmallHausdorffParams, collect_hausdorff_segment_params_small,
+    evaluate_max_point_to_target_squared_on_segment_bisect_small,
+};
+use crate::geometry::{
+    CoordSeq, LineSeq, Point, Segment, Shape, XY, point_distance_squared,
+    point_segment_distance_squared,
+};
 
 pub(crate) trait HausdorffTargetLike {
     fn distance_squared(&self, point: XY) -> f64;
@@ -20,7 +33,6 @@ pub(crate) trait HausdorffTargetLike {
         out: &mut [HausdorffProbeResult],
         stack: &mut Vec<u32>,
     );
-    fn feature_count(&self) -> usize;
     fn features_slice(&self) -> &[HausdorffFeature];
     fn segments_len(&self) -> usize;
     fn segment_at(&self, index: usize) -> Segment;
@@ -38,23 +50,12 @@ fn fold_isolated_point_probes(
         let point = XY::new(x, y);
         let mut best = out[index].distance_squared;
         let mut witness = out[index].feature_id;
-        if let Some(point_index) = &target.point_index {
-            let probe = Point::new_unchecked_xy(x, y);
-            if let Some((_, distance_squared)) = point_index.nearest(probe)
-                && distance_squared < best
-            {
+        for point_index in 0..target.points.len() {
+            let feature_index = target.query.linework.segment_count() + point_index;
+            let distance_squared = point_distance_squared(point, target.points[point_index].xy());
+            if distance_squared < best {
                 best = distance_squared;
-                witness = u32::MAX;
-            }
-        } else {
-            for point_index in 0..target.points.len() {
-                let feature_index = target.query.linework.segment_count() + point_index;
-                let distance_squared =
-                    point_distance_squared(point, target.points[point_index].xy());
-                if distance_squared < best {
-                    best = distance_squared;
-                    witness = feature_index as u32;
-                }
+                witness = feature_index as u32;
             }
         }
         out[index] = HausdorffProbeResult {
@@ -100,10 +101,6 @@ impl HausdorffTargetLike for SmallLineTarget {
         small_line_target_distance_squared(self, point)
     }
 
-    fn feature_count(&self) -> usize {
-        self.n_features as usize
-    }
-
     fn features_slice(&self) -> &[HausdorffFeature] {
         small_line_target_features_slice(self)
     }
@@ -147,31 +144,21 @@ impl HausdorffTargetLike for HausdorffTarget {
         Self::distance_squared(self, point)
     }
 
-    fn feature_count(&self) -> usize {
-        Self::feature_count(self)
-    }
-
     fn features_slice(&self) -> &[HausdorffFeature] {
         &self.features
     }
 
     fn segments_len(&self) -> usize {
+        // Segment features are packed at the front of `features` (points follow).
         self.query.linework.segment_count()
     }
 
     fn segment_at(&self, index: usize) -> Segment {
-        let mut current = 0_usize;
-        let mut found = Segment {
-            start: XY::new(0.0, 0.0),
-            end: XY::new(0.0, 0.0),
-        };
-        self.query.linework.for_each_segment(|segment| {
-            if current == index {
-                found = segment;
-            }
-            current += 1;
-        });
-        found
+        // O(1) from the retained feature list — never re-walk linework.
+        match self.features[index] {
+            HausdorffFeature::Segment(segment) => segment,
+            HausdorffFeature::Point(_) => unreachable!("segment index into point feature"),
+        }
     }
 
     fn points_len(&self) -> usize {
@@ -414,13 +401,6 @@ impl HausdorffTargetLike for HausdorffTargetBorrowed {
         }
     }
 
-    fn feature_count(&self) -> usize {
-        match self {
-            Self::Small(target) => target.feature_count(),
-            Self::Indexed(target) => target.feature_count(),
-        }
-    }
-
     fn features_slice(&self) -> &[HausdorffFeature] {
         match self {
             Self::Small(target) => target.features_slice(),
@@ -464,7 +444,30 @@ pub(crate) fn hausdorff_distance_line_columns(
     right_xs: &[f64],
     right_ys: &[f64],
 ) -> f64 {
-    hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt()
+    let left = line_shape_from_columns(left_xs, left_ys);
+    let right = line_shape_from_columns(right_xs, right_ys);
+    let source_distance = left.hausdorff_distance(&right);
+    let squared_distance =
+        hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt();
+    if squared_distance.is_finite()
+        && squared_distance
+            .to_bits()
+            .abs_diff(source_distance.to_bits())
+            <= 1
+    {
+        squared_distance
+    } else {
+        source_distance
+    }
+}
+
+fn line_shape_from_columns(xs: &[f64], ys: &[f64]) -> Shape {
+    let points: Vec<Point> = xs
+        .iter()
+        .zip(ys)
+        .map(|(&x, &y)| Point::new_unchecked_xy(x, y))
+        .collect();
+    Shape::LineString(LineSeq::from_trusted(CoordSeq::from(points)))
 }
 
 /// Element-wise planar Hausdorff over packed line CSR windows (one column
@@ -488,11 +491,18 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
             f64::INFINITY,
         )
         .unwrap_or_else(|| {
+            let source_distance =
+                hausdorff_distance_line_columns(left_xs, left_ys, right_xs, right_ys);
             if left_xs.len() == 4 && right_xs.len() == 4 {
-                hausdorff_distance_uniform_4v(left_xs, left_ys, right_xs, right_ys)
-            } else {
-                hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt()
+                let closed_form =
+                    hausdorff_distance_uniform_4v(left_xs, left_ys, right_xs, right_ys);
+                if closed_form.is_finite()
+                    && closed_form.to_bits().abs_diff(source_distance.to_bits()) <= 1
+                {
+                    return closed_form;
+                }
             }
+            source_distance
         });
     }
 }

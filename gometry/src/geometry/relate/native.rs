@@ -1,11 +1,18 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use Dimension::{Curve as DimCurve, Point as DimPoint, Surface as DimSurface};
+use ahash::HashSetExt as _;
 
-use super::*;
-use crate::geometry::*;
+use crate::geometry::relate::{
+    De9im, LinealOperand, Loc, PairEdgeLabel, PuntalOperand, RelateTopology, areal_relate_data,
+    areal_relate_pattern_shapes, areal_relate_shapes, empty_relate, line_is_collapsed,
+    lineal_relate_shapes, merge_topo_loc, mixed_relate_data, mixed_relate_shapes,
+    multiline_is_collapsed, polygon_has_nondegenerate_area, polygon_parts, puntal_relate,
+};
+use crate::geometry::{
+    CoordSeq, Coordinates as _, Dimension, HashMap, HashMapExt as _, HashSet, Point, PointKey,
+    RUN_NODING_MIN, Segment, Shape, ShapeData, for_each_candidate_pair, overlay, point_on_segment,
+    relate_ng, same_point, segment_envelopes_disjoint, shared_segment_part, single_chain,
+    undirected_segment_edge_key,
+};
 
 pub(crate) fn native_relate_shapes(left: &Shape, right: &Shape) -> De9im {
     if left.is_empty() || right.is_empty() {
@@ -20,7 +27,11 @@ pub(crate) fn native_relate_shapes(left: &Shape, right: &Shape) -> De9im {
         if let Some(degenerate) = degenerate_polygonal_lineal_overlap(left, right) {
             matrix.set_at_least(Loc::Interior, Loc::Interior, DimCurve);
             if degenerate.two_point_collapse {
-                matrix.0[if degenerate.polygonal_is_left { 3 } else { 1 }] = b'F';
+                if degenerate.polygonal_is_left {
+                    matrix.clear(Loc::Boundary, Loc::Interior);
+                } else {
+                    matrix.clear(Loc::Interior, Loc::Boundary);
+                }
             }
         }
         return matrix;
@@ -63,7 +74,11 @@ pub(crate) fn native_relate_data(left: &ShapeData, right: &ShapeData) -> De9im {
         if let Some(degenerate) = degenerate_polygonal_lineal_overlap(left.shape(), right.shape()) {
             matrix.set_at_least(Loc::Interior, Loc::Interior, DimCurve);
             if degenerate.two_point_collapse {
-                matrix.0[if degenerate.polygonal_is_left { 3 } else { 1 }] = b'F';
+                if degenerate.polygonal_is_left {
+                    matrix.clear(Loc::Boundary, Loc::Interior);
+                } else {
+                    matrix.clear(Loc::Interior, Loc::Boundary);
+                }
             }
         }
         return matrix;
@@ -279,10 +294,18 @@ pub(crate) fn polygonal_unique_xy_count(shape: &Shape) -> usize {
 
 pub(crate) fn shape_needs_mod2_topology(shape: &Shape) -> bool {
     match shape {
-        Shape::GeometryCollection(_) | Shape::MultiPolygon(_) => true,
+        // GeometryCollection always needs the topology engine (mixed-dimension
+        // members, cross-member linework). MultiPolygon only when every part is
+        // area-degenerate — a singleton (or multi) with real area shares the
+        // Polygon areal/mixed lanes so a shell-collinear line is boundary, not
+        // interior (DE-9IM parity with the equivalent Polygon).
+        Shape::GeometryCollection(_) => true,
         Shape::LineString(line) => line_is_collapsed(line),
         Shape::MultiLineString(lines) => multiline_is_collapsed(lines),
         Shape::Polygon(polygon) => !polygon_has_nondegenerate_area(polygon),
+        Shape::MultiPolygon(polygons) => {
+            polygons.is_empty() || !polygons.iter().any(polygon_has_nondegenerate_area)
+        },
         Shape::Empty(..) | Shape::Point(_) | Shape::MultiPoint(_) => false,
     }
 }
@@ -314,6 +337,10 @@ pub(crate) fn mod2_relate(left: &RelateTopology, right: &RelateTopology) -> De9i
     matrix
 }
 
+#[expect(
+    clippy::iter_over_hash_type,
+    reason = "each boundary visit only joins an idempotent DE-9IM lattice state, so iteration order is unobservable"
+)]
 pub(crate) fn add_overlapping_line_boundary_columns(
     matrix: &mut De9im,
     left: &RelateTopology,
@@ -344,6 +371,10 @@ pub(crate) fn topology_has_line_support(topology: &RelateTopology, point: Point)
         .any(|edge| point_on_segment(point, edge.segment.start, edge.segment.end))
 }
 
+#[expect(
+    clippy::iter_over_hash_type,
+    reason = "each boundary visit only joins an idempotent DE-9IM lattice state, so iteration order is unobservable"
+)]
 pub(crate) fn add_shared_line_boundary_nodes(
     matrix: &mut De9im,
     left: &RelateTopology,
@@ -367,23 +398,25 @@ pub(crate) fn suppress_lineal_overlap_boundary_artifacts(
 ) {
     if left.lineal_overlap_collection
         && !right.is_collection
-        && (matrix.0[3] != b'0' || right.area_polygons.is_empty())
+        && (!matrix.is_dimension(Loc::Boundary, Loc::Interior, Dimension::Point)
+            || right.area_polygons.is_empty())
     {
-        matrix.0[5] = b'F';
+        matrix.clear(Loc::Boundary, Loc::Exterior);
     }
     if right.lineal_overlap_collection
         && !left.is_collection
-        && (matrix.0[1] != b'0' || left.area_polygons.is_empty())
+        && (!matrix.is_dimension(Loc::Interior, Loc::Boundary, Dimension::Point)
+            || left.area_polygons.is_empty())
     {
-        matrix.0[7] = b'F';
+        matrix.clear(Loc::Exterior, Loc::Boundary);
     }
     if left.lineal_overlap_collection && !left.collection_has_puntal_support && right.is_collection
     {
-        matrix.0[1] = b'F';
+        matrix.clear(Loc::Interior, Loc::Boundary);
     }
     if right.lineal_overlap_collection && !right.collection_has_puntal_support && left.is_collection
     {
-        matrix.0[3] = b'F';
+        matrix.clear(Loc::Boundary, Loc::Interior);
     }
 }
 
@@ -418,37 +451,39 @@ pub(crate) fn collect_pair_edges(
     let mut by_key: HashMap<(PointKey, PointKey), (Segment, PairEdgeLabel)> =
         HashMap::with_capacity(atomic.len());
     let mut node_hints: HashMap<PointKey, NodeHint> = HashMap::with_capacity(atomic.len());
-    for (piece, source) in atomic.into_iter().zip(sources) {
+    for (piece, owners) in atomic.into_iter().zip(sources.iter()) {
         if same_point(piece.start, piece.end) {
             continue;
         }
-        let source = source as usize;
-        let is_left = source < split;
-        let loc = if is_left {
-            left.edges[source].on
-        } else {
-            right.edges[source - split].on
-        };
-        for endpoint in [piece.start, piece.end] {
-            let hint = node_hints.entry(PointKey::new(endpoint)).or_default();
-            let slot = if is_left {
-                &mut hint.left
+        for &(source, _reversed) in owners {
+            let source = source as usize;
+            let is_left = source < split;
+            let loc = if is_left {
+                left.edges[source].on
             } else {
-                &mut hint.right
+                right.edges[source - split].on
             };
-            merge_topo_loc(slot, loc);
-        }
-        let entry =
-            by_key
-                .entry(undirected_segment_edge_key(piece))
-                .or_insert((piece, PairEdgeLabel {
+            for endpoint in [piece.start, piece.end] {
+                let hint = node_hints.entry(PointKey::new(endpoint)).or_default();
+                let slot = if is_left {
+                    &mut hint.left
+                } else {
+                    &mut hint.right
+                };
+                merge_topo_loc(slot, loc);
+            }
+            let entry = by_key.entry(undirected_segment_edge_key(piece)).or_insert((
+                piece,
+                PairEdgeLabel {
                     left: None,
                     right: None,
-                }));
-        if is_left {
-            merge_topo_loc(&mut entry.1.left, loc);
-        } else {
-            merge_topo_loc(&mut entry.1.right, loc);
+                },
+            ));
+            if is_left {
+                merge_topo_loc(&mut entry.1.left, loc);
+            } else {
+                merge_topo_loc(&mut entry.1.right, loc);
+            }
         }
     }
     (by_key.into_values().collect(), node_hints)
@@ -594,6 +629,10 @@ pub(crate) fn add_node_pass(
     }
 }
 
+#[expect(
+    clippy::iter_over_hash_type,
+    reason = "each boundary visit only joins an idempotent DE-9IM lattice state, so iteration order is unobservable"
+)]
 pub(crate) fn add_line_boundary_pass(
     matrix: &mut De9im,
     left: &RelateTopology,

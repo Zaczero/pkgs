@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::geometry::overlay::OverlayOp;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

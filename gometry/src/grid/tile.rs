@@ -2,14 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! XYZ web-mercator tiles: the slippy-map `z/x/y` addressing scheme.
 //!
 //! A `Tile` is `(z, x, y)` with mercantile-compatible math; the packed
@@ -18,17 +10,44 @@
 //! are quadkeys (Bing's digit-per-level path; the empty quadkey is the
 //! `z0` world tile). Zoom caps at 29 — the deliberate pre-v1 limit the
 //! packed id affords.
+#![allow(
+    clippy::absolute_paths,
+    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+)]
 
 use std::f64::consts::PI;
 
 use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
 use crate::curves::{morton_deinterleave, morton_interleave};
-use crate::geometry::Bounds;
+use crate::geometry::{Bounds, Point, Shape};
 
 pub(crate) const TILE_MAX_ZOOM: u8 = 29;
 
 /// The Web Mercator latitude domain edge.
 pub(crate) const TILE_MAX_LATITUDE: f64 = WEB_MERCATOR_MAX_LATITUDE;
+
+/// Whether `lat` lies inside the Web Mercator / slippy-tile domain.
+pub(crate) fn latitude_in_tile_domain(lat: f64) -> bool {
+    (-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&lat)
+}
+
+/// Reject a covering geometry whose any vertex latitude is outside
+/// ±[`TILE_MAX_LATITUDE`]. Tile coverings cannot represent latitudes past the
+/// Web Mercator edge; silently clipping (identical cell counts for ±84 vs
+/// ±89.9) is the defect this gate closes. Matches the point/tile_cells path
+/// that raises rather than clamps.
+///
+/// Returns the first out-of-domain latitude, or `Ok(())` when every vertex is
+/// in domain (or the shape has no vertices).
+pub(crate) fn ensure_shape_in_tile_domain(shape: &Shape) -> Result<(), f64> {
+    let mut bad = None;
+    shape.for_each_point(|point: Point| {
+        if bad.is_none() && !latitude_in_tile_domain(point.y) {
+            bad = Some(point.y);
+        }
+    });
+    bad.map_or(Ok(()), Err)
+}
 
 /// One XYZ tile address; `0 <= x, y < 2^z`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,12 +85,18 @@ impl Tile {
         Some(Self { z, x, y })
     }
 
-    /// The tile containing a lon/lat point (latitude clamped to the Web
-    /// Mercator domain, mercantile-style).
-    pub(crate) fn from_lonlat(lon: f64, lat: f64, zoom: u8) -> Self {
+    /// The tile containing a lon/lat point inside the Web Mercator domain.
+    ///
+    /// Returns `None` when `lat` is outside ±[`TILE_MAX_LATITUDE`] (about
+    /// ±85.05112878°). Out-of-domain latitudes are rejected rather than
+    /// silently clamped — callers that need a typed error raise at the
+    /// boundary; mercantile-style clamp is not offered.
+    pub(crate) fn from_lonlat(lon: f64, lat: f64, zoom: u8) -> Option<Self> {
+        if !latitude_in_tile_domain(lat) {
+            return None;
+        }
         let cells = 2_f64.powi(i32::from(zoom));
         let x = ((lon + 180.0) / 360.0 * cells).floor();
-        let lat = lat.clamp(-TILE_MAX_LATITUDE, TILE_MAX_LATITUDE);
         let lat_rad = lat.to_radians();
         // Canonical Web Mercator forward form: one tangent instead of the
         // equivalent `tan(lat) + sec(lat)` pair used by the traditional
@@ -92,11 +117,11 @@ impl Tile {
             normalized_y.floor()
         };
         let last = cells - 1.0;
-        Self {
+        Some(Self {
             z: zoom,
             x: x.clamp(0.0, last) as u32,
             y: y.clamp(0.0, last) as u32,
-        }
+        })
     }
 
     /// The quadkey token (one base-4 digit per level; empty at `z0`).
@@ -140,6 +165,10 @@ impl Tile {
     }
 
     /// Lon/lat bounds (mercantile `bounds`).
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn bounds(self) -> Bounds {
         let cells = 2_f64.powi(i32::from(self.z));
         let lon = |x: f64| x / cells * 360.0 - 180.0;
@@ -166,6 +195,10 @@ impl Tile {
     }
 
     /// The four children one zoom finer, in quadkey order.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) const fn children(self) -> [Self; 4] {
         let (z, x, y) = (self.z + 1, self.x << 1, self.y << 1);
         [
@@ -224,6 +257,33 @@ impl crate::grid::coverer::RectCell for Tile {
     fn children(self) -> impl Iterator<Item = Self> {
         Self::children(self).into_iter()
     }
+    fn push_children_bounds(self, parent: Bounds, out: &mut Vec<(Self, Bounds)>) {
+        // Lon is linear in tile x; lat is mercator — one mid-row latitude
+        // (parent y + 0.5) splits the four children, matching `bounds()` bit-
+        // for-bit without four full sinh/atan recomputes.
+        let mid_lon = f64::midpoint(parent.minx(), parent.maxx());
+        // `1 << z` is exact for z ≤ 29 (TILE_MAX_ZOOM); same value as `2.0.powi(z)`.
+        let cells = f64::from(1_u32 << u32::from(self.z));
+        let n = PI * (1.0 - 2.0 * (f64::from(self.y) + 0.5) / cells);
+        let mid_lat = n.sinh().atan().to_degrees();
+        let kids = Self::children(self);
+        out.push((
+            kids[0],
+            Bounds::new_unchecked(parent.minx(), mid_lat, mid_lon, parent.maxy()),
+        ));
+        out.push((
+            kids[1],
+            Bounds::new_unchecked(mid_lon, mid_lat, parent.maxx(), parent.maxy()),
+        ));
+        out.push((
+            kids[2],
+            Bounds::new_unchecked(parent.minx(), parent.miny(), mid_lon, mid_lat),
+        ));
+        out.push((
+            kids[3],
+            Bounds::new_unchecked(mid_lon, parent.miny(), parent.maxx(), mid_lat),
+        ));
+    }
     fn edge_neighbors(self) -> [Option<Self>; 4] {
         // Tile rows grow southward (y down), so south is y+1 and north is y-1;
         // east/west do NOT wrap the antimeridian (None at x = 0 / last column).
@@ -252,9 +312,53 @@ mod tests {
     }
 
     #[test]
+    fn push_children_bounds_match_child_bounds_bit_exact() {
+        use crate::grid::coverer::RectCell as _;
+        let parents = [
+            Tile { z: 0, x: 0, y: 0 },
+            Tile { z: 5, x: 10, y: 20 },
+            Tile {
+                z: 10,
+                x: 486,
+                y: 332,
+            },
+            Tile {
+                z: 15,
+                x: 10_000,
+                y: 12_000,
+            },
+        ];
+        for parent in parents {
+            let mut derived = Vec::new();
+            parent.push_children_bounds(parent.bounds(), &mut derived);
+            let kids = parent.children();
+            assert_eq!(derived.len(), 4);
+            for (i, (child, bounds)) in derived.into_iter().enumerate() {
+                assert_eq!(child, kids[i]);
+                let expected = child.bounds();
+                assert_eq!(
+                    (
+                        bounds.minx().to_bits(),
+                        bounds.miny().to_bits(),
+                        bounds.maxx().to_bits(),
+                        bounds.maxy().to_bits()
+                    ),
+                    (
+                        expected.minx().to_bits(),
+                        expected.miny().to_bits(),
+                        expected.maxx().to_bits(),
+                        expected.maxy().to_bits()
+                    ),
+                    "child {i} of {parent:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn matches_mercantile_vectors() {
         // mercantile.tile(-105.939, 35.687, 9) == Tile(105, 201, 9)
-        let tile = Tile::from_lonlat(-105.939, 35.687, 9);
+        let tile = Tile::from_lonlat(-105.939, 35.687, 9).expect("in domain");
         assert_eq!((tile.x, tile.y, tile.z), (105, 201, 9));
         // mercantile.quadkey(486, 332, 10) == '0313102310'
         let qk = Tile {
@@ -314,13 +418,15 @@ mod tests {
         assert!(children.iter().all(|child| child.parent_at(10) == tile));
         assert!(
             children
-                .windows(2)
+                .array_windows::<2>()
                 .all(|pair| pair[0].quadkey() < pair[1].quadkey())
         );
         assert_eq!(tile.parent_at(0), Tile { z: 0, x: 0, y: 0 });
-        // Latitude clamp matches mercantile (poles land in the edge rows).
-        assert_eq!(Tile::from_lonlat(0.0, 90.0, 5).y, 0);
-        assert_eq!(Tile::from_lonlat(0.0, -90.0, 5).y, 31);
+        // Out-of-domain latitudes are rejected (no silent clamp).
+        assert!(Tile::from_lonlat(0.0, 90.0, 5).is_none());
+        assert!(Tile::from_lonlat(0.0, -90.0, 5).is_none());
+        assert!(Tile::from_lonlat(0.0, TILE_MAX_LATITUDE, 5).is_some());
+        assert!(Tile::from_lonlat(0.0, -TILE_MAX_LATITUDE, 5).is_some());
         // Antimeridian wrap and pole edges.
         let east_edge = Tile { z: 4, x: 15, y: 7 };
         assert_eq!(east_edge.neighbor(1, 0).unwrap().x, 0);
@@ -349,15 +455,21 @@ mod tests {
                 let n = PI * (1.0 - 2.0 * f64::from(row) / f64::from(cells));
                 let boundary = n.sinh().atan().to_degrees();
                 for lat in [boundary.next_down(), boundary, boundary.next_up()] {
+                    if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&lat) {
+                        assert!(
+                            Tile::from_lonlat(0.0, lat, zoom).is_none(),
+                            "zoom={zoom} row={row} lat={lat:?}"
+                        );
+                        continue;
+                    }
                     assert_eq!(
-                        Tile::from_lonlat(0.0, lat, zoom).y,
+                        Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
                         reference_tile_y(lat, zoom),
                         "zoom={zoom} row={row} lat={lat:?}"
                     );
                 }
             }
             for lat in [
-                -90.0,
                 -85.051_128_779_806_6,
                 -80.0,
                 -66.513_260_443_111_86,
@@ -369,11 +481,16 @@ mod tests {
                 66.513_260_443_111_86,
                 80.0,
                 85.051_128_779_806_6,
-                90.0,
             ] {
                 assert_eq!(
-                    Tile::from_lonlat(0.0, lat, zoom).y,
+                    Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
                     reference_tile_y(lat, zoom),
+                    "zoom={zoom} lat={lat:?}"
+                );
+            }
+            for lat in [-90.0, 90.0, 86.0, -86.0] {
+                assert!(
+                    Tile::from_lonlat(0.0, lat, zoom).is_none(),
                     "zoom={zoom} lat={lat:?}"
                 );
             }

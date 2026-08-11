@@ -1,11 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Packed geohash cells: the classic base-32 lon/lat bisection code.
 //!
 //! A `Geohash` packs up to 12 base-32 characters (5 bits each) left-aligned
@@ -13,6 +5,10 @@
 //! token's lexicographic order — the property that makes sorted cell sets
 //! and range membership work like the numeric systems. Even bit positions
 //! (from the top) refine longitude, odd refine latitude.
+#![allow(
+    clippy::absolute_paths,
+    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+)]
 
 use crate::geometry::Bounds;
 
@@ -148,6 +144,10 @@ impl Geohash {
     }
 
     /// The cell's lon/lat bounding rectangle.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn bounds(self) -> Bounds {
         let (lon_index, lat_index) = self.split_axes();
         let (lon_count, lat_count) = axis_counts(self.precision);
@@ -186,6 +186,10 @@ impl Geohash {
     }
 
     /// All children one level finer, in token order.
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn children(self) -> impl DoubleEndedIterator<Item = Self> + ExactSizeIterator {
         let precision = self.precision + 1;
         (0..32).map(move |value| Self {

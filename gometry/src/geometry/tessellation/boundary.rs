@@ -1,8 +1,9 @@
 use std::collections::hash_map::Entry;
 
-use super::*;
 use crate::collections::HashMap;
-use crate::geometry::PointKey;
+use crate::geometry::{
+    CoordSeq, Coordinates, HashMapExt as _, LineSeq, Point, PointKey, Shape, XY, same_point,
+};
 
 /// Every linear chain (lines, rings) of every shape as XY rows, read
 /// straight off the borrowed coordinate columns — the polygonize noding

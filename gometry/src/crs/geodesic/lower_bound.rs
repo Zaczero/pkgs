@@ -1,8 +1,4 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::crs::geodesic::{Geodesic, Point, REDUCED_LAT_MIN_ONE_MINUS_F, REDUCED_LAT_TABLE_CELLS};
 
 pub(crate) enum LowerBoundKernel {
     Disabled,

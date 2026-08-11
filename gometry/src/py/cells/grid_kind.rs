@@ -1,29 +1,25 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+//! Grid-kind registry and id coercion for `CellArray`: which scalar cell
+//! type an array stores, per-grid id validation/round-tripping, and the
+//! Python-input -> `Vec<u64>` collectors the constructor uses.
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! Grid-kind registry and id coercion for `CellArray`: which scalar cell
-//! type an array stores, per-grid id validation/round-tripping, and the
-//! Python-input -> `Vec<u64>` collectors the constructor uses.
 
 use h3o::CellIndex;
-use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyInt, PyString, PyType};
 
-use super::geohash::PyGeohashCell;
-use super::h3::PyH3Cell;
-use super::s2::PyS2Cell;
-use super::tiles::PyTile;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::Tile;
+use crate::py::cells::geohash::PyGeohashCell;
+use crate::py::cells::h3::PyH3Cell;
+use crate::py::cells::s2::PyS2Cell;
+use crate::py::cells::tiles::PyTile;
 use crate::py::errors::{GeometryError, ParseFormat, parse_error};
 
 /// Which scalar cell type a `CellArray` stores.
@@ -370,6 +366,31 @@ fn grid_kind_from_cell(value: &Bound<'_, PyAny>) -> Option<GridKind> {
         .then_some(GridKind::GeohashCell)
 }
 
+fn owned_u64_ids_from_tobytes<T>(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>>
+where
+    T: Copy + TryInto<u64>,
+{
+    use pyo3::types::PyBytes;
+    let py_bytes = ids.call_method0("tobytes")?;
+    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
+    let width = std::mem::size_of::<T>();
+    if width == 0 || !bytes.len().is_multiple_of(width) {
+        return Err(PyTypeError::new_err(
+            "cell array ids buffer length is invalid",
+        ));
+    }
+    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
+    for chunk in bytes.chunks_exact(width) {
+        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
+        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
+        let id = value.try_into().map_err(|_| {
+            PyTypeError::new_err("cell array ids must be integers representable as uint64")
+        })?;
+        out.push(id);
+    }
+    Ok(out)
+}
+
 fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
@@ -382,20 +403,11 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     macro_rules! try_array {
         ($($ty:ty),* $(,)?) => {
             $(
-                if let Ok(values) = ids.extract::<PyReadonlyArrayDyn<'_, $ty>>() {
-                    let flat = values.as_array();
-                    // Fallible reserve: a small-dtype array must not amplify
-                    // into an infallible `Vec<u64>` of the same length.
-                    let mut out = crate::try_vec_with_capacity(flat.len())?;
-                    for &value in flat.iter() {
-                        let id = u64::try_from(value).map_err(|_| {
-                            PyTypeError::new_err(
-                                "cell array ids must be integers representable as uint64",
-                            )
-                        })?;
-                        out.push(id);
-                    }
-                    return Ok(Some(out));
+                if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
+                    // Owned capture via `tobytes()` — immutable bytes by
+                    // construction; never iterate an ArrayView over writable
+                    // NumPy memory.
+                    return Ok(Some(owned_u64_ids_from_tobytes::<$ty>(ids)?));
                 }
             )*
         };

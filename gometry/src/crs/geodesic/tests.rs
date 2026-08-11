@@ -1,6 +1,13 @@
 use geographiclib_rs::Geodesic;
 
-use super::*;
+use super::super::GOLDEN_SECTION_TOLERANCE_METRES;
+use super::distance::geodesic_frechet_dp;
+use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
+use super::segment::{
+    GeodesicSegmentMinimum, endpoint_probe, geodesic_segment_minimum,
+    geodesic_segment_minimum_golden, nearer_endpoint,
+};
+use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, GeodesicMetric, GeodesicSegment, LineSeq, Point,
@@ -36,6 +43,10 @@ fn point_only_points(shape: &Shape) -> Vec<Point> {
     }
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn golden_oracle(
     geodesic: &Geodesic,
     point: Point,
@@ -336,8 +347,8 @@ fn brute_geodesic_nearest_points(
 
 #[test]
 #[expect(
-    clippy::float_cmp,
-    reason = "the prolate guard must return the exact no-prune sentinel"
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
 fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result<()> {
     let semi_major = 6_378_137.0;

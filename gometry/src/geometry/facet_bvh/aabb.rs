@@ -1,4 +1,4 @@
-use crate::geometry::*;
+use crate::geometry::Segment;
 
 /// Lower-bound squared distance between two AABBs (0 when overlapping).
 /// Plain mul+add, not `mul_add`: scalar `mul_add` on the portable baseline

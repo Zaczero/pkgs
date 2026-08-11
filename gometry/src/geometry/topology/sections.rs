@@ -1,4 +1,7 @@
-use super::*;
+use crate::geometry::topology::{
+    Cut, Operand, OperandPool, Segment, XY, polygon_rings_contain_interior,
+};
+use crate::geometry::{Bounds, point_on_segment};
 
 pub(in crate::geometry) fn sort_dedup_cuts(segment: Segment, cuts: &mut Vec<Cut>) {
     if cuts.is_empty() {

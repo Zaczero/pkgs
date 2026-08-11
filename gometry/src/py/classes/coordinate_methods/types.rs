@@ -1,4 +1,7 @@
-use super::*;
+use crate::py::classes::coordinate_methods::{
+    Bound, Point, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyResult, Python, coordinate_tuple,
+    coordinates,
+};
 
 impl PyCoordinates {
     pub const fn new(view: coordinates::CoordinateView) -> Self {
@@ -6,44 +9,42 @@ impl PyCoordinates {
     }
 
     pub(crate) fn coordinates_equal(&self, other: &Self) -> bool {
-        if self.view.len() != other.view.len() {
-            return false;
-        }
-        let mut other_values = Vec::with_capacity(other.view.len());
-        other.view.for_each_point(|coord| {
-            other_values.push(visible_coordinate(coord.point, other.layout));
-        });
-        let mut idx = 0_usize;
-        let mut equal = true;
-        self.view.for_each_point(|coord| {
-            if equal {
-                equal =
-                    other_values.get(idx) == Some(&visible_coordinate(coord.point, self.layout));
-                idx += 1;
-            }
-        });
-        equal
+        // Full-scan equality is run-wise / columnar (never n× CSR `point_at`,
+        // which is O(n log rows) on packed lines/polygons). Short-circuit
+        // first-mismatch stays linear via dual sequential streams; identical
+        // owners answer in O(1).
+        self.view
+            .equal_visible(&other.view, self.layout, other.layout)
     }
 
+    /// Single-pass sequence equality: stream self's visible tuples against
+    /// `other`'s iterator once. Provider errors propagate (never swallowed).
     pub(crate) fn coordinates_equal_sequence(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        use std::ops::ControlFlow;
         let py = other.py();
         let mut items = other.try_iter()?;
-        let mut points = Vec::with_capacity(self.view.len());
-        self.view.for_each_point(|coord| points.push(coord.point));
-        for point in points {
-            match items.next() {
-                Some(Ok(item)) => {
-                    if !coordinate_tuple(py, point, self.layout)?
-                        .bind(py)
-                        .eq(&item)?
-                    {
-                        return Ok(false);
-                    }
+        let walk = self
+            .view
+            .try_for_each_point(&mut |coord| match items.next() {
+                Some(Ok(item)) => match coordinate_tuple(py, coord.point, self.layout) {
+                    Ok(expected) => match expected.bind(py).eq(&item) {
+                        Ok(true) => ControlFlow::Continue(()),
+                        Ok(false) => ControlFlow::Break(Ok(false)),
+                        Err(err) => ControlFlow::Break(Err(err)),
+                    },
+                    Err(err) => ControlFlow::Break(Err(err)),
                 },
-                _ => return Ok(false),
-            }
+                Some(Err(err)) => ControlFlow::Break(Err(err)),
+                None => ControlFlow::Break(Ok(false)),
+            });
+        match walk {
+            ControlFlow::Break(result) => result,
+            ControlFlow::Continue(()) => match items.next() {
+                None => Ok(true),
+                Some(Ok(_)) => Ok(false),
+                Some(Err(err)) => Err(err),
+            },
         }
-        Ok(items.next().is_none())
     }
 
     /// Format one coordinate as a Python tuple, honoring a fixed `select`
@@ -51,14 +52,16 @@ impl PyCoordinates {
     pub(crate) fn tuple(&self, py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
         coordinate_tuple(py, point, self.layout)
     }
-}
 
-fn visible_coordinate(point: Point, layout: Option<CoordinateAxes>) -> ([Option<f64>; 4], usize) {
-    let (order, n) =
-        coordinate_axis_order(layout.unwrap_or_else(|| CoordinateAxes::from_point(point)));
-    let mut values = [None; 4];
-    for (index, &axis) in order[..n].iter().enumerate() {
-        values[index] = coordinate_ordinate(point, axis);
+    /// Visible-layout equality used by membership / count / index — the same
+    /// representation iteration yields. A `select('XY')` view matches on XY
+    /// only; a forced XYZ layout matches `(x, y, None)` when Z is absent.
+    pub(crate) fn visible_equals(
+        &self,
+        py: Python<'_>,
+        point: Point,
+        item: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        self.tuple(py, point)?.bind(py).eq(item)
     }
-    (values, n)
 }

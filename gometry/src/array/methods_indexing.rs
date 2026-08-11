@@ -3,25 +3,29 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    clippy::needless_pass_by_value,
+    reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
-)]
 
-use std::fmt::Write;
+use std::borrow::Cow;
+use std::fmt::Write as _;
+use std::mem::size_of;
 
-use numpy::{Element, PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods};
+use numpy::{Element, PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
-use pyo3::types::{PyBool, PyInt, PySequence};
+use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PySequence, PyTuple};
 
-use super::*;
+use crate::array::{
+    Arc, Bound, CoordSeq, GeometryArrayStorage, GeometryError, HeapSize, IntoPyObject as _,
+    MissingMask, OverlayOp, PointColumnBuilder, Py, PyAny, PyAnyMethods as _, PyBytesMethods as _,
+    PyCoordinates, PyErr, PyGeometryArray, PyGeometryArrayIter, PyListMethods as _, PyResult,
+    PyTupleMethods as _, PyTypeMethods as _, Python, Shape, Typed, exact_geometry,
+    exact_geometry_array, overlay_operator, physical_row,
+};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
 pub(crate) enum FancyIndex {
@@ -51,24 +55,22 @@ pub(crate) fn numpy_fancy_index(
             "{label} NumPy indices must be zero- or one-dimensional"
         )));
     }
-    if let Ok(mask) = index.extract::<PyReadonlyArrayDyn<'_, bool>>() {
+    if index.extract::<PyReadonlyArrayDyn<'_, bool>>().is_ok() {
         if ndim == 0 {
             return Err(PyTypeError::new_err(format!(
                 "boolean scalar is not a {type_label} index; use an integer index or a boolean mask"
             )));
         }
-        if let Ok(values) = mask.as_slice() {
-            return Ok(Some(NumpyFancyIndex::Mask(values.to_vec())));
-        }
-        return Ok(Some(NumpyFancyIndex::Mask(
-            mask.as_array().iter().copied().collect(),
-        )));
+        // `ndarray.tobytes()` materializes immutable Python bytes — owned by
+        // construction, never an ArrayView over writable provider memory.
+        let owned = owned_bool_mask_from_tobytes(index)?;
+        return Ok(Some(NumpyFancyIndex::Mask(owned)));
     }
     macro_rules! try_integer_array {
         ($($ty:ty),* $(,)?) => {
             $(
-                if let Ok(indices) = index.extract::<PyReadonlyArrayDyn<'_, $ty>>() {
-                    return numpy_integer_fancy_index(indices, ndim, label).map(Some);
+                if index.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
+                    return numpy_integer_fancy_index::<$ty>(index, ndim, label).map(Some);
                 }
             )*
         };
@@ -79,34 +81,23 @@ pub(crate) fn numpy_fancy_index(
     )))
 }
 
+/// Copy a NumPy bool mask via `tobytes()` into owned `Vec<bool>`.
+fn owned_bool_mask_from_tobytes(index: &Bound<'_, PyAny>) -> PyResult<Vec<bool>> {
+    let py_bytes = index.call_method0("tobytes")?;
+    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
+    Ok(bytes.iter().map(|&b| b != 0).collect())
+}
+
 pub(crate) fn numpy_integer_fancy_index<T>(
-    indices: PyReadonlyArrayDyn<'_, T>,
+    index: &Bound<'_, PyAny>,
     ndim: usize,
     label: &str,
 ) -> PyResult<NumpyFancyIndex>
 where
     T: Copy + Element + TryInto<isize>,
 {
-    let values = if let Ok(values) = indices.as_slice() {
-        values
-            .iter()
-            .map(|&value| {
-                value
-                    .try_into()
-                    .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))
-            })
-            .collect::<PyResult<Vec<_>>>()?
-    } else {
-        indices
-            .as_array()
-            .iter()
-            .map(|&value| {
-                value
-                    .try_into()
-                    .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))
-            })
-            .collect::<PyResult<Vec<_>>>()?
-    };
+    // Owned capture via `tobytes()` — immutable bytes by construction.
+    let values = owned_integer_indices_from_tobytes::<T>(index, label)?;
     if ndim == 0 {
         return Ok(NumpyFancyIndex::Scalar(
             values
@@ -116,6 +107,35 @@ where
         ));
     }
     Ok(NumpyFancyIndex::Indices(values))
+}
+
+fn owned_integer_indices_from_tobytes<T>(
+    index: &Bound<'_, PyAny>,
+    label: &str,
+) -> PyResult<Vec<isize>>
+where
+    T: Copy + Element + TryInto<isize>,
+{
+    let py_bytes = index.call_method0("tobytes")?;
+    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
+    let width = size_of::<T>();
+    if width == 0 || !bytes.len().is_multiple_of(width) {
+        return Err(PyTypeError::new_err(format!(
+            "{label} NumPy integer index buffer length is invalid"
+        )));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / width);
+    for chunk in bytes.chunks_exact(width) {
+        // SAFETY: `T: Element` for integer dtypes used here; bytes come from
+        // NumPy's native-endian `tobytes()` for that dtype.
+        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
+        out.push(
+            value
+                .try_into()
+                .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))?,
+        );
+    }
+    Ok(out)
 }
 
 pub(crate) fn is_bool_scalar(index: &Bound<'_, PyAny>) -> bool {
@@ -131,13 +151,23 @@ pub(crate) enum CollectedFancyIndex {
 
 /// Classify and materialize a fancy-index sequence in **one pass**.
 ///
-/// A sequence that reports `len == 1` during a separate classify walk and
-/// `sys.maxsize` during `Vec<T>: FromPyObject` extraction can allocator-abort;
-/// collecting items once with fallible reservation closes that window.
+/// Exact `list` / `tuple` of bool or int extract directly into the mask /
+/// index vector (no intermediate `Vec<PyObject>`). Generic sequences and
+/// other executable providers still collect items once with fallible
+/// reservation so a lying `__len__` cannot allocator-abort.
 pub(crate) fn classify_and_collect_fancy_index(
     py: Python<'_>,
     sequence: &Bound<'_, PySequence>,
 ) -> PyResult<CollectedFancyIndex> {
+    // Trusted-shape fast lane: exact builtins are ABI-honest length sources.
+    let any = sequence.as_any();
+    if let Ok(list) = any.cast::<PyList>() {
+        return classify_and_collect_exact_list(list);
+    }
+    if let Ok(tuple) = any.cast::<PyTuple>() {
+        return classify_and_collect_exact_tuple(tuple);
+    }
+
     let items = crate::collect_sequence_items(sequence)?;
     if items.is_empty() {
         return Ok(CollectedFancyIndex::Empty);
@@ -177,11 +207,71 @@ pub(crate) fn classify_and_collect_fancy_index(
     })
 }
 
+/// Exact `list` fancy-index ingest.
+///
+/// Free-threading soundness: never snapshot `len` then call
+/// [`PyListMethods::get_item_unchecked`] — another thread can shrink the list
+/// between those steps (UB). Nested `extract` / type checks can also suspend a
+/// critical section, so one outer critical section around the whole classify
+/// loop is not enough.
+///
+/// Shape: take an **owned immutable snapshot** via [`PyListMethods::to_tuple`]
+/// (synchronized list→tuple copy under the list's free-threaded lock), then
+/// reuse the exact-tuple lane. Classification and nested Python work run only
+/// on the frozen tuple, which cannot shrink under concurrent mutation.
+fn classify_and_collect_exact_list(list: &Bound<'_, PyList>) -> PyResult<CollectedFancyIndex> {
+    let snapshot = list.to_tuple();
+    classify_and_collect_exact_tuple(&snapshot)
+}
+
+/// Exact `tuple`: same single-pass shape as the list lane (no PyObject staging).
+fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<CollectedFancyIndex> {
+    let len = tuple.len();
+    if len == 0 {
+        return Ok(CollectedFancyIndex::Empty);
+    }
+    // SAFETY: index 0 is in range for a non-empty exact tuple.
+    let first = unsafe { tuple.get_item_unchecked(0) };
+    if first.cast_exact::<PyBool>().is_ok() {
+        let py = tuple.py();
+        let true_ptr = PyBool::new(py, true).as_ptr();
+        let false_ptr = PyBool::new(py, false).as_ptr();
+        let mut mask = Vec::with_capacity(len);
+        for i in 0..len {
+            // SAFETY: `i` is in `0..len` for this exact tuple.
+            let item = unsafe { tuple.get_item_unchecked(i) };
+            let ptr = item.as_ptr();
+            if ptr == true_ptr {
+                mask.push(true);
+            } else if ptr == false_ptr {
+                mask.push(false);
+            } else {
+                return Ok(CollectedFancyIndex::Invalid);
+            }
+        }
+        return Ok(CollectedFancyIndex::Mask(mask));
+    }
+    if first.cast::<PyInt>().is_ok() {
+        let mut indices = Vec::with_capacity(len);
+        for i in 0..len {
+            // SAFETY: `i` is in `0..len` for this exact tuple.
+            let item = unsafe { tuple.get_item_unchecked(i) };
+            if item.cast_exact::<PyBool>().is_ok() || item.cast::<PyInt>().is_err() {
+                return Ok(CollectedFancyIndex::Invalid);
+            }
+            indices.push(item.extract::<isize>()?);
+        }
+        return Ok(CollectedFancyIndex::Indices(indices));
+    }
+    Ok(CollectedFancyIndex::Invalid)
+}
+
 impl HeapSize for PyGeometryArray {
     fn heap_bytes(&self) -> usize {
         self.storage().logical_heap_bytes()
             + self.missing().map_or(0, MissingMask::len)
             + self.frame_caches.heap_bytes()
+            + self.prepared_cache_heap_bytes()
     }
 }
 
@@ -197,12 +287,7 @@ impl RowContainer for PyGeometryArray {
         if self.is_row_missing(row) {
             return Ok(py.None());
         }
-        Ok(Typed(
-            self.storage()
-                .geometry_at(row, self.frame.clone(), self.row_frame_cache(row)),
-        )
-        .into_pyobject(py)?
-        .unbind())
+        Ok(Typed(self.geometry_at(row)).into_pyobject(py)?.unbind())
     }
 }
 
@@ -510,7 +595,11 @@ impl PyGeometryArray {
                     .filter(|(_, missing)| !**missing)
                     .map(|(row, _)| row)
                     .collect();
+                // Carry frame-only caches for the retained rows — the dense
+                // gather rebuilds storage but frame-dependent sidecars remain
+                // valid for present rows and must not be discarded.
                 self.gather_logical_rows_dense(&rows)
+                    .with_selected_caches_from(self, rows.iter().copied())
             },
         )
     }
@@ -563,46 +652,132 @@ impl PyGeometryArray {
             return Ok(self.clone());
         };
         if let Some(geometry) = scalar {
+            // The column keeps its own stored label (`compatible` is
+            // left-biased); the fill only has to name the same frame.
             self.frame.compatible(&geometry.frame, "fill_missing")?;
-            let items: Vec<PyGeometry> = self
-                .storage()
-                .iter_shapes()
-                .enumerate()
-                .map(|(row, shape)| {
-                    let shape = if mask[row] {
-                        geometry.shape.shape().clone()
-                    } else {
-                        shape.into_owned()
-                    };
-                    PyGeometry::with_frame(shape, self.frame.clone())
-                })
-                .collect();
-            return Ok(Self::pack_or_mixed(items, self.frame.clone()));
+            return Ok(self.fill_missing_with_shape(mask, geometry.shape.shape()));
         }
         if let Some(fill) = fill_array {
             self.frame.compatible(&fill.frame, "fill_missing")?;
-            let items: Vec<PyGeometry> = self
-                .storage()
-                .iter_shapes()
-                .zip(fill.storage().iter_shapes())
-                .enumerate()
-                .map(|(row, (shape, fill_shape))| {
-                    let shape = if mask[row] {
-                        if fill.is_row_missing(row) {
-                            return Err(GeometryError::new_err(
-                                "fill array contains missing geometries at rows this array needs",
-                            ));
-                        }
-                        fill_shape.into_owned()
-                    } else {
-                        shape.into_owned()
-                    };
-                    Ok(PyGeometry::with_frame(shape, self.frame.clone()))
-                })
-                .collect::<PyResult<_>>()?;
-            return Ok(Self::pack_or_mixed(items, self.frame.clone()));
+            // Reject missing fill rows that land on a missing target row before
+            // allocating the output column — only consumed fill rows must be present.
+            for (row, &missing) in mask.iter().enumerate() {
+                if missing && fill.is_row_missing(row) {
+                    return Err(GeometryError::new_err(
+                        "fill array contains missing geometries at rows this array needs",
+                    ));
+                }
+            }
+            return Ok(self.fill_missing_with_array(mask, fill));
         }
         unreachable!("fill value type checked above")
+    }
+
+    /// Private batch scatter used by the pandas adapter: replace selected
+    /// positions in one native call (never rebuilds the column through Python
+    /// per row). ``positions`` and ``values`` are equal-length sequences;
+    /// each value is a ``Geometry`` or missing (``None``).
+    ///
+    /// Parameters
+    /// ----------
+    /// positions : sequence of int
+    ///     Non-negative logical row indices (already bounds-normalized).
+    /// values : sequence of Geometry or None
+    ///     Replacement values aligned with ``positions``.
+    ///
+    /// Returns
+    /// -------
+    /// GeometryArray
+    #[pyo3(name = "_replace_at")]
+    pub fn replace_at(
+        &self,
+        positions: &Bound<'_, PyAny>,
+        values: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let positions = crate::collect_py_iter(positions, |item| item.extract::<isize>())?;
+        let values = crate::collect_py_iter(values, Ok)?;
+        if positions.len() != values.len() {
+            return Err(PyValueError::new_err(format!(
+                "positions length {} does not match values length {}",
+                positions.len(),
+                values.len()
+            )));
+        }
+        let n = self.storage().len();
+        let mut rows: Vec<(usize, Option<Shape>)> = Vec::with_capacity(positions.len());
+        for (position, value) in positions.into_iter().zip(values) {
+            if position < 0 || position as usize >= n {
+                return Err(PyIndexError::new_err(format!(
+                    "index {position} is out of bounds for axis 0 with size {n}"
+                )));
+            }
+            let row = position as usize;
+            if value.is_none() {
+                rows.push((row, None));
+                continue;
+            }
+            let Some(geometry) = exact_geometry(&value) else {
+                return Err(PyTypeError::new_err(format!(
+                    "expected Geometry or missing, got {}",
+                    value.get_type().name()?
+                )));
+            };
+            // The column keeps its own stored label; the scattered row only
+            // has to name the same frame.
+            self.frame.compatible(&geometry.frame, "_replace_at")?;
+            rows.push((row, Some(geometry.shape.shape().clone())));
+        }
+        // Packed identity XY points: copy ordinate columns once and patch
+        // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).
+        if let GeometryArrayStorage::Points { coords, row_map } = self.storage()
+            && row_map.is_identity()
+            && coords.axes() == crate::geometry::CoordinateAxes::XY
+            && rows.iter().all(|(_, shape)| {
+                shape.as_ref().is_none_or(|s| {
+                    matches!(s, Shape::Point(p) if p.axes == crate::geometry::CoordinateAxes::XY)
+                })
+            })
+        {
+            let mut xs = coords.xs().to_vec();
+            let mut ys = coords.ys().to_vec();
+            let mut missing_flags: Vec<bool> =
+                (0..n).map(|row| self.is_row_missing(row)).collect();
+            for (row, shape) in rows {
+                match shape {
+                    None => {
+                        xs[row] = f64::NAN;
+                        ys[row] = f64::NAN;
+                        missing_flags[row] = true;
+                    },
+                    Some(Shape::Point(point)) => {
+                        xs[row] = point.x;
+                        ys[row] = point.y;
+                        missing_flags[row] = false;
+                    },
+                    Some(_) => unreachable!("axes gate above"),
+                }
+            }
+            let seq = CoordSeq::from_columns_unchecked(xs.into(), ys.into(), None, None);
+            return Ok(Self::packed_points(seq, self.frame.clone())
+                .with_missing_mask(MissingMask::from_vec(n, missing_flags)));
+        }
+
+        let mut shapes: Vec<Shape> = self.storage().iter_shapes().map(Cow::into_owned).collect();
+        let mut missing_flags: Vec<bool> = (0..n).map(|row| self.is_row_missing(row)).collect();
+        for (row, shape) in rows {
+            match shape {
+                None => {
+                    missing_flags[row] = true;
+                    shapes[row] = Self::missing_placeholder();
+                },
+                Some(shape) => {
+                    missing_flags[row] = false;
+                    shapes[row] = shape;
+                },
+            }
+        }
+        Ok(Self::from_shapes(shapes, self.frame.clone())
+            .with_missing_mask(MissingMask::from_vec(n, missing_flags)))
     }
 
     /// Whether a geometry (or missing row via ``None``) is present.
@@ -630,7 +805,7 @@ impl PyGeometryArray {
     }
 
     pub fn __hash__(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
+        use std::hash::{Hash as _, Hasher as _};
         let mut hasher = crate::collections::python_hasher();
         self.crs_ref().hash(&mut hasher);
         self.epoch().map(f64::to_bits).hash(&mut hasher);
@@ -646,9 +821,10 @@ impl PyGeometryArray {
     }
     /// Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
     /// the stored ``f64`` ordinate columns for this array's selected rows.
-    /// Slices and fancy-indexed arrays report only their logical rows; object
-    /// headers, CSR offset columns, row maps, caches, and CRS metadata are
-    /// excluded.
+    /// Slices and fancy-indexed arrays report only their logical rows. Object
+    /// headers, CSR offset columns, row maps, prepared-geometry / frame
+    /// sidecars, gather memos, and CRS metadata are excluded (``nbytes`` is
+    /// payload-only, matching NumPy).
     ///
     /// Returns
     /// -------
@@ -659,7 +835,9 @@ impl PyGeometryArray {
     }
 
     /// `sys.getsizeof` support: the wrapper plus this array's logical
-    /// Rust-side heap (coordinate payload, CSR offsets, and row maps).
+    /// Rust-side heap — coordinate payload, CSR offsets, row maps, missing
+    /// mask, and any already-materialized prepared-geometry / frame sidecars.
+    /// Lazy cache slots that have not been populated do not inflate the total.
     /// Shared backing buffers are accounted like NumPy views: the logical view
     /// is reported, not the whole shared parent allocation.
     pub fn __sizeof__(&self) -> usize {
@@ -696,4 +874,104 @@ impl PyGeometryArray {
         out
     }
 }
+}
+
+impl PyGeometryArray {
+    /// Dense fill from a scalar shape: packed columns stay column-native;
+    /// mixed storage patches only missing rows. Never stages `PyGeometry`.
+    fn fill_missing_with_shape(&self, mask: &MissingMask, fill: &Shape) -> Self {
+        let frame = self.frame.clone();
+        match (self.storage(), fill) {
+            (GeometryArrayStorage::Points { coords, row_map }, Shape::Point(point))
+                if point.axes == coords.axes() =>
+            {
+                let mut builder = PointColumnBuilder::like_coords(coords, mask.len());
+                for (row, &missing) in mask.iter().enumerate() {
+                    if missing {
+                        builder.push(*point);
+                    } else {
+                        builder.push_at(coords, physical_row(row_map.as_deref(), row));
+                    }
+                }
+                Self::packed_points(builder.finish_infallible(), frame)
+            },
+            (GeometryArrayStorage::Mixed(shapes), _) => {
+                let mut out = shapes.clone();
+                for (row, &missing) in mask.iter().enumerate() {
+                    if missing {
+                        out[row] = fill.clone();
+                    }
+                }
+                Self::from_shapes(out, frame)
+            },
+            _ => {
+                let shapes: Vec<Shape> = self
+                    .storage()
+                    .iter_shapes()
+                    .enumerate()
+                    .map(|(row, shape)| {
+                        if mask[row] {
+                            fill.clone()
+                        } else {
+                            shape.into_owned()
+                        }
+                    })
+                    .collect();
+                Self::from_shapes(shapes, frame)
+            },
+        }
+    }
+
+    /// Dense fill from a row-aligned array: packed point×point stays columnar;
+    /// otherwise collect shapes only (no `PyGeometry` staging).
+    fn fill_missing_with_array(&self, mask: &MissingMask, fill: &Self) -> Self {
+        let frame = self.frame.clone();
+        match (self.storage(), fill.storage()) {
+            (
+                GeometryArrayStorage::Points {
+                    coords: left_coords,
+                    row_map: left_map,
+                },
+                GeometryArrayStorage::Points {
+                    coords: right_coords,
+                    row_map: right_map,
+                },
+            ) if left_coords.axes() == right_coords.axes() => {
+                let mut builder = PointColumnBuilder::like_coords(left_coords, mask.len());
+                for (row, &missing) in mask.iter().enumerate() {
+                    if missing {
+                        builder.push_at(right_coords, physical_row(right_map.as_deref(), row));
+                    } else {
+                        builder.push_at(left_coords, physical_row(left_map.as_deref(), row));
+                    }
+                }
+                Self::packed_points(builder.finish_infallible(), frame)
+            },
+            (GeometryArrayStorage::Mixed(shapes), _) => {
+                let mut out = shapes.clone();
+                for (row, fill_shape) in fill.storage().iter_shapes().enumerate() {
+                    if mask[row] {
+                        out[row] = fill_shape.into_owned();
+                    }
+                }
+                Self::from_shapes(out, frame)
+            },
+            _ => {
+                let shapes: Vec<Shape> = self
+                    .storage()
+                    .iter_shapes()
+                    .zip(fill.storage().iter_shapes())
+                    .enumerate()
+                    .map(|(row, (shape, fill_shape))| {
+                        if mask[row] {
+                            fill_shape.into_owned()
+                        } else {
+                            shape.into_owned()
+                        }
+                    })
+                    .collect();
+                Self::from_shapes(shapes, frame)
+            },
+        }
+    }
 }

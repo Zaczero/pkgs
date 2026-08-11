@@ -9,20 +9,48 @@
 
 use pyo3::types::{PyBytes, PyTuple};
 
-use super::*;
+use crate::py::classes::geometry_methods::{
+    Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
+};
+use crate::{
+    Frame, PyGeometryArray, PyValidationReport, RepairMethod, Shape, VoronoiClipInput, geometry,
+    io, parse_cdt_refinement, parse_precision, parse_sample_count, parse_sample_seed,
+    parse_wkt_output_dimension, require_geojson_crs, validate_subdivide_max_vertices,
+    voronoi_flatten,
+};
+
+/// Byte-size gate for exact `PyBytes::new_with` (not a coordinate-count cliff).
+const EXACT_PYBYTES_MIN_BYTES: usize = 4096;
+
+/// Cheap overestimate of WKB payload bytes without classifying the shape.
+/// Used only to skip the exact-into-PyBytes path on ordinary small geometry.
+fn wkb_byte_estimate(shape: &crate::geometry::Shape) -> usize {
+    use crate::geometry::Shape;
+    match shape {
+        Shape::Point(_) | Shape::Empty(..) => 32,
+        Shape::MultiPoint(points) => points.len().saturating_mul(32).saturating_add(32),
+        Shape::LineString(line) => line.len().saturating_mul(16).saturating_add(32),
+        Shape::MultiLineString(lines) => lines.iter().fold(32_usize, |acc, line| {
+            acc.saturating_add(32)
+                .saturating_add(line.len().saturating_mul(16))
+        }),
+        Shape::Polygon(polygon) => polygon.coord_count().saturating_mul(16).saturating_add(64),
+        Shape::MultiPolygon(polygons) => polygons.iter().fold(32_usize, |acc, polygon| {
+            acc.saturating_add(64)
+                .saturating_add(polygon.coord_count().saturating_mul(16))
+        }),
+        // Collections always take the growable `io::to_wkb` path.
+        Shape::GeometryCollection(_) => 0,
+    }
+}
 
 impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
         shapes: impl IntoIterator<Item = Shape>,
     ) -> PyGeometryArray {
-        PyGeometryArray::pack_or_mixed(
-            shapes
-                .into_iter()
-                .map(|shape| self.with_shape(shape))
-                .collect(),
-            self.frame.clone(),
-        )
+        // Shape-native sink: never stage per-part `PyGeometry` wrappers.
+        PyGeometryArray::from_shapes(shapes.into_iter().collect(), self.frame.clone())
     }
 
     pub(crate) fn to_wkt_impl(
@@ -54,14 +82,24 @@ impl PyGeometry {
             .map(parse_precision)
             .transpose()?
             .map(|precision| self.shape.quantize(precision));
-        Ok(PyBytes::new(
-            py,
-            &io::to_wkb(
-                quantized.as_ref().unwrap_or(&self.shape),
-                self.crs_str(),
-                include_srid,
-            )?,
-        ))
+        let shape = quantized.as_ref().unwrap_or(&self.shape);
+        let crs = self.crs_str();
+        // No coordinate-count gate (the R7 cliff was `coord_count() < 32`).
+        // Byte-size decision via a cheap overestimate (no classify): only large
+        // payloads take exact `PyBytes::new_with` (round-4 win). Ordinary
+        // multiparts share one classify with `__reduce__` via `io::to_wkb` —
+        // never `to_wkb_len` then `to_wkb` (double classify tax on small).
+        if wkb_byte_estimate(shape) >= EXACT_PYBYTES_MIN_BYTES
+            && let Ok(len) = io::to_wkb_len(shape, crs, include_srid)
+            && len >= EXACT_PYBYTES_MIN_BYTES
+        {
+            return PyBytes::new_with(py, len, |buf| {
+                io::write_wkb_into(buf, shape, crs, include_srid)?;
+                Ok(())
+            });
+        }
+        let bytes = io::to_wkb(shape, crs, include_srid)?;
+        Ok(PyBytes::new(py, &bytes))
     }
 
     pub(crate) fn to_geojson_impl(&self, include_z: bool) -> PyResult<String> {
@@ -114,12 +152,9 @@ impl PyGeometry {
         // flat vertex stream — one coords column + arithmetic CSR offsets — so a
         // 1000-triangle result skips 1000 per-triangle `Polygon`/`CoordSeq`
         // allocations and the re-pack scan (measured ~50% of the op).
-        let vertices = self.shape.delaunay_triangle_vertices();
+        let vertices = self.shape.delaunay_triangle_vertices()?;
         if vertices.is_empty() {
-            return Ok(PyGeometryArray::pack_or_mixed(
-                Vec::new(),
-                self.frame.clone(),
-            ));
+            return Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()));
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
@@ -140,10 +175,7 @@ impl PyGeometry {
         if refinement.active() || (!self.shape.has_z() && !self.shape.has_m()) {
             let vertices = self.shape.constrained_delaunay_vertices(refinement)?;
             return if vertices.is_empty() {
-                Ok(PyGeometryArray::pack_or_mixed(
-                    Vec::new(),
-                    self.frame.clone(),
-                ))
+                Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()))
             } else {
                 PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
@@ -162,7 +194,13 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         let count = parse_sample_count(count)?;
         let seed = parse_sample_seed(seed)?;
-        let points = self.shape.sample_points(count, seed)?;
+        // A scalar IS row 0: derive its stream exactly as the array lane
+        // derives row 0's, so `arr.sample_points(n, seed=s)[0]` and
+        // `arr[0].sample_points(n, seed=s)` agree. Using the raw seed here made
+        // the two spellings of one operation disagree for the same input.
+        let points = self
+            .shape
+            .sample_points(count, crate::geometry::row_sample_seed(seed, 0))?;
         Ok(self.parts_to_array(points.into_iter().map(Shape::Point)))
     }
 
@@ -179,7 +217,7 @@ impl PyGeometry {
             tolerance,
             clip,
             "voronoi_polygons",
-            Shape::voronoi_polygons,
+            Shape::voronoi_polygons_budgeted,
         )
     }
 
@@ -196,7 +234,7 @@ impl PyGeometry {
             tolerance,
             clip,
             "voronoi_edges",
-            Shape::voronoi_edges,
+            Shape::voronoi_edges_budgeted,
         )
     }
 
@@ -220,11 +258,14 @@ impl PyGeometry {
         Ok(self.parts_to_array(self.shape.split(&splitter.shape, tolerance)?))
     }
 
-    pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        // An extent accessor describes what is THERE: `None` on an empty
+        // scalar, exactly like `bounds`, `bounds_3d`, `min_z` and `z_range`.
+        // Raising made these two the only members of that family that could
+        // not be called on an empty geometry, while both ARRAY forms already
+        // degraded per row.
         let Some(points) = self.shape.extremes() else {
-            return Err(crate::py::errors::InvalidGeometryError::new_err(
-                "extremes requires a non-empty geometry",
-            ));
+            return Ok(None);
         };
         let typed = points.map(|point| {
             Typed(Self::with_epoch(
@@ -235,7 +276,7 @@ impl PyGeometry {
         });
         let result =
             crate::py::support::extreme_points_type(py)?.call1(PyTuple::new(py, typed)?)?;
-        Ok(result.unbind())
+        Ok(Some(result.unbind()))
     }
 
     pub(crate) fn spatial_key_impl(
@@ -243,8 +284,9 @@ impl PyGeometry {
         curve: crate::py::support::SpatialCurve,
         level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<u64> {
-        crate::py::support::spatial_key_for_shape(&self.shape, curve.into(), level, bounds)
+    ) -> PyResult<Option<u64>> {
+        // `None` on an empty scalar — see `extremes_impl`.
+        crate::py::support::spatial_key_for_shape_opt(&self.shape, curve.into(), level, bounds)
     }
 
     pub(crate) fn subdivide_parts(&self, max_vertices: i64) -> PyResult<PyGeometryArray> {

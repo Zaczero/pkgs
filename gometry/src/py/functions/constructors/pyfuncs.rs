@@ -2,7 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::functions::constructors::{
+    Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
+    PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
+    broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array, coordinate_arc_values,
+    coordinate_epoch_option, coordinate_input, coordinate_inputs_are_scalar,
+    finite_coordinate_required, line_string_from_data_item, multi_line_string_from_data_item,
+    multi_point_from_data_item, multi_polygon_from_data_item, optional_coordinate_arc_values,
+    parse_crs, parse_crs_epoch, polygon_from_data_item, pyfunction,
+};
 
 /// Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
 ///
@@ -139,6 +147,12 @@ pub(super) fn points(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
+    // Contiguous non-scalar buffers → final Arc columns (Item 12). Scalar
+    // broadcast and arbitrary iterators keep the CoordinateInput path below.
+    if let Some(seq) = try_points_from_arc_columns(py, x, y, z, m)? {
+        let frame = parse_crs_epoch(crs, epoch)?;
+        return Ok(PyGeometryArray::packed_points(seq, frame));
+    }
     // Sibling length pin (D11): a list/buffer column establishes the count so
     // a bare `itertools.repeat` sibling rejects instantly instead of hanging.
     let established = crate::coordinate_sequence_len_hint(x)
@@ -171,6 +185,47 @@ pub(super) fn points(
         m.map(|value| value.values.into()),
     )?;
     Ok(PyGeometryArray::packed_points(seq, frame))
+}
+
+/// Fast path for `points(x, y, …)` when every supplied column is a real f64
+/// buffer (NumPy/memoryview) — builds final Arc columns without the
+/// intermediate `CoordinateInput` `Vec` bounce.
+///
+/// Returns `None` for scalars (broadcast), bare iterators, and sequences that
+/// only expose a lying `__len__` — those stay on the iterator-safe path. Only
+/// `PyBuffer<f64>` item counts are trusted as authoritative (ingress threat
+/// model: advisory sizes must not become allocation/length authority).
+fn try_points_from_arc_columns(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    y: &Bound<'_, PyAny>,
+    z: Option<&Bound<'_, PyAny>>,
+    m: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<CoordSeq>> {
+    use pyo3::buffer::PyBuffer;
+    // Real buffers only — never promote Sequence.__len__ to authority.
+    if PyBuffer::<f64>::get(x).is_err() || PyBuffer::<f64>::get(y).is_err() {
+        return Ok(None);
+    }
+    if z.is_some_and(|value| PyBuffer::<f64>::get(value).is_err() && !value.is_none()) {
+        return Ok(None);
+    }
+    if m.is_some_and(|value| PyBuffer::<f64>::get(value).is_err() && !value.is_none()) {
+        return Ok(None);
+    }
+    let xs = coordinate_arc_values(py, x, "x")?;
+    let ys = coordinate_arc_values(py, y, "y")?;
+    if xs.len() != ys.len() {
+        return Err(InvalidGeometryError::new_err(format!(
+            "x and y must have the same length, got {} and {}",
+            xs.len(),
+            ys.len(),
+        )));
+    }
+    let zs = optional_coordinate_arc_values(py, z, xs.len(), "z")?;
+    let ms = optional_coordinate_arc_values(py, m, xs.len(), "m")?;
+    // Finite check lives in from_arc_columns (same as column-form LineString).
+    Ok(Some(CoordSeq::from_arc_columns(xs, ys, zs, ms)?))
 }
 
 /// Create a ``GeometryArray`` of rectangular polygons from bound columns.

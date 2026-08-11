@@ -1,5 +1,5 @@
-use super::*;
-use crate::geometry::*;
+use crate::array::{GeometryArrayStorage, polygon_row_point_membership, row_bounds};
+use crate::geometry::{Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, Shape, ShapeData};
 
 #[derive(Clone, Copy)]
 pub(crate) struct VertexWindow {
@@ -9,7 +9,11 @@ pub(crate) struct VertexWindow {
 
 #[derive(Clone, Copy)]
 pub enum ShapeRow<'a> {
+    /// Persistent prepared handle (index boxed rows, scalar geometry).
     Handle(&'a ShapeData),
+    /// Array-owned mixed storage: plain shape; prepared state lives in the
+    /// array-side prepared-row cache (see [`PyGeometryArray::with_row_data`]).
+    Shape(&'a Shape),
     Point(Point),
     Line(&'a CoordSeq, usize, usize),
     Rings(&'a CoordSeq, &'a [i32], usize, usize),
@@ -21,9 +25,14 @@ impl ShapeRow<'_> {
         Shape::LineString(LineSeq::from_trusted(coords.view(window)))
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
+    )]
     pub fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> R {
         match self {
             Self::Handle(handle) => f(handle.shape()),
+            Self::Shape(shape) => f(shape),
             Self::Point(point) => f(&Shape::Point(point)),
             Self::Line(coords, start, end) => f(&Self::line_shape(coords, start, end)),
             Self::Rings(coords, ring_offsets, start, end) => f(&Shape::Polygon(
@@ -35,6 +44,7 @@ impl ShapeRow<'_> {
     pub fn quick_bounds(self) -> Option<Bounds> {
         match self {
             Self::Handle(handle) => handle.bounds(),
+            Self::Shape(shape) => shape.bounds(),
             Self::Point(point) => Some(Bounds::from_point(point)),
             Self::Line(coords, start, end) => {
                 let window = VertexWindow { start, end };
@@ -59,15 +69,21 @@ impl ShapeRow<'_> {
     pub fn topological_dimension(self) -> Dimension {
         match self {
             Self::Handle(handle) => handle.shape().topological_dimension(),
+            Self::Shape(shape) => shape.topological_dimension(),
             Self::Point(_) => Dimension::Point,
             Self::Line(..) => Dimension::Curve,
             Self::Rings(..) => Dimension::Surface,
         }
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
+    )]
     pub fn with_data<R>(self, f: impl FnOnce(&ShapeData) -> R) -> R {
         match self {
             Self::Handle(handle) => f(handle),
+            Self::Shape(shape) => f(&ShapeData::new(shape.clone())),
             Self::Point(point) => f(&ShapeData::new(Shape::Point(point))),
             Self::Line(coords, start, end) => {
                 f(&ShapeData::new(Self::line_shape(coords, start, end)))
@@ -104,6 +120,7 @@ impl ShapeRow<'_> {
     pub(crate) fn packed_coord_count(self) -> usize {
         match self {
             Self::Handle(handle) => handle.shape().coord_count(),
+            Self::Shape(shape) => shape.coord_count(),
             Self::Point(_) => 1,
             Self::Line(_, start, end) => end - start,
             Self::Rings(_, ring_offsets, start, end) => (start..end)
@@ -122,6 +139,7 @@ impl ShapeRow<'_> {
                 let data = ShapeData::new(handle.shape().clone());
                 data.with_seeded_bounds(bounds)
             },
+            Self::Shape(shape) => ShapeData::new(shape.clone()).with_seeded_bounds(bounds),
             Self::Point(point) => ShapeData::new(Shape::Point(point)).with_seeded_bounds(bounds),
             Self::Line(coords, start, end) => {
                 ShapeData::new(Self::line_shape(coords, start, end)).with_seeded_bounds(bounds)
@@ -133,9 +151,14 @@ impl ShapeRow<'_> {
         }
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
+    )]
     pub fn with_data_bounds<R>(self, bounds: Option<Bounds>, f: impl FnOnce(&ShapeData) -> R) -> R {
         match self {
             Self::Handle(handle) => f(handle),
+            Self::Shape(shape) => f(&ShapeData::new(shape.clone()).with_seeded_bounds(bounds)),
             Self::Point(point) => {
                 f(&ShapeData::new(Shape::Point(point)).with_seeded_bounds(bounds))
             },

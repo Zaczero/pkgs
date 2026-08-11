@@ -1,9 +1,12 @@
-use pyo3::types::{PyAny, PyAnyMethods};
+use pyo3::types::{PyAny, PyAnyMethods as _};
 use pyo3::{Bound, Py, PyResult, Python, pyfunction};
 
-use super::*;
 use crate::geometry::LineSeq;
-use crate::{CoordSeq, Point, PyGeometry, Shape, crs_arc_static};
+use crate::py::cells::h3::{
+    DirectedEdgeIndex, LatLng, PyH3Cell, PyH3Edge, PyH3Vertex, Typed, VertexIndex, parse_h3_index,
+    validate_h3_index_id,
+};
+use crate::{CoordSeq, Point, PyGeometry, Shape};
 
 frozen_pymethods! {
 impl PyH3Vertex {
@@ -71,15 +74,14 @@ impl PyH3Vertex {
     /// Returns
     /// -------
     /// Point
-    ///     Longitude/latitude point tagged ``EPSG:4326``.
+    ///     Longitude/latitude point tagged ``OGC:CRS84``.
     #[getter]
     fn point(&self) -> Typed {
         let latlng = LatLng::from(self.vertex);
-        PyGeometry::typed_with_epoch(
-            Shape::Point(Point::new_unchecked_xy(latlng.lng(), latlng.lat())),
-            Some(crs_arc_static("EPSG:4326")),
-            None,
-        )
+        PyGeometry::typed_wgs84(Shape::Point(Point::new_unchecked_xy(
+            latlng.lng(),
+            latlng.lat(),
+        )))
     }
 
     fn __int__(&self) -> u64 {
@@ -254,7 +256,7 @@ fn reverse(&self) -> Self {
     /// Returns
     /// -------
     /// LineString
-    ///     Longitude/latitude line tagged ``EPSG:4326``.
+    ///     Longitude/latitude line tagged ``OGC:CRS84``.
     #[getter]
     fn line(&self) -> Typed {
         let points: Vec<Point> = self
@@ -263,13 +265,9 @@ fn reverse(&self) -> Self {
             .iter()
             .map(|latlng| Point::new_unchecked_xy(latlng.lng(), latlng.lat()))
             .collect();
-        PyGeometry::typed_with_epoch(
-            Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(points)).expect("H3 edge boundary is lineal"),
-            ),
-            Some(crs_arc_static("EPSG:4326")),
-            None,
-        )
+        PyGeometry::typed_wgs84(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(points)).expect("H3 edge boundary is lineal"),
+        ))
     }
 
     /// Length of the edge in meters (spherical, like `H3Cell.area`).

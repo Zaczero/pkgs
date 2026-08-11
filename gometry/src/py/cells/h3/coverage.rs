@@ -1,11 +1,17 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use std::sync::Arc;
+
+use pyo3::IntoPyObjectExt as _;
+use pyo3::prelude::{PyAnyMethods as _, PyTypeMethods as _};
+
 use crate::grid::cell::CellDepth;
 use crate::py::cells::coverage_ops::{CoverageCells, HierarchicalCoverageOps};
-use crate::py::cells::*;
+use crate::py::cells::h3::{
+    CellIndex, PyH3Cell, PyH3Coverage, PyH3CoverageIter, Resolution, h3_cell_index, h3_cell_vec,
+    h3_compact_with_floor, h3_dissolve_sorted, h3_floor, parse_h3_resolution, py_h3_cell_array,
+};
+use crate::py::cells::{
+    Bound, GridKind, PyAny, PyErr, PyResult, Typed, pymethods, uncompact_floor_error,
+};
 
 #[pymethods]
 impl PyH3Coverage {
@@ -40,7 +46,7 @@ grid_hierarchical_coverage_common_pymethods! {
 impl HierarchicalCoverageOps for PyH3Coverage {
     type Cell = PyH3Cell;
 
-    fn cells(&self) -> &CoverageCells<Self::Cell> {
+    fn coverage_cells(&self) -> &CoverageCells<Self::Cell> {
         &self.cells
     }
 
@@ -107,21 +113,21 @@ grid_coverage_common_pymethods! {
         cell_array: py_h3_cell_array,
         parse_cell: h3_cell_index,
         parsed_key: |cell| u64::from(cell),
-        interior_doc: "Cells certified entirely inside the source geometry.\n\nWith ``boundary_cells`` this is the rule-independent classification of the covering: any point in an interior cell is inside the area, no geometry test needed. Render these solid and ``boundary_cells`` outlined for a faithful core-vs-fringe picture.\n\nReturns\n-------\nCellArray of H3Cell",
-        interior_cells: { coverage.membership.partition.interior().cell_array(GridKind::H3Cell) },
-        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nReturns\n-------\nCellArray of H3Cell",
+        interior_doc: "Cells certified entirely inside the source geometry.\n\nWith ``boundary_cells`` this is the rule-independent classification of the covering: any point in an interior cell is inside the area, no geometry test needed. Render these solid and ``boundary_cells`` outlined for a faithful core-vs-fringe picture.\n\nThe overlap partition is computed lazily on first access (shared with ``boundary_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of H3Cell\n\nRaises\n------\nGeometryError\n    If computing the overlap partition would exceed the recorded ``max_cells``.",
+        interior_cells: { Ok(coverage.partition()?.interior().cell_array(GridKind::H3Cell)) },
+        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nThe overlap partition is computed lazily on first access (shared with ``interior_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of H3Cell\n\nRaises\n------\nGeometryError\n    If computing the overlap partition would exceed the recorded ``max_cells``.",
         boundary_cells: {
-            coverage.membership.partition.boundary().cell_array(GridKind::H3Cell)
+            Ok(coverage.partition()?.boundary().cell_array(GridKind::H3Cell))
         },
-        depth_fields: [depth],
-        hash_depth: (coverage.depth,),
+        depth_fields: [depth, max_cells],
+        hash_depth: (coverage.depth, coverage.max_cells,),
         cell_hash_key: |cell| { u64::from(cell.cell) },
         explain_grid: "h3",
         explain_depth: { coverage.depth.explain("resolution") },
         explain_cells: "cells",
-        explain_interior_len: { coverage.membership.partition.interior_len() },
-        explain_outer_len: { coverage.membership.partition.outer_len() },
-        to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nShared cell edges are removed, so the result is the coverage's region as one geometry (the ``cellsToMultiPolygon`` operation), not one polygon per cell like ``coverage.cells.polygon``. Mixed resolutions dissolve too, so ``coverage.compact().to_polygon()`` works directly. Disjoint covered regions return a `MultiPolygon`.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n    The dissolved region, tagged ``EPSG:4326``.\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
+        explain_interior_len: { coverage.partition()?.interior_len() },
+        explain_outer_len: { coverage.partition()?.outer_len() },
+        to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nShared cell edges are removed, so the result is the coverage's region as one geometry (the ``cellsToMultiPolygon`` operation), not one polygon per cell like ``coverage.cells.polygon``. Mixed resolutions dissolve too, so ``coverage.compact().to_polygon()`` works directly. Disjoint covered regions return a `MultiPolygon`.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n    The dissolved region, tagged ``OGC:CRS84``.\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
         to_polygon: { h3_dissolve_sorted(coverage.cells.iter().map(|cell| cell.cell).collect()) },
         reduce_unpickle: "_unpickle_h3_coverage",
         reduce_args: {
@@ -171,7 +177,7 @@ impl PyH3Coverage {
             cells,
             cell_rule: self.cell_rule,
             depth,
-            membership: self.membership.clone(),
+            membership: Arc::clone(&self.membership),
             max_cells: self.max_cells,
         }
     }

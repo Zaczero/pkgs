@@ -26,8 +26,8 @@ class Lying:
 
 
 def _assert_not_panic(exc: BaseException) -> None:
-    assert type(exc).__name__ != "PanicException", f"Rust panic: {exc}"
-    assert "capacity overflow" not in str(exc).lower()
+    assert type(exc).__name__ != 'PanicException', f'Rust panic: {exc}'
+    assert 'capacity overflow' not in str(exc).lower()
 
 
 def _call_no_panic(call):
@@ -47,7 +47,7 @@ def _call_no_panic(call):
 def test_d01_lying_len_cell_array_unpickle_no_panic():
     # Lying __len__ must not force Vec::with_capacity panic. Iteration via
     # getitem that immediately IndexErrors yields an empty cell array (safe).
-    out, err = _call_no_panic(lambda: _lib._unpickle_cell_array(Lying(), "h3"))
+    out, err = _call_no_panic(lambda: _lib._unpickle_cell_array(Lying(), 'h3'))
     if err is None:
         assert len(out) == 0
 
@@ -55,12 +55,12 @@ def test_d01_lying_len_cell_array_unpickle_no_panic():
 def test_d01_lying_len_coverage_and_groups_no_panic():
     calls = [
         lambda: _lib._unpickle_h3_coverage(
-            gm.box(0, 0, 1, 1, crs=4326), Lying(), "overlap", 1, None, 1_000_000
+            gm.box(0, 0, 1, 1, crs=4326), Lying(), 'overlap', 1, None, 1_000_000
         ),
         lambda: _lib._unpickle_s2_coverage(
             gm.box(0, 0, 1, 1, crs=4326),
             Lying(),
-            "overlap",
+            'overlap',
             1,
             1,
             1,
@@ -102,7 +102,7 @@ def test_d02_arrow_multilinestring_empty_parts_budget(pyarrow_or_skip):
 
     # Moderate empty-heavy case (was over the old magic structure ratio).
     n = 2_048
-    coord = pa.struct([pa.field("x", pa.float64()), pa.field("y", pa.float64())])
+    coord = pa.struct([pa.field('x', pa.float64()), pa.field('y', pa.float64())])
     inner = pa.ListArray.from_arrays(
         pa.array(np.zeros(n + 1, dtype=np.int32)),
         pa.array([], type=coord),
@@ -114,18 +114,16 @@ def test_d02_arrow_multilinestring_empty_parts_budget(pyarrow_or_skip):
     ext = pa.ExtensionArray.from_storage(typ, outer)
     arr = gm.from_arrow(ext)
     assert len(arr) == 1
-    assert arr[0].geometry_type == "MultiLineString"
+    assert arr[0].geometry_type == 'MultiLineString'
 
 
 def test_d02_positive_dense_multilinestring_imports(pyarrow_or_skip):
     _ = pyarrow_or_skip
     # Small legitimate multi-line must still import.
-    g = gm.MultiLineString(
-        [
-            gm.LineString([(0, 0), (1, 1)]),
-            gm.LineString([(2, 2), (3, 3)]),
-        ]
-    )
+    g = gm.MultiLineString([
+        gm.LineString([(0, 0), (1, 1)]),
+        gm.LineString([(2, 2), (3, 3)]),
+    ])
     arr = gm.GeometryArray([g])
     arrow = arr.to_arrow()
     back = gm.from_arrow(arrow)
@@ -141,9 +139,9 @@ def test_d25_ewkb_srid_conflict_rejected():
     # Exact audit repro: embedded 4326 + payload EPSG:3857 must not overwrite.
     w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
     with pytest.raises(gm.CRSMismatchError) as excinfo:
-        _lib._unpickle_geometry(w, "EPSG:3857", None)
-    assert "3857" in str(excinfo.value)
-    assert "4326" in str(excinfo.value)
+        _lib._unpickle_geometry(w, 'EPSG:3857', None)
+    assert '3857' in str(excinfo.value)
+    assert '4326' in str(excinfo.value)
 
 
 def test_d25_ewkb_srid_kept_when_frame_absent():
@@ -151,17 +149,17 @@ def test_d25_ewkb_srid_kept_when_frame_absent():
     w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
     g = _lib._unpickle_geometry_array([w], None, None, None)
     assert g[0].crs is not None
-    assert "4326" in str(g[0].crs)
+    assert '4326' in str(g[0].crs)
     # Scalar path is consistent: no silent discard either.
     scalar = _lib._unpickle_geometry(w, None, None)
     assert scalar.crs is not None
-    assert "4326" in str(scalar.crs)
+    assert '4326' in str(scalar.crs)
 
 
 def test_d25_invalid_frame_rejected_at_unpickle():
     # Exact audit repro: "NOT_A_CRS" fails AT unpickle (typed CRSError).
     with pytest.raises(gm.CRSError):
-        _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), "NOT_A_CRS", None)
+        _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), 'NOT_A_CRS', None)
 
 
 def test_d25_positive_geometry_pickle_roundtrip():
@@ -217,7 +215,7 @@ def test_d29_positive_spatial_index_roundtrip():
 def test_d30_forged_valid_recomputed_false():
     # Exact audit repro: forged valid=True via unpickle payload is impossible;
     # unpickle takes geometry only and re-runs validate().
-    bad = gm.from_wkt("POLYGON ((0 0,1 1,1 0,0 1,0 0))")
+    bad = gm.from_wkt('POLYGON ((0 0,1 1,1 0,0 1,0 0))')
     assert bad.is_valid is False
     with pytest.raises(TypeError):
         _lib._unpickle_validation_report(bad, None)  # type: ignore[call-arg]
@@ -232,7 +230,7 @@ def test_d30_forged_nonfinite_diagnostic_not_accepted():
     with pytest.raises(TypeError):
         _lib._unpickle_validation_report(  # type: ignore[call-arg]
             gm.Point(0, 0),
-            ("forged", (float("nan"), float("inf")), "not-a-path"),
+            ('forged', (float('nan'), float('inf')), 'not-a-path'),
         )
     report = _lib._unpickle_validation_report(gm.Point(0, 0))
     assert report.valid is True
@@ -241,7 +239,7 @@ def test_d30_forged_nonfinite_diagnostic_not_accepted():
 
 def test_d30_positive_validation_report_roundtrip():
     good = gm.Point(0, 0)
-    bad = gm.from_wkt("POLYGON ((0 0,1 1,1 0,0 1,0 0))")
+    bad = gm.from_wkt('POLYGON ((0 0,1 1,1 0,0 1,0 0))')
     for geom in (good, bad):
         report = geom.validate()
         out = pickle.loads(pickle.dumps(report))
@@ -259,7 +257,7 @@ def test_d26_source_normalization_matches_factory():
     base = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=1)
     args = list(base.__reduce__()[1])
     # Empty geometry: factory rejects; unpickle must too.
-    empty = gm.from_wkt("POLYGON EMPTY").set_crs(4326)
+    empty = gm.from_wkt('POLYGON EMPTY').set_crs(4326)
     args[0] = empty
     with pytest.raises(gm.InvalidGeometryError) as excinfo:
         _lib._unpickle_h3_coverage(*args)
@@ -303,10 +301,10 @@ def test_d26_positive_coverage_roundtrips():
         _assert_coverage_pickle_identity(compacted)
         # Uncompact back to the cover depth when uniform metadata is present.
         depth = (
-            getattr(cov, "resolution", None)
-            or getattr(cov, "level", None)
-            or getattr(cov, "precision", None)
-            or getattr(cov, "zoom", None)
+            getattr(cov, 'resolution', None)
+            or getattr(cov, 'level', None)
+            or getattr(cov, 'precision', None)
+            or getattr(cov, 'zoom', None)
         )
         if depth is not None:
             expanded = compacted.uncompact(depth)
@@ -341,7 +339,7 @@ def test_r12_positive_empty_and_projected_roundtrips():
 
 def test_r12_positive_cell_rule_variants_roundtrip():
     src = gm.box(0, 0, 1, 1, crs=4326)
-    for rule in ("overlap", "within", "center", "bbox"):
+    for rule in ('overlap', 'within', 'center', 'bbox'):
         for cov in (
             gm.h3_cover(src, resolution=4, cell_rule=rule),
             gm.tile_cover(src, zoom=6, cell_rule=rule),
@@ -402,10 +400,10 @@ def test_d28_s2_impossible_params_rejected():
     _assert_not_panic(excinfo.value)
     # Individual public-parser cases (same validators as s2_cover).
     cases = [
-        ([31, 1, 1, 10000], "level"),
-        ([5, 1, 1, 10000], "min_level"),
-        ([1, 1, 0, 10000], "level_mod"),
-        ([1, 1, 1, 0], "max_cells"),
+        ([31, 1, 1, 10000], 'level'),
+        ([5, 1, 1, 10000], 'min_level'),
+        ([1, 1, 0, 10000], 'level_mod'),
+        ([1, 1, 1, 0], 'max_cells'),
     ]
     for patch, _needle in cases:
         bad = list(args)
@@ -423,7 +421,7 @@ def test_d28_geohash_impossible_precision_rejected():
     for bad in (0, 13, 255):
         bad_args = list(args)
         bad_args[factory_idx] = bad
-        with pytest.raises(gm.GeometryError, match="precision") as excinfo:
+        with pytest.raises(gm.GeometryError, match='precision') as excinfo:
             _lib._unpickle_geohash_coverage(*bad_args)
         _assert_not_panic(excinfo.value)
 
@@ -435,7 +433,7 @@ def test_d28_tile_impossible_zoom_rejected():
     for bad in (30, 255):
         bad_args = list(args)
         bad_args[factory_idx] = bad
-        with pytest.raises(gm.GeometryError, match="zoom") as excinfo:
+        with pytest.raises(gm.GeometryError, match='zoom') as excinfo:
             _lib._unpickle_tile_coverage(*bad_args)
         _assert_not_panic(excinfo.value)
 
@@ -448,7 +446,7 @@ def test_d28_h3_impossible_resolution_rejected():
     for bad in (16, 255):
         bad_args = list(args)
         bad_args[factory_idx] = bad
-        with pytest.raises(gm.GeometryError, match="resolution") as excinfo:
+        with pytest.raises(gm.GeometryError, match='resolution') as excinfo:
             _lib._unpickle_h3_coverage(*bad_args)
         _assert_not_panic(excinfo.value)
 
@@ -464,49 +462,51 @@ def test_d20_empty_coverage_rejects_impossible_visible_depth():
     src = gm.Point(0, 0, crs=4326)
 
     # H3 audit repro: empty cells + visible_depth=255.
-    with pytest.raises(gm.GeometryError, match="resolution") as excinfo:
-        _lib._unpickle_h3_coverage(src, [], "within", 0, 255, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='resolution') as excinfo:
+        _lib._unpickle_h3_coverage(src, [], 'within', 0, 255, 1_000_000)
     _assert_not_panic(excinfo.value)
-    with pytest.raises(gm.GeometryError, match="resolution") as excinfo:
-        _lib._unpickle_h3_coverage(src, [], "within", 0, 16, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='resolution') as excinfo:
+        _lib._unpickle_h3_coverage(src, [], 'within', 0, 16, 1_000_000)
     _assert_not_panic(excinfo.value)
 
     # Geohash / tile empty path (visible_depth is second-to-last; max_cells last).
-    with pytest.raises(gm.GeometryError, match="precision") as excinfo:
-        _lib._unpickle_geohash_coverage(src, [], "within", 1, 255, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='precision') as excinfo:
+        _lib._unpickle_geohash_coverage(src, [], 'within', 1, 255, 1_000_000)
     _assert_not_panic(excinfo.value)
-    with pytest.raises(gm.GeometryError, match="precision") as excinfo:
-        _lib._unpickle_geohash_coverage(src, [], "within", 1, 13, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='precision') as excinfo:
+        _lib._unpickle_geohash_coverage(src, [], 'within', 1, 13, 1_000_000)
     _assert_not_panic(excinfo.value)
-    with pytest.raises(gm.GeometryError, match="zoom") as excinfo:
-        _lib._unpickle_tile_coverage(src, [], "within", 0, 255, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='zoom') as excinfo:
+        _lib._unpickle_tile_coverage(src, [], 'within', 0, 255, 1_000_000)
     _assert_not_panic(excinfo.value)
-    with pytest.raises(gm.GeometryError, match="zoom") as excinfo:
-        _lib._unpickle_tile_coverage(src, [], "within", 0, 30, 1_000_000)
+    with pytest.raises(gm.GeometryError, match='zoom') as excinfo:
+        _lib._unpickle_tile_coverage(src, [], 'within', 0, 30, 1_000_000)
     _assert_not_panic(excinfo.value)
 
     # S2: impossible max_level on empty visible cells (levels always gated).
-    with pytest.raises(gm.GeometryError, match="level") as excinfo:
-        _lib._unpickle_s2_coverage(src, [], "within", 0, 31, 1, 10000, 8)
+    with pytest.raises(gm.GeometryError, match='level') as excinfo:
+        _lib._unpickle_s2_coverage(src, [], 'within', 0, 31, 1, 10000, 8)
     _assert_not_panic(excinfo.value)
 
     # Legitimate empty coverages at valid depths still restore.
-    empty_h3 = _lib._unpickle_h3_coverage(src, [], "within", 0, 0, 1_000_000)
+    empty_h3 = _lib._unpickle_h3_coverage(src, [], 'within', 0, 0, 1_000_000)
     assert len(empty_h3) == 0
     assert empty_h3.resolution == 0
-    round_h3 = pickle.loads(pickle.dumps(gm.h3_cover(src, resolution=0, cell_rule="within")))
+    round_h3 = pickle.loads(
+        pickle.dumps(gm.h3_cover(src, resolution=0, cell_rule='within'))
+    )
     assert len(round_h3) == 0
     assert round_h3.resolution == 0
 
-    empty_gh = _lib._unpickle_geohash_coverage(src, [], "within", 1, 1, 1_000_000)
+    empty_gh = _lib._unpickle_geohash_coverage(src, [], 'within', 1, 1, 1_000_000)
     assert len(empty_gh) == 0
     assert empty_gh.precision == 1
 
-    empty_tile = _lib._unpickle_tile_coverage(src, [], "within", 0, 0, 1_000_000)
+    empty_tile = _lib._unpickle_tile_coverage(src, [], 'within', 0, 0, 1_000_000)
     assert len(empty_tile) == 0
     assert empty_tile.zoom == 0
 
-    empty_s2 = gm.s2_cover(src, level=1, cell_rule="within")
+    empty_s2 = gm.s2_cover(src, level=1, cell_rule='within')
     assert len(empty_s2) == 0
     round_s2 = pickle.loads(pickle.dumps(empty_s2))
     assert len(round_s2) == 0
@@ -533,10 +533,10 @@ def test_d28_positive_params_roundtrip():
 def test_d32_empty_geometry_groups_unpickle():
     # Empty offsets is invalid CSR (must start with 0). Pre-fix release raised
     # BufferError / debug panic on len()-1; require a clean GeometryError.
-    with pytest.raises(gm.GeometryError, match="invalid CSR offsets") as excinfo:
+    with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
         _lib._unpickle_geometry_groups(gm.GeometryArray([]), [])
-    assert type(excinfo.value).__name__ != "BufferError"
-    assert type(excinfo.value).__name__ != "PanicException"
+    assert type(excinfo.value).__name__ != 'BufferError'
+    assert type(excinfo.value).__name__ != 'PanicException'
 
     # Valid empty Groups: offsets=[0].
     g = _lib._unpickle_geometry_groups(gm.GeometryArray([]), [0])
@@ -544,10 +544,10 @@ def test_d32_empty_geometry_groups_unpickle():
 
 
 def test_d32_empty_cell_groups_unpickle():
-    with pytest.raises(gm.GeometryError, match="invalid CSR offsets") as excinfo:
+    with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
         _lib._unpickle_cell_groups(gm.CellArray([], type=gm.H3Cell), [])
-    assert type(excinfo.value).__name__ != "BufferError"
-    assert type(excinfo.value).__name__ != "PanicException"
+    assert type(excinfo.value).__name__ != 'BufferError'
+    assert type(excinfo.value).__name__ != 'PanicException'
 
     g = _lib._unpickle_cell_groups(gm.CellArray([], type=gm.H3Cell), [0])
     assert len(g) == 0
@@ -568,4 +568,4 @@ def test_d32_positive_groups_roundtrip():
 
 @pytest.fixture
 def pyarrow_or_skip():
-    return pytest.importorskip("pyarrow")
+    return pytest.importorskip('pyarrow')

@@ -2,13 +2,207 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::{
+    CHAIN_MIN_SEGMENTS, CoordSeq, HashMap, HashMapExt as _, HashSet, Orientation, PointKey,
+    RUN_NODING_MIN, Segment, SegmentIndex, XY, dedup_consecutive_xy, for_each_candidate_pair,
+    orientation, point_on_segment, same_point, segment_cross_point, segment_envelopes_disjoint,
+    single_chain, undirected_segment_edge_key,
+};
+
+/// One original source ordinal that owned a unique undirected edge, plus
+/// whether that source's direction was the reverse of the representative
+/// kept for noding. Callers that need directed weights (binary overlay
+/// windings) apply `weight.neg()` when `reversed` is set.
+pub(crate) type SegmentSource = (u32, bool);
+
+/// Flat CSR multi-owner provenance: `offsets` has `unique_count + 1` entries,
+/// `entries[offsets[i]..offsets[i+1]]` is every `(ordinal, reversed)` owner of
+/// unique edge `i`. Always cheap on unique input (one flat vec of E singles,
+/// no per-piece `Vec` heap allocs) so noding never needs a size-threshold fork.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SegmentProvenance {
+    offsets: Vec<u32>,
+    entries: Vec<SegmentSource>,
+}
+
+impl SegmentProvenance {
+    fn empty() -> Self {
+        Self {
+            offsets: vec![0],
+            entries: Vec::new(),
+        }
+    }
+
+    pub(crate) fn owners(&self, piece: usize) -> &[SegmentSource] {
+        let start = self.offsets[piece] as usize;
+        let end = self.offsets[piece + 1] as usize;
+        &self.entries[start..end]
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// True when every unique edge has exactly one forward owner (identity
+    /// multiplicity — expand is a no-op).
+    fn all_single_forward(&self) -> bool {
+        self.entries.len() == self.len() && self.entries.iter().all(|&(_, reversed)| !reversed)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &[SegmentSource]> + '_ {
+        self.offsets.array_windows::<2>().map(|window| {
+            let start = window[0] as usize;
+            let end = window[1] as usize;
+            &self.entries[start..end]
+        })
+    }
+}
+
+impl std::ops::Index<usize> for SegmentProvenance {
+    type Output = [SegmentSource];
+
+    fn index(&self, piece: usize) -> &Self::Output {
+        self.owners(piece)
+    }
+}
+
+/// Sourced undirected dedup into flat CSR: one representative directed segment
+/// per exact endpoint pair, plus every original ordinal that owned that edge
+/// and whether that ordinal's direction is reversed relative to the
+/// representative. Binary overlay winding needs the FULL provenance set — a
+/// shared edge keeps both operands' tags after expansion.
+///
+/// Two-pass CSR build: assign unique indices, count multiplicity, place
+/// `(ordinal, reversed)` into a single flat `entries` vector. Unique input
+/// pays HashMap inserts + two flat vecs — never N tiny heap `Vec`s.
+fn dedup_undirected_segments_sourced(segments: &[Segment]) -> (Vec<Segment>, SegmentProvenance) {
+    let n = segments.len();
+    if n == 0 {
+        return (Vec::new(), SegmentProvenance::empty());
+    }
+    let mut index_of: HashMap<(PointKey, PointKey), u32> = HashMap::with_capacity(n);
+    let mut unique: Vec<Segment> = Vec::with_capacity(n);
+    // Per original ordinal: (unique_index, reversed).
+    let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(n);
+    for &segment in segments {
+        let key = undirected_segment_edge_key(segment);
+        if let Some(&unique_index) = index_of.get(&key) {
+            let rep = unique[unique_index as usize];
+            // Same undirected endpoints ⇒ same direction or exact reverse.
+            let reversed = !same_point(rep.start, segment.start);
+            debug_assert!(
+                (same_point(rep.start, segment.start) && same_point(rep.end, segment.end))
+                    || (same_point(rep.start, segment.end) && same_point(rep.end, segment.start))
+            );
+            assignment.push((unique_index, reversed));
+        } else {
+            let unique_index = unique.len() as u32;
+            index_of.insert(key, unique_index);
+            unique.push(segment);
+            assignment.push((unique_index, false));
+        }
+    }
+    let unique_count = unique.len();
+    let mut counts = vec![0_u32; unique_count];
+    for &(unique_index, _) in &assignment {
+        counts[unique_index as usize] += 1;
+    }
+    let mut offsets = Vec::with_capacity(unique_count + 1);
+    offsets.push(0);
+    for &count in &counts {
+        offsets.push(offsets[offsets.len() - 1] + count);
+    }
+    let mut entries = vec![(0_u32, false); n];
+    let mut cursor = offsets[..unique_count].to_vec();
+    for (ordinal, &(unique_index, reversed)) in assignment.iter().enumerate() {
+        let slot = cursor[unique_index as usize] as usize;
+        entries[slot] = (ordinal as u32, reversed);
+        cursor[unique_index as usize] += 1;
+    }
+    (unique, SegmentProvenance { offsets, entries })
+}
+
+/// Expand noded unique pieces once per original directed source so unit-weight
+/// consumers ([`Arrangement::new`], even-odd repair) keep directed multiplicity:
+/// same-direction stacks accumulate, opposite directions on a shared edge
+/// cancel. Noding runs on the unique undirected set (O(U²)); expansion is O(E).
+fn expand_directed_atoms(
+    atomic: Vec<Segment>,
+    unique_sources: &[u32],
+    provenance: &SegmentProvenance,
+) -> Vec<Segment> {
+    if provenance.all_single_forward() {
+        return atomic;
+    }
+    let mut out = Vec::with_capacity(atomic.len().saturating_mul(2));
+    for (piece, &unique_index) in atomic.iter().zip(unique_sources) {
+        for &(_, reversed) in provenance.owners(unique_index as usize) {
+            out.push(if reversed {
+                Segment {
+                    start: piece.end,
+                    end: piece.start,
+                }
+            } else {
+                *piece
+            });
+        }
+    }
+    out
+}
+
+/// Map per-unique provenance onto per-atomic-piece provenance (each atomic
+/// piece inherits the full owner set of its unique parent edge).
+fn expand_provenance_to_atoms(
+    unique_sources: &[u32],
+    provenance: &SegmentProvenance,
+) -> SegmentProvenance {
+    let atom_count = unique_sources.len();
+    let mut offsets = Vec::with_capacity(atom_count + 1);
+    offsets.push(0);
+    let mut total = 0_u32;
+    for &unique_index in unique_sources {
+        total += provenance.owners(unique_index as usize).len() as u32;
+        offsets.push(total);
+    }
+    let mut entries = Vec::with_capacity(total as usize);
+    for &unique_index in unique_sources {
+        entries.extend_from_slice(provenance.owners(unique_index as usize));
+    }
+    SegmentProvenance { offsets, entries }
+}
 
 /// Self-node one segment set: split every segment at its interior contacts
 /// with every other, via the pair-once candidate sweep — no index build,
 /// the same atomic output as [`node_segments`] against itself (the cut
 /// consumer sorts and dedups per segment, so collection order is free).
+///
+/// Exact undirected XY duplicates always collapse for the pair scan via flat
+/// CSR provenance (no size threshold — thresholds are cliffs for cascade
+/// callers that re-enter below a floor). Unique input stays linear: dedup is
+/// one HashMap + two flat vecs, then noding on U = E. Duplicate-rich input
+/// nodes O(U²) and re-expands directed multiplicity for unit-weight consumers.
 pub(crate) fn self_node_segments(segments: &[Segment]) -> Vec<Segment> {
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
+    if provenance.all_single_forward() {
+        // Unique (or pure forward 1:1 after collapse of identical copies that
+        // still leave single forward — actually identical dups make len>1).
+        // all_single_forward ⇒ U owners, each single forward ⇒ U == E and no
+        // reverse; unique may still be a proper subset only if... never when
+        // all single. So unique.len() == segments.len() and we can node unique
+        // (equal to original order of first occurrence = original order).
+        return self_node_segments_unique(&unique);
+    }
+    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
+    expand_directed_atoms(atomic, &unique_sources, &provenance)
+}
+
+/// Node a pre-deduped segment set (collinear-overlap pre-pass + full pass).
+fn self_node_segments_unique(segments: &[Segment]) -> Vec<Segment> {
     // Collinear OVERLAPS need a pre-pass: splitting them at each other's
     // endpoints first (exact points) makes coincident strokes
     // BIT-IDENTICAL, so the main pass's canonicalized crossing placement
@@ -25,10 +219,30 @@ pub(crate) fn self_node_segments(segments: &[Segment]) -> Vec<Segment> {
     full_noding_pass(&pre_split).0
 }
 
-/// [`self_node_segments`] also reporting each atomic piece's SOURCE
-/// segment index — the operand provenance the binary overlay's
-/// per-operand windings ride on.
-pub(crate) fn self_node_segments_sourced(segments: &[Segment]) -> (Vec<Segment>, Vec<u32>) {
+/// [`self_node_segments`] with multi-source provenance per atomic piece.
+///
+/// Exact undirected duplicates always collapse before noding so the pair scan
+/// is O(U²) in unique edges, not O(E²) in duplicate multiplicity. Each atomic
+/// piece carries the **full** set of original ordinals that owned that
+/// undirected edge (with reverse flags) in flat CSR form — binary overlay
+/// winding depends on every operand's contribution, not just the first source.
+///
+/// Atoms stay in the representative direction; consumers fold reverse flags
+/// into weights rather than re-expanding E copies of each piece. One uniform
+/// path (no size threshold, no probe-vs-no-probe fork).
+pub(crate) fn self_node_segments_sourced(
+    segments: &[Segment],
+) -> (Vec<Segment>, SegmentProvenance) {
+    if segments.is_empty() {
+        return (Vec::new(), SegmentProvenance::empty());
+    }
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
+    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
+    let multi = expand_provenance_to_atoms(&unique_sources, &provenance);
+    (atomic, multi)
+}
+
+fn self_node_segments_sourced_unique(segments: &[Segment]) -> (Vec<Segment>, Vec<u32>) {
     let (events, overlaps_found) = full_noding_events(segments);
     if !overlaps_found {
         return split_by_events_sourced(segments, events);

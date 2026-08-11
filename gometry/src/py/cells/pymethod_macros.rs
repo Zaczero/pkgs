@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Shared `macro_rules!` helpers for grid cell/coverage PyO3 boilerplate.
 
 macro_rules! grid_cell_common_pymethods {
@@ -66,6 +62,13 @@ macro_rules! grid_cell_common_pymethods {
             }
 
             /// The cell as a filled WGS84 Polygon (lon/lat).
+            ///
+            /// H3 and S2 emit **planar chord proxies** for the true spherical
+            /// cell boundary (great-circle / geodesic edges). Prefer
+            /// cell-algebra methods (``contains``, ``parent``, set ops,
+            /// ``grid_disk``) for exact hierarchical work — do not treat this
+            /// polygon as a densified spherical boundary. Geohash and tile
+            /// cells are exact lon/lat rectangles (no chord proxy).
             ///
             /// Returns
             /// -------
@@ -388,14 +391,30 @@ macro_rules! grid_coverage_common_pymethods {
 
             #[doc = $interior_doc]
             #[getter]
-            fn interior_cells(&self) -> crate::py::cells::PyCellArray {
+            #[expect(
+                clippy::allow_attributes,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            #[allow(
+                clippy::unnecessary_wraps,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            fn interior_cells(&self) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
                 let $this = self;
                 $($interior_cells)*
             }
 
             #[doc = $boundary_doc]
             #[getter]
-            fn boundary_cells(&self) -> crate::py::cells::PyCellArray {
+            #[expect(
+                clippy::allow_attributes,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            #[allow(
+                clippy::unnecessary_wraps,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            fn boundary_cells(&self) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
                 let $this = self;
                 $($boundary_cells)*
             }
@@ -612,17 +631,33 @@ macro_rules! grid_coverage_common_pymethods {
             /// -------
             /// list of str
             ///     One line per plan step.
-            fn explain(&self) -> Vec<String> {
+            ///
+            /// Raises
+            /// ------
+            /// GeometryError
+            ///     If a lazy coverage partition must be built and exceeds its
+            ///     recorded ``max_cells`` budget.
+            #[expect(
+                clippy::allow_attributes,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            #[allow(
+                clippy::unnecessary_wraps,
+                reason = "shared Result return: lazy partition init can fail on max_cells"
+            )]
+            fn explain(&self) -> pyo3::PyResult<Vec<String>> {
                 let $this = self;
-                crate::py::cells::coverage_explain(
+                let interior_len = {$($explain_interior_len)*};
+                let outer_len = {$($explain_outer_len)*};
+                Ok(crate::py::cells::coverage_explain(
                     $explain_grid,
                     &$($explain_depth)*,
                     self.cell_rule,
                     self.cells.len(),
                     $explain_cells,
-                    $($explain_interior_len)*,
-                    $($explain_outer_len)*,
-                )
+                    interior_len,
+                    outer_len,
+                ))
             }
 
             #[doc = $to_polygon_doc]
@@ -660,8 +695,13 @@ macro_rules! grid_coverage_common_pymethods {
                 ))
             }
 
-            /// Pickle support: round-trip through the source geometry, visible
-            /// cell ids, rule, depth fields, and factory max_cells budget.
+            /// Pickle support: reconstruct from source geometry, visible cell
+            /// ids, rule, depth fields, and factory ``max_cells``.
+            ///
+            /// The inspection partition (``interior_cells`` /
+            /// ``boundary_cells``) is **cold** after unpickle — rebuilt lazily
+            /// on first access under the restored ``max_cells`` budget, not
+            /// serialized as partition state.
             fn __reduce__(
                 &self,
                 py: pyo3::Python<'_>,
@@ -864,7 +904,7 @@ macro_rules! grid_coverage_common_pymethods {
 macro_rules! coverage_iter_pyclass {
     (iter: $iter:ident, cell: $cell:ty, name: $name:literal) => {
         /// Lazy iterator over a coverage's cells, yielding one cell per step.
-        #[pyclass(name = $name, module = "gometry", frozen)]
+        #[pyclass(name = $name, module = "gometry", frozen, immutable_type)]
         pub(super) struct $iter {
             source: crate::py::cells::coverage_ops::CoverageIterCells<$cell>,
             state: crate::py::row::RowIterState,
@@ -1083,19 +1123,15 @@ macro_rules! rect_coverage_pyclass {
                 Self { cell }
             }
 
-            fn rect_cell(self) -> Self::Cell {
-                self.cell
-            }
-
             fn level(self) -> u8 {
                 <$spec as crate::py::cells::coverage_ops::RectCoverSpec>::level_of(&self.cell)
             }
         }
 
         #[doc = $class_doc]
-        #[pyclass(name = $class_name, module = "gometry", frozen, sequence, skip_from_py_object)]
+        #[pyclass(name = $class_name, module = "gometry", frozen, immutable_type, sequence, skip_from_py_object)]
         #[derive(Clone, Debug)]
-        pub(super) struct $coverage(crate::py::cells::coverage_ops::RectCoverageState<$cell>);
+        pub(crate) struct $coverage(crate::py::cells::coverage_ops::RectCoverageState<$cell>);
 
         impl std::ops::Deref for $coverage {
             type Target = crate::py::cells::coverage_ops::RectCoverageState<$cell>;
@@ -1268,121 +1304,6 @@ macro_rules! grid_free_functions {
             let right = $cell_set_arg(right)?;
             let $array_cells = crate::grid::cell_set::difference(&left, &right)
                 .map_err(crate::py::cells::cell_limit_err)?;
-            Ok($array_expr)
-        }
-    };
-
-    (
-        @to_polygon {
-            function: $function:ident,
-            argument: $argument:ident,
-            label: $label:literal,
-            item_doc: $item_doc:literal,
-            depth_plural: $depth_plural:literal,
-            parse_cell: $parse_cell:expr,
-            dissolve: |$dissolve_cells:ident| $dissolve_expr:expr $(,)?
-        }
-    ) => {
-        #[doc = concat!("Dissolve ", $label, " cells into one outline geometry.")]
-        ///
-        /// Shared cell edges are removed, so the result is the cells' combined region
-        /// as a single geometry, not one polygon per cell. Mixed
-        #[doc = concat!($depth_plural, " are allowed, so compacted sets dissolve directly.")]
-        ///
-        /// Parameters
-        /// ----------
-        #[doc = concat!(stringify!($argument), " : ", $item_doc)]
-        ///     The cells to dissolve (any mix of objects, ids, or tokens).
-        ///
-        /// Returns
-        /// -------
-        /// Polygon or MultiPolygon
-        ///     The dissolved region, tagged ``EPSG:4326``.
-        ///
-        /// Raises
-        /// ------
-        /// GeometryError
-        ///     If ``cells`` is empty.
-        /// ParseError
-        #[doc = concat!("    If an id or token is not a valid ", $label, " cell.")]
-        ///
-        /// Examples
-        /// --------
-        /// Dissolve a detached cell list (when you have a coverage, use
-        /// ``coverage.to_polygon()`` directly).
-        #[pyo3::pyfunction]
-        pub(super) fn $function(
-            $argument: &pyo3::Bound<'_, pyo3::PyAny>,
-        ) -> pyo3::PyResult<crate::Typed> {
-            let items = crate::py::cells::cell_items($argument)?;
-            let $dissolve_cells = items
-                .iter()
-                .map(|cell| $parse_cell(cell))
-                .collect::<pyo3::PyResult<Vec<_>>>()?;
-            $dissolve_expr
-        }
-    };
-
-
-    (
-        @parent {
-            function: $function:ident,
-            label: $label:literal,
-            cell_doc: $cell_doc:literal,
-            item_doc: $item_doc:literal,
-            depth: $depth:ident,
-            depth_name: $depth_name:literal,
-            text_signature: $text_signature:literal,
-            parse_cell: $parse_cell:expr,
-            parse_depth: $parse_depth:path,
-            array: |$array_cells:ident| $array_expr:expr $(,)?
-        }
-    ) => {
-        /// Parent cell of every input cell — a row-aligned mapping, one output per
-        /// input (duplicates preserved), for roll-up/group-by-parent workflows.
-        ///
-        /// Parameters
-        /// ----------
-        #[doc = concat!("cells : ", $item_doc)]
-        ///     Cells to map (any mix of objects, ids, or tokens).
-        #[doc = concat!(stringify!($depth), " : int, optional")]
-        #[doc = concat!("    Target ", $depth_name, "; must not be finer than any input cell.")]
-        #[doc = concat!("    Defaults to one coarser than each cell's own ", $depth_name, ".")]
-        ///
-        /// Returns
-        /// -------
-        #[doc = concat!("CellArray of ", $cell_doc)]
-        ///     The parent of each input cell, in input order.
-        ///
-        /// Raises
-        /// ------
-        /// GeometryError
-        #[doc = concat!(
-                            "    If ",
-                            $depth_name,
-                            " is out of range, finer than an input cell, or a minimum-",
-                            $depth_name,
-                            " cell has no parent."
-                        )]
-        /// ParseError
-        #[doc = concat!("    If an id or token is not a valid ", $label, " cell.")]
-        #[pyo3::pyfunction]
-        #[pyo3(signature = (cells, $depth = None), text_signature = $text_signature)]
-        pub(super) fn $function(
-            cells: &pyo3::Bound<'_, pyo3::PyAny>,
-            $depth: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
-        ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
-            let items = crate::py::cells::cell_items(cells)?;
-            let $array_cells = items
-                .iter()
-                .map(|cell| {
-                    crate::py::cells::cell_ops::cell_parent(
-                        $parse_cell(cell)?,
-                        $depth,
-                        $parse_depth,
-                    )
-                })
-                .collect::<pyo3::PyResult<Vec<_>>>()?;
             Ok($array_expr)
         }
     };

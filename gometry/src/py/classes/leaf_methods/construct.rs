@@ -10,9 +10,12 @@ use pyo3::prelude::{PyClassInitializer, PyResult};
 use pyo3::types::PyDict;
 use pyo3::{Bound, PyAny};
 
-use super::*;
 use crate::boundary::metadata::FrameEdit;
 use crate::geometry::{EmptyKind, MOrdinate, Point, Shape, ZOrdinate};
+use crate::py::classes::leaf_methods::{
+    PyErr, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
+    PyMultiPolygon, PyPoint, PyPolygon, PyRef, ShapeData, Typed, pymethods,
+};
 use crate::py::errors::InvalidGeometryError;
 use crate::py::functions::constructors::{
     build_geometry_collection, build_line_string, build_multi_line_string, build_multi_point,

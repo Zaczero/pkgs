@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Validation-at-the-boundary free functions: `require` and `repair`.
 //!
 //! `require` parses an input and enforces a geometry contract (kind/dimension/
@@ -12,7 +8,17 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::py::errors::crs_mismatch_error;
-use crate::*;
+use crate::py::wire_crs::{
+    guard_embedded_crs_conflict, has_ewkt_srid_prefix, prefer_wire_alias_crs, split_ewkt_srid,
+};
+use crate::{
+    CoordinateAxes, Crs, Frame, FrameAdoption, FrameEdit, GeoJsonDecodeContext, HeapSize,
+    InvalidGeometryError, PyGeometry, PyGeometryArray, RepairMethod, Typed, ValidationIssue,
+    coerce_geojson_geometry_value, crs_arc, crs_label, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, geometry, guard_epoch_frame, io, is_mapping_like,
+    is_one_byte_buffer, parse_crs, parse_geojson_slice, parse_geojson_value, parse_wkb_geometry,
+    with_one_byte_buffer,
+};
 
 /// Parse and require a geometry contract at an input boundary.
 ///
@@ -154,25 +160,42 @@ fn is_require_scalar(value: &Bound<'_, PyAny>) -> PyResult<bool> {
             .is_some())
 }
 
+/// Whether a `require(crs=)` contract needs the value retagged to `expected`,
+/// or `Err` when the value is in a genuinely different frame.
+///
+/// `require` *attaches* rather than merely asserting — it already labels
+/// CRS-free input — so a value already in the requested frame under a
+/// different spelling is retagged to the label the caller asked for. That is
+/// the same rule `GeometryArray(values, crs=...)` applies, and it keeps
+/// `require` from rejecting a pair that every predicate and metric accepts.
+fn require_crs_retag(actual: Option<&Crs>, expected: Option<&Crs>) -> PyResult<bool> {
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    match actual {
+        None => Ok(true),
+        Some(actual) if actual == expected => Ok(false),
+        Some(actual) if crate::crs_operationally_equal(actual, expected)? => Ok(true),
+        Some(actual) => Err(crs_mismatch_error(
+            format!(
+                "expected CRS {}, got {}",
+                crs_label(Some(expected.as_str())),
+                crs_label(Some(actual.as_str())),
+            ),
+            Some(expected.as_str()),
+            Some(actual.as_str()),
+            None,
+        )),
+    }
+}
+
 fn require_geometry_contract(
     mut geometry: PyGeometry,
     expected: Option<&Crs>,
     axes: Option<CoordinateAxes>,
 ) -> PyResult<PyGeometry> {
-    if expected.is_some() && geometry.crs_ref().is_none() {
+    if require_crs_retag(geometry.crs_ref(), expected)? {
         geometry.set_crs_keep_epoch(expected.cloned());
-    }
-    if geometry.crs_ref() != expected && expected.is_some() {
-        return Err(crs_mismatch_error(
-            format!(
-                "expected CRS {}, got {}",
-                crs_label(expected.map(Crs::as_str)),
-                crs_label(geometry.crs_str()),
-            ),
-            expected.map(Crs::as_str),
-            geometry.crs_str(),
-            None,
-        ));
     }
     if let Some(axes) = axes
         && geometry.shape.coordinate_axes() != axes.as_str()
@@ -197,39 +220,18 @@ fn require_array_contract(
     expected: Option<&Crs>,
     axes: Option<CoordinateAxes>,
 ) -> PyResult<PyGeometryArray> {
-    if expected.is_some() && array.crs_ref().is_none() {
+    if require_crs_retag(array.crs_ref(), expected)? {
         // Attach the pre-parsed CRS without re-parsing a Bound token.
+        // `overwrite` is safe here: `require_crs_retag` only asks for a retag
+        // once the existing label is absent or names the very same frame.
         let frame = FrameEdit::SetCrs {
             crs: expected.cloned(),
-            overwrite: false,
+            overwrite: true,
         }
         .apply(&array.frame)?;
-        array = if matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
-            PyGeometryArray::mixed(
-                array
-                    .items()
-                    .iter()
-                    .map(|item| PyGeometry::with_frame(item.shape.clone(), frame.clone()))
-                    .collect(),
-                frame,
-            )
-            .with_missing_mask(array.missing().cloned())
-        } else {
+        array =
             PyGeometryArray::from_storage_arc(std::sync::Arc::clone(array.storage_arc()), frame)
-                .with_missing_mask(array.missing().cloned())
-        };
-    }
-    if array.crs_ref() != expected && expected.is_some() {
-        return Err(crs_mismatch_error(
-            format!(
-                "expected CRS {}, got {}",
-                crs_label(expected.map(Crs::as_str)),
-                crs_label(array.crs_str()),
-            ),
-            expected.map(Crs::as_str),
-            array.crs_str(),
-            None,
-        ));
+                .with_missing_mask(array.missing().cloned());
     }
     if let Some(axes) = axes
         && array.uniform_axes() != Some(axes)
@@ -283,10 +285,9 @@ fn is_wkt_string(text: &str) -> bool {
     let trimmed = text.trim();
     // Any SRID= prefix is declared EWKT; let the WKT/EWKT parser produce the
     // diagnostic (a malformed SRID must not fall through to the GeoJSON decoder).
-    if trimmed
-        .get(..5)
-        .is_some_and(|head| head.eq_ignore_ascii_case("SRID="))
-    {
+    // The prefix rule itself is shared with `split_ewkt_srid` so the classifier
+    // and the parser cannot drift apart.
+    if has_ewkt_srid_prefix(text) {
         return true;
     }
     let body = trimmed;
@@ -314,9 +315,10 @@ fn is_wkt_string(text: &str) -> bool {
 }
 
 fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry> {
-    let (body, embedded) = split_ewkt_srid(text)?;
+    let (body, srid) = split_ewkt_srid(text)?;
+    let embedded = io::crs_from_optional_srid(srid)?;
     guard_embedded_crs_conflict(embedded.as_deref(), fallback.map(Crs::as_str), "EWKT SRID")?;
-    let crs = embedded.or_else(|| fallback.cloned());
+    let crs = prefer_wire_alias_crs(embedded.map(crs_arc), fallback).or_else(|| fallback.cloned());
     guard_epoch_frame(None, crs.as_ref())?;
     Ok(PyGeometry::with_epoch(io::parse_wkt(body)?, crs, None))
 }
@@ -354,9 +356,9 @@ fn parse_require_bytes_slice(data: &[u8], fallback: Option<&Crs>) -> PyResult<Py
     }
     let mut geometry = parse_wkb_geometry(data)?;
     guard_embedded_crs_conflict(geometry.crs_str(), fallback.map(Crs::as_str), "EWKB SRID")?;
-    if geometry.crs_ref().is_none() {
-        geometry.set_crs_keep_epoch(fallback.cloned());
-    }
+    let resolved =
+        prefer_wire_alias_crs(geometry.crs_ref().cloned(), fallback).or_else(|| fallback.cloned());
+    geometry.set_crs_keep_epoch(resolved);
     Ok(geometry)
 }
 
@@ -392,6 +394,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
     name = "ValidationReport",
     module = "gometry",
     frozen,
+    immutable_type,
     skip_from_py_object
 )]
 #[derive(Clone, Debug)]

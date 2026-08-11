@@ -31,12 +31,14 @@ list of str
 Parameters
 ----------
 output_dimension : int, optional
-    Force the written ordinate count (2, 3, or 4); defaults to the
-    geometry's own dimensionality.
+    Cap the written ordinate count (2, 3, or 4) to at most the
+    geometry's own dimensionality; defaults to writing all present
+    ordinates. Cannot invent Z/M that the geometry does not carry.
 
 include_srid : bool, default False
-    Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix (requires an
-    EPSG-authority CRS).
+    Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
+    aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
+    decoding either alias yields that EPSG identity.
 
 precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
@@ -96,7 +98,9 @@ list of bytes
 Parameters
 ----------
 include_srid : bool, default False
-    Embed the EPSG code as an EWKB SRID (requires an EPSG-authority CRS).
+    Embed the EPSG code as an EWKB SRID. The PostGIS wire aliases
+    ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979; decoding
+    either alias yields that EPSG identity.
 
 precision : int, optional
     Decimal places to round coordinates to (omit for full precision).

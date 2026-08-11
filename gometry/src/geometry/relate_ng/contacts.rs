@@ -1,6 +1,12 @@
 use std::ops::ControlFlow;
 
-use super::*;
+use ahash::{HashMapExt as _, HashSetExt as _};
+
+use crate::geometry::relate_ng::{
+    Contact, Cut, HashMap, HashSet, NodeIncidence, Operand, OperandPool, Orientation, PointKey,
+    RUN_NODING_MIN, Segment, SharedSpan, TopologyComputer, XY, add_cut, for_each_candidate_pair,
+    orientation, segment_contact_exact, segment_contact_with_orientations,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct SharedRun {

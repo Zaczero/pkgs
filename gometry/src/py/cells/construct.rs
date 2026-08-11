@@ -7,13 +7,15 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 
-use super::geohash::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
-use super::h3::{PyH3Cell, h3_cell_from_xy, h3_cell_index, parse_h3_resolution};
-use super::s2::{PyS2Cell, parse_s2_level, s2_cell_from_xy, s2_cell_id};
-use super::tiles::{PyTile, parse_tile_zoom, tile_arg};
-use super::*;
 use crate::grid::geohash::Geohash;
 use crate::grid::tile::Tile;
+use crate::py::cells::geohash::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
+use crate::py::cells::h3::{PyH3Cell, h3_cell_from_xy, h3_cell_index, parse_h3_resolution};
+use crate::py::cells::s2::{PyS2Cell, parse_s2_level, s2_cell_from_xy, s2_cell_id};
+use crate::py::cells::tiles::{PyTile, parse_tile_zoom, tile_arg};
+use crate::py::cells::{
+    Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
+};
 use crate::{
     I64Param, broadcast_coordinate_group, coordinate_input, coordinate_inputs_are_scalar,
     exact_geometry, exact_geometry_array, finite_coordinate_required, lonlat_shape, point_xy,
@@ -220,9 +222,14 @@ pub(crate) fn construct_tile(
             })?;
             let shape = lonlat_shape(geometry)?;
             let (lon, lat) = point_xy(&shape)?;
-            return Ok(PyTile {
-                cell: Tile::from_lonlat(lon, lat, parse_tile_zoom(zoom)?),
-            });
+            let zoom = parse_tile_zoom(zoom)?;
+            let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
+                crate::py::errors::InvalidGeometryError::new_err(format!(
+                    "latitude {lat} is outside the Web Mercator domain ±{max} degrees",
+                    max = crate::grid::tile::TILE_MAX_LATITUDE
+                ))
+            })?;
+            return Ok(PyTile { cell });
         }
         return Ok(PyTile {
             cell: tile_arg(value)?,
@@ -241,9 +248,14 @@ pub(crate) fn construct_tile(
     let lon = finite_coordinate_required("longitude", lon)?;
     let lat = finite_coordinate_required("latitude", lat)?;
     crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
-    Ok(PyTile {
-        cell: Tile::from_lonlat(lon, lat, parse_tile_zoom(zoom)?),
-    })
+    let zoom = parse_tile_zoom(zoom)?;
+    let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
+        crate::py::errors::InvalidGeometryError::new_err(format!(
+            "latitude {lat} is outside the Web Mercator domain ±{max} degrees",
+            max = crate::grid::tile::TILE_MAX_LATITUDE
+        ))
+    })?;
+    Ok(PyTile { cell })
 }
 
 /// Bulk cell builder returning a typed [`PyCellArray`] (mirrors `points`).
@@ -273,12 +285,27 @@ where
         let points = super::grid_lonlat_points(array)?;
         let depth = I64Param::parse(depth, depth_kw, points.len())?;
         let mut ids = Vec::with_capacity(points.len());
-        for (row, point) in points.iter().enumerate() {
-            // Validate each depth once (no pre-pass + re-validate).
+        let mut missing = Vec::with_capacity(points.len());
+        let mut any_missing = false;
+        for row in 0..points.len() {
+            if array.is_row_missing(row) {
+                // Array-degrades doctrine: missing geometry → missing cell.
+                ids.push(0);
+                missing.push(true);
+                any_missing = true;
+                continue;
+            }
+            let point = points.get(row);
+            crate::boundary::geographic::validate_lonlat_point(point)?;
             let depth = validate_depth(depth.get(row))?;
             ids.push(from_xy(point.x, point.y, depth)?.into_cell_array_id());
+            missing.push(false);
         }
-        return Ok(PyCellArray::from_trusted_ids(kind, ids));
+        return Ok(if any_missing {
+            PyCellArray::from_trusted_ids_with_missing(kind, ids, missing)
+        } else {
+            PyCellArray::from_trusted_ids(kind, ids)
+        });
     }
     let lat = lat
         .ok_or_else(|| PyTypeError::new_err("lat is required when values is a longitude column"))?;

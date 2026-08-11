@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Generic hierarchical cell-set algebra.
 //!
 //! Normalized (sorted, non-overlapping, sibling-merged) id vectors with
@@ -304,7 +300,7 @@ mod tests {
 
     #[test]
     fn tile_set_algebra_identities() {
-        let base = Tile::from_lonlat(13.4, 52.5, 8);
+        let base = Tile::from_lonlat(13.4, 52.5, 8).expect("in domain");
         let children: Vec<_> = HierarchicalId::children(base).collect();
         let left = normalize(vec![base]);
         let right = normalize(children[..2].to_vec());

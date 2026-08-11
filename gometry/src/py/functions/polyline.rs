@@ -15,35 +15,14 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::geometry::LineSeq;
+use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, LineSeq, Point};
 use crate::py::errors::ParseError;
-use crate::py::functions::geometry_io::{StreamedRow, stream_bulk};
-use crate::*;
-
-pub(crate) enum PolylineCrs {
-    Wgs84,
-    Resolved(Option<Crs>),
-}
-
-impl PolylineCrs {
-    fn into_crs(self) -> Option<Crs> {
-        match self {
-            Self::Wgs84 => Some(crs_arc_static("EPSG:4326")),
-            Self::Resolved(crs) => crs,
-        }
-    }
-}
-
-impl<'a, 'py> FromPyObject<'a, 'py> for PolylineCrs {
-    type Error = PyErr;
-
-    fn extract(value: pyo3::Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if value.is_none() {
-            return Ok(Self::Resolved(None));
-        }
-        Ok(Self::Resolved(parse_crs(Some(&value))?))
-    }
-}
+use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
+use crate::{
+    CRSError, Coordinates, Crs, GeometryError, PyGeometry, PyGeometryArray, PyTypeError, Shape,
+    Typed, Wgs84DefaultCrs, coordinate_epoch_option, geometry_type_err, guard_epoch_frame,
+    is_wgs84_family_crs, note_array_row,
+};
 
 /// Decimal digits kept per ordinate; 5 is the classic default, 6 the
 /// high-resolution variant (OSRM/Valhalla). `10^11` still fits the scaled
@@ -51,7 +30,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PolylineCrs {
 pub(crate) fn polyline_precision_factor(precision: i32) -> PyResult<f64> {
     if !(0..=11).contains(&precision) {
         return Err(GeometryError::new_err(format!(
-            "polyline precision must be between 0 and 11, got {precision}"
+            "from_polyline/to_polyline precision must be between 0 and 11, got {precision}"
         )));
     }
     Ok(10_f64.powi(precision))
@@ -130,8 +109,14 @@ fn encode_shape(shape: &Shape, factor: f64) -> PyResult<String> {
     }
 }
 
-fn decode_line(data: &str, factor: f64) -> PyResult<Vec<Point>> {
-    let mut points = Vec::new();
+/// Decode polyline bytes straight into SoA columns (no intermediate
+/// `Vec<Point>` staging). Returns the sealed coordinate sequence.
+fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
+    // Polyline vertices are always XY lon/lat. Size hint from the encoded
+    // length (~5 chars/ordinate worst-case) keeps growth rare without
+    // over-reading.
+    let capacity = (data.len() / 6).max(2);
+    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, capacity);
     let mut bytes = data.bytes();
     let (mut lat, mut lon) = (0_i64, 0_i64);
     // Hoist constant domain bounds once for the whole stream.
@@ -149,28 +134,30 @@ fn decode_line(data: &str, factor: f64) -> PyResult<Vec<Point>> {
             ));
         };
         // The accumulated scaled coordinates must stay in the WGS84 domain
-        // — the output is tagged EPSG:4326, so a wrapped or absurd stream
+        // — the output is tagged OGC:CRS84, so a wrapped or absurd stream
         // is malformed input, not data.
         lat = lat.checked_add(delta_lat).ok_or_else(out_of_domain)?;
         lon = lon.checked_add(delta_lon).ok_or_else(out_of_domain)?;
         if lat.abs() > lat_bound || lon.abs() > lon_bound {
             return Err(out_of_domain());
         }
-        points.push(
-            Point::new(lon as f64 / factor, lat as f64 / factor)
-                .map_err(|error| ParseError::new_err(error.to_string()))?,
-        );
+        let x = lon as f64 / factor;
+        let y = lat as f64 / factor;
+        // Point::new validates finiteness; polyline domain gates above keep
+        // values finite, so the builder path matches the prior error surface.
+        Point::new(x, y).map_err(|error| ParseError::new_err(error.to_string()))?;
+        builder.push_xyzm(x, y, None, None);
     }
-    Ok(points)
+    Ok(builder.finish_infallible())
 }
 
-fn shape_from_decoded_polyline(points: Vec<Point>) -> Shape {
-    match points.as_slice() {
-        [] => Shape::LineString(LineSeq::empty(CoordinateAxes::XY)),
-        [point] => Shape::Point(*point),
-        _ => Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(points)).expect("polyline has two or more vertices"),
-        ),
+fn shape_from_decoded_polyline(coords: CoordSeq) -> Shape {
+    match coords.len() {
+        0 => Shape::LineString(LineSeq::empty(CoordinateAxes::XY)),
+        1 => Shape::Point(coords.point_at(0)),
+        _ => {
+            Shape::LineString(LineSeq::try_new(coords).expect("polyline has two or more vertices"))
+        },
     }
 }
 
@@ -202,7 +189,7 @@ fn python_str_repr(value: &str) -> String {
             b'\t' => out.push_str("\\t"),
             0x20..=0x7E => out.push(char::from(byte)),
             _ => {
-                use std::fmt::Write;
+                use std::fmt::Write as _;
                 let _ = write!(out, "\\x{byte:02x}");
             },
         }
@@ -249,15 +236,17 @@ fn decode_value(bytes: &mut std::str::Bytes<'_>, source: &str) -> PyResult<Optio
 }
 
 /// `to_polyline` is WGS84 by definition: a bare-coordinate geometry is
-/// trusted to be lon/lat, any other CRS must reproject first.
+/// trusted to be lon/lat; only the shared WGS84-family frames (same set as
+/// GeoJSON: EPSG:4326/4979 and OGC:CRS84/h) are accepted without reproject.
 fn require_polyline_crs(crs: Option<&str>) -> PyResult<()> {
-    match crs {
-        None => Ok(()),
-        Some(crs) if crs::is_wgs84_lonlat(crs) => Ok(()),
-        _ => Err(CRSError::new_err(
-            "to_polyline requires EPSG:4326 longitude/latitude coordinates (polylines are \
-             WGS84 by definition); use to_crs(...) first",
-        )),
+    if is_wgs84_family_crs(crs) {
+        Ok(())
+    } else {
+        Err(CRSError::new_err(
+            "to_polyline requires WGS84 longitude/latitude coordinates (EPSG:4326, \
+             EPSG:4979, OGC:CRS84, or OGC:CRS84h; polylines are WGS84 by definition); \
+             use to_crs(...) first",
+        ))
     }
 }
 
@@ -301,7 +290,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// route encoding used by Google Maps, OSRM, and Valhalla. Accepts one
 /// string (returns a ``Point`` for one coordinate, otherwise a ``LineString``)
 /// or an iterable of strings/``None`` rows (returns a `GeometryArray` with
-/// missing rows). Polylines are WGS84 by definition, so results carry EPSG:4326
+/// missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
 /// unless ``crs=None`` explicitly requests a CRS-free result;
 /// ``epoch`` restores coordinate-epoch metadata on round-trip.
 ///
@@ -312,7 +301,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// precision : int, default 5
 ///     Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
 ///     classic default, 6 the high-resolution variant.
-/// crs : str or int or None, default 4326
+/// crs : str or int or None, default 'OGC:CRS84'
 ///     Frame for the decoded longitude/latitude coordinates. Only WGS84
 ///     longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
 /// epoch : float, optional
@@ -320,8 +309,9 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 ///
 /// Returns
 /// -------
-/// LineString or GeometryArray
-///     One line per input string.
+/// Point, LineString, or GeometryArray
+///     A ``Point`` when the encoding has one coordinate, a ``LineString``
+///     for two or more, or a `GeometryArray` for iterable input.
 ///
 /// Raises
 /// ------
@@ -343,14 +333,14 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// 'LINESTRING (-120.2 38.5, -120.95 40.7, -126.453 43.252)'
 #[pyfunction]
 #[pyo3(
-    signature = (data, *, precision = 5, crs = PolylineCrs::Wgs84, epoch = None),
-    text_signature = "(data, *, precision=5, crs=4326, epoch=None)"
+    signature = (data, *, precision = 5, crs = Wgs84DefaultCrs::Default, epoch = None),
+    text_signature = "(data, *, precision=5, crs='OGC:CRS84', epoch=None)"
 )]
 pub(crate) fn from_polyline(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
     precision: i32,
-    crs: PolylineCrs,
+    crs: Wgs84DefaultCrs,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let factor = polyline_precision_factor(precision)?;
@@ -360,7 +350,7 @@ pub(crate) fn from_polyline(
     guard_epoch_frame(epoch, crs.as_ref())?;
     let decode_tagged = |text: &str| -> PyResult<Shape> {
         let points = decode_line(text, factor).map_err(|err| {
-            crate::py::errors::tag_parse_format(err, crate::py::errors::ParseFormat::Polyline)
+            crate::py::errors::tag_parse_format(err, crate::error::ParseFormat::Polyline)
         })?;
         Ok(shape_from_decoded_polyline(points))
     };

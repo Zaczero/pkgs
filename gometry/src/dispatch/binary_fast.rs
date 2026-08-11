@@ -1,27 +1,23 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::binary::{
-    BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
-};
-use super::kernels;
-use super::metric::OpCtx;
-use super::operation::Operation;
 use crate::broadcast::{
     GeometryInput, array_crs_distances, array_crs_dwithin, classify_input,
     predicate_pairwise_arrays, predicate_scalar_vs_array,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
+use crate::dispatch::binary::{
+    BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
+};
+use crate::dispatch::kernels;
+use crate::dispatch::metric::OpCtx;
+use crate::dispatch::operation::Operation;
 use crate::geometry::{ShapeData, is_geographic_frame};
-use crate::py::functions::predicate::{Predicate, topology_scalar_pair};
+use crate::predicates::engine::{Predicate, topology_scalar_pair};
 use crate::{DistanceUnit, NonNegative, OverlayOp};
 
 /// Predicate array-lane fast paths (point SIMD, bounds gates, prepared scans).
@@ -47,7 +43,6 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
         other: GeometryInput<'_>,
         _op_name: &str,
         _frame: &crate::boundary::metadata::Frame,
-        _geographic: bool,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -72,7 +67,6 @@ impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
         _right: GeometryInput<'_>,
         _op_name: &str,
         _frame: &crate::boundary::metadata::Frame,
-        _geographic: bool,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -136,7 +130,7 @@ pub(crate) fn dispatch_broadcast2<R>(
     + Sync,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + super::element::BulkElement,
+    R: Send + crate::broadcast::BulkElement,
 {
     dispatch_binary(
         py,
@@ -168,7 +162,7 @@ fn dispatch_metric_binary<R>(
     ) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + super::element::BulkElement,
+    R: Send + crate::broadcast::BulkElement,
 {
     let op_name = op.name();
     let left_in = classify_input(left);
@@ -245,6 +239,7 @@ pub(crate) fn dispatch_distance_3d(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     let op = Operation::Distance3d;
     dispatch_binary(
@@ -252,7 +247,7 @@ pub(crate) fn dispatch_distance_3d(
         left,
         right,
         op.name(),
-        super::MetricResolver::None,
+        op.resolver().with_unit(unit),
         &NoBinaryFastPath,
         kernels::binary_distance_3d,
     )
@@ -300,7 +295,11 @@ pub(crate) fn dispatch_frechet_distance(
         Operation::FrechetDistance,
         kernels::binary_frechet_distance,
         crate::metric_frechet_densified,
-        crate::geometry::frechet_distance_line_columns,
+        |left_xs, left_ys, right_xs, right_ys| {
+            Ok(crate::geometry::frechet_distance_line_columns(
+                left_xs, left_ys, right_xs, right_ys,
+            ))
+        },
     )
 }
 

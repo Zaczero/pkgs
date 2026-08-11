@@ -1,9 +1,7 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::SQUARED_SPACE_MAX_MAGNITUDE;
+use crate::geometry::distance::hausdorff::{HausdorffFeature, sqrt_distance_squared};
 use crate::geometry::facet_bvh::{BVH_MIN_INDEXED_SEGMENTS, FacetBvh, PreparedLinework};
+use crate::geometry::{Shape, XY, point_distance_squared, point_segment_distance_squared};
 
 /// Per-probe exact squared distance and nearest target-feature index.
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,13 +18,16 @@ pub(crate) mod stats {
     pub(crate) const fn inc_segment_bound_skips() {}
     pub(crate) const fn inc_coverage_certificate_skips() {}
     pub(crate) const fn inc_exact_segment_evals() {}
+    pub(crate) const fn inc_point_envelope_candidates(_: usize) {}
+    pub(crate) const fn inc_point_envelope_breakpoints(_: usize) {}
+    pub(crate) const fn inc_point_envelope_samples(_: usize) {}
 }
 
 pub(crate) fn linework_squared_safe(linework: &PreparedLinework) -> bool {
     let safe_column = |column: &[f64]| {
         column
             .iter()
-            .all(|value| value.abs() <= super::intersects::SQUARED_SPACE_MAX_MAGNITUDE)
+            .all(|value| value.abs() <= SQUARED_SPACE_MAX_MAGNITUDE)
     };
     let mut safe = true;
     linework.for_each_chain_xy_columns(|xs, ys| {
@@ -85,8 +86,13 @@ impl HausdorffLineworkQuery {
             WITNESS.with(|witness_cell| {
                 let mut dist = dist_cell.borrow_mut();
                 let mut witness = witness_cell.borrow_mut();
+                // An empty linework target contributes no zero-distance
+                // feature.  Point-only targets are folded by
+                // `HausdorffTarget::distance_squared` afterwards; starting
+                // this lane at zero silently made every probe coincide with
+                // a Point target and sent the extreme fallback a false zero.
                 dist.clear();
-                dist.resize(probes.len(), 0.0);
+                dist.resize(probes.len(), f64::INFINITY);
                 witness.clear();
                 witness.resize(probes.len(), u32::MAX);
                 if self.squared_safe {
@@ -129,14 +135,10 @@ impl HausdorffLineworkQuery {
     }
 
     pub(crate) fn distance_squared(&self, point: XY) -> f64 {
-        self.probe_one(point).distance_squared
-    }
-
-    pub(crate) fn probe_one(&self, point: XY) -> HausdorffProbeResult {
         let mut stack = Vec::new();
         let mut out = [HausdorffProbeResult::default()];
         self.batch_probe(&[(point.x, point.y)], &mut out, &mut stack);
-        out[0]
+        out[0].distance_squared
     }
 }
 
@@ -200,10 +202,13 @@ pub(crate) mod stats {
         pub segment_bound_skips: usize,
         pub coverage_certificate_skips: usize,
         pub exact_segment_evals: usize,
+        pub point_envelope_candidates: usize,
+        pub point_envelope_breakpoints: usize,
+        pub point_envelope_samples: usize,
     }
 
     thread_local! {
-        static COUNTERS: [Cell<usize>; 4] = Default::default();
+        static COUNTERS: [Cell<usize>; 7] = Default::default();
     }
 
     pub(crate) fn reset() {
@@ -216,6 +221,9 @@ pub(crate) mod stats {
             segment_bound_skips: c[1].get(),
             coverage_certificate_skips: c[2].get(),
             exact_segment_evals: c[3].get(),
+            point_envelope_candidates: c[4].get(),
+            point_envelope_breakpoints: c[5].get(),
+            point_envelope_samples: c[6].get(),
         })
     }
 
@@ -234,5 +242,14 @@ pub(crate) mod stats {
     }
     pub(crate) fn inc_exact_segment_evals() {
         add(3, 1);
+    }
+    pub(crate) fn inc_point_envelope_candidates(count: usize) {
+        add(4, count);
+    }
+    pub(crate) fn inc_point_envelope_breakpoints(count: usize) {
+        add(5, count);
+    }
+    pub(crate) fn inc_point_envelope_samples(count: usize) {
+        add(6, count);
     }
 }

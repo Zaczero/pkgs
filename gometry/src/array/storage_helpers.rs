@@ -2,8 +2,11 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::py::support::Bounds3D;
+use crate::array::{
+    Bounds, OriginSpec, Point, Result, RowSelectionRef, line_logical_len, polygon_logical_len,
+    polygon_rings_range,
+};
+use crate::geometry::Bounds3D;
 
 pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Bounds {
     debug_assert!(!xs.is_empty());

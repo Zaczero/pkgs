@@ -2,20 +2,19 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Detached packed-column execution: resolve `row_map`, release the GIL, and hand logical contiguous columns to kernels in `packed_column_kernels.rs`.
 
 use std::sync::Arc;
 
-use super::packed_gather::{
+use crate::array::packed_gather::{
     gather_line_columns, gather_point_columns, gather_polygon_columns, normalized_gather_storage,
 };
-use super::*;
+use crate::array::{
+    CoordSeq, CoordinateReplacement, CsrOffsetColumn, Frame, GeometryArrayStorage, PolygonLevel,
+    PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis, Result, Ring, RingLevel,
+    RowSelectionRef, rows_err,
+};
 use crate::geometry::{CoordSeqBuilder, CoordWindow};
-use crate::py::classes::coordinate_methods::{CoordinateReplacement, ReplacementAxis};
 
 pub(crate) enum PackedColumnError {
     Batch(crate::error::Error),
@@ -104,6 +103,79 @@ pub(crate) struct PolygonColumns<'a> {
     coords: ColumnSource<'a, CoordSeq>,
     ring_offsets: ColumnSource<'a, CsrOffsetColumn<RingLevel>>,
     polygon_offsets: ColumnSource<'a, CsrOffsetColumn<PolygonLevel>>,
+}
+
+/// Topology-only descriptor for dual-strategy columnar reduction over packed
+/// line/ring storage.
+///
+/// Owns **offsets and missingness only** — arithmetic stays monomorphized in
+/// the domain kernel (length, perimeter, …). Leaf offsets bound contiguous
+/// vertex runs (one line, one ring). Group offsets map output rows onto leaf
+/// ranges (`None` = identity for lines; `Some` = polygon→ring CSR). Group-level
+/// missing masks mark NaN output slots without exposing placeholder coordinates.
+#[derive(Clone, Copy)]
+pub(crate) struct SegmentedRuns<'a> {
+    /// Leaf run boundaries in the physical vertex column (`len = n_leaves + 1`).
+    pub leaf_offsets: &'a [i32],
+    /// Group boundaries in leaf space (`len = n_groups + 1`). `None` means
+    /// identity: group `i` owns only leaf `i`.
+    pub group_offsets: Option<&'a [i32]>,
+    /// Per-group missing mask (`None` = all present). Length = `n_groups`.
+    pub group_missing: Option<&'a [bool]>,
+}
+
+impl SegmentedRuns<'_> {
+    pub(crate) fn n_groups(&self) -> usize {
+        self.group_offsets.map_or_else(
+            || self.n_leaves(),
+            |offsets| offsets.len().saturating_sub(1),
+        )
+    }
+
+    pub(crate) const fn n_leaves(&self) -> usize {
+        self.leaf_offsets.len().saturating_sub(1)
+    }
+
+    /// Leaf-index range owned by `group`.
+    pub(crate) fn group_leaves(&self, group: usize) -> std::ops::Range<usize> {
+        self.group_offsets.map_or_else(
+            || group..group + 1,
+            |offsets| offsets[group] as usize..offsets[group + 1] as usize,
+        )
+    }
+
+    /// Vertex window for leaf `leaf` in the physical column.
+    pub(crate) const fn leaf_vertices(&self, leaf: usize) -> std::ops::Range<usize> {
+        self.leaf_offsets[leaf] as usize..self.leaf_offsets[leaf + 1] as usize
+    }
+
+    /// True when the group is marked missing.
+    pub(crate) fn is_missing(&self, group: usize) -> bool {
+        self.group_missing.is_some_and(|mask| mask[group])
+    }
+}
+
+impl LineColumns<'_> {
+    /// Topology descriptor for planar line-length dual reduction. Group space
+    /// is identity over leaves (one line row = one leaf).
+    pub(crate) fn segmented_runs<'a>(&'a self, missing: Option<&'a [bool]>) -> SegmentedRuns<'a> {
+        SegmentedRuns {
+            leaf_offsets: self.offsets(),
+            group_offsets: None,
+            group_missing: missing,
+        }
+    }
+}
+
+impl PolygonColumns<'_> {
+    /// Topology descriptor for planar polygon perimeter dual reduction.
+    pub(crate) fn segmented_runs<'a>(&'a self, missing: Option<&'a [bool]>) -> SegmentedRuns<'a> {
+        SegmentedRuns {
+            leaf_offsets: self.ring_offsets(),
+            group_offsets: Some(self.polygon_offsets()),
+            group_missing: missing,
+        }
+    }
 }
 
 impl PolygonColumns<'_> {

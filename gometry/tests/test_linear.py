@@ -98,7 +98,7 @@ def test_line_interpolate_and_locate_point_are_rust_backed_and_preserve_axes() -
         line.line_locate(gm.box(0, 0, 1, 1, crs=3857))
     with pytest.raises(TypeError, match='LineString or MultiLineString'):
         gm.Point(0, 0).line_interpolate(1)
-    with pytest.raises(ValueError, match='start_distance must be finite'):
+    with pytest.raises(ValueError, match='start must be finite'):
         line.line_substring(math.nan, 1)
 
 

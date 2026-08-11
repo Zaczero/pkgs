@@ -2,7 +2,16 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use pyo3::IntoPyObjectExt as _;
+use pyo3::types::PyAnyMethods as _;
+
+use crate::array::{
+    Arc, Bound, CRSError, CoordSeq, CoordinateAxes, FrameEdit, GeometryArrayStorage,
+    GeometryTransformFrame, Py, PyAny, PyBytes, PyErr, PyGeometryArray, PyResult, PyTuple,
+    PyTupleMethods as _, Python, Result, Shape, coordinate_epoch_option, crs, f64_column_le_bytes,
+    map_coordseq_to_crs, parse_crs, parse_geometry_transform_options, pymethods,
+    usize_row_map_le_bytes,
+};
 
 #[pymethods]
 impl PyGeometryArray {
@@ -40,22 +49,12 @@ impl PyGeometryArray {
             overwrite,
         }
         .apply(&self.frame)?;
-        // Packed storage carries no per-row frame: relabel by sharing
-        // storage — the columns are untouched.
-        if !matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
-            return Ok(
-                Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
-                    .with_missing_mask(self.missing().cloned()),
-            );
-        }
-        Ok(Self::mixed(
-            self.items()
-                .iter()
-                .map(|item| PyGeometry::with_frame(item.shape.clone(), frame.clone()))
-                .collect(),
-            frame,
+        // Shape storage (packed or mixed) carries no per-row frame: relabel
+        // by sharing storage — only the array-level frame refreshes.
+        Ok(
+            Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
+                .with_missing_mask(self.missing().cloned()),
         )
-        .with_missing_mask(self.missing().cloned()))
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
@@ -92,22 +91,11 @@ impl PyGeometryArray {
     pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Self> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
-        if !matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
-            // Packed storage carries no per-row frame: re-tagging is pure
-            // metadata, the columns are shared untouched.
-            return Ok(
-                Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
-                    .with_missing_mask(self.missing().cloned()),
-            );
-        }
-        Ok(Self::mixed(
-            self.items()
-                .iter()
-                .map(|item| PyGeometry::with_frame(item.shape.clone(), frame.clone()))
-                .collect(),
-            frame,
+        // Shape storage (packed or mixed) carries no per-row frame.
+        Ok(
+            Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
+                .with_missing_mask(self.missing().cloned()),
         )
-        .with_missing_mask(self.missing().cloned()))
     }
 
     /// Reproject all geometries to a target CRS.
@@ -131,19 +119,23 @@ impl PyGeometryArray {
     ///     dynamic (time-dependent). A static target clears it.
     ///
     /// authority : str, optional
-    ///     Restrict candidate transforms to this authority (e.g. ``'EPSG'``).
+    ///     Restrict candidate coordinate operations to this authority
+    ///     (e.g. ``'EPSG'``).
     ///
     /// accuracy : float, optional
-    ///     Maximum acceptable transformation accuracy, in meters.
+    ///     Maximum acceptable operation accuracy, in meters.
     ///
     /// allow_ballpark : bool, optional
-    ///     Allow low-accuracy ballpark transforms when no precise one exists.
+    ///     Allow low-accuracy ballpark operations when no precise one exists.
     ///
     /// only_best : bool, optional
-    ///     Use only the single best transform; no fallback.
+    ///     Use only the single best operation; no fallback.
     ///
     /// force_over : bool, optional
-    ///     Keep coordinates on the source side of the antimeridian (no wrap).
+    ///     Keep coordinates on the source side of the antimeridian instead of
+    ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+    ///     ``only_best``, this also collapses operation selection to a single
+    ///     candidate, so enumerating surfaces return exactly one operation.
     ///
     /// Returns
     /// -------
@@ -226,30 +218,32 @@ impl PyGeometryArray {
         let transformer =
             crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
         if let GeometryArrayStorage::Mixed(_) = self.storage() {
-            // Borrow each element's shared shape — no deep clone of the
-            // input coordinate tree before the batched PROJ transform.
+            // Borrow array-owned shapes — no deep clone before the batched
+            // PROJ transform; land outputs in array-owned mixed/packed.
             let storage = Arc::clone(self.storage_arc());
             let shapes = py.detach(move || {
-                let GeometryArrayStorage::Mixed(items) = storage.as_ref() else {
+                let GeometryArrayStorage::Mixed(shapes) = storage.as_ref() else {
                     unreachable!("matched Mixed");
                 };
-                let borrowed: Vec<_> = items.iter().map(|item| item.shape.shape()).collect();
+                let borrowed: Vec<_> = shapes.iter().collect();
                 transformer.transform_shapes(&borrowed)
             })?;
-            let items = shapes
-                .into_iter()
-                .map(|shape| PyGeometry::with_frame(shape, output.clone()))
-                .collect();
-            Ok(Self::pack_or_mixed(items, output))
+            crate::py::crs::drain_accuracy_warning(py)?;
+            Ok(Self::from_shapes(shapes, output))
         } else {
-            self.map_packed_coordseq_detached(py, output, move |coords| {
-                map_coordseq_to_crs(&transformer, coords)
-            })?
-            .ok_or_else(|| {
-                PyErr::from(crate::error::Error::from(
-                    crate::geometry::GeometryErrorKind::Projection("packed to_crs failed".into()),
-                ))
-            })
+            let result = self
+                .map_packed_coordseq_detached(py, output, move |coords| {
+                    map_coordseq_to_crs(&transformer, coords)
+                })?
+                .ok_or_else(|| {
+                    PyErr::from(crate::error::Error::from(
+                        crate::geometry::GeometryErrorKind::Projection(
+                            "packed to_crs failed".into(),
+                        ),
+                    ))
+                })?;
+            crate::py::crs::drain_accuracy_warning(py)?;
+            Ok(result)
         }
     }
     /// Per-element validity mask (see `Geometry.is_valid`).

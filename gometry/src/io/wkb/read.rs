@@ -1,21 +1,47 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use std::sync::Arc;
+
 use crate::geometry::{CoordSeqBuilder, MOrdinate, ZOrdinate, column_all_finite};
+use crate::io::wkb::{
+    CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, EmptyKind, GeometryErrorKind,
+    ISO_DIM_OFFSET, IoError, LineSeq, MAX_PARSE_DEPTH, ParseFormat, Point, Polygon, Result, Ring,
+    Shape, WKB_COUNT, WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING,
+    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbAxes, WkbGeometry, parse_content,
+    wkb_dimension,
+};
 
 pub(crate) fn parse_wkb(value: &[u8]) -> Result<WkbGeometry> {
-    parse_wkb_inner(value).map_err(|error| parse_content(ParseFormat::Wkb, error))
+    parse_wkb_inner(value)
+        .map_err(|error| parse_content(ParseFormat::Wkb, error))
+        .map_err(|error| error.with_parse_position(value.len()))
+}
+
+/// Batch parse entry: same grammar/errors as [`parse_wkb`]. Coordinate runs
+/// allocate exact final `Arc<[f64]>` columns (shared decoder with the scalar
+/// path). `arena` is retained as a batch call-site token so Arrow/`from_wkb`
+/// batch loops keep one explicit handle across rows; decode does not stage
+/// through it (each run owns its own Arc set mid-parse).
+pub(crate) fn parse_wkb_batch(value: &[u8], arena: &WkbCoordArena) -> Result<WkbGeometry> {
+    let _ = arena;
+    parse_wkb_inner(value)
+        .map_err(|error| parse_content(ParseFormat::Wkb, error))
+        .map_err(|error| error.with_parse_position(value.len()))
 }
 
 fn parse_wkb_inner(value: &[u8]) -> Result<WkbGeometry> {
     let mut reader = WkbReader { value, offset: 0 };
-    let (shape, crs) = reader.read_shape()?;
+    let (shape, srid) = reader
+        .read_shape()
+        .map_err(|error| error.with_parse_position(reader.offset))?;
     if reader.offset != value.len() {
-        return Err(IoError::wkb("trailing bytes after WKB geometry"));
+        return Err(IoError::wkb_at(
+            reader.offset,
+            format!(
+                "trailing bytes after WKB geometry ({} bytes remain)",
+                value.len().saturating_sub(reader.offset)
+            ),
+        ));
     }
-    Ok(WkbGeometry { shape, crs })
+    Ok(WkbGeometry { shape, srid })
 }
 fn parse_wkb_type(value: u32) -> Result<(u32, WkbAxes)> {
     let ewkb_z = value & EWKB_Z_FLAG != 0;
@@ -69,6 +95,10 @@ struct WkbReader<'a> {
 }
 
 impl WkbReader<'_> {
+    fn error<T>(&self, detail: impl Into<Box<str>>) -> Result<T> {
+        Err(IoError::wkb_at(self.offset, detail))
+    }
+
     const fn remaining_bytes(&self) -> usize {
         self.value.len().saturating_sub(self.offset)
     }
@@ -142,25 +172,25 @@ impl WkbReader<'_> {
 }
 
 /// Resolve runtime axes to the const-generic decoder instantiations.
-fn decode_coordseq_axes<const BIG: bool>(
-    bytes: &[u8],
-    axes: WkbAxes,
-    count: usize,
-) -> Result<CoordSeq> {
+fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: WkbAxes) -> Result<CoordSeq> {
     match (axes.z, axes.m) {
-        (false, false) => decode_coordseq::<BIG, false, false>(bytes, count),
-        (true, false) => decode_coordseq::<BIG, true, false>(bytes, count),
-        (false, true) => decode_coordseq::<BIG, false, true>(bytes, count),
-        (true, true) => decode_coordseq::<BIG, true, true>(bytes, count),
+        (false, false) => decode_coordseq::<BIG, false, false>(bytes),
+        (true, false) => decode_coordseq::<BIG, true, false>(bytes),
+        (false, true) => decode_coordseq::<BIG, false, true>(bytes),
+        (true, true) => decode_coordseq::<BIG, true, true>(bytes),
     }
 }
 
 /// Decode one coordinate run into separated columns, monomorphized over
 /// byte order AND axes so the hot loop carries no per-vertex branch or
 /// `Option` at all — eight straight-line loop bodies, dispatched once.
+///
+/// Vertex **count is derived from the byte span length** (no external
+/// `size_hint` / trusted-count parameter). Each column is then an exact final
+/// `Arc<[f64]>` sized from that proven count. Scalar and batch paths share this
+/// decoder (no staging Vec / re-Arc).
 fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     bytes: &[u8],
-    count: usize,
 ) -> Result<CoordSeq> {
     let decode = |array: [u8; 8]| {
         if BIG {
@@ -170,53 +200,48 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
         }
     };
     let stride = (2 + usize::from(Z) + usize::from(M)) * size_of::<f64>();
-    // Validated coordinate count (caller checked remaining payload bytes):
-    // fallible exact reservation — never `Vec::with_capacity` (OOM abort).
-    let mut xs = Vec::new();
-    xs.try_reserve(count).map_err(|_| {
-        IoError::wkb(format!(
-            "failed to reserve capacity for {count} WKB coordinates"
-        ))
-    })?;
-    let mut ys = Vec::new();
-    ys.try_reserve(count).map_err(|_| {
-        IoError::wkb(format!(
-            "failed to reserve capacity for {count} WKB coordinates"
-        ))
-    })?;
-    let mut zs = if Z {
-        let mut column = Vec::new();
-        column.try_reserve(count).map_err(|_| {
-            IoError::wkb(format!(
-                "failed to reserve capacity for {count} WKB coordinates"
-            ))
-        })?;
-        Some(column)
-    } else {
-        None
-    };
-    let mut ms = if M {
-        let mut column = Vec::new();
-        column.try_reserve(count).map_err(|_| {
-            IoError::wkb(format!(
-                "failed to reserve capacity for {count} WKB coordinates"
-            ))
-        })?;
-        Some(column)
-    } else {
-        None
-    };
-    for vertex in bytes.chunks_exact(stride) {
-        let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
-        xs.push(decode(ordinates[0]));
-        ys.push(decode(ordinates[1]));
-        if let Some(column) = &mut zs {
-            column.push(decode(ordinates[2]));
-        }
-        if let Some(column) = &mut ms {
-            column.push(decode(ordinates[2 + usize::from(Z)]));
+    if stride == 0 || !bytes.len().is_multiple_of(stride) {
+        return Err(IoError::wkb(
+            "WKB coordinate run length is not a multiple of the vertex stride",
+        ));
+    }
+    // Count proven by byte length ÷ stride (no separate trusted count).
+    let count = bytes.len() / stride;
+    let mut xs = Arc::<[f64]>::new_uninit_slice(count);
+    let mut ys = Arc::<[f64]>::new_uninit_slice(count);
+    let mut zs = Z.then(|| Arc::<[f64]>::new_uninit_slice(count));
+    let mut ms = M.then(|| Arc::<[f64]>::new_uninit_slice(count));
+    {
+        let xs_out = Arc::get_mut(&mut xs).expect("new Arc is unique");
+        let ys_out = Arc::get_mut(&mut ys).expect("new Arc is unique");
+        let mut zs_out = zs
+            .as_mut()
+            .map(|column| Arc::get_mut(column).expect("new Arc is unique"));
+        let mut ms_out = ms
+            .as_mut()
+            .map(|column| Arc::get_mut(column).expect("new Arc is unique"));
+        for (index, vertex) in bytes.chunks_exact(stride).enumerate() {
+            let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
+            xs_out[index].write(decode(ordinates[0]));
+            ys_out[index].write(decode(ordinates[1]));
+            if let Some(column) = &mut zs_out {
+                column[index].write(decode(ordinates[2]));
+            }
+            if let Some(column) = &mut ms_out {
+                column[index].write(decode(ordinates[2 + usize::from(Z)]));
+            }
         }
     }
+    // SAFETY: `count == bytes.len() / stride` and the loop enumerates every
+    // `chunks_exact` vertex, writing each selected ordinate for indices
+    // `0..count`. `assume_init` runs only after every slot is written.
+    let xs = unsafe { xs.assume_init() };
+    // SAFETY: same as `xs` — full column written above.
+    let ys = unsafe { ys.assume_init() };
+    // SAFETY: Z column allocated only when Z; then fully written above.
+    let zs = zs.map(|column| unsafe { column.assume_init() });
+    // SAFETY: M column allocated only when M; then fully written above.
+    let ms = ms.map(|column| unsafe { column.assume_init() });
     if !column_all_finite(&xs)
         || !column_all_finite(&ys)
         || zs
@@ -228,7 +253,22 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
-    CoordSeq::try_from_columns(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+    CoordSeq::try_from_columns(xs, ys, zs, ms)
+}
+
+/// Batch WKB parse token. Coordinate runs allocate exact final `Arc<[f64]>`
+/// columns via the shared decoder; call sites keep one arena across a batch so
+/// nested multipolygon/collection mid-parse ownership stays explicit.
+///
+/// **CoordSeq ownership:** each run owns its own Arc columns (that run's
+/// vertices). Nested geometry needs a finished `CoordSeq` mid-parse, so true
+/// multi-run slab windows are not shipped.
+pub(crate) struct WkbCoordArena;
+
+impl WkbCoordArena {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
 }
 
 /// A member's position inside a nested WKB container. Threaded only so a
@@ -272,7 +312,6 @@ const fn wkb_container_name(code: u32) -> &'static str {
 /// [`crate::io::crs_from_srid`] rule). Normalize before nested reconciliation so
 /// outer-0/child-4326, outer-4326/child-0, and sibling 0/4326 never invent a
 /// conflict against the unknown sentinel.
-#[inline]
 const fn normalize_ewkb_srid(srid: Option<u32>) -> Option<u32> {
     match srid {
         Some(0) | None => None,
@@ -305,14 +344,13 @@ fn resolve_nested_srid(
 }
 
 impl WkbReader<'_> {
-    fn read_shape(&mut self) -> Result<(Shape, Option<SmolStr>)> {
-        let (shape, srid) = self.read_geometry(None, None, 0)?;
-        // SRID 0 → CRS-free; nonzero → canonical PROJ CRS (rejects unknowns).
-        let crs = match srid {
-            Some(code) => crate::io::crs_from_srid(code)?,
-            None => None,
-        };
-        Ok((shape, crs))
+    /// Decode one top-level geometry and its normalized embedded SRID.
+    ///
+    /// SRID resolution is deferred to the caller ([`crate::io::crs_from_srid`]
+    /// / [`crate::io::SridCrsCache`]) so bulk ingest can canonicalize each
+    /// distinct code once. Nested SRID conflicts are still checked here.
+    fn read_shape(&mut self) -> Result<(Shape, Option<u32>)> {
+        self.read_geometry(None, None, 0)
     }
 
     /// Read one geometry, possibly a nested member. `inherited` is the SRID
@@ -337,7 +375,7 @@ impl WkbReader<'_> {
         let byte_order = match self.read_u8()? {
             0 => WkbByteOrder::BigEndian,
             1 => WkbByteOrder::LittleEndian,
-            _ => return Err(IoError::wkb("invalid WKB byte order")),
+            _ => return self.error("invalid WKB byte order"),
         };
         let raw_geometry_type = self.read_u32(byte_order)?;
         let (geometry_type, axes) = parse_wkb_type(raw_geometry_type)?;
@@ -454,7 +492,7 @@ impl WkbReader<'_> {
         let value = *self
             .value
             .get(self.offset)
-            .ok_or_else(|| IoError::wkb("unexpected end of WKB"))?;
+            .ok_or_else(|| IoError::wkb_at(self.offset, "unexpected end of WKB"))?;
         self.offset += 1;
         Ok(value)
     }
@@ -483,7 +521,7 @@ impl WkbReader<'_> {
             .value
             .get(self.offset..)
             .and_then(<[u8]>::first_chunk::<N>)
-            .ok_or_else(|| IoError::wkb("unexpected end of WKB"))?;
+            .ok_or_else(|| IoError::wkb_at(self.offset, "unexpected end of WKB"))?;
         self.offset += N;
         Ok(out)
     }
@@ -508,18 +546,6 @@ impl WkbReader<'_> {
         )?))
     }
 
-    /// Borrow the next `len` bytes and advance the cursor (overflow-safe).
-    fn read_bytes(&mut self, len: usize) -> Result<&[u8]> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .filter(|&end| end <= self.value.len())
-            .ok_or_else(|| IoError::wkb("unexpected end of WKB"))?;
-        let bytes = &self.value[self.offset..end];
-        self.offset = end;
-        Ok(bytes)
-    }
-
     /// Read a `count`-vertex coordinate run straight into separated `CoordSeq`
     /// columns. WKB stores interleaved `x, y, (z), (m)` per vertex, so a copy
     /// to deinterleave is unavoidable, but this skips any per-vertex `Point`
@@ -537,24 +563,31 @@ impl WkbReader<'_> {
         let byte_len = count
             .checked_mul(stride)
             .ok_or_else(|| IoError::wkb("WKB coordinate run is too large"))?;
-        let bytes = self.read_bytes(byte_len)?;
-
+        // Split borrow: take the byte slice without holding `self` across decode.
+        let end = self
+            .offset
+            .checked_add(byte_len)
+            .filter(|&end| end <= self.value.len())
+            .ok_or_else(|| IoError::wkb("unexpected end of WKB"))?;
+        let bytes = &self.value[self.offset..end];
+        self.offset = end;
         // Dispatch ONCE on (byte order, axes) — the loop body is fully
         // monomorphized, so the hot loop re-tests neither.
         match byte_order {
-            WkbByteOrder::BigEndian => decode_coordseq_axes::<true>(bytes, axes, count),
-            WkbByteOrder::LittleEndian => decode_coordseq_axes::<false>(bytes, axes, count),
+            WkbByteOrder::BigEndian => decode_coordseq_axes::<true>(bytes, axes),
+            WkbByteOrder::LittleEndian => decode_coordseq_axes::<false>(bytes, axes),
         }
     }
 
     fn read_ring(&mut self, byte_order: WkbByteOrder, axes: WkbAxes) -> Result<CoordSeq> {
         let count = self.read_u32(byte_order)? as usize;
-        // Structural rule: a polygon ring needs ≥ MIN_VERTICES_CLOSED vertices.
-        // Independent of any size budget — empty rings are simply malformed.
-        if count < Ring::MIN_VERTICES_CLOSED {
+        // Floor only: ≥ MIN_VERTICES_OPEN corners. Shared `admit_closed_ring`
+        // then silent-closes XY-open rings or rejects Z/M-open / too-short
+        // closed rings — same policy as WKT (A1 uniformity).
+        if count < Ring::MIN_VERTICES_OPEN {
             return Err(IoError::wkb(format!(
                 "WKB polygon ring requires at least {} coordinates, got {count}",
-                Ring::MIN_VERTICES_CLOSED
+                Ring::MIN_VERTICES_OPEN
             )));
         }
         self.read_coordseq(byte_order, axes, count)
@@ -572,14 +605,15 @@ impl WkbReader<'_> {
                 axes.coordinate_axes(),
             ));
         }
-        // Rings are structurally checked (min vertices) then accepted as
-        // closed storage without re-running winding/simplicity so
-        // `Geometry.validate()` can still diagnose content issues.
-        // Shell first, holes straight into their final Vec (no front removal).
-        let shell = Ring::from_trusted_closed(self.read_ring(byte_order, axes)?);
+        // Shared untrusted ring admission (same policy as WKT): silent-close
+        // XY-open rings; reject Z/M-open; then pack. Winding/simplicity stay
+        // for `Geometry.validate()`. Shell first, holes into final Vec.
+        let shell = crate::io::admit_closed_ring(self.read_ring(byte_order, axes)?)?;
         let mut holes = self.try_vec_with_capacity(ring_count - 1)?;
         for _ in 0..ring_count - 1 {
-            holes.push(Ring::from_trusted_closed(self.read_ring(byte_order, axes)?));
+            holes.push(crate::io::admit_closed_ring(
+                self.read_ring(byte_order, axes)?,
+            )?);
         }
         Ok(Shape::Polygon(Polygon::new(shell, holes)))
     }

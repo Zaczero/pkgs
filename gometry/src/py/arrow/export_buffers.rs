@@ -1,12 +1,12 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::arrow::*;
+use crate::py::arrow::{
+    ArrowCoordinateValues, Bound, CoordSeq, CoordinateAxes, Coordinates, IntoPyObject as _, Point,
+    Py, PyAny, PyBytes, PyResult, Python, arrow_content_error, geoarrow_parse_error,
+    mixed_axes_error,
+};
 
 /// Serialize a native `f64` column into a `PyBytes` Arrow buffer. On
 /// little-endian hosts the `bytemuck` cast is a zero-cost reinterpretation, so
@@ -70,6 +70,146 @@ pub(crate) struct ArrowCoordinateBuffers {
     ms: Option<Vec<f64>>,
 }
 
+/// Multi-chunk Arrow import accumulator: totals are known before the fill, so
+/// each ordinate column is an exact-size final `Arc` written chunk-by-chunk
+/// (no `Vec` → `Arc` conversion).
+///
+/// Axes are fixed at construction. Every [`append_arrow_coordinates`] call must
+/// supply exactly those axes (Z/M presence must match); a mismatch is a typed
+/// error and does not advance the fill cursor. That makes unwritten optional
+/// columns unreachable at [`into_coord_seq`] — the previous `if let (Some, Some)`
+/// write pattern could leave Z/M uninit while still completing the XY fill.
+pub(crate) struct ExactArrowCoordinateFill {
+    xs: std::sync::Arc<[std::mem::MaybeUninit<f64>]>,
+    ys: std::sync::Arc<[std::mem::MaybeUninit<f64>]>,
+    zs: Option<std::sync::Arc<[std::mem::MaybeUninit<f64>]>>,
+    ms: Option<std::sync::Arc<[std::mem::MaybeUninit<f64>]>>,
+    pos: usize,
+    capacity: usize,
+    /// Declared axes at construction; append requires exact Z/M presence match.
+    axes: CoordinateAxes,
+}
+
+impl ExactArrowCoordinateFill {
+    pub(crate) fn with_capacity(axes: CoordinateAxes, coordinate_count: usize) -> Self {
+        use std::sync::Arc;
+        // Capacity is a sum of trusted chunk lengths (already validated per
+        // chunk); the allocation is proportional to admitted input.
+        Self {
+            xs: Arc::new_uninit_slice(coordinate_count),
+            ys: Arc::new_uninit_slice(coordinate_count),
+            zs: axes
+                .has_z()
+                .then(|| Arc::new_uninit_slice(coordinate_count)),
+            ms: axes
+                .has_m()
+                .then(|| Arc::new_uninit_slice(coordinate_count)),
+            pos: 0,
+            capacity: coordinate_count,
+            axes,
+        }
+    }
+
+    pub(crate) fn append_arrow_coordinates(
+        &mut self,
+        coordinates: &ArrowCoordinateValues,
+    ) -> PyResult<()> {
+        use std::sync::Arc;
+
+        use crate::geometry::column_all_finite;
+        let xs = coordinates.x.values.as_ref();
+        let ys = coordinates.y.values.as_ref();
+        let zs = coordinates.z.as_ref().map(|values| values.values.as_ref());
+        let ms = coordinates.m.as_ref().map(|values| values.values.as_ref());
+        // Axes mismatch is always-on and fallible: an XY chunk must never be
+        // accepted into an XYZ/XYM/XYZM fill (or the reverse). Without this,
+        // `pos` can reach capacity while optional columns stay uninit, and
+        // `into_coord_seq` would `assume_init` them.
+        let src_axes = CoordinateAxes::new(
+            crate::geometry::HasZ(zs.is_some()),
+            crate::geometry::HasM(ms.is_some()),
+        );
+        if src_axes != self.axes {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate chunk axes do not match the multi-chunk fill axes",
+            ));
+        }
+        if !column_all_finite(xs)
+            || !column_all_finite(ys)
+            || zs.is_some_and(|column| !column_all_finite(column))
+            || ms.is_some_and(|column| !column_all_finite(column))
+        {
+            return Err(arrow_content_error(
+                crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into(),
+            ));
+        }
+        let n = xs.len();
+        if ys.len() != n
+            || zs.is_some_and(|column| column.len() != n)
+            || ms.is_some_and(|column| column.len() != n)
+        {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate columns have mismatched lengths",
+            ));
+        }
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))?;
+        if end > self.capacity {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate count exceeds precomputed total",
+            ));
+        }
+        let start = self.pos;
+        // SAFETY: unique Arcs; `start..end` is in-range. Axes match is enforced
+        // above, so every allocated optional column has a source of equal length
+        // and is fully written in this range (or no optional column exists).
+        unsafe {
+            let write = |dst: &mut Arc<[std::mem::MaybeUninit<f64>]>, src: &[f64]| {
+                let slot = Arc::get_mut(dst).unwrap_unchecked();
+                slot[start..end].write_copy_of_slice(src);
+            };
+            write(&mut self.xs, xs);
+            write(&mut self.ys, ys);
+            // Axes match ⇒ presence of src tracks presence of dst exactly.
+            if let Some(dst) = self.zs.as_mut() {
+                write(dst, zs.unwrap_unchecked());
+            }
+            if let Some(dst) = self.ms.as_mut() {
+                write(dst, ms.unwrap_unchecked());
+            }
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    pub(crate) fn into_coord_seq(self) -> PyResult<CoordSeq> {
+        // Fallible completeness: never `assume_init` an under-filled buffer.
+        // `append_arrow_coordinates` already rejects over-fill and axes mismatch;
+        // a shortfall means the multi-chunk total was wrong or a chunk was skipped.
+        if self.pos != self.capacity {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate count does not match precomputed total",
+            ));
+        }
+        // SAFETY: every slot `0..capacity` of every allocated column was written:
+        // - XY always written by each successful append for that range;
+        // - Z/M allocated iff `axes` has them, and every append requires matching
+        //   axes so each optional column is written on the same ranges;
+        // - `pos == capacity` means the full range was covered by successful appends.
+        let (xs, ys, zs, ms) = unsafe {
+            (
+                self.xs.assume_init(),
+                self.ys.assume_init(),
+                self.zs.map(|column| column.assume_init()),
+                self.ms.map(|column| column.assume_init()),
+            )
+        };
+        Ok(CoordSeq::try_from_columns(xs, ys, zs, ms)?)
+    }
+}
+
 impl ArrowCoordinateBuffers {
     pub(crate) fn new(axes: CoordinateAxes) -> Self {
         Self {
@@ -86,27 +226,6 @@ impl ArrowCoordinateBuffers {
         buffers
     }
 
-    /// Fallible capacity for import paths that must not abort on huge forged counts.
-    pub(crate) fn try_with_capacity(
-        axes: CoordinateAxes,
-        coordinate_count: usize,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            xs: crate::try_vec_with_capacity(coordinate_count)?,
-            ys: crate::try_vec_with_capacity(coordinate_count)?,
-            zs: if axes.has_z() {
-                Some(crate::try_vec_with_capacity(coordinate_count)?)
-            } else {
-                None
-            },
-            ms: if axes.has_m() {
-                Some(crate::try_vec_with_capacity(coordinate_count)?)
-            } else {
-                None
-            },
-        })
-    }
-
     pub(crate) fn reserve(&mut self, coordinate_count: usize) {
         self.xs.reserve(coordinate_count);
         self.ys.reserve(coordinate_count);
@@ -116,46 +235,6 @@ impl ArrowCoordinateBuffers {
         if let Some(values) = &mut self.ms {
             values.reserve(coordinate_count);
         }
-    }
-
-    /// Append finite coordinate columns from a GeoArrow import chunk.
-    pub(crate) fn append_arrow_coordinates(
-        &mut self,
-        coordinates: &ArrowCoordinateValues,
-    ) -> PyResult<()> {
-        use crate::geometry::column_all_finite;
-        let xs = coordinates.x.values.as_ref();
-        let ys = coordinates.y.values.as_ref();
-        let zs = coordinates.z.as_ref().map(|values| values.values.as_ref());
-        let ms = coordinates.m.as_ref().map(|values| values.values.as_ref());
-        if !column_all_finite(xs)
-            || !column_all_finite(ys)
-            || zs.is_some_and(|column| !column_all_finite(column))
-            || ms.is_some_and(|column| !column_all_finite(column))
-        {
-            return Err(arrow_content_error(
-                crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into(),
-            ));
-        }
-        self.xs.extend_from_slice(xs);
-        self.ys.extend_from_slice(ys);
-        if let (Some(out), Some(column)) = (self.zs.as_mut(), zs) {
-            out.extend_from_slice(column);
-        }
-        if let (Some(out), Some(column)) = (self.ms.as_mut(), ms) {
-            out.extend_from_slice(column);
-        }
-        Ok(())
-    }
-
-    /// Finish import accumulation into a validated coordinate sequence.
-    pub(crate) fn into_coord_seq(self) -> PyResult<CoordSeq> {
-        Ok(CoordSeq::try_from_columns(
-            self.xs.into(),
-            self.ys.into(),
-            self.zs.map(Into::into),
-            self.ms.map(Into::into),
-        )?)
     }
 
     pub(crate) fn push_point(&mut self, point: Point) -> PyResult<()> {
@@ -238,5 +317,128 @@ impl ArrowCoordinateBuffers {
             (None, None) => Ok(()),
             _ => Err(mixed_axes_error()),
         }
+    }
+}
+
+#[cfg(test)]
+mod exact_arrow_fill_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::geometry::{CoordinateAxes, HasM, HasZ};
+    use crate::py::arrow::{ArrowCoordinateValues, ArrowOrdinateValues, ArrowValidity};
+
+    /// Build a fill and feed raw columns without going through Arrow Python
+    /// values — exercises the same axes gate as production append.
+    fn try_append_raw(
+        fill: &mut ExactArrowCoordinateFill,
+        xs: &[f64],
+        ys: &[f64],
+        zs: Option<&[f64]>,
+        ms: Option<&[f64]>,
+    ) -> Result<(), String> {
+        let src_axes = CoordinateAxes::new(HasZ(zs.is_some()), HasM(ms.is_some()));
+        if src_axes != fill.axes {
+            return Err("axes mismatch".into());
+        }
+        // Mirror production: only advance after a successful axes-matched write
+        // of every allocated column.
+        let n = xs.len();
+        if ys.len() != n || zs.is_some_and(|c| c.len() != n) || ms.is_some_and(|c| c.len() != n) {
+            return Err("length mismatch".into());
+        }
+        let end = fill.pos.checked_add(n).ok_or("overflow")?;
+        if end > fill.capacity {
+            return Err("over capacity".into());
+        }
+        let start = fill.pos;
+        // SAFETY: unique Arc, range in capacity, axes matched ⇒ every column written.
+        unsafe {
+            let write = |dst: &mut Arc<[std::mem::MaybeUninit<f64>]>, src: &[f64]| {
+                let slot = Arc::get_mut(dst).unwrap_unchecked();
+                slot[start..end].write_copy_of_slice(src);
+            };
+            write(&mut fill.xs, xs);
+            write(&mut fill.ys, ys);
+            if let Some(dst) = fill.zs.as_mut() {
+                write(dst, zs.unwrap_unchecked());
+            }
+            if let Some(dst) = fill.ms.as_mut() {
+                write(dst, ms.unwrap_unchecked());
+            }
+        }
+        fill.pos = end;
+        Ok(())
+    }
+
+    fn ordinate(values: &[f64], field: &'static str) -> ArrowOrdinateValues {
+        ArrowOrdinateValues {
+            values: Arc::<[f64]>::from(values),
+            base: 0,
+            validity: ArrowValidity {
+                bitmap: None,
+                offset: 0,
+            },
+            field,
+        }
+    }
+
+    #[test]
+    fn mismatched_axes_cannot_complete_xyz_fill() {
+        // PyResult error construction needs an interpreter.
+        pyo3::Python::initialize();
+        // XYZ fill + XY-only values must not reach assume_init on Z.
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2);
+        let err = try_append_raw(&mut fill, &[1.0, 2.0], &[3.0, 4.0], None, None)
+            .expect_err("XY into XYZ must fail");
+        assert!(err.contains("axes"), "{err}");
+        assert_eq!(fill.pos, 0, "failed append must not advance the cursor");
+        // Completing without any write is a shortfall error, not UB.
+        fill.into_coord_seq()
+            .expect_err("unfilled XYZ must not assume_init");
+    }
+
+    #[test]
+    fn mismatched_axes_cannot_complete_xy_fill_with_z() {
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XY, 1);
+        let err = try_append_raw(&mut fill, &[1.0], &[2.0], Some(&[3.0]), None)
+            .expect_err("XYZ into XY must fail");
+        assert!(err.contains("axes"), "{err}");
+        assert_eq!(fill.pos, 0);
+    }
+
+    #[test]
+    fn matched_xyz_fill_finishes() {
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2);
+        try_append_raw(&mut fill, &[1.0, 2.0], &[3.0, 4.0], Some(&[5.0, 6.0]), None)
+            .expect("matched axes");
+        let seq = fill.into_coord_seq().expect("full fill");
+        assert_eq!(seq.len(), 2);
+        assert!(seq.axes().has_z());
+        assert!(!seq.axes().has_m());
+    }
+
+    #[test]
+    fn production_append_rejects_axes_mismatch() {
+        // Drive the real `append_arrow_coordinates` entry with synthetic
+        // `ArrowCoordinateValues` so the shipped axes gate is what fails.
+        pyo3::Python::initialize();
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 1);
+        let xy_only = ArrowCoordinateValues {
+            x: ordinate(&[1.0], "x"),
+            y: ordinate(&[2.0], "y"),
+            z: None,
+            m: None,
+            value_validity: ArrowValidity {
+                bitmap: None,
+                offset: 0,
+            },
+            value_base: 0,
+            full: std::cell::OnceCell::new(),
+        };
+        fill.append_arrow_coordinates(&xy_only)
+            .expect_err("production append must reject XY into XYZ");
+        assert_eq!(fill.pos, 0);
+        fill.into_coord_seq().unwrap_err();
     }
 }

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -496,27 +492,47 @@ GeometryArray
     };
     (@pre) => {
         r"Densify linework by inserting vertices so no segment exceeds
-``max_length`` (or a fraction of its length) (planar).
+``max_length`` (or a fraction of its length).
+
+``max_length`` is a real-world distance measured for the CRS, exactly like
+``length``: a geographic CRS subdivides along the ellipsoid in meters, a
+projected CRS uses its native linear units, and a CRS-free geometry uses
+coordinate units. Every original vertex survives unchanged — this operation
+only inserts.
 
 Parameters
 ----------"
     };
     (@post) => {
-        r""
+        r"
+unit : {'planar', 'meters'} or None, default None
+    ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
+    (degrees-as-Cartesian on a geographic CRS — only for deliberate
+    coordinate-space math); ``'meters'`` forces the CRS metric and raises
+    without a CRS. Cannot be combined with ``fraction``, which is already
+    relative to each segment."
     };
     (@tail) => {
         r"
 Raises
 ------
+CRSError
+    If ``unit='meters'`` is requested and the CRS lacks linear axis units.
 GeometryError
     If neither or both constraints are supplied, ``max_length`` is not a
-    positive finite number, or ``fraction`` is outside ``(0, 1]``.
+    positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
+    combined with ``fraction``, or ``unit='meters'`` is requested for a
+    CRS-free geometry.
 
 Examples
 --------
 >>> import gometry as gm
 >>> gm.LineString([(0, 0), (4, 0)]).segmentize(2).to_wkt()
-'LINESTRING (0 0, 2 0, 4 0)'"
+'LINESTRING (0 0, 2 0, 4 0)'
+>>> # On a geographic CRS the bound is meters along the ellipsoid.
+>>> line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+>>> len(list(line.segmentize(20_000).coords))
+7"
     };
 }
 

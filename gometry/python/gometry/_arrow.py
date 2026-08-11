@@ -77,14 +77,13 @@ def to_arrow_wkb(
     data: Buffer,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap WKB ``offsets``/``data`` buffers as a ``geoarrow.wkb`` array."""
     pa = _pyarrow()
     storage = pa.Array.from_buffers(
         pa.binary(),
         _offset_length(offsets),
-        [_validity_buffer(pa, missing), pa.py_buffer(offsets), pa.py_buffer(data)],
+        [None, pa.py_buffer(offsets), pa.py_buffer(data)],
     )
     return pa.ExtensionArray.from_storage(
         _extension_type(pa, GEOARROW_WKB, crs, epoch), storage
@@ -98,11 +97,10 @@ def to_arrow_point(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
-    """Wrap interleaved coordinate buffers as a ``geoarrow.point`` array."""
+    """Wrap separated (struct) coordinate columns as a ``geoarrow.point`` array."""
     pa = _pyarrow()
-    storage = _coordinate_values(pa, xs, ys, z, m, missing=missing)
+    storage = _coordinate_values(pa, xs, ys, z, m)
     return pa.ExtensionArray.from_storage(
         _extension_type(pa, GEOARROW_POINT, crs, epoch, z is not None, m is not None),
         storage,
@@ -117,12 +115,9 @@ def to_arrow_linestring(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap one offset level over coordinates as a ``geoarrow.linestring`` array."""
-    return _to_arrow_list(
-        offsets, xs, ys, z, m, GEOARROW_LINESTRING, crs, epoch, missing=missing
-    )
+    return _to_arrow_nested((offsets,), xs, ys, z, m, GEOARROW_LINESTRING, crs, epoch)
 
 
 def to_arrow_multipoint(
@@ -133,12 +128,9 @@ def to_arrow_multipoint(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap one offset level over coordinates as a ``geoarrow.multipoint`` array."""
-    return _to_arrow_list(
-        offsets, xs, ys, z, m, GEOARROW_MULTIPOINT, crs, epoch, missing=missing
-    )
+    return _to_arrow_nested((offsets,), xs, ys, z, m, GEOARROW_MULTIPOINT, crs, epoch)
 
 
 def to_arrow_multilinestring(
@@ -150,12 +142,10 @@ def to_arrow_multilinestring(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap two offset levels over coordinates as a ``geoarrow.multilinestring`` array."""
-    return _to_arrow_nested_list(
-        geometry_offsets,
-        line_offsets,
+    return _to_arrow_nested(
+        (geometry_offsets, line_offsets),
         xs,
         ys,
         z,
@@ -163,7 +153,6 @@ def to_arrow_multilinestring(
         GEOARROW_MULTILINESTRING,
         crs,
         epoch,
-        missing=missing,
     )
 
 
@@ -176,12 +165,10 @@ def to_arrow_polygon(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap polygon/ring offset levels over coordinates as a ``geoarrow.polygon`` array."""
-    return _to_arrow_nested_list(
-        polygon_offsets,
-        ring_offsets,
+    return _to_arrow_nested(
+        (polygon_offsets, ring_offsets),
         xs,
         ys,
         z,
@@ -189,7 +176,6 @@ def to_arrow_polygon(
         GEOARROW_POLYGON,
         crs,
         epoch,
-        missing=missing,
     )
 
 
@@ -203,38 +189,22 @@ def to_arrow_multipolygon(
     m: Buffer | None,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     """Wrap multipolygon/polygon/ring offset levels as a ``geoarrow.multipolygon`` array."""
-    pa = _pyarrow()
-    ring_count = _offset_length(ring_offsets)
-    polygon_count = _offset_length(polygon_offsets)
-    rings = _coordinate_list(pa, ring_offsets, xs, ys, z, m, ring_count)
-    coordinate_type = _coordinate_type(pa, z is not None, m is not None)
-    polygon_storage_type = pa.list_(pa.list_(coordinate_type))
-    polygons = pa.Array.from_buffers(
-        polygon_storage_type,
-        polygon_count,
-        [None, pa.py_buffer(polygon_offsets)],
-        children=[rings],
-    )
-    storage_type = pa.list_(polygon_storage_type)
-    storage = pa.Array.from_buffers(
-        storage_type,
-        _offset_length(multipolygon_offsets),
-        [_validity_buffer(pa, missing), pa.py_buffer(multipolygon_offsets)],
-        children=[polygons],
-    )
-    return pa.ExtensionArray.from_storage(
-        _extension_type(
-            pa, GEOARROW_MULTIPOLYGON, crs, epoch, z is not None, m is not None
-        ),
-        storage,
+    return _to_arrow_nested(
+        (multipolygon_offsets, polygon_offsets, ring_offsets),
+        xs,
+        ys,
+        z,
+        m,
+        GEOARROW_MULTIPOLYGON,
+        crs,
+        epoch,
     )
 
 
-def _to_arrow_list(
-    offsets: Buffer,
+def _to_arrow_nested(
+    offset_levels: tuple[Buffer, ...],
     xs: Buffer,
     ys: Buffer,
     z: Buffer | None,
@@ -242,65 +212,26 @@ def _to_arrow_list(
     extension_name: str,
     crs: str | None,
     epoch: float | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
+    """Inside-out offset-stack builder for depth-1/2/3 GeoArrow list storage.
+
+    *offset_levels* is outer→inner (outermost list first). Missingness is
+    applied later through the shared batch path — builders emit dense storage.
+    """
     pa = _pyarrow()
-    storage = _coordinate_list(
-        pa, offsets, xs, ys, z, m, _offset_length(offsets), missing=missing
-    )
+    child = _coordinate_values(pa, xs, ys, z, m)
+    # Build from the innermost offsets outward.
+    for offsets in reversed(offset_levels):
+        storage_type = pa.list_(child.type)
+        child = pa.Array.from_buffers(
+            storage_type,
+            _offset_length(offsets),
+            [None, pa.py_buffer(offsets)],
+            children=[child],
+        )
     return pa.ExtensionArray.from_storage(
         _extension_type(pa, extension_name, crs, epoch, z is not None, m is not None),
-        storage,
-    )
-
-
-def _to_arrow_nested_list(
-    geometry_offsets: Buffer,
-    item_offsets: Buffer,
-    xs: Buffer,
-    ys: Buffer,
-    z: Buffer | None,
-    m: Buffer | None,
-    extension_name: str,
-    crs: str | None,
-    epoch: float | None,
-    missing: Buffer | None = None,
-) -> pa.Array:
-    pa = _pyarrow()
-    # Offsets may be raw bytes or a PEP-3118 `Int32Buffer` from packed storage.
-    item_count = _offset_length(item_offsets)
-    items = _coordinate_list(pa, item_offsets, xs, ys, z, m, item_count)
-    coordinate_type = _coordinate_type(pa, z is not None, m is not None)
-    storage_type = pa.list_(pa.list_(coordinate_type))
-    storage = pa.Array.from_buffers(
-        storage_type,
-        _offset_length(geometry_offsets),
-        [_validity_buffer(pa, missing), pa.py_buffer(geometry_offsets)],
-        children=[items],
-    )
-    return pa.ExtensionArray.from_storage(
-        _extension_type(pa, extension_name, crs, epoch, z is not None, m is not None),
-        storage,
-    )
-
-
-def _coordinate_list(
-    pa: Any,
-    offsets: Buffer,
-    xs: Buffer,
-    ys: Buffer,
-    z: Buffer | None,
-    m: Buffer | None,
-    length: int,
-    missing: Buffer | None = None,
-) -> pa.Array:
-    values = _coordinate_values(pa, xs, ys, z, m)
-    storage_type = pa.list_(_coordinate_type(pa, z is not None, m is not None))
-    return pa.Array.from_buffers(
-        storage_type,
-        length,
-        [_validity_buffer(pa, missing), pa.py_buffer(offsets)],
-        children=[values],
+        child,
     )
 
 
@@ -310,7 +241,6 @@ def _coordinate_values(
     ys: Buffer,
     z: Buffer | None,
     m: Buffer | None,
-    missing: Buffer | None = None,
 ) -> pa.Array:
     # `xs` is bytes OR any PEP-3118 exporter (zero-copy column objects);
     # the byte length comes from the buffer view either way.
@@ -331,11 +261,7 @@ def _coordinate_values(
             pa.Array.from_buffers(pa.float64(), value_count, [None, pa.py_buffer(m)])
         )
         names.append('m')
-    validity = _validity_buffer(pa, missing)
-    if validity is None:
-        return pa.StructArray.from_arrays(arrays, names=names)
-    struct_type = pa.struct([pa.field(name, pa.float64()) for name in names])
-    return pa.Array.from_buffers(struct_type, value_count, [validity], children=arrays)
+    return pa.StructArray.from_arrays(arrays, names=names)
 
 
 def _coordinate_type(pa: Any, has_z: bool, has_m: bool) -> Any:
@@ -353,18 +279,6 @@ def _storage_axes(storage_type: Any) -> tuple[bool, bool]:
         coordinate_type = coordinate_type.value_type
     names = [coordinate_type[index].name for index in range(coordinate_type.num_fields)]
     return 'z' in names, 'm' in names
-
-
-def _validity_buffer(pa: Any, missing: Buffer | None) -> Any:
-    """LSB-packed Arrow validity bitmap from a byte-per-row missing mask
-    (``1`` = missing), or ``None`` for a dense array.
-    """
-    if missing is None:
-        return None
-    import numpy as np
-
-    mask = np.frombuffer(memoryview(missing), dtype=np.uint8)
-    return pa.py_buffer(np.packbits(mask == 0, bitorder='little').tobytes())
 
 
 def apply_missing(array: pa.ExtensionArray, validity: Buffer) -> pa.ExtensionArray:

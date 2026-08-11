@@ -1,6 +1,7 @@
+use h3o::error::CompactionError;
 use h3o::{CellIndex, Resolution};
 
-use crate::py::cells::*;
+use crate::py::cells::{Bound, GeometryError, H3_MAX_RESOLUTION, PyAny, PyResult, py_i64_required};
 /// Compact H3 `cells` without merging coarser than `min_resolution`: cells at
 /// or coarser than the floor pass through unchanged, complete sibling groups
 /// merge recursively (mixed-resolution input is grouped per resolution and
@@ -8,10 +9,34 @@ use crate::py::cells::*;
 /// input), and any merge result landing coarser than the floor is re-expanded
 /// to it (an ancestor's expansion is exactly the sibling set that merged into
 /// it, so the covered area is unchanged).
+///
+/// Default-floor input tries h3o directly (no one-key BTreeMap + pre-sort).
+/// `DuplicateInput` retries on the already-sorted/deduped vector;
+/// `HeterogeneousResolution` falls through to the multi-resolution path
+/// without a second pre-scan.
 pub(super) fn h3_compact_with_floor(
-    cells: Vec<CellIndex>,
+    mut cells: Vec<CellIndex>,
     min_resolution: Resolution,
 ) -> PyResult<Vec<CellIndex>> {
+    // Fast path: default floor tries h3o first. Homogeneous input finishes
+    // here; mixed input falls through with cells still unsorted (h3o rejects
+    // before its sort).
+    if min_resolution == Resolution::Zero {
+        match CellIndex::compact(&mut cells) {
+            Ok(()) => return Ok(cells),
+            Err(CompactionError::DuplicateInput) => {
+                // Sorted+deduped in place before the error — one retry.
+                CellIndex::compact(&mut cells)
+                    .map_err(|error| GeometryError::new_err(error.to_string()))?;
+                return Ok(cells);
+            },
+            // Heterogeneous (and any future non-exhaustive variant): fall
+            // through to the multi-resolution floor path. h3o rejects before
+            // sorting, so `cells` is still the original order.
+            Err(CompactionError::HeterogeneousResolution | _) => {},
+        }
+    }
+
     let (mut out, rest): (Vec<_>, Vec<_>) = cells
         .into_iter()
         .partition(|cell| cell.resolution() <= min_resolution);

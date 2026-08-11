@@ -14,7 +14,7 @@ use pyo3::types::{PyAny, PyDict};
 use serde_json::Value;
 
 use crate::py::errors::parse_error;
-use crate::*;
+use crate::{Coordinates, EmptyKind, Point, Polygon, PyList, Shape, geometry, py_bool};
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
     let value = match shape {
@@ -88,7 +88,25 @@ pub(crate) fn point_tuple(py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Build a GeoJSON geometry dict after the same RFC 7946 preparation as
+/// [`crate::io::to_geojson_string`] when `geographic` is true (domain check,
+/// antimeridian split, right-hand winding). CRS-free geometry stays planar.
+pub(crate) fn geojson_dict_prepared<'py>(
+    py: Python<'py>,
+    shape: &Shape,
+    geographic: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let prepared = crate::io::geojson_output_shape(shape, geographic)?;
+    geojson_dict_raw(py, prepared.as_ref())
+}
+
+/// Raw Shape → GeoJSON dict (no domain / antimeridian preparation). Prefer
+/// [`geojson_dict_prepared`] for RFC 7946 Feature / `to_geojson` surfaces.
 pub(crate) fn geojson_dict<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
+    geojson_dict_raw(py, shape)
+}
+
+fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     match shape {
         Shape::Point(point) => {
@@ -199,7 +217,7 @@ pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
                     .ok_or_else(|| {
                         parse_error(
                             format!("GeoJSON coordinate {value} is not a finite JSON number"),
-                            crate::py::errors::ParseFormat::GeoJson,
+                            crate::error::ParseFormat::GeoJson,
                         )
                     })?
                     .into_pyobject(py)?

@@ -1,12 +1,12 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::support::{
+    Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
+    PyGeometry, PyResult, Result, Shape, ShapeData, coordinate_values, require_locate_point,
+    resolve_metric,
+};
 
 /// Resolve the metric for a line-LRS op. `normalized` distances are fractions
 /// of total length, so they are unit-independent — pairing `unit=` with
@@ -55,7 +55,7 @@ pub(crate) fn parse_interpolate_plan(
         (Some(count), None) => {
             if normalized {
                 return Err(GeometryError::new_err(
-                    "normalized applies to distances; count samples fractions already",
+                    "normalized applies to at; count samples fractions already",
                 ));
             }
             let count = crate::boundary::input::positive_int(
@@ -68,9 +68,9 @@ pub(crate) fn parse_interpolate_plan(
             Ok(InterpolatePlan::Count(count))
         },
         (None, Some(distances)) => {
-            let values = coordinate_values(distances.py(), distances, "distances")?;
+            let values = coordinate_values(distances.py(), distances, "at")?;
             if !crate::geometry::column_all_finite(&values) {
-                return Err(GeometryError::new_err("distances must be finite"));
+                return Err(GeometryError::new_err("at must be finite"));
             }
             Ok(InterpolatePlan::Distances(
                 values,
@@ -78,7 +78,7 @@ pub(crate) fn parse_interpolate_plan(
             ))
         },
         _ => Err(GeometryError::new_err(
-            "line_interpolate_points requires exactly one of count or distances",
+            "line_interpolate requires exactly one of at or count",
         )),
     }
 }

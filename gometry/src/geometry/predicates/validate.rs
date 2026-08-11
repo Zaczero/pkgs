@@ -1,4 +1,7 @@
-use crate::geometry::*;
+use crate::geometry::{
+    Coordinates, Orientation, Point, Polygon, ValidationIssue, XY, column_all_finite,
+    multi_polygon_members_issue, orientation_xy, same_point, wrap_index,
+};
 pub(crate) fn validate_point(point: Point, path: &str) -> Option<ValidationIssue> {
     (!point.x.is_finite() || !point.y.is_finite())
         .then(|| ValidationIssue::new("point coordinates must be finite", Some(point), path))

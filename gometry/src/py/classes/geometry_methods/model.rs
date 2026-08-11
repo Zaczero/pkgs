@@ -1,9 +1,6 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
+use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
@@ -11,7 +8,13 @@ use crate::geometry::FrameDependentCaches;
 use crate::py::row::{
     RowContainer, RowIndexOrSlice, RowIterState, collect_slice_rows, parse_row_index_or_slice,
 };
-use crate::{Crs, Frame, GeometryKind, HeapSize, ShapeData, *};
+use crate::{
+    Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
+    PyClassInitializer, PyErr, PyRef, PyResult, PySequenceMethods as _, Python, Result, ShapeData,
+    exact_geometry, pyclass, pymethods, wgs84_crs,
+};
+#[cfg(test)]
+use crate::{Point, Shape};
 
 /// An immutable geometry with optional CRS.
 ///
@@ -29,6 +32,7 @@ use crate::{Crs, Frame, GeometryKind, HeapSize, ShapeData, *};
     name = "Geometry",
     module = "gometry",
     frozen,
+    immutable_type,
     subclass,
     weakref,
     skip_from_py_object
@@ -53,7 +57,14 @@ pub struct PyGeometry {
 
 impl HeapSize for PyGeometry {
     fn heap_bytes(&self) -> usize {
-        self.shape.shape().coordinate_bytes() + self.frame_cache.heap_bytes()
+        // Honest retained cost: the Arc-owned `ShapeData` block (shape + any
+        // demand-allocated prepared caches already built), plus the
+        // Arc-owned frame-cache sidecar and its initialized products.
+        // Uninitialized lazy caches are not counted and never forced here.
+        std::mem::size_of_val(self.shape.as_ref())
+            + self.shape.retained_heap_bytes()
+            + std::mem::size_of_val(self.frame_cache.as_ref())
+            + self.frame_cache.heap_bytes()
     }
 }
 
@@ -78,6 +89,7 @@ macro_rules! geometry_leaf {
             module = "gometry",
             extends = PyGeometry,
             frozen,
+            immutable_type,
             skip_from_py_object
         )]
         pub(crate) struct $ident;
@@ -248,7 +260,13 @@ impl From<PyGeometry> for Typed {
 /// their immediate members. Scalar indexing and iteration materialize one
 /// typed geometry at a time via ``part_at``; slice indexing may still build a
 /// list up front.
-#[pyclass(name = "GeometryParts", module = "gometry", frozen, sequence)]
+#[pyclass(
+    name = "GeometryParts",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    sequence
+)]
 pub(crate) struct PyGeometryParts {
     geometry: PyGeometry,
 }
@@ -487,7 +505,12 @@ impl PyGeometryParts {
 
 /// Lazy iterator over a ``GeometryParts`` view: one typed leaf per
 /// ``__next__`` via ``part_at``, without building the full part list up front.
-#[pyclass(name = "GeometryPartsIterator", module = "gometry", frozen)]
+#[pyclass(
+    name = "GeometryPartsIterator",
+    module = "gometry",
+    frozen,
+    immutable_type
+)]
 pub(crate) struct PyGeometryPartsIter {
     source: PyGeometryParts,
     state: RowIterState,
@@ -563,6 +586,7 @@ impl PyGeometry {
 #[cfg(test)]
 mod frame_cache_ownership_tests {
     use super::*;
+    use crate::boundary::crs_arc_static;
 
     #[test]
     fn scalar_clone_shares_but_retag_gets_fresh_frame_cache() {
@@ -659,6 +683,10 @@ impl PyGeometry {
     // existing `Arc<ShapeData>` (shared with no coordinate copy AND shared
     // prepared state — e.g. `set_crs`/`with_shape` reuse the parent's
     // payload and its indexes).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
+    )]
     pub fn from_shape_crs(shape: impl Into<Arc<ShapeData>>, crs: Option<Crs>) -> Self {
         Self::with_epoch(shape, crs, None)
     }
@@ -680,6 +708,10 @@ impl PyGeometry {
     /// New geometry with an explicit CRS and coordinate epoch (and a fresh
     /// bounds cache). Prefer [`with_shape`](Self::with_shape) when the CRS and
     /// epoch are inherited from an existing geometry.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
+    )]
     pub fn with_epoch(
         shape: impl Into<Arc<ShapeData>>,
         crs: Option<Crs>,
@@ -694,7 +726,12 @@ impl PyGeometry {
 
     /// New WGS84 lon/lat geometry with no coordinate epoch.
     pub(crate) fn wgs84(shape: impl Into<Arc<ShapeData>>) -> Self {
-        Self::with_epoch(shape, Some(crs_arc_static("EPSG:4326")), None)
+        Self::with_epoch(shape, Some(wgs84_crs()), None)
+    }
+
+    /// [`wgs84`](Self::wgs84) wrapped as [`Typed`] for return to Python.
+    pub(crate) fn typed_wgs84(shape: impl Into<Arc<ShapeData>>) -> Typed {
+        Typed(Self::wgs84(shape))
     }
 
     /// New geometry from an already-built [`Frame`] — the zero-conversion path
@@ -722,6 +759,10 @@ impl PyGeometry {
     }
 
     /// New geometry that keeps this one's CRS and epoch but swaps in `shape`.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
+    )]
     pub fn with_shape(&self, shape: impl Into<Arc<ShapeData>>) -> Self {
         Self::with_epoch(shape, self.crs_ref().cloned(), self.epoch())
     }
@@ -729,6 +770,10 @@ impl PyGeometry {
     /// Like [`with_shape`](Self::with_shape) but wrapped as [`Typed`] for
     /// return to Python as the leaf subclass matching `shape` (e.g.
     /// `centroid` → Point).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
+    )]
     pub fn typed_shape(&self, shape: impl Into<Arc<ShapeData>>) -> Typed {
         Typed(self.with_shape(shape))
     }
@@ -736,6 +781,10 @@ impl PyGeometry {
     /// Like [`with_epoch`](Self::with_epoch) but wrapped as [`Typed`] for
     /// return to Python (used where the CRS/epoch change, e.g. `to_crs`,
     /// `set_crs`).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
+    )]
     pub fn typed_with_epoch(
         shape: impl Into<Arc<ShapeData>>,
         crs: Option<Crs>,

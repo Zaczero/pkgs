@@ -42,11 +42,7 @@ def test_geoarrow_extension_types_and_arrays_pickle_round_trip() -> None:
             b'{"epoch": "2020"}', 'epoch must be a number', id='wrong-epoch-type'
         ),
         pytest.param(b'[]', 'expected a JSON object', id='non-object-root'),
-        pytest.param(
-            b'{"edges":"spherical"}',
-            'edges "spherical" are unsupported',
-            id='spherical-edges',
-        ),
+        # spherical on POINT is accepted (vacuous edges); use linestring shape below
         pytest.param(b'{"edges":"bogus"}', 'unknown edges value', id='unknown-edges'),
         pytest.param(
             b'{"crs_type":"bogus"}', 'unknown crs_type', id='unknown-crs-type'
@@ -79,6 +75,44 @@ def test_from_arrow_malformed_geoarrow_metadata_is_tagged_parse_error(
     assert excinfo.value.format == 'geoarrow'
 
 
+def test_geoarrow_spherical_edges_rejected_on_linestring_accepted_on_point() -> None:
+    """Edge semantics are vacuous on points; spherical remains rejected for lines."""
+    point_storage = pa.StructArray.from_arrays(
+        [pa.array([0.0]), pa.array([0.0])], names=['x', 'y']
+    )
+    point_field = pa.field(
+        'geometry',
+        point_storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': b'{"edges":"spherical"}',
+        },
+    )
+    point_table = pa.Table.from_arrays([point_storage], schema=pa.schema([point_field]))
+    assert gm.from_arrow(point_table).to_wkt() == ['POINT (0 0)']
+
+    # linestring: list of point structs
+    coord = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    line_storage = pa.array(
+        [[(0.0, 0.0), (1.0, 1.0)]],
+        type=pa.list_(coord),
+    )
+    line_field = pa.field(
+        'geometry',
+        line_storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{"edges":"spherical"}',
+        },
+    )
+    line_table = pa.Table.from_arrays([line_storage], schema=pa.schema([line_field]))
+    with pytest.raises(
+        gm.ParseError, match=r'edges "spherical" are unsupported'
+    ) as excinfo:
+        gm.from_arrow(line_table)
+    assert excinfo.value.format == 'geoarrow'
+
+
 def test_reserved_extension_name_must_be_utf8_on_all_arrow_frontends() -> None:
     storage = pa.StructArray.from_arrays(
         [pa.array([0.0]), pa.array([0.0])], names=['x', 'y']
@@ -89,7 +123,9 @@ def test_reserved_extension_name_must_be_utf8_on_all_arrow_frontends() -> None:
     table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
     batch = table.to_batches()[0]
     for source in (table, _ArrowCStreamOnly(table), _ArrowCArrayOnly(batch)):
-        with pytest.raises(gm.ParseError, match='extension name metadata is not UTF-8') as exc:
+        with pytest.raises(
+            gm.ParseError, match='extension name metadata is not UTF-8'
+        ) as exc:
             gm.from_arrow(source)
         assert exc.value.format == 'geoarrow'
 
@@ -294,12 +330,16 @@ def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> Non
         assert restored.to_wkt() == ['POINT (1 2)']
 
     # Positive: when BAD itself is the PyArrow carrier, dual-source still errors.
-    with pytest.raises(gm.ParseError, match='conflicting GeoArrow extension metadata') as exc:
+    with pytest.raises(
+        gm.ParseError, match='conflicting GeoArrow extension metadata'
+    ) as exc:
         gm.from_arrow(bad)
     assert exc.value.format == 'geoarrow'
 
 
-def test_from_arrow_geoarrow_wkb_over_point_storage_same_verdict_all_frontends() -> None:
+def test_from_arrow_geoarrow_wkb_over_point_storage_same_verdict_all_frontends() -> (
+    None
+):
     """D07: geoarrow.wkb declared over point (struct) storage rejects on every frontend."""
     storage = pa.StructArray.from_arrays(
         [pa.array([1.0]), pa.array([2.0])], names=['x', 'y']

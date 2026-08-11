@@ -1,6 +1,6 @@
 //! Generic cell `#[pymethods]` backing functions — written once per `GridCell`.
 
-use pyo3::IntoPyObjectExt;
+use pyo3::IntoPyObjectExt as _;
 use pyo3::basic::CompareOp;
 use pyo3::prelude::*;
 

@@ -28,7 +28,9 @@ FOOT_UNIT_M = 0.3048006096012192
 EXACT_OPS = sorted({
     'area',
     'length',
+    'length_3d',
     'distance',
+    'distance_3d',
     'dwithin',
     'hausdorff_distance',
     'frechet_distance',
@@ -144,6 +146,31 @@ def _exact_cases() -> list[ExactCase]:
         lambda: line.length,
         lambda: gm.length(line, unit='meters'),
         lambda: gm.length(free_line, unit='meters'),
+        10.0,
+    ))
+
+    # The 3D family belongs to this matrix for the same reason the 2D one does,
+    # and its absence is exactly why `length_3d` shipped returning SI metres
+    # from a foot CRS while `length` returned feet — for the very same line.
+    line_3d = gm.LineString([(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)], crs=FOOT_CRS)
+    free_line_3d = gm.LineString([(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)])
+    cases.append((
+        'length_3d',
+        lambda: line_3d.length_3d,
+        lambda: gm.length_3d(line_3d, unit='meters'),
+        lambda: gm.length_3d(free_line_3d, unit='meters'),
+        10.0,
+    ))
+
+    a_3d = gm.Point(0.0, 0.0, z=0.0, crs=FOOT_CRS)
+    b_3d = gm.Point(10.0, 0.0, z=0.0, crs=FOOT_CRS)
+    free_a_3d = gm.Point(0.0, 0.0, z=0.0)
+    free_b_3d = gm.Point(10.0, 0.0, z=0.0)
+    cases.append((
+        'distance_3d',
+        lambda: gm.distance_3d(a_3d, b_3d),
+        lambda: gm.distance_3d(a_3d, b_3d, unit='meters'),
+        lambda: gm.distance_3d(free_a_3d, free_b_3d, unit='meters'),
         10.0,
     ))
 

@@ -1,6 +1,8 @@
 use pyo3::exceptions::PyAttributeError;
 
-use super::*;
+use crate::py::classes::leaf_methods::{
+    EmptyKind, PyLineString, PyPoint, PyPolygon, PyRef, PyResult, Shape, Typed, pymethods,
+};
 use crate::py::errors::geometry_type_err;
 
 enum PointAxis {
@@ -70,7 +72,9 @@ impl PyPoint {
     /// Raises
     /// ------
     /// GeometryTypeError
-    ///     If the point is empty or has no Z ordinate.
+    ///     If the point has no Z ordinate.
+    /// AttributeError
+    ///     If the point is empty (``POINT EMPTY``).
     #[getter]
     pub(crate) fn z(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::Z)
@@ -81,7 +85,9 @@ impl PyPoint {
     /// Raises
     /// ------
     /// GeometryTypeError
-    ///     If the point is empty or has no M ordinate.
+    ///     If the point has no M ordinate.
+    /// AttributeError
+    ///     If the point is empty (``POINT EMPTY``).
     #[getter]
     pub(crate) fn m(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::M)

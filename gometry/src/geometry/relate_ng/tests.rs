@@ -1,5 +1,6 @@
-use super::relate::areal_relate_arrangement_oracle;
-use super::*;
+use crate::geometry::relate::areal_relate_arrangement_oracle;
+use crate::geometry::relate_ng::*;
+use crate::geometry::{CoordSeq, Point, Ring, Shape};
 
 fn radial_ring(cx: f64, cy: f64, radii: &[f64], rot: f64, clockwise: bool) -> CoordSeq {
     let n = radii.len();
@@ -87,7 +88,8 @@ fn areal_relate_ng_matches_arrangement_oracle_on_curated_cases() {
     let check = |name: &str, left: Vec<Polygon>, right: Vec<Polygon>, require_fast: bool| {
         // Prepared testers built from the same parts must produce the
         // byte-identical matrix as the raw per-ring scan path — this locks
-        // the banded-raycaster fast lane against the arrangement oracle.
+        // the hierarchical `PointBatchTester` fast lane against the
+        // arrangement oracle.
         let left_tester = PointBatchTester::new(&Shape::MultiPolygon(left.clone()));
         let right_tester = PointBatchTester::new(&Shape::MultiPolygon(right.clone()));
         let prepared = AreaTesters {

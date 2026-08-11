@@ -2,7 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::support::{
+    BufferCapStyle, BufferJoinStyle, BufferSide, DistanceUnit, RepairMethod, Result,
+    SimplifyMethod, SmoothMethod, pyfunction,
+};
 
 // Token enums accepted directly as Python argument types: extraction parses
 // the string and raises `ValueError` with the canonical message.

@@ -131,7 +131,9 @@ def test_d21_from_geojson_nested_crs_all_frontends() -> None:
     }
     text = json.dumps(feature)
     for data in (feature, text, text.encode()):
-        with pytest.raises(gm.ParseError, match='legacy GeoJSON CRS member') as exc_info:
+        with pytest.raises(
+            gm.ParseError, match='legacy GeoJSON CRS member'
+        ) as exc_info:
             gm.from_geojson(data, crs=4326)
         assert exc_info.value.format == 'geojson'
 
@@ -414,22 +416,28 @@ def test_d22_from_features_nested_feature_geometry_slot_parity() -> None:
 
 
 def test_d22_from_geojson_fixed_document_semantics() -> None:
-    """Fixed policy: omitted = EPSG:4326; CRS84 accepts; 3857 / crs=None reject."""
+    """Fixed policy: omitted = OGC:CRS84; CRS84 accepts; 3857 / crs=None reject."""
     plain = {'type': 'Point', 'coordinates': [1, 2]}
-    assert gm.from_geojson(plain).crs == 'EPSG:4326'
-    assert gm.from_features({
-        'type': 'Feature',
-        'geometry': plain,
-        'properties': {},
-    }).geometries.crs == 'EPSG:4326'
+    assert gm.from_geojson(plain).crs == 'OGC:CRS84'
+    assert (
+        gm.from_features({
+            'type': 'Feature',
+            'geometry': plain,
+            'properties': {},
+        }).geometries.crs
+        == 'OGC:CRS84'
+    )
 
     crs84 = _legacy_mapping('OGC:CRS84')
-    assert gm.from_geojson(crs84).crs == 'EPSG:4326'
-    assert gm.from_features({
-        'type': 'Feature',
-        'geometry': crs84,
-        'properties': {},
-    }).geometries.crs == 'EPSG:4326'
+    assert gm.from_geojson(crs84).crs == 'OGC:CRS84'
+    assert (
+        gm.from_features({
+            'type': 'Feature',
+            'geometry': crs84,
+            'properties': {},
+        }).geometries.crs
+        == 'OGC:CRS84'
+    )
 
     conflict = _legacy_mapping('EPSG:3857')
     with pytest.raises(gm.ParseError) as exc_info:

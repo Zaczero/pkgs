@@ -1,4 +1,6 @@
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, crs_html_escape, parse_crs,
+};
 frozen_pymethods! {
 impl PyCrs {
     /// Build a CRS from any accepted input.

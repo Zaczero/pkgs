@@ -33,7 +33,9 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
     # EMPTY keyword remains the empty spelling.
     assert gm.from_wkt('MULTILINESTRING EMPTY').to_wkt() == 'MULTILINESTRING EMPTY'
     assert gm.from_wkt('MULTIPOLYGON EMPTY').to_wkt() == 'MULTIPOLYGON EMPTY'
-    assert gm.from_wkt('GEOMETRYCOLLECTION EMPTY').to_wkt() == 'GEOMETRYCOLLECTION EMPTY'
+    assert (
+        gm.from_wkt('GEOMETRYCOLLECTION EMPTY').to_wkt() == 'GEOMETRYCOLLECTION EMPTY'
+    )
 
     # Mixed EMPTY member still round-trips (must not weaken).
     mixed = gm.from_wkt('MULTILINESTRING (EMPTY, (0 0,1 1))')
@@ -49,7 +51,9 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
     # Valid WKT/EWKT still parse (PostGIS forms).
     assert gm.from_wkt('POINTM(1 2 3)').to_wkt() == 'POINT M (1 2 3)'
     assert gm.from_wkt('POINT(1 2 3 4)').to_wkt() == 'POINT ZM (1 2 3 4)'
-    assert gm.from_wkt('MULTILINESTRING Z (EMPTY)').to_wkt() == 'MULTILINESTRING Z EMPTY'
+    assert (
+        gm.from_wkt('MULTILINESTRING Z (EMPTY)').to_wkt() == 'MULTILINESTRING Z EMPTY'
+    )
 
 
 @pytest.mark.parametrize(
@@ -62,7 +66,12 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
         # EXACT D16 repros: empty-member form keeps declared axes + kind.
         ('MULTIPOINT Z (EMPTY)', 'MultiPoint', 'XYZ', 'MULTIPOINT Z EMPTY'),
         ('MULTILINESTRING EMPTY', 'MultiLineString', 'XY', 'MULTILINESTRING EMPTY'),
-        ('MULTILINESTRING M EMPTY', 'MultiLineString', 'XYM', 'MULTILINESTRING M EMPTY'),
+        (
+            'MULTILINESTRING M EMPTY',
+            'MultiLineString',
+            'XYM',
+            'MULTILINESTRING M EMPTY',
+        ),
         (
             'MULTILINESTRING Z (EMPTY)',
             'MultiLineString',

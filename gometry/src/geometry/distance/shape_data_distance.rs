@@ -1,4 +1,14 @@
-use super::*;
+use crate::geometry::distance::{
+    Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
+    coordinate_squared_safe, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
+    geodesic_point_distance_with_parts, geodesic_point_dwithin_with_parts, parts_boundary_contact,
+    parts_covers_point, puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap,
+    squared_space_safe,
+};
+use crate::geometry::{
+    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, Shape, ShapeData,
+    finish_planar_squared_min, point_distance, points_dwithin,
+};
 impl ShapeData {
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
@@ -30,7 +40,11 @@ impl ShapeData {
             && bounds_squared_safe(right)
             && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())
         {
-            return squared.sqrt();
+            // Always finish through the shared rescue — bare sqrt false-zeros
+            // at 1e-200 point×line / multipoint×poly separations.
+            return finish_planar_squared_min(squared, || {
+                puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
+            });
         }
         let self_parts = self.distance_parts();
         let other_parts = other.distance_parts();
@@ -47,7 +61,7 @@ impl ShapeData {
     pub fn dwithin(&self, other: &Self, distance: f64) -> bool {
         // Point pairs answer directly (mirrors `Shape::dwithin`).
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
-            return point_distance_squared(*a, *b) <= distance * distance;
+            return points_dwithin(*a, *b, distance);
         }
         let bounds = self.bounds().zip(other.bounds());
         let limit = distance * distance;
@@ -64,17 +78,18 @@ impl ShapeData {
         if overlapping && quick_area_overlap(self.shape(), other.shape()).is_some() {
             return true;
         }
-        // Same in-place puntal kernel as `distance` (squared, so the two stay
-        // consistent to one ulp at the boundary): compare the min squared
-        // point-to-edge distance to the squared limit (`limit` is +inf for a
-        // non-finite distance, so a within-range geometry still answers
-        // correctly). Extreme-coordinate operands defer to the hypot sweep.
-        if let Some((left_b, right_b)) = bounds
+        // Puntal brute finished through the same helper as distance.
+        let use_sq = limit.is_finite() && limit != 0.0 && distance > 0.0;
+        if use_sq
+            && let Some((left_b, right_b)) = bounds
             && bounds_squared_safe(left_b)
             && bounds_squared_safe(right_b)
             && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())
         {
-            return squared <= limit;
+            let d = finish_planar_squared_min(squared, || {
+                puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
+            });
+            return d <= distance;
         }
         let self_parts = self.distance_parts();
         let other_parts = other.distance_parts();
@@ -83,14 +98,14 @@ impl ShapeData {
         {
             return true;
         }
-        if !limit.is_finite() {
+        if !limit.is_finite() || !use_sq {
             return self
                 .shape()
                 .distance_disjoint_with_parts(self_parts, other_parts)
                 <= distance;
         }
         self.shape()
-            .dwithin_disjoint_with_parts(self_parts, other_parts, limit)
+            .dwithin_disjoint_with_parts(self_parts, other_parts, distance)
     }
 
     /// Geodesic distance with both sides' geodesic working state cached on the
@@ -155,9 +170,10 @@ impl ShapeData {
 
     /// Boundary-inclusive `covers_point` on cached prepared state — the
     /// exact zero test for the point lanes. Bare (multi)polygons answer
-    /// through the banded raycaster (interior + ring boundary; they carry no
-    /// other parts); everything else through the prepared parts (isolated
-    /// identity, robust on-segment via the facet tree, recursive area parts).
+    /// through [`PointBatchTester`] (hierarchical Y-stabbing; interior + ring
+    /// boundary; they carry no other parts); everything else through the
+    /// prepared parts (isolated identity, robust on-segment via the facet
+    /// tree, recursive area parts).
     pub(crate) fn covers_point_cached(&self, point: Point) -> bool {
         self.point_tester().map_or_else(
             || parts_covers_point(self.shape(), self.distance_parts(), point),
@@ -165,16 +181,14 @@ impl ShapeData {
         )
     }
 
-    /// Planar distance from one point probe to this geometry, on cached
-    /// prepared state — see [`Self::distance_points`] for the batch lane.
-    pub fn distance_point(&self, point: Point) -> f64 {
-        self.distance_point_with(point, &mut Vec::new())
-    }
-
     /// Per-row planar distances from an XY probe stream, on cached prepared
     /// state — the packed point-array lane: parts resolve once and every
     /// probe's tree descent reuses one traversal stack (no per-row handle,
     /// no per-row allocation).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
+    )]
     pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Vec<f64> {
         let mut stack = Vec::new();
         probes
@@ -189,31 +203,50 @@ impl ShapeData {
         }
         let parts = self.distance_parts();
         let safe = squared_space_safe(parts) && coordinate_squared_safe(point);
-        let probe = std::iter::once((point.x, point.y));
-        let mut best = match (parts.bvh(), safe) {
-            (Some(bvh), true) => bvh
-                .min_point_distance_with_stack::<true>(
-                    &parts.linework,
-                    point.x,
-                    point.y,
-                    stack,
-                    f64::INFINITY,
+        // Local min to linework: squared (SQUARED=true) or distance space.
+        let mut min_linework = |squared: bool| -> f64 {
+            if squared {
+                parts.bvh().map_or_else(
+                    || {
+                        parts.linework.min_points_distance::<true>(
+                            std::iter::once((point.x, point.y)),
+                            f64::INFINITY,
+                        )
+                    },
+                    |bvh| {
+                        bvh.min_point_distance_with_stack::<true>(
+                            &parts.linework,
+                            point.x,
+                            point.y,
+                            stack,
+                            f64::INFINITY,
+                        )
+                    },
                 )
-                .sqrt(),
-            (Some(bvh), false) => bvh.min_point_distance_with_stack::<false>(
-                &parts.linework,
-                point.x,
-                point.y,
-                stack,
-                f64::INFINITY,
-            ),
-            (None, true) => parts
-                .linework
-                .min_points_distance::<true>(probe, f64::INFINITY)
-                .sqrt(),
-            (None, false) => parts
-                .linework
-                .min_points_distance::<false>(probe, f64::INFINITY),
+            } else {
+                parts.bvh().map_or_else(
+                    || {
+                        parts.linework.min_points_distance::<false>(
+                            std::iter::once((point.x, point.y)),
+                            f64::INFINITY,
+                        )
+                    },
+                    |bvh| {
+                        bvh.min_point_distance_with_stack::<false>(
+                            &parts.linework,
+                            point.x,
+                            point.y,
+                            stack,
+                            f64::INFINITY,
+                        )
+                    },
+                )
+            }
+        };
+        let mut best = if safe {
+            finish_planar_squared_min(min_linework(true), || min_linework(false))
+        } else {
+            min_linework(false)
         };
         for &other in &parts.point_only {
             best = best.min(point_distance(point, other));
@@ -231,6 +264,10 @@ impl ShapeData {
 
     /// Per-row planar `dwithin` from an XY probe stream — the batch sibling
     /// of [`Self::dwithin_point`], one shared traversal stack across rows.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
+    )]
     pub fn dwithin_points(
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
@@ -250,26 +287,36 @@ impl ShapeData {
             return true;
         }
         let parts = self.distance_parts();
-        let limit = distance * distance;
-        if !limit.is_finite() {
+        let limit_sq = distance * distance;
+        let use_sq = limit_sq.is_finite() && limit_sq != 0.0 && distance > 0.0;
+        if !use_sq {
             return self.distance_point_with(point, stack) <= distance;
         }
         let simd = squared_space_safe(parts) && coordinate_squared_safe(point);
         let linework_hit = parts.bvh().map_or_else(
             || {
-                parts
-                    .linework
-                    .any_points_within(std::iter::once((point.x, point.y)), limit, simd)
+                parts.linework.any_points_within(
+                    std::iter::once((point.x, point.y)),
+                    limit_sq,
+                    simd,
+                )
             },
             |bvh| {
-                bvh.point_within_with_stack(&parts.linework, point.x, point.y, limit, simd, stack)
+                bvh.point_within_with_stack(
+                    &parts.linework,
+                    point.x,
+                    point.y,
+                    limit_sq,
+                    simd,
+                    stack,
+                )
             },
         );
         linework_hit
             || parts
                 .point_only
                 .iter()
-                .any(|&other| point_distance_squared(point, other) <= limit)
+                .any(|&other| points_dwithin(point, other, distance))
     }
 
     /// Per-row geodesic distances from lon/lat point probes to this fixed

@@ -2,11 +2,9 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::geometry::*;
+use crate::geometry::{
+    Bounds, Coordinates, Orientation, Point, Shape, XY, orientation, shell_is_convex,
+};
 /// orientation sign — no raycasts, no extent checks. Decisive BOTH ways
 /// for `covers`: a vertex strictly outside some halfplane is off the
 /// container; all vertices passing puts the candidate's hull (hence the

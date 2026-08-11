@@ -2,7 +2,11 @@
 
 use pyo3::types::PyAny;
 
-use super::*;
+use crate::broadcast::metrics::{
+    Arc, Bound, CollectRows as _, DistanceUnit, Frame, GeometryInput, Py, PyGeometry,
+    PyGeometryArray, PyResult, Python, Shape, classify_required, crs, float64_array,
+    pair_dwithin_shapes, paired_arrays, resolve_metric, rows_err,
+};
 
 /// Per-element ``densify=`` lane for array Hausdorff/Fréchet.
 pub(crate) fn array_crs_similarity_metric_per_densify(
@@ -27,7 +31,7 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                 operation,
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
-            let right = right.shape.clone();
+            let right = Arc::clone(&right.shape);
             let missing = array.missing().cloned();
             float64_array(
                 py,

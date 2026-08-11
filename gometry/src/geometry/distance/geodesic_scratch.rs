@@ -1,4 +1,5 @@
-use super::*;
+use crate::geometry::distance::{CapGroup, RowProbe};
+use crate::geometry::{GeodesicMetric, GeodesicSegment, Point, Shape};
 #[derive(Default)]
 pub(crate) struct GeodesicScratch {
     pub(crate) left_points: Vec<Point>,

@@ -2,11 +2,20 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::geometry::{CoordSeqBuilder, HasM, HasZ, MOrdinate, ZOrdinate};
+use crate::io::wkt::{
+    CoordSeq, CoordinateAxes, EmptyKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
+    ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, parse_content,
+};
 
 pub(crate) fn parse_wkt(value: &str) -> Result<Shape> {
-    parse_wkt_inner(value, 0, None).map_err(|error| parse_content(ParseFormat::Wkt, error))
+    parse_wkt_inner(value, 0, None)
+        .map_err(|error| parse_content(ParseFormat::Wkt, error))
+        // The recursive WKT parser works on borrowed sub-slices and does not
+        // carry an original-input cursor. Its public position is therefore the
+        // UTF-8 input length for every failure. WKB has a real reader cursor
+        // and reports the varying detection offset instead.
+        .map_err(|error| error.with_parse_position(value.len()))
 }
 
 /// Parse one WKT geometry. `inherited_axes` is set when this geometry is a
@@ -74,7 +83,7 @@ fn parse_wkt_inner(
             };
             let members = split_wkt_members(body)?;
             // All-empty (or empty body) → typed empty so declared axes survive.
-            if members.is_empty() || members.iter().all(WktMember::is_empty) {
+            if members.is_empty() || members.iter().all(|member| member.is_empty()) {
                 return Ok(Shape::typed_empty(EmptyKind::MultiLineString, header.axes));
             }
             let axes = if axes_fixed {
@@ -276,7 +285,9 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
     // Uppercase the keyword into a stack buffer. Longest token is
     // GEOMETRYCOLLECTIONZM (20). Compact PostGIS suffixes (`POINTM`,
     // `LINESTRINGZ`, …) are accepted alongside spaced tags (`POINT M`).
-    let keyword = &text[..keyword_len];
+    let keyword = text
+        .get(..keyword_len)
+        .ok_or_else(|| IoError::wkt("invalid WKT geometry type"))?;
     if keyword_len == 0 || keyword_len > WKT_MAX_KEYWORD {
         return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
     }
@@ -286,7 +297,10 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
     let Some((geometry_type, compact_axes)) = parse_wkt_type_keyword(&upper[..keyword_len]) else {
         return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
     };
-    let mut rest = text[keyword_len..].trim_start();
+    let mut rest = text
+        .get(keyword_len..)
+        .ok_or_else(|| IoError::wkt("invalid WKT geometry type"))?
+        .trim_start();
     let (mut axes, mut axes_explicit) =
         compact_axes.map_or((CoordinateAxes::XY, false), |compact| (compact, true));
     if let Some(axis_len) = rest
@@ -299,7 +313,9 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
             if axes_explicit {
                 return Err(IoError::wkt("invalid WKT dimensional tag"));
             }
-            let axis = &rest[..axis_len];
+            let axis = rest
+                .get(..axis_len)
+                .ok_or_else(|| IoError::wkt("invalid WKT dimensional tag"))?;
             axes = if axis.eq_ignore_ascii_case("Z") {
                 CoordinateAxes::XYZ
             } else if axis.eq_ignore_ascii_case("M") {
@@ -310,7 +326,10 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
                 return Err(IoError::wkt("invalid WKT dimensional tag"));
             };
             axes_explicit = true;
-            rest = rest[axis_len..].trim_start();
+            rest = rest
+                .get(axis_len..)
+                .ok_or_else(|| IoError::wkt("invalid WKT dimensional tag"))?
+                .trim_start();
         }
     } else if !rest.is_empty() && !rest.starts_with('(') && !rest.eq_ignore_ascii_case("EMPTY") {
         return Err(IoError::wkt("invalid WKT dimensional tag"));
@@ -365,10 +384,18 @@ fn paren_body(value: &str) -> Result<&str> {
                     .checked_sub(1)
                     .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?;
                 if depth == 0 {
-                    if !value[idx + 1..].trim().is_empty() {
+                    if !value
+                        .get(idx + 1..)
+                        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?
+                        .trim()
+                        .is_empty()
+                    {
                         return Err(IoError::wkt("trailing text after WKT geometry"));
                     }
-                    return Ok(value[1..idx].trim());
+                    return value
+                        .get(1..idx)
+                        .map(str::trim)
+                        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"));
                 }
             },
             _ => {},
@@ -435,7 +462,10 @@ fn split_wkt_collection_members(value: &str) -> Result<Vec<&str>> {
         if depth != 0 {
             return Err(IoError::wkt("unclosed geometry collection parentheses"));
         }
-        let member = value[start..index].trim_end();
+        let member = value
+            .get(start..index)
+            .ok_or_else(|| IoError::wkt("invalid geometry collection member"))?
+            .trim_end();
         if member.is_empty() {
             return Err(IoError::wkt("empty geometry collection member"));
         }
@@ -450,21 +480,9 @@ fn split_wkt_collection_members(value: &str) -> Result<Vec<&str>> {
 }
 
 fn parse_wkt_ring(value: &str, axes: CoordinateAxes) -> Result<Ring> {
-    let coords = parse_wkt_points(value, axes)?;
-    if coords.len() < Ring::MIN_VERTICES_OPEN {
-        return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
-    }
-    let first = coords.first().expect("validated non-empty ring");
-    let last = coords.last().expect("validated non-empty ring");
-    if crate::geometry::same_point(first, last) {
-        return Ok(Ring::from_trusted_closed(coords));
-    }
-    let mut closed = CoordSeqBuilder::with_capacity(axes, coords.len() + 1);
-    for point in &coords {
-        closed.push(point);
-    }
-    closed.push(first);
-    Ok(Ring::from_trusted_closed(closed.finish()?))
+    // Shared untrusted admission: silent-close XY-open; reject Z/M-open (see
+    // [`crate::io::admit_closed_ring`]).
+    crate::io::admit_closed_ring(parse_wkt_points(value, axes)?)
 }
 
 fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
@@ -505,8 +523,14 @@ fn is_wkt_member_list(value: &str) -> bool {
     let value = value.trim_start();
     value.starts_with('(')
         || (value.len() >= 5
-            && value.as_bytes()[..5].eq_ignore_ascii_case(b"EMPTY")
-            && (value.len() == 5 || !value.as_bytes()[5].is_ascii_alphanumeric()))
+            && value
+                .as_bytes()
+                .get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"EMPTY"))
+            && value
+                .as_bytes()
+                .get(5)
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric()))
 }
 
 /// One member of a multipart WKT body: the EMPTY keyword or a parenthesized group.
@@ -517,7 +541,7 @@ enum WktMember<'a> {
 }
 
 impl WktMember<'_> {
-    const fn is_empty(&self) -> bool {
+    const fn is_empty(self) -> bool {
         matches!(self, Self::Empty)
     }
 }
@@ -564,7 +588,10 @@ fn split_wkt_members(value: &str) -> Result<Vec<WktMember<'_>>> {
                             .checked_sub(1)
                             .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?;
                         if depth == 0 {
-                            let group = value[start..index].trim();
+                            let group = value
+                                .get(start..index)
+                                .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?
+                                .trim();
                             index += 1;
                             members.push(WktMember::Group(group));
                             closed = true;

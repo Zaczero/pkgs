@@ -1,17 +1,15 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
-use super::*;
 use crate::broadcast::{GeometryInput, classify_required};
-use crate::geometry::{MOrdinate, ZOrdinate};
+use crate::py::classes::coordinate_methods::{
+    Arc, CoordSeq, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray,
+    coordinates, point_tuple,
+};
 use crate::py::errors::parameter_error;
 use crate::py::numpy::{
     float64_array, float64_matrix, float64_slice_array, optional_float64_array,
@@ -102,21 +100,7 @@ pub(crate) fn interleave_coordseq_ordered(
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout
 /// (absent Z/M become `None`) or the coordinate's native axes. Shared by
-/// `Coordinates` indexing/iteration and the lazy iterator.
-pub(crate) fn parse_coordinate_member(item: &Bound<'_, PyAny>) -> Option<Point> {
-    let values = coordinate_values(item.py(), item, "coordinate").ok()?;
-    if !(2..=4).contains(&values.len()) || values.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    Point::new_axes(
-        values[0],
-        values[1],
-        ZOrdinate(values.get(2).copied()),
-        MOrdinate(values.get(3).copied()),
-    )
-    .ok()
-}
-
+/// `Coordinates` indexing/iteration, membership, and the lazy iterator.
 pub(crate) fn coordinate_tuple(
     py: Python<'_>,
     point: Point,
@@ -179,7 +163,7 @@ pub(crate) fn column_ref_to_py(
 pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates::CoordinateView {
     match input {
         GeometryInput::One(geometry) => {
-            coordinates::CoordinateView::from_shape(geometry.shape.clone())
+            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape))
         },
         GeometryInput::Many(array) => array.coordinate_view(),
     }
@@ -237,9 +221,10 @@ pub(crate) fn get_coordinates(
     let (order, dims) = coordinate_axis_order(axes);
     let order = &order[..dims];
     let rows = view.len();
-    let mut indexes = return_index.then(|| Vec::with_capacity(rows));
-    let data = if !return_index
-        && let Some(seq) = view.single_seq()
+    // Coordinate matrix: always ride the SoA interleave when the view is one
+    // contiguous packed column, independent of `return_index`. The index
+    // column is built separately at coordinate-run altitude (`row_index_i64`).
+    let data = if let Some(seq) = view.single_seq()
         && seq.len() == rows
     {
         interleave_coordseq_ordered(seq, order, f64::NAN)
@@ -249,18 +234,13 @@ pub(crate) fn get_coordinates(
             for &axis in order {
                 data.push(coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN));
             }
-            if let Some(indexes) = indexes.as_mut() {
-                indexes.push(coord.path.geometry.unwrap_or(0) as i64);
-            }
         });
         data
     };
     let matrix = float64_matrix(py, data, rows, dims)?;
-    if let Some(indexes) = indexes {
-        Ok((matrix, crate::py::numpy::int64_array(py, indexes)?)
-            .into_pyobject(py)?
-            .unbind()
-            .into())
+    if return_index {
+        let indexes = crate::py::numpy::int64_array(py, view.row_index_i64())?;
+        Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
     } else {
         Ok(matrix)
     }

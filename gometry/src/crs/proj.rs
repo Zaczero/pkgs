@@ -1,19 +1,45 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-//! libPROJ FFI handle types impls — RAII `Drop` and small constructors for
+//! libPROJ FFI handle types — RAII `Drop` and small constructors for
 //! `ProjContext`/`ProjArea`/`ProjOperationFactoryContext`/
-//! `ProjCrsListParameters`/ `ProjTransformOptions`.
+//! `ProjCrsListParameters`/`ProjTransformOptions` plus typed list owners.
 //!
-//! Handle structs live in the parent `crs` module; reached via `use super::*`.
+//! Handle structs live here; reached via `use super::*`.
+//!
+//! # Ownership design (R13-L3)
+//!
+//! Safe crate-internal APIs never accept raw PROJ pointers. Provenance is
+//! encoded in typed owners (`ProjContext`, `OwnedPj`, list guards). `as_ptr()`
+//! is for the final documented FFI expression only. Ownership adoption is
+//! `unsafe` after a checked `NonNull::new`, with `# Safety` naming provenance,
+//! thread confinement, and exactly-once destruction.
 
-use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr::NonNull;
 
-use super::*;
+use crate::crs::{
+    AreaOfInterest, AreaOfUse, CStr, CString, CelestialBodyInfo, CrsCatalogInfo, CrsCatalogOptions,
+    CrsError, CrsObjectKind, ProjContext, TransformOptions, UnitInfo, c_char, crs_type_name,
+    cstring, ptr,
+};
 use crate::error::Result;
+
+/// Provenance-owning C-string copy from a raw PROJ pointer.
+///
+/// # Safety (call-site obligation)
+///
+/// The expression must evaluate to null or a NUL-terminated C string that
+/// remains live for the evaluation (object / list-entry / process-static).
+/// This macro expands to an `unsafe` call of [`copy_proj_c_string`]; it is
+/// **not** a safe API — the raw-pointer precondition is documented here and
+/// at every expansion via the fixed SAFETY proof. Prefer RAII owners first.
+macro_rules! proj_c_string {
+    ($ptr:expr) => {{
+        // SAFETY: `$ptr` is a PROJ-returned C string (or null) that remains
+        // live for this evaluation — object-lifetime, list-entry, or
+        // process-static. Call sites of this macro are only at those FFI
+        // read boundaries.
+        unsafe { $crate::crs::proj::copy_proj_c_string($ptr) }
+    }};
+}
 
 /// Owned `PJ` handle — destroyed exactly once on drop.
 pub(super) struct OwnedPj {
@@ -32,11 +58,27 @@ pub(super) struct ProjIntList {
     len: usize,
 }
 
-/// Non-owning `PJ` reference. There is intentionally no `Drop` implementation:
-/// the owner remains responsible for destroying the referenced object.
-pub(super) struct BorrowedPj<'owner> {
-    raw: NonNull<proj_sys::PJ>,
-    _owner: PhantomData<&'owner proj_sys::PJ>,
+/// Caller-owned PROJ null-terminated string list (`proj_*_from_database`).
+pub(super) struct OwnedProjStringList {
+    raw: NonNull<*mut c_char>,
+}
+
+/// Caller-owned CRS info list from `proj_get_crs_info_list_from_database`.
+pub(super) struct OwnedCrsInfoList {
+    raw: NonNull<*mut proj_sys::PROJ_CRS_INFO>,
+    len: i32,
+}
+
+/// Caller-owned celestial-body list from the PROJ database.
+pub(super) struct OwnedCelestialBodyList {
+    raw: NonNull<*mut proj_sys::PROJ_CELESTIAL_BODY_INFO>,
+    len: i32,
+}
+
+/// Caller-owned unit list from `proj_get_units_from_database`.
+pub(super) struct OwnedUnitList {
+    raw: NonNull<*mut proj_sys::PROJ_UNIT_INFO>,
+    len: i32,
 }
 
 const _: () = {
@@ -47,8 +89,10 @@ macro_rules! impl_proj_single_drop {
     ($ty:ty, $destroy:path) => {
         impl Drop for $ty {
             fn drop(&mut self) {
-                // SAFETY: raw is owned by this wrapper and destroyed exactly once
-                // here.
+                // SAFETY: DOC-H. `raw` is the uniquely owned libPROJ allocation
+                // transferred into this wrapper on the creating OS thread (the
+                // guard is !Send via NonNull; CRS caches are TLS). Destroyed
+                // exactly once here; PROJ invokes no Python callback.
                 unsafe {
                     $destroy(self.raw.as_ptr());
                 }
@@ -57,7 +101,7 @@ macro_rules! impl_proj_single_drop {
     };
 }
 
-impl_proj_single_drop!(ProjContext, proj_sys::proj_context_destroy);
+// ProjContext Drop lives in context.rs (paired with path-includable owner).
 impl_proj_single_drop!(ProjArea, proj_sys::proj_area_destroy);
 impl_proj_single_drop!(
     ProjOperationFactoryContext,
@@ -69,17 +113,31 @@ impl_proj_single_drop!(
 );
 
 impl OwnedPj {
+    /// Adopt a uniquely owned non-null `PJ` returned by PROJ.
+    ///
     /// # Safety
     ///
-    /// `raw` must be a non-null `PJ` pointer returned by PROJ and not yet
-    /// destroyed.
-    pub(super) const unsafe fn from_owned(raw: *mut proj_sys::PJ) -> Self {
-        Self {
-            raw: {
-                // SAFETY: upheld by the caller contract above.
-                unsafe { NonNull::new_unchecked(raw) }
-            },
-        }
+    /// - `raw` is a non-null `PJ*` freshly returned by a PROJ create/get API
+    ///   that transfers ownership to the caller.
+    /// - It has not been destroyed and is not aliased by any other owner.
+    /// - It remains on its creating OS thread until this wrapper drops
+    ///   (NonNull makes the guard `!Send`).
+    /// - Drop calls `proj_destroy` exactly once.
+    pub(super) const unsafe fn from_owned(raw: NonNull<proj_sys::PJ>) -> Self {
+        Self { raw }
+    }
+
+    /// Null-check then adopt. See [`Self::from_owned`] for the full contract.
+    ///
+    /// # Safety
+    ///
+    /// When `raw` is non-null, the same ownership/provenance/thread contract
+    /// as [`Self::from_owned`] must hold.
+    pub(super) unsafe fn try_from_owned(raw: *mut proj_sys::PJ) -> Option<Self> {
+        NonNull::new(raw).map(|raw| {
+            // SAFETY: non-null branch; caller upholds from_owned contract.
+            unsafe { Self::from_owned(raw) }
+        })
     }
 
     pub(super) const fn as_ptr(&self) -> *mut proj_sys::PJ {
@@ -89,7 +147,8 @@ impl OwnedPj {
 
 impl Drop for OwnedPj {
     fn drop(&mut self) {
-        // SAFETY: raw is owned by this wrapper and destroyed exactly once here.
+        // SAFETY: DOC-H. Unique ownership of a live PJ on the creating thread
+        // (!Send); destroyed exactly once; PROJ invokes no Python callback.
         unsafe {
             proj_sys::proj_destroy(self.raw.as_ptr());
         }
@@ -97,36 +156,52 @@ impl Drop for OwnedPj {
 }
 
 impl ProjObjList {
+    /// Adopt a uniquely owned non-null object list returned by PROJ.
+    ///
     /// # Safety
     ///
-    /// `raw` must be a non-null list pointer returned by PROJ and not yet
-    /// destroyed.
-    pub(super) const unsafe fn from_owned(raw: *mut proj_sys::PJ_OBJ_LIST) -> Self {
-        Self {
-            raw: {
-                // SAFETY: upheld by the caller contract above.
-                unsafe { NonNull::new_unchecked(raw) }
-            },
-        }
+    /// `raw` is a non-null `PJ_OBJ_LIST*` returned by PROJ with ownership
+    /// transfer, not yet destroyed, confined to the creating thread. Drop
+    /// calls `proj_list_destroy` exactly once. Items from [`Self::get`] are
+    /// independent owned references.
+    pub(super) const unsafe fn from_owned(raw: NonNull<proj_sys::PJ_OBJ_LIST>) -> Self {
+        Self { raw }
+    }
+
+    /// # Safety
+    /// When non-null, same contract as [`Self::from_owned`].
+    pub(super) unsafe fn try_from_owned(raw: *mut proj_sys::PJ_OBJ_LIST) -> Option<Self> {
+        NonNull::new(raw).map(|raw| {
+            // SAFETY: non-null; caller upholds from_owned.
+            unsafe { Self::from_owned(raw) }
+        })
     }
 
     pub(super) fn count(&self) -> i32 {
-        // SAFETY: self owns a valid PROJ object list for the duration of `self`.
+        // SAFETY: DOC-H. Self owns a live list on the creating thread; PROJ
+        // invokes no Python callback.
         unsafe { proj_sys::proj_list_get_count(self.raw.as_ptr()) }
     }
 
-    pub(super) fn get(&self, context: *mut proj_sys::PJ_CONTEXT, index: i32) -> Option<OwnedPj> {
-        // SAFETY: self owns the list and index is within the count reported by
-        // PROJ. The returned object is a new owned reference which PROJ requires
-        // the caller to release with `proj_destroy`.
-        let raw = unsafe { proj_sys::proj_list_get(context, self.raw.as_ptr(), index) };
-        NonNull::new(raw).map(|raw| OwnedPj { raw })
+    /// Fetch item `index` as an independently owned `PJ`.
+    ///
+    /// Returns `None` when `index` is out of range or PROJ returns null.
+    pub(super) fn get(&self, context: &ProjContext, index: i32) -> Option<OwnedPj> {
+        let count = self.count();
+        if index < 0 || index >= count {
+            return None;
+        }
+        // SAFETY: DOC-H. Context and list are live typed owners on this thread;
+        // index is in `0..count`. PROJ returns a new owned reference (or null).
+        let raw = unsafe { proj_sys::proj_list_get(context.as_ptr(), self.raw.as_ptr(), index) };
+        // SAFETY: non-null returns are uniquely owned by the caller per PROJ.
+        unsafe { OwnedPj::try_from_owned(raw) }
     }
 }
 
 impl Drop for ProjObjList {
     fn drop(&mut self) {
-        // SAFETY: raw is owned by this wrapper and destroyed exactly once here.
+        // SAFETY: DOC-H. Unique list ownership on creating thread; destroy once.
         unsafe {
             proj_sys::proj_list_destroy(self.raw.as_ptr());
         }
@@ -138,18 +213,27 @@ impl ProjIntList {
         Self { raw: None, len: 0 }
     }
 
+    /// Adopt a PROJ-owned integer list of exactly `len` initialized entries.
+    ///
     /// # Safety
     ///
-    /// `raw` must be a non-null PROJ-owned integer list that has not been
-    /// destroyed and contains at least `len` initialized entries. Ownership is
-    /// transferred to this wrapper; use [`Self::empty`] for a null result.
-    pub(super) const unsafe fn from_owned(raw: *mut c_int, len: usize) -> Self {
+    /// `raw` is a non-null list from e.g. `proj_identify` with at least `len`
+    /// initialized `c_int` entries, not yet destroyed, creating-thread confined.
+    /// Drop calls `proj_int_list_destroy` exactly once.
+    pub(super) const unsafe fn from_owned(raw: NonNull<c_int>, len: usize) -> Self {
         Self {
-            raw: Some({
-                // SAFETY: upheld by the caller contract above.
-                unsafe { NonNull::new_unchecked(raw) }
-            }),
+            raw: Some(raw),
             len,
+        }
+    }
+
+    /// # Safety
+    /// When non-null, same contract as [`Self::from_owned`].
+    pub(super) const unsafe fn try_from_owned(raw: *mut c_int, len: usize) -> Self {
+        match NonNull::new(raw) {
+            // SAFETY: non-null branch upholds from_owned.
+            Some(raw) => unsafe { Self::from_owned(raw, len) },
+            None => Self::empty(),
         }
     }
 
@@ -159,7 +243,8 @@ impl ProjIntList {
         }
         self.raw.map(|raw| {
             // SAFETY: construction guarantees `len` initialized entries and
-            // the explicit bounds check above proves `index < len`.
+            // the bounds check above proves `index < len`. Thread-confined
+            // (!Send); PROJ invokes no Python callback.
             unsafe { *raw.as_ptr().add(index) }
         })
     }
@@ -168,7 +253,7 @@ impl ProjIntList {
 impl Drop for ProjIntList {
     fn drop(&mut self) {
         if let Some(raw) = self.raw {
-            // SAFETY: raw is owned by this wrapper and destroyed exactly once here.
+            // SAFETY: DOC-H. Unique ownership of the int list on creating thread.
             unsafe {
                 proj_sys::proj_int_list_destroy(raw.as_ptr());
             }
@@ -176,43 +261,22 @@ impl Drop for ProjIntList {
     }
 }
 
-impl BorrowedPj<'_> {
-    /// # Safety
-    ///
-    /// `raw` must be either null or a valid PJ pointer whose owner outlives the
-    /// returned borrow.
-    pub(super) unsafe fn from_borrowed(raw: *mut proj_sys::PJ) -> Option<Self> {
-        NonNull::new(raw).map(|raw| Self {
-            raw,
-            _owner: PhantomData,
-        })
-    }
-
-    pub(super) const fn as_ptr(&self) -> *mut proj_sys::PJ {
-        self.raw.as_ptr()
-    }
-}
-
 impl ProjContext {
-    pub(super) fn new() -> Result<Self> {
-        Ok(Self {
-            raw: create_proj_context()?,
-        })
-    }
-
-    pub(super) const fn as_ptr(&self) -> *mut proj_sys::PJ_CONTEXT {
-        self.raw.as_ptr()
+    pub(super) fn errno(&self) -> i32 {
+        // SAFETY: DOC-H. Self is a live context on the creating thread.
+        unsafe { proj_sys::proj_context_errno(self.as_ptr()) }
     }
 }
 
 impl ProjArea {
     pub(super) fn new(area: AreaOfInterest) -> Result<Self> {
         area.validate()?;
-        // SAFETY: PROJ returns an owned area pointer or null.
+        // SAFETY: DOC-H. No pointer inputs; returns uniquely owned area or null.
         let raw = NonNull::new(unsafe { proj_sys::proj_area_create() }).ok_or_else(|| {
             CrsError::invalid("PROJ area-of-interest creation returned null".to_owned())
         })?;
-        // SAFETY: raw is a valid PROJ area pointer created above.
+        // SAFETY: DOC-H. Freshly owned area on creating thread; coordinates are
+        // by-value; PROJ invokes no Python callback.
         unsafe {
             proj_sys::proj_area_set_bbox(
                 raw.as_ptr(),
@@ -231,17 +295,14 @@ impl ProjArea {
 }
 
 impl ProjOperationFactoryContext {
-    pub(super) fn new(
-        context: *mut proj_sys::PJ_CONTEXT,
-        options: &TransformOptions,
-    ) -> Result<Self> {
+    pub(super) fn new(context: &ProjContext, options: &TransformOptions) -> Result<Self> {
         options.validate()?;
         let authority = options.authority.as_deref().map(cstring).transpose()?;
-        // SAFETY: context is valid and authority, when present, is a valid C string
-        // for the duration of the call. PROJ returns an owned factory context.
+        // SAFETY: DOC-H. Typed live context; authority CString lives for the
+        // call; returns uniquely owned factory context or null.
         let raw = unsafe {
             proj_sys::proj_create_operation_factory_context(
-                context,
+                context.as_ptr(),
                 authority
                     .as_ref()
                     .map_or(ptr::null(), |value| value.as_ptr()),
@@ -251,35 +312,45 @@ impl ProjOperationFactoryContext {
             CrsError::invalid("PROJ operation factory context creation returned null".to_owned())
         })?;
         let raw_ptr = raw.as_ptr();
-        // SAFETY: raw/context are valid for these factory configuration calls.
+        // SAFETY: DOC-H. Typed context + freshly owned factory on creating
+        // thread; configuration setters take by-value / live factory only.
         unsafe {
             if let Some(area) = options.area_of_interest {
                 proj_sys::proj_operation_factory_context_set_area_of_interest(
-                    context, raw_ptr, area.west, area.south, area.east, area.north,
+                    context.as_ptr(),
+                    raw_ptr,
+                    area.west,
+                    area.south,
+                    area.east,
+                    area.north,
                 );
             }
             if let Some(accuracy) = options.accuracy {
                 proj_sys::proj_operation_factory_context_set_desired_accuracy(
-                    context,
+                    context.as_ptr(),
                     raw_ptr,
                     accuracy.get(),
                 );
             }
             if let Some(allow_ballpark) = options.allow_ballpark {
                 proj_sys::proj_operation_factory_context_set_allow_ballpark_transformations(
-                    context,
+                    context.as_ptr(),
                     raw_ptr,
                     i32::from(allow_ballpark),
                 );
             }
-            proj_sys::proj_operation_factory_context_set_discard_superseded(context, raw_ptr, 1);
+            proj_sys::proj_operation_factory_context_set_discard_superseded(
+                context.as_ptr(),
+                raw_ptr,
+                1,
+            );
             proj_sys::proj_operation_factory_context_set_grid_availability_use(
-                context,
+                context.as_ptr(),
                 raw_ptr,
                 proj_sys::PROJ_GRID_AVAILABILITY_USE_PROJ_GRID_AVAILABILITY_IGNORED,
             );
             proj_sys::proj_operation_factory_context_set_spatial_criterion(
-                context,
+                context.as_ptr(),
                 raw_ptr,
                 proj_sys::PROJ_SPATIAL_CRITERION_PROJ_SPATIAL_CRITERION_PARTIAL_INTERSECTION,
             );
@@ -301,15 +372,19 @@ impl ProjCrsListParameters {
             .into_iter()
             .collect::<Vec<_>>();
         let celestial_body = options.celestial_body.as_deref().map(cstring).transpose()?;
-        // SAFETY: PROJ returns owned list parameters or null.
+        // SAFETY: DOC-H. No pointer inputs; uniquely owned params or null.
         let raw = NonNull::new(unsafe { proj_sys::proj_get_crs_list_parameters_create() })
             .ok_or_else(|| {
                 CrsError::invalid("PROJ CRS list parameter creation returned null".to_owned())
             })?;
         let raw_ptr = raw.as_ptr();
-        // SAFETY: raw is valid and owned by this wrapper. The type and celestial
-        // body buffers are stored in the wrapper so their pointers stay valid for
-        // the list call.
+        // SAFETY: DOC-H. Freshly owned exclusive struct on creating thread.
+        // `_types` / `_celestial_body` retain every borrowed buffer until after
+        // params destruction (field drop order: buffers after `raw` would be
+        // wrong — they are declared after `raw` so Drop destroys raw first
+        // while buffers still live; wait — Drop order is field declaration
+        // order, first field first. We declare `raw` first so it drops first
+        // while `_types`/`_celestial_body` still live — correct).
         unsafe {
             if kind.is_empty() {
                 (*raw_ptr).types = ptr::null();
@@ -386,17 +461,202 @@ impl ProjTransformOptions {
     }
 }
 
+impl OwnedProjStringList {
+    /// # Safety
+    /// `raw` is a non-null PROJ-owned null-terminated string list not yet
+    /// destroyed; creating-thread confined; Drop calls
+    /// `proj_string_list_destroy` exactly once.
+    pub(super) const unsafe fn from_owned(raw: NonNull<*mut c_char>) -> Self {
+        Self { raw }
+    }
+
+    /// # Safety
+    /// When non-null, same contract as [`Self::from_owned`].
+    pub(super) unsafe fn try_from_owned(raw: proj_sys::PROJ_STRING_LIST) -> Option<Self> {
+        NonNull::new(raw).map(|raw| {
+            // SAFETY: non-null; caller upholds from_owned.
+            unsafe { Self::from_owned(raw) }
+        })
+    }
+
+    pub(super) fn to_strings(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut index = 0_usize;
+        loop {
+            // SAFETY: DOC-H + LIST. PROJ string lists are null-terminated arrays
+            // of C strings owned by this guard until Drop. Each entry is copied
+            // before return. Thread-confined; no Python callback.
+            let value = unsafe { *self.raw.as_ptr().add(index) };
+            if value.is_null() {
+                break;
+            }
+            if let Some(value) = proj_c_string!(value) {
+                values.push(value);
+            }
+            index += 1;
+        }
+        values
+    }
+}
+
+impl Drop for OwnedProjStringList {
+    fn drop(&mut self) {
+        // SAFETY: DOC-H. Unique ownership; destroy exactly once on creating thread.
+        unsafe {
+            proj_sys::proj_string_list_destroy(self.raw.as_ptr());
+        }
+    }
+}
+
+impl OwnedCrsInfoList {
+    /// # Safety
+    /// `raw` points to `len` PROJ-owned `PROJ_CRS_INFO*` entries (null entries
+    /// allowed); not yet destroyed; creating-thread confined.
+    pub(super) const unsafe fn from_owned(
+        raw: NonNull<*mut proj_sys::PROJ_CRS_INFO>,
+        len: i32,
+    ) -> Self {
+        Self { raw, len }
+    }
+
+    pub(super) fn into_catalog_infos(self) -> Vec<CrsCatalogInfo> {
+        let mut items = Vec::with_capacity(self.len.max(0) as usize);
+        for index in 0..self.len {
+            // SAFETY: LIST(n). Self owns `len` entries until Drop.
+            let info = unsafe { *self.raw.as_ptr().add(index as usize) };
+            if info.is_null() {
+                continue;
+            }
+            // SAFETY: non-null entry is a live PROJ_CRS_INFO owned by the list.
+            let info = unsafe { &*info };
+            let authority = proj_c_string!(info.auth_name);
+            let code = proj_c_string!(info.code);
+            let crs = match (&authority, &code) {
+                (Some(authority), Some(code)) => format!("{authority}:{code}"),
+                _ => proj_c_string!(info.name).unwrap_or_else(|| "unknown".to_owned()),
+            };
+            items.push(CrsCatalogInfo {
+                crs,
+                authority,
+                code,
+                name: proj_c_string!(info.name),
+                kind: crs_type_name(info.type_),
+                deprecated: info.deprecated != 0,
+                area_of_use: (info.bbox_valid != 0).then(|| AreaOfUse {
+                    west: info.west_lon_degree,
+                    south: info.south_lat_degree,
+                    east: info.east_lon_degree,
+                    north: info.north_lat_degree,
+                    name: proj_c_string!(info.area_name),
+                }),
+                projection_method_name: proj_c_string!(info.projection_method_name),
+                celestial_body: proj_c_string!(info.celestial_body_name),
+            });
+        }
+        items
+    }
+}
+
+impl Drop for OwnedCrsInfoList {
+    fn drop(&mut self) {
+        // SAFETY: DOC-H. Unique CRS-info list ownership; destroy once.
+        unsafe {
+            proj_sys::proj_crs_info_list_destroy(self.raw.as_ptr());
+        }
+    }
+}
+
+impl OwnedCelestialBodyList {
+    /// # Safety
+    /// `raw` points to `len` PROJ-owned celestial-body entries; not destroyed;
+    /// creating-thread confined.
+    pub(super) const unsafe fn from_owned(
+        raw: NonNull<*mut proj_sys::PROJ_CELESTIAL_BODY_INFO>,
+        len: i32,
+    ) -> Self {
+        Self { raw, len }
+    }
+
+    pub(super) fn into_infos(self) -> Vec<CelestialBodyInfo> {
+        let mut items = Vec::with_capacity(self.len.max(0) as usize);
+        for index in 0..self.len {
+            // SAFETY: LIST(n). Self owns `len` entries until Drop.
+            let info = unsafe { *self.raw.as_ptr().add(index as usize) };
+            if info.is_null() {
+                continue;
+            }
+            // SAFETY: live PROJ_CELESTIAL_BODY_INFO owned by the list.
+            let info = unsafe { &*info };
+            items.push(CelestialBodyInfo {
+                authority: proj_c_string!(info.auth_name),
+                name: proj_c_string!(info.name),
+            });
+        }
+        items
+    }
+}
+
+impl Drop for OwnedCelestialBodyList {
+    fn drop(&mut self) {
+        // SAFETY: DOC-H. Unique list ownership; destroy once.
+        unsafe {
+            proj_sys::proj_celestial_body_list_destroy(self.raw.as_ptr());
+        }
+    }
+}
+
+impl OwnedUnitList {
+    /// # Safety
+    /// `raw` points to `len` PROJ-owned unit-info entries; not destroyed;
+    /// creating-thread confined.
+    pub(super) const unsafe fn from_owned(
+        raw: NonNull<*mut proj_sys::PROJ_UNIT_INFO>,
+        len: i32,
+    ) -> Self {
+        Self { raw, len }
+    }
+
+    pub(super) fn into_units(self) -> Vec<UnitInfo> {
+        let mut units = Vec::with_capacity(self.len.max(0) as usize);
+        for index in 0..self.len {
+            // SAFETY: LIST(n). Self owns `len` entries until Drop.
+            let info = unsafe { *self.raw.as_ptr().add(index as usize) };
+            if info.is_null() {
+                continue;
+            }
+            // SAFETY: live PROJ_UNIT_INFO owned by the list.
+            let info = unsafe { &*info };
+            units.push(UnitInfo {
+                authority: proj_c_string!(info.auth_name),
+                code: proj_c_string!(info.code),
+                name: proj_c_string!(info.name),
+                category: proj_c_string!(info.category),
+                conversion_factor: info.conv_factor,
+                proj_short_name: proj_c_string!(info.proj_short_name),
+            });
+        }
+        units
+    }
+}
+
+impl Drop for OwnedUnitList {
+    fn drop(&mut self) {
+        // SAFETY: DOC-H. Unique unit-list ownership; destroy once.
+        unsafe {
+            proj_sys::proj_unit_list_destroy(self.raw.as_ptr());
+        }
+    }
+}
+
 pub(crate) struct ProjPipeline {
     pub(super) transform: OwnedPj,
     pub(super) context: ProjContext,
 }
 
-pub(super) struct ProjContext {
-    pub raw: NonNull<proj_sys::PJ_CONTEXT>,
-}
+// `ProjContext` lives in `context.rs` (path-includable type-level keystone).
 
 pub(super) struct ProjArea {
-    pub raw: NonNull<proj_sys::PJ_AREA>,
+    raw: NonNull<proj_sys::PJ_AREA>,
 }
 
 pub(super) struct ProjTransformOptions {
@@ -405,11 +665,11 @@ pub(super) struct ProjTransformOptions {
 }
 
 pub(super) struct ProjOperationFactoryContext {
-    pub raw: NonNull<proj_sys::PJ_OPERATION_FACTORY_CONTEXT>,
+    raw: NonNull<proj_sys::PJ_OPERATION_FACTORY_CONTEXT>,
 }
 
 pub(super) struct ProjCrsListParameters {
-    pub raw: NonNull<proj_sys::PROJ_CRS_LIST_PARAMETERS>,
+    raw: NonNull<proj_sys::PROJ_CRS_LIST_PARAMETERS>,
     pub _types: Vec<proj_sys::PJ_TYPE>,
     pub _celestial_body: Option<CString>,
 }
@@ -423,20 +683,34 @@ pub(super) const fn yes_no(value: bool) -> &'static str {
     if value { "YES" } else { "NO" }
 }
 
-pub(super) fn with_proj_context<R>(
-    operation: impl FnOnce(*mut proj_sys::PJ_CONTEXT) -> R,
-) -> Result<R> {
-    ensure_thread_caches_current();
-    let context = ProjContext::new()?;
-    Ok(operation(context.as_ptr()))
+// `with_proj_context` lives in `context.rs` (same module as `ProjContext`).
+
+/// Collect a PROJ database string list into owned Rust strings.
+///
+/// `list` is the RAII guard from the FFI acquisition site (or `None` when PROJ
+/// returned null). On `None`, inspects context errno (empty vs error). A safe
+/// caller cannot supply a dangling or double-owned raw `PROJ_STRING_LIST`.
+pub(super) fn take_proj_string_list(
+    context: &ProjContext,
+    list: Option<OwnedProjStringList>,
+) -> Result<Vec<String>> {
+    let Some(list) = list else {
+        return if context.errno() == 0 {
+            Ok(Vec::new())
+        } else {
+            Err(CrsError::invalid(proj_context_error_message(context)))
+        };
+    };
+    Ok(list.to_strings())
 }
 
 pub(super) fn proj_error_message(error: i32) -> String {
     if error == 0 {
         return "PROJ transformed fewer coordinates than requested".to_owned();
     }
-    // SAFETY: proj_errno_string returns a null-terminated static string for known
-    // PROJ errors, or null for unknown error codes.
+    // SAFETY: DOC-H / STATIC. `proj_errno_string` returns null or immutable
+    // process-static error text; copied immediately. No thread-local handle;
+    // PROJ invokes no Python callback.
     unsafe {
         let message = proj_sys::proj_errno_string(error);
         if message.is_null() {
@@ -446,15 +720,15 @@ pub(super) fn proj_error_message(error: i32) -> String {
     }
 }
 
-pub(super) fn proj_context_error_message(context: *mut proj_sys::PJ_CONTEXT) -> String {
-    // SAFETY: context is a valid PROJ context for this call path and PROJ returns
-    // static null-terminated error text for known error codes.
+pub(super) fn proj_context_error_message(context: &ProjContext) -> String {
+    // SAFETY: DOC-H. Typed live context on creating thread; PROJ returns
+    // static null-terminated error text for known codes, copied immediately.
     unsafe {
-        let error = proj_sys::proj_context_errno(context);
+        let error = proj_sys::proj_context_errno(context.as_ptr());
         if error == 0 {
             return "PROJ returned null".to_owned();
         }
-        let message = proj_sys::proj_context_errno_string(context, error);
+        let message = proj_sys::proj_context_errno_string(context.as_ptr(), error);
         if message.is_null() {
             return format!("PROJ error code {error}");
         }
@@ -466,12 +740,19 @@ pub(super) fn proj_context_error_message(context: *mut proj_sys::PJ_CONTEXT) -> 
     }
 }
 
-pub(super) fn string_from_ptr(value: *const std::os::raw::c_char) -> Option<String> {
+/// Copy a PROJ-returned C string into owned Rust storage.
+///
+/// # Safety
+///
+/// `value` is null or a NUL-terminated C string that remains live for this
+/// call (object lifetime, list-entry lifetime, or process-static catalog).
+/// Call only at a provenance-owning FFI boundary; never with a forgeable
+/// arbitrary pointer.
+pub(crate) unsafe fn copy_proj_c_string(value: *const std::os::raw::c_char) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    // SAFETY: PROJ metadata/export functions return null-terminated strings that
-    // remain valid for the lifetime documented by PROJ.
+    // SAFETY: caller guarantees a live NUL-terminated C string for this call.
     Some(
         unsafe { CStr::from_ptr(value) }
             .to_string_lossy()
@@ -483,54 +764,25 @@ pub(super) fn optional_c_string(value: Option<&str>) -> Result<Option<CString>> 
     value.map(cstring).transpose()
 }
 
-pub(super) fn first_static_string_from_ptr(value: *const *const c_char) -> Option<String> {
+/// First entry of a process-static `char**` descriptor (operation catalog).
+///
+/// # Safety
+///
+/// `value` is null or points into PROJ's process-static operation metadata
+/// whose first entry is a display description string (or null).
+pub(super) unsafe fn first_static_string_from_ptr(value: *const *const c_char) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    // SAFETY: PROJ operation metadata exposes a descriptor pointer whose first
-    // entry is the display description for this operation.
-    string_from_ptr(unsafe { *value })
-}
-
-pub(super) fn string_list_from_ptr(
-    context: *mut proj_sys::PJ_CONTEXT,
-    list: proj_sys::PROJ_STRING_LIST,
-) -> Result<Vec<String>> {
-    if list.is_null() {
-        // SAFETY: context is valid. PROJ returns a nonzero context errno for
-        // database failures; unknown empty authority lookups return null without
-        // setting an error.
-        let error = unsafe { proj_sys::proj_context_errno(context) };
-        return if error == 0 {
-            Ok(Vec::new())
-        } else {
-            Err(CrsError::invalid(proj_context_error_message(context)))
-        };
-    }
-    let mut values = Vec::new();
-    let mut index = 0;
-    loop {
-        // SAFETY: PROJ string lists are null-terminated arrays. Each non-null
-        // entry is copied immediately, and the list is destroyed before return.
-        let value = unsafe { *list.add(index) };
-        if value.is_null() {
-            break;
-        }
-        if let Some(value) = string_from_ptr(value) {
-            values.push(value);
-        }
-        index += 1;
-    }
-    // SAFETY: list was allocated by PROJ and is destroyed exactly once here.
-    unsafe {
-        proj_sys::proj_string_list_destroy(list);
-    }
-    Ok(values)
+    proj_c_string!(*value)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
+    use crate::crs::context::with_proj_context;
 
     #[test]
     fn mandatory_handles_are_non_null_and_pointer_sized() {
@@ -563,11 +815,53 @@ mod tests {
     }
 
     #[test]
-    fn object_list_items_are_independent_owned_guards() {
-        // PROJ's `proj_list_get` transfers a new reference that must be released
-        // with `proj_destroy`; keep that ownership visible in the wrapper type.
-        let get: fn(&ProjObjList, *mut proj_sys::PJ_CONTEXT, i32) -> Option<OwnedPj> =
-            ProjObjList::get;
+    fn object_list_get_takes_typed_context() {
+        let get: fn(&ProjObjList, &ProjContext, i32) -> Option<OwnedPj> = ProjObjList::get;
         let _ = get;
+    }
+
+    #[test]
+    fn with_proj_context_lends_typed_borrow() {
+        let value = with_proj_context(|ctx| {
+            assert!(!ctx.as_ptr().is_null());
+            7
+        })
+        .expect("context");
+        assert_eq!(value, 7);
+    }
+
+    /// Holding an owned PROJ string list across a panic must Drop (destroy)
+    /// it; afterwards PROJ catalog queries still succeed (no double-free /
+    /// corruption from a leaked or double-destroyed list).
+    #[test]
+    fn owned_string_list_releases_on_panic() {
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            let context = ProjContext::new().expect("context");
+            // SAFETY: DOC-H. Live context; PROJ returns caller-owned string list.
+            let raw = unsafe { proj_sys::proj_get_authorities_from_database(context.as_ptr()) };
+            // SAFETY: non-null path transfers unique ownership to the guard.
+            let list = unsafe { OwnedProjStringList::try_from_owned(raw) }
+                .expect("authorities list from bundled PROJ");
+            let _hold = list;
+            panic!("force unwind while list guard is live");
+        }));
+        assert!(panicked.is_err(), "panic must propagate for Drop to run");
+        // Post-unwind: a fresh list still works → prior Drop destroyed cleanly.
+        let authorities = with_proj_context(|ctx| {
+            // SAFETY: DOC-H. Live typed context; uniquely owned list adopted at
+            // the FFI boundary before the safe consumer runs.
+            let list = unsafe {
+                OwnedProjStringList::try_from_owned(proj_sys::proj_get_authorities_from_database(
+                    ctx.as_ptr(),
+                ))
+            };
+            take_proj_string_list(ctx, list)
+        })
+        .expect("context")
+        .expect("authorities after panic cleanup");
+        assert!(
+            authorities.iter().any(|a| a == "EPSG"),
+            "EPSG must remain after unwind cleanup, got {authorities:?}"
+        );
     }
 }

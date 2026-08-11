@@ -1,5 +1,5 @@
-use super::*;
-use crate::geometry::*;
+use crate::geometry::relate::{De9im, polygon_parts};
+use crate::geometry::{Polygon, Shape, ShapeData, overlay, relate_ng};
 
 pub(crate) fn areal_relate_arrangement_oracle(
     left: &[Polygon],
@@ -80,9 +80,10 @@ pub(crate) fn areal_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im> 
     areal_relate_inner(left, right, relate_ng::AreaTesters::default())
 }
 
-/// [`areal_relate_shapes`] over cached operands: each side's prepared banded
-/// raycaster turns the per-boundary-section membership probes from O(ring)
-/// scans into O(band) lookups — the dominant cost on large polygons.
+/// [`areal_relate_shapes`] over cached operands: each side's prepared
+/// [`PointBatchTester`] turns the per-boundary-section membership probes from
+/// O(ring) scans into hierarchical Y-stabbing lookups — the dominant cost on
+/// large polygons.
 pub(crate) fn areal_relate_data(left: &ShapeData, right: &ShapeData) -> Option<De9im> {
     let (Some(left_rings), Some(right_rings)) = (left.staged_rings(), right.staged_rings()) else {
         return None;

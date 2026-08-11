@@ -22,7 +22,7 @@ mod csr_offset_tests {
 #[cfg(test)]
 mod linref_array_degrade_tests {
     use crate::broadcast::{
-        CollectRows, degrade_linref_float, degrade_linref_linestring, degrade_linref_point,
+        CollectRows as _, degrade_linref_float, degrade_linref_linestring, degrade_linref_point,
         degrade_linref_point_between, is_degradable_line_row,
     };
     use crate::crs::MetricModel;

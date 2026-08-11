@@ -334,12 +334,18 @@ def test_point_nav_array_errors_keep_row_notes() -> None:
         gm.Point(1.0, 0.0, crs=4326),
         gm.Point(0.0, 95.0, crs=4326),
     ])
-    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data') as domain_error:
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+    ) as domain_error:
         gm.bearing(origin, targets)
     assert domain_error.value.__notes__ == ['while processing array element 1']
 
     starts = gm.GeometryArray([origin, gm.Point(0.0, 95.0, crs=4326)])
-    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data') as destination_error:
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+    ) as destination_error:
         gm.destination(starts, 90.0, 1_000.0)
     assert destination_error.value.__notes__ == ['while processing array element 1']
 
@@ -350,7 +356,10 @@ def test_point_nav_array_errors_keep_row_notes() -> None:
         'while processing array element 1'
     ]
 
-    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data') as point_between_error:
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+    ) as point_between_error:
         gm.point_between(origin, targets, 0.5, normalized=True)
     assert point_between_error.value.__notes__ == ['while processing array element 1']
 
@@ -365,7 +374,10 @@ def test_point_nav_array_errors_keep_row_notes() -> None:
         lambda: gm.point_between(origins, targets[0], 0.5, normalized=True),
         lambda: gm.point_between(origins, valid_targets, 0.5, normalized=True),
     ):
-        with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data') as row_error:
+        with pytest.raises(
+            gm.InvalidGeometryError,
+            match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+        ) as row_error:
             operation()
         assert row_error.value.__notes__ == ['while processing array element 1']
 
@@ -479,7 +491,9 @@ def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> No
         for a, b in zip((start, end), (end, start), strict=True)
     ]
 
-    with pytest.raises(gm.GeometryError, match="does not accept unit when path='rhumb'"):
+    with pytest.raises(
+        gm.GeometryError, match="does not accept unit when path='rhumb'"
+    ):
         gm.point_between(start, end, total / 2.0, path='rhumb', unit='meters')
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.point_between(

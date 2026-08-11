@@ -2,7 +2,9 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::methods::unary_constructive_methods::{
+    Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
+};
 
 unary_shape_method!(
     build_area,
@@ -42,7 +44,7 @@ impl PyGeometry {
         self.line_merge_impl()
     }
     #[doc = doc_extremes!(scalar)]
-    pub fn extremes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn extremes(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.extremes_impl(py)
     }
     #[doc = doc_self_intersections!(scalar)]

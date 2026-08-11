@@ -1,6 +1,9 @@
 //! Explicit optional-framework boundaries for `GeometryArray`.
 
-use super::*;
+use crate::array::{
+    Bound, Py, PyAny, PyAnyMethods as _, PyDict, PyDictMethods as _, PyGeometryArray, PyResult,
+    Python, pymethods,
+};
 
 #[pymethods]
 impl PyGeometryArray {
@@ -52,19 +55,18 @@ impl PyGeometryArray {
     /// ----------
     /// name : str, default "geometry"
     ///     Output Series name.
-    /// include_srid : bool, default True
-    ///     Embed the CRS as an EWKB SRID when possible.
     /// drop_epoch : bool, default False
     ///     Permit losing coordinate-epoch metadata, which WKB cannot encode.
     /// drop_crs : bool, default False
     ///     Permit losing a CRS that EWKB cannot embed (no EPSG authority
-    ///     code); restore it via ``from_polars(..., crs=...)``.
+    ///     code); restore it via ``from_polars(..., crs=...)``. EPSG SRIDs
+    ///     are always embedded when available.
     ///
     /// Returns
     /// -------
     /// object
     ///     A Polars Series containing WKB or EWKB values.
-    #[pyo3(signature = (*, name = "geometry", include_srid = true, drop_epoch = false, drop_crs = false))]
+    #[pyo3(signature = (*, name = "geometry", drop_epoch = false, drop_crs = false))]
     ///
     /// Examples
     /// --------
@@ -75,14 +77,12 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         name: &str,
-        include_srid: bool,
         drop_epoch: bool,
         drop_crs: bool,
     ) -> PyResult<Py<PyAny>> {
         let module = py.import("gometry._polars")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("name", name)?;
-        kwargs.set_item("include_srid", include_srid)?;
         kwargs.set_item("drop_epoch", drop_epoch)?;
         kwargs.set_item("drop_crs", drop_crs)?;
         Ok(module
@@ -129,8 +129,6 @@ impl PyGeometryArray {
     /// attributes : pyarrow.Table or mapping, optional
     ///     Per-row attribute columns written beside the geometry column
     ///     (lengths must match).
-    /// crs : str or int, optional
-    ///     CRS to record when the array itself carries none.
     /// encoding : str, default "wkb"
     ///     Geometry encoding: ``'wkb'`` (portable default) or ``'native'``
     ///     (GeoArrow separated coordinates for homogeneous arrays).
@@ -143,12 +141,10 @@ impl PyGeometryArray {
     ///
     /// Raises
     /// ------
-    /// CRSError
-    ///     If crs is not a valid CRS identifier.
     /// GeometryError
     ///     If encoding is unknown, or attributes clash with the geometry
     ///     column or mismatch the row count.
-    #[pyo3(signature = (path, *, attributes = None, crs = None, encoding = "wkb", **kwargs))]
+    #[pyo3(signature = (path, *, attributes = None, encoding = "wkb", **kwargs))]
     ///
     /// Examples
     /// --------
@@ -163,7 +159,6 @@ impl PyGeometryArray {
         py: Python<'_>,
         path: &Bound<'_, PyAny>,
         attributes: Option<&Bound<'_, PyAny>>,
-        crs: Option<&Bound<'_, PyAny>>,
         encoding: &str,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<()> {
@@ -172,7 +167,6 @@ impl PyGeometryArray {
             None => PyDict::new(py),
         };
         forwarded.set_item("attributes", attributes)?;
-        forwarded.set_item("crs", crs)?;
         forwarded.set_item("encoding", encoding)?;
         py.import("gometry._geoparquet")?
             .getattr("to_geoparquet")?

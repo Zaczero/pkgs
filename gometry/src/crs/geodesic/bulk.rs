@@ -1,6 +1,14 @@
-use std::simd::cmp::SimdPartialOrd;
+use std::simd::cmp::SimdPartialOrd as _;
 
-use super::*;
+use crate::crs::geodesic::{
+    AngleUnit, DistanceMode, GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo,
+    GeodesicInverseInfo, GeometryErrorKind, endpoints_are_repeated, ensure_geodesic_lonlat_crs,
+    ensure_geographic_domain, ensure_latitudes_in_domain, ensure_same_geodesic_len,
+    geodesic_direct_on_ellipsoid, geodesic_direct_on_ellipsoid_const,
+    geodesic_interpolate_on_line_const, geodesic_inverse_on_ellipsoid,
+    geodesic_inverse_on_ellipsoid_const, geodesic_line_solution_const, geodesic_shape_length,
+    normalize, with_geodesic,
+};
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, ReduceSimd, Shape, column_all_finite, simd_mask_any};
 

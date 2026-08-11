@@ -10,9 +10,13 @@
 //! ends (`target <= length` in the old loop), distances normalize through
 //! [`normalize_line_distance`], and locate keeps first-wins tie ordering.
 
-use super::*;
 use crate::HeapSize;
 use crate::error::Result;
+use crate::geometry::{
+    CoordSeq, Coordinates as _, GeodesicMetric, GeometryErrorKind, LineSeq, MeasureRange, Ordering,
+    Point, Segment, Shape, lerp_point, linework_first_point, normalize_line_distance,
+    point_distance, push_distinct_point, segment_projection,
+};
 
 /// Per-segment measurement for the linear-referencing engine.
 pub trait SegmentMetric {
@@ -63,40 +67,26 @@ impl SegmentMetric for PlanarMetric {
         length: f64,
         _best: f64,
     ) -> (f64, f64) {
-        // Locate is a pure MEASUREMENT (a distance to compare and an
-        // along-line offset) — no geometry placement comes out of the scan —
-        // so the whole projection runs in plain mul+add (scalar `mul_add`
-        // on the portable baseline is a libm `fma` call; the old path paid
-        // four of them plus two `hypot`s per scanned segment). Extreme
-        // coordinates rescue through the scaled projection and `hypot`,
-        // matching the overflow-safe forms for every input class. The along
-        // offset reuses the cached prefix length.
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
-        let qx = probe.x - start.x;
-        let qy = probe.y - start.y;
-        let length2 = dx * dx + dy * dy;
-        let fraction = if length2 == 0.0 {
-            0.0
-        } else {
-            let fraction = ((qx * dx + qy * dy) / length2).clamp(0.0, 1.0);
-            if fraction.is_finite() {
-                fraction
-            } else {
-                segment_projection_fraction_scaled(probe, Segment {
-                    start: start.into(),
-                    end: end.into(),
-                })
-            }
+        // Projection classification, witness placement, and along-segment
+        // reconstruction share the segment kernel's certified owner. The
+        // exact fallback retains its ratio until `interpolate_xy` / `scale`,
+        // so an interior parameter that rounds to an endpoint cannot erase
+        // either the residual distance or the locate offset.
+        let segment = Segment {
+            start: start.into(),
+            end: end.into(),
         };
-        let ex = qx - fraction * dx;
-        let ey = qy - fraction * dy;
+        let projection = segment_projection(probe, segment);
+        let foot = projection.interpolate_xy(segment);
+        let ex = probe.x - foot.x;
+        let ey = probe.y - foot.y;
         let squared = ex * ex + ey * ey;
-        let distance = if squared.is_finite() && (squared != 0.0 || (ex == 0.0 && ey == 0.0)) {
-            squared.sqrt()
-        } else {
-            ex.hypot(ey)
-        };
+        let distance =
+            if crate::geometry::squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0) {
+                squared.sqrt()
+            } else {
+                ex.hypot(ey)
+            };
         // No outer finite-rescue on `distance`: it can only go non-finite
         // when a DELTA itself overflows (segment span or probe offset past
         // ~1.8e308) — and a segment that long has an infinite metric length,
@@ -105,7 +95,7 @@ impl SegmentMetric for PlanarMetric {
         // extremes the suite covers resolve correctly through the scaled
         // projection + `hypot` rescues above; guarding the last class was
         // measured at +14% on every real locate.
-        (distance, length * fraction)
+        (distance, projection.scale(length))
     }
 }
 
@@ -152,6 +142,8 @@ pub(crate) enum LineIndexSlot {
     Index(LineIndex),
     NotLineal,
     Empty,
+    /// Fallible construction (non-finite segment/total length, etc.).
+    Invalid(Box<str>),
 }
 
 impl LineIndexSlot {
@@ -162,9 +154,7 @@ impl LineIndexSlot {
             Err(error) => match error.kind() {
                 ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Self::Empty,
                 ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Self::NotLineal,
-                // `linework()` and the first-vertex check are the only failure
-                // sources; a new one must get its own slot, not a silent remap.
-                other => unreachable!("unexpected LineIndex build error: {other}"),
+                other => Self::Invalid(format!("{other}").into()),
             },
         }
     }
@@ -174,6 +164,7 @@ impl LineIndexSlot {
             Self::Index(index) => Ok(index),
             Self::NotLineal => Err(GeometryErrorKind::LineStringRequired.into()),
             Self::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
+            Self::Invalid(msg) => Err(GeometryErrorKind::message(msg.as_ref())),
         }
     }
 }
@@ -207,6 +198,10 @@ impl LineIndex {
     /// shapes, `EmptyLinework` when there is no first vertex (the zero-total
     /// degeneracies — all-zero-length linework — build fine and resolve to
     /// `first`, matching the walks).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
+    )]
     pub fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
@@ -220,10 +215,25 @@ impl LineIndex {
             for [start, end] in line.segment_pairs() {
                 last = end;
                 let length = metric.length(start, end);
+                // Non-finite lengths (overflowed extreme segments) would poison
+                // every subsequent prefix entry — reject construction.
+                if !length.is_finite() {
+                    return Err(GeometryErrorKind::message(
+                        "line index cannot include a non-finite segment length",
+                    ));
+                }
                 if length == 0.0 {
                     continue;
                 }
+                // Plain sum: blanket Kahan on LRS prefixes is nonfree (+4–33%
+                // planar) — N11 closed under free-or-nearly-free. Geodesic
+                // shape-length folds compensate separately in measure.rs.
                 total += length;
+                if !total.is_finite() {
+                    return Err(GeometryErrorKind::message(
+                        "line index total length must be finite",
+                    ));
+                }
                 segments.push(OrdinateSegment { start, end });
                 prefix.push(total);
             }
@@ -247,6 +257,10 @@ impl LineIndex {
     /// Build over one line's zero-copy [`CoordSeq`] window — the packed-`Lines`
     /// batch lane reads CSR rows through this with no per-row `Shape` / `Arc`
     /// traffic (the measured gap vs the `iter_rows` + `with_data` fallback).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
+    )]
     pub fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
@@ -258,10 +272,20 @@ impl LineIndex {
         for [start, end] in coords.segment_pairs() {
             last = end;
             let length = metric.length(start, end);
+            if !length.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index cannot include a non-finite segment length",
+                ));
+            }
             if length == 0.0 {
                 continue;
             }
             total += length;
+            if !total.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index total length must be finite",
+                ));
+            }
             segments.push(OrdinateSegment { start, end });
             prefix.push(total);
         }
@@ -296,6 +320,10 @@ impl LineIndex {
 
     /// The point at `distance` along the linework (the engine behind
     /// `line_interpolate_point`). Caller has validated finiteness.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
+    )]
     pub fn interpolate(
         &self,
         distance: f64,
@@ -508,6 +536,7 @@ impl HeapSize for LineIndexSlot {
         match self {
             Self::Index(index) => index.heap_bytes(),
             Self::NotLineal | Self::Empty => 0,
+            Self::Invalid(msg) => msg.len(),
         }
     }
 }

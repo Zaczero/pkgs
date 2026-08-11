@@ -10,9 +10,6 @@ publish = false
 autobenches = false
 include = [
   "/src/**",
-  "/vendor/geographiclib-rs/**",
-  "/vendor/h3o/**",
-  "/vendor/proj-sys/**",
   "/Cargo.toml",
   "/README.md",
   "/LICENSE-*",
@@ -38,7 +35,11 @@ fast_hilbert = { version = "2.1.0", default-features = false }
 geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
-h3o = { version = "0.10.0", default-features = false, features = ["std"] }
+# The pinned fork exposes raw H3 projection carriers needed by certified grid
+# predicates; upstream's public boundary API intentionally rounds them away.
+h3o = { git = "https://github.com/Zaczero/h3o.git", rev = "2b5bde491449c776cb9c1ae305a5f826f6d8e968", default-features = false, features = [
+  "std"
+] }
 lexical-core = { version = "1.0.6", default-features = false, features = [
   "parse-floats"
 ] }
@@ -58,7 +59,17 @@ pyo3 = { version = "0.29.0", default-features = false, features = [
 robust = { version = "1.2.0", default-features = false }
 rstar = { version = "0.13.0", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["std"] }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+# `float_roundtrip`: correctly-rounded binary64 parse so GeoJSON text→f64→text
+# is bit-identical (R15-G). Measured ~+5% on full Value parse of the countries
+# fixture vs default. `raw_value` preserves only opaque Feature properties/ids
+# until Python conversion, so arbitrary-size JSON integers do not force an
+# arbitrary-precision parse of every geometry coordinate. Write path already
+# uses zmij shortest-round-trip.
+serde_json = { version = "1.0", default-features = false, features = [
+  "alloc",
+  "float_roundtrip",
+  "raw_value",
+] }
 smol_str = { version = "0.3.6", default-features = false, features = ["std"] }
 spade = { version = "2.15", default-features = false, features = ["std"] }
 thiserror = { version = "2.0", default-features = false, features = ["std"] }

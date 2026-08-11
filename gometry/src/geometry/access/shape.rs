@@ -1,11 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
-use crate::geometry::*;
-use crate::py::support::Bounds3D;
+use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
+use crate::geometry::{
+    Bounds, Bounds3D, CoordIter, CoordSeq, CoordinateAxes, Coordinates, Dimension, EmptyKind, HasM,
+    HasZ, HashSet, LineSeq, Point, Polygon, Shape, line_length_3d,
+};
 
 impl Shape {
     pub const fn geometry_type(&self) -> &'static str {
@@ -122,6 +122,10 @@ impl Shape {
     /// Visit every vertex without allocating an iterator. Prefer it for folds
     /// and scans on hot per-element paths (encode, axis detection); collect
     /// with [`points_vec`](Self::points_vec) when a slice is needed.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
     pub fn for_each_point(&self, mut visit: impl FnMut(Point)) {
         self.for_each_point_inner(&mut visit);
     }
@@ -165,6 +169,10 @@ impl Shape {
 
     /// Whether any vertex satisfies `predicate`, short-circuiting on the first
     /// match. The non-boxing counterpart to `points().any(...)`.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "predicate type is intentionally opaque at this one-pass traversal boundary"
+    )]
     pub fn any_point(&self, mut predicate: impl FnMut(Point) -> bool) -> bool {
         self.any_point_inner(&mut predicate)
     }
@@ -190,6 +198,10 @@ impl Shape {
     /// fallible counterpart to [`for_each_point`](Self::for_each_point), for
     /// hot scans that validate each vertex without allocating a boxed
     /// iterator.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
     pub fn try_for_each_point<E>(
         &self,
         mut visit: impl FnMut(Point) -> Result<(), E>,
@@ -332,18 +344,18 @@ impl Shape {
         }
     }
 
-    pub fn parts(&self) -> Box<dyn Iterator<Item = Self> + '_> {
+    pub fn parts(&self) -> ShapePartsIter<'_> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
-                Box::new(std::iter::once(self.clone()))
+                ShapePartsIter::Single(Some(self))
             },
-            Self::MultiPoint(points) => Box::new(points.iter().map(Self::Point)),
-            Self::MultiLineString(lines) => {
-                Box::new(lines.iter().map(|line| Self::LineString(line.clone())))
+            Self::MultiPoint(points) => ShapePartsIter::MultiPoint(points.iter()),
+            Self::MultiLineString(lines) => ShapePartsIter::MultiLineString(lines.iter()),
+            Self::MultiPolygon(polygons) => ShapePartsIter::MultiPolygon(polygons.iter()),
+            Self::GeometryCollection(geometries) => {
+                ShapePartsIter::GeometryCollection(geometries.iter())
             },
-            Self::MultiPolygon(polygons) => Box::new(polygons.iter().cloned().map(Self::Polygon)),
-            Self::GeometryCollection(geometries) => Box::new(geometries.iter().cloned()),
-            Self::Empty(..) => Box::new(std::iter::empty()),
+            Self::Empty(..) => ShapePartsIter::Empty,
         }
     }
 
@@ -398,6 +410,10 @@ impl Shape {
 
     /// Visit every polygon ring (shells then holes, per polygon) as
     /// borrowed columns; non-polygonal shapes have none.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
     pub fn for_each_ring(&self, mut visit: impl FnMut(&CoordSeq)) {
         match self {
             Self::Polygon(polygon) => polygon.rings().for_each(&mut visit),
@@ -610,6 +626,62 @@ impl Shape {
     }
 }
 
+/// Exact-size top-level part iterator specialized once for the shape kind.
+pub enum ShapePartsIter<'a> {
+    Single(Option<&'a Shape>),
+    MultiPoint(CoordIter<'a>),
+    MultiLineString(std::slice::Iter<'a, LineSeq>),
+    MultiPolygon(std::slice::Iter<'a, Polygon>),
+    GeometryCollection(std::slice::Iter<'a, Shape>),
+    Empty,
+}
+
+impl Iterator for ShapePartsIter<'_> {
+    type Item = Shape;
+
+    fn next(&mut self) -> Option<Shape> {
+        match self {
+            Self::Single(shape) => shape.take().cloned(),
+            Self::MultiPoint(points) => points.next().map(Shape::Point),
+            Self::MultiLineString(lines) => lines.next().cloned().map(Shape::LineString),
+            Self::MultiPolygon(polygons) => polygons.next().cloned().map(Shape::Polygon),
+            Self::GeometryCollection(geometries) => geometries.next().cloned(),
+            Self::Empty => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
+}
+
+impl DoubleEndedIterator for ShapePartsIter<'_> {
+    fn next_back(&mut self) -> Option<Shape> {
+        match self {
+            Self::Single(shape) => shape.take().cloned(),
+            Self::MultiPoint(points) => points.next_back().map(Shape::Point),
+            Self::MultiLineString(lines) => lines.next_back().cloned().map(Shape::LineString),
+            Self::MultiPolygon(polygons) => polygons.next_back().cloned().map(Shape::Polygon),
+            Self::GeometryCollection(geometries) => geometries.next_back().cloned(),
+            Self::Empty => None,
+        }
+    }
+}
+
+impl ExactSizeIterator for ShapePartsIter<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Single(shape) => usize::from(shape.is_some()),
+            Self::MultiPoint(points) => points.len(),
+            Self::MultiLineString(lines) => lines.len(),
+            Self::MultiPolygon(polygons) => polygons.len(),
+            Self::GeometryCollection(geometries) => geometries.len(),
+            Self::Empty => 0,
+        }
+    }
+}
+
 /// Every non-empty vertex carries Z: empty shapes are vacuously `true`;
 /// points require `z()`; `CoordSeq` requires a Z column; collections require
 /// all children. Unlike [`Shape::has_z`], a mixed-axis collection is `false`.
@@ -674,4 +746,35 @@ impl ShapePart<'_> {
 /// First vertex of the first non-empty line piece, if any.
 pub(crate) fn linework_first_point(lines: &[&CoordSeq]) -> Option<Point> {
     lines.iter().find_map(|line| line.first())
+}
+
+#[cfg(test)]
+mod parts_iter_tests {
+    use super::*;
+
+    #[test]
+    fn parts_iterator_is_exact_and_exhausts_from_both_ends() {
+        let points = [
+            Point::new_unchecked_xy(1.0, 2.0),
+            Point::new_unchecked_xy(3.0, 4.0),
+            Point::new_unchecked_xy(5.0, 6.0),
+        ];
+        let shape = Shape::MultiPoint(points.to_vec().into());
+        let mut parts = shape.parts();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts.next(), Some(Shape::Point(points[0])));
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts.next_back(), Some(Shape::Point(points[2])));
+        assert_eq!(parts.next(), Some(Shape::Point(points[1])));
+        assert_eq!(parts.len(), 0);
+        assert_eq!(parts.next(), None);
+        assert_eq!(parts.next_back(), None);
+
+        assert_eq!(
+            Shape::Empty(EmptyKind::Point, CoordinateAxes::XY)
+                .parts()
+                .len(),
+            0
+        );
+    }
 }

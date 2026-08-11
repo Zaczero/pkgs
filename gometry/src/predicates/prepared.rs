@@ -5,9 +5,13 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::super::*;
-use crate::HeapSize;
 use crate::broadcast::bool_array_mask_missing;
+use crate::{
+    Arc, DistanceUnit, Frame, HeapSize, PREPARED_PREDICATE_MIN, Predicate, PyGeometry, Typed,
+    array_crs_dwithin_scalar, crs_aware_dwithin, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, py_bool, scalar_vs_shapes, topology_scalar_pair,
+    validate_distance_arg, xy_predicate_geometry,
+};
 // --- PreparedGeometry #[pymethods] (moved from crate root) ---
 
 /// Rebuild a pickled `PreparedGeometry` by re-preparing its geometry
@@ -31,6 +35,7 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
     name = "PreparedGeometry",
     module = "gometry",
     frozen,
+    immutable_type,
     skip_from_py_object
 )]
 #[derive(Clone, Debug)]
@@ -60,8 +65,9 @@ impl PyPreparedGeometry {
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus the source geometry's
-    /// retained coordinate payload and any prepared caches already built on
-    /// that shared geometry handle. Calling this does not build new caches.
+    /// retained native cost (``ShapeData`` Arc, shape payload, and any
+    /// prepared/frame caches already built on that shared handle). Calling
+    /// this does not build new caches.
     fn __sizeof__(&self) -> usize {
         self.total_size()
     }
@@ -512,7 +518,20 @@ pub fn dwithin(
         unit: Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>> {
         let distance = validate_distance_arg(distance)?.get();
-        self.dwithin_eval(geom, distance, unit)
+        Python::attach(|py| {
+            if let Some(geometry) = exact_geometry(geom) {
+                return Ok(py_bool(
+                    py,
+                    crs_aware_dwithin(&self.geometry, geometry, distance, "dwithin", unit)?,
+                ));
+            }
+            if let Some(array) = exact_geometry_array(geom) {
+                let result =
+                    array_crs_dwithin_scalar(py, array, &self.geometry, distance, "dwithin", unit)?;
+                return Ok(result.into_pyobject(py)?.into_any().unbind());
+            }
+            Err(expected_geometry_or_array())
+        })
     }
 
     /// Test whether this prepared geometry contains each ``(x, y)`` point.
@@ -544,6 +563,8 @@ pub fn contains_xy(
         x: &Bound<'_, PyAny>,
         y: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
+        // Prepared handle already carries hierarchical caches; the free
+        // geometry×xy entry reuses them when the receiver is prepared.
         xy_predicate_geometry(py, &self.geometry, x, y, false)
     }
 
@@ -596,7 +617,8 @@ pub fn intersects_xy(
 pub fn explain(&self) -> Vec<String> {
         let mut plan = vec![
             format!("prepared geometry: {}", self.geometry.shape.geometry_type()),
-            "predicate kernel: native cached facet-tree engines".to_owned(),
+            "predicate kernel: hierarchical Y-stabbing raycast (parts → rings → edges)"
+                .to_owned(),
             "scalar geometry inputs: bounds gate, then the cached pair kernel".to_owned(),
             "array geometry inputs: shared batch engine (point/line gates, cached scalar state)"
                 .to_owned(),
@@ -619,7 +641,13 @@ pub fn explain(&self) -> Vec<String> {
 
 impl HeapSize for PyPreparedGeometry {
     fn heap_bytes(&self) -> usize {
-        self.geometry.shape.retained_heap_bytes()
+        // Same retained model as `Geometry.__sizeof__`: the shared
+        // `ShapeData` Arc block + nested heap + frame-cache sidecar.
+        // Does not force uninitialized lazy products.
+        std::mem::size_of_val(self.geometry.shape.as_ref())
+            + self.geometry.shape.retained_heap_bytes()
+            + std::mem::size_of_val(self.geometry.frame_cache.as_ref())
+            + self.geometry.frame_cache.heap_bytes()
     }
 }
 
@@ -655,21 +683,28 @@ impl PyPreparedGeometry {
                 if spec.right_point.is_some()
                     && !held_crosses
                     && let Some(points) = array.storage().point_rows()
+                    && !(geographic
+                        && points.iter().any(|point| {
+                            crate::geometry::point_is_geographic_pole(point).is_some()
+                        }))
                 {
-                    let shape = self.geometry.shape.clone();
+                    let shape = Arc::clone(&self.geometry.shape);
                     let result = py.detach(move || {
-                        crate::py::functions::predicate::point_batch(&spec, &shape, &points, true)
+                        crate::predicates::engine::point_batch(&spec, &shape, &points, true)
                             .expect("right_point checked above")
                     });
                     // Missing rows carry a `POINT (NaN NaN)` placeholder that
-                    // must not be evaluated: force them to the predicate's
-                    // missing sentinel (`false`), matching the free-function
-                    // path (`bool_array_mask_missing`, broadcast/predicates.rs).
+                    // the batch kernel evaluates; the mask then forces those
+                    // rows to the predicate's missing sentinel (`false`),
+                    // matching the free-function path (`bool_array_mask_missing`).
                     return bool_array_mask_missing(py, result, array.missing());
                 }
+                // One predicate pipeline for every batch length (scalar_vs_shapes).
+                // Length only chooses GIL detach scheduling, never the kernel.
+                let shape = &self.geometry.shape;
                 let result: Vec<bool> = if array.storage().len() >= PREPARED_PREDICATE_MIN {
                     let array = array.clone();
-                    let shape = self.geometry.shape.clone();
+                    let shape = Arc::clone(shape);
                     py.detach(move || {
                         scalar_vs_shapes(
                             &spec,
@@ -681,47 +716,18 @@ impl PyPreparedGeometry {
                         )
                     })
                 } else {
-                    array
-                        .storage()
-                        .iter_rows()
-                        .enumerate()
-                        .map(|(index, row)| {
-                            array.with_row_data(index, row, |element| {
-                                topology_scalar_pair(
-                                    &spec,
-                                    &self.geometry.shape,
-                                    element,
-                                    geographic,
-                                )
-                            })
-                        })
-                        .collect()
+                    scalar_vs_shapes(
+                        &spec,
+                        shape,
+                        array.storage().iter_rows().enumerate(),
+                        true,
+                        Some(array),
+                        geographic,
+                    )
                 };
-                // Force missing rows (evaluated on their placeholder) to the
-                // predicate's missing sentinel, matching the free path.
+                // Placeholders are evaluated above; force missing rows to the
+                // predicate's missing sentinel (`false`), matching the free path.
                 return bool_array_mask_missing(py, result, array.missing());
-            }
-            Err(expected_geometry_or_array())
-        })
-    }
-
-    pub(crate) fn dwithin_eval(
-        &self,
-        values: &Bound<'_, PyAny>,
-        distance: f64,
-        unit: Option<DistanceUnit>,
-    ) -> PyResult<Py<PyAny>> {
-        Python::attach(|py| {
-            if let Some(geometry) = exact_geometry(values) {
-                return Ok(py_bool(
-                    py,
-                    crs_aware_dwithin(&self.geometry, geometry, distance, "dwithin", unit)?,
-                ));
-            }
-            if let Some(array) = exact_geometry_array(values) {
-                let result =
-                    array_crs_dwithin_scalar(py, array, &self.geometry, distance, "dwithin", unit)?;
-                return Ok(result.into_pyobject(py)?.into_any().unbind());
             }
             Err(expected_geometry_or_array())
         })

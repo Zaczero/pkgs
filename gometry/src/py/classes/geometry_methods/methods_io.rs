@@ -2,9 +2,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::fmt::Write;
+use std::fmt::Write as _;
 
-use super::*;
+use crate::py::classes::geometry_methods::{
+    Bound, Py, PyAny, PyAnyMethods as _, PyBytes, PyGeometry, PyResult, Python,
+};
+use crate::{
+    ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
+    overlay_operator, py_bool,
+};
 
 frozen_pymethods! {
 impl PyGeometry {
@@ -75,15 +81,15 @@ impl PyGeometry {
     ///
     /// Returns
     /// -------
-    /// int
-    ///     Spatial curve key.
+    /// int or None
+    ///     Spatial curve key, or ``None`` for an empty geometry — the same
+    ///     contract as ``bounds`` and the other extent accessors.
     ///
     /// Raises
     /// ------
-    /// InvalidGeometryError
-    ///     If the geometry is empty.
     /// GeometryError
-    ///     If ``level`` or ``bounds`` is invalid.
+    ///     If ``level`` or ``bounds`` is invalid (a bad parameter is an error
+    ///     whatever the geometry).
     ///
     /// Examples
     /// --------
@@ -97,7 +103,7 @@ impl PyGeometry {
         curve: SpatialCurve,
         level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<u64> {
+    ) -> PyResult<Option<u64>> {
         self.spatial_key_impl(curve, level, bounds)
     }
     /// Export the geometry as a `GeoArrow` array.
@@ -120,10 +126,18 @@ impl PyGeometry {
     /// 'ExtensionArray'
 pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         match encoding {
-            ArrowEncoding::Auto => geometries_to_arrow(py, [self], self.crs_str(), self.epoch()),
-            ArrowEncoding::Wkb => {
-                geometries_to_wkb_arrow(py, [self], self.crs_str(), self.epoch())
-            },
+            ArrowEncoding::Auto => crate::py::arrow::shapes_to_arrow(
+                py,
+                std::slice::from_ref(self.shape.shape()),
+                self.crs_str(),
+                self.epoch(),
+            ),
+            ArrowEncoding::Wkb => crate::py::arrow::shapes_to_wkb_arrow(
+                py,
+                std::slice::from_ref(self.shape.shape()),
+                self.crs_str(),
+                self.epoch(),
+            ),
         }
     }
 
@@ -318,8 +332,30 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         self.shape.shape().coordinate_bytes()
     }
 
+    /// Retained native cost of this geometry for ``sys.getsizeof``.
+    ///
+    /// Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
+    /// (including the ``Shape`` payload — coordinate columns **and**
+    /// container allocations such as multipart ``Vec``s, polygon hole
+    /// ``Arc``s, and nested collection members — plus any
+    /// *already-initialized* prepared caches), and the Arc-owned
+    /// frame-cache sidecar with any products already built on it.
+    /// Uninitialized lazy caches are not counted and this method never
+    /// builds them — so two cold ``__sizeof__`` reads report the same
+    /// size, and warming (``bounds``, ``prepare``, distance, …) can only
+    /// increase it. Container geometries therefore scale with part/member
+    /// count even when members carry no ordinate payload (e.g. empty
+    /// points in a ``GeometryCollection``).
+    ///
+    /// ``nbytes`` remains the coordinate-only payload (numpy convention);
+    /// use ``__sizeof__`` when measuring object retention.
+    ///
+    /// Returns
+    /// -------
+    /// int
     pub fn __sizeof__(&self) -> usize {
         self.total_size()
     }
 }
 }
+use pyo3::IntoPyObjectExt as _;

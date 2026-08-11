@@ -1,8 +1,20 @@
 use std::ops::ControlFlow;
 
-use super::*;
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
-use crate::geometry::*;
+use crate::geometry::predicates::{
+    LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
+    line_crosses_antimeridian, line_is_closed, line_is_simple, minimum_clearance_witness,
+    multiline_is_simple, polygonal_repair, shell_is_convex, validate_geo_multi_polygon,
+    validate_line, validate_point, validate_points,
+};
+use crate::geometry::{
+    CoordSeq, CoordinateAxes, Coordinates as _, EmptyKind, GeometryErrorKind, HashSet, LineSeq,
+    Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates, emit_from_original,
+    finish_planar_squared_min, point_distance, ring_winding, same_point, unique_xy_points,
+    witness_pair,
+};
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
@@ -123,8 +135,19 @@ pub(crate) fn shape_spans_full_longitude(shape: &Shape) -> bool {
 
 impl Shape {
     pub fn minimum_clearance(&self) -> f64 {
-        minimum_clearance_witness(self)
-            .map_or(f64::INFINITY, |witness| witness.distance_squared.sqrt())
+        minimum_clearance_witness(self).map_or(f64::INFINITY, |witness| {
+            // Shared squared-norm trust: normal → sqrt; zero/subnormal →
+            // recompute the witness pair in distance space so tiny positive
+            // clearances are not quantized (or dropped as false-zero).
+            finish_planar_squared_min(witness.distance_squared, || {
+                let points = self.points_vec();
+                let emitted = emit_from_original(&points, &witness.plan);
+                let [a, b] = emitted.as_slice() else {
+                    return 0.0;
+                };
+                point_distance(*a, *b)
+            })
+        })
     }
 
     pub(crate) fn minimum_clearance_plan(&self) -> Option<MinimumClearanceWitness> {

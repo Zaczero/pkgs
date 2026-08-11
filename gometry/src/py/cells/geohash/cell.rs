@@ -1,17 +1,12 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+//! The GeohashCell class and parsing helpers.
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! The GeohashCell class and parsing helpers.
 
 use pyo3::pymethods;
 use pyo3::types::PyAny;
 
-use super::super::*;
 use crate::Typed;
 use crate::grid::cell::GridCell;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
@@ -19,7 +14,9 @@ use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
     cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
-use crate::py::cells::{GridKind, construct_geohash_cell};
+use crate::py::cells::{
+    Bound, GridKind, Py, PyCellArray, PyResult, Python, construct_geohash_cell, pyclass, pyfunction,
+};
 use crate::py::errors::tag_parse_format;
 
 /// One geohash cell: a base-32 character prefix addressing a lon/lat
@@ -29,7 +26,13 @@ use crate::py::errors::tag_parse_format;
 /// ``cell.token``, ``cell.polygon``, ``cell.center``) and hierarchy moves
 /// (``parent``/``children``/``neighbors``). Geohash tokens are the public
 /// identity — text, not integers. Convert via ``GeohashCell(...)``.
-#[pyclass(name = "GeohashCell", module = "gometry", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "GeohashCell",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    skip_from_py_object
+)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PyGeohashCell {
     pub(crate) cell: Geohash,
@@ -47,7 +50,7 @@ pub(crate) fn parse_geohash_token(token: &str) -> PyResult<Geohash> {
     Geohash::parse(token).map_err(|message| {
         tag_parse_format(
             crate::py::errors::ParseError::new_err(message),
-            crate::py::errors::ParseFormat::Geohash,
+            crate::error::ParseFormat::Geohash,
         )
     })
 }

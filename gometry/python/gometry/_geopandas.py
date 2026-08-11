@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gometry import from_wkb
 from gometry._lib import (
     GeometryArray,
     GeometryError,
+    from_wkb,
 )
 from gometry._optional import missing_optional_dependency
 

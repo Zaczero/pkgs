@@ -1,8 +1,8 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::{
+    DistanceParts, Point, Segment, Shape, point_distance, point_distance_squared,
+    point_segment_distance, point_segment_distance_squared, points_dwithin, same_point,
+    segment_envelopes_disjoint, segments_intersect,
+};
 pub(crate) fn parts_covers_point(shape: &Shape, parts: &DistanceParts, point: Point) -> bool {
     parts
         .point_only
@@ -82,29 +82,47 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
     best
 }
 
-/// Whether any vertex of `probe` sits within `limit` (squared, inclusive) of
-/// `target`'s linework or isolated points — the dwithin sweep. `simd` gates
-/// the vector facet kernel (squared-space-safe callers only).
+/// Whether any vertex of `probe` sits within `distance` (inclusive) of
+/// `target`'s linework or isolated points — the dwithin sweep.
+/// `limit_sq` is `distance²` when honest; callers pass both so underflow of
+/// either side can fall back to distance space.
 pub(crate) fn any_parts_within(
     probe: &DistanceParts,
     target: &DistanceParts,
-    limit: f64,
+    distance: f64,
+    limit_sq: f64,
     simd: bool,
 ) -> bool {
-    let segment_hit = target.bvh().map_or_else(
-        || {
-            target
-                .linework
-                .any_points_within(probe.probe_coords(), limit, simd)
-        },
-        |bvh| bvh.any_points_within(&target.linework, probe.probe_coords(), limit, simd),
-    );
+    // Squared path only when limit² is honest (positive finite, non-false-zero).
+    let use_sq = limit_sq.is_finite() && limit_sq != 0.0 && distance > 0.0;
+    let segment_hit = if use_sq {
+        target.bvh().map_or_else(
+            || {
+                target
+                    .linework
+                    .any_points_within(probe.probe_coords(), limit_sq, simd)
+            },
+            |bvh| bvh.any_points_within(&target.linework, probe.probe_coords(), limit_sq, simd),
+        )
+    } else {
+        // Tiny / zero radius: distance-space against linework.
+        probe.probe_coords().any(|(x, y)| {
+            let point = Point::new_unchecked_xy(x, y);
+            target.linework.facets.iter().any(|&facet| {
+                (0..facet.segment_count as usize).any(|index| {
+                    let segment = target.linework.segment(facet, index);
+                    point_segment_distance(point, segment) <= distance
+                })
+            })
+        })
+    };
     segment_hit
         || (!target.point_only.is_empty()
             && probe.probe_coords().any(|(x, y)| {
-                target.point_only.iter().any(|&other| {
-                    point_distance_squared(Point::new_unchecked_xy(x, y), other) <= limit
-                })
+                target
+                    .point_only
+                    .iter()
+                    .any(|&other| points_dwithin(Point::new_unchecked_xy(x, y), other, distance))
             }))
 }
 
@@ -144,19 +162,9 @@ pub(crate) fn quick_area_overlap(left: &Shape, right: &Shape) -> Option<Point> {
 /// distance-query shape — land squarely in the win zone.
 pub(crate) const PUNTAL_BRUTE_MAX_SEGMENTS: usize = 24;
 
-/// SQUARED planar distance for a pure point set vs a few-segment lineal/areal
-/// shape: the minimum squared point-to-edge distance, walked in place over the
-/// edges. Squared (not rooted) so `distance` and `dwithin` share ONE kernel —
-/// `distance` roots it, `dwithin` compares it to the squared limit — keeping
-/// the two within one ulp at the boundary (the GEOS/PostGIS trade). Returns
-/// `None` (defer to the indexed sweep) unless exactly one operand is puntal
-/// (`Point`/`MultiPoint`), the other is a single lineal/areal type
-/// (`LineString`/`MultiLineString`/`Polygon`/`MultiPolygon`), and that other
-/// is small enough that the prepared-linework allocation dominates. The caller
-/// has already returned 0 for intersecting/contained/boundary cases, so the
-/// remainder is disjoint and the boundary distance is exact — including a point
-/// inside a hole, whose nearest edge is reached by walking every ring.
-pub(crate) fn puntal_brute_distance_squared(a: &Shape, b: &Shape) -> Option<f64> {
+/// Whether the puntal-vs-few-segment fast path applies; shared by squared
+/// and distance-space variants.
+fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(&'a Shape, &'a Shape)> {
     let puntal = |shape: &Shape| matches!(shape, Shape::Point(_) | Shape::MultiPoint(_));
     let lineal_or_areal = |shape: &Shape| {
         matches!(
@@ -179,8 +187,15 @@ pub(crate) fn puntal_brute_distance_squared(a: &Shape, b: &Shape) -> Option<f64>
     if segments == 0 || segments > PUNTAL_BRUTE_MAX_SEGMENTS {
         return None;
     }
-    // Accumulate in squared space — one `sqrt` at the end, not per edge (the
-    // squared kernel is exactly what the indexed sweep uses).
+    Some((points, other))
+}
+
+/// SQUARED min point-to-edge for puntal vs few-segment lineal/areal.
+/// A returned `0.0` is **not** a contact certificate — callers finish via
+/// [`finish_planar_squared_min`] with [`puntal_brute_distance`] as recompute.
+/// Returns `None` when the shape pair is out of this fast path.
+pub(crate) fn puntal_brute_distance_squared(a: &Shape, b: &Shape) -> Option<f64> {
+    let (points, other) = puntal_brute_operands(a, b)?;
     let mut best_squared = f64::INFINITY;
     let mut probe = |point: Point| {
         other.for_each_vertex_pair(|start, end| {
@@ -196,4 +211,25 @@ pub(crate) fn puntal_brute_distance_squared(a: &Shape, b: &Shape) -> Option<f64>
         _ => unreachable!("puntal guard restricts to Point/MultiPoint"),
     }
     Some(best_squared)
+}
+
+/// Distance-space min point-to-edge for the same puntal-vs-few-segment class —
+/// the recompute half of [`finish_planar_squared_min`] for this lane.
+pub(crate) fn puntal_brute_distance(a: &Shape, b: &Shape) -> Option<f64> {
+    let (points, other) = puntal_brute_operands(a, b)?;
+    let mut best = f64::INFINITY;
+    let mut probe = |point: Point| {
+        other.for_each_vertex_pair(|start, end| {
+            best = best.min(point_segment_distance(point, Segment {
+                start: start.into(),
+                end: end.into(),
+            }));
+        });
+    };
+    match points {
+        Shape::Point(point) => probe(*point),
+        Shape::MultiPoint(coords) => coords.points().for_each(probe),
+        _ => unreachable!("puntal guard restricts to Point/MultiPoint"),
+    }
+    Some(best)
 }

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::error::Error as CrateError;
+use crate::geometry::CoordinateAxes;
 
 #[derive(Debug, Error)]
 pub enum GeometryErrorKind {
@@ -8,10 +9,19 @@ pub enum GeometryErrorKind {
     NonFiniteCoordinate,
     #[error("coordinate lanes must have the same length, got x={0} and {1}")]
     CoordinateLength(usize, usize),
-    #[error("coordinate axes must match the builder's declared axes")]
-    CoordinateAxesMismatch,
-    #[error("coordinate window is outside the coordinate sequence")]
-    CoordinateRange,
+    #[error("coordinate axes must match the builder's declared axes, got {declared:?} and {got:?}")]
+    CoordinateAxesMismatch {
+        declared: CoordinateAxes,
+        got: CoordinateAxes,
+    },
+    #[error(
+        "coordinate window {start}..{end} is outside the coordinate sequence of length {length}"
+    )]
+    CoordinateRange {
+        start: usize,
+        end: usize,
+        length: usize,
+    },
     #[error("{param} must be finite, got {value}")]
     NonFinite { param: &'static str, value: f64 },
     #[error("{0} must be a non-negative finite number, got {1}")]
@@ -45,7 +55,7 @@ pub enum GeometryErrorKind {
     #[error("interpolate_m measures must be finite with end_m >= start_m, got {0} and {1}")]
     InvalidMeasureRange(f64, f64),
     #[error(
-        "line_substring requires start_distance <= end_distance, got {0} and {1}; use reverse() for a reversed sub-line"
+        "line_substring requires start <= end, got {0} and {1}; use reverse() for a reversed sub-line"
     )]
     SubstringOrder(f64, f64),
     #[error(
@@ -126,30 +136,58 @@ pub enum GeometryErrorKind {
 }
 
 impl GeometryErrorKind {
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn projection(message: impl Into<Box<str>>) -> CrateError {
         Self::Projection(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn triangulation(message: impl Into<Box<str>>) -> CrateError {
         Self::Triangulation(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn voronoi(message: impl Into<Box<str>>) -> CrateError {
         Self::Voronoi(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn repair_failed(message: impl Into<Box<str>>) -> CrateError {
         Self::RepairFailed(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn ordinate_dropped(operation: impl Into<Box<str>>) -> CrateError {
         Self::OrdinateDropped(operation.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn antimeridian_split_failed(message: impl Into<Box<str>>) -> CrateError {
         Self::AntimeridianSplitFailed(message.into()).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn invalid_de9im_pattern(message: impl Into<Box<str>>) -> CrateError {
         Self::InvalidDe9imPattern(message.into()).into()
     }
@@ -166,6 +204,10 @@ impl GeometryErrorKind {
         Self::PositiveFinite(name, value).into()
     }
 
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn parameter(param: &'static str, value: f64, message: impl Into<Box<str>>) -> CrateError {
         Self::Parameter {
             param,
@@ -179,6 +221,10 @@ impl GeometryErrorKind {
     /// for invalid-input conditions that don't fit a specific variant
     /// (e.g. non-finite geodesic coordinates). Maps to the Python
     /// `InvalidGeometryError`.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
     pub fn message(message: impl Into<Box<str>>) -> CrateError {
         Self::Invalid(message.into()).into()
     }

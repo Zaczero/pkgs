@@ -7,7 +7,7 @@
 use pyo3::prelude::*;
 
 use crate::py::errors::geometry_type_err;
-use crate::*;
+use crate::{GeometryErrorKind, Point, Polygon, Shape};
 
 pub(crate) fn invalid_lonlat_error(lon: f64, lat: f64) -> crate::error::Error {
     GeometryErrorKind::message(format!(
@@ -23,6 +23,49 @@ pub(crate) const MAX_LONGITUDE: f64 = 180.0;
 pub(crate) const MIN_LATITUDE: f64 = -90.0;
 /// Maximum WGS84 latitude (degrees north).
 pub(crate) const MAX_LATITUDE: f64 = 90.0;
+
+/// Public geographic admission accepts a tiny floating-point overshoot at the
+/// two latitude limits.  Canonicalize only that admitted exterior sliver: an
+/// inward neighbour remains its stored latitude, while an accepted outward
+/// neighbour denotes the physical pole rather than a distinct point beyond it.
+pub(crate) fn normalize_accepted_latitude(latitude: f64) -> f64 {
+    const EPSILON: f64 = 1.0e-12;
+    if (MAX_LATITUDE..=MAX_LATITUDE + EPSILON).contains(&latitude) {
+        MAX_LATITUDE
+    } else if (MIN_LATITUDE - EPSILON..=MIN_LATITUDE).contains(&latitude) {
+        MIN_LATITUDE
+    } else {
+        latitude
+    }
+}
+
+/// Physical-pole identity after the geographic admission normalization.
+/// Longitude is intentionally absent: every longitude spelling at either
+/// normalized pole is the same spherical point.
+pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<bool> {
+    match normalize_accepted_latitude(latitude) {
+        MAX_LATITUDE => Some(true),
+        MIN_LATITUDE => Some(false),
+        _ => None,
+    }
+}
+
+/// Return the grid-topology image of a geographically admitted shape.
+///
+/// The public latitude boundary deliberately accepts a tiny exterior rounding
+/// sliver.  At either pole that sliver has no distinct physical location, so
+/// every grid carrier must see the same canonical coordinate before it derives
+/// bounds, chains, or point witnesses.  The map is otherwise bit-preserving,
+/// including longitude and Z/M ordinates.
+pub(crate) fn normalize_accepted_geographic_latitudes(shape: &Shape) -> Shape {
+    shape
+        .map_points(&|point| {
+            Ok::<_, crate::error::Error>(
+                point.with_xy_unchecked(point.x, normalize_accepted_latitude(point.y)),
+            )
+        })
+        .expect("geographic latitude normalization is an infallible finite-coordinate map")
+}
 
 /// Web Mercator latitude domain edge (EPSG:3857 and slippy-map tiles).
 pub(crate) const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;

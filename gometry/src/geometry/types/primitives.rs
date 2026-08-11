@@ -2,13 +2,9 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
-use super::*;
+use crate::geometry::types::{CoordSeq, Ring};
 use crate::geometry::{
     FacetBvh, GeodesicFacetBvh, GeodesicSweepCaps, PointSetIndex, PreparedLinework,
     xy_bounds_columns,
@@ -23,6 +19,28 @@ pub struct Polygon {
 impl AsRef<Self> for Polygon {
     fn as_ref(&self) -> &Self {
         self
+    }
+}
+
+impl crate::HeapSize for Polygon {
+    fn heap_bytes(&self) -> usize {
+        // Shell + hole coordinate columns, plus the retained `Arc<[Ring]>`
+        // allocation (header + each `Ring`/`CoordSeq` control block).
+        //
+        // Hole-free polygons all share one empty `Arc` (see
+        // `Polygon::empty_holes`) and are STILL charged its control block: the
+        // crate-wide rule is that a shared Arc is charged in full to every
+        // holder (`ARC_CONTROL_BYTES`). The sharing is a real allocation win;
+        // it is deliberately not claimed here.
+        let ring_control = std::mem::size_of::<Ring>();
+        let holes_arc = 2 * std::mem::size_of::<usize>() + self.holes.len() * ring_control;
+        self.shell.coords().coordinate_bytes()
+            + self
+                .holes
+                .iter()
+                .map(|hole| hole.coords().coordinate_bytes())
+                .sum::<usize>()
+            + holes_arc
     }
 }
 
@@ -110,10 +128,8 @@ impl CoordinateAxes {
 
     pub(crate) const fn new(z: HasZ, m: HasM) -> Self {
         let bits = (z.0 as u8 * Self::Z) | (m.0 as u8 * Self::M);
-        match Self::from_bits(bits) {
-            Some(axes) => axes,
-            None => panic!("invalid coordinate axes bits"),
-        }
+        debug_assert!(Self::from_bits(bits).is_some());
+        Self(bits)
     }
 
     pub(crate) const fn from_bits(bits: u8) -> Option<Self> {
@@ -241,6 +257,38 @@ impl Bounds {
         self.miny = self.miny().min(other.miny());
         self.maxx = self.maxx().max(other.maxx());
         self.maxy = self.maxy().max(other.maxy());
+    }
+}
+
+/// A 3D bounding box: ``(minx, miny, minz, maxx, maxy, maxz)``.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounds3D {
+    pub minx: f64,
+    pub miny: f64,
+    pub minz: f64,
+    pub maxx: f64,
+    pub maxy: f64,
+    pub maxz: f64,
+}
+
+impl Bounds3D {
+    pub(crate) const fn into_tuple(self) -> (f64, f64, f64, f64, f64, f64) {
+        (
+            self.minx, self.miny, self.minz, self.maxx, self.maxy, self.maxz,
+        )
+    }
+}
+
+impl From<(f64, f64, f64, f64, f64, f64)> for Bounds3D {
+    fn from((minx, miny, minz, maxx, maxy, maxz): (f64, f64, f64, f64, f64, f64)) -> Self {
+        Self {
+            minx,
+            miny,
+            minz,
+            maxx,
+            maxy,
+            maxz,
+        }
     }
 }
 

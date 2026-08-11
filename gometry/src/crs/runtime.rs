@@ -1,17 +1,128 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! CRS string normalization (`normalize`/`canonicalize`) and global runtime
 //! configuration (PROJ search paths and local grid directories).
 //!
 //! `&str`/`RuntimeConfig` API; the raw-pointer context mutators stay private in
 //! the parent `crs` module, reached via `use super::*`; re-exported at `crs`.
 
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+
 use smol_str::SmolStr;
 
-use super::*;
+use crate::crs::{
+    AtomicU64, CRS_CANONICAL_CACHE, CRS_CANONICAL_CACHE_CAPACITY, CStr, Confidence, CrsError,
+    OnceLock, Ordering, ProjContext, RefCell, RuntimeConfig, RwLock, c_char,
+    ensure_thread_caches_current, info, lru_resolve, parse_epsg, ptr, to_authority,
+};
 use crate::error::Result;
+
+const PROJ_INI: &str = "[general]\nnetwork = off\ncdn_endpoint = https://cdn.proj.org\ncache_enabled = on\ncache_size_MB = 300\ncache_ttl_sec = 86400\ntmerc_default_algo = poder_engsager\n";
+const MAX_PROJ_DIAGNOSTIC_BYTES: usize = 4096;
+
+thread_local! {
+    static PROJ_DIAGNOSTIC: RefCell<Option<String>> = const { RefCell::new(None) };
+    static CURRENT_ACCURACY_DIAGNOSTIC: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+static PROJ_CONFIG_DIRECTORY: OnceLock<std::result::Result<std::path::PathBuf, String>> =
+    OnceLock::new();
+static PROJ_CONFIG_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn proj_config_directory() -> Result<&'static std::path::Path> {
+    match PROJ_CONFIG_DIRECTORY.get_or_init(|| {
+        let temp = std::env::temp_dir();
+        let mut random = [0_u8; 16];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut random))
+            .map_err(|error| error.to_string())?;
+        let nonce = u128::from_ne_bytes(random);
+        for _ in 0..128 {
+            let sequence = PROJ_CONFIG_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let directory = temp.join(format!(
+                "gometry-proj-{}-{nonce:032x}-{sequence}",
+                std::process::id()
+            ));
+            match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {
+                    let ini = directory.join("proj.ini");
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(ini)
+                        .map_err(|error| error.to_string())?;
+                    file.write_all(PROJ_INI.as_bytes())
+                        .map_err(|error| error.to_string())?;
+                    return Ok(directory);
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("could not allocate a private temporary directory".to_owned())
+    }) {
+        Ok(directory) => Ok(directory.as_path()),
+        Err(error) => Err(CrsError::invalid(format!(
+            "could not create gometry PROJ configuration: {error}"
+        ))),
+    }
+}
+
+pub(super) fn begin_proj_operation() {
+    let _ = PROJ_DIAGNOSTIC.try_with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            *slot = None;
+        }
+    });
+}
+
+pub(super) fn finish_proj_operation() -> Option<String> {
+    PROJ_DIAGNOSTIC
+        .try_with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn begin_accuracy_diagnostics() {
+    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| *diagnostic.borrow_mut() = None);
+}
+
+pub(super) fn publish_accuracy_diagnostic(message: String) {
+    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| *diagnostic.borrow_mut() = Some(message));
+}
+
+pub(crate) fn take_accuracy_diagnostic() -> Option<String> {
+    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| diagnostic.borrow_mut().take())
+}
+
+unsafe extern "C" fn capture_proj_diagnostic(
+    _app_data: *mut std::ffi::c_void,
+    _level: i32,
+    message: *const c_char,
+) {
+    if message.is_null() {
+        return;
+    }
+    // SAFETY: PROJ invokes its registered callback synchronously with a live,
+    // NUL-terminated message. We copy it before returning and retain no pointer.
+    let bytes = unsafe { CStr::from_ptr(message) }.to_bytes();
+    if !bytes.starts_with(b"Attempt to use coordinate operation ")
+        || !bytes
+            .windows(b" is not available.".len())
+            .any(|window| window == b" is not available.")
+    {
+        return;
+    }
+    let end = bytes.len().min(MAX_PROJ_DIAGNOSTIC_BYTES);
+    let message = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    // An FFI callback must never unwind. `try_with` and `try_borrow_mut` make
+    // TLS destruction and accidental re-entry harmless rather than panicking.
+    let _ = PROJ_DIAGNOSTIC.try_with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            *slot = Some(message);
+        }
+    });
+}
 
 pub(crate) fn normalize(value: &str) -> Result<String> {
     let trimmed = value.trim();
@@ -246,48 +357,49 @@ pub(crate) fn runtime_config_generation() -> u64 {
     PROJ_CONFIG_GENERATION.load(Ordering::Acquire)
 }
 
-pub(super) fn create_proj_context() -> Result<std::ptr::NonNull<proj_sys::PJ_CONTEXT>> {
-    let config = runtime_config_snapshot()?;
-    // SAFETY: PROJ context creation returns an owned context pointer or null.
-    let context = std::ptr::NonNull::new(unsafe { proj_sys::proj_context_create() })
-        .ok_or_else(|| CrsError::invalid("PROJ context creation returned null".to_owned()))?;
-    if let Err(error) = apply_runtime_config(context, &config) {
-        // SAFETY: context is owned on this path and destroyed exactly once.
-        unsafe {
-            proj_sys::proj_context_destroy(context.as_ptr());
-        }
-        return Err(error);
-    }
-    Ok(context)
-}
-
-pub(super) fn apply_runtime_config(
-    context: std::ptr::NonNull<proj_sys::PJ_CONTEXT>,
-    config: &RuntimeConfig,
-) -> Result<()> {
-    // SAFETY: context is a valid PROJ context and these setters only mutate
-    // context-local PROJ behavior.
+/// Apply process runtime search-path / writable-directory settings to a live
+/// typed context. Callers wrap the context in [`ProjContext`] *before* this
+/// so error/panic paths never need a manual `proj_context_destroy`.
+pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig) -> Result<()> {
+    // SAFETY: DOC-H. Typed live context on the creating thread. PROJ copies
+    // search paths / directory into context-owned storage; temporary
+    // CString/pointer vectors need only outlive each call. PROJ invokes no
+    // Python callback.
     unsafe {
-        let context = context.as_ptr();
-        proj_sys::proj_log_level(context, proj_sys::PJ_LOG_LEVEL_PJ_LOG_NONE);
-        if let Some(search_paths) = &config.search_paths {
-            let values = search_paths
-                .iter()
-                .map(|path| cstring(path.as_str()))
-                .collect::<Result<Vec<_>>>()?;
-            let pointers = values
-                .iter()
-                .map(|value| value.as_ptr())
-                .collect::<Vec<_>>();
-            proj_sys::proj_context_set_search_paths(
-                context,
-                pointers.len() as i32,
-                pointers.as_ptr(),
-            );
-        }
+        proj_sys::proj_log_func(
+            context.as_ptr(),
+            ptr::null_mut(),
+            Some(capture_proj_diagnostic),
+        );
+        // Missing-best-grid diagnostics are emitted at DEBUG. TRACE would add
+        // unrelated per-step chatter; TELL is a query sentinel, not a level.
+        proj_sys::proj_log_level(context.as_ptr(), proj_sys::PJ_LOG_LEVEL_PJ_LOG_DEBUG);
+        let config_directory = proj_config_directory()?;
+        let values = std::iter::once(config_directory.to_string_lossy().into_owned())
+            .chain(config.search_paths.clone().unwrap_or_default())
+            // PROJ's writable cache is also a valid grid search location. It
+            // must be installed in the context search list, not merely set as
+            // the download/cache destination, so caller-supplied grids are
+            // actually discoverable without a process-global environment var.
+            .chain(config.user_writable_directory.clone())
+            .map(cstring)
+            .collect::<Result<Vec<_>>>()?;
+        let pointers = values
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        proj_sys::proj_context_set_search_paths(
+            context.as_ptr(),
+            pointers.len() as i32,
+            pointers.as_ptr(),
+        );
         if let Some(directory) = &config.user_writable_directory {
             let directory = cstring(directory.as_str())?;
-            proj_sys::proj_context_set_user_writable_directory(context, directory.as_ptr(), 0);
+            proj_sys::proj_context_set_user_writable_directory(
+                context.as_ptr(),
+                directory.as_ptr(),
+                0,
+            );
         }
     }
     Ok(())

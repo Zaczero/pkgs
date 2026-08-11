@@ -1,14 +1,21 @@
-use crate::geometry::*;
+use crate::geometry::{
+    Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Shape, column_mean2,
+    held_axis_interpolate, interpolate_segment_point, line_length, line_length_columns,
+    point_distance, simd_argmin_f64,
+};
 /// Collect horizontal-bisector chord crossings for one ring's coordinate
 /// columns.
-fn push_chord_crossings(xs: &[f64], ys: &[f64], mid: f64, crossings: &mut Vec<f64>) {
+fn push_chord_crossings(xs: &[f64], ys: &[f64], mid: f64, crossings: &mut Vec<f64>) -> bool {
     for index in 1..ys.len() {
         let (y0, y1) = (ys[index - 1], ys[index]);
         if (y0 <= mid) != (y1 <= mid) {
-            let t = (mid - y0) / (y1 - y0);
-            crossings.push(xs[index - 1] + t * (xs[index] - xs[index - 1]));
+            let Some(x) = held_axis_interpolate(y0, xs[index - 1], y1, xs[index], mid) else {
+                return false;
+            };
+            crossings.push(x);
         }
     }
+    true
 }
 
 /// Finish the scanline interior point from sorted even-odd chord crossings.
@@ -42,7 +49,9 @@ fn point_on_surface_polygon_columns(
     for ring_index in rings {
         let start = ring_offsets[ring_index] as usize;
         let end = ring_offsets[ring_index + 1] as usize;
-        push_chord_crossings(&xs[start..end], &ys[start..end], mid, &mut crossings);
+        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, &mut crossings) {
+            return None;
+        }
     }
     point_from_chord_crossings(&mut crossings, mid)
 }
@@ -107,7 +116,9 @@ pub(crate) fn polygonal_surface_point(shape: &Shape) -> Option<Point> {
     };
     for polygon in polygons {
         for ring in polygon.rings() {
-            push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings);
+            if !push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings) {
+                return None;
+            }
         }
     }
     point_from_chord_crossings(&mut crossings, mid)

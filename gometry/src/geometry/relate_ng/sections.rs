@@ -1,4 +1,8 @@
-use super::*;
+use crate::geometry::relate_ng::{
+    AreaTesters, BoundaryContacts, Operand, OperandPool, OrientedRing, PointKey, RingClass,
+    SectionEnd, Segment, SharedRun, TopologyComputer, XY, operand_covers_boundary, other_contains,
+    same_point, section_end, sort_dedup_cuts,
+};
 
 #[derive(Default)]
 pub(crate) struct NodeIncidence {
@@ -266,9 +270,10 @@ fn strict_section_membership(
     if same_point(midpoint, section.from) || same_point(midpoint, section.to) {
         return None;
     }
-    // Prepared raycaster: one banded 3-way classification fuses the
-    // boundary-defer check and the interior test. Boundary → defer (None),
-    // exactly as the raw `operand_covers_boundary` + `other_contains` pair.
+    // Prepared `PointBatchTester`: one hierarchical 3-way classification
+    // fuses the boundary-defer check and the interior test. Boundary →
+    // defer (None), exactly as the raw `operand_covers_boundary` +
+    // `other_contains` pair.
     if let Some(tester) = testers.for_operand(operand) {
         return match tester.classify_area_point(midpoint.point()) {
             Some(RingClass::Interior) => Some(true),

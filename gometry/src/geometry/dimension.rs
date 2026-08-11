@@ -1,5 +1,5 @@
 use crate::geometry::relate::{line_has_nonzero_segment, multiline_has_nonzero_segment};
-use crate::geometry::*;
+use crate::geometry::{Coordinates as _, EmptyKind, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DimMode {

@@ -216,7 +216,17 @@ def array_repr_html(arr: GeometryArray) -> str | None:
     try:
         from ipywidgets.embed import embed_snippet
 
-        map_obj = explore(arr)
+        display_arr = _array_for_map(arr)
+        # Widget-state serialization runs in lonboard's worker pool after this
+        # call returns.  Materialize the Arrow object so those workers do not
+        # outlive the direct C-capsule handoff owned by ``display_arr``.
+        try:
+            data = display_arr.to_arrow()
+        except ModuleNotFoundError:
+            # Without PyArrow, lonboard serializes the direct capsule through
+            # arro3 and does not cross the crashing PyArrow worker boundary.
+            data = display_arr
+        map_obj = _require_lonboard().viz(data)
         return embed_snippet(views=[map_obj], drop_defaults=True)
     except Exception:
         return None

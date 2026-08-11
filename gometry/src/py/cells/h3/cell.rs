@@ -1,11 +1,14 @@
 use h3o::CoordIJ;
 use pyo3::prelude::*;
 
-use super::*;
 use crate::grid::cell::GridCell;
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
     cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+};
+use crate::py::cells::h3::{
+    CellIndex, LocalIJ, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3VertexArray, PyResult,
+    h3_cell_index, parse_h3_grid_k, parse_h3_resolution,
 };
 use crate::py::cells::{GridKind, PyCellArray, construct_h3_cell};
 use crate::py::errors::GeometryError;

@@ -1,4 +1,7 @@
-use super::*;
+use crate::geometry::distance::Result;
+use crate::geometry::{
+    Bounds, Coordinates, GeometryErrorKind, line_length_3d_columns, squared_norm_is_trustworthy,
+};
 pub(crate) fn line_length_3d<C: Coordinates + ?Sized>(points: &C) -> Result<f64> {
     // SoA-backed sequences run the wide column kernel (column presence IS
     // the per-vertex Z truth, so the missing-Z check happens once).
@@ -18,12 +21,11 @@ pub(crate) fn line_length_3d<C: Coordinates + ?Sized>(points: &C) -> Result<f64>
         // Guarded sqrt: `hypot` is a libm call per segment; fall back to the
         // chained exact form only on overflow/underflow.
         let squared = dx * dx + dy * dy + dz * dz;
-        let length =
-            if squared.is_finite() && (squared != 0.0 || (dx == 0.0 && dy == 0.0 && dz == 0.0)) {
-                squared.sqrt()
-            } else {
-                dx.hypot(dy).hypot(dz)
-            };
+        let length = if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0 && dz == 0.0) {
+            squared.sqrt()
+        } else {
+            dx.hypot(dy).hypot(dz)
+        };
         Ok(total + length)
     })
 }

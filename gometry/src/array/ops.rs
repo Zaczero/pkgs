@@ -9,7 +9,17 @@
 
 use pyo3::types::{PyBytes, PyTuple};
 
-use super::*;
+use crate::array::{
+    Arc, Bound, CollectRows as _, CoordinateAxes, DefaultedF64Input, DistanceUnit, Error, F64Param,
+    Frame, I64Param, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometryArray, PyResult,
+    PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput,
+    array_binary_geometry, bool_array, cdt_refinement_values, crs, curves, exact_geometry,
+    exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
+    geometry, io, metric_nearest_points, metric_shortest_line, non_negative_int, note_array_row,
+    owned_voronoi_boundary, pair_packed_equals_exact, paired_arrays, parse_precision,
+    parse_wkt_output_dimension, require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
+    validate_equals_exact_tolerance, validate_subdivide_max_vertices,
+};
 
 impl PyGeometryArray {
     /// Per-row export rows as a Python list with ``None`` at missing rows —
@@ -18,7 +28,7 @@ impl PyGeometryArray {
     where
         T: for<'py> pyo3::IntoPyObjectExt<'py>,
     {
-        use pyo3::IntoPyObjectExt;
+        use pyo3::IntoPyObjectExt as _;
         match self.missing() {
             None => rows.into_py_any(py),
             Some(mask) => {
@@ -197,11 +207,7 @@ impl PyGeometryArray {
                 if self.is_row_missing(index) {
                     return None;
                 }
-                let geometry = self.storage().geometry_at(
-                    index,
-                    self.frame.clone(),
-                    self.row_frame_cache(index),
-                );
+                let geometry = self.geometry_at(index);
                 let issue = crate::geometry::validate_data_in_frame(&geometry.shape, geographic);
                 Some(PyValidationReport { geometry, issue })
             })
@@ -362,7 +368,7 @@ impl PyGeometryArray {
                     "shortest_line",
                 )?;
                 let lefts = self.clone();
-                let right = geometry.shape.clone();
+                let right = Arc::clone(&geometry.shape);
                 let right_cache = Arc::clone(&geometry.frame_cache);
                 let missing = self.missing().cloned();
                 let rows = Python::attach(|py| {
@@ -575,14 +581,24 @@ impl PyGeometryArray {
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
         if self.uniform_axes().is_none() {
-            return self.flat_map_shapes_groups(py, Shape::delaunay_triangles);
+            return self.flat_map_shapes_groups_budgeted(
+                py,
+                "triangulate",
+                "method",
+                |_, shape, budget| shape.delaunay_triangles_budgeted(budget),
+            );
         }
         // Mirror the scalar `Geometry::delaunay_triangles` packed builder: each
         // row's flat `[a, c, b, a]` vertex stream is concatenated into ONE
         // coords column + arithmetic CSR offsets — skipping per-triangle
         // `Polygon`/`CoordSeq` materialization. Per-row `Groups` offsets are the
         // running triangle counts, so grouping is free.
-        self.flat_map_packed_triangles_groups(py, |shape| Ok(shape.delaunay_triangle_vertices()))
+        self.flat_map_packed_triangles_groups_budgeted(
+            py,
+            "triangulate",
+            "method",
+            |_, shape, budget| shape.delaunay_triangle_vertices_budgeted(budget),
+        )
     }
 
     pub(crate) fn constrained_delaunay_triangles_impl(
@@ -610,20 +626,32 @@ impl PyGeometryArray {
         // a mixed-axis batch uses the shape collector. Pure-XY batches retain
         // the packed triangle builder.
         if self.has_z() || self.has_m() {
-            return self.flat_map_shapes_groups_indexed(py, move |row, shape| {
-                shape.constrained_delaunay_triangles(refinements[row])
-            });
+            return self.flat_map_shapes_groups_budgeted(
+                py,
+                "triangulate",
+                "min_angle/max_area",
+                move |row, shape, budget| {
+                    shape.constrained_delaunay_triangles_budgeted(refinements[row], budget)
+                },
+            );
         }
-        self.flat_map_packed_triangles_groups_indexed(py, move |row, shape| {
-            shape.constrained_delaunay_vertices(refinements[row])
-        })
+        self.flat_map_packed_triangles_groups_budgeted(
+            py,
+            "triangulate",
+            "min_angle/max_area",
+            move |row, shape, budget| {
+                shape.constrained_delaunay_vertices_budgeted(refinements[row], budget)
+            },
+        )
     }
 
     pub(crate) fn polygon_triangles_impl(
         &self,
         py: Python<'_>,
     ) -> PyResult<crate::py::vectors::Groups> {
-        self.flat_map_shapes_groups(py, Shape::polygon_triangles)
+        self.flat_map_shapes_groups_budgeted(py, "triangulate", "method", |_, shape, budget| {
+            shape.polygon_triangles_budgeted(budget)
+        })
     }
 
     pub(crate) fn sample_points_impl(
@@ -645,11 +673,20 @@ impl PyGeometryArray {
         let mut shapes = Vec::with_capacity(budget.used());
         let mut offsets = vec![0_i64];
         for (row, (is_missing, shape)) in self.masked_shape_rows().enumerate() {
-            if !is_missing {
+            // An empty row yields an empty group rather than aborting: the
+            // columnar contract is that one bad row never fails the batch. The
+            // SCALAR surface still raises, per the ergonomic/columnar split.
+            if !is_missing && !shape.is_empty() {
                 let count = usize::try_from(count.get(row)).expect("validated non-negative");
+                // One rule: a geometry seeded with `s` always draws
+                // `row_sample_seed(s, 0)`. A single seed spreads across rows by
+                // index; per-row seeds are each that row's OWN seed, so each
+                // draws the stream a scalar with that seed draws. Both keep
+                // rows independent AND agree with the scalar surface — the
+                // per-element lane used the raw seed and so disagreed.
                 let seed = match &seed {
                     I64Param::Scalar(value) => row_sample_seed(*value as u64, row),
-                    I64Param::PerElement(values) => values[row] as u64,
+                    I64Param::PerElement(values) => row_sample_seed(values[row] as u64, 0),
                 };
                 shapes.extend(
                     shape
@@ -673,13 +710,14 @@ impl PyGeometryArray {
         tolerance: f64,
         clip: &VoronoiClipInput,
     ) -> PyResult<crate::py::vectors::Groups> {
-        voronoi_groups(
+        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_polygons")?;
+        self.flat_map_shapes_groups_budgeted(
             py,
-            self,
-            tolerance,
-            clip,
             "voronoi_polygons",
-            Shape::voronoi_polygons,
+            "sites/clip topology",
+            move |_, shape, budget| {
+                shape.voronoi_polygons_budgeted(tolerance, boundary.as_borrowed(), budget)
+            },
         )
     }
 
@@ -689,13 +727,14 @@ impl PyGeometryArray {
         tolerance: f64,
         clip: &VoronoiClipInput,
     ) -> PyResult<crate::py::vectors::Groups> {
-        voronoi_groups(
+        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edges")?;
+        self.flat_map_shapes_groups_budgeted(
             py,
-            self,
-            tolerance,
-            clip,
             "voronoi_edges",
-            Shape::voronoi_edges,
+            "sites/clip topology",
+            move |_, shape, budget| {
+                shape.voronoi_edges_budgeted(tolerance, boundary.as_borrowed(), budget)
+            },
         )
     }
 
@@ -729,7 +768,7 @@ impl PyGeometryArray {
                 splitter.epoch(),
                 "split",
             )?;
-            let splitter_shape = splitter.shape.clone();
+            let splitter_shape = Arc::clone(&splitter.shape);
             let storage = Arc::clone(self.storage_arc());
             let missing = self.missing().cloned();
             py.detach(move || {
@@ -847,4 +886,40 @@ fn array_equals_exact_row_tolerance<const Z: bool, const M: bool>(
         "equals_exact",
         move |left, right, row| Ok(left.equals_exact_impl::<Z, M>(right, tolerance.get(row))),
     )
+}
+
+#[cfg(test)]
+mod voronoi_budget_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::Point;
+
+    #[test]
+    fn voronoi_array_budget_is_cumulative_across_rows() {
+        Python::initialize();
+        let visits = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&visits);
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_unchecked_xy(0.0, 0.0)),
+                Shape::Point(Point::new_unchecked_xy(1.0, 0.0)),
+            ],
+            Frame::new(None, None).unwrap(),
+        );
+        let result = Python::attach(|py| {
+            array.flat_map_shapes_groups_budgeted(
+                py,
+                "voronoi_polygons",
+                "sites/clip topology",
+                move |_, _, budget| {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    budget.add(crate::geometry::GENERATED_ITEM_LIMIT / 2 + 1)?;
+                    Ok(Vec::new())
+                },
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!(visits.load(Ordering::Relaxed), 2);
+    }
 }

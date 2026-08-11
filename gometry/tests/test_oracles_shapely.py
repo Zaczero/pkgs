@@ -6,6 +6,7 @@ import pytest
 
 shapely = pytest.importorskip('shapely')
 
+
 def test_predicates_and_overlay_match_shapely_oracle() -> None:
     from shapely import (
         boundary,
@@ -508,6 +509,7 @@ def test_union_all_dissolves_mixed_dimensions_like_shapely_oracle() -> None:
 def test_geometry_collection_relate_clean_cases_match_shapely_oracle() -> None:
     import shapely
     from shapely import relate
+
     square = 'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))'
     cases = [
         ('point_equal', 'POINT (0 0)', 'POINT (0 0)', False),
@@ -523,10 +525,25 @@ def test_geometry_collection_relate_clean_cases_match_shapely_oracle() -> None:
         ('line_on_square_boundary', 'LINESTRING (0 0, 2 0)', square, False),
         ('square_overlap', square, 'POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))', False),
         ('square_shared_edge', square, 'POLYGON ((2 0, 4 0, 4 2, 2 2, 2 0))', False),
-        ('square_contains_polygon', 'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))', 'POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))', False),
-        ('square_partial_shared_edge', square, 'POLYGON ((3 0, 4 0, 4 1, 3 1, 3 0))', False),
+        (
+            'square_contains_polygon',
+            'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))',
+            'POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))',
+            False,
+        ),
+        (
+            'square_partial_shared_edge',
+            square,
+            'POLYGON ((3 0, 4 0, 4 1, 3 1, 3 0))',
+            False,
+        ),
         ('both_wrapped_lines', 'LINESTRING (0 0, 2 0)', 'LINESTRING (1 1, 3 1)', True),
-        ('wrapped_polygon_line', 'POLYGON ((0.5 0.5, 1.5 0.5, 1.5 1.5, 0.5 1.5, 0.5 0.5))', 'LINESTRING (2 1, 3 1)', True),
+        (
+            'wrapped_polygon_line',
+            'POLYGON ((0.5 0.5, 1.5 0.5, 1.5 1.5, 0.5 1.5, 0.5 0.5))',
+            'LINESTRING (2 1, 3 1)',
+            True,
+        ),
         ('wrapped_line_polygon', 'LINESTRING (1 1, 3 1)', square, True),
     ]
 

@@ -5,7 +5,10 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
-use crate::*;
+use crate::{
+    GeometryError, InvalidGeometryError, PyTypeError, Shape, exact_geometry, exact_geometry_array,
+    geometry_type_err, mapping_as_dict, require_geojson_crs,
+};
 
 fn properties_value<'py>(
     py: Python<'py>,
@@ -67,15 +70,28 @@ fn require_geojson_shape(shape: &Shape, crs: Option<&str>) -> PyResult<()> {
     Ok(())
 }
 
+/// Whether a Feature encoder should apply RFC 7946 geographic preparation
+/// (domain check + antimeridian split). CRS-tagged WGS84-family frames opt in;
+/// CRS-free geometry stays planar (same rule as `to_geojson`).
+const fn feature_geographic(crs: Option<&str>) -> bool {
+    crs.is_some()
+}
+
 fn feature_dict<'py>(
     py: Python<'py>,
     geometry: Option<&Shape>,
+    crs: Option<&str>,
     properties: Option<&Bound<'py, PyAny>>,
     id: Option<&Bound<'py, PyAny>>,
     preserve_explicit_null: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let geometry = if let Some(shape) = geometry {
-        Some(crate::boundary::convert::geojson_dict(py, shape)?)
+        // Share `to_geojson`'s RFC 7946 preparation (domain + seam split).
+        Some(crate::boundary::convert::geojson_dict_prepared(
+            py,
+            shape,
+            feature_geographic(crs),
+        )?)
     } else {
         None
     };
@@ -115,8 +131,15 @@ fn feature_dict<'py>(
 ///     If ``geom`` is not a Geometry or ``None``.
 /// GeometryError
 ///     If properties are not a string-keyed mapping, or the id is invalid.
+/// InvalidGeometryError
+///     If a WGS84-tagged geometry has coordinates outside the lon/lat domain.
 /// CRSError
-///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
+///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
+///
+/// Notes
+/// -----
+/// Coordinate epoch metadata is not representable in GeoJSON Feature mappings
+/// and is **silently dropped** (same contract as ``to_geojson(..., drop_epoch=True)``).
 ///
 /// Examples
 /// --------
@@ -138,12 +161,14 @@ pub(crate) fn to_feature(
             Some(exact_geometry(value).ok_or_else(|| geometry_type_err("expected Geometry"))?)
         },
     };
+    let crs = geometry.as_ref().and_then(|geometry| geometry.crs_str());
     if let Some(geometry) = geometry {
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
     }
     Ok(feature_dict(
         py,
         geometry.map(|geometry| geometry.shape.shape()),
+        crs,
         properties,
         id,
         false,
@@ -266,7 +291,8 @@ fn to_feature_collection_impl(
                 "GeoJSON has no M ordinate; use WKT/GeoArrow to preserve M",
             ));
         }
-        let properties = if let Some(ref props) = broadcast_properties {
+        let array_crs = array.crs_str();
+        let properties = if let Some(props) = &broadcast_properties {
             std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
                 .take(array.storage().len())
                 .collect::<PyResult<Vec<_>>>()?
@@ -282,6 +308,7 @@ fn to_feature_collection_impl(
             features.append(feature_dict(
                 py,
                 (!missing).then_some(shape.as_ref()),
+                array_crs,
                 properties.as_ref(),
                 id.as_ref(),
                 true,
@@ -301,7 +328,7 @@ fn to_feature_collection_impl(
                 exact_geometry(geometry).ok_or_else(|| geometry_type_err("expected Geometry"))?;
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
-        let properties = if let Some(ref props) = broadcast_properties {
+        let properties = if let Some(props) = &broadcast_properties {
             std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
                 .take(geometry_rows.len())
                 .collect::<PyResult<Vec<_>>>()?
@@ -312,15 +339,17 @@ fn to_feature_collection_impl(
         for ((geometry, properties), id) in
             geometry_rows.iter().zip(properties.iter()).zip(ids.iter())
         {
-            let geometry = (!geometry.is_none()).then(|| {
-                exact_geometry(geometry)
-                    .expect("geometry rows were validated before aligned side data")
-                    .shape
-                    .shape()
-            });
+            let (shape, row_crs) = if geometry.is_none() {
+                (None, None)
+            } else {
+                let geometry = exact_geometry(geometry)
+                    .expect("geometry rows were validated before aligned side data");
+                (Some(geometry.shape.shape()), geometry.crs_str())
+            };
             features.append(feature_dict(
                 py,
-                geometry,
+                shape,
+                row_crs,
                 properties.as_ref(),
                 id.as_ref(),
                 true,

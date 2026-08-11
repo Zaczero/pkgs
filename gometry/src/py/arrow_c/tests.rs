@@ -1,10 +1,11 @@
-use super::*;
 use crate::PyGeometry;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
+use crate::py::arrow_c::capsule_lifecycle::stream_from_export;
+use crate::py::arrow_c::*;
 
 fn release_twice(export: ExportedArray) {
     let mut schema = export.schema;
-    let mut array = export.array;
+    let mut array = export.array.into_box();
     // SAFETY: this test owns both boxed C structs and is explicitly
     // exercising idempotent release callbacks before the boxes drop.
     unsafe {
@@ -77,3 +78,6 @@ fn stream_export_release_is_idempotent_after_batch_move() {
         release_stream(stream.as_mut());
     }
 }
+
+// Compile-fail fixtures for arrow_c / frozen-i64 are driven by the crate-root
+// `compile_fail_gate` (stable error codes + production dep-info).

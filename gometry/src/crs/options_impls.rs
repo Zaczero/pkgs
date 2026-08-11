@@ -1,14 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Inherent impls for the CRS option/DTO types (`TransformOptions`,
 //! `Crs*Options`, `ProjDirection`, `AreaOfInterest`).
 //!
 //! The data types live in `types`; their validation/builder methods reach
 //! parent-`crs` helpers via `use super::*`.
 
-use super::*;
+use crate::crs::{
+    AreaOfInterest, CString, CrsCatalogOptions, CrsComparison, CrsError, CrsObjectKind,
+    CrsProjJsonOptions, CrsProjOptions, CrsSearchOptions, CrsWktOptions, ProjDirection,
+    ProjStringVersion, ProjectionFactorColumns, ProjectionFactors, TransformOptions,
+    UtmCatalogOptions, WktAxisRule, WktVersion, c_char, cstring, ptr, validate_search_limit,
+};
 use crate::error::Result;
 
 impl TransformOptions {
@@ -269,6 +270,10 @@ impl AreaOfInterest {
 }
 
 impl ProjectionFactors {
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     pub(crate) fn from_raw(raw: proj_sys::PJ_FACTORS, radians: bool) -> Self {
         let angle = |value: f64| if radians { value } else { value.to_degrees() };
         Self {
@@ -321,6 +326,10 @@ impl ProjectionFactorColumns {
         }
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     pub(crate) fn push(&mut self, factors: ProjectionFactors) {
         self.meridional_scale.push(factors.meridional_scale);
         self.parallel_scale.push(factors.parallel_scale);

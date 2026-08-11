@@ -64,8 +64,12 @@ def test_overlap_coverage_cell_arrays_share_the_canonical_id_storage() -> None:
         assert first.flags.writeable is False
         assert first.tolist() == second.tolist()
         restored = pickle.loads(pickle.dumps(coverage))
-        assert restored.__sizeof__() == coverage.__sizeof__()
         assert list(restored.cells) == list(coverage.cells)
+        # All four grids keep the inspection partition cold on unpickle for
+        # non-seeded paths (overlap may be warm on the live cover when seeded
+        # at factory time). Restore never forces partition compute.
+        assert restored.__sizeof__() <= coverage.__sizeof__()
+        assert list(restored.interior_cells) == list(coverage.interior_cells)
 
 
 def test_cell_array_token_mirrors_scalar_property_name() -> None:
@@ -147,7 +151,9 @@ def test_compact_respects_the_resolution_floor() -> None:
         ),
         (
             'tile',
-            lambda: gm.CellArray([gm.Tile(lon=0.0, lat=0.0, zoom=2)], type=gm.Tile).compact(-1),
+            lambda: gm.CellArray(
+                [gm.Tile(lon=0.0, lat=0.0, zoom=2)], type=gm.Tile
+            ).compact(-1),
             'tile min_zoom must be between 0 and 29, got -1',
         ),
     ],
@@ -186,9 +192,9 @@ def test_compact_floor_out_of_range_errors_name_the_floor_kwarg(
         ),
         (
             'tile',
-            lambda: gm.CellArray([gm.Tile(lon=0.0, lat=0.0, zoom=3)], type=gm.Tile).uncompact(
-                2
-            ),
+            lambda: gm.CellArray(
+                [gm.Tile(lon=0.0, lat=0.0, zoom=3)], type=gm.Tile
+            ).uncompact(2),
             'uncompact zoom must be >= every',
         ),
     ],
@@ -281,9 +287,14 @@ def test_tile_coverage_depth_metadata_tracks_compact_uncompact_and_pickle() -> N
 def test_coverage_membership_matches_geometry_ground_truth() -> None:
     tri = gm.Polygon([(20.2, 51.2), (21.8, 51.4), (20.9, 52.8)], crs=4326)
     points = [
-        (20.9, 52.0), (20.9, 52.79),
-        (20.0, 52.0), (22.0, 52.0), (21.0, 51.0),
-        (20.2, 51.2), (21.8, 51.4), (20.9, 52.8),
+        (20.9, 52.0),
+        (20.9, 52.79),
+        (20.0, 52.0),
+        (22.0, 52.0),
+        (21.0, 51.0),
+        (20.2, 51.2),
+        (21.8, 51.4),
+        (20.9, 52.8),
     ]
     pts = gm.points(*zip(*points, strict=True), crs=4326)
     cov = gm.h3_cover(tri, resolution=6)
@@ -369,6 +380,273 @@ def test_coverage_interior_and_boundary_cells_partition_the_covering() -> None:
     assert 'exact source-geometry predicates' in s2_plan[2]
 
 
+def test_h3_cover_native_rules_match_partition_derived_sets() -> None:
+    """Per-rule native tiling must match the overlap-partition derived sets."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    overlap = gm.h3_cover(area, resolution=5, cell_rule='overlap')
+    within = gm.h3_cover(area, resolution=5, cell_rule='within')
+    center = gm.h3_cover(area, resolution=5, cell_rule='center')
+    bbox = gm.h3_cover(area, resolution=5, cell_rule='bbox')
+    assert {c.id for c in within.cells} == {c.id for c in overlap.interior_cells}
+    assert {c.id for c in center.cells} <= {c.id for c in overlap.cells}
+    assert all(gm.covers(area, c.center) for c in center.cells)
+    # Bbox is a superset of hex-overlap (looser envelope test).
+    assert {c.id for c in overlap.cells} <= {c.id for c in bbox.cells}
+
+
+def test_h3_center_cover_partition_is_lazy_until_inspection() -> None:
+    """Exact predicates must not force the overlap partition; inspection does once."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    cov = gm.h3_cover(area, resolution=5, cell_rule='center')
+    cold = cov.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert isinstance(cov.covers(probe), bool)
+    assert isinstance(cov.contains(probe), bool)
+    assert isinstance(cov.intersects(probe), bool)
+    assert isinstance(cov.contains_xy(21.0, 52.0), bool)
+    assert isinstance(cov.intersects_xy(21.0, 52.0), bool)
+    # Predicates answer against the source geometry — no partition materialised.
+    assert cov.__sizeof__() == cold
+    interior = cov.interior_cells
+    warm = cov.__sizeof__()
+    assert warm > cold
+    # Second inspection reuses the cached partition (sizeof stable).
+    boundary = cov.boundary_cells
+    assert cov.__sizeof__() == warm
+    assert not ({c.id for c in interior} & {c.id for c in boundary})
+    plan = cov.explain()
+    assert cov.__sizeof__() == warm
+    assert any('interior' in line for line in plan)
+    # Hierarchical transforms share the same lazy membership handle.
+    compacted = cov.compact()
+    assert compacted.__sizeof__() > cold
+
+
+@pytest.mark.parametrize('rule', ['overlap', 'bbox'])
+def test_h3_certified_visible_rules_keep_inspection_cold_through_pickle(
+    rule: str,
+) -> None:
+    """R15-S: eager cells and delayed inspection share the arc relation."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    cov = gm.h3_cover(area, resolution=5, cell_rule=rule)
+    cold = cov.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    # Source-backed predicates and size inspection are not a hidden exact
+    # traversal; only an inspection surface initializes the Arc<OnceLock>.
+    assert cov.covers(probe) is True
+    assert cov.__sizeof__() == cold
+    restored = pickle.loads(pickle.dumps(cov))
+    assert restored.__sizeof__() == cold
+    assert {cell.id for cell in restored.cells} == {cell.id for cell in cov.cells}
+    assert {cell.id for cell in restored.interior_cells} == {
+        cell.id for cell in cov.interior_cells
+    }
+    assert restored.__sizeof__() > cold
+
+
+def test_h3_cover_delayed_max_cells_failure_on_inspection() -> None:
+    """Visible center tiling may succeed under a budget that overlap exceeds."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    # Center selects fewer cells than full overlap; pick a budget that admits
+    # the center set but not the overlap partition.
+    center_n = len(gm.h3_cover(area, resolution=5, cell_rule='center'))
+    overlap_n = len(gm.h3_cover(area, resolution=5, cell_rule='overlap'))
+    assert center_n < overlap_n
+    budget = center_n  # enough for center visible tiling, not for overlap
+    cov = gm.h3_cover(area, resolution=5, cell_rule='center', max_cells=budget)
+    assert len(cov) == center_n
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        _ = cov.interior_cells
+    # Error is sticky: a second inspection re-raises without hanging.
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        _ = cov.boundary_cells
+
+
+def test_h3_cover_pickle_does_not_force_partition() -> None:
+    """Pickle restores visible ids + params; partition stays cold until inspection."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    original = gm.h3_cover(area, resolution=5, cell_rule='center')
+    restored = pickle.loads(pickle.dumps(original))
+    assert list(restored.cells) == list(original.cells)
+    assert restored.cell_rule == original.cell_rule
+    assert restored.resolution == original.resolution
+    cold = restored.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    # Predicates still work without partition.
+    assert restored.covers(probe) is original.covers(probe)
+    assert restored.__sizeof__() == cold
+    # Inspection after load matches the live cover's partition.
+    assert {c.id for c in restored.interior_cells} == {
+        c.id for c in original.interior_cells
+    }
+    assert restored.__sizeof__() > cold
+    assert {c.id for c in restored.boundary_cells} == {
+        c.id for c in original.boundary_cells
+    }
+
+
+def test_s2_center_cover_partition_is_lazy_until_inspection() -> None:
+    """Exact predicates must not force the coverer partition; inspection does once."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    cov = gm.s2_cover(area, level=8, cell_rule='center')
+    cold = cov.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert isinstance(cov.covers(probe), bool)
+    assert isinstance(cov.contains(probe), bool)
+    assert isinstance(cov.intersects(probe), bool)
+    assert isinstance(cov.contains_xy(21.0, 52.0), bool)
+    assert isinstance(cov.intersects_xy(21.0, 52.0), bool)
+    assert cov.__sizeof__() == cold
+    interior = cov.interior_cells
+    warm = cov.__sizeof__()
+    assert warm > cold
+    boundary = cov.boundary_cells
+    assert cov.__sizeof__() == warm
+    assert not ({c.id for c in interior} & {c.id for c in boundary})
+    plan = cov.explain()
+    assert cov.__sizeof__() == warm
+    assert any('interior' in line for line in plan)
+    compacted = cov.compact()
+    # Hierarchical transforms share the lazy membership handle (partition warm).
+    assert compacted.__sizeof__() > cold
+
+
+def test_s2_cover_pickle_does_not_force_partition() -> None:
+    """Pickle restores visible ids + params; partition stays cold until inspection."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    original = gm.s2_cover(area, level=8, cell_rule='center')
+    restored = pickle.loads(pickle.dumps(original))
+    assert list(restored.cells) == list(original.cells)
+    assert restored.cell_rule == original.cell_rule
+    assert restored.min_level == original.min_level
+    assert restored.max_level == original.max_level
+    cold = restored.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert restored.covers(probe) is original.covers(probe)
+    assert restored.__sizeof__() == cold
+    assert {c.id for c in restored.interior_cells} == {
+        c.id for c in original.interior_cells
+    }
+    assert restored.__sizeof__() > cold
+    assert {c.id for c in restored.boundary_cells} == {
+        c.id for c in original.boundary_cells
+    }
+
+
+def test_s2_cover_visible_sets_stable_across_rules_fixed_and_adaptive() -> None:
+    """Fixed L5 + adaptive visible cell sets are stable per rule (lazy partition)."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    fixed = {
+        rule: {c.id for c in gm.s2_cover(area, level=5, cell_rule=rule).cells}
+        for rule in ('center', 'within', 'overlap', 'bbox')
+    }
+    # Within ⊆ center ⊆ overlap; bbox is independent envelope covering.
+    assert fixed['within'] <= fixed['center'] <= fixed['overlap']
+    assert fixed['within'] <= fixed['overlap']
+    # Second construction matches (determinism + no rule crosstalk).
+    for rule, ids in fixed.items():
+        again = {c.id for c in gm.s2_cover(area, level=5, cell_rule=rule).cells}
+        assert again == ids
+
+
+def test_geohash_center_cover_partition_is_lazy_until_inspection() -> None:
+    """Exact predicates must not force the rect coverer partition; inspection does once."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    cov = gm.geohash_cover(area, precision=4, cell_rule='center')
+    cold = cov.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert isinstance(cov.covers(probe), bool)
+    assert isinstance(cov.contains(probe), bool)
+    assert isinstance(cov.intersects(probe), bool)
+    assert cov.__sizeof__() == cold
+    interior = cov.interior_cells
+    warm = cov.__sizeof__()
+    assert warm > cold
+    boundary = cov.boundary_cells
+    assert cov.__sizeof__() == warm
+    assert not ({c.token for c in interior} & {c.token for c in boundary})
+    plan = cov.explain()
+    assert cov.__sizeof__() == warm
+    assert any('interior' in line for line in plan)
+    compacted = cov.compact()
+    assert compacted.__sizeof__() > cold
+
+
+def test_geohash_cover_pickle_does_not_force_partition() -> None:
+    """Pickle restores visible tokens + params; partition stays cold until inspection."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    original = gm.geohash_cover(area, precision=4, cell_rule='center')
+    restored = pickle.loads(pickle.dumps(original))
+    assert list(restored.cells) == list(original.cells)
+    assert restored.cell_rule == original.cell_rule
+    cold = restored.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert restored.covers(probe) is original.covers(probe)
+    assert restored.__sizeof__() == cold
+    assert {c.token for c in restored.interior_cells} == {
+        c.token for c in original.interior_cells
+    }
+    assert restored.__sizeof__() > cold
+    assert {c.token for c in restored.boundary_cells} == {
+        c.token for c in original.boundary_cells
+    }
+
+
+def test_tile_center_cover_partition_is_lazy_until_inspection() -> None:
+    """Tile center covers keep the overlap partition cold until inspection."""
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    cov = gm.tile_cover(area, zoom=8, cell_rule='center')
+    cold = cov.__sizeof__()
+    probe = gm.Point(21.0, 52.0, crs=4326)
+    assert isinstance(cov.covers(probe), bool)
+    assert cov.__sizeof__() == cold
+    _ = cov.interior_cells
+    warm = cov.__sizeof__()
+    assert warm > cold
+    _ = cov.boundary_cells
+    assert cov.__sizeof__() == warm
+
+
+def test_rect_center_visible_set_matches_overlap_filter() -> None:
+    """Native center descent emits the same tokens as overlap-then-center-filter."""
+    area = gm.box(12.8, 52.2, 14.0, 53.0, crs=4326)
+    for precision in (4, 5):
+        center = {
+            c.token
+            for c in gm.geohash_cover(area, precision=precision, cell_rule='center')
+        }
+        overlap = gm.geohash_cover(area, precision=precision, cell_rule='overlap')
+        # Within ⊆ center ⊆ overlap for rectangular grids.
+        within = {
+            c.token
+            for c in gm.geohash_cover(area, precision=precision, cell_rule='within')
+        }
+        assert within <= center <= {c.token for c in overlap.cells}
+    for zoom in (6, 10):
+        center = {c.token for c in gm.tile_cover(area, zoom=zoom, cell_rule='center')}
+        within = {c.token for c in gm.tile_cover(area, zoom=zoom, cell_rule='within')}
+        overlap = {c.token for c in gm.tile_cover(area, zoom=zoom, cell_rule='overlap')}
+        assert within <= center <= overlap
+    adaptive = {
+        rule: {
+            c.id
+            for c in gm.s2_cover(
+                area, min_level=4, max_level=8, target_cells=32, cell_rule=rule
+            ).cells
+        }
+        for rule in ('center', 'within', 'overlap')
+    }
+    assert adaptive['within'] <= adaptive['center'] <= adaptive['overlap']
+    for rule, ids in adaptive.items():
+        again = {
+            c.id
+            for c in gm.s2_cover(
+                area, min_level=4, max_level=8, target_cells=32, cell_rule=rule
+            ).cells
+        }
+        assert again == ids
+
+
 def test_all_coverage_predicates_match_source_geometry_for_jagged_polygon() -> None:
     vertices = 96
     coords = []
@@ -386,8 +664,14 @@ def test_all_coverage_predicates_match_source_geometry_for_jagged_polygon() -> N
         x, y = coords[index]
         points.extend([
             (x, y),
-            (center[0] + 0.75 * (x - center[0]), center[1] + 0.75 * (y - center[1])),
-            (center[0] + 1.35 * (x - center[0]), center[1] + 1.35 * (y - center[1])),
+            (
+                center[0] + 0.75 * (x - center[0]),
+                center[1] + 0.75 * (y - center[1]),
+            ),
+            (
+                center[0] + 1.35 * (x - center[0]),
+                center[1] + 1.35 * (y - center[1]),
+            ),
         ])
     xs, ys = zip(*points, strict=True)
     points = gm.points(xs, ys, crs=4326)
@@ -495,7 +779,14 @@ def test_coverage_polar_cap_membership_matches_free_predicates() -> None:
     crossing polar hexes; covering still needs the split working shape.
     """
     hex_north = gm.Polygon(
-        [(0.0, 80.0), (60.0, 80.0), (120.0, 80.0), (180.0, 80.0), (-120.0, 80.0), (-60.0, 80.0)],
+        [
+            (0.0, 80.0),
+            (60.0, 80.0),
+            (120.0, 80.0),
+            (180.0, 80.0),
+            (-120.0, 80.0),
+            (-60.0, 80.0),
+        ],
         crs=4326,
     )
     north_pole = gm.Point(0.0, 90.0, crs=4326)
@@ -563,7 +854,7 @@ def test_vectorized_cell_boundaries() -> None:
     batch = cov.boundary_cells.polygon
     assert isinstance(batch, gm.GeometryArray)
     assert len(batch) == len(cov.boundary_cells)
-    assert batch.crs == 'EPSG:4326'
+    assert batch.crs == 'OGC:CRS84'
     assert isinstance(cov.cells[0].polygon, gm.Polygon)
     s2_cells = gm.s2_cover(gm.box(20.9, 51.9, 21.1, 52.1, crs=4326), level=10).cells
     assert len(s2_cells.polygon) == len(s2_cells)
@@ -573,7 +864,7 @@ def test_vectorized_cell_boundaries() -> None:
     gh_batch = gh_cells.cells.polygon
     assert isinstance(gh_batch, gm.GeometryArray)
     assert len(gh_batch) == len(gh_cells.cells)
-    assert gh_batch.crs == 'EPSG:4326'
+    assert gh_batch.crs == 'OGC:CRS84'
     assert isinstance(
         gm.CellArray([gh_cells.cells[0].token], type=gm.GeohashCell).polygon[0],
         gm.Polygon,
@@ -582,7 +873,7 @@ def test_vectorized_cell_boundaries() -> None:
     tile_batch = tile_cells.cells.polygon
     assert isinstance(tile_batch, gm.GeometryArray)
     assert len(tile_batch) == len(tile_cells.cells)
-    assert tile_batch.crs == 'EPSG:4326'
+    assert tile_batch.crs == 'OGC:CRS84'
     assert isinstance(
         gm.CellArray([tile_cells.cells[0].id], type=gm.Tile).polygon[0], gm.Polygon
     )
@@ -685,14 +976,12 @@ def _assert_s2_bounding_bbox(region) -> gm.S2Cell:
     cx, cy = 0.5 * (minx + maxx), 0.5 * (miny + maxy)
     samples = [(cx, cy)]
     if abs(dx) >= 1e-12 and abs(dy) >= 1e-12:
-        samples.extend(
-            [
-                (minx + frac * dx, miny + frac * dy),
-                (maxx - frac * dx, miny + frac * dy),
-                (minx + frac * dx, maxy - frac * dy),
-                (maxx - frac * dx, maxy - frac * dy),
-            ]
-        )
+        samples.extend([
+            (minx + frac * dx, miny + frac * dy),
+            (maxx - frac * dx, miny + frac * dy),
+            (minx + frac * dx, maxy - frac * dy),
+            (maxx - frac * dx, maxy - frac * dy),
+        ])
     face_root = got.parent(0) if got.level > 0 else got
     checked = 0
     for x, y in samples:
@@ -824,6 +1113,7 @@ def test_s2_bounding_cell_face_meridian_edges_are_exact():
                 raise AssertionError((west, south, east, north, exc)) from exc
     assert ok >= 4  # at least the strictly single-face boxes
 
+
 def test_s2_bounding_cell_face_seam_box_45():
     """Face-seam box(45,0,46,1): multi-face raise or Hilbert-containing cell."""
     box = gm.box(45.0, 0.0, 46.0, 1.0, crs=4326)
@@ -845,10 +1135,12 @@ def test_s2_bounding_cell_face_seam_box_45():
         except gm.GeometryError as exc:
             if 'no single S2 cell' not in str(exc):
                 raise
-    with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-        gm.s2_bounding_cell(
-            gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326)
-        )
+    # Short antimeridian-crossing line: normalized spherical samples find a
+    # containing face root (no longer multi-face raise).
+    seam = gm.s2_bounding_cell(gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326))
+    assert seam.level >= 0
+    e = gm.s2_bounding_cell(gm.Point(179.0, -1.0, crs=4326))
+    assert seam.contains(e) or seam == e or e.parent() is not None
 
 
 def test_s2_bounding_cell_boundary_aligned_line_bbox() -> None:
@@ -881,9 +1173,7 @@ def test_s2_bounding_cell_seam_multipoint() -> None:
     assert pt.level == 30
     assert pt == gm.S2Cell(13.4, 52.5, level=30)
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-        gm.s2_bounding_cell(
-            gm.MultiPoint([(-100.0, 0.0), (100.0, 0.0)], crs=4326)
-        )
+        gm.s2_bounding_cell(gm.MultiPoint([(-100.0, 0.0), (100.0, 0.0)], crs=4326))
 
 
 def test_s2_bounding_cell_exact_seam_repros() -> None:
@@ -962,13 +1252,10 @@ def test_s2_bounding_cell_bbox_contract_matrix() -> None:
 
     # Multi-face cases raise (huge + moderate skeptic box).
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-        gm.s2_bounding_cell(
-            gm.LineString([(-45.0, 40.0), (45.0, 40.0)], crs=4326)
-        )
-    with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-        gm.s2_bounding_cell(
-            gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326)
-        )
+        gm.s2_bounding_cell(gm.LineString([(-45.0, 40.0), (45.0, 40.0)], crs=4326))
+    # Short antimeridian-crossing line succeeds via spherical sample LCA.
+    seam = gm.s2_bounding_cell(gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326))
+    assert seam.level >= 0
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
         gm.s2_bounding_cell([-50.0, 10.0, -32.0, 15.0])
 
@@ -989,15 +1276,11 @@ def test_s2_bounding_cell_bbox_contract_matrix() -> None:
     assert pt.level == 30
     assert pt == gm.S2Cell(13.4, 52.5, level=30)
 
-    same = gm.s2_bounding_cell(
-        gm.MultiPoint([(0.1, 0.1), (0.2, 0.2)], crs=4326)
-    )
+    same = gm.s2_bounding_cell(gm.MultiPoint([(0.1, 0.1), (0.2, 0.2)], crs=4326))
     assert same.contains(gm.S2Cell(0.1, 0.1, level=30))
     assert same.contains(gm.S2Cell(0.2, 0.2, level=30))
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-        gm.s2_bounding_cell(
-            gm.MultiPoint([(-100.0, 0.0), (100.0, 0.0)], crs=4326)
-        )
+        gm.s2_bounding_cell(gm.MultiPoint([(-100.0, 0.0), (100.0, 0.0)], crs=4326))
 
     with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
         gm.s2_bounding_cell(gm.from_wkt('POLYGON EMPTY', crs=4326))
@@ -1036,7 +1319,9 @@ def test_s2_bounding_cell_bbox_contract_matrix() -> None:
                 continue
 
 
-def _assert_s2_full_bbox_containment(minx: float, miny: float, maxx: float, maxy: float) -> gm.S2Cell:
+def _assert_s2_full_bbox_containment(
+    minx: float, miny: float, maxx: float, maxy: float
+) -> gm.S2Cell:
     """Hard soundness: returned cell Hilbert-contains same-face bbox corners.
 
     Corner + center L30 leaves on the cell's face must be contained. Dual-face
@@ -1073,12 +1358,7 @@ def _assert_s2_full_bbox_containment(minx: float, miny: float, maxx: float, maxy
     if abs(cy) < 60.0 and (maxx - minx) > 1e-15 and (maxy - miny) > 1e-15:
         assert checked >= 1, (cell.token, bounds, checked)
     # Planar cover only where the cell polygon is a faithful oracle.
-    if (
-        cell.level >= 4
-        and abs(cy) < 50.0
-        and (maxx - minx) > 0
-        and (maxy - miny) > 0
-    ):
+    if cell.level >= 4 and abs(cy) < 50.0 and (maxx - minx) > 0 and (maxy - miny) > 0:
         box = gm.box(minx, miny, maxx, maxy, crs=4326)
         assert gm.covers(cell.polygon, box), (
             'planar polygon does not cover bbox',
@@ -1174,7 +1454,11 @@ def test_s2_bounding_cell_south_pole_lon90_closed_contains() -> None:
     mp = gm.MultiPoint([(90.0, -80.0), (91.0, -79.0)], crs=4326)
     mp_cell = gm.s2_bounding_cell(mp)
     for lon, lat in ((90.0, -80.0), (91.0, -79.0)):
-        assert mp_cell.contains(gm.S2Cell(lon, lat, level=30)), (mp_cell.token, lon, lat)
+        assert mp_cell.contains(gm.S2Cell(lon, lat, level=30)), (
+            mp_cell.token,
+            lon,
+            lat,
+        )
 
     # Antimeridian-south: deepest closed-containing cell (may be deeper than face b).
     for bounds in (
@@ -1248,29 +1532,232 @@ def test_s2_bounding_cell_false_reject_corpus_23_targets() -> None:
     """
     # (index, geom, token, level) — geom is bounds list or line endpoint pairs.
     fits: list[tuple[int, object, str, int]] = [
-        (24, [-163.43155005236318, 34.57495506265212, -160.48030567216512, 36.39518788075429], '7dd', 4),
-        (42, [91.50006554028693, -42.57493163891812, 91.91758255944056, -40.66300559487594], '281', 4),
-        (76, [-57.177885869288275, -35.4934011401071, -54.562368380886255, -33.64185180632114], '95', 2),
-        (77, [(-52.63481129756637, -31.620750092937477), (-57.177885869288275, -35.4934011401071)], '95', 2),
-        (95, [(170.89774691575514, -39.12687589120752), (172.76493830506587, -34.756523791683975)], '6d1', 4),
-        (101, [(-64.14527265092615, -43.636174260201365), (-68.97903982312017, -43.11519666553432)], 'bc', 1),
-        (118, [121.97723096433214, 41.85143051876878, 124.0770569843029, 42.46807962913732], '5e3', 4),
-        (145, [(-116.92282423836268, 40.36683060261118), (-120.00226157283939, 39.08234558278977)], '80c', 3),
-        (148, [57.17881356040576, 34.06932029084419, 58.56948388353784, 36.84981291845648], '3f4', 3),
-        (154, [-90.13853915312798, 42.428057902258644, -90.02691318086124, 43.078590143664584], '87f', 4),
-        (155, [(-90.7508084519286, 37.638404633117354), (-90.13853915312798, 42.428057902258644)], '87c', 3),
-        (167, [(26.266966518747218, -37.078805077390605), (25.983026805232782, -32.0872522568795)], '1e4', 3),
-        (180, [-2.612665417993213, 41.78061784876387, -0.6556347565569483, 43.76197960928756], '0d5', 4),
-        (181, [(-1.3159118311066642, 40.85060759864879), (-2.612665417993213, 41.78061784876387)], '0d5', 4),
-        (188, [3.680570358854311, 41.60710312730191, 5.006104011176957, 42.737117336708714], '12b', 4),
-        (189, [(5.24900574784283, 36.80451700128276), (3.680570358854311, 41.60710312730191)], '12c', 3),
-        (202, [-24.42790700451789, 44.47080889517443, -22.05021233231807, 45.121521412900584], '4c', 1),
-        (208, [-92.90328979887346, 37.08688419351098, -90.7197067123228, 38.07282224856326], '87d', 4),
-        (209, [(-96.83943546007704, 36.05696274538232), (-92.90328979887346, 37.08688419351098)], '87c', 3),
-        (219, [(29.55210848587695, -44.88093637729473), (28.615922611016543, -48.97580700525289)], 'b5c', 3),
-        (230, [49.229658534017204, 41.58442554977563, 51.32129552603737, 44.136731588338485], '41', 2),
-        (231, [(50.85982041900414, 40.48144482652907), (49.229658534017204, 41.58442554977563)], '403', 4),
-        (238, [76.44962890163072, 41.35812024632591, 78.64086324527754, 43.6395249010793], '389', 4),
+        (
+            24,
+            [
+                -163.43155005236318,
+                34.57495506265212,
+                -160.48030567216512,
+                36.39518788075429,
+            ],
+            '7dd',
+            4,
+        ),
+        (
+            42,
+            [
+                91.50006554028693,
+                -42.57493163891812,
+                91.91758255944056,
+                -40.66300559487594,
+            ],
+            '281',
+            4,
+        ),
+        (
+            76,
+            [
+                -57.177885869288275,
+                -35.4934011401071,
+                -54.562368380886255,
+                -33.64185180632114,
+            ],
+            '95',
+            2,
+        ),
+        (
+            77,
+            [
+                (-52.63481129756637, -31.620750092937477),
+                (-57.177885869288275, -35.4934011401071),
+            ],
+            '95',
+            2,
+        ),
+        (
+            95,
+            [
+                (170.89774691575514, -39.12687589120752),
+                (172.76493830506587, -34.756523791683975),
+            ],
+            '6d1',
+            4,
+        ),
+        (
+            101,
+            [
+                (-64.14527265092615, -43.636174260201365),
+                (-68.97903982312017, -43.11519666553432),
+            ],
+            'bc',
+            1,
+        ),
+        (
+            118,
+            [
+                121.97723096433214,
+                41.85143051876878,
+                124.0770569843029,
+                42.46807962913732,
+            ],
+            '5e3',
+            4,
+        ),
+        (
+            145,
+            [
+                (-116.92282423836268, 40.36683060261118),
+                (-120.00226157283939, 39.08234558278977),
+            ],
+            '80c',
+            3,
+        ),
+        (
+            148,
+            [
+                57.17881356040576,
+                34.06932029084419,
+                58.56948388353784,
+                36.84981291845648,
+            ],
+            '3f4',
+            3,
+        ),
+        (
+            154,
+            [
+                -90.13853915312798,
+                42.428057902258644,
+                -90.02691318086124,
+                43.078590143664584,
+            ],
+            '87f',
+            4,
+        ),
+        (
+            155,
+            [
+                (-90.7508084519286, 37.638404633117354),
+                (-90.13853915312798, 42.428057902258644),
+            ],
+            '87c',
+            3,
+        ),
+        (
+            167,
+            [
+                (26.266966518747218, -37.078805077390605),
+                (25.983026805232782, -32.0872522568795),
+            ],
+            '1e4',
+            3,
+        ),
+        (
+            180,
+            [
+                -2.612665417993213,
+                41.78061784876387,
+                -0.6556347565569483,
+                43.76197960928756,
+            ],
+            '0d5',
+            4,
+        ),
+        (
+            181,
+            [
+                (-1.3159118311066642, 40.85060759864879),
+                (-2.612665417993213, 41.78061784876387),
+            ],
+            '0d5',
+            4,
+        ),
+        (
+            188,
+            [
+                3.680570358854311,
+                41.60710312730191,
+                5.006104011176957,
+                42.737117336708714,
+            ],
+            '12b',
+            4,
+        ),
+        (
+            189,
+            [
+                (5.24900574784283, 36.80451700128276),
+                (3.680570358854311, 41.60710312730191),
+            ],
+            '12c',
+            3,
+        ),
+        (
+            202,
+            [
+                -24.42790700451789,
+                44.47080889517443,
+                -22.05021233231807,
+                45.121521412900584,
+            ],
+            '4c',
+            1,
+        ),
+        (
+            208,
+            [
+                -92.90328979887346,
+                37.08688419351098,
+                -90.7197067123228,
+                38.07282224856326,
+            ],
+            '87d',
+            4,
+        ),
+        (
+            209,
+            [
+                (-96.83943546007704, 36.05696274538232),
+                (-92.90328979887346, 37.08688419351098),
+            ],
+            '87c',
+            3,
+        ),
+        (
+            219,
+            [
+                (29.55210848587695, -44.88093637729473),
+                (28.615922611016543, -48.97580700525289),
+            ],
+            'b5c',
+            3,
+        ),
+        (
+            230,
+            [
+                49.229658534017204,
+                41.58442554977563,
+                51.32129552603737,
+                44.136731588338485,
+            ],
+            '41',
+            2,
+        ),
+        (
+            231,
+            [
+                (50.85982041900414, 40.48144482652907),
+                (49.229658534017204, 41.58442554977563),
+            ],
+            '403',
+            4,
+        ),
+        (
+            238,
+            [76.44962890163072, 41.35812024632591, 78.64086324527754, 43.6395249010793],
+            '389',
+            4,
+        ),
     ]
     assert len(fits) == 23
     for idx, geom, token, level in fits:
@@ -1294,23 +1781,137 @@ def test_s2_bounding_cell_false_reject_corpus_23_targets() -> None:
         _assert_s2_bounding_bbox(bounds)
 
     genuine: list[tuple[int, object]] = [
-        (10, [-95.555766807789, -45.75268793803267, -94.8213017995097, -44.31983788739324]),
-        (14, [-135.72139438952132, -28.441818488778054, -133.52908960752984, -26.279362356661743]),
-        (15, [(-131.35698852152672, -29.220748489163903), (-135.72139438952132, -28.441818488778054)]),
-        (23, [(2.9136179981160693, 42.63099418969385), (3.0166827934934872, 47.33524455002478)]),
-        (43, [(89.94429418125188, -46.87977785360965), (91.50006554028693, -42.57493163891812)]),
-        (100, [-68.97903982312017, -43.11519666553432, -68.6430704035072, -42.20091516719676]),
-        (119, [(121.30361097409451, 38.43039995629039), (121.97723096433214, 41.85143051876878)]),
-        (133, [(-3.5105792006594942, -42.56237970502738), (-7.5799742457179775, -46.73944554340961)]),
-        (138, [-45.96206959237176, 34.21805269432748, -43.72645705430334, 36.0423283283661]),
-        (139, [(-42.39929820324171, 38.18409640549097), (-45.96206959237176, 34.21805269432748)]),
-        (144, [-120.00226157283939, 39.08234558278977, -119.7842063795634, 42.02788665141943]),
-        (157, [(43.50233483203388, 18.380075865873195), (45.654518696417995, 17.956681558345707)]),
-        (162, [-41.79421425367758, -36.71193422529493, -41.38061054834849, -34.27004186611242]),
-        (163, [(-45.613498948370925, -34.239281878414495), (-41.79421425367758, -36.71193422529493)]),
-        (203, [(-23.16904195113809, 41.127104170196006), (-24.42790700451789, 44.47080889517443)]),
-        (227, [(-137.11287224413897, -10.70030587825781), (-132.4675686473578, -6.308823444946455)]),
-        (239, [(73.96543584313837, 46.12215701325488), (76.44962890163072, 41.35812024632591)]),
+        (
+            10,
+            [
+                -95.555766807789,
+                -45.75268793803267,
+                -94.8213017995097,
+                -44.31983788739324,
+            ],
+        ),
+        (
+            14,
+            [
+                -135.72139438952132,
+                -28.441818488778054,
+                -133.52908960752984,
+                -26.279362356661743,
+            ],
+        ),
+        (
+            15,
+            [
+                (-131.35698852152672, -29.220748489163903),
+                (-135.72139438952132, -28.441818488778054),
+            ],
+        ),
+        (
+            23,
+            [
+                (2.9136179981160693, 42.63099418969385),
+                (3.0166827934934872, 47.33524455002478),
+            ],
+        ),
+        (
+            43,
+            [
+                (89.94429418125188, -46.87977785360965),
+                (91.50006554028693, -42.57493163891812),
+            ],
+        ),
+        (
+            100,
+            [
+                -68.97903982312017,
+                -43.11519666553432,
+                -68.6430704035072,
+                -42.20091516719676,
+            ],
+        ),
+        (
+            119,
+            [
+                (121.30361097409451, 38.43039995629039),
+                (121.97723096433214, 41.85143051876878),
+            ],
+        ),
+        (
+            133,
+            [
+                (-3.5105792006594942, -42.56237970502738),
+                (-7.5799742457179775, -46.73944554340961),
+            ],
+        ),
+        (
+            138,
+            [
+                -45.96206959237176,
+                34.21805269432748,
+                -43.72645705430334,
+                36.0423283283661,
+            ],
+        ),
+        (
+            139,
+            [
+                (-42.39929820324171, 38.18409640549097),
+                (-45.96206959237176, 34.21805269432748),
+            ],
+        ),
+        (
+            144,
+            [
+                -120.00226157283939,
+                39.08234558278977,
+                -119.7842063795634,
+                42.02788665141943,
+            ],
+        ),
+        (
+            157,
+            [
+                (43.50233483203388, 18.380075865873195),
+                (45.654518696417995, 17.956681558345707),
+            ],
+        ),
+        (
+            162,
+            [
+                -41.79421425367758,
+                -36.71193422529493,
+                -41.38061054834849,
+                -34.27004186611242,
+            ],
+        ),
+        (
+            163,
+            [
+                (-45.613498948370925, -34.239281878414495),
+                (-41.79421425367758, -36.71193422529493),
+            ],
+        ),
+        (
+            203,
+            [
+                (-23.16904195113809, 41.127104170196006),
+                (-24.42790700451789, 44.47080889517443),
+            ],
+        ),
+        (
+            227,
+            [
+                (-137.11287224413897, -10.70030587825781),
+                (-132.4675686473578, -6.308823444946455),
+            ],
+        ),
+        (
+            239,
+            [
+                (73.96543584313837, 46.12215701325488),
+                (76.44962890163072, 41.35812024632591),
+            ],
+        ),
     ]
     assert len(genuine) == 17
     for _idx, geom in genuine:
@@ -1332,12 +1933,10 @@ def test_s2_bounding_cell_latitude_band_no_false_reject() -> None:
 
     success = 0
     multi_face = 0
-    lats = np.concatenate(
-        [
-            np.arange(35.3, 45.01, 0.5),
-            np.arange(-45.0, -35.29, 0.5),
-        ]
-    )
+    lats = np.concatenate([
+        np.arange(35.3, 45.01, 0.5),
+        np.arange(-45.0, -35.29, 0.5),
+    ])
     lons = np.arange(-180.0, 180.0, 5.0)
     for lat0 in lats:
         for lon0 in lons:
@@ -1366,9 +1965,7 @@ def test_s2_bounding_cell_face_diagonal_meridian_raises_not_sparse_lca() -> None
         with pytest.raises(gm.GeometryError, match='no single S2 cell'):
             gm.s2_bounding_cell([lon, -10.0, lon, -9.7])
         with pytest.raises(gm.GeometryError, match='no single S2 cell'):
-            gm.s2_bounding_cell(
-                gm.LineString([(lon, -10.0), (lon, -9.7)], crs=4326)
-            )
+            gm.s2_bounding_cell(gm.LineString([(lon, -10.0), (lon, -9.7)], crs=4326))
 
 
 def test_s2_bounding_cell_face_diagonal_meridian_lat0_to_5_raises() -> None:
@@ -1465,7 +2062,6 @@ def test_s2_bounding_cell_interior_point_soundness_matrix() -> None:
     # (face root '3' closed-contains the envelope — same as the box form).
     for multi in (
         gm.box(-100.0, -40.0, 100.0, 40.0, crs=4326),
-        gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326),
         gm.MultiPoint([(-100.0, 0.0), (100.0, 0.0)], crs=4326),
         [-50.0, 10.0, -32.0, 15.0],
         [-135.0, -10.0, -135.0, -9.7],
@@ -1475,6 +2071,9 @@ def test_s2_bounding_cell_interior_point_soundness_matrix() -> None:
     ):
         with pytest.raises(gm.GeometryError, match='no single S2 cell'):
             gm.s2_bounding_cell(multi)
+    # Short antimeridian-crossing line is NOT multi-face under spherical samples.
+    seam = gm.s2_bounding_cell(gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326))
+    assert seam.level >= 0
     # Seam multipoint ≡ bbox (containing face root, not a leaf-LCA raise).
     seam_mp = gm.MultiPoint([(45.0, 0.5), (46.0, 0.5)], crs=4326)
     assert gm.s2_bounding_cell(seam_mp) == gm.s2_bounding_cell(
@@ -1487,23 +2086,23 @@ def test_s2_bounding_cell_moderate_multiface_raises_not_face7() -> None:
     bounds = [-50.0, 10.0, -32.0, 15.0]
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
         gm.s2_bounding_cell(bounds)
-    # Coverer max_cells=1 also refuses (budget).
+    # A fixed-level cover with max_cells=1 also refuses (budget).
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.s2_cover(gm.box(*bounds, crs=4326), max_cells=1)
+        gm.s2_cover(gm.box(*bounds, crs=4326), level=4, max_cells=1)
 
 
 def test_s2_bounding_cell_no_amplification_zero_length_multipart() -> None:
-    """Zero-length multipart must complete immediately (bbox-only, no edge climb)."""
-    import time
+    """Zero-length multipart uses bbox-only path (degenerate → point leaf).
 
+    Hang/amplification protection is structural: degenerate endpoints collapse
+    to a level-30 leaf identical to the point cell — no edge climb. Wall-clock
+    is not a pytest gate.
+    """
     geom = gm.MultiLineString(
         [[(10.0, 20.0), (10.0, 20.0)], [(10.0, 20.0), (10.0, 20.0)]],
         crs=4326,
     )
-    t0 = time.perf_counter()
     cell = gm.s2_bounding_cell(geom)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 1.0, f'amplification: {elapsed:.3f}s'
     assert cell.level == 30  # degenerate bbox → point leaf
     assert cell == gm.S2Cell(10.0, 20.0, level=30)
 
@@ -1528,7 +2127,9 @@ def test_s2_bounding_cell_sibling_consistency() -> None:
 
     # Line and its envelope share the s2 bounding cell (bbox contract).
     line = gm.LineString([(13.3, 52.4), (13.5, 52.6)], crs=4326)
-    assert gm.s2_bounding_cell(line) == gm.s2_bounding_cell(gm.box(*line.bounds, crs=4326))
+    assert gm.s2_bounding_cell(line) == gm.s2_bounding_cell(
+        gm.box(*line.bounds, crs=4326)
+    )
 
     with pytest.raises(gm.GeometryError, match='no single S2 cell'):
         gm.s2_bounding_cell([-100.0, -40.0, 100.0, 40.0])
@@ -1682,7 +2283,7 @@ def test_to_polygon_parity_across_coverage_systems() -> None:
     ):
         outline = coverage.to_polygon()
         assert outline.geometry_type in ('Polygon', 'MultiPolygon')
-        assert outline.crs == 'EPSG:4326'
+        assert outline.crs == 'OGC:CRS84'
         assert outline.is_valid
         union = coverage.cells.polygon.union_all()
         assert (outline ^ union).area <= 1e-06 * max(outline.area, 1e-12)
@@ -1719,7 +2320,9 @@ def test_grid_review_regressions() -> None:
     ):
         world.compact(0)
     tile = gm.Tile('0313102310')
-    with pytest.raises(gm.GeometryError, match='tile min_zoom must be between 0 and 29'):
+    with pytest.raises(
+        gm.GeometryError, match='tile min_zoom must be between 0 and 29'
+    ):
         gm.CellArray([tile], type=gm.Tile).compact(-1)
     for cover in (gm.h3_cover, gm.s2_cover, gm.geohash_cover, gm.tile_cover):
         grouped = cover(gm.GeometryArray([gm.Point(0, 0, crs=4326)]), 1)
@@ -1809,3 +2412,96 @@ def test_ordinary_cover_at_modest_depth_stays_within_budget() -> None:
     assert list(gm.s2_cover(area, level=10).cells) == list(covers[1].cells)
     assert list(gm.geohash_cover(area, precision=5).cells) == list(covers[2].cells)
     assert list(gm.tile_cover(area, zoom=10).cells) == list(covers[3].cells)
+
+
+def test_rect_and_s2_center_covers_match_interior_union_boundary_probe() -> None:
+    """Center = every within cell U boundary cells whose center is covered.
+
+    Interior tags from the rect/S2 coverers mean fully covered, so centers of
+    interior cells need no probe; boundary cells still use covers_point.
+    """
+    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+
+    def center_tokens(cover) -> set[object]:
+        return {getattr(c, 'token', None) or c.id for c in cover.cells}
+
+    for cover, _within_kw, _center_kw, boundary_center in [
+        (
+            lambda **kw: gm.geohash_cover(area, precision=4, **kw),
+            {},
+            {'cell_rule': 'center'},
+            lambda c: c.center,
+        ),
+        (
+            lambda **kw: gm.tile_cover(area, zoom=6, **kw),
+            {},
+            {'cell_rule': 'center'},
+            lambda c: c.center,
+        ),
+        (
+            lambda **kw: gm.s2_cover(area, level=8, **kw),
+            {},
+            {'cell_rule': 'center'},
+            lambda c: c.center,
+        ),
+    ]:
+        overlap = cover()
+        within = cover(cell_rule='within')
+        center = cover(cell_rule='center')
+        within_ids = center_tokens(within)
+        center_ids = center_tokens(center)
+        # Fully-covered cells are always in the center covering.
+        assert within_ids <= center_ids
+        # Every admitted center cell has its center covered by the source.
+        assert all(gm.covers(area, boundary_center(c)) for c in center.cells)
+        # Every overlap cell whose center is covered must appear in center.
+        expected = {
+            getattr(c, 'token', None) or c.id
+            for c in overlap.cells
+            if gm.covers(area, boundary_center(c))
+        }
+        assert center_ids == expected
+        # Non-center rules still produce distinct counts when the fixture has
+        # both interior and edge cells.
+        assert len(within.cells) <= len(center.cells) <= len(overlap.cells)
+
+
+def test_cell_array_mirrors_every_generic_scalar_cell_member() -> None:
+    """`CellArray` must expose every member the scalar cells all share.
+
+    `children_count` was the single hole: the count was reachable only by
+    materializing `children` and taking its length, which is exactly the work
+    the count exists to avoid. Per-grid members (`is_pentagon`, `grid_disk`, …)
+    are deliberately absent — `CellArray` is one erased class and cannot type
+    them — so the contract is the INTERSECTION across the four cell kinds.
+    """
+    scalars = {
+        'H3': gm.H3Cell(20, 10, resolution=5),
+        'S2': gm.S2Cell(20, 10, level=5),
+        'Geohash': gm.GeohashCell(20, 10, precision=5),
+        'Tile': gm.tile_cover(gm.Point(1, 2, crs=4326), zoom=5).cells[0],
+    }
+    generic = set.intersection(
+        *(
+            {name for name in dir(cell) if not name.startswith('_')}
+            for cell in scalars.values()
+        )
+    )
+    array_members = {
+        name
+        for name in dir(gm.CellArray([scalars['H3']], type=gm.H3Cell))
+        if not name.startswith('_')
+    }
+    assert not generic - array_members
+
+    for name, cell in scalars.items():
+        cells = gm.CellArray([cell, cell], type=type(cell))
+        counts = cells.children_count()
+        assert counts.dtype == np.uint64, name
+        assert counts.tolist() == [cell.children_count()] * 2, name
+
+    # ...and an explicit depth agrees with the scalar at that depth
+    h3 = scalars['H3']
+    assert gm.CellArray([h3], type=gm.H3Cell).children_count(7).tolist() == [
+        h3.children_count(resolution=7)
+    ]

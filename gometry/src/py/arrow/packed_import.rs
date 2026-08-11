@@ -1,7 +1,12 @@
 use std::sync::Arc;
 
 use crate::geometry::{HasM, HasZ, column_all_finite};
-use crate::py::arrow::*;
+use crate::py::arrow::{
+    ArrowCoordinateValues, ArrowListLevel, ArrowPolygonLevels, ArrowStorage, CoordSeq,
+    CoordinateAxes, ExactArrowCoordinateFill, Frame, PyAnyMethods as _, PyGeometryArray, PyResult,
+    Python, arrow_content_error, arrow_coordinate_values, arrow_ring_needs_closure, arrow_validity,
+    coordinate_span, ensure_vertex_range_in_span, geoarrow_parse_error,
+};
 
 pub(crate) fn packed_linestrings_import(
     py: Python<'_>,
@@ -54,9 +59,9 @@ pub(crate) fn packed_linestrings_import(
         }
         if multi_chunk {
             if builder.is_none() {
-                builder = Some(ArrowCoordinateBuffers::try_with_capacity(
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                )?);
+                ));
             }
             builder
                 .as_mut()
@@ -68,7 +73,7 @@ pub(crate) fn packed_linestrings_import(
     }
     let coords = builder.map_or_else(
         || Ok(single.unwrap_or_else(|| CoordSeq::empty(CoordinateAxes::XY))),
-        ArrowCoordinateBuffers::into_coord_seq,
+        ExactArrowCoordinateFill::into_coord_seq,
     )?;
     let Ok(offsets) =
         crate::geometry::CsrOffsetColumn::try_from_arc_i32(offsets.into(), coords.len())
@@ -125,9 +130,9 @@ pub(crate) fn packed_points_import(
         }
         if multi_chunk {
             if builder.is_none() {
-                builder = Some(ArrowCoordinateBuffers::try_with_capacity(
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                )?);
+                ));
             }
             builder
                 .as_mut()
@@ -139,7 +144,7 @@ pub(crate) fn packed_points_import(
     }
     let coords = builder.map_or_else(
         || Ok(single.unwrap_or_else(|| CoordSeq::empty(CoordinateAxes::XY))),
-        ArrowCoordinateBuffers::into_coord_seq,
+        ExactArrowCoordinateFill::into_coord_seq,
     )?;
     Ok(Some(PyGeometryArray::packed_points(coords, frame)))
 }
@@ -179,6 +184,18 @@ pub(crate) fn packed_polygons_import(
         }
         let levels = ArrowPolygonLevels::read(py, array)?;
         levels.polygons.ensure(0, len)?;
+        // This full selected child window is the packed path's layout
+        // admission.  It must happen before coordinate buffers are read so a
+        // successful packed import can be the sole offset snapshot on the
+        // direct PyArrow path.
+        let ring_start = levels.polygons.endpoint(0)?;
+        let ring_end = levels.polygons.endpoint(len)?;
+        levels.rings.ensure(
+            ring_start,
+            ring_end
+                .checked_sub(ring_start)
+                .ok_or_else(|| geoarrow_parse_error("Arrow offsets must be ordered"))?,
+        )?;
         let (base, span) = levels.visible_coordinate_span(len)?;
         let values = array.getattr("values")?.getattr("values")?;
         let coordinates = arrow_coordinate_values(py, &values, base, span)?;
@@ -224,9 +241,9 @@ pub(crate) fn packed_polygons_import(
         }
         if multi_chunk {
             if builder.is_none() {
-                builder = Some(ArrowCoordinateBuffers::try_with_capacity(
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                )?);
+                ));
             }
             builder
                 .as_mut()
@@ -238,7 +255,7 @@ pub(crate) fn packed_polygons_import(
     }
     let coords = builder.map_or_else(
         || Ok(single.unwrap_or_else(|| CoordSeq::empty(CoordinateAxes::XY))),
-        ArrowCoordinateBuffers::into_coord_seq,
+        ExactArrowCoordinateFill::into_coord_seq,
     )?;
     Ok(finish_packed_polygons(
         coords,

@@ -1,4 +1,10 @@
-use super::*;
+use crate::array::{
+    Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
+    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape, affine_about, geometry,
+    reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
+    validate_densify_fraction, validate_max_segment_length,
+};
+use crate::geometry::ExpansionBudget;
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -37,14 +43,51 @@ impl From<(f64, f64)> for GridOrigin {
 }
 
 impl PyGeometryArray {
-    pub(crate) fn segmentize_unary_packed(&self, max_segment_length: &F64Param) -> PyResult<Self> {
+    /// Packed `segmentize` under a resolved placement.
+    ///
+    /// The placement is captured by VALUE (a `Geodesic` is a handful of `f64`
+    /// ellipsoid constants, cheap to clone and trivially `Send`) because the
+    /// packed lane hands its kernels to a detached worker: a borrowed
+    /// placement could not satisfy the `Send + 'static` bound.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the packed kernels are `Send + 'static` closures, so the ellipsoid must be \
+                  owned rather than borrowed; it is `Copy` and resolved once per call"
+    )]
+    pub(crate) fn segmentize_unary_packed(
+        &self,
+        max_segment_length: &F64Param,
+        geodesic: Option<geographiclib_rs::Geodesic>,
+        to_metre: f64,
+    ) -> PyResult<Self> {
+        let for_columns = geodesic;
+        let for_shapes = geodesic;
         self.subdivide_unary_packed(
             "segmentize",
             "max_segment_length",
             max_segment_length,
             |value| validate_max_segment_length(value).map(|_| ()),
-            crate::geometry::segmentize_points,
-            Shape::segmentize,
+            move |points, length, budget| {
+                crate::geometry::segmentize_points_budgeted(
+                    points,
+                    length / to_metre,
+                    for_columns.as_ref().map_or(
+                        crate::geometry::SegmentPlacement::Planar,
+                        crate::geometry::SegmentPlacement::Geodesic,
+                    ),
+                    budget,
+                )
+            },
+            move |shape, length, budget| {
+                shape.segmentize_budgeted(
+                    length / to_metre,
+                    for_shapes.as_ref().map_or(
+                        crate::geometry::SegmentPlacement::Planar,
+                        crate::geometry::SegmentPlacement::Geodesic,
+                    ),
+                    budget,
+                )
+            },
         )
     }
 
@@ -54,8 +97,8 @@ impl PyGeometryArray {
             "fraction",
             fraction,
             |value| validate_densify_fraction(value).map(|_| ()),
-            crate::geometry::densify_points,
-            Shape::densified,
+            crate::geometry::densify_points_budgeted,
+            Shape::densified_budgeted,
         )
     }
 
@@ -65,8 +108,14 @@ impl PyGeometryArray {
         parameter: &'static str,
         param: &F64Param,
         validate: impl Fn(f64) -> PyResult<()>,
-        subdivide: impl Fn(&CoordSeq, f64) -> Result<CoordSeq> + Copy + Send + 'static,
-        shape_fallback: impl Fn(&Shape, f64) -> Result<Shape> + Copy + Send + Sync + 'static,
+        subdivide: impl Fn(&CoordSeq, f64, &mut ExpansionBudget) -> Result<CoordSeq>
+        + Copy
+        + Send
+        + 'static,
+        shape_fallback: impl Fn(&Shape, f64, &mut ExpansionBudget) -> Result<Shape>
+        + Copy
+        + Send
+        + 'static,
     ) -> PyResult<Self> {
         param.try_validate(validate)?;
         if let Some(identity) = self.packed_points_identity() {
@@ -75,21 +124,23 @@ impl PyGeometryArray {
         // Packed lines/polygons: one CSR window per row (or ring), columnar
         // subdivision, rebuilt offsets only when vertex counts change.
         // Per-element parameters keep the per-shape route.
-        if let Some(value) = param.as_scalar()
+        if !self.has_missing()
+            && let Some(value) = param.as_scalar()
             && let Some(subdivided) = Python::attach(|py| {
                 self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
-                        PackedColumns::Lines(line_columns) => {
-                            subdivide_line_columns(&line_columns, operation, parameter, |points| {
-                                subdivide(points, value)
-                            })
-                            .map_err(PackedColumnError::Batch)
-                        },
+                        PackedColumns::Lines(line_columns) => subdivide_line_columns(
+                            &line_columns,
+                            operation,
+                            parameter,
+                            |points, budget| subdivide(points, value, budget),
+                        )
+                        .map_err(PackedColumnError::Batch),
                         PackedColumns::Polygons(polygon_columns) => subdivide_polygon_columns(
                             &polygon_columns,
                             operation,
                             parameter,
-                            |points| subdivide(points, value),
+                            |points, budget| subdivide(points, value, budget),
                         )
                         .map_err(PackedColumnError::Batch),
                         PackedColumns::Points(_) => unreachable!("points identity above"),
@@ -100,9 +151,12 @@ impl PyGeometryArray {
             return Ok(subdivided);
         }
         Python::attach(|py| {
-            self.map_shapes_detached_indexed(py, move |shape, row| {
-                shape_fallback(shape, param.get(row))
-            })
+            self.map_shapes_detached_indexed_budgeted(
+                py,
+                operation,
+                parameter,
+                move |shape, row, budget| shape_fallback(shape, param.get(row), budget),
+            )
         })
     }
 
@@ -170,6 +224,7 @@ impl PyGeometryArray {
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
+                Arc::clone(&self.total_bounds_cache),
             ),
             GeometryArrayStorage::Polygons {
                 coords,
@@ -186,6 +241,7 @@ impl PyGeometryArray {
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
+                Arc::clone(&self.total_bounds_cache),
             ),
             _ => self.map_shapes_infallible(Shape::reverse),
         }

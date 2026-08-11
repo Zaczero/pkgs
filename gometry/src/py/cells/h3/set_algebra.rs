@@ -1,15 +1,17 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::grid::cell::CellDepth;
 use crate::py::cells::coverage_ops::CoverageCells;
-use crate::py::cells::*;
+use crate::py::cells::h3::{
+    CellIndex, H3Membership, PyH3Cell, PyH3Coverage, Resolution, h3_cell_array, h3_cell_index,
+    h3_cell_vec, h3_resolution, parse_h3_resolution, validate_h3_index_id,
+};
+use crate::py::cells::{
+    Bound, CellRule, H3_MAX_RESOLUTION, PyAny, PyCellArray, PyResult, exact_geometry,
+    expected_geometry_or_array, pyfunction,
+};
 
 /// Range-key adapter making `CellIndex` a
 /// [`crate::grid::cell_set::HierarchicalId`]: base cell + the 3-bit digit path
@@ -147,10 +149,12 @@ grid_free_functions! {
 /// Rebuild a pickled H3Coverage from its public fields (internal; see
 /// ``H3Coverage.__reduce__``).
 ///
-/// Source geometry is normalized through the same lon/lat path as ``h3_cover``;
-/// membership is recomputed from the source. Visible cell ids are user-selected
-/// state (compact/with_parents); partition recomputation stays under the
-/// recorded factory budget.
+/// Source geometry is normalized through the same lon/lat path as ``h3_cover``.
+/// Visible cell ids are restored as-is (user-selected state after
+/// compact/with_parents). The overlap inspection partition is **not**
+/// recomputed at unpickle — it stays lazy under the recorded factory
+/// ``max_cells`` budget and is built on first ``interior_cells`` /
+/// ``boundary_cells`` / ``explain`` access.
 #[pyfunction]
 pub(super) fn _unpickle_h3_coverage(
     geometry: &Bound<'_, PyAny>,
@@ -163,8 +167,7 @@ pub(super) fn _unpickle_h3_coverage(
     let geometry_in = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
-    let (geometry, cover_shape) =
-        crate::py::cells::coverage_ops::coverage_factory_shapes(&geometry_in, "H3")?;
+    let geometry = crate::py::cells::coverage_ops::coverage_factory_geometry(&geometry_in, "H3")?;
     let cell_rule = CellRule::parse(cell_rule)
         .map_err(|message| crate::py::errors::parameter_error(message, "cell_rule"))?;
     // Factory partition depth; independent of post-transform
@@ -180,51 +183,15 @@ pub(super) fn _unpickle_h3_coverage(
         cell_ids,
         "H3 coverage pickle cells",
     )?;
-    let cells = h3_cell_vec(
+    let cells = CoverageCells::from_cells(h3_cell_vec(
         raw_ids
             .into_iter()
             .map(validate_h3_index_id::<CellIndex>)
             .collect::<PyResult<Vec<_>>>()?,
-    );
-    // Bound recompute by the factory's recorded max_cells (D07). Payload
-    // max_cells=None is the adult unlimited factory choice — recompute stays
-    // unbounded (equals the factory's own work, not amplification).
-    let unsplit = geometry.shape.as_ref();
-    let membership = Arc::new(
-        h3_membership_for_shape(unsplit, &cover_shape, resolution, max_cells)
-            .map_err(crate::py::cells::coverage_ops::unpickle_cover_budget_err)?,
-    );
-    let owned_cells = CoverageCells::from_cells(cells);
-    // Expected visible set matches the factory's cell_rule selection.
-    let expected = match cell_rule {
-        CellRule::Overlap => membership.partition.all(),
-        CellRule::Within => membership.partition.interior(),
-        CellRule::Center => membership.partition.select(|cell| {
-            let center = h3o::LatLng::from(cell.cell);
-            let probe = crate::geometry::ShapeData::from(crate::geometry::Shape::Point(
-                crate::geometry::Point::new_unchecked_xy(center.lng(), center.lat()),
-            ));
-            crate::py::functions::predicate::topology_scalar_pair(
-                &crate::py::functions::predicate::Predicate::Covers.spec(),
-                unsplit,
-                &probe,
-                true,
-            )
-        }),
-        CellRule::Bbox => {
-            let annotated =
-                super::tile::h3_tile(&cover_shape, unsplit, resolution, CellRule::Bbox, max_cells)
-                    .map_err(crate::py::cells::coverage_ops::unpickle_cover_budget_err)?;
-            CoverageCells::from_cells(h3_cell_vec(
-                annotated.into_iter().map(|cell| cell.cell).collect(),
-            ))
-        },
-    };
-    let cells = if owned_cells.same_ids(&expected) {
-        expected
-    } else {
-        owned_cells
-    };
+    ));
+    // Lazy membership: no overlap recompute on unpickle (D07 budget applies
+    // when inspection first materializes the partition).
+    let membership = H3Membership::lazy(resolution);
     let depth = CellDepth::from_levels(cells.iter().map(|cell| cell.cell.resolution().into()))
         .or_else(|| visible_depth.map(CellDepth::Uniform))
         .unwrap_or(CellDepth::Uniform(factory_resolution));

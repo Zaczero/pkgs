@@ -1,4 +1,6 @@
-use super::*;
+use crate::array::{
+    PyGeometry, PyGeometryArray, PyResult, Python, SimplifyMethod, Typed, geometry, pymethods,
+};
 
 #[pymethods]
 impl PyGeometryArray {
@@ -168,7 +170,8 @@ impl PyGeometryArray {
             )
             .into());
         }
-        let shape = py.detach(move || geometry::coverage_union(&shapes))?;
+        let geographic = geometry::is_geographic_frame(&self.frame);
+        let shape = py.detach(move || geometry::coverage_union_topo(&shapes, geographic))?;
         Ok(PyGeometry::typed_with_epoch(
             shape,
             self.frame.crs_owned(),

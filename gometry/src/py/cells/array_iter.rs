@@ -2,11 +2,11 @@
 
 use pyo3::prelude::*;
 
-use super::PyCellArray;
+use crate::py::cells::PyCellArray;
 use crate::py::row::RowIterState;
 
 /// Lazy iterator over a `CellArray`'s typed cells (both directions).
-#[pyclass(name = "CellArrayIterator", module = "gometry", frozen)]
+#[pyclass(name = "CellArrayIterator", module = "gometry", frozen, immutable_type)]
 pub(crate) struct PyCellArrayIter {
     source: PyCellArray,
     state: RowIterState,

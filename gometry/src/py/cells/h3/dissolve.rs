@@ -1,13 +1,9 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
 use crate::geometry::CoordSeq;
 use crate::py::cells::coverage_ops::{
-    DissolveEdge, GridDissolver, coordseq_crosses_lon_seam, dissolve_grid_cells,
+    GridDissolver, coordseq_crosses_lon_seam, dissolve_grid_cells,
 };
-use crate::py::cells::*;
+use crate::py::cells::h3::{CellIndex, ensure_h3_uncompact_budget, h3_cell_shape};
+use crate::py::cells::{GeometryError, Point, PyResult, Shape, Typed};
 
 pub(super) fn h3_dissolve(mut cells: Vec<CellIndex>) -> PyResult<Typed> {
     // A cell SET dissolves to the same outline regardless of order or repeats,
@@ -48,18 +44,29 @@ impl GridDissolver for H3Dissolver {
         }
     }
 
-    fn boundary_edges(cell: Self::Cell) -> Vec<DissolveEdge<Self::Cell>> {
+    fn adjacency_neighbors(cell: Self::Cell) -> impl Iterator<Item = Self::Cell> {
+        cell.edges().map(h3o::DirectedEdgeIndex::destination)
+    }
+
+    /// Exterior directed-edge segments as lon/lat polylines.
+    ///
+    /// These are **planar chord proxies** of H3's spherical edge geometry —
+    /// exact region algebra should use cell set ops, not dissolved polygons.
+    fn exterior_edge_segments(
+        cell: Self::Cell,
+        is_member: &dyn Fn(Self::Cell) -> bool,
+    ) -> Vec<CoordSeq> {
         cell.edges()
-            .map(|edge| {
+            .filter_map(|edge| {
+                if is_member(edge.destination()) {
+                    return None;
+                }
                 let points: Vec<Point> = edge
                     .boundary()
                     .iter()
                     .map(|latlng| Point::new_unchecked_xy(latlng.lng(), latlng.lat()))
                     .collect();
-                DissolveEdge {
-                    neighbor: edge.destination(),
-                    segment: CoordSeq::from_points(&points),
-                }
+                Some(CoordSeq::from_points(&points))
             })
             .collect()
     }

@@ -18,7 +18,6 @@ use pyo3::prelude::*;
 /// Leading markers per the struct module / PEP 3118: `@` and `=` are native;
 /// `<` is little-endian; `>` and `!` are big-endian. No marker (e.g. `"d"`,
 /// `"Q"`) means native size-and-order.
-#[inline]
 pub(crate) const fn buffer_format_is_native_endian(format: &CStr) -> bool {
     match format.to_bytes().first() {
         Some(&b'<') => cfg!(target_endian = "little"),
@@ -29,33 +28,43 @@ pub(crate) const fn buffer_format_is_native_endian(format: &CStr) -> bool {
     }
 }
 
-#[inline]
 pub(crate) const fn swap_f64_endian(value: f64) -> f64 {
     f64::from_bits(value.to_bits().swap_bytes())
 }
 
-#[inline]
 pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
     value.swap_bytes()
 }
 
 /// Copy a C-contiguous `f64` buffer into an `Arc<[f64]>` in host-native order.
 ///
+/// Reads each element through [`pyo3::buffer::ReadOnlyCell`] — a `PyBuffer` pins
+/// the allocation but does **not** stop another free-threaded mutator writing
+/// NumPy / memoryview contents, so forming a plain `&[f64]` over the buffer is
+/// aliasing UB. `ReadOnlyCell::get` is a plain non-atomic load (not a concurrent
+/// fence): the producer must remain **quiescent** for the finite capture, after
+/// which only the owned `Arc` is retained.
+///
 /// # Safety contract
 /// Caller must only pass a C-contiguous `f64` buffer held for this scope.
-pub(crate) fn buffer_to_arc_f64(buffer: &PyBuffer<f64>) -> Arc<[f64]> {
+/// Buffer contents must not be written by another thread until this function
+/// returns.
+pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> Arc<[f64]> {
     let len = buffer.item_count();
     let mut arc: Arc<[MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
     let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
-    let source = buffer.buf_ptr().cast::<f64>();
-    // SAFETY: C-contiguous f64 PyBuffer, held alive for this scope; `item_count`
-    // is the element length.
-    let source = unsafe { std::slice::from_raw_parts(source, len) };
+    // C-contiguous path: as_slice is always Some for a matching contiguous buffer.
+    let cells = buffer
+        .as_slice(py)
+        .expect("C-contiguous f64 PyBuffer must expose as_slice");
+    debug_assert_eq!(cells.len(), len);
     if buffer_format_is_native_endian(buffer.format()) {
-        uninit.write_copy_of_slice(source);
+        for (dst, cell) in uninit.iter_mut().zip(cells.iter()) {
+            dst.write(cell.get());
+        }
     } else {
-        for (dst, &src) in uninit.iter_mut().zip(source.iter()) {
-            dst.write(swap_f64_endian(src));
+        for (dst, cell) in uninit.iter_mut().zip(cells.iter()) {
+            dst.write(swap_f64_endian(cell.get()));
         }
     }
     // SAFETY: every slot was written above.

@@ -1,9 +1,15 @@
 use std::sync::Arc;
 
-use super::super::*;
-use super::bvh::refine_facet_nearest;
 use crate::HeapSize;
-use crate::geometry::*;
+use crate::geometry::facet_bvh::engine::bvh::refine_facet_nearest;
+use crate::geometry::facet_bvh::{
+    FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_squared, point_aabb,
+    simd_point_facet_distance_squared,
+};
+use crate::geometry::{
+    Bounds, CoordSeq, Point, Segment, Shape, XY, point_on_segment, point_segment_distance,
+    point_segment_distance_squared, segments_intersect, xy_bounds_columns,
+};
 
 /// One run of up to [`FACET_SEGMENTS`] consecutive segments inside a single
 /// chain: vertices `first_vertex ..= first_vertex + segment_count` (local
@@ -41,6 +47,10 @@ pub(crate) struct PreparedLinework {
 }
 
 impl PreparedLinework {
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
     }
@@ -413,13 +423,17 @@ impl PreparedLinework {
             return best;
         };
         for probe in probes {
-            let limit = best.as_ref().map_or(f64::INFINITY, |b| b.distance_squared);
-            if aabb_distance_squared(aabb, point_aabb(probe.x, probe.y)) >= limit {
+            let limit = best
+                .as_ref()
+                .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
+            if aabb_distance_squared(aabb, point_aabb(probe.x, probe.y)) > limit {
                 continue;
             }
             for &facet in &self.facets {
-                let limit = best.as_ref().map_or(f64::INFINITY, |b| b.distance_squared);
-                if self.facet_point_distance_squared(facet, probe.x, probe.y) < limit {
+                let limit = best
+                    .as_ref()
+                    .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
+                if self.facet_point_distance_squared(facet, probe.x, probe.y) <= limit {
                     refine_facet_nearest(self, facet, probe, &mut best);
                 }
             }

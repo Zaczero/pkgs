@@ -19,9 +19,7 @@ def test_s2_cover_defaults_are_truthful_and_pickle_preserves_custom_target() -> 
     assert fixed.max_cells == fixed_default.max_cells == 1_000_000
 
     adaptive = gm.s2_cover(area)
-    adaptive_default = gm.s2_cover(
-        area, max_cells=1_000_000, target_cells=8
-    )
+    adaptive_default = gm.s2_cover(area, max_cells=1_000_000, target_cells=8)
     assert adaptive.cells == adaptive_default.cells
     assert adaptive.max_cells == adaptive_default.max_cells == 1_000_000
     assert adaptive.target_cells == adaptive_default.target_cells == 8
@@ -37,39 +35,43 @@ def test_s2_cover_defaults_are_truthful_and_pickle_preserves_custom_target() -> 
 
 
 @pytest.mark.parametrize(
-    "value",
+    'value',
     [
         gm.Point(0, 0, crs=4326, epoch=2020.0),
         gm.GeometryArray([gm.Point(0, 0, crs=4326, epoch=2020.0)]),
     ],
 )
-@pytest.mark.parametrize("serializer", ["to_wkb", "to_wkt", "to_geojson"])
-def test_lossy_core_serializers_require_epoch_drop_acknowledgement(value, serializer) -> None:
+@pytest.mark.parametrize('serializer', ['to_wkb', 'to_wkt', 'to_geojson'])
+def test_lossy_core_serializers_require_epoch_drop_acknowledgement(
+    value, serializer
+) -> None:
     method = getattr(value, serializer)
-    with pytest.raises(gm.GeometryError, match="drop_epoch=True"):
+    with pytest.raises(gm.GeometryError, match='drop_epoch=True'):
         method()
     assert method(drop_epoch=True) is not None
 
 
-def test_arrow_preserves_epoch_while_lossy_serializers_require_acknowledgement() -> None:
+def test_arrow_preserves_epoch_while_lossy_serializers_require_acknowledgement() -> (
+    None
+):
     values = gm.GeometryArray([gm.Point(0, 0, crs=4326, epoch=2020.0)])
     restored = gm.from_arrow(values.to_arrow())
     assert restored.epoch == 2020.0
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "expected"),
+    ('kwargs', 'expected'),
     [
         (
-            {"version": "WKT2_2018"},
+            {'version': 'WKT2_2018'},
             "did you mean 'WKT2_2019'? expected 'WKT2_2019', 'WKT2_2019_SIMPLIFIED', 'WKT2_2015', 'WKT2_2015_SIMPLIFIED', 'WKT1_GDAL', or 'WKT1_ESRI'",
         ),
         (
-            {"version": "WKT2_2018_SIMPLIFIED"},
+            {'version': 'WKT2_2018_SIMPLIFIED'},
             "did you mean 'WKT2_2019_SIMPLIFIED'? expected 'WKT2_2019', 'WKT2_2019_SIMPLIFIED', 'WKT2_2015', 'WKT2_2015_SIMPLIFIED', 'WKT1_GDAL', or 'WKT1_ESRI'",
         ),
-        ({"output_axis": "true"}, "expected 'auto', 'yes', or 'no'"),
-        ({"output_axis": "false"}, "expected 'auto', 'yes', or 'no'"),
+        ({'output_axis': 'true'}, "expected 'auto', 'yes', or 'no'"),
+        ({'output_axis': 'false'}, "expected 'auto', 'yes', or 'no'"),
     ],
 )
 def test_crs_export_tokens_reject_hidden_aliases(kwargs, expected) -> None:
@@ -81,10 +83,13 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
     crs = gm.CRS(4326)
     assert str(inspect.signature(crs.to_wkt)) == (
         "(*, version='WKT2_2019', pretty=False, output_axis='auto', strict=True, "
-        "indentation_width=4)"
+        'indentation_width=4)'
     )
-    assert str(inspect.signature(crs.to_projjson)) == "(*, pretty=False, indentation_width=2)"
-    assert crs.to_wkt() == crs.to_wkt(output_axis="auto")
+    assert (
+        str(inspect.signature(crs.to_projjson))
+        == '(*, pretty=False, indentation_width=2)'
+    )
+    assert crs.to_wkt() == crs.to_wkt(output_axis='auto')
     assert crs.to_wkt(pretty=True) == crs.to_wkt(pretty=True, indentation_width=4)
     assert crs.to_projjson(pretty=True) == crs.to_projjson(
         pretty=True, indentation_width=2
@@ -98,8 +103,8 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
 
 
 def test_from_features_resolves_frame_before_all_input_lanes() -> None:
-    feature = {"type": "Feature", "properties": {}}
+    feature = {'type': 'Feature', 'properties': {}}
     for value in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.CRSError) as raised:
-            gm.from_features(value, crs="not-a-crs")
+            gm.from_features(value, crs='not-a-crs')
         assert type(raised.value) is gm.CRSError

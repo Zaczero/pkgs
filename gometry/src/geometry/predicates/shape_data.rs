@@ -1,10 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::ControlFlow;
 
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::{
+    Bounds, Coordinates, HashMap, HashMapExt as _, HashSet, IndexedSegment, LineworkChains, Point,
+    PointBatchTester, PointKey, RingClass, Segment, Shape, ShapeData, TouchDirections,
+    ValidationIssue, XY, convex_halfplanes_cover, face_interior_point, has_collection_operand,
+    linework_contact, native_relate_data, orient_ring, ring_classify_point, ring_label, same_point,
+    segment_cross_point, segment_intersection_is_simple, segments_are_adjacent, segments_intersect,
+    shared_segment_part, vertex_witness,
+};
 impl ShapeData {
     /// The relate-class predicates over CACHED bounds — the batch engine's
     /// per-pair lanes never re-scan coordinates for the box gates.
@@ -27,7 +32,7 @@ impl ShapeData {
         // Bounds containment is NECESSARY: a candidate poking out of the
         // container's box is never contained/covered. Refute the common
         // non-case for free BEFORE building any point-in-polygon index (the
-        // band raycaster build dominated array contains over non-nesting pairs).
+        // `PointBatchTester` build dominated array contains over non-nesting pairs).
         match (self.bounds(), other.bounds()) {
             (Some(outer), Some(inner)) if !bounds_cover(outer, inner) => return false,
             (None, _) | (_, None) => return false,
@@ -57,14 +62,14 @@ impl ShapeData {
             }
             return self.with_bounds_tail::<false, false>(other);
         }
-        // The banded tester beats raw ring raycasts only past ~64
-        // container vertices (tiny rings pay more for the band machinery
-        // than the 4-edge scan it replaces — measured both ways).
+        // The hierarchical `PointBatchTester` beats raw ring raycasts only
+        // past ~64 container vertices (tiny rings pay more for the Y-stabbing
+        // build than the 4-edge scan it replaces — measured both ways).
         if self.shape().coord_count() >= PointBatchTester::MIN_PROBES
             && let Some(tester) = self.point_tester()
         {
             // Same uncovered-vertex refutation as the lane's witness, but
-            // each probe rides the cached band-indexed raycaster.
+            // each probe rides the cached hierarchical tester.
             if vertex_witness(other.shape(), |point| !tester.covers_point(point)) {
                 return false;
             }
@@ -206,7 +211,7 @@ pub(crate) fn classify_ring_pair(
         }
         return Some(ValidationIssue::new(
             format!("{} has a self-intersection", ring_label(left.line)),
-            Some(pair_contact_point(left.segment, right.segment).point()),
+            pair_contact_point(left.segment, right.segment).map(XY::point),
             "$",
         ));
     }
@@ -237,12 +242,16 @@ pub(crate) fn classify_ring_pair(
     None
 }
 
-/// First contact point of a known-intersecting pair (witness extraction).
-pub(crate) fn pair_contact_point(left: Segment, right: Segment) -> XY {
+/// First contact point of an intersecting pair (witness extraction), or
+/// `None` when the pair does not actually meet.
+///
+/// This used to answer `left.start` when `segment_cross_point` declined — a
+/// point on neither segment, indistinguishable from a real witness.
+pub(crate) fn pair_contact_point(left: Segment, right: Segment) -> Option<XY> {
     if let Some((_, part)) = shared_segment_part(left, right) {
-        return part[0];
+        return Some(part[0]);
     }
-    segment_cross_point(left, right).unwrap_or(left.start)
+    segment_cross_point(left, right)
 }
 
 /// Record the local directions both segments contribute at touch `point`.
@@ -290,8 +299,12 @@ pub(crate) fn settle_touches(
     let mut graph = crate::collections::UnionFind::new(ring_count);
     let mut edges: HashSet<(usize, usize)> = HashSet::new();
 
-    for (&(ring_a, ring_b), points) in touches {
-        for (&key, directions) in points {
+    let mut ring_touches: Vec<_> = touches.iter().collect();
+    ring_touches.sort_unstable_by_key(|(rings, _)| **rings);
+    for (&(ring_a, ring_b), points) in ring_touches {
+        let mut point_touches: Vec<_> = points.iter().collect();
+        point_touches.sort_unstable_by_key(|(key, _)| **key);
+        for (&key, directions) in point_touches {
             let point = XY::new(f64::from_bits(key.x), f64::from_bits(key.y));
             if wedges_interleave(&directions[0], &directions[1], point) {
                 return Some(ValidationIssue::new(
@@ -386,6 +399,13 @@ pub(crate) fn wedges_interleave(first: &[XY], second: &[XY], point: XY) -> bool 
 /// Monotone angle substitute on `[0, 4)` (the "diamond angle"): cheap,
 /// branch-light, and order-equivalent to `atan2` for sorting directions.
 pub(in crate::geometry) fn pseudo_angle(dx: f64, dy: f64) -> f64 {
+    // Scale first so extreme-but-finite components cannot overflow the
+    // abs-sum denominator to inf (NaN angles reorder facets).
+    let scale = dx.abs().max(dy.abs());
+    if scale == 0.0 || !scale.is_finite() {
+        return 0.0;
+    }
+    let (dx, dy) = (dx / scale, dy / scale);
     let denominator = dx.abs() + dy.abs();
     if denominator == 0.0 {
         return 0.0;

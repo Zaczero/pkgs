@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from gometry import from_wkb
 from gometry._lib import (
     GeometryArray,
     GeometryError,
+    from_wkb,
 )
 from gometry._optional import missing_optional_dependency
 from gometry._types import CrsInput  # noqa: TC001 - required by annotations
@@ -40,7 +40,6 @@ def to_polars(
     values: GeometryArray,
     *,
     name: str = 'geometry',
-    include_srid: bool = True,
     drop_crs: bool = False,
     drop_epoch: bool = False,
 ) -> pl.Series:
@@ -52,12 +51,13 @@ def to_polars(
         Geometries to encode.
     name : str, default 'geometry'
         Series name.
-    include_srid : bool, default True
-        Embed the CRS as an EWKB SRID so `from_polars` restores it.
     drop_crs : bool, default False
-        Allow encoding without CRS metadata. EPSG CRSs are embedded as EWKB
-        SRIDs by default; other CRSs require this acknowledgement because a
-        Polars Series has no metadata channel for their full definition.
+        Allow encoding without CRS metadata when the CRS cannot be embedded as
+        an EWKB SRID. EPSG codes and the PostGIS wire aliases ``OGC:CRS84`` /
+        ``OGC:CRS84h`` are always embedded when present (identity loss for the
+        OGC spellings is documented under EWKB). Other CRSs require this
+        acknowledgement because a Polars Series has no metadata channel for
+        their full definition. Use ``to_wkb()`` for deliberately plain WKB.
     drop_epoch : bool, default False
         Allow encoding an epoch-bearing array even though WKB/EWKB cannot
         represent coordinate epoch metadata. When false, epoch-bearing arrays
@@ -79,17 +79,24 @@ def to_polars(
             'to_polars cannot encode coordinate epoch metadata in WKB/EWKB; '
             'pass drop_epoch=True to acknowledge the loss'
         )
-    crs = values.crs
-    can_embed_srid = crs is not None and crs.authority == 'EPSG'
-    if crs is not None and not (include_srid and can_embed_srid) and not drop_crs:
-        raise GeometryError(
-            'to_polars cannot encode this CRS in WKB/EWKB; '
-            'pass drop_crs=True to acknowledge the loss'
-        )
-    storage = values.to_wkb(
-        include_srid=include_srid and can_embed_srid,
-        drop_epoch=drop_epoch,
-    )
+    # Let the native WKB writer decide encodability (EPSG codes + the exact
+    # PostGIS wire aliases OGC:CRS84→4326 / OGC:CRS84h→4979). Do not duplicate
+    # an authority=='EPSG' gate here — that blocked CRS84 despite a valid EWKB
+    # alias. When the writer can embed an SRID it always does (same as prior
+    # EPSG behaviour, even with drop_crs=True); drop_crs only acknowledges
+    # loss for CRS values the writer cannot encode.
+    if values.crs is None:
+        storage = values.to_wkb(include_srid=False, drop_epoch=drop_epoch)
+    else:
+        try:
+            storage = values.to_wkb(include_srid=True, drop_epoch=drop_epoch)
+        except Exception as exc:
+            if not drop_crs:
+                raise GeometryError(
+                    'to_polars cannot encode this CRS in WKB/EWKB; '
+                    'pass drop_crs=True to acknowledge the loss'
+                ) from exc
+            storage = values.to_wkb(include_srid=False, drop_epoch=drop_epoch)
     return _pl.Series(name, storage, dtype=_pl.Binary)
 
 

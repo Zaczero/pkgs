@@ -3,15 +3,16 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::check_i32_min;
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, CrsCoordinateArgs, IntoPyObject as _, Py, PyAny, PyAnyMethods as _, PyErr, PyResult,
+    Python, accuracy_option, coordinate_epoch_option, coordinate_values, crs, crs_normalize,
+    finite_coordinate_required, parse_area, pyfunction,
+};
+use crate::py::errors::{AccuracyWarning, GeometryError};
 
 pub(crate) struct TransformOptionArgs<'py> {
     pub area_of_interest: Option<&'py Bound<'py, PyAny>>,
@@ -22,6 +23,20 @@ pub(crate) struct TransformOptionArgs<'py> {
     pub allow_ballpark: Option<bool>,
     pub only_best: Option<bool>,
     pub force_over: bool,
+}
+
+/// Drain the one diagnostic published by the shared PROJ pipeline seam.
+///
+/// Python-visible transform boundaries call this after their native batch has
+/// completed, so a warning is emitted once per operation rather than once per
+/// coordinate or from the `extern "C"` PROJ callback.
+pub(crate) fn drain_accuracy_warning(py: Python<'_>) -> PyResult<()> {
+    if let Some(message) = crs::take_accuracy_diagnostic() {
+        let message = std::ffi::CString::new(message)
+            .map_err(|_| GeometryError::new_err("PROJ diagnostic contained a NUL byte"))?;
+        PyErr::warn(py, &py.get_type::<AccuracyWarning>(), &message, 1)?;
+    }
+    Ok(())
 }
 
 impl TransformOptionArgs<'_> {
@@ -71,15 +86,16 @@ pub(crate) fn crs_grid(name: &str) -> PyResult<crs::GridDatabaseInfo> {
 /// Returns
 /// -------
 /// dict
-pub(crate) fn crs_operation(
+pub(crate) fn crs_operation<'py>(
+    py: Python<'py>,
     source: &Bound<'_, PyAny>,
     target: &Bound<'_, PyAny>,
     opts: TransformOptionArgs<'_>,
-) -> PyResult<crs::OperationInfo> {
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let source = crs_normalize(source)?;
     let target = crs_normalize(target)?;
     let options = opts.parse()?;
-    Ok(crs::operation_info(&source, &target, &options)?)
+    super::list_cache::crs_operation_py_dict(py, &source, &target, &options)
 }
 
 /// The coordinate operation between two CRS at a location.
@@ -137,15 +153,16 @@ pub(crate) fn crs_operation_at(
 /// Returns
 /// -------
 /// list
-pub(crate) fn crs_operations(
+pub(crate) fn crs_operations<'py>(
+    py: Python<'py>,
     source: &Bound<'_, PyAny>,
     target: &Bound<'_, PyAny>,
     opts: TransformOptionArgs<'_>,
-) -> PyResult<Vec<crs::OperationInfo>> {
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
     let source = crs_normalize(source)?;
     let target = crs_normalize(target)?;
     let options = opts.parse()?;
-    Ok(crs::operations_info(&source, &target, &options)?)
+    super::list_cache::crs_operations_py_list(py, &source, &target, &options)
 }
 
 #[pyfunction(signature = (
@@ -180,12 +197,32 @@ pub(crate) fn crs_operations(
 ///     Vertical column for 3D transforms.
 /// t : float or sequence of float, optional
 ///     Coordinate epoch column.
-/// area_of_interest : dict or object, optional
-///     Area of interest guiding operation selection.
+/// area_of_interest : sequence of float, dict, or object, optional
+///     Area of interest guiding operation selection, as
+///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+///     AreaOfInterest-like object.
 /// source_epoch, target_epoch : float, optional
 ///     Coordinate epochs for dynamic CRS.
-/// authority, accuracy, allow_ballpark, only_best, force_over : optional
-///     PROJ operation-selection options.
+/// authority : str, optional
+///     Restrict candidate coordinate operations to this authority
+///     (e.g. ``'EPSG'``).
+///
+/// accuracy : float, optional
+///     Maximum acceptable operation accuracy, in meters.
+///
+/// allow_ballpark : bool, optional
+///     Allow low-accuracy ballpark operations when no precise one exists.
+///
+/// only_best : bool, optional
+///     Require PROJ's best operation. If a required transformation grid is
+///     unavailable, raise ``TransformError`` instead of using a less accurate
+///     fallback operation.
+///
+/// force_over : bool, optional
+///     Keep coordinates on the source side of the antimeridian instead of
+///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+///     ``only_best``, this also collapses operation selection to a single
+///     candidate, so enumerating surfaces return exactly one operation.
 ///
 /// Returns
 /// -------
@@ -235,8 +272,8 @@ pub(crate) fn crs_transform(
     only_best: Option<bool>,
     force_over: bool,
 ) -> PyResult<Py<PyAny>> {
-    let source = crs_canonical(source)?;
-    let target = crs_canonical(target)?;
+    let source = crs_normalize(source)?;
+    let target = crs_normalize(target)?;
     let mut coordinates = CrsCoordinateArgs::parse(py, x, y, z, t)?;
     let options = TransformOptionArgs {
         area_of_interest,
@@ -249,10 +286,14 @@ pub(crate) fn crs_transform(
         force_over,
     }
     .parse()?;
-    py.detach(|| {
+    let result = py.detach(|| {
         let (x, y, zt) = coordinates.columns_mut();
         crs::transform_coordinates(&source, &target, x, y, zt, options)
-    })?;
+    });
+    if result.is_ok() {
+        super::warn_about_accuracy_degradation(py)?;
+    }
+    result?;
     coordinates_to_matrix_py(py, coordinates)
 }
 
@@ -435,12 +476,32 @@ pub(crate) fn coordinates_to_py(
 ///     maxy, maxz)``) box in the source CRS.
 /// densify : int, default 21
 ///     Points added per edge before transforming, to track curved edges.
-/// area_of_interest : dict or object, optional
-///     Area of interest guiding operation selection.
+/// area_of_interest : sequence of float, dict, or object, optional
+///     Area of interest guiding operation selection, as
+///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+///     AreaOfInterest-like object.
 /// source_epoch, target_epoch : float, optional
 ///     Coordinate epochs for dynamic CRS.
-/// authority, accuracy, allow_ballpark, only_best, force_over : optional
-///     PROJ operation-selection options (see ``crs_transform``).
+/// authority : str, optional
+///     Restrict candidate coordinate operations to this authority
+///     (e.g. ``'EPSG'``).
+///
+/// accuracy : float, optional
+///     Maximum acceptable operation accuracy, in meters.
+///
+/// allow_ballpark : bool, optional
+///     Allow low-accuracy ballpark operations when no precise one exists.
+///
+/// only_best : bool, optional
+///     Require PROJ's best operation. If a required transformation grid is
+///     unavailable, raise ``TransformError`` instead of using a less accurate
+///     fallback operation.
+///
+/// force_over : bool, optional
+///     Keep coordinates on the source side of the antimeridian instead of
+///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+///     ``only_best``, this also collapses operation selection to a single
+///     candidate, so enumerating surfaces return exactly one operation.
 ///
 /// Returns
 /// -------
@@ -489,8 +550,8 @@ pub(crate) fn crs_transform_bounds(
     // streams), then classify structurally as One | Many — never treat a
     // scalar parse failure as evidence of batch input.
     let items = crate::collect_py_iter(bounds, Ok)?;
-    let source = crs_canonical(source)?;
-    let target = crs_canonical(target)?;
+    let source = crs_normalize(source)?;
+    let target = crs_normalize(target)?;
     let options = TransformOptionArgs {
         area_of_interest,
         source_epoch,
@@ -502,7 +563,7 @@ pub(crate) fn crs_transform_bounds(
         force_over,
     }
     .parse()?;
-    match classify_bounds_shape(py, &items)? {
+    let result = match classify_bounds_shape(py, &items)? {
         BoundsShape::One(values) => match values.as_slice() {
             [minx, miny, maxx, maxy] => Ok(crs::transform_bounds(
                 &source,
@@ -546,12 +607,7 @@ pub(crate) fn crs_transform_bounds(
                     for transformed in
                         crs::transform_bounds_many(&source, &target, &rows, densify, options)?
                     {
-                        out.extend_from_slice(&[
-                            transformed.0,
-                            transformed.1,
-                            transformed.2,
-                            transformed.3,
-                        ]);
+                        out.extend_from_slice(&<[f64; 4]>::from(transformed));
                     }
                 } else {
                     let rows: Vec<_> = rows
@@ -566,21 +622,18 @@ pub(crate) fn crs_transform_bounds(
                     for transformed in
                         crs::transform_bounds_3d_many(&source, &target, &rows, densify, options)?
                     {
-                        out.extend_from_slice(&[
-                            transformed.0,
-                            transformed.1,
-                            transformed.2,
-                            transformed.3,
-                            transformed.4,
-                            transformed.5,
-                        ]);
+                        out.extend_from_slice(&<[f64; 6]>::from(transformed));
                     }
                 }
                 Ok::<_, PyErr>(out)
             })?;
             crate::py::numpy::float64_matrix(py, out, len, columns)
         },
+    };
+    if result.is_ok() {
+        drain_accuracy_warning(py)?;
     }
+    result
 }
 
 enum BoundsRow {
@@ -698,12 +751,32 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
 ///     How many forward+inverse passes to apply.
 /// direction : {'forward', 'inverse'}, default 'forward'
 ///     Which leg runs first.
-/// area_of_interest : dict or object, optional
-///     Area of interest guiding operation selection.
+/// area_of_interest : sequence of float, dict, or object, optional
+///     Area of interest guiding operation selection, as
+///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
+///     AreaOfInterest-like object.
 /// source_epoch, target_epoch : float, optional
 ///     Coordinate epochs for dynamic CRS.
-/// authority, accuracy, allow_ballpark, only_best, force_over : optional
-///     PROJ operation-selection options (see ``crs_transform``).
+/// authority : str, optional
+///     Restrict candidate coordinate operations to this authority
+///     (e.g. ``'EPSG'``).
+///
+/// accuracy : float, optional
+///     Maximum acceptable operation accuracy, in meters.
+///
+/// allow_ballpark : bool, optional
+///     Allow low-accuracy ballpark operations when no precise one exists.
+///
+/// only_best : bool, optional
+///     Require PROJ's best operation. If a required transformation grid is
+///     unavailable, raise ``TransformError`` instead of using a less accurate
+///     fallback operation.
+///
+/// force_over : bool, optional
+///     Keep coordinates on the source side of the antimeridian instead of
+///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+///     ``only_best``, this also collapses operation selection to a single
+///     candidate, so enumerating surfaces return exactly one operation.
 ///
 /// Returns
 /// -------

@@ -130,7 +130,11 @@ def test_map_normalizes_non_wgs84_geographic_crs() -> None:
     from gometry._viz import _array_for_map
 
     nad27 = gm.GeometryArray([gm.Point(-100.0, 40.0, crs=4267)])
-    normalized = _array_for_map(nad27)
+    # PROJ lacks the CONUS and Kansas NAD27 grids, so map normalization degrades.
+    with pytest.warns(
+        gm.AccuracyWarning, match='us_noaa_conus[.]tif.*us_noaa_kshpgn[.]tif'
+    ):
+        normalized = _array_for_map(nad27)
     assert normalized.crs == 'EPSG:4326'
     assert normalized[0] != nad27[0]
 

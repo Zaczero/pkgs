@@ -32,12 +32,17 @@ def test_invalid_self_intersecting_polygon_renders_red():
 
 
 def test_viewbox_derives_from_bounds():
+    # Geometry is rendered in a local pixel frame (origin at padded min) so
+    # extreme world coordinates stay finite in the SVG; the viewBox is the
+    # pixel canvas, not the world bounds. Aspect follows the padded extent.
     svg = gm.box(10, 20, 12, 24)._repr_svg_()
     minx, miny, w, h = _viewbox(svg)
-    assert minx == pytest.approx(9.9)
-    assert miny == pytest.approx(19.8)
-    assert w == pytest.approx(2.2)
-    assert h == pytest.approx(4.4)
+    assert minx == pytest.approx(0.0)
+    assert miny == pytest.approx(0.0)
+    # Pad is 5% of each side (world 2x4 → padded 2.2x4.4); pixel scale fits
+    # the longer axis into the fixed SVG slot with aspect preserved.
+    assert w > 0.0 and h > 0.0
+    assert h / w == pytest.approx(4.4 / 2.2, rel=1e-6)
 
 
 def test_flipped_content_stays_inside_the_viewbox():

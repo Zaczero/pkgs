@@ -1,17 +1,22 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError};
+use pyo3::IntoPyObjectExt as _;
+use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::PyBool;
 
 use crate::collections::sort_row_ids;
-use crate::py::index::*;
-use crate::{HeapSize, parse_spatial_index_handle};
+use crate::parse_spatial_index_handle;
+use crate::py::index::{
+    BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexEntry,
+    IndexEnvelope, IndexPredicate, IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py,
+    PyAny, PyAnyMethods as _, PyGeometry, PyResult, PySpatialIndex, Python, Shape,
+    build_spatial_index, exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows,
+    geodesic_prunable_point, geometry_items, index_envelope, join_indexed, parse_max_distance,
+    pyfunction, pymethods, query_distance, resolve_metric, restore_spatial_index, spatial_index,
+    usize_array, validate_nearest_k,
+};
 
 type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, Vec<usize>));
 
@@ -172,7 +177,9 @@ impl PySpatialIndex {
     /// Returns
     /// -------
     /// Geometry
-    pub(crate) fn __getitem__(&self, handle: &Bound<'_, PyAny>) -> PyResult<crate::PyGeometry> {
+    ///     A typed leaf (`Point`, `Polygon`, …) matching the stored kind —
+    ///     never the bare base `Geometry` class.
+    pub(crate) fn __getitem__(&self, handle: &Bound<'_, PyAny>) -> PyResult<crate::Typed> {
         let handle = parse_handle_like(handle)?;
         if !self.is_live_handle(handle) {
             return Err(PyKeyError::new_err(handle));
@@ -291,7 +298,7 @@ impl PySpatialIndex {
     ) -> PyResult<Py<PyAny>> {
         let handle = parse_handle_like(handle)?;
         if self.is_live_handle(handle) {
-            return self.geometry_at_handle(handle).into_py_any(py);
+            return Ok(self.geometry_at_handle(handle).into_pyobject(py)?.unbind());
         }
         Ok(default.unwrap_or_else(|| py.None()))
     }
@@ -418,17 +425,22 @@ impl PySpatialIndex {
             // candidate core and the pair kernel on stack handles — no
             // per-row PyGeometry staging.
             let plan = PreparedIndexQuery::for_array(self, array, Some(predicate), distance, unit)?;
+            let element_bounds = array.cached_element_bounds();
             let row_count = array.storage().len();
             let mut ids = Vec::new();
             let mut offsets = Vec::with_capacity(row_count + 1);
             offsets.push(0);
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
+                    let seeded = element_bounds
+                        .as_ref()
+                        .and_then(|bounds| bounds.get(row_index).copied().flatten());
                     self.dwithin_query_row_matches_append(
                         row,
                         &array.row_frame_cache(row_index),
                         &plan,
                         &mut ids,
+                        seeded,
                     )?;
                 }
                 offsets.push(ids.len());
@@ -629,25 +641,42 @@ impl PySpatialIndex {
             // One frame check + one metric resolution for the whole array;
             // rows answer from their window bounds and append into one CSR
             // values column — no per-row PyGeometry, ShapeData, or second
-            // id-buffer copy.
+            // id-buffer copy. Packed element bounds are hoisted once so each
+            // row reuses the cache instead of re-scanning shells.
             let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
+            let element_bounds = array.cached_element_bounds();
+            // Pure envelope candidates (no distance, not geographic): never
+            // enter row prep / with_shape — bounds cache is the whole answer.
+            let envelope_only =
+                matches!(plan, PreparedIndexQuery::Candidates) && !self.geographic();
             let row_count = array.storage().len();
             let mut ids = Vec::new();
             let mut offsets = Vec::with_capacity(row_count + 1);
             offsets.push(0);
-            for (missing, row) in array.masked_storage_rows() {
+            for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let row_start = ids.len();
-                    let prepared = plan.row(self, row);
-                    self.candidate_ids_core_append(
-                        prepared.bounds,
-                        prepared.pruner_point,
-                        prepared.cap,
-                        plan.predicate,
-                        plan.distance,
-                        plan.metric.as_ref(),
-                        &mut ids,
-                    );
+                    let seeded = element_bounds
+                        .as_ref()
+                        .and_then(|bounds| bounds.get(row_index).copied().flatten());
+                    let (predicate, distance, metric) = plan.candidate_parts();
+                    if envelope_only {
+                        let bounds = seeded.or_else(|| row.quick_bounds());
+                        self.candidate_ids_core_append(
+                            bounds, None, None, None, None, None, &mut ids,
+                        );
+                    } else {
+                        let prepared = plan.row(self, row, seeded);
+                        self.candidate_ids_core_append(
+                            prepared.bounds,
+                            prepared.pruner_point,
+                            prepared.cap,
+                            predicate,
+                            distance,
+                            metric,
+                            &mut ids,
+                        );
+                    }
                     sort_row_ids(&mut ids[row_start..], self.rows.len());
                 }
                 offsets.push(ids.len());
@@ -705,7 +734,9 @@ impl PySpatialIndex {
     ) -> PyResult<Vec<String>> {
         let predicate = IndexPredicate::parse_opt(predicate)?;
         let distance = query_distance(predicate, distance)?;
-        let n = self.rows.len();
+        // Live geometries only — allocated slots include tombstones / missing
+        // rows that were never indexed.
+        let n = self.__len__();
         let loaded = if n == 1 {
             format!("loaded {n} geometry")
         } else {
@@ -720,17 +751,24 @@ impl PySpatialIndex {
         let plan = PreparedIndexQuery::for_geometry(self, geom, predicate, distance, unit)?;
         // No predicate = the `candidates(...)` plan: the envelope filter
         // (optionally distance-expanded) with no exact refine step.
-        let Some(predicate) = plan.predicate else {
-            steps.push(plan.candidate_step(self, Some(geom.shape.shape())));
-            return Ok(steps);
-        };
-        steps.push("predicate operands: predicate(query_geom, indexed_row)".to_owned());
-        match predicate {
-            IndexPredicate::Dwithin => {
+        match &plan {
+            PreparedIndexQuery::Candidates | PreparedIndexQuery::CandidatesDwithin { .. } => {
                 steps.push(plan.candidate_step(self, Some(geom.shape.shape())));
-                steps.push(plan.refine_step().expect("dwithin has a refine step"));
+                return Ok(steps);
             },
-            IndexPredicate::Topological(predicate) => {
+            PreparedIndexQuery::Dwithin {
+                distance, metric, ..
+            } => {
+                steps.push("predicate operands: predicate(query_geom, indexed_row)".to_owned());
+                steps.push(plan.candidate_step(self, Some(geom.shape.shape())));
+                steps.push(format!(
+                    "exact {} distance refine within {}",
+                    metric.explain_label(),
+                    distance.get()
+                ));
+            },
+            PreparedIndexQuery::Topological { predicate } => {
+                steps.push("predicate operands: predicate(query_geom, indexed_row)".to_owned());
                 let envelope = predicate
                     .spec()
                     .index_envelope
@@ -741,7 +779,7 @@ impl PySpatialIndex {
                     },
                     IndexEnvelope::Intersecting => "bounds envelope candidate filter".to_owned(),
                 });
-                steps.push(plan.refine_step().expect("predicate has a refine step"));
+                steps.push(format!("exact {} predicate refine", predicate.token()));
             },
         }
         Ok(steps)
@@ -814,13 +852,18 @@ impl PySpatialIndex {
         let k = validate_nearest_k(k)?;
         let max_distance = parse_max_distance(max_distance)?;
         if let Some(geometry) = exact_geometry(geom) {
-            let pairs = self.nearest_one(geometry, k, unit, max_distance, exclusive, ties)?;
+            let pairs = self.nearest_one(geometry, k, unit, max_distance, NearestOptions {
+                exclude_equal: exclusive,
+                include_ties: ties,
+            })?;
             return format_nearest(py, pairs, return_distance);
         }
         if let Some(array) = exact_geometry_array(geom) {
             // One frame check and metric resolution for the whole array;
             // every storage's rows drive `nearest_core` on stack handles —
             // no per-row `PyGeometry` materialization anywhere.
+            // Batch-local R-tree frontier heap reused across rows (clear+push;
+            // free-threading: not a receiver cache / lock).
             self.ensure_frame_compatible(array.crs_ref(), array.epoch(), "spatial index nearest")?;
             let metric = resolve_metric(self.metric_crs_str(array.crs_str()), unit, "nearest")?;
             let row_count = array.storage().len();
@@ -830,6 +873,7 @@ impl PySpatialIndex {
             let mut distances = Vec::with_capacity(if return_distance { capacity } else { 0 });
             let mut offsets = Vec::with_capacity(row_count + 1);
             offsets.push(0);
+            let mut frontier = BinaryHeap::new();
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let candidates = row.with_data(|query| {
@@ -839,8 +883,11 @@ impl PySpatialIndex {
                             &array.row_frame_cache(row_index),
                             k,
                             max_distance,
-                            exclusive,
-                            ties,
+                            NearestOptions {
+                                exclude_equal: exclusive,
+                                include_ties: ties,
+                            },
+                            &mut frontier,
                         )
                     })?;
                     for candidate in candidates {
@@ -940,13 +987,10 @@ impl PySpatialIndex {
             let Some(bounds) = row.with_shape(Shape::bounds) else {
                 return Ok(false);
             };
-            // Mirror insert's envelope exactly (crossing rows get the wrapped
-            // band) so the overflow R-tree can locate the entry to remove.
-            let envelope = if self.geographic() && row.with_shape(Shape::crosses_antimeridian) {
-                row.with_shape(|shape| crossing_index_envelope(shape, bounds))
-            } else {
-                bounds_envelope(bounds)
-            };
+            // Mirror insert's envelope exactly (crossing rows and physical
+            // poles get the full-longitude band) so the overflow R-tree can
+            // locate the entry to remove.
+            let envelope = row.with_shape(|shape| index_envelope(shape, bounds, self.geographic()));
             let entry = IndexEntry {
                 idx: handle,
                 envelope,

@@ -1,4 +1,4 @@
-use crate::geometry::*;
+use crate::geometry::{Bounds, Coordinates, EmptyKind, Ordering, Point, Polygon, Shape};
 pub(crate) fn compare_shapes(left: &Shape, right: &Shape) -> Ordering {
     shape_sort_rank(left)
         .cmp(&shape_sort_rank(right))

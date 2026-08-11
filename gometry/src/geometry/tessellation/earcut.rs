@@ -2,25 +2,43 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use ahash::HashSetExt as _;
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
-use super::*;
 use crate::curves::morton_interleave;
 use crate::error::Result;
+use crate::geometry::{
+    AreaSign, Bounds, BulkRTree, Coordinates, GeometryErrorKind, HashSet, Orientation, Point,
+    PointKey, Polygon, Ring, RingWinding, Segment, SegmentIndex, Shape, XY,
+    dedup_consecutive_points, open_point_cycle_decision, open_point_cycle_winding, orientation,
+    orientation_xy, point_on_segment, ring_contains_interior, same_point, segments_intersect,
+    wrap_index,
+};
 
 pub(crate) fn polygon_triangles(polygon: &Polygon) -> Result<Vec<Shape>> {
     earcut_polygon(polygon)
 }
 
 pub(crate) fn earcut_polygon(polygon: &Polygon) -> Result<Vec<Shape>> {
+    let mut triangles = Vec::new();
+    earcut_polygon_with(polygon, &mut |a, b, c| {
+        triangles.push(triangle_shape(a, b, c));
+        Ok(())
+    })?;
+    Ok(triangles)
+}
+
+/// Walk a polygon's ear-cut triangles through one caller-owned sink. The
+/// generated-output budget lives at that caller, so it can reject before a
+/// triangle shape or array row is emitted.
+pub(crate) fn earcut_polygon_with(
+    polygon: &Polygon,
+    emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
+) -> Result<()> {
     let mut ring = cleaned_earcut_ring(&polygon.shell, false)?;
     if ring.len() < 3 || open_point_cycle_decision(&ring).sign() == AreaSign::Zero {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let mut holes = Vec::with_capacity(polygon.holes.len());
@@ -34,7 +52,7 @@ pub(crate) fn earcut_polygon(polygon: &Polygon) -> Result<Vec<Shape>> {
     }
     validate_hole_interactions(&ring, &holes)?;
     eliminate_holes(&mut ring, &holes, polygon)?;
-    earcut_linked_ring(&ring)
+    earcut_linked_ring_with(&ring, emit)
 }
 
 pub(crate) fn cleaned_earcut_ring<C: Coordinates + ?Sized>(
@@ -628,23 +646,25 @@ impl ZScale {
     }
 }
 
-pub(crate) fn earcut_linked_ring(points: &[Point]) -> Result<Vec<Shape>> {
+pub(crate) fn earcut_linked_ring_with(
+    points: &[Point],
+    emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
+) -> Result<()> {
     if points.len() < 3 {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let mut arena = EarArena::new(points);
-    let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
     let mut current = 0;
     let mut guard = 0;
     while arena.active > 3 {
         if is_ear(&arena, current) {
             let prev = arena.nodes[current].prev;
             let next = arena.nodes[current].next;
-            triangles.push(triangle_shape(
+            emit(
                 arena.nodes[prev].point,
                 arena.nodes[current].point,
                 arena.nodes[next].point,
-            ));
+            )?;
             arena.remove(current);
             current = next;
             guard = 0;
@@ -663,13 +683,13 @@ pub(crate) fn earcut_linked_ring(points: &[Point]) -> Result<Vec<Shape>> {
         let first = remaining[0];
         let second = arena.nodes[first].next;
         let third = arena.nodes[second].next;
-        triangles.push(triangle_shape(
+        emit(
             arena.nodes[first].point,
             arena.nodes[second].point,
             arena.nodes[third].point,
-        ));
+        )?;
     }
-    Ok(triangles)
+    Ok(())
 }
 
 pub(crate) fn is_ear(arena: &EarArena, index: usize) -> bool {

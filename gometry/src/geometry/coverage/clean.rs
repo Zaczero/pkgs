@@ -1,9 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
 use crate::error::Result;
+use crate::geometry::coverage::{
+    AABB, CoverageRow, HashMap, HashMapExt as _, HashSet, RTreeObject,
+    coverage_invalid_segments_prepared, coverage_rows, minimal_positive_face_rings, sort_row_ids,
+    valid_coverage_rows,
+};
+use crate::geometry::{
+    Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, PointKey, Polygon, Ring,
+    Segment, Shape, XY, face_interior_point, line_segments, point_distance, polygon_parts_to_shape,
+    ring_area_measure, ring_contains_interior, self_node_segments, topology_split,
+    undirected_segment_edge_key,
+};
 
 // --- Cleaning ----------------------------------------------------------------
 
@@ -327,40 +333,88 @@ fn dissolve_regions(regions: Vec<Polygon>) -> Shape {
             }
         }
     }
-    let mut survivors: Vec<Segment> = counts
+    dissolve_edge_incidences(counts)
+}
+
+/// XOR-dissolve from a raw undirected edge incidence map: occurrence==1
+/// segments are exterior survivors; reassemble via the shared face pipeline.
+/// Used by `coverage_union_inner` on the validation product (no second polygon walk)
+/// and by `dissolve_regions` after building counts from assigned regions.
+fn dissolve_edge_incidences(incidences: HashMap<(PointKey, PointKey), (Segment, u32)>) -> Shape {
+    let mut survivors: Vec<Segment> = incidences
         .into_values()
         .filter(|&(_, count)| count == 1)
         .map(|(segment, _)| segment)
         .collect();
+    if survivors.is_empty() {
+        return Shape::empty_polygon();
+    }
     survivors.sort_by_key(|segment| undirected_segment_edge_key(*segment));
-    let segments = survivors;
-    let faces = minimal_positive_face_rings(&segments);
+    let faces = minimal_positive_face_rings(&survivors);
     let parts = top_level_regions(arrangement_regions(&faces));
     polygon_parts_to_shape(parts)
 }
 
-/// Union a polygonal coverage by dissolving its shared edges.
-///
-/// Assumes a VALID coverage — polygons meet edge-to-edge with no overlaps and
-/// no T-junctions (`coverage_is_valid`) — so every interior edge appears in
-/// exactly two
-/// polygons and cancels, leaving the outer boundary, which the same
-/// `arrangement` reassembly the cell-grid dissolve uses closes into the merged
-/// polygon(s). This never nodes or classifies interior intersections, so it is
-/// far cheaper than the general planar `union_all`. The public kernel validates
-/// this precondition and rejects invalid coverage rather than returning a
-/// plausible but incorrect dissolve.
-pub(crate) fn coverage_union<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result<Shape> {
+/// Frame-aware coverage dissolve: antimeridian-crossing rows are split first
+/// so the edge inventory never sees the false-middle planar box.
+pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
+    coverage: &[S],
+    geographic: bool,
+) -> Result<Shape> {
+    if !geographic {
+        return coverage_union_inner(coverage);
+    }
+    let split_owned: Vec<Shape> = coverage
+        .iter()
+        .map(|row| {
+            let shape = row.borrow();
+            if shape.crosses_antimeridian() {
+                topology_split(shape)
+            } else {
+                shape.clone()
+            }
+        })
+        .collect();
+    coverage_union_inner(&split_owned)
+}
+
+fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
-    let _prepared = valid_coverage_rows(coverage, "coverage_union")?;
-    let regions: Vec<Polygon> = coverage
-        .iter()
-        .filter_map(|shape| relate::polygon_parts(shape.borrow()))
-        .flatten()
-        .cloned()
-        .collect();
-    Ok(dissolve_regions(regions))
+    let prepared = valid_coverage_rows(coverage, "coverage_union")?;
+    // Preserve dissolve_regions' single-region identity path: one polygon is
+    // already the union (bit-identical presentation of the input).
+    let mut sole: Option<&Polygon> = None;
+    let mut multi = false;
+    for row in &prepared.rows {
+        match row.shape {
+            Shape::Polygon(polygon) => {
+                if sole.is_some() {
+                    multi = true;
+                    break;
+                }
+                sole = Some(polygon);
+            },
+            Shape::MultiPolygon(polygons) => {
+                if polygons.len() > 1 || sole.is_some() {
+                    multi = true;
+                    break;
+                }
+                if let Some(polygon) = polygons.first() {
+                    sole = Some(polygon);
+                }
+            },
+            // Empties contribute no regions; non-polygonal rows are rejected by
+            // coverage_rows before we get here.
+            _ => {},
+        }
+    }
+    if !multi {
+        return Ok(sole.map_or_else(Shape::empty_polygon, |polygon| {
+            Shape::Polygon(polygon.clone())
+        }));
+    }
+    Ok(dissolve_edge_incidences(prepared.edge_incidences))
 }
 
 /// Drop regions that sit inside another region's hole-free interior twice

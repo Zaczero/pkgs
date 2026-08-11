@@ -5,7 +5,10 @@
 use std::borrow::Cow;
 use std::iter::Enumerate;
 
-use super::*;
+use crate::array::{
+    Arc, MissingMask, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, RowsIter, Shape,
+    ShapeRow, ShapesIter, coordinates,
+};
 
 pub(crate) enum PresentShapeRows<'a> {
     Dense(Enumerate<ShapesIter<'a>>),
@@ -118,7 +121,7 @@ impl PyGeometryArray {
     /// therefore become the same ``NaN`` row as an empty/no-Z geometry.
     pub(crate) fn bounds_3d_rows(
         &self,
-    ) -> impl Iterator<Item = Option<crate::py::support::Bounds3D>> + '_ {
+    ) -> impl Iterator<Item = Option<crate::geometry::Bounds3D>> + '_ {
         self.masked_shape_rows()
             .map(|(missing, shape)| (!missing).then(|| shape.bounds_3d()).flatten())
     }
@@ -158,7 +161,7 @@ impl PyGeometryArray {
     where
         T: for<'py> pyo3::IntoPyObjectExt<'py>,
     {
-        use pyo3::IntoPyObjectExt;
+        use pyo3::IntoPyObjectExt as _;
         let Some(mask) = self.missing() else {
             return rows
                 .into_iter()

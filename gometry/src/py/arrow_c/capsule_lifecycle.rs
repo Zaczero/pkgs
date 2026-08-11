@@ -4,12 +4,27 @@
 )]
 use std::ptr;
 
-use crate::py::arrow_c::*;
+use crate::py::arrow_c::{
+    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, CString, ExportedArray, GometryArrowArray,
+    ImportedStreamGuard, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
+    PyResult, PyTuple, Python, StreamPrivate, apply_top_level_validity, array_capsule_destructor,
+    array_capsule_name, c_char, export_from_geometries, export_from_geometry_array, ffi,
+    release_array, release_imported_stream, release_schema, release_stream,
+    schema_capsule_destructor, schema_capsule_name, schema_from_geometries,
+    schema_from_geometry_array, stream_capsule_destructor, stream_capsule_name,
+    stream_get_last_error, stream_get_next, stream_get_schema,
+};
 
 pub(crate) type ArrowReleaseCallback<T> = unsafe extern "C" fn(*mut T);
 pub(crate) type CapsuleDestructor = unsafe extern "C" fn(*mut ffi::PyObject);
 
 pub(crate) trait ArrowReleaseSlot: Sized {
+    /// Return the address of the Arrow release callback slot.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null, properly aligned, and point to a live Arrow C
+    /// base structure of `Self` whose fields remain accessible for the call.
     unsafe fn release_slot(ptr: *mut Self) -> *mut Option<ArrowReleaseCallback<Self>>;
 }
 
@@ -21,7 +36,9 @@ impl ImportedStreamGuard {
 
 impl Drop for ImportedStreamGuard {
     fn drop(&mut self) {
-        release_imported_stream(self.stream);
+        // SAFETY: this guard uniquely owns the stream for its lifetime; no
+        // retained producer borrows remain when Drop runs.
+        unsafe { release_imported_stream(self.stream) }
     }
 }
 
@@ -69,6 +86,14 @@ pub(crate) fn owned_capsule<T>(
     Ok(unsafe { Bound::<PyAny>::from_owned_ptr(py, capsule) }.unbind())
 }
 
+/// Release and deallocate the boxed Arrow shell owned by a capsule.
+///
+/// # Safety
+///
+/// `capsule` must be a live Python capsule whose pointer under `name` or
+/// `used_name` came from `Box::into_raw::<T>`. The caller must have sole
+/// ownership of that shell, and no borrow of the shell or its released tree
+/// may remain live.
 pub(crate) unsafe fn capsule_destructor<T>(
     capsule: *mut ffi::PyObject,
     name: *const c_char,
@@ -87,9 +112,17 @@ pub(crate) unsafe fn capsule_destructor<T>(
     }
 }
 
-pub(crate) fn release_imported<T: ArrowReleaseSlot>(ptr: *mut T) {
-    // SAFETY: imported C Data Interface structs are released through their own
-    // callback when present; idempotence belongs to the producer.
+/// Release an imported Arrow C base structure through its producer callback.
+///
+/// # Safety
+///
+/// - `ptr` is null **or** a live producer-owned base structure whose release
+///   slot is still set (or already cleared — then this is a no-op).
+/// - No safe borrow of `*ptr` (or any field/table it owns) remains live across
+///   this call. Release-while-borrowed is undefined behaviour.
+/// - The caller does not release the same live structure twice concurrently.
+pub(crate) unsafe fn release_imported<T: ArrowReleaseSlot>(ptr: *mut T) {
+    // SAFETY: caller guarantees no live borrows and a valid (or null) pointer.
     unsafe {
         if !ptr.is_null()
             && let Some(release) = *T::release_slot(ptr)
@@ -99,6 +132,13 @@ pub(crate) fn release_imported<T: ArrowReleaseSlot>(ptr: *mut T) {
     }
 }
 
+/// Recover the Arrow shell pointer owned by a named or consumed capsule.
+///
+/// # Safety
+///
+/// `capsule` must be null or a live Python object that may safely be passed to
+/// the CPython capsule API. A non-null returned pointer remains owned by the
+/// capsule and may only be consumed by the capsule's destructor.
 pub(crate) unsafe fn capsule_destructor_pointer<T>(
     capsule: *mut ffi::PyObject,
     name: *const c_char,
@@ -137,9 +177,8 @@ pub(crate) fn array_to_schema_capsule(
     array: &PyGeometryArray,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let items = array.items();
-    let crs = array_frame_crs(array, &items)?;
-    let schema = schema_from_geometries(items.iter(), crs.as_deref(), array.epoch())?;
+    // Array frame is authoritative (per-row frames no longer exist).
+    let schema = schema_from_geometry_array(array)?;
     schema_capsule(py, schema)
 }
 
@@ -157,11 +196,10 @@ pub(crate) fn array_to_array_capsules(
     array: &PyGeometryArray,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let items = array.items();
-    let crs = array_frame_crs(array, &items)?;
-    let mut export = export_from_geometries(items.iter(), crs.as_deref(), array.epoch())?;
+    // Storage-direct: retain coordinate/CSR Arcs; no per-row PyGeometry.
+    let mut export = export_from_geometry_array(array)?;
     if let Some(mask) = array.missing() {
-        apply_top_level_validity(export.array.as_mut(), mask)?;
+        apply_top_level_validity(&mut export.array, mask)?;
     }
     array_capsules(py, export)
 }
@@ -180,35 +218,11 @@ pub(crate) fn array_to_stream_capsule(
     array: &PyGeometryArray,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let items = array.items();
-    let crs = array_frame_crs(array, &items)?;
-    let mut export = export_from_geometries(items.iter(), crs.as_deref(), array.epoch())?;
+    let mut export = export_from_geometry_array(array)?;
     if let Some(mask) = array.missing() {
-        apply_top_level_validity(export.array.as_mut(), mask)?;
+        apply_top_level_validity(&mut export.array, mask)?;
     }
     stream_capsule(py, export)
-}
-
-pub(crate) fn array_frame_crs(
-    array: &PyGeometryArray,
-    items: &[PyGeometry],
-) -> PyResult<Option<String>> {
-    if matches!(array.storage(), crate::GeometryArrayStorage::Mixed(_)) {
-        // Empty framed Mixed has no element CRS to compare — the array frame
-        // is authoritative (zero-batch import / GeometryArray([], crs=...)).
-        if !items.is_empty() {
-            let crs = common_crs_required(items, "Arrow export")?;
-            if crs.as_deref() != array.crs_str() {
-                return Err(crate::py::errors::crs_mismatch_error(
-                    "Arrow export requires GeometryArray CRS metadata to match every element",
-                    array.crs_str(),
-                    crs.as_deref(),
-                    None,
-                ));
-            }
-        }
-    }
-    Ok(array.crs_str().map(ToOwned::to_owned))
 }
 
 pub(crate) fn schema_capsule(py: Python<'_>, schema: Box<ArrowSchema>) -> PyResult<Py<PyAny>> {
@@ -227,10 +241,10 @@ pub(crate) fn array_capsules(py: Python<'_>, export: ExportedArray) -> PyResult<
     Ok(PyTuple::new(py, [schema, array])?.unbind().into_any())
 }
 
-pub(crate) fn array_capsule(py: Python<'_>, array: Box<ArrowArray>) -> PyResult<Py<PyAny>> {
+pub(crate) fn array_capsule(py: Python<'_>, array: GometryArrowArray) -> PyResult<Py<PyAny>> {
     owned_capsule(
         py,
-        array,
+        array.into_box(),
         array_capsule_name(),
         array_capsule_destructor,
         release_array,
@@ -245,7 +259,7 @@ pub(crate) fn stream_from_export(export: ExportedArray) -> Box<ArrowArrayStream>
         release: Some(release_stream),
         private_data: Box::into_raw(Box::new(StreamPrivate {
             schema: export.schema_node,
-            array: Some(export.array),
+            array: Some(export.array.into_box()),
             last_error: CString::new("").expect("empty string has no nul"),
         }))
         .cast(),

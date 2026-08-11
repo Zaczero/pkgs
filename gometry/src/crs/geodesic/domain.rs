@@ -1,8 +1,8 @@
-use std::simd::cmp::SimdPartialOrd;
-use std::simd::num::SimdFloat;
+use std::simd::cmp::SimdPartialOrd as _;
+use std::simd::num::SimdFloat as _;
 
-use super::*;
 use crate::boundary::geographic::invalid_lonlat_error;
+use crate::crs::geodesic::{CrsError, ensure_geographic_degree_units, info};
 use crate::error::Result;
 use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
 

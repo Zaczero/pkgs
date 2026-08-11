@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import math
 import pickle
+import struct
+from functools import partial
 
 import gometry as gm
 import pytest
@@ -40,6 +42,51 @@ def test_hierarchy_bases_identity_and_module() -> None:
         assert cls.__module__ == 'gometry'
         assert cls.__doc__
     assert issubclass(errors.GeometryTypeError, TypeError)
+    assert issubclass(errors.AccuracyWarning, UserWarning)
+    assert not issubclass(errors.AccuracyWarning, errors.GeometryError)
+
+
+@pytest.mark.parametrize(
+    ('payload', 'position'),
+    [
+        (b'\x01', 1),
+        (b'\x01\x01\x00\x00\x00', 5),
+        (b'\x01\x01\x00\x00\x00' + struct.pack('<d', 1.0), 13),
+        (b'\x01\x01\x00\x00\x00' + struct.pack('<dd', 1.0, 2.0) + b'xx', 21),
+        (b'\x07', 1),
+        (b'\x01\x63\x00\x00\x00', 5),
+    ],
+)
+def test_parse_position_tracks_wkb_cursor(payload: bytes, position: int) -> None:
+    with pytest.raises(errors.ParseError) as excinfo:
+        gm.from_wkb(payload)
+    assert excinfo.value.position == position
+
+
+def test_structured_error_defaults_and_parse_position() -> None:
+    assert errors.ParseError('x').position is None
+    assert errors.GeometryTypeError('x').expected is None
+    assert errors.TransformError('x').source is None
+    with pytest.raises(errors.ParseError) as json_error:
+        gm.from_geojson('{')
+    assert json_error.value.position is None
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'POINT (1)',
+        'POINT (1 bad)',
+        'POINT (1 2) garbage',
+        'POLYGON ((0 0, 1 bad, 2 2, 0 0))',
+        'GEOMETRYCOLLECTION (POINT (0 0), POINT (1 bad))',
+        'GEOMETRYCOLLECTION (POINT (0 0), POINT (é bad))',
+    ],
+)
+def test_wkt_position_is_utf8_input_length(text: str) -> None:
+    with pytest.raises(errors.ParseError) as excinfo:
+        gm.from_wkt(text)
+    assert excinfo.value.position == len(text.encode())
 
 
 def test_exceptions_pickle() -> None:
@@ -51,10 +98,14 @@ def test_exceptions_pickle() -> None:
 
 
 def test_invalid_geometry_error_on_structural_rules() -> None:
-    with pytest.raises(errors.InvalidGeometryError, match='x must be finite') as excinfo:
+    with pytest.raises(
+        errors.InvalidGeometryError, match='x must be finite'
+    ) as excinfo:
         gm.Point(float('nan'), 0)
     assert type(excinfo.value) is errors.InvalidGeometryError
-    with pytest.raises(errors.InvalidGeometryError, match='at least three coordinates') as excinfo:
+    with pytest.raises(
+        errors.InvalidGeometryError, match='at least three coordinates'
+    ) as excinfo:
         gm.Polygon([(0, 0), (1, 1)])
     assert type(excinfo.value) is errors.InvalidGeometryError
     with pytest.raises(errors.InvalidGeometryError, match='same length') as excinfo:
@@ -87,9 +138,12 @@ def test_crs_mismatch_error_on_index_frame_guard() -> None:
     index = gm.SpatialIndex(gm.GeometryArray([gm.Point(0.5, 0.5)]))
     with pytest.raises(errors.CRSMismatchError, match='share the index CRS') as query:
         index.query(gm.box(0, 0, 1, 1, crs=4326))
-    assert (query.value.field, query.value.left, query.value.right, query.value.index) == (
-        'crs', None, 'EPSG:4326', None
-    )
+    assert (
+        query.value.field,
+        query.value.left,
+        query.value.right,
+        query.value.index,
+    ) == ('crs', None, 'EPSG:4326', None)
     with pytest.raises(errors.CRSMismatchError, match='share the index CRS'):
         index.insert(gm.Point(1, 1, crs=4326))
 
@@ -99,13 +153,18 @@ def test_direct_frame_mismatch_paths_keep_structured_attributes() -> None:
     tagged = gm.GeometryArray([gm.Point(1, 1, crs=4326)])
     with pytest.raises(gm.CRSMismatchError) as concat:
         bare.concat(tagged)
-    assert (concat.value.field, concat.value.left, concat.value.right, concat.value.index) == (
-        'crs', None, 'EPSG:4326', 1
-    )
+    assert (
+        concat.value.field,
+        concat.value.left,
+        concat.value.right,
+        concat.value.index,
+    ) == ('crs', None, 'EPSG:4326', 1)
     with pytest.raises(gm.CRSMismatchError) as required:
         gm.require(gm.Point(0, 0, crs=3857), crs=4326)
     assert (required.value.field, required.value.left, required.value.right) == (
-        'crs', 'EPSG:4326', 'EPSG:3857'
+        'crs',
+        'EPSG:4326',
+        'EPSG:3857',
     )
 
 
@@ -231,10 +290,14 @@ def test_parse_error_covers_content_violations() -> None:
 
 
 def test_export_srid_without_epsg_is_crs_error() -> None:
+    # CRS84 is a PostGIS wire alias (encodes as SRID 4326); a truly non-EPSG
+    # non-alias CRS still raises CRSError.
+    ewkb = gm.Point(0, 0, crs='OGC:CRS84').to_wkb(include_srid=True)
+    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
     with pytest.raises(
         errors.CRSError, match='EWKB SRID requires an EPSG-authority CRS'
     ):
-        gm.Point(0, 0, crs='OGC:CRS84').to_wkb(include_srid=True)
+        gm.Point(0, 0, crs='ESRI:102001').to_wkb(include_srid=True)
 
 
 def test_from_arrow_rejects_non_arrow_objects() -> None:
@@ -250,24 +313,35 @@ def test_index_construction_frame_conflict() -> None:
 
 
 def test_frechet_separates_kind_from_content() -> None:
+    """Wrong KIND raises; empty CONTENT degrades to the family sentinel.
+
+    The split is the point, and only the content half changed: an empty operand
+    is total for `distance` and `hausdorff_distance`, so `frechet_distance`
+    answering `inf` is what makes the three agree and keeps one empty row from
+    aborting a batch. A polygon operand is still a hard error on both surfaces.
+    """
     line = gm.from_wkt('LINESTRING (0 0, 1 1)')
     with pytest.raises(errors.GeometryTypeError, match='Frechet distance requires'):
         gm.frechet_distance(gm.box(0, 0, 1, 1), line)
-    with pytest.raises(errors.InvalidGeometryError, match='non-empty linework'):
-        gm.frechet_distance(gm.from_wkt('LINESTRING EMPTY'), line)
+    assert gm.frechet_distance(gm.from_wkt('LINESTRING EMPTY'), line) == math.inf
+
     polygons = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 1, 2, 2)])
     with pytest.raises(errors.GeometryTypeError, match='Frechet distance requires'):
         gm.frechet_distance(polygons, polygons)
     empty_lines = gm.GeometryArray([gm.from_wkt('LINESTRING EMPTY'), line])
-    with pytest.raises(errors.InvalidGeometryError, match='non-empty linework'):
-        gm.frechet_distance(empty_lines, empty_lines)
+    assert gm.frechet_distance(empty_lines, empty_lines).tolist() == [math.inf, 0.0]
 
 
-def test_frechet_empty_geographic_raises_invalid_geometry_error() -> None:
+def test_frechet_empty_geographic_degrades_like_the_planar_lane() -> None:
+    """The geodesic lane uses the same sentinel as the planar one.
+
+    Domain validation still runs first — an out-of-domain latitude is a real
+    error — but emptiness is total on both lanes.
+    """
     empty = gm.from_wkt('LINESTRING EMPTY', crs=4326)
     line = gm.LineString([(0, 0), (1, 1)], crs=4326)
-    with pytest.raises(errors.InvalidGeometryError, match='non-empty linework'):
-        gm.frechet_distance(empty, line)
+    assert gm.frechet_distance(empty, line) == math.inf
+    assert gm.frechet_distance(line, empty) == math.inf
 
 
 def test_parameter_coherence_is_geometry_error() -> None:
@@ -362,3 +436,61 @@ def test_errors_carry_structured_attributes() -> None:
     assert excinfo3.value.right == 'EPSG:4326'
     assert gm.CRSMismatchError('boom').left is None
     assert gm.ParseError('boom').format is None
+
+
+def test_linref_messages_name_only_public_spellings() -> None:
+    """An error must name the API the caller actually called.
+
+    These messages named private internals (`line_interpolate_points`) and
+    parameters that do not exist on any public signature (`distances`,
+    `start_distance`, `end_distance`, `start_m`, `end_m`) — so a user reading
+    one could not find the thing it referred to.
+    """
+    line = gm.LineString([(0, 0), (1, 1)], m=[0, 1])
+    private = (
+        'line_interpolate_points',
+        'line_substring_m',
+        'line_locate_point',
+        'distances',
+        'start_distance',
+        'end_distance',
+        'start_m',
+        'end_m',
+    )
+    cases = (
+        partial(line.line_substring, 0.8, 0.2),
+        partial(line.line_substring, math.nan, 1.0),
+        partial(line.line_substring, 0.0, math.nan),
+        partial(line.line_substring, math.nan, 1.0, basis='m'),
+        partial(line.line_interpolate, 0.5, count=3),
+        partial(line.line_interpolate),
+        partial(line.line_interpolate, count=3, normalized=True),
+    )
+    for call in cases:
+        with pytest.raises(gm.GeometryError) as info:
+            call()
+        message = str(info.value)
+        assert not [token for token in private if token in message], message
+
+
+def test_ewkt_prefix_recognition_is_shared_between_classifier_and_parser() -> None:
+    """`require`'s WKT classifier and the EWKT parser share ONE prefix rule.
+
+    They are different jobs — a classifier and a parser — so they are not
+    merged. But the `SRID=` prefix test was written out in both, and a change
+    to one would silently stop `require` recognizing EWKT and misroute it to
+    the GeoJSON decoder. The rule now lives in one place.
+    """
+    for text in (
+        'SRID=4326;POINT (1 2)',
+        'srid=4326;POINT (1 2)',
+        '  SrId=4326;POINT (1 2)',
+    ):
+        assert gm.require(text).crs == 'EPSG:4326', text
+
+    # a malformed SRID must reach the WKT parser's diagnostic, not GeoJSON
+    with pytest.raises(gm.ParseError):
+        gm.require('SRID=bad;POINT (1 2)')
+
+    # a bare WKT body is unaffected
+    assert gm.require('POINT (1 2)').crs is None

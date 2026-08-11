@@ -1,6 +1,16 @@
 use std::num::NonZeroU32;
 
-use super::*;
+use crate::geometry::constructive::{
+    BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, Result, WalkJoinRule, circle_loop,
+    convex_buffer_budgeted, degenerate_polygonal_as_linework, point_buffer, sided_strip_parts,
+    validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
+    winding_erosion_budgeted, winding_region, winding_stroke_budgeted,
+};
+use crate::geometry::{
+    BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, Coordinates as _, ExpansionBudget,
+    GeometryErrorKind, LineSeq, RepairMethod, Shape, polygon_parts_to_shape,
+    same_topological_coordinate,
+};
 use crate::{Finite, Positive};
 
 impl Shape {
@@ -22,6 +32,26 @@ impl Shape {
         quadrant_segments: NonZeroU32,
         miter_limit: Positive,
     ) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+        self.buffer_with_style_budgeted(
+            distance,
+            cap_style,
+            join_style,
+            quadrant_segments,
+            miter_limit,
+            &mut budget,
+        )
+    }
+
+    pub(crate) fn buffer_with_style_budgeted(
+        &self,
+        distance: f64,
+        cap_style: BufferCapStyle,
+        join_style: BufferJoinStyle,
+        quadrant_segments: NonZeroU32,
+        miter_limit: Positive,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         let distance = Finite::try_new("distance", distance)?.get();
         // Buffering any empty geometry yields the empty polygon (Shapely
         // semantics); short-circuit before handing geo-rs an empty input.
@@ -37,7 +67,6 @@ impl Shape {
         {
             return Ok(self.clone());
         }
-        validate_buffer_expansion(self, quadrant_segments)?;
         // GEOS-style input reduction (matches `BufferInputLineSimplifier`):
         // an input vertex whose deviation is a tiny fraction of the buffer
         // distance cannot move the offset result beyond its own arc-faceting
@@ -64,9 +93,10 @@ impl Shape {
             self
         };
         // Convex hole-free polygons buffer constructively (offset edges +
-        // styled joins, no boolean resolution) — see `convex_buffer`.
+        // styled joins, no boolean resolution) — see `convex_buffer_budgeted`.
         if let Self::Polygon(polygon) = source
-            && let Some(fast) = convex_buffer(polygon, distance, rule, quadrant_segments)
+            && let Some(fast) =
+                convex_buffer_budgeted(polygon, distance, rule, quadrant_segments, budget)?
         {
             return Ok(fast);
         }
@@ -79,7 +109,9 @@ impl Shape {
         // limit (the valid region; one lobe of a bowtie, like GEOS).
         // `None` means the polygonal input has degenerate (zero-area) rings,
         // which have no interior to expand or erode.
-        if let Some(result) = source.winding_route(distance, cap_style, rule, quadrant_segments) {
+        if let Some(result) =
+            source.winding_route(distance, cap_style, rule, quadrant_segments, budget)?
+        {
             return Ok(result);
         }
         // A zero-area polygon IS its boundary linework: reinterpret its rings
@@ -90,7 +122,7 @@ impl Shape {
         // for inputs GEOS itself flags `invalid` and resolves the same way.
         let linework = degenerate_polygonal_as_linework(source);
         Ok(linework
-            .winding_route(distance, cap_style, rule, quadrant_segments)
+            .winding_route(distance, cap_style, rule, quadrant_segments, budget)?
             .unwrap_or_else(Self::empty_polygon))
     }
 
@@ -103,71 +135,104 @@ impl Shape {
         cap_style: BufferCapStyle,
         rule: WalkJoinRule,
         quadrant_segments: NonZeroU32,
-    ) -> Option<Self> {
+        budget: &mut ExpansionBudget,
+    ) -> Result<Option<Self>> {
         if distance <= 0.0 {
             // Erosion at distance 0 selects `winding <= -1` of the
             // UNMOVED flipped rings — exactly the valid region, so
             // `buffer(0)` is the d -> 0 limit for free.
             return match self {
-                Self::Polygon(polygon) => winding_erosion(
+                Self::Polygon(polygon) => winding_erosion_budgeted(
                     std::slice::from_ref(polygon),
                     -distance,
                     rule,
                     quadrant_segments,
+                    budget,
                 ),
                 Self::MultiPolygon(polygons) => {
-                    winding_erosion(polygons, -distance, rule, quadrant_segments)
+                    winding_erosion_budgeted(polygons, -distance, rule, quadrant_segments, budget)
                 },
-                Self::GeometryCollection(parts) => {
-                    winding_collection(parts, distance, cap_style, rule, quadrant_segments)
-                },
+                Self::GeometryCollection(parts) => winding_collection_budgeted(
+                    parts,
+                    distance,
+                    cap_style,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                ),
                 // Non-positive distances annihilate puntal/lineal input
                 // exactly (GEOS semantics).
-                _ => Some(Self::empty_polygon()),
+                _ => Ok(Some(Self::empty_polygon())),
             };
         }
         match self {
-            Self::Point(point) => point_buffer(*point, distance, quadrant_segments),
+            Self::Point(point) => point_buffer(*point, distance, quadrant_segments, budget),
             Self::MultiPoint(points) => {
                 let mut loops = Vec::with_capacity(points.len());
                 for point in points.iter_coords() {
-                    loops.push(circle_loop(point, distance, quadrant_segments)?);
+                    let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)?
+                    else {
+                        return Ok(None);
+                    };
+                    loops.push(circle);
                 }
                 let parts = winding_region(&loops, |winding| winding >= 1);
                 if parts.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
-                Some(polygon_parts_to_shape(parts))
+                Ok(Some(polygon_parts_to_shape(parts)))
             },
-            Self::LineString(chain) => {
-                winding_stroke(&[chain], distance, cap_style, rule, quadrant_segments)
-            },
+            Self::LineString(chain) => winding_stroke_budgeted(
+                &[chain],
+                distance,
+                cap_style,
+                rule,
+                quadrant_segments,
+                budget,
+            ),
             Self::MultiLineString(lines) => {
                 let chains: Vec<&CoordSeq> = lines.iter().map(LineSeq::as_coords).collect();
-                winding_stroke(&chains, distance, cap_style, rule, quadrant_segments)
+                winding_stroke_budgeted(
+                    &chains,
+                    distance,
+                    cap_style,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                )
             },
-            Self::Polygon(polygon) => winding_buffer(
+            Self::Polygon(polygon) => winding_buffer_budgeted(
                 std::slice::from_ref(polygon),
                 distance,
                 rule,
                 quadrant_segments,
+                budget,
             ),
             Self::MultiPolygon(polygons) => {
-                winding_buffer(polygons, distance, rule, quadrant_segments)
+                winding_buffer_budgeted(polygons, distance, rule, quadrant_segments, budget)
             },
             Self::GeometryCollection(parts) => {
                 // A collection with one real member buffers AS that member
-                // (the convex/point fast paths apply); mixed collections
-                // share one arrangement.
-                let mut real = parts.iter().filter(|part| !part.is_empty());
-                match (real.next(), real.next()) {
-                    (Some(only), None) => {
-                        only.winding_route(distance, cap_style, rule, quadrant_segments)
+                // (the convex/point fast paths apply); mixed collections share
+                // one arrangement.  Find that member across nested collections
+                // in one iterative pass: recursively asking `is_empty()` at
+                // every one-child wrapper rescanned the entire tail at each
+                // level and made a deep collection quadratic.
+                match sole_nonempty_collection_member(parts) {
+                    Some(only) => {
+                        only.winding_route(distance, cap_style, rule, quadrant_segments, budget)
                     },
-                    _ => winding_collection(parts, distance, cap_style, rule, quadrant_segments),
+                    _ => winding_collection_budgeted(
+                        parts,
+                        distance,
+                        cap_style,
+                        rule,
+                        quadrant_segments,
+                        budget,
+                    ),
                 }
             },
-            Self::Empty(..) => Some(Self::empty_polygon()),
+            Self::Empty(..) => Ok(Some(Self::empty_polygon())),
         }
     }
 
@@ -242,4 +307,21 @@ impl Shape {
             shape.repair(RepairMethod::Structure, false)
         }
     }
+}
+
+/// The only non-empty non-collection member of `parts`, if there is exactly
+/// one.  An explicit stack keeps deeply nested one-child collections off the
+/// Rust call stack and never asks a collection to recursively scan itself.
+fn sole_nonempty_collection_member(parts: &[Shape]) -> Option<&Shape> {
+    let mut stack: Vec<&Shape> = parts.iter().rev().collect();
+    let mut only = None;
+    while let Some(part) = stack.pop() {
+        match part {
+            Shape::GeometryCollection(nested) => stack.extend(nested.iter().rev()),
+            _ if part.is_empty() => {},
+            _ if only.replace(part).is_some() => return None,
+            _ => {},
+        }
+    }
+    only
 }

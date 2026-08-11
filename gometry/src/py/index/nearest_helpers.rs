@@ -1,13 +1,14 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::IntoPyObjectExt as _;
+
 use crate::NonNegative;
-use crate::py::index::*;
+use crate::py::index::{
+    AABB, BinaryHeap, IndexEntry, Ordering, ParentNode, PointDistance, Py, PyAny, PyResult, Python,
+    RTreeNode, RTreeObject, float64_array, int64_array,
+};
 use crate::py::vectors::Groups;
 /// A frontier node of the best-first nearest traversal — a bulk STR node
 /// (level, index), an overflow R-tree node, or an evaluated-bound entry —
@@ -134,12 +135,12 @@ pub(crate) fn push_nearest_candidate(
 ) {
     if nearest.len() < k {
         nearest.push(candidate);
-    } else if nearest
-        .peek()
-        .is_some_and(|worst| candidate.cmp(worst).is_lt())
-    {
-        nearest.pop();
-        nearest.push(candidate);
+    } else if let Some(mut worst) = nearest.peek_mut() {
+        // Replace-in-place via peek_mut (one sift) instead of pop+push (two).
+        // Kept only when the public nearest row improves beyond noise.
+        if candidate.cmp(&*worst).is_lt() {
+            *worst = candidate;
+        }
     }
 }
 

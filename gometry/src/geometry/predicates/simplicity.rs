@@ -1,10 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::ControlFlow;
 
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::{
+    CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation, Point,
+    PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
+    point_on_segment, ring_winding, same_point, segment_cross_point, segments_cross,
+    segments_intersect, shared_segment_part,
+};
 pub(crate) fn intersection_contact(left: &Shape, right: &Shape) -> bool {
     isolated_or_area_contact(left, right)
         || isolated_or_area_contact(right, left)
@@ -270,6 +273,10 @@ pub(crate) fn non_shared_endpoint_lies_on_segment(left: Segment, right: Segment)
 }
 
 impl ValidationIssue {
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the input shapes are borrowed through their common trait contract, without a meaningful generic identity"
+    )]
     pub fn new(
         reason: impl Into<String>,
         location: Option<Point>,

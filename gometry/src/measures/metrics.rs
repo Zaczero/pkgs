@@ -6,7 +6,10 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::super::*;
+use crate::{
+    DistanceUnit, PyGeometry, PyGeometryArray, exact_geometry, exact_geometry_array,
+    finite_f64_required,
+};
 
 /// Axis-aligned bounds as a matrix (see `GeometryArray.bounds`).
 ///
@@ -97,7 +100,13 @@ pub(crate) fn area(
     geom: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    area_natural_or_override(py, geom, unit)
+    measure_natural_or_override(
+        py,
+        geom,
+        unit,
+        crate::dispatch::Operation::Area,
+        crate::dispatch::kernels::unary_area,
+    )
 }
 
 pub(crate) fn area_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResult<f64> {
@@ -121,21 +130,20 @@ pub(crate) fn area_natural_array(py: Python<'_>, values: &PyGeometryArray) -> Py
     )
 }
 
-fn area_natural_or_override(
+/// The body every `unit=`-override measure free function shares: a scalar or
+/// `GeometryArray` dispatches straight through, while a raw iterable is
+/// materialized into one array first (the capability that earns these free
+/// functions a place beside their property forms).
+fn measure_natural_or_override(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
+    op: crate::dispatch::Operation,
+    kernel: crate::dispatch::UnaryMeasureKernel,
 ) -> PyResult<Py<PyAny>> {
     match crate::GeometryValues::parse(geom)? {
         crate::GeometryValues::One(_) | crate::GeometryValues::Array(_) => {
-            crate::dispatch::dispatch_unary(
-                py,
-                geom,
-                crate::dispatch::Operation::Area,
-                unit,
-                None,
-                crate::dispatch::kernels::unary_area,
-            )
+            crate::dispatch::dispatch_unary(py, geom, op, unit, None, kernel)
         },
         crate::GeometryValues::Collected(items) => {
             let mut items = items.into_items();
@@ -148,14 +156,7 @@ fn area_natural_or_override(
                 "GeometryArray",
             )?;
             let array = PyGeometryArray::pack_or_mixed(items, frame);
-            crate::dispatch::unary_array(
-                py,
-                &array,
-                crate::dispatch::Operation::Area,
-                unit,
-                None,
-                crate::dispatch::kernels::unary_area,
-            )
+            crate::dispatch::unary_array(py, &array, op, unit, None, kernel)
         },
     }
 }
@@ -200,7 +201,65 @@ pub(crate) fn length(
     geom: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    length_natural_or_override(py, geom, unit)
+    measure_natural_or_override(
+        py,
+        geom,
+        unit,
+        crate::dispatch::Operation::Length,
+        crate::dispatch::kernels::unary_length,
+    )
+}
+
+/// Compute 3D length in CRS-natural units or with a ``unit`` override.
+///
+/// Parameters
+/// ----------
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values
+///     Input geometry, array, or iterable materialized as an array.
+/// unit : {'planar', 'meters'} or None, default None
+///     ``None`` follows the geometry's CRS, exactly like ``geom.length_3d``.
+///     ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
+///     metric and raises without a CRS.
+///
+/// Returns
+/// -------
+/// float or numpy.ndarray
+///     Scalar 3D length or one value per row.
+///
+/// Raises
+/// ------
+/// CRSError
+///     If the CRS lacks linear axis units for a metric result.
+/// GeometryError
+///     If ``unit='meters'`` is requested for a CRS-free geometry.
+/// InvalidGeometryError
+///     If a scalar geometry lacks Z on every vertex.
+///
+/// See Also
+/// --------
+/// length_3d : CRS-natural property form.
+/// length : The 2D sibling, with the same ``unit`` override.
+/// distance_3d : Pairwise 3D distance under the same metric.
+#[pyfunction]
+#[pyo3(signature = (geom, *, unit = None))]
+///
+/// Examples
+/// --------
+/// >>> import gometry as gm
+/// >>> gm.length_3d(gm.from_wkt('LINESTRING Z (0 0 0, 3 4 0)'), unit='planar')
+/// 5.0
+pub(crate) fn length_3d(
+    py: Python<'_>,
+    geom: &Bound<'_, PyAny>,
+    unit: Option<DistanceUnit>,
+) -> PyResult<Py<PyAny>> {
+    measure_natural_or_override(
+        py,
+        geom,
+        unit,
+        crate::dispatch::Operation::Length3d,
+        crate::dispatch::kernels::unary_length_3d,
+    )
 }
 
 pub(crate) fn length_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResult<f64> {
@@ -225,45 +284,6 @@ pub(crate) fn length_natural_array(
         None,
         crate::dispatch::kernels::unary_length,
     )
-}
-
-fn length_natural_or_override(
-    py: Python<'_>,
-    geom: &Bound<'_, PyAny>,
-    unit: Option<DistanceUnit>,
-) -> PyResult<Py<PyAny>> {
-    match crate::GeometryValues::parse(geom)? {
-        crate::GeometryValues::One(_) | crate::GeometryValues::Array(_) => {
-            crate::dispatch::dispatch_unary(
-                py,
-                geom,
-                crate::dispatch::Operation::Length,
-                unit,
-                None,
-                crate::dispatch::kernels::unary_length,
-            )
-        },
-        crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items();
-            let frame = crate::Frame::resolve_items(
-                &mut items,
-                crate::FrameAdoption {
-                    crs: None,
-                    epoch: None,
-                },
-                "GeometryArray",
-            )?;
-            let array = PyGeometryArray::pack_or_mixed(items, frame);
-            crate::dispatch::unary_array(
-                py,
-                &array,
-                crate::dispatch::Operation::Length,
-                unit,
-                None,
-                crate::dispatch::kernels::unary_length,
-            )
-        },
-    }
 }
 
 /// Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.

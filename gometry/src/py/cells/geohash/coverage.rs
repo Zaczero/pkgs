@@ -1,17 +1,21 @@
 //! GeohashCoverage and the geohash-cover backend.
 
-use pyo3::IntoPyObjectExt;
+use pyo3::prelude::{PyAnyMethods as _, PyTypeMethods as _};
 use pyo3::types::PyAny;
+use pyo3::{IntoPyObjectExt as _, pyclass, pymethods};
 
-use super::super::*;
-use super::cell::{
-    PyGeohashCell, geohash_cell_arg, geohash_floor, parse_geohash_precision, parse_geohash_token,
-};
 use crate::Typed;
 use crate::grid::geohash::{self as kernel, GEOHASH_MAX_PRECISION, Geohash};
 use crate::py::cells::coverage_ops::{
     CoverageCells, build_rect_coverage_state, parse_max_cells, rect_cell_array_for,
     rect_cell_polygon, rect_coverage_cells, unpickle_rect_coverage_state,
+};
+use crate::py::cells::geohash::cell::{
+    PyGeohashCell, geohash_cell_arg, geohash_floor, parse_geohash_precision, parse_geohash_token,
+};
+use crate::py::cells::{
+    Bound, CellRule, GridKind, Py, PyCellArray, PyGeometry, PyResult, Python, grid_cover_dispatch,
+    pyfunction,
 };
 
 /// Rebuild a pickled GeohashCoverage from its public fields (internal; see
@@ -115,20 +119,28 @@ grid_coverage_common_pymethods! {
         cell_array: py_geohash_cell_array,
         parse_cell: geohash_cell_arg,
         parsed_key: |cell| cell.identity_key(),
-        interior_doc: "Cells certified entirely inside the source geometry.\n\nReturns\n-------\nCellArray of GeohashCell",
-        interior_cells: { coverage.partition.interior().cell_array(GridKind::GeohashCell) },
-        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nReturns\n-------\nCellArray of GeohashCell",
-        boundary_cells: {
-            coverage.partition.boundary().cell_array(GridKind::GeohashCell)
+        interior_doc: "Cells certified entirely inside the source geometry.\n\nThe coverer partition is computed lazily on first access (shared with ``boundary_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of GeohashCell\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
+        interior_cells: {
+            Ok(coverage
+                .partition::<GeohashCoverSpec>()?
+                .interior()
+                .cell_array(GridKind::GeohashCell))
         },
-        depth_fields: [depth],
-        hash_depth: (coverage.depth,),
+        boundary_doc: "Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).\n\nThe coverer partition is computed lazily on first access (shared with ``interior_cells`` / ``explain``). When the factory ``max_cells`` budget is too small for the full overlap partition, this may raise even if visible-cell construction succeeded under a weaker ``cell_rule``.\n\nReturns\n-------\nCellArray of GeohashCell\n\nRaises\n------\nGeometryError\n    If computing the coverer partition would exceed the recorded ``max_cells``.",
+        boundary_cells: {
+            Ok(coverage
+                .partition::<GeohashCoverSpec>()?
+                .boundary()
+                .cell_array(GridKind::GeohashCell))
+        },
+        depth_fields: [depth, max_cells],
+        hash_depth: (coverage.depth, coverage.max_cells,),
         cell_hash_key: |cell| { cell.cell },
         explain_grid: "geohash",
         explain_depth: { coverage.depth.explain("precision") },
         explain_cells: "cells",
-        explain_interior_len: { coverage.partition.interior_len() },
-        explain_outer_len: { coverage.partition.outer_len() },
+        explain_interior_len: { coverage.partition::<GeohashCoverSpec>()?.interior_len() },
+        explain_outer_len: { coverage.partition::<GeohashCoverSpec>()?.outer_len() },
         to_polygon_doc: "Dissolve the coverage into one outline geometry.\n\nDisjoint covered regions return a `MultiPolygon`; adjacent cells dissolve shared edges into one outline.\n\nReturns\n-------\n`Polygon` or `MultiPolygon`\n\nRaises\n------\nGeometryError\n    If the coverage is empty.",
         to_polygon: {
             let inners: Vec<_> = coverage.cells.iter().map(|cell| cell.cell).collect();
@@ -160,21 +172,15 @@ grid_coverage_common_pymethods! {
                     Typed(coverage.geometry.clone()),
                     tokens,
                     coverage.cell_rule.token(),
-                    // Factory partition precision (recompute key).
-                    coverage
-                        .partition
-                        .all()
-                        .get(0)
-                        .map(|cell| cell.cell.precision)
-                        .or_else(|| coverage.depth.uniform_level())
-                        .expect("coverage has factory or visible depth"),
+                    // Factory partition precision (lazy recompute key).
+                    coverage.membership.factory_depth(),
                     // Visible depth when empty (cannot be inferred from cells).
                     if coverage.cells.is_empty() {
                         coverage.depth.uniform_level()
                     } else {
                         None
                     },
-                    // Factory max_cells budget for bounded unpickle recompute (D07).
+                    // Factory max_cells budget for bounded lazy partition (D07).
                     coverage.max_cells,
                 )
             }

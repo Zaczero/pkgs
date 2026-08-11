@@ -4,8 +4,11 @@
 )]
 use geographiclib_rs::Geodesic;
 
-use super::*;
-use crate::geometry::{Coordinates, GeodesicMetric, Point, Shape};
+use crate::crs::geodesic::{
+    EllipsoidMetric, Result, ensure_geodesic_lonlat_crs, ensure_geographic_lonlat, finite,
+    normalize, with_ellipsoid_metric, with_geodesic,
+};
+use crate::geometry::{Coordinates, GeodesicMetric as _, Point, Shape};
 
 /// Batch geodesic distances from packed lon/lat columns to one fixed
 /// point: CRS/domain validation and the geodesic cache resolve happen

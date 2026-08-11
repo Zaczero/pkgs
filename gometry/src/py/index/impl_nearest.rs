@@ -1,4 +1,9 @@
-use crate::py::index::*;
+use crate::py::index::{
+    AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
+    NonNegative, PyGeometry, PyResult, PySpatialIndex, RTreeNode, Shape, ShapeData,
+    aabb_box_distance_2, crs, index_envelope, nearest_candidates_from_heap, pair_distance_resolved,
+    push_nearest_candidate, resolve_metric, shape_pruner_point,
+};
 
 impl PySpatialIndex {
     pub(crate) fn nearest_one(
@@ -7,19 +12,19 @@ impl PySpatialIndex {
         k: usize,
         unit: Option<DistanceUnit>,
         max_distance: Option<NonNegative>,
-        exclusive: bool,
-        ties: bool,
+        options: NearestOptions,
     ) -> PyResult<Vec<NearestCandidate>> {
         self.ensure_query_compatible(geometry, "spatial index nearest")?;
         let metric = resolve_metric(self.metric_crs_str(geometry.crs_str()), unit, "nearest")?;
+        let mut frontier = BinaryHeap::new();
         self.nearest_core_ties(
             &metric,
             &geometry.shape,
             &geometry.frame_cache,
             k,
             max_distance,
-            exclusive,
-            ties,
+            options,
+            &mut frontier,
         )
     }
 
@@ -31,19 +36,29 @@ impl PySpatialIndex {
     /// k-th distance as the ceiling (and no k cap) returns EVERY row tying
     /// it under exact comparison — shapely `all_matches` / geopandas
     /// `return_all` parity, opt-in.
-    pub(crate) fn nearest_core_ties(
-        &self,
+    ///
+    /// `frontier` is a batch-local R-tree work heap: cleared and reused across
+    /// array query rows (free-threading: never a receiver cache or lock).
+    pub(crate) fn nearest_core_ties<'a>(
+        &'a self,
         metric: &crs::MetricModel,
         query: &ShapeData,
         query_cache: &crate::geometry::FrameDependentCaches,
         k: usize,
         max_distance: Option<NonNegative>,
-        exclusive: bool,
-        ties: bool,
+        options: NearestOptions,
+        frontier: &mut BinaryHeap<FrontierNode<'a>>,
     ) -> PyResult<Vec<NearestCandidate>> {
-        let candidates =
-            self.nearest_core(metric, query, query_cache, k, max_distance, exclusive)?;
-        if !ties || k == 0 || candidates.len() < k {
+        let candidates = self.nearest_core(
+            metric,
+            query,
+            query_cache,
+            k,
+            max_distance,
+            options.exclude_equal,
+            frontier,
+        )?;
+        if !options.include_ties || k == 0 || candidates.len() < k {
             // Nothing was dropped at the k boundary — no ties to recover.
             return Ok(candidates);
         }
@@ -54,18 +69,20 @@ impl PySpatialIndex {
             query_cache,
             usize::MAX,
             Some(NonNegative::try_new("max_distance", kth)?),
-            exclusive,
+            options.exclude_equal,
+            frontier,
         )
     }
 
-    pub(crate) fn nearest_core(
-        &self,
+    pub(crate) fn nearest_core<'a>(
+        &'a self,
         metric: &crs::MetricModel,
         query: &ShapeData,
         query_cache: &crate::geometry::FrameDependentCaches,
         k: usize,
         max_distance: Option<NonNegative>,
         exclusive: bool,
+        frontier: &mut BinaryHeap<FrontierNode<'a>>,
     ) -> PyResult<Vec<NearestCandidate>> {
         let Some(query_bounds) = query.bounds().filter(|_| k > 0) else {
             return Ok(Vec::new());
@@ -78,7 +95,7 @@ impl PySpatialIndex {
             // Planar metrics: the envelope box distance is a valid lower bound
             // in coordinate units (scaled to meters where needed), so one
             // bound-ordered traversal serves point and non-point queries.
-            let query_envelope = bounds_envelope(query_bounds);
+            let query_envelope = index_envelope(query.shape(), query_bounds, self.geographic());
             let to_metre = metric.coordinate_scale();
             return self.bound_ordered_nearest(
                 |envelope| aabb_box_distance_2(&query_envelope, envelope).sqrt() * to_metre,
@@ -96,6 +113,7 @@ impl PySpatialIndex {
                 k,
                 max_distance,
                 exclude,
+                frontier,
             );
         }
         if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
@@ -117,6 +135,7 @@ impl PySpatialIndex {
                 k,
                 max_distance,
                 exclude,
+                frontier,
             );
         }
         // Geodesic metric without a sound envelope bound (non-point shapes
@@ -156,15 +175,19 @@ impl PySpatialIndex {
     /// once the lower bound exceeds the relevant ceiling (the k-th best so
     /// far, or `max_distance`). Yields the identical k-nearest as a full scan
     /// for any `bound` that never exceeds the true distance.
-    pub(crate) fn bound_ordered_nearest(
-        &self,
+    ///
+    /// `frontier` is cleared and reused across rows on the array path — batch
+    /// local only (no receiver cache, no lock).
+    pub(crate) fn bound_ordered_nearest<'a>(
+        &'a self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
         exact: impl Fn(usize) -> PyResult<f64>,
         k: usize,
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
+        frontier: &mut BinaryHeap<FrontierNode<'a>>,
     ) -> PyResult<Vec<NearestCandidate>> {
-        let mut frontier: BinaryHeap<FrontierNode<'_>> = BinaryHeap::new();
+        frontier.clear();
         let root_level = self.bulk.root_level();
         for (index, root) in self.bulk.roots().iter().enumerate() {
             frontier.push(FrontierNode {
@@ -241,7 +264,9 @@ impl PySpatialIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use pyo3::Python;
+
+    use crate::py::index::parse_max_distance;
 
     #[test]
     fn nearest_max_distance_rejects_nan_at_parser() {

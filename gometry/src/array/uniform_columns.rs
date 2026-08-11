@@ -2,7 +2,10 @@
 //! one shared `CoordSeq` (+CSR offsets) when every row is the same
 //! primitive kind with uniform axes, else `None` -> `Mixed`.
 
-use super::*;
+use crate::array::{
+    CoordSeq, CoordinateAxes, CsrOffsetBuilder, CsrOffsetColumn, PolygonLevel, PyGeometryArray,
+    RingLevel, Shape,
+};
 
 impl PyGeometryArray {
     /// `Some((coords, offsets))` when every row is a non-empty `LineString`

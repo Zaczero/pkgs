@@ -1,12 +1,9 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::GeometryError;
+use crate::py::functions::geocode::PyResult;
 
 const OLC_ALPHABET: &[u8; 20] = b"23456789CFGHJMPQRVWX";
 
@@ -255,7 +252,7 @@ pub(super) fn olc_require_full(code: &str) -> PyResult<()> {
     } else {
         Err(crate::py::errors::parse_error(
             format!("{code:?} is not a full plus code"),
-            crate::py::errors::ParseFormat::PlusCode,
+            crate::error::ParseFormat::PlusCode,
         ))
     }
 }
@@ -304,7 +301,10 @@ pub(super) fn olc_shorten(code: &str, latitude: f64, longitude: f64) -> PyResult
     for level in (1..=OLC_PAIR_RESOLUTIONS.len() - 2).rev() {
         // 0.3 instead of 0.5 leaves recovery a safety margin.
         if range < OLC_PAIR_RESOLUTIONS[level] * 0.3 {
-            return Ok(code[(level + 1) * 2..].to_owned());
+            return code
+                .get((level + 1) * 2..)
+                .map(str::to_owned)
+                .ok_or_else(|| GeometryError::new_err("invalid plus code"));
         }
     }
     Ok(code)
@@ -318,7 +318,7 @@ pub(super) fn olc_recover(code: &str, latitude: f64, longitude: f64) -> PyResult
     if !olc_is_short(code) {
         return Err(crate::py::errors::parse_error(
             format!("{code:?} is not a short plus code"),
-            crate::py::errors::ParseFormat::PlusCode,
+            crate::error::ParseFormat::PlusCode,
         ));
     }
     let latitude = latitude.clamp(-90.0, 90.0);
@@ -331,7 +331,10 @@ pub(super) fn olc_recover(code: &str, latitude: f64, longitude: f64) -> PyResult
     let resolution = 20_f64.powf(2.0 - padding as f64 / 2.0);
     let half = resolution / 2.0;
     let reference = olc_encode(latitude, longitude, OLC_PAIR_CODE_LENGTH);
-    let candidate = format!("{}{}", &reference[..padding], code);
+    let prefix = reference
+        .get(..padding)
+        .ok_or_else(|| GeometryError::new_err("invalid plus code"))?;
+    let candidate = format!("{prefix}{code}");
     let area = olc_decode(&candidate);
     let (mut center_lat, center_lng) = area.center();
     let mut center_lng = center_lng;

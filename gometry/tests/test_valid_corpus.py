@@ -129,11 +129,15 @@ def _corpus_geometries() -> list[tuple[str, gm.Geometry]]:
     return items
 
 
-def _assert_same_shape(label: str, original: gm.Geometry, restored: gm.Geometry) -> None:
+def _assert_same_shape(
+    label: str, original: gm.Geometry, restored: gm.Geometry
+) -> None:
     """Exact self-output identity: WKT body, coordinate axes, CRS, epoch."""
     assert str(restored) == str(original), f'{label}: wkt mismatch'
     assert restored.coordinate_axes == original.coordinate_axes, f'{label}: axes'
-    assert restored.crs == original.crs, f'{label}: crs {restored.crs!r} vs {original.crs!r}'
+    assert restored.crs == original.crs, (
+        f'{label}: crs {restored.crs!r} vs {original.crs!r}'
+    )
     assert restored.epoch == original.epoch, f'{label}: epoch'
 
 
@@ -215,7 +219,11 @@ def _roundtrip_self_output(label: str, g: gm.Geometry) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(('label', 'geom'), _corpus_geometries(), ids=lambda x: x if isinstance(x, str) else '')
+@pytest.mark.parametrize(
+    ('label', 'geom'),
+    _corpus_geometries(),
+    ids=lambda x: x if isinstance(x, str) else '',
+)
 def test_corpus_self_output_roundtrips(label: str, geom: gm.Geometry) -> None:
     _roundtrip_self_output(label, geom)
 
@@ -368,7 +376,9 @@ def test_corpus_geoparquet_extension_disagreement_still_rejected() -> None:
         [pa.array([1.0]), pa.array([2.0])],
         names=['x', 'y'],
     )
-    ext_type = _extension_type_from_storage(pa, GEOARROW_POINT, storage.type, None, None)
+    ext_type = _extension_type_from_storage(
+        pa, GEOARROW_POINT, storage.type, None, None
+    )
     ext = pa.ExtensionArray.from_storage(ext_type, storage)
     chunked = pa.chunked_array([ext])
     with pytest.raises(gm.GeometryError, match=r'conflicts with.*extension|encoding'):

@@ -1,8 +1,4 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::crs::*;
+use crate::crs::{CfValue, CrsCoordinateOperationInfo, OperationParameterInfo};
 
 pub(crate) fn is_transverse_mercator(operation: &CrsCoordinateOperationInfo) -> bool {
     is_operation_method(operation, "9807", "Transverse Mercator")

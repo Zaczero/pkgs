@@ -1,4 +1,4 @@
-use super::*;
+use crate::geometry::predicates::*;
 use crate::geometry::*;
 mod convex_tests {
     use super::*;

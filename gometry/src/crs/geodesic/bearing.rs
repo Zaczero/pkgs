@@ -1,8 +1,37 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use geographiclib_rs::Geodesic;
+
+use crate::crs::geodesic::{
+    CrsError, DirectGeodesic as _, Result, ensure_geographic_lonlat, inverse_azimuths,
+    inverse_distance_azimuths, with_geodesic,
+};
+
+/// Copy the cached ellipsoid for a CRS once (batch nav kernels borrow it).
+pub(crate) fn geodesic_for_crs(crs: &str) -> Result<Geodesic> {
+    with_geodesic(crs, |geodesic| Ok(*geodesic))
+}
+
+/// Initial geodesic bearing (degrees clockwise from north, `0..360`) on a
+/// resolved ellipsoid — azimuth-only inverse grade.
+pub(crate) fn geodesic_bearing(
+    geodesic: &Geodesic,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+) -> Result<f64> {
+    ensure_geographic_lonlat(lon1, lat1)?;
+    ensure_geographic_lonlat(lon2, lat2)?;
+    let (azimuth, _) = inverse_azimuths(geodesic, lon1, lat1, lon2, lat2);
+    // geographiclib azimuths land in (-180, 180]; the branch normalize
+    // is bit-identical to `rem_euclid(360)` there without the `fmod`.
+    finite(azimuth, "geodesic bearing").map(|azimuth| {
+        if azimuth < 0.0 {
+            azimuth + 360.0
+        } else {
+            azimuth
+        }
+    })
+}
 
 /// Initial geodesic bearing (degrees clockwise from north, `0..360`).
 pub(crate) fn geodesic_bearing_crs(
@@ -12,20 +41,28 @@ pub(crate) fn geodesic_bearing_crs(
     lon2: f64,
     lat2: f64,
 ) -> Result<f64> {
-    ensure_geographic_lonlat(lon1, lat1)?;
-    ensure_geographic_lonlat(lon2, lat2)?;
     with_geodesic(crs, |geodesic| {
-        let (azimuth, _) = inverse_azimuths(geodesic, lon1, lat1, lon2, lat2);
-        // geographiclib azimuths land in (-180, 180]; the branch normalize
-        // is bit-identical to `rem_euclid(360)` there without the `fmod`.
-        finite(azimuth, "geodesic bearing").map(|azimuth| {
-            if azimuth < 0.0 {
-                azimuth + 360.0
-            } else {
-                azimuth
-            }
-        })
+        geodesic_bearing(geodesic, lon1, lat1, lon2, lat2)
     })
+}
+
+/// Destination lon/lat from a point along `azimuth` for `meters` (direct
+/// problem). Lat/lon-only direct grade — final azimuth is not exposed.
+pub(crate) fn geodesic_destination(
+    geodesic: &Geodesic,
+    lon: f64,
+    lat: f64,
+    azimuth: f64,
+    meters: f64,
+) -> Result<(f64, f64)> {
+    ensure_geographic_lonlat(lon, lat)?;
+    if crate::geometry::same_topological_coordinate(meters, 0.0) {
+        return Ok((lon, lat));
+    }
+    let (lat2, lon2): (f64, f64) = geodesic.direct(lat, lon, azimuth, meters);
+    finite(lon2, "geodesic destination")?;
+    finite(lat2, "geodesic destination")?;
+    Ok((lon2, lat2))
 }
 
 /// Destination lon/lat from a point along `azimuth` for `meters` (direct
@@ -37,43 +74,51 @@ pub(crate) fn geodesic_destination_crs(
     azimuth: f64,
     meters: f64,
 ) -> Result<(f64, f64)> {
-    ensure_geographic_lonlat(lon, lat)?;
-    if crate::geometry::same_topological_coordinate(meters, 0.0) {
-        return Ok((lon, lat));
-    }
     with_geodesic(crs, |geodesic| {
-        let (lat2, lon2, _): (f64, f64, f64) = geodesic.direct(lat, lon, azimuth, meters);
-        finite(lon2, "geodesic destination")?;
-        finite(lat2, "geodesic destination")?;
-        Ok((lon2, lat2))
+        geodesic_destination(geodesic, lon, lat, azimuth, meters)
     })
 }
 
-/// Lon/lat interpolated along the geodesic between two points (`ratio` in
-/// `0..1`).
-pub(crate) fn geodesic_interpolate_crs(
-    crs: &str,
+/// Point-between kernel: one inverse (distance+azimuth) + optional direct.
+///
+/// Returns `(lon, lat, ratio)` where `ratio` is the clamped fraction used
+/// for the step (and for Z/M lerp at the call site). Endpoint short-circuits
+/// return the input coordinates with ratio 0 or 1 — callers that need the
+/// original `Point` (Z/M) should prefer those endpoints over the bare lon/lat.
+pub(crate) fn geodesic_point_between(
+    geodesic: &Geodesic,
     lon1: f64,
     lat1: f64,
     lon2: f64,
     lat2: f64,
-    ratio: f64,
-) -> Result<(f64, f64)> {
+    distance: f64,
+    normalized: bool,
+) -> Result<(f64, f64, f64)> {
     ensure_geographic_lonlat(lon1, lat1)?;
     ensure_geographic_lonlat(lon2, lat2)?;
+    // One inverse yields both the total length (absolute-distance ratio) and
+    // the forward azimuth for the direct step — never a separate distance-only
+    // inverse first.
+    let (total, azimuth, _) = inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
+    let total = finite(total, "geodesic distance")?;
+    let ratio = if normalized {
+        distance
+    } else if total == 0.0 {
+        0.0
+    } else {
+        distance / total
+    }
+    .clamp(0.0, 1.0);
     if crate::geometry::same_topological_coordinate(ratio, 0.0) {
-        return Ok((lon1, lat1));
+        return Ok((lon1, lat1, ratio));
     }
     if crate::geometry::same_topological_coordinate(ratio, 1.0) {
-        return Ok((lon2, lat2));
+        return Ok((lon2, lat2, ratio));
     }
-    with_geodesic(crs, |geodesic| {
-        let (total, azimuth, _) = inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
-        let (lat, lon, _): (f64, f64, f64) = geodesic.direct(lat1, lon1, azimuth, total * ratio);
-        finite(lon, "geodesic interpolate")?;
-        finite(lat, "geodesic interpolate")?;
-        Ok((lon, lat))
-    })
+    let (lat, lon): (f64, f64) = geodesic.direct(lat1, lon1, azimuth, total * ratio);
+    finite(lon, "geodesic interpolate")?;
+    finite(lat, "geodesic interpolate")?;
+    Ok((lon, lat, ratio))
 }
 
 pub(crate) fn finite(value: f64, operation: &str) -> Result<f64> {

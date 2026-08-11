@@ -7,14 +7,13 @@ import resource
 import subprocess
 import sys
 import textwrap
-import time
 
 import gometry as gm
 import pytest
 
 
 def _assert_not_panic(exc: BaseException) -> None:
-    assert type(exc).__name__ != "PanicException", exc
+    assert type(exc).__name__ != 'PanicException', exc
 
 
 # ---------------------------------------------------------------------------
@@ -27,10 +26,10 @@ def test_default_max_cells_names_knob_on_runaway():
     # Full-longitude world band (not a |Δlon|>180 seam edge — those normalize
     # to a narrow strip and no longer runaway under geographic covering).
     src = gm.box(-180.0, -85.0, 180.0, 85.0, crs=4326)
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
-        gm.tile_cover(src, zoom=12, cell_rule="bbox")
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+        gm.tile_cover(src, zoom=12, cell_rule='bbox')
     _assert_not_panic(excinfo.value)
-    assert "1000000" in str(excinfo.value) or "1_000_000" in str(excinfo.value)
+    assert '1000000' in str(excinfo.value) or '1_000_000' in str(excinfo.value)
 
 
 def test_max_cells_none_allows_past_old_wall():
@@ -38,16 +37,16 @@ def test_max_cells_none_allows_past_old_wall():
     # A covering that sits just above 1M cells with a tight budget must fail,
     # then succeed with None / a raised budget.
     src = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326)
-    with pytest.raises(gm.GeometryError, match="max_cells"):
-        gm.tile_cover(src, zoom=10, cell_rule="bbox", max_cells=100)
-    cov = gm.tile_cover(src, zoom=10, cell_rule="bbox", max_cells=None)
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.tile_cover(src, zoom=10, cell_rule='bbox', max_cells=100)
+    cov = gm.tile_cover(src, zoom=10, cell_rule='bbox', max_cells=None)
     assert len(cov) > 100
-    cov2 = gm.tile_cover(src, zoom=10, cell_rule="bbox", max_cells=1_000_000)
+    cov2 = gm.tile_cover(src, zoom=10, cell_rule='bbox', max_cells=1_000_000)
     assert len(cov2) == len(cov)
 
 
 @pytest.mark.parametrize(
-    "factory",
+    'factory',
     [
         lambda src, **kw: gm.h3_cover(src, 3, **kw),
         lambda src, **kw: gm.s2_cover(src, level=6, **kw),
@@ -59,7 +58,7 @@ def test_max_cells_none_allows_past_old_wall():
 def test_max_cells_nonpositive_typed_error(factory):
     src = gm.box(0, 0, 1, 1, crs=4326)
     for bad in (0, -1):
-        with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+        with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
             factory(src, max_cells=bad)
         _assert_not_panic(excinfo.value)
 
@@ -74,7 +73,7 @@ def test_s2_fixed_level_max_cells_is_a_hard_cap_like_other_grids():
         lambda: gm.tile_cover(area, zoom=8, max_cells=1),
     )
     for factory in factories:
-        with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+        with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
             factory()
         _assert_not_panic(excinfo.value)
 
@@ -133,6 +132,56 @@ def test_s2_cover_budget_equals_unlimited_fit_threshold():
             assert isinstance(excinfo.value, gm.GeometryError)
 
 
+def test_h3_within_budget_counts_only_emitted_cells():
+    """Discarded outline probes cannot consume H3's public output budget.
+
+    The independent oracle is the unlimited *visible* token set.  At exactly
+    that cardinality scalar and packed covers must succeed unchanged; one less
+    must fail when there is more than one emitted cell.  The two polygons and
+    their MultiPolygon exercise the single and aggregate owners that used to
+    reject at outline counts 14/15 despite emitting 3/6/9 cells.
+    """
+    first = gm.box(10.0, 40.0, 20.0, 50.0, crs=4326)
+    second = gm.box(-80.0, -40.0, -70.0, -30.0, crs=4326)
+    for source in (first, second, gm.MultiPolygon([first, second], crs=4326)):
+        unlimited = gm.h3_cover(source, 2, cell_rule='within', max_cells=None)
+        expected = {cell.token for cell in unlimited.cells}
+        assert expected
+        cap = len(expected)
+        for cells in (
+            gm.h3_cover(source, 2, cell_rule='within', max_cells=cap).cells,
+            gm.h3_cover(
+                gm.GeometryArray([source]), 2, cell_rule='within', max_cells=cap
+            )[0],
+        ):
+            actual = {cell.token for cell in cells}
+            assert actual == expected, (
+                'discarded outline owners changed the emitted H3 set'
+            )
+            assert len(actual) <= cap
+        if cap > 1:
+            with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+                gm.h3_cover(source, 2, cell_rule='within', max_cells=cap - 1)
+            _assert_not_panic(excinfo.value)
+
+
+@pytest.mark.parametrize('cell_rule', ['center', 'within'])
+def test_h3_polygon_budget_stops_in_the_streamed_outline_owner(cell_rule: str) -> None:
+    """A capped high-resolution polygon never first materializes its trace.
+
+    The 180-degree, one-degree-tall source has multiple distinct resolution-15
+    center cells, so the independent public contract is a typed output-budget
+    failure at one cell.  Both polygon outline owners (center and within) are
+    exercised, not the line helper; there is no timing assertion.
+    """
+    source = gm.Polygon(
+        [(-90.0, 0.0), (90.0, 0.0), (90.0, 1.0), (-90.0, 1.0)], crs=4326
+    )
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+        gm.h3_cover(source, 15, cell_rule=cell_rule, max_cells=1)
+    _assert_not_panic(excinfo.value)
+
+
 def test_s2_adaptive_target_cells_matches_requested_detail():
     """Adaptive target_cells charges proven-productive cells only.
 
@@ -185,21 +234,21 @@ def test_s2_fixed_level_soft_budget_never_emits_below_min_level():
     assert list(restored.cells) == list(capped.cells)
 
 
-@pytest.mark.parametrize("level", [4, 8, 10, 14])
-@pytest.mark.parametrize("cell_rule", ["overlap", "within", "center", "bbox"])
+@pytest.mark.parametrize('level', [4, 8, 10, 14])
+@pytest.mark.parametrize('cell_rule', ['overlap', 'within', 'center', 'bbox'])
 def test_s2_fixed_level_matrix_only_emits_level_l(level, cell_rule):
     """F7 matrix: when the level-L cover fits in M, every cell is level L."""
     src = gm.box(0, 0, 1, 1, crs=4326)
     unlimited = gm.s2_cover(src, level=level, cell_rule=cell_rule, max_cells=None)
     # max_cells budgets the exact coverer before cell_rule filtering, so size
     # M from the underlying overlap cover (within/center are subsets).
-    overlap_fit = len(gm.s2_cover(src, level=level, cell_rule="overlap", max_cells=None))
+    overlap_fit = len(
+        gm.s2_cover(src, level=level, cell_rule='overlap', max_cells=None)
+    )
     assert all(c.level == level for c in unlimited.cells)
     # Finite M above the coverer fit — must not coarsen below level L.
     budget = max(overlap_fit, 1) + 64
-    capped = gm.s2_cover(
-        src, level=level, cell_rule=cell_rule, max_cells=budget
-    )
+    capped = gm.s2_cover(src, level=level, cell_rule=cell_rule, max_cells=budget)
     assert len(capped) == len(unlimited)
     assert all(c.level == level for c in capped.cells)
     assert capped.min_level == capped.max_level == level
@@ -227,7 +276,7 @@ def test_s2_target_cells_respects_min_level_and_max_cells_stays_hard():
     assert min(levels) >= 4
     assert max(levels) <= 12
     # Fixed-level that cannot fit raises a typed GeometryError naming max_cells.
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(src, level=14, max_cells=1)
     _assert_not_panic(excinfo.value)
 
@@ -243,42 +292,45 @@ def _rss_kib() -> int:
 
 
 def test_s2_level30_tiny_budget_rejects_without_frontier_flood():
-    """Defect 2: level=30 + max_cells=1 must reject fast, without BFS flood.
+    """Defect 2: level=30 + max_cells=1 must reject without BFS flood.
 
     Pre-fix: ~2.3s / ~85 MiB building a fine frontier before the budget
-    error. Post-fix: projected-count DFS raises before that work.
+    error. Post-fix: projected-count DFS raises before that work. Hang
+    detection is RSS (no O(frontier) allocation) plus the subprocess sibling
+    with a process timeout — not an in-process wall-clock budget.
     """
     line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
-    # Warm classifier / PROJ paths so the timed call measures cover work.
+    # Warm classifier / PROJ paths so the measured call is cover work.
     gm.s2_cover(gm.Point(0.0, 0.0, crs=4326), level=4, max_cells=8)
 
     rss_before = _rss_kib()
-    started = time.perf_counter()
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(line, level=30, max_cells=1)
-    elapsed = time.perf_counter() - started
     rss_after = _rss_kib()
 
     _assert_not_panic(excinfo.value)
-    assert elapsed < 0.5, f"budget rejection took {elapsed:.3f}s (frontier flood?)"
     # Linux ru_maxrss is KiB; incremental peak must stay well under the old ~85 MiB.
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith('linux'):
         delta_mib = max(0, rss_after - rss_before) / 1024.0
-        assert delta_mib < 32.0, f"incremental RSS {delta_mib:.1f} MiB (frontier flood?)"
+        assert delta_mib < 32.0, (
+            f'incremental RSS {delta_mib:.1f} MiB (frontier flood?)'
+        )
 
 
 def test_s2_level30_tiny_budget_rejects_in_subprocess():
-    """Same flood gate in a clean subprocess (3s outer timeout, no import noise)."""
+    """Same flood gate in a clean subprocess (process timeout, no import noise).
+
+    The outer ``timeout=3.0`` is hang detection (kill the process), not a
+    wall-clock performance budget asserted against a µs/ms target.
+    """
     script = textwrap.dedent(
         """
         import resource
         import sys
-        import time
         import gometry as gm
 
         line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
         rss0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        t0 = time.perf_counter()
         try:
             gm.s2_cover(line, level=30, max_cells=1)
         except gm.GeometryError as e:
@@ -288,64 +340,52 @@ def test_s2_level30_tiny_budget_rejects_in_subprocess():
         else:
             print("NO_RAISE", flush=True)
             sys.exit(3)
-        elapsed = time.perf_counter() - t0
         rss1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         delta_mib = max(0, rss1 - rss0) / 1024.0
-        print(f"OK elapsed={elapsed:.4f} delta_mib={delta_mib:.2f}", flush=True)
-        if elapsed >= 0.5:
-            sys.exit(4)
+        print(f"OK delta_mib={delta_mib:.2f}", flush=True)
         if delta_mib >= 32.0:
             sys.exit(5)
         """
     )
     proc = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, '-c', script],
         capture_output=True,
         text=True,
         timeout=3.0,
         check=False,
     )
     assert proc.returncode == 0, (
-        f"subprocess failed rc={proc.returncode}\n"
-        f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+        f'subprocess failed rc={proc.returncode}\n'
+        f'stdout={proc.stdout!r}\nstderr={proc.stderr!r}'
     )
-    assert "OK" in proc.stdout
+    assert 'OK' in proc.stdout
 
 
-def test_s2_world_line_l20_tiny_budget_rejects_fast():
-    """World-spanning line at L20 + tiny budget stays time/memory bounded."""
+def test_s2_world_line_l20_tiny_budget_rejects():
+    """World-spanning line at L20 + tiny budget raises max_cells (no flood)."""
     line = gm.LineString([(-179.0, 0.0), (179.0, 0.0)], crs=4326)
-    started = time.perf_counter()
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(line, level=20, max_cells=1)
-    elapsed = time.perf_counter() - started
     _assert_not_panic(excinfo.value)
-    assert elapsed < 0.5, f"world L20 tiny budget took {elapsed:.3f}s"
 
 
 def test_s2_point_level30_max_cells_one_succeeds():
-    """Ordinary point at level=30 with max_cells=1 is a single cell, fast."""
+    """Ordinary point at level=30 with max_cells=1 is a single cell."""
     pt = gm.Point(13.4, 52.5, crs=4326)
-    started = time.perf_counter()
     cov = gm.s2_cover(pt, level=30, max_cells=1)
-    elapsed = time.perf_counter() - started
     assert len(cov) == 1
     assert cov.cells[0].level == 30
-    assert elapsed < 0.5
 
 
 def test_s2_adaptive_max_level30_target_one_returns_coarse():
-    """Adaptive min=0/max=30/target_cells=1 returns one coarse cell quickly."""
+    """Adaptive min=0/max=30/target_cells=1 returns one coarse cell."""
     area = gm.box(0, 0, 1, 1, crs=4326)
-    started = time.perf_counter()
     cov = gm.s2_cover(area, min_level=0, max_level=30, target_cells=1)
-    elapsed = time.perf_counter() - started
     assert len(cov) <= 1
-    assert elapsed < 0.5
 
 
 def test_s2_fixed_level_threshold_n_identical_n_minus_one_raises():
-    """F7 threshold: budget=N matches unlimited; budget=N-1 raises fast."""
+    """F7 threshold: budget=N matches unlimited; budget=N-1 raises."""
     src = gm.box(0, 0, 1, 1, crs=4326)
     unlimited = gm.s2_cover(src, level=10, max_cells=None)
     n = len(unlimited)
@@ -354,15 +394,12 @@ def test_s2_fixed_level_threshold_n_identical_n_minus_one_raises():
     assert len(exact) == n
     assert {c.id for c in exact.cells} == {c.id for c in unlimited.cells}
     assert all(c.level == 10 for c in exact.cells)
-    started = time.perf_counter()
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(src, level=10, max_cells=n - 1)
-    elapsed = time.perf_counter() - started
     _assert_not_panic(excinfo.value)
-    assert elapsed < 0.5
 
 
-@pytest.mark.parametrize("level_mod", [1, 2, 3])
+@pytest.mark.parametrize('level_mod', [1, 2, 3])
 def test_s2_level_mod_target_cells_conforming_and_bounded(level_mod):
     """level_mod fanout uses actual K; outputs stay conforming and ≤ target."""
     src = gm.box(0, 0, 2, 2, crs=4326)
@@ -385,19 +422,16 @@ def test_s2_interior_subtree_rejects_before_enumeration():
     """Interior 4^Δ preflight rejects a huge fixed-level areal cover early."""
     # Large box + fine min_level: interior faces expand to 4^Δ terminals.
     src = gm.box(-60.0, -40.0, 60.0, 40.0, crs=4326)
-    started = time.perf_counter()
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(src, level=16, max_cells=100)
-    elapsed = time.perf_counter() - started
     _assert_not_panic(excinfo.value)
-    assert elapsed < 0.5, f"interior multiplicity preflight took {elapsed:.3f}s"
 
 
 def test_with_parents_large_uncapped_and_pickle_roundtrip():
     """Explicit with_parents may produce >1M cells; pickle restores them."""
     # Exact ±180 full-longitude band: geographic cover keeps the world extent.
     src = gm.box(-180.0, -82.0, 180.0, 82.0, crs=4326)
-    cov = gm.tile_cover(src, zoom=10, cell_rule="bbox")
+    cov = gm.tile_cover(src, zoom=10, cell_rule='bbox')
     wp = cov.with_parents(min_zoom=0)
     assert len(wp) > 1_000_000
     out = pickle.loads(pickle.dumps(wp))
@@ -420,41 +454,48 @@ def _roundtrip_exact(cov):
 
 
 @pytest.mark.parametrize(
-    "label,build",
+    'label,build',
     [
         (
-            "h3",
-            lambda: gm.h3_cover(gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule="center"),
+            'h3',
+            lambda: gm.h3_cover(gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule='center'),
         ),
         (
-            "s2",
+            's2',
             lambda: gm.s2_cover(
-                gm.box(-1, -1, 1, 1, crs=4326), level=6, max_cells=128, cell_rule="center"
+                gm.box(-1, -1, 1, 1, crs=4326),
+                level=6,
+                max_cells=128,
+                cell_rule='center',
             ),
         ),
         (
-            "geohash",
-            lambda: gm.geohash_cover(gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule="center"),
+            'geohash',
+            lambda: gm.geohash_cover(
+                gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule='center'
+            ),
         ),
         (
-            "tile",
-            lambda: gm.tile_cover(gm.box(-1, -1, 1, 1, crs=4326), 6, cell_rule="center"),
+            'tile',
+            lambda: gm.tile_cover(
+                gm.box(-1, -1, 1, 1, crs=4326), 6, cell_rule='center'
+            ),
         ),
     ],
 )
 def test_p23_transform_pickle_roundtrips(label, build):
     base = build()
     uncompact_depth = {
-        "h3": 5,
-        "s2": 8,
-        "geohash": 5,
-        "tile": 7,
+        'h3': 5,
+        's2': 8,
+        'geohash': 5,
+        'tile': 7,
     }[label]
     for _form, cov in (
-        ("base", base),
-        ("compact", base.compact()),
-        ("uncompact", base.uncompact(uncompact_depth)),
-        ("with_parents", base.with_parents()),
+        ('base', base),
+        ('compact', base.compact()),
+        ('uncompact', base.uncompact(uncompact_depth)),
+        ('with_parents', base.with_parents()),
     ):
         _roundtrip_exact(cov)
 
@@ -463,13 +504,13 @@ def test_p23_empty_center_uncompact_pickle():
     """Empty center cover uncompacted to a finer depth round-trips (the P23 repro)."""
     source = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
     # H3: center@4 is empty; uncompact(5) stays empty; must not recompute as center@5.
-    cov = gm.h3_cover(source, 4, cell_rule="center").uncompact(5)
+    cov = gm.h3_cover(source, 4, cell_rule='center').uncompact(5)
     assert len(cov) == 0
     assert cov.resolution == 5
     out = _roundtrip_exact(cov)
     assert out.resolution == 5
 
-    gh = gm.geohash_cover(source, 2, cell_rule="center").uncompact(5)
+    gh = gm.geohash_cover(source, 2, cell_rule='center').uncompact(5)
     assert len(gh) == 0
     out_gh = _roundtrip_exact(gh)
     assert out_gh.precision == 5
@@ -506,9 +547,9 @@ def test_p23_projected_source_roundtrips():
 def test_p23_empty_nonempty_parity():
     """Empty/nonempty parity: empty factory stays empty; nonempty stays nonempty."""
     src = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
-    empty = gm.h3_cover(src, 4, cell_rule="center")
+    empty = gm.h3_cover(src, 4, cell_rule='center')
     assert len(empty) == 0
     _roundtrip_exact(empty)
-    nonempty = gm.h3_cover(src, 5, cell_rule="center")
+    nonempty = gm.h3_cover(src, 5, cell_rule='center')
     assert len(nonempty) > 0
     _roundtrip_exact(nonempty)

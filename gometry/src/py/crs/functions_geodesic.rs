@@ -1,12 +1,12 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, CoordinateInput, Py, PyAny, PyAnyMethods as _, PyDict, PyDictMethods as _, PyResult,
+    Python, broadcast_coordinate_group, coordinate_input, coordinate_input_with_error, crs,
+    crs_normalize,
+};
 /// Export a CRS to CF (Climate & Forecast) grid-mapping attributes.
 ///
 /// Parameters

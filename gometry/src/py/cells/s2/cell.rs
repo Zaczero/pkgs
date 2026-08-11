@@ -1,11 +1,6 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::pymethods;
 use pyo3::types::{PyBool, PyInt};
 
-use super::*;
 use crate::Typed;
 use crate::boundary::geographic::validate_lonlat_xy;
 use crate::grid::cell::GridCell;
@@ -16,7 +11,11 @@ use crate::py::cells::cell_ops::{
     cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::coverage_ops::CoverageCells;
-use crate::py::cells::{GridKind, PyCellArray, construct_s2_cell};
+use crate::py::cells::s2::{PyS2Cell, parse_s2_level};
+use crate::py::cells::{
+    Bound, GridKind, Py, PyAny, PyAnyMethods as _, PyCellArray, PyGeometry, PyResult, Python,
+    Shape, construct_s2_cell,
+};
 use crate::py::errors::{ParseFormat, parse_error};
 
 pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyCellArray {

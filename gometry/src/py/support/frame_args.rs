@@ -7,7 +7,10 @@ use std::borrow::Cow;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyString;
 
-use super::*;
+use crate::py::support::{
+    Bound, CRSError, Crs, Frame, FromPyObject, GeometryError, PyAny, PyAnyMethods as _, PyErr,
+    PyGeometry, PyResult, PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
+};
 
 /// Borrow ``value`` as UTF-8 text when it is a Python ``str``.
 pub(crate) fn py_text_borrow<'py>(
@@ -25,6 +28,42 @@ pub(crate) fn parse_crs(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Crs
         return Ok(None);
     };
     crate::py::crs::parse_crs_inner(value, 0)
+}
+
+/// A ``crs=`` parameter whose default is gometry's WGS84 lon/lat label rather
+/// than "no CRS" — the shape every parser of an inherently-WGS84 format needs
+/// (`from_geojson`, `from_features`, `from_polyline`).
+///
+/// It exists as one type so the default cannot drift per parser. It did: the
+/// `geojson` lane defaulted to [`WGS84_LONLAT`] while the polyline lane
+/// defaulted to `EPSG:4326`, and because the two labels are deliberately
+/// unequal as stored CRS, geometry parsed from the two formats could not be
+/// combined into one `GeometryArray`.
+pub(crate) enum Wgs84DefaultCrs {
+    /// ``crs=`` omitted — stamp [`WGS84_LONLAT`].
+    Default,
+    /// ``crs=`` given, already parsed; `None` is an explicit CRS-free request.
+    Resolved(Option<Crs>),
+}
+
+impl Wgs84DefaultCrs {
+    pub(crate) fn into_crs(self) -> Option<Crs> {
+        match self {
+            Self::Default => Some(wgs84_crs()),
+            Self::Resolved(crs) => crs,
+        }
+    }
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Wgs84DefaultCrs {
+    type Error = PyErr;
+
+    fn extract(value: pyo3::Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if value.is_none() {
+            return Ok(Self::Resolved(None));
+        }
+        Ok(Self::Resolved(parse_crs(Some(&value))?))
+    }
 }
 
 pub(crate) fn require_antimeridian_crs(crs: Option<&str>) -> PyResult<()> {
@@ -53,7 +92,14 @@ pub(crate) fn common_crs_required<'a>(
         return Ok(None);
     };
     for (offset, item) in items.enumerate() {
-        if item.crs_ref() != first.as_ref() {
+        // Same rule as `Frame::common`: items must name one frame, and the
+        // first item's label is the one carried forward.
+        let agrees = match (first.as_ref(), item.crs_ref()) {
+            (None, None) => true,
+            (Some(left), Some(right)) => crate::crs_operationally_equal(left, right)?,
+            _ => false,
+        };
+        if !agrees {
             let index = offset + 1;
             return Err(crate::py::errors::crs_mismatch_error(
                 format!(

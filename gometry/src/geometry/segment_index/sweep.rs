@@ -2,13 +2,12 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::ControlFlow;
 
-use crate::geometry::*;
+use crate::geometry::{
+    Bounds, DistanceParts, PointKey, PreparedLinework, Segment, SegmentContact, Shape, XY,
+    segment_contact, segments_intersect,
+};
 
 /// Below this many candidate *pairs* the brute-force double loop wins: the
 /// index build (sort + tree nodes) costs more than it saves.
@@ -17,7 +16,9 @@ pub(crate) const SEGMENT_INDEX_MIN_PAIRS: usize = 4096;
 /// The sweep's build is just an envelope `Vec` and one sort — far cheaper
 /// than an R-tree — so its brute crossover sits much lower (measured: the
 /// sweep wins from ~6-8 segments; below that the allocation dominates).
-const SWEEP_MIN_PAIRS: usize = 32;
+/// Brute-force when item count is strictly below this threshold (equivalent
+/// to the historical `count * count < 32` pair-count floor).
+const SWEEP_MIN_ITEMS: usize = 6;
 
 /// Entry count from which the sweep bands its cross axis (below it the
 /// plain forward window is already short), and the per-band grain the
@@ -80,6 +81,75 @@ impl MonotoneRun {
     }
 }
 
+/// Visit every unordered pair of axis-aligned bounds whose envelopes
+/// overlap, each at most once as `visit(i, j)` with `i < j` in input
+/// order. Same crossover shape as [`for_each_candidate_pair`]: brute below
+/// [`SWEEP_MIN_ITEMS`], sweep-and-prune above. Used by polygon-hole and
+/// multipolygon-member validity so non-overlapping parts never pay an
+/// all-pairs bounds compare.
+pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
+    bounds: &[Bounds],
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let count = bounds.len();
+    if count < 2 {
+        return ControlFlow::Continue(());
+    }
+    if count < SWEEP_MIN_ITEMS {
+        for left in 0..count {
+            for right in (left + 1)..count {
+                if bounds[left].intersects(bounds[right]) {
+                    visit(left, right)?;
+                }
+            }
+        }
+        return ControlFlow::Continue(());
+    }
+    thread_local! {
+        static BOUNDS_SCRATCH: std::cell::Cell<Vec<SweepEntry>> =
+            const { std::cell::Cell::new(Vec::new()) };
+    }
+    let mut entries = BOUNDS_SCRATCH.take();
+    entries.clear();
+    entries.reserve(count);
+    let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (ordinal, b) in bounds.iter().enumerate() {
+        let (x_lo, x_hi, y_lo, y_hi) = (b.minx(), b.maxx(), b.miny(), b.maxy());
+        min_x = min_x.min(x_lo);
+        max_x = max_x.max(x_hi);
+        min_y = min_y.min(y_lo);
+        max_y = max_y.max(y_hi);
+        entries.push(SweepEntry {
+            sweep_min: x_lo,
+            sweep_max: x_hi,
+            cross_min: y_lo,
+            cross_max: y_hi,
+            ordinal: ordinal as u32,
+        });
+    }
+    finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
+    // Dense-enough sets take the banded windows; otherwise the plain
+    // forward window (same split the segment sweep uses for large pools).
+    let flow = if count >= SWEEP_BAND_MIN {
+        let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
+        let cross_lo = entries
+            .iter()
+            .map(|e| e.cross_min)
+            .fold(f64::INFINITY, f64::min);
+        let cross_hi = entries
+            .iter()
+            .map(|e| e.cross_max)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
+        banded_windows(&entries, bands, cross_lo, band_height, &mut visit)
+    } else {
+        plain_windows(&entries, &mut visit)
+    };
+    BOUNDS_SCRATCH.set(entries);
+    flow
+}
+
 /// Visit a superset of the pairs of one segment set that can interact
 /// beyond a chained shared vertex, each unordered pair at most once, as
 /// `visit(i, j)` with `i < j` in input order. Below the pair-count
@@ -103,7 +173,7 @@ impl MonotoneRun {
 /// `RUN_MIN` is the monotone-run crossover: [`CHAIN_MIN_SEGMENTS`] for the
 /// broad default (the run-join setup only pays past it), [`RUN_NODING_MIN`] for
 /// the noding hot paths (whose ~40 KB flat sort would otherwise exceed L1).
-/// Below it the flat per-segment sweep wins; below [`SWEEP_MIN_PAIRS`] the
+/// Below it the flat per-segment sweep wins; below [`SWEEP_MIN_ITEMS`] the
 /// brute double loop wins. Same candidate set at every threshold — only the
 /// work shape differs.
 pub(in crate::geometry) fn for_each_candidate_pair<const RUN_MIN: usize>(
@@ -112,7 +182,7 @@ pub(in crate::geometry) fn for_each_candidate_pair<const RUN_MIN: usize>(
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let count = pool.len();
-    if count * count < SWEEP_MIN_PAIRS {
+    if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
                 visit(left, right)?;
@@ -349,6 +419,10 @@ pub(in crate::geometry) fn for_each_bipartite_index_pair(
 /// `&[Segment]`). `Copy` (always a borrow): monomorphizes per source, no `dyn`.
 pub(in crate::geometry) trait SegmentSource: Copy {
     fn segment_count(self) -> usize;
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
     fn for_each_segment(self, visit: impl FnMut(Segment));
     /// Push every segment into the combined sweep pool (slices bulk-copy).
     fn fill_segments(self, pool: &mut Vec<Segment>) {

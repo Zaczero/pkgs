@@ -163,21 +163,21 @@ NON_FINITE_CASES: list[NonFinite] = [
         'line_substring_start_nan',
         lambda: _three_lines()[0].line_substring(NAN, 5.0),
         lambda: _three_lines().line_substring([NAN, 0.0, 0.0], [5.0, 5.0, 5.0]),
-        'start_distance must be finite',
+        'start must be finite',
         gm.GeometryError,
     ),
     (
         'line_substring_end_nan',
         lambda: _three_lines()[0].line_substring(0.0, NAN),
         lambda: _three_lines().line_substring([0.0, 0.0, 0.0], [5.0, NAN, 5.0]),
-        'end_distance must be finite',
+        'end must be finite',
         gm.GeometryError,
     ),
     (
         'line_substring_end_inf',
         lambda: _three_lines()[0].line_substring(0.0, POS_INF),
         lambda: _three_lines().line_substring([0.0, 0.0, 0.0], [5.0, POS_INF, 5.0]),
-        'end_distance must be finite',
+        'end must be finite',
         gm.GeometryError,
     ),
     (
@@ -272,15 +272,21 @@ NON_FINITE_CASES: list[NonFinite] = [
     ),
     (
         'hausdorff_densify_nan',
-        lambda: gm.hausdorff_distance(_three_lines()[0], _three_lines()[1], densify=NAN),
-        lambda: gm.hausdorff_distance(_three_lines(), _three_lines(), densify=[0.0, NAN, 0.0]),
+        lambda: gm.hausdorff_distance(
+            _three_lines()[0], _three_lines()[1], densify=NAN
+        ),
+        lambda: gm.hausdorff_distance(
+            _three_lines(), _three_lines(), densify=[0.0, NAN, 0.0]
+        ),
         'densify must be finite',
         gm.GeometryError,
     ),
     (
         'frechet_densify_nan',
         lambda: gm.frechet_distance(_three_lines()[0], _three_lines()[1], densify=NAN),
-        lambda: gm.frechet_distance(_three_lines(), _three_lines(), densify=[0.0, NAN, 0.0]),
+        lambda: gm.frechet_distance(
+            _three_lines(), _three_lines(), densify=[0.0, NAN, 0.0]
+        ),
         'densify must be finite',
         gm.GeometryError,
     ),

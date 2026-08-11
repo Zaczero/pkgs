@@ -2,7 +2,13 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::index::*;
+use pyo3::IntoPyObjectExt as _;
+
+use crate::py::index::{
+    Bound, DistanceUnit, IndexPredicate, NonNegative, PreparedIndexQuery, Py, PyAny, PyResult,
+    PySpatialIndex, Python, build_spatial_index, exact_geometry_array, geometry_items, pyfunction,
+    query_distance,
+};
 #[pyfunction]
 #[pyo3(
     signature = (values, geom, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
@@ -198,6 +204,7 @@ pub(crate) fn join_pair_columns(
         // metric resolution for dwithin); rows feed the shared cores with
         // no Vec<PyGeometry> staging.
         let plan = PreparedIndexQuery::for_array(index, array, Some(predicate), distance, unit)?;
+        let element_bounds = array.cached_element_bounds();
         let mut left_ids = Vec::new();
         let mut right_ids = Vec::new();
         if let IndexPredicate::Topological(topological) = predicate
@@ -222,11 +229,15 @@ pub(crate) fn join_pair_columns(
             if missing {
                 continue;
             }
+            let seeded = element_bounds
+                .as_ref()
+                .and_then(|bounds| bounds.get(left_idx).copied().flatten());
             index.dwithin_query_row_matches(
                 row,
                 &array.row_frame_cache(left_idx),
                 &plan,
                 &mut scratch,
+                seeded,
             )?;
             let left = left_idx as i64;
             for &right_idx in &scratch {

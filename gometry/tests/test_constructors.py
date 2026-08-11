@@ -87,7 +87,9 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
     # The equal-chord limit, rather than a span switch, keeps the normal path
     # byte-identical on both sides of one degree at a typical latitude.
     near_one = [0.9999, 1.0, 1.0001]
-    near_one_boxes = [gm.box(20.0, 52.0, 20.0 + span, 53.0, crs=4326) for span in near_one]
+    near_one_boxes = [
+        gm.box(20.0, 52.0, 20.0 + span, 53.0, crs=4326) for span in near_one
+    ]
     assert [len(box.exterior.coords) for box in near_one_boxes] == [5, 5, 5]
     near_one_areas = np.array([box.area for box in near_one_boxes])
     assert np.all(np.diff(near_one_areas) > 0.0)
@@ -147,9 +149,10 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
 
     # `box(-100, ..., 100, ...)` is the 200-degree band, not the 160-degree
     # complement, and every public region consumer sees that same band.
-    assert gm.box(-100.0, -10.0, 100.0, 10.0, crs=4326).area > gm.box(
-        -80.0, -10.0, 80.0, 10.0, crs=4326
-    ).area
+    assert (
+        gm.box(-100.0, -10.0, 100.0, 10.0, crs=4326).area
+        > gm.box(-80.0, -10.0, 80.0, 10.0, crs=4326).area
+    )
     for span in (160.0, 180.1, 200.0, 358.0, 360.0):
         band = gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326)
         point = gm.Point(0.0, 0.0, crs=4326)
@@ -165,7 +168,9 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         assert s2.contains(point)
 
 
-def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged() -> None:
+def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged() -> (
+    None
+):
     projected = gm.box(0.0, 0.0, 1000.0, 1000.0, crs=3857)
     assert projected.to_wkt() == 'POLYGON ((0 0, 1000 0, 1000 1000, 0 1000, 0 0))'
     split = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')
@@ -278,35 +283,25 @@ def test_lonlat_range_validation_on_grid_paths() -> None:
         gm.h3_cover(gm.box(181, 0, 182, 1, crs=4326), resolution=1)
     with pytest.raises(ValueError, match='invalid longitude/latitude'):
         gm.s2_cover(gm.box(181, 0, 182, 1, crs=4326), level=1)
+    # A reflected selection image requires |latitude| > 90. Cover ingress
+    # rejects it, so it can never replace raw source authority on a public
+    # H3/S2 path.
+    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+        gm.h3_cover(gm.box(0, 91, 1, 92, crs=4326), resolution=1)
+    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+        gm.s2_cover(gm.box(0, 91, 1, 92, crs=4326), level=1)
 
 
-def test_d21_polygon_mixed_shell_hole_axes_match_from_geojson() -> None:
-    """D21: Polygon(xy_shell, xyz_hole) matches from_geojson (union axes, NaN shell Z).
+def test_d21_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:
+    """D21/G2: Polygon(xy_shell, xyz_hole) rejects at construction (writer parity).
 
-    EXACT repro: constructor used to reject mismatched ring axes; from_geojson
-    already accepted the same rings and exposed XYZ with NaN for absent shell Z.
+    Writers refuse mixed ring axes rather than invent Z/M; construction matches.
+    Promote with force_3d/set_m (or build homogeneous rings) first.
     """
     shell = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 0.0)]
     hole = [(1.0, 1.0, 1.0), (2.0, 1.0, 1.0), (1.0, 2.0, 1.0), (1.0, 1.0, 1.0)]
-    poly = gm.Polygon(shell, holes=[hole])
-    geojson = gm.from_geojson(
-        {
-            'type': 'Polygon',
-            'coordinates': [
-                [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 0.0]],
-                [[1.0, 1.0, 1.0], [2.0, 1.0, 1.0], [1.0, 2.0, 1.0], [1.0, 1.0, 1.0]],
-            ],
-        },
-        crs=None,
-    )
-    assert poly == geojson
-    assert poly.coordinate_axes == 'XYZ'
-    assert poly.exterior.coordinate_axes == 'XY'
-    assert poly.interiors[0].coordinate_axes == 'XYZ'
-    coords = np.asarray(poly.coords)
-    assert coords.shape == (8, 3)
-    assert np.isnan(coords[:4, 2]).all()
-    np.testing.assert_allclose(coords[4:, 2], [1.0, 1.0, 1.0, 1.0])
+    with pytest.raises(gm.InvalidGeometryError, match=r'share one coordinate axes'):
+        gm.Polygon(shell, holes=[hole])
 
     # Within-sequence mixed vertices still reject (uniformity preserved).
     with pytest.raises(gm.InvalidGeometryError, match='axis layout'):
@@ -319,32 +314,39 @@ def test_d21_polygon_mixed_shell_hole_axes_match_from_geojson() -> None:
     assert uniform.coordinate_axes == 'XY'
 
 
-def test_m05_mixed_multipart_promotes_absent_ordinate_as_nan() -> None:
-    """m05: mixed-axes multipart construction leaves absent Z as NaN, never 0.
+def test_m05_mixed_multipart_rejects_at_construction() -> None:
+    """m05/G2: mixed-axes MultiLineString / MultiPolygon reject at construction.
 
-    MultiLineString / MultiPolygon keep per-part axes; the union coords view
-    pads with NaN. 3D metrics still follow the missing-Z policy.
+    Writers refuse mixed members rather than invent Z/M; construction matches.
+    Homogeneous XYZ multiparts still expose NaN-free Z columns.
     """
-    mls = gm.MultiLineString([[(0.0, 0.0), (1.0, 1.0)], [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)]])
-    assert mls.coordinate_axes == 'XYZ'
-    assert [part.coordinate_axes for part in mls.parts] == ['XY', 'XYZ']
-    mls_coords = np.asarray(mls.coords)
-    assert np.isnan(mls_coords[0, 2]) and np.isnan(mls_coords[1, 2])
-    assert mls_coords[0, 2] != 0.0
-    np.testing.assert_allclose(mls_coords[2:, 2], [5.0, 6.0])
-    with pytest.raises(gm.InvalidGeometryError, match='Z ordinate'):
-        _ = mls.length_3d
-    assert np.isnan(gm.GeometryArray([mls]).length_3d[0])
+    with pytest.raises(gm.InvalidGeometryError, match=r'share one coordinate axes'):
+        gm.MultiLineString([
+            [(0.0, 0.0), (1.0, 1.0)],
+            [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)],
+        ])
 
-    mpoly = gm.MultiPolygon(
-        [
+    mls = gm.MultiLineString([
+        [(0.0, 0.0, 0.0), (1.0, 1.0, 0.0)],
+        [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)],
+    ])
+    assert mls.coordinate_axes == 'XYZ'
+    assert [part.coordinate_axes for part in mls.parts] == ['XYZ', 'XYZ']
+    mls_coords = np.asarray(mls.coords)
+    np.testing.assert_allclose(mls_coords[:, 2], [0.0, 0.0, 5.0, 6.0])
+    _ = mls.length_3d  # all members carry Z
+
+    with pytest.raises(gm.InvalidGeometryError, match=r'share one coordinate axes'):
+        gm.MultiPolygon([
             [[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]],
             [[(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 0.0, 1.0)]],
-        ]
-    )
+        ])
+    mpoly = gm.MultiPolygon([
+        [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 0.0, 0.0)]],
+        [[(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 0.0, 1.0)]],
+    ])
     assert mpoly.coordinate_axes == 'XYZ'
-    assert [part.coordinate_axes for part in mpoly.parts] == ['XY', 'XYZ']
+    assert [part.coordinate_axes for part in mpoly.parts] == ['XYZ', 'XYZ']
     mpoly_coords = np.asarray(mpoly.coords)
-    assert np.isnan(mpoly_coords[0, 2])
-    assert mpoly_coords[0, 2] != 0.0
+    np.testing.assert_allclose(mpoly_coords[0, 2], 0.0)
     np.testing.assert_allclose(mpoly_coords[4, 2], 1.0)

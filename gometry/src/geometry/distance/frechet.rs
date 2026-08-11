@@ -3,28 +3,30 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::geometry::{
+    Coordinates, Point, finish_planar_squared_min, packed_line_metrics, point_distance,
+    point_distance_squared, same_topological_coordinate,
+};
 pub(crate) fn frechet_distance_line_columns(
     left_xs: &[f64],
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-) -> Result<f64> {
+) -> f64 {
+    // Empty is total, matching `Shape::frechet_distance`, `hausdorff_*` and
+    // `distance` — never an error, so one empty row cannot abort a batch.
+    // Infallible for the same reason `hausdorff_distance_line_columns` is.
     if left_xs.is_empty() || right_xs.is_empty() {
-        return Err(GeometryErrorKind::EmptyLinework.into());
+        return f64::INFINITY;
     }
-    Ok(if left_xs.len() <= right_xs.len() {
+    if left_xs.len() <= right_xs.len() {
         frechet_dp_columns(left_xs, left_ys, right_xs, right_ys)
     } else {
         frechet_dp_columns(right_xs, right_ys, left_xs, left_ys)
-    })
+    }
 }
 
 /// Element-wise planar Fréchet over packed line CSR windows (one column
@@ -33,7 +35,7 @@ pub(crate) fn frechet_distance_line_columns_batch(
     left: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
     right: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
     out: &mut [f64],
-) -> Result<(), (usize, crate::error::Error)> {
+) {
     let len = left.logical_len();
     debug_assert_eq!(len, right.logical_len());
     debug_assert_eq!(out.len(), len);
@@ -41,7 +43,7 @@ pub(crate) fn frechet_distance_line_columns_batch(
     for (index, slot) in out.iter_mut().enumerate() {
         let (left_xs, left_ys) = left.row_xy(index);
         let (right_xs, right_ys) = right.row_xy(index);
-        *slot = if let Some(value) = super::packed_line_metrics::packed_line_same_window_value(
+        *slot = if let Some(value) = packed_line_metrics::packed_line_same_window_value(
             left_xs,
             left_ys,
             right_xs,
@@ -50,7 +52,7 @@ pub(crate) fn frechet_distance_line_columns_batch(
         ) {
             value
         } else if left_xs.is_empty() || right_xs.is_empty() {
-            return Err((index, GeometryErrorKind::EmptyLinework.into()));
+            f64::INFINITY
         } else if left_xs.len() <= right_xs.len() {
             let width = left_xs.len();
             scratch.ensure_capacity(width);
@@ -75,7 +77,6 @@ pub(crate) fn frechet_distance_line_columns_batch(
             )
         };
     }
-    Ok(())
 }
 
 pub(crate) fn discrete_frechet_distance<A: Coordinates + ?Sized, B: Coordinates + ?Sized>(
@@ -133,7 +134,45 @@ pub(crate) fn frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    previous[width - 1].sqrt()
+    let answer2 = previous[width - 1];
+    // Shared squared-norm trust: normal → sqrt; zero/subnormal → distance DP.
+    finish_planar_squared_min(answer2, || frechet_dp_distance(short, long))
+}
+
+/// Distance-space discrete Fréchet over coordinate iterators (underflow rescue).
+fn frechet_dp_distance<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
+    short: &S,
+    long: &L,
+) -> f64 {
+    let width = short.coord_count();
+    let mut previous = vec![0.0_f64; width];
+    let mut current = vec![0.0_f64; width];
+    let mut long_points = long.iter_coords();
+    let first_long = long_points.next().expect("non-empty linework");
+    let mut running = 0.0_f64;
+    for (cell, short_point) in std::iter::zip(&mut previous, short.iter_coords()) {
+        running = running.max(point_distance(first_long, short_point));
+        *cell = running;
+    }
+    for long_point in long_points {
+        let mut first = true;
+        let mut left_value = 0.0;
+        for (short_index, short_point) in short.iter_coords().enumerate() {
+            let distance = point_distance(long_point, short_point);
+            let reach = if first {
+                first = false;
+                previous[0]
+            } else {
+                previous[short_index]
+                    .min(previous[short_index - 1])
+                    .min(left_value)
+            };
+            left_value = distance.max(reach);
+            current[short_index] = left_value;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[width - 1]
 }
 
 /// A valid UPPER BOUND on the discrete Fréchet² — the squared bottleneck of
@@ -363,5 +402,133 @@ pub(crate) fn frechet_dp_columns_with_scratch<'a>(
     } else {
         ub2
     };
-    answer2.sqrt()
+    finish_frechet_squared(answer2, short_xs, short_ys, long_xs, long_ys)
+}
+
+/// `sqrt` of Fréchet², with a distance-space DP rescue when squared space
+/// underflows to 0 for non-identical curves (e.g. parallel lines 1e-200 apart).
+fn finish_frechet_squared(
+    answer2: f64,
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+) -> f64 {
+    // Shared squared-norm trust: normal → sqrt; zero/subnormal/non-finite →
+    // distance-space DP, optionally in an origin-shifted power-of-two frame
+    // so huge parallel lines do not report +inf.
+    if answer2.is_normal() {
+        return answer2.sqrt();
+    }
+    if frechet_columns_vertexwise_equal(short_xs, short_ys, long_xs, long_ys) {
+        return 0.0;
+    }
+    let dist = frechet_dp_columns_distance(short_xs, short_ys, long_xs, long_ys);
+    if dist.is_finite() {
+        return dist;
+    }
+    frechet_dp_columns_distance_framed(short_xs, short_ys, long_xs, long_ys)
+}
+
+fn frechet_dp_columns_distance_framed(
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+) -> f64 {
+    let origin_x = short_xs
+        .first()
+        .copied()
+        .or_else(|| long_xs.first().copied())
+        .unwrap_or(0.0);
+    let origin_y = short_ys
+        .first()
+        .copied()
+        .or_else(|| long_ys.first().copied())
+        .unwrap_or(0.0);
+    let mut max_abs = 0.0_f64;
+    for (&x, &y) in short_xs.iter().zip(short_ys) {
+        max_abs = max_abs.max((x - origin_x).abs()).max((y - origin_y).abs());
+    }
+    for (&x, &y) in long_xs.iter().zip(long_ys) {
+        max_abs = max_abs.max((x - origin_x).abs()).max((y - origin_y).abs());
+    }
+    if max_abs == 0.0 {
+        return 0.0;
+    }
+    let exp = max_abs.log2().floor();
+    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
+    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let map = |xs: &[f64], ys: &[f64]| -> (Vec<f64>, Vec<f64>) {
+        (
+            xs.iter()
+                .map(|&x| crate::geometry::scaled_residual(x, origin_x, scale))
+                .collect(),
+            ys.iter()
+                .map(|&y| crate::geometry::scaled_residual(y, origin_y, scale))
+                .collect(),
+        )
+    };
+    let (sxs, sys) = map(short_xs, short_ys);
+    let (lxs, lys) = map(long_xs, long_ys);
+    frechet_dp_columns_distance(&sxs, &sys, &lxs, &lys) / scale
+}
+
+fn frechet_columns_vertexwise_equal(
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+) -> bool {
+    short_xs.len() == long_xs.len()
+        && short_xs
+            .iter()
+            .zip(long_xs)
+            .zip(short_ys.iter().zip(long_ys))
+            .all(|((&sx, &lx), (&sy, &ly))| {
+                same_topological_coordinate(sx, lx) && same_topological_coordinate(sy, ly)
+            })
+}
+
+/// Distance-space discrete Fréchet DP (rescue for squared underflow only).
+fn frechet_dp_columns_distance(
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+) -> f64 {
+    let width = short_xs.len();
+    let mut previous = vec![0.0_f64; width];
+    let mut current = vec![0.0_f64; width];
+    let (first_x, first_y) = (long_xs[0], long_ys[0]);
+    let mut running = 0.0_f64;
+    for (cell, (&sx, &sy)) in std::iter::zip(&mut previous, std::iter::zip(short_xs, short_ys)) {
+        running = running.max(point_distance(
+            Point::new_unchecked_xy(first_x, first_y),
+            Point::new_unchecked_xy(sx, sy),
+        ));
+        *cell = running;
+    }
+    for (&long_x, &long_y) in long_xs[1..].iter().zip(&long_ys[1..]) {
+        let mut first = true;
+        let mut left_value = 0.0;
+        for (short_index, (&sx, &sy)) in short_xs.iter().zip(short_ys).enumerate() {
+            let distance = point_distance(
+                Point::new_unchecked_xy(long_x, long_y),
+                Point::new_unchecked_xy(sx, sy),
+            );
+            let reach = if first {
+                first = false;
+                previous[0]
+            } else {
+                previous[short_index]
+                    .min(previous[short_index - 1])
+                    .min(left_value)
+            };
+            left_value = distance.max(reach);
+            current[short_index] = left_value;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[width - 1]
 }

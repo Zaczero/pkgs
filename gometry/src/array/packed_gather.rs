@@ -2,8 +2,11 @@
 //! per-kind column gathers plus the shared `gathered_memo`
 //! normalization used by every packed-column chokepoint.
 
-use super::packed_columns::*;
-use super::*;
+use crate::array::packed_columns::{PackedColumnResult, batch_err};
+use crate::array::{
+    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
+    PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection, RowSelectionRef,
+};
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> CoordSeq {
     let mut builder = PointColumnBuilder::like_coords(coords, map.len());

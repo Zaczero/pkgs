@@ -1,13 +1,8 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+//! Core `GeometryArray` methods: construction, metadata, properties, iteration.
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! Core `GeometryArray` methods: construction, metadata, properties, iteration.
-
 #![allow(
     clippy::needless_pass_by_value,
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
@@ -15,8 +10,19 @@
 
 use pyo3::types::PyList;
 
-use super::*;
-use crate::py::classes::coordinate_methods::ReplacementAxis;
+use crate::array::{
+    Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq, CoordinateReplacement,
+    CsrOffsetColumn, EmptyKind, Frame, FrameAdoption, GeometryArrayStorage, InvalidGeometryError,
+    MissingMask, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _,
+    PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError,
+    PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array,
+    coerce_collected_geometry_items, coordinate_epoch_option, crs, crs_arc, exact_geometry,
+    geometry, geometry_array_svg_grid_html_masked, line_crosses_antimeridian, line_is_ccw,
+    line_is_closed, line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
+    parse_coordinate_replacement, parse_crs, physical_row, point_logical_len, polygon_is_valid,
+    polygon_logical_len, polygon_rings_range, pymethods, replace_shape_coordinates,
+    slice_replacement_for_shape, total_bounds_from_columns,
+};
 
 fn type_module(value: &Bound<'_, PyAny>) -> PyResult<String> {
     value.get_type().getattr("__module__")?.extract()
@@ -58,37 +64,6 @@ fn shapely_wkb_batch<'py>(
     ))
 }
 
-fn replacement_coordseq(old: &CoordSeq, replacement: CoordinateReplacement) -> PyResult<CoordSeq> {
-    if replacement.positional && old.axes() != replacement.axes {
-        return Err(InvalidGeometryError::new_err(
-            "coordinates must preserve each coordinate sequence axes",
-        ));
-    }
-    let zs = match replacement.zs {
-        ReplacementAxis::Replace(values) => {
-            if !old.axes().has_z() {
-                return Err(InvalidGeometryError::new_err(
-                    "coordinates must preserve each coordinate sequence axes",
-                ));
-            }
-            Some(values)
-        },
-        ReplacementAxis::Carry => old.carried_zs(),
-    };
-    let ms = match replacement.ms {
-        ReplacementAxis::Replace(values) => {
-            if !old.axes().has_m() {
-                return Err(InvalidGeometryError::new_err(
-                    "coordinates must preserve each coordinate sequence axes",
-                ));
-            }
-            Some(values)
-        },
-        ReplacementAxis::Carry => old.carried_ms(),
-    };
-    CoordSeq::from_arc_columns(replacement.xs, replacement.ys, zs, ms).map_err(PyErr::from)
-}
-
 fn validate_packed_replacement_rings(
     coords: &CoordSeq,
     ring_offsets: &CsrOffsetColumn<RingLevel>,
@@ -125,7 +100,7 @@ fn replace_dense_packed_coordinates(
     match array.storage() {
         GeometryArrayStorage::Points { coords, row_map } if row_map.is_identity() => {
             debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement_coordseq(coords, replacement)?;
+            let coords = replacement.apply_to_seq(coords)?;
             Ok(Ok(PyGeometryArray::packed_points(
                 coords,
                 array.frame.clone(),
@@ -137,7 +112,7 @@ fn replace_dense_packed_coordinates(
             row_map,
         } if row_map.is_identity() => {
             debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement_coordseq(coords, replacement)?;
+            let coords = replacement.apply_to_seq(coords)?;
             Ok(Ok(PyGeometryArray::packed_lines(
                 coords,
                 offsets.clone(),
@@ -151,7 +126,7 @@ fn replace_dense_packed_coordinates(
             row_map,
         } if row_map.is_identity() => {
             debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement_coordseq(coords, replacement)?;
+            let coords = replacement.apply_to_seq(coords)?;
             validate_packed_replacement_rings(&coords, ring_offsets)?;
             Ok(Ok(PyGeometryArray::packed_polygons(
                 coords,
@@ -182,7 +157,7 @@ fn replace_array_coordinates(
             .expect("non-Mixed storage has packed columns"));
     }
     let mut present_cursor = 0;
-    let mut items = Vec::with_capacity(array.storage().len());
+    let mut shapes = Vec::with_capacity(array.storage().len());
     for (missing, shape) in array.masked_shape_rows() {
         let out_shape = if missing {
             PyGeometryArray::missing_placeholder()
@@ -192,10 +167,10 @@ fn replace_array_coordinates(
             present_cursor += count;
             replace_shape_coordinates(&shape, &sub)?
         };
-        items.push(PyGeometry::with_frame(out_shape, array.frame.clone()));
+        shapes.push(out_shape);
     }
     debug_assert_eq!(present_cursor, replacement.len);
-    Ok(PyGeometryArray::pack_or_mixed(items, array.frame.clone())
+    Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())
         .with_missing_mask(array.missing().cloned()))
 }
 
@@ -375,9 +350,7 @@ impl PyGeometryArray {
             let geometry = if self.is_row_missing(row) {
                 py.None().into_bound(py)
             } else {
-                let geometry =
-                    self.storage()
-                        .geometry_at(row, self.frame.clone(), self.row_frame_cache(row));
+                let geometry = self.geometry_at(row);
                 crate::boundary::convert::geojson_dict(py, geometry.shape.shape())?.into_any()
             };
             feature.set_item("geometry", geometry)?;
@@ -517,29 +490,9 @@ impl PyGeometryArray {
     /// tuple or None
     #[getter]
     pub fn total_bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        if self.has_missing() {
-            // Aggregates skip missing rows; the placeholder is a NaN point
-            // that would poison the column min/max fold.
-            return self.drop_missing().total_bounds();
-        }
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        if geographic {
-            let mut shapes = self.present_shape_rows();
-            if shapes.any(|(_, shape)| shape.crosses_antimeridian()) {
-                return crate::geometry::geographic_crossing_bounds_for_shapes(
-                    self.present_shape_rows().map(|(_, shape)| shape),
-                )
-                .map(Bounds::into_tuple);
-            }
-        }
-        if let Ok(Some(Some(bounds))) = Python::attach(|py| {
-            self.reduce_packed_columns_detached(py, |columns| {
-                Ok(total_bounds_from_columns(&columns))
-            })
-        }) {
-            return Some(bounds.into_tuple());
-        }
-        self.storage().total_bounds().map(Bounds::into_tuple)
+        *self
+            .total_bounds_cache
+            .get_or_init(|| self.compute_total_bounds())
     }
     /// Per-geometry OGC type name (see `Geometry.geometry_type`), with
     /// ``None`` at missing rows.
@@ -851,6 +804,10 @@ impl PyGeometryArray {
     ///     One result per input geometry.
     #[getter]
     pub fn is_simple(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        // Dense packed path is a separate, small function so the common case
+        // does not share an instruction-cache footprint with the full unary
+        // fallback (UnaryRowMode / frame-cache / linref monomorphization).
+        // Nullable still rides the mask-aware packed lane in the same helper.
         crate::predicates::unary::is_simple_array(py, self)
     }
     /// Per-geometry polygon convexity test (see `Geometry.is_convex`).
@@ -881,6 +838,33 @@ impl PyGeometryArray {
 }
 
 impl PyGeometryArray {
+    /// Uncached array-wide bounds fold (geographic antimeridian when needed).
+    pub(crate) fn compute_total_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        if self.has_missing() {
+            // Aggregates skip missing rows; the placeholder is a NaN point
+            // that would poison the column min/max fold.
+            return self.drop_missing().total_bounds();
+        }
+        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        if geographic {
+            let mut shapes = self.present_shape_rows();
+            if shapes.any(|(_, shape)| shape.crosses_antimeridian()) {
+                return crate::geometry::geographic_crossing_bounds_for_shapes(
+                    self.present_shape_rows().map(|(_, shape)| shape),
+                )
+                .map(Bounds::into_tuple);
+            }
+        }
+        if let Ok(Some(Some(bounds))) = Python::attach(|py| {
+            self.reduce_packed_columns_detached(py, |columns| {
+                Ok(total_bounds_from_columns(&columns))
+            })
+        }) {
+            return Some(bounds.into_tuple());
+        }
+        self.storage().total_bounds().map(Bounds::into_tuple)
+    }
+
     pub(crate) fn is_empty_unary_packed(&self) -> Vec<bool> {
         match self.storage() {
             GeometryArrayStorage::Points { .. } => {
@@ -940,23 +924,63 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn is_simple_unary_packed(&self) -> Option<Vec<bool>> {
-        if let Some(simple) = self.storage().lines_bool(line_is_simple) {
+        let missing = self.missing();
+        // Dense (no missing mask): use the unmasked kernels so the hot loop
+        // has no per-row Option branch — restores the round-4/pre-mask code
+        // shape for the overwhelmingly common packed input.
+        if missing.is_none() {
+            if let Some(simple) = self.storage().lines_bool(line_is_simple) {
+                return Some(simple);
+            }
+            if let Some(simple) = self.storage().polygons_bool(polygon_is_valid) {
+                return Some(simple);
+            }
+            if let GeometryArrayStorage::Points { .. } = self.storage() {
+                return Some(vec![true; self.storage().len()]);
+            }
+            return None;
+        }
+        // Nullable: mask-aware kernels skip placeholders and write false for
+        // missing — keeps the cliff ~1.2× of dense, not the old 592× fallback.
+        if let Some(simple) = self.storage().lines_bool_masked(missing, line_is_simple) {
             return Some(simple);
         }
-        if let Some(simple) = self.storage().polygons_bool(polygon_is_valid) {
+        if let Some(simple) = self
+            .storage()
+            .polygons_bool_masked(missing, polygon_is_valid)
+        {
             return Some(simple);
         }
         if let GeometryArrayStorage::Points { .. } = self.storage() {
-            return Some(std::iter::repeat_n(true, self.storage().len()).collect());
+            let mask = missing.expect("missing branch");
+            return Some(mask.iter().map(|&is_missing| !is_missing).collect());
         }
         None
     }
 
     pub(crate) fn is_valid_unary_packed(&self) -> Option<Vec<bool>> {
+        let missing = self.missing();
         if let GeometryArrayStorage::Points { coords, row_map } = self.storage() {
             let map = row_map.as_deref();
+            let len = point_logical_len(coords, map);
+            // Skip masked rows (NaN placeholders); write false for missing so
+            // the answer matches the shape lane without a second mask pass
+            // being load-bearing for correctness.
+            if let Some(mask) = missing {
+                return Some(
+                    (0..len)
+                        .map(|logical| {
+                            if mask.is_missing(logical) {
+                                return false;
+                            }
+                            let point = coords.point_at(physical_row(map, logical));
+                            point.x.is_finite() && point.y.is_finite()
+                        })
+                        .collect(),
+                );
+            }
             return Some(
-                (0..point_logical_len(coords, map))
+                (0..len)
                     .map(|logical| {
                         let point = coords.point_at(physical_row(map, logical));
                         point.x.is_finite() && point.y.is_finite()
@@ -964,10 +988,13 @@ impl PyGeometryArray {
                     .collect(),
             );
         }
-        if let Some(valid) = self.storage().lines_bool(line_is_valid) {
+        if let Some(valid) = self.storage().lines_bool_masked(missing, line_is_valid) {
             return Some(valid);
         }
-        if let Some(valid) = self.storage().polygons_bool(polygon_is_valid) {
+        if let Some(valid) = self
+            .storage()
+            .polygons_bool_masked(missing, polygon_is_valid)
+        {
             return Some(valid);
         }
         None

@@ -71,7 +71,11 @@ def test_masked_packed_pickle_uses_typed_columns() -> None:
         assert restored.is_missing.tolist() == [False, True, False]
         assert restored.to_wkt() == values.to_wkt()
         # Distinct present-side values (not both the same geometry).
-        present = [w for w, m in zip(restored.to_wkt(), restored.is_missing, strict=True) if not m]
+        present = [
+            w
+            for w, m in zip(restored.to_wkt(), restored.is_missing, strict=True)
+            if not m
+        ]
         assert len(set(present)) == 2, present
         assert restored.to_arrow().type.extension_name == f'geoarrow.{arrow_kind}'
 

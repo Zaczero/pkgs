@@ -158,7 +158,9 @@ def test_epoch_requires_a_crs_and_set_crs_none_clears_it() -> None:
     assert stamped_array.to_crs(3857).epoch == 2020.0
 
 
-def test_epoch_requires_a_dynamic_crs_at_the_shared_frame_owner(capsys: pytest.CaptureFixture[str]) -> None:
+def test_epoch_requires_a_dynamic_crs_at_the_shared_frame_owner(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     message = r'^a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$'
     for make in (
         lambda: gm.Point(1.0, 2.0, crs=2180, epoch=2020.0),

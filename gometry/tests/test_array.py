@@ -421,3 +421,42 @@ def test_m_aggregate_family_scalar_and_array() -> None:
     assert_optional_float_array(arr.min_m, [g.min_m for g in arr])
     assert_optional_float_array(arr.max_m, [g.max_m for g in arr])
     assert_optional_float_array(arr.m_range, [g.m_range for g in arr])
+
+
+def test_total_bounds_is_memoized_and_refreshes_on_frame_retag() -> None:
+    """Array-level total_bounds cache: warm re-reads agree; retag does not share."""
+    arr = gm.GeometryArray(
+        [gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3), gm.Point(4, 5)],
+        crs=3857,
+    )
+    first = arr.total_bounds
+    second = arr.total_bounds
+    assert first == second == (0.0, 0.0, 4.0, 5.0)
+
+    # Geographic crossing keeps the west>east convention, and warm re-reads agree.
+    seam = gm.GeometryArray([
+        gm.Polygon(
+            [(170, 40), (-170, 40), (-170, 50), (170, 50), (170, 40)],
+            crs=4326,
+        )
+    ])
+    geo_first = seam.total_bounds
+    geo_second = seam.total_bounds
+    assert geo_first == geo_second
+    assert geo_first is not None
+    minx, miny, maxx, maxy = geo_first
+    assert minx > maxx  # west>east for a ±180 crossing
+    assert miny == pytest.approx(40.0)
+    assert maxy == pytest.approx(50.0)
+
+    # set_crs retags storage: cache must not inherit a stale geographic fold.
+    plain = seam.set_crs(None, overwrite=True)
+    plain_bounds = plain.total_bounds
+    fresh_plain = gm.GeometryArray([
+        gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50), (170, 40)])
+    ])
+    assert plain_bounds == fresh_plain.total_bounds
+    # Without a geographic frame the planar fold reports the raw lon min/max
+    # (east of west numerically for a wrapping ring).
+    assert plain_bounds is not None
+    assert plain_bounds[0] < plain_bounds[2]

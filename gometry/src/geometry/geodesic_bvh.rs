@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Geodesic segment BVH — branch-and-bound point probes over ellipsoidal
 //! segments.
 //!
@@ -12,12 +8,11 @@
 //! kernel. The bound is purely pruning; exact distance and witness semantics
 //! stay owned by `GeodesicMetric`.
 
-use super::*;
 use crate::HeapSize;
-use crate::collections::{HashMap, HashMapExt};
-
-pub(super) const GEODESIC_BVH_MIN_INDEXED_SEGMENTS: usize =
-    super::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
+use crate::collections::HashMap;
+use crate::geometry::{
+    BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, HashMapExt as _, Point,
+};
 
 const GEODESIC_LEAF_SEGMENTS: usize = 8;
 const GEODESIC_BVH_MAX_POINT_VISITS: usize = 64;
@@ -57,11 +52,15 @@ impl GeodesicFacetBvh {
             return None;
         }
         let max_leaf_count = segments.len();
-        let node_count = 2 * max_leaf_count - 1;
+        // Perfect binary tree over `n` leaves uses `2n-1` nodes, but near a
+        // power of two the recursive partition often realises far fewer
+        // internal nodes. Reserve capacity and shrink to the filled range
+        // after build so we do not keep an ~8× over-allocation.
+        let node_capacity = 2 * max_leaf_count - 1;
         let mut tree = Self {
-            anchors: vec![Point::new_unchecked_xy(0.0, 0.0); node_count].into_boxed_slice(),
-            reaches: vec![0.0; node_count].into_boxed_slice(),
-            codes: vec![0; node_count].into_boxed_slice(),
+            anchors: vec![Point::new_unchecked_xy(0.0, 0.0); node_capacity].into_boxed_slice(),
+            reaches: vec![0.0; node_capacity].into_boxed_slice(),
+            codes: vec![0; node_capacity].into_boxed_slice(),
             leaves: Box::default(),
             segment_ids: Box::default(),
         };
@@ -98,6 +97,22 @@ impl GeodesicFacetBvh {
             &mut segment_ids,
             metric,
         );
+        // `next` is the count of realized nodes; drop unused tail capacity
+        // (near power-of-two leaf counts this was ~8× over-reserved).
+        if next < node_capacity {
+            let mut anchors = tree.anchors.into_vec();
+            let mut reaches = tree.reaches.into_vec();
+            let mut codes = tree.codes.into_vec();
+            anchors.truncate(next);
+            reaches.truncate(next);
+            codes.truncate(next);
+            anchors.shrink_to_fit();
+            reaches.shrink_to_fit();
+            codes.shrink_to_fit();
+            tree.anchors = anchors.into_boxed_slice();
+            tree.reaches = reaches.into_boxed_slice();
+            tree.codes = codes.into_boxed_slice();
+        }
         tree.leaves = leaves.into_boxed_slice();
         tree.segment_ids = segment_ids.into_boxed_slice();
         Some(tree)

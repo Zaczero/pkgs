@@ -1,4 +1,9 @@
-use super::*;
+use crate::geometry::clean_union::{
+    ArcAction, BoundaryContacts, Operand, OperandPool, OrientedRing, OverlayOp, SectionEnd,
+    SharedAction, SharedArc, arc_rule, compare_along_segment, operand_covers_boundary,
+    other_contains, section_end, shared_arc_rule, sort_dedup_cuts,
+};
+use crate::geometry::{PointKey, Segment, XY, same_point};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ArcSection {
@@ -184,6 +189,10 @@ pub(crate) fn section_inside_shared_arc(
         && !compare_along_segment(segment, to, hi).is_gt()
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn strict_section_membership(
     pool: &OperandPool,
     operand: Operand,

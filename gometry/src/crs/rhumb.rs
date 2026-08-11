@@ -32,13 +32,13 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use super::cache::{
+use crate::crs::cache::{
     CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, ensure_thread_caches_current,
     lru_resolve,
 };
-use super::error::CrsError;
-use super::geodesic::{ellipsoid_shape, ensure_geographic_lonlat};
-use super::local::normalize_longitude;
+use crate::crs::error::CrsError;
+use crate::crs::geodesic::{ellipsoid_shape, ensure_geographic_lonlat};
+use crate::crs::local::normalize_longitude;
 use crate::error::Result;
 
 /// The rectifying series is GeographicLib's order-6 expansion, documented
@@ -148,6 +148,19 @@ impl RhumbEllipsoid {
             let dpsi_dphi = (1.0 - self.e2) / (phi1.cos() * (1.0 - self.e2 * sin_phi * sin_phi));
             return dmu_dphi / dpsi_dphi;
         }
+        let (mu_diff, psi_diff) = self.differences(phi1, phi2);
+        mu_diff / psi_diff
+    }
+
+    /// Cancellation-free rectifying and isometric latitude differences.
+    fn differences(&self, phi1: f64, phi2: f64) -> (f64, f64) {
+        self.differences_with_delta(phi1, phi2, phi2 - phi1)
+    }
+
+    fn differences_with_delta(&self, phi1: f64, phi2: f64, dphi: f64) -> (f64, f64) {
+        if dphi == 0.0 {
+            return (0.0, 0.0);
+        }
         let mid = f64::midpoint(phi1, phi2);
         // mu2 - mu1, term-wise stable: sum c_k [sin(2k phi2) - sin(2k phi1)]
         // rewritten as sum c_k 2 cos(2k mid) sin(k dphi) so a tiny dphi never
@@ -188,7 +201,7 @@ impl RhumbEllipsoid {
         let (u1, u2) = (self.e * phi1.sin(), self.e * phi2.sin());
         let du = self.e * 2.0 * mid.cos() * (dphi / 2.0).sin();
         let atanh_diff = (du / (1.0 - u1 * u2)).atanh();
-        mu_diff / (asinh_diff - self.e * atanh_diff)
+        (mu_diff, asinh_diff - self.e * atanh_diff)
     }
 }
 
@@ -221,8 +234,14 @@ fn series(theta: f64, coefficients: &[f64; 6]) -> f64 {
 /// (an exact 180-degree tie takes the east-going rhumb, like
 /// GeographicLib).
 fn shortest_lon_delta(lon1: f64, lon2: f64) -> f64 {
-    let delta = (lon2 - lon1).rem_euclid(360.0);
-    if delta > 180.0 { delta - 360.0 } else { delta }
+    let delta = lon2 - lon1;
+    if delta > 180.0 {
+        delta - 360.0
+    } else if delta <= -180.0 {
+        delta + 360.0
+    } else {
+        delta
+    }
 }
 
 /// Resolve the prepared [`RhumbEllipsoid`] for `crs` from the thread-local
@@ -264,20 +283,34 @@ pub(crate) fn rhumb_distance_crs(
     ensure_geographic_lonlat(lon1, lat1)?;
     ensure_geographic_lonlat(lon2, lat2)?;
     with_rhumb(crs, |ellipsoid| {
-        let psi1 = ellipsoid.isometric(lat1);
-        let psi2 = ellipsoid.isometric(lat2);
         let lambda12 = shortest_lon_delta(lon1, lon2).to_radians();
-        let dpsi = psi2 - psi1;
         let phi1 = lat1.to_radians();
         let phi2 = lat2.to_radians();
-        let distance = if psi1.is_infinite() || psi2.is_infinite() {
+        let dphi = (lat2 - lat1).to_radians();
+        #[expect(
+            clippy::float_cmp,
+            reason = "only the literal ±90 degree poles are exact poles"
+        )]
+        let distance = if lat1.abs() == 90.0 || lat2.abs() == 90.0 {
             // A pole endpoint: every longitude is the same physical point, so
             // the rhumb runs the meridian — Mercator coordinates blow up but
             // the rectifying arc is exact.
-            (ellipsoid.rectifying(phi2) - ellipsoid.rectifying(phi1)).abs() * ellipsoid.radius
+            let (mu_diff, _) = ellipsoid.differences_with_delta(phi1, phi2, dphi);
+            mu_diff.abs() * ellipsoid.radius
         } else {
-            let mercator = (lambda12 * lambda12 + dpsi * dpsi).sqrt();
-            mercator * ellipsoid.slope(phi1, phi2) * ellipsoid.radius
+            let (mu_diff, dpsi) = ellipsoid.differences_with_delta(phi1, phi2, dphi);
+            let squared = lambda12 * lambda12 + dpsi * dpsi;
+            let mercator =
+                if squared.is_finite() && (squared != 0.0 || (lambda12 == 0.0 && dpsi == 0.0)) {
+                    squared.sqrt()
+                } else {
+                    lambda12.hypot(dpsi)
+                };
+            if dpsi == 0.0 {
+                mercator * ellipsoid.slope(phi1, phi2) * ellipsoid.radius
+            } else {
+                mercator * (mu_diff / dpsi) * ellipsoid.radius
+            }
         };
         finite(distance, "rhumb distance")
     })
@@ -300,7 +333,31 @@ pub(crate) fn rhumb_bearing_crs(
         let psi1 = ellipsoid.isometric(lat1);
         let psi2 = ellipsoid.isometric(lat2);
         let lambda12 = shortest_lon_delta(lon1, lon2).to_radians();
-        let azimuth = lambda12.atan2(psi2 - psi1).to_degrees();
+        let mut dpsi = psi2 - psi1;
+        // Recover cancelled finite isometric differences only. Pole endpoints
+        // produce ±∞ isometrics; INF <= INF would wrongly enter this arm and
+        // replace the meridian atan2 with a finite divided-difference that is
+        // not the pole-course limit (bearing pole→(180,80) must stay 180°).
+        #[expect(
+            clippy::float_cmp,
+            reason = "exact lat equality is the zero-delta short-circuit for isometric"
+        )]
+        let lats_differ = lat1 != lat2;
+        if lats_differ
+            && dpsi.is_finite()
+            && psi1.is_finite()
+            && psi2.is_finite()
+            && dpsi.abs() <= 64.0 * f64::EPSILON * psi1.abs().max(psi2.abs()).max(1.0)
+        {
+            dpsi = ellipsoid
+                .differences_with_delta(
+                    lat1.to_radians(),
+                    lat2.to_radians(),
+                    (lat2 - lat1).to_radians(),
+                )
+                .1;
+        }
+        let azimuth = lambda12.atan2(dpsi).to_degrees();
         finite(azimuth, "rhumb bearing")
     })?;
     // atan2 degrees land in (-180, 180]; the branch normalize is

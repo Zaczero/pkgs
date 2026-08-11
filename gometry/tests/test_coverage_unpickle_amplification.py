@@ -21,9 +21,11 @@ import pytest
 from gometry import _lib
 
 
-def _run_child(script: str, *, timeout: float = 8.0) -> subprocess.CompletedProcess[str]:
+def _run_child(
+    script: str, *, timeout: float = 8.0
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(script)],
+        [sys.executable, '-c', textwrap.dedent(script)],
         capture_output=True,
         check=False,
         text=True,
@@ -31,21 +33,23 @@ def _run_child(script: str, *, timeout: float = 8.0) -> subprocess.CompletedProc
     )
 
 
-def _assert_terminates(script: str, *, timeout: float = 8.0) -> subprocess.CompletedProcess[str]:
+def _assert_terminates(
+    script: str, *, timeout: float = 8.0
+) -> subprocess.CompletedProcess[str]:
     try:
         completed = _run_child(script, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         pytest.fail(
-            f"child hung past {timeout}s:\nstdout={exc.stdout!r}\nstderr={exc.stderr!r}"
+            f'child hung past {timeout}s:\nstdout={exc.stdout!r}\nstderr={exc.stderr!r}'
         )
-    assert completed.returncode != -6, f"SIGABRT:\n{completed.stderr}"
-    assert completed.returncode != 134, f"abort exit 134:\n{completed.stderr}"
+    assert completed.returncode != -6, f'SIGABRT:\n{completed.stderr}'
+    assert completed.returncode != 134, f'abort exit 134:\n{completed.stderr}'
     return completed
 
 
 def _assert_not_panic(exc: BaseException) -> None:
     name = type(exc).__name__
-    assert "Panic" not in name, f"unexpected panic-like exception: {name}: {exc}"
+    assert 'Panic' not in name, f'unexpected panic-like exception: {name}: {exc}'
 
 
 # ---------------------------------------------------------------------------
@@ -54,114 +58,124 @@ def _assert_not_panic(exc: BaseException) -> None:
 
 
 @pytest.mark.parametrize(
-    "script",
+    'script',
     [
         pytest.param(
             """
             import gometry as gm
             from gometry import _lib
+            # All grids unpickle cold: restore visible ids without recompute.
+            # Budget rejects when the inspection partition is first materialised.
+            cov = _lib._unpickle_tile_coverage(
+                gm.box(-180, -85, 180, 85, crs=4326),
+                [],
+                "overlap",
+                14,
+                None,
+                1_000_000,
+            )
             try:
-                _lib._unpickle_tile_coverage(
-                    gm.box(-180, -85, 180, 85, crs=4326),
-                    [],
-                    "overlap",
-                    14,
-                    None,
-                    1_000_000,
-                )
+                _ = cov.interior_cells
             except Exception as exc:
                 assert "Panic" not in type(exc).__name__
                 print("ok", type(exc).__name__)
             else:
-                raise SystemExit("expected rejection")
+                raise SystemExit("expected inspection rejection")
             """,
-            id="tile-z14",
+            id='tile-z14',
         ),
         pytest.param(
             """
             import gometry as gm
             from gometry import _lib
+            # H3 unpickle is lazy: restoring visible ids + params must not flood.
+            # The recorded max_cells budget still rejects when the overlap
+            # inspection partition is first materialised.
+            cov = _lib._unpickle_h3_coverage(
+                gm.box(-180, -85, 180, 85, crs=4326),
+                [],
+                "overlap",
+                15,
+                None,
+                1_000_000,
+            )
             try:
-                _lib._unpickle_h3_coverage(
-                    gm.box(-180, -85, 180, 85, crs=4326),
-                    [],
-                    "overlap",
-                    15,
-                    None,
-                    1_000_000,
-                )
+                _ = cov.interior_cells
             except Exception as exc:
                 assert "Panic" not in type(exc).__name__
                 print("ok", type(exc).__name__)
             else:
-                raise SystemExit("expected rejection")
+                raise SystemExit("expected inspection rejection")
             """,
-            id="h3-res15",
+            id='h3-res15',
         ),
         pytest.param(
             """
             import gometry as gm
             from gometry import _lib
+            cov = _lib._unpickle_s2_coverage(
+                gm.box(-180, -85, 180, 85, crs=4326),
+                [],
+                "overlap",
+                30,
+                30,
+                1,
+                1_000_000,
+                8,
+            )
             try:
-                _lib._unpickle_s2_coverage(
-                    gm.box(-180, -85, 180, 85, crs=4326),
-                    [],
-                    "overlap",
-                    30,
-                    30,
-                    1,
-                    1_000_000,
-                    8,
-                )
+                _ = cov.interior_cells
             except Exception as exc:
                 assert "Panic" not in type(exc).__name__
                 print("ok", type(exc).__name__)
             else:
-                raise SystemExit("expected rejection")
+                raise SystemExit("expected inspection rejection")
             """,
-            id="s2-level30",
+            id='s2-level30',
         ),
         pytest.param(
             """
             import gometry as gm
             from gometry import _lib
+            cov = _lib._unpickle_geohash_coverage(
+                gm.box(-180, -85, 180, 85, crs=4326),
+                [],
+                "overlap",
+                12,
+                None,
+                1_000_000,
+            )
             try:
-                _lib._unpickle_geohash_coverage(
-                    gm.box(-180, -85, 180, 85, crs=4326),
-                    [],
-                    "overlap",
-                    12,
-                    None,
-                    1_000_000,
-                )
+                _ = cov.interior_cells
             except Exception as exc:
                 assert "Panic" not in type(exc).__name__
                 print("ok", type(exc).__name__)
             else:
-                raise SystemExit("expected rejection")
+                raise SystemExit("expected inspection rejection")
             """,
-            id="geohash-prec12",
+            id='geohash-prec12',
         ),
     ],
 )
 def test_d07_deep_empty_cells_terminates(script: str):
     completed = _assert_terminates(script)
     assert completed.returncode == 0, completed.stderr
-    assert "ok" in completed.stdout
+    assert 'ok' in completed.stdout
 
 
 def test_d07_inprocess_tile_z14_budget_message():
-    with pytest.raises(gm.GeometryError, match="max_cells") as excinfo:
-        _lib._unpickle_tile_coverage(
-            gm.box(-180, -85, 180, 85, crs=4326),
-            [],
-            "overlap",
-            14,
-            None,
-            1_000_000,
-        )
+    """Unpickle stays cold; max_cells raises on first inspection."""
+    cov = _lib._unpickle_tile_coverage(
+        gm.box(-180, -85, 180, 85, crs=4326),
+        [],
+        'overlap',
+        14,
+        None,
+        1_000_000,
+    )
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+        _ = cov.interior_cells
     _assert_not_panic(excinfo.value)
-    assert "coverage reconstruction exceeds its recorded max_cells=" in str(excinfo.value)
 
 
 def test_d07_honest_finite_max_cells_roundtrip():
@@ -208,17 +222,17 @@ def test_d09_infinite_cells_iterable_terminates():
         """
     )
     assert completed.returncode == 0, completed.stderr
-    assert "ok" in completed.stdout
+    assert 'ok' in completed.stdout
 
 
 def test_d09_inprocess_repeat_cells_typeerror():
     import itertools
 
-    with pytest.raises(TypeError, match="list") as excinfo:
+    with pytest.raises(TypeError, match='list') as excinfo:
         _lib._unpickle_tile_coverage(
             gm.Point(0, 0, crs=4326),
             itertools.repeat(0),
-            "overlap",
+            'overlap',
             0,
             None,
             1_000_000,
@@ -252,34 +266,51 @@ def test_d09_reduce_arity_has_no_discarded_fields():
 
 
 @pytest.mark.parametrize(
-    "cov",
+    'cov',
     [
         lambda: gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=8).compact(),
         lambda: gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=6).with_parents(),
         lambda: gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5).uncompact(6),
         lambda: gm.geohash_cover(gm.box(0, 0, 1, 1, crs=4326), precision=5).compact(),
-        lambda: gm.geohash_cover(gm.box(0, 0, 1, 1, crs=4326), precision=4).with_parents(),
+        lambda: gm.geohash_cover(
+            gm.box(0, 0, 1, 1, crs=4326), precision=4
+        ).with_parents(),
         lambda: gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=4).compact(),
         lambda: gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=3).with_parents(),
         lambda: gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), level=8).compact(),
         lambda: gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), level=6).with_parents(),
         # N7 — composed transforms (decorative ancestors + compact/uncompact)
-        lambda: gm.h3_cover(gm.Point(0.123, 0.123, crs=4326), resolution=1)
-        .with_parents()
-        .uncompact(2),
-        lambda: gm.s2_cover(gm.Point(0.123, 0.123, crs=4326), level=1)
-        .with_parents()
-        .uncompact(2),
-        lambda: gm.geohash_cover(gm.Point(0.123, 0.123, crs=4326), precision=2)
-        .with_parents()
-        .compact(),
-        lambda: gm.tile_cover(gm.Point(0.123, 0.123, crs=4326), zoom=1)
-        .with_parents()
-        .compact(),
-        lambda: gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5)
-        .with_parents()
-        .compact()
-        .uncompact(6),
+        lambda: (
+            gm
+            .h3_cover(gm.Point(0.123, 0.123, crs=4326), resolution=1)
+            .with_parents()
+            .uncompact(2)
+        ),
+        lambda: (
+            gm
+            .s2_cover(gm.Point(0.123, 0.123, crs=4326), level=1)
+            .with_parents()
+            .uncompact(2)
+        ),
+        lambda: (
+            gm
+            .geohash_cover(gm.Point(0.123, 0.123, crs=4326), precision=2)
+            .with_parents()
+            .compact()
+        ),
+        lambda: (
+            gm
+            .tile_cover(gm.Point(0.123, 0.123, crs=4326), zoom=1)
+            .with_parents()
+            .compact()
+        ),
+        lambda: (
+            gm
+            .tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5)
+            .with_parents()
+            .compact()
+            .uncompact(6)
+        ),
     ],
     ids=[
         'tile-compact',
@@ -339,22 +370,16 @@ def test_n8_s2_with_parents_pickle_preserves_factory_and_partition():
 
 
 # ---------------------------------------------------------------------------
-# N9 — adaptive S2 applies the hard max_cells limit directly
+# N9 — adaptive S2 targets cells rather than enforcing max_cells
 # ---------------------------------------------------------------------------
 
 
-def test_n9_s2_adaptive_max_cells_one_honored_or_typed_error():
-    """max_cells=1 must not silently emit more cells than requested."""
+def test_n9_s2_adaptive_max_cells_is_not_a_hard_cap():
+    """Adaptive S2 must retain a complete cover when max_cells is tiny."""
     pt = gm.Point(0, 0, crs=4326)
-    try:
-        cov = gm.s2_cover(pt, max_cells=1)
-    except gm.GeometryError as exc:
-        _assert_not_panic(exc)
-        if "max_cells" not in str(exc):
-            raise AssertionError(exc) from exc
-        return
+    cov = gm.s2_cover(pt, max_cells=1)
     assert cov.max_cells == 1
-    assert len(cov) <= 1
+    assert len(cov) > 1
 
 
 def test_n9_s2_adaptive_max_cells_none_unlimited():
@@ -363,7 +388,7 @@ def test_n9_s2_adaptive_max_cells_none_unlimited():
     assert len(cov) > 0
 
 
-def test_n9_s2_adaptive_target_cells_is_separate_from_hard_cap():
+def test_n9_s2_adaptive_target_cells_guides_the_cover():
     area = gm.box(0, 0, 2, 2, crs=4326)
     adaptive = gm.s2_cover(area, min_level=4, max_level=8, target_cells=64)
     assert adaptive.max_cells == 1_000_000

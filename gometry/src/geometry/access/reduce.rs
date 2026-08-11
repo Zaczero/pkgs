@@ -2,15 +2,13 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
-use std::simd::num::SimdFloat;
+use std::ops::Not as _;
+use std::simd::StdFloat as _;
+use std::simd::cmp::SimdPartialEq as _;
+use std::simd::num::SimdFloat as _;
 
-use super::*;
-use crate::geometry::*;
+use crate::geometry::access::{REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd};
+use crate::geometry::{CoordSeq, Point, Result, point_distance, squared_norm_is_trustworthy};
 
 /// Map ``-0.0`` to ``+0.0``; leave every other value unchanged.
 ///
@@ -23,6 +21,30 @@ pub(crate) fn canonicalize_zero(v: f64) -> f64 {
 
 /// IEEE-754 f64 exponent field all-ones ⇒ the value is ±inf or NaN.
 const NON_FINITE_EXP_MASK: u64 = 0x7FF0_0000_0000_0000;
+/// IEEE-754 f64 exponent field mask (bits 52..62).
+const EXP_FIELD_MASK: u64 = 0x7FF0_0000_0000_0000;
+
+/// SIMD sibling of [`crate::geometry::squared_norm_is_trustworthy`]: a lane is
+/// **untrusted** (needs cold hypot rescue) when the squared residual is not a
+/// normal positive **and** not exact zero with all-zero deltas. Exponent-bit
+/// classification — same rule as the scalar path, not a third variant.
+///
+/// Public so packed pair-distance and other column SIMD lanes share one rule
+/// (a private copy that only rescued exact-zero underflow left multi-scale
+/// packed distance wrong on positive-subnormal squares).
+pub(crate) fn squared_norm_untrusted_mask(
+    squared: ReduceSimd,
+    zero_delta: std::simd::Mask<i64, REDUCE_LANES>,
+) -> std::simd::Mask<i64, REDUCE_LANES> {
+    use std::simd::cmp::SimdPartialEq as _;
+    let bits = squared.to_bits();
+    let exp = bits & std::simd::Simd::<u64, REDUCE_LANES>::splat(EXP_FIELD_MASK);
+    let is_normal = exp.simd_ne(std::simd::Simd::splat(0))
+        & exp.simd_ne(std::simd::Simd::splat(EXP_FIELD_MASK));
+    let is_zero = squared.simd_eq(ReduceSimd::splat(0.0));
+    // trusted = is_normal | (is_zero & zero_delta); untrusted = !trusted
+    (is_normal | (is_zero & zero_delta)).not()
+}
 
 /// Branchless SIMD finiteness scan: `true` iff EVERY value in `column` is
 /// finite. Accumulates the non-finite predicate VERTICALLY into one wide mask
@@ -336,29 +358,53 @@ pub(crate) fn pair_map4_guarded_f64(
     let (ly_chunks, _) = ly.as_chunks::<REDUCE_LANES>();
     let (rx_chunks, _) = rx.as_chunks::<REDUCE_LANES>();
     let (ry_chunks, _) = ry.as_chunks::<REDUCE_LANES>();
+    let chunk_count = lx_chunks.len();
     {
+        // Zip rather than index. The five chunk slices come from five
+        // independent `&[f64]` parameters, so nothing tells the optimizer they
+        // share a length: indexing four of them off the fifth's counter left a
+        // bounds check per column per chunk, and each check is a side exit into
+        // a panic block. Those extra exits are the expensive part — they block
+        // store sinking and make the unroller conservative, and the wide
+        // 8-lane logical vector exists precisely to *get* that unroll on the
+        // 128-bit baseline. Zipping makes shortest-length structural, so the
+        // loop has one exit and no checks. `columns_within` in
+        // `geometry/util.rs` is the same shape.
         let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..lx_chunks.len() {
+        let inputs = std::iter::zip(
+            std::iter::zip(lx_chunks, ly_chunks),
+            std::iter::zip(rx_chunks, ry_chunks),
+        );
+        for (chunk, (((lx_chunk, ly_chunk), (rx_chunk, ry_chunk)), out_chunk)) in
+            std::iter::zip(inputs, out_chunks).enumerate()
+        {
             let (distance, bad) = vector(
-                ReduceSimd::from_array(lx_chunks[chunk]),
-                ReduceSimd::from_array(ly_chunks[chunk]),
-                ReduceSimd::from_array(rx_chunks[chunk]),
-                ReduceSimd::from_array(ry_chunks[chunk]),
+                ReduceSimd::from_array(*lx_chunk),
+                ReduceSimd::from_array(*ly_chunk),
+                ReduceSimd::from_array(*rx_chunk),
+                ReduceSimd::from_array(*ry_chunk),
             );
-            let mut chunk_out = distance.to_array();
+            // Materialize the lane array only on the rescue path. Writing it
+            // unconditionally and then patching lanes *by index* makes it an
+            // address-taken local, which forces a stack round-trip (8 stores +
+            // 8 loads per 64-byte chunk) on the overwhelmingly common
+            // all-good-lanes path.
             if bad.any() {
+                let mut chunk_out = distance.to_array();
                 let start = chunk * REDUCE_LANES;
-                for (lane, value) in chunk_out.iter_mut().enumerate().take(REDUCE_LANES) {
+                for (lane, value) in chunk_out.iter_mut().enumerate() {
                     if bad.test(lane) {
                         let index = start + lane;
                         *value = scalar(lx[index], ly[index], rx[index], ry[index]);
                     }
                 }
+                *out_chunk = chunk_out;
+            } else {
+                *out_chunk = distance.to_array();
             }
-            out_chunks[chunk] = chunk_out;
         }
     }
-    let lanes = lx_chunks.len() * REDUCE_LANES;
+    let lanes = chunk_count * REDUCE_LANES;
     for index in lanes..len {
         out[index] = scalar(lx[index], ly[index], rx[index], ry[index]);
     }
@@ -697,16 +743,20 @@ pub(crate) fn xy_bounds_columns(xs: &[f64], ys: &[f64]) -> [f64; 4] {
 }
 
 /// Area-weighted centroid sums about `anchor` over a ring's contiguous
-/// columns: the UNSIGNED triangle-fan accumulators `(Σ 2·area, Σ 2·area·(ax +
-/// x_i + x_{i+1}), Σ 2·area·(ay + y_i + y_{i+1}))` — the caller applies the
-/// ring's CW/CCW sign and the final `/3/area` divides. The SIMD twin of
-/// [`shoelace_measure_columns`] for the area centroid: same offset-by-one column
-/// shape, three lane accumulators instead of one. Zero-padded tail edges
-/// contribute exactly `0` (the base-relative cross product `(-ax)(-ay) −
-/// (-ax)(-ay)` cancels). Small rings take an algebraic scalar fold
-/// (measurement); large rings reduce in plain SIMD lanes.
-/// Centroid is measurement arithmetic, so lane order is not part of the
-/// contract (matching `area`).
+/// columns: the SIGNED triangle-fan accumulators `(Σ 2·area, Σ 2·area·(ax +
+/// x_i + x_{i+1}), Σ 2·area·(ay + y_i + y_{i+1}))` — signed cross products
+/// about the anchor; the caller applies the ring's CW/CCW shell/hole sign and
+/// the final `/3/area` divides. The SIMD twin of [`shoelace_measure_columns`]
+/// for the area centroid: same offset-by-one column shape, three lane
+/// accumulators instead of one. Zero-padded tail edges contribute exactly `0`
+/// (the base-relative cross product `(-ax)(-ay) − (-ax)(-ay)` cancels). Small
+/// rings take an algebraic scalar fold (measurement); large rings reduce in
+/// plain SIMD lanes. Centroid is measurement arithmetic, so lane order is not
+/// part of the contract (matching `area`).
+/// Ordinary (world-frame) ring centroid sums. Bit-identical on typical input.
+/// Extreme rings may return non-finite moments; the areal centroid drivers
+/// then re-accumulate with one shared local scale so multi-ring weights stay
+/// consistent and the world moment (~e³) is never formed.
 pub(crate) fn centroid_ring_sums(
     xs: &[f64],
     ys: &[f64],
@@ -729,9 +779,6 @@ pub(crate) fn centroid_ring_sums(
             )
         })
     };
-    // Same offset-pair cross-product shape as `shoelace_measure_columns`, so it
-    // shares the measured crossover: the scalar fold auto-vectorizes and wins on
-    // small rings; the 512-bit body's ILP only pays off past it.
     if pairs < super::crossover::OFFSET_PAIR_MEASURE {
         return scalar_fold(0..pairs);
     }
@@ -785,6 +832,54 @@ pub(crate) fn centroid_ring_sums(
     )
 }
 
+/// Local-frame centroid accumulators: `(Σ area2_l, Σ area2_l*(lx1+lx2), Σ area2_l*(ly1+ly2))`
+/// with per-axis `l* = coord*s - anchor*s` (scale-before-subtraction). Shared-e
+/// multi-ring rescue finishes as `anchor + (c_l / s_axis) / (3 * sa_l / …)` —
+/// caller unscales x by `1/sx` and y by `1/sy` independently so a huge X and
+/// tiny Y (or the reverse) both stay normal.
+pub(crate) fn centroid_ring_sums_local(
+    xs: &[f64],
+    ys: &[f64],
+    pairs: usize,
+    anchor: (f64, f64),
+    sx: f64,
+    sy: f64,
+) -> (f64, f64, f64) {
+    let (ax, ay) = anchor;
+    let id_x = sx.to_bits() == 1.0_f64.to_bits();
+    let id_y = sy.to_bits() == 1.0_f64.to_bits();
+    (0..pairs).fold((0.0_f64, 0.0_f64, 0.0_f64), |(sa, scx, scy), index| {
+        // `x*s - origin*s`, never `(x - origin)*s` — the latter overflows on
+        // opposite-sign extremes even when the scaled residual is representable.
+        let lx1 = if id_x {
+            xs[index] - ax
+        } else {
+            xs[index] * sx - ax * sx
+        };
+        let ly1 = if id_y {
+            ys[index] - ay
+        } else {
+            ys[index] * sy - ay * sy
+        };
+        let lx2 = if id_x {
+            xs[index + 1] - ax
+        } else {
+            xs[index + 1] * sx - ax * sx
+        };
+        let ly2 = if id_y {
+            ys[index + 1] - ay
+        } else {
+            ys[index + 1] * sy - ay * sy
+        };
+        let area2 = lx1 * ly2 - lx2 * ly1;
+        (
+            sa + area2,
+            scx + area2 * (lx1 + lx2),
+            scy + area2 * (ly1 + ly2),
+        )
+    })
+}
+
 pub(crate) fn line_length(points: &CoordSeq) -> f64 {
     line_length_columns(points.xs(), points.ys())
 }
@@ -806,20 +901,31 @@ pub(crate) fn line_length_3d_columns(xs: &[f64], ys: &[f64], zs: &[f64]) -> f64 
 
 /// Shared planar line-length kernel: `HAS_Z = false` is 2-D (`dx/dy` only,
 /// scalar rescue via [`point_distance`]); `HAS_Z = true` folds the `dz` lane
-/// and the chained-`hypot` scalar form. Op order per monomorphization matches
-/// the former twin bodies so release asm stays byte-identical.
+/// and the chained-`hypot` scalar form.
+///
+/// Guard shape: one combined squared-value bad-lane mask *before* the vector
+/// `sqrt`, then cold scalar-hypot rescue only for flagged lanes. The residual
+/// tail (segments not filling a full SIMD chunk) is a plain scalar fold — no
+/// overlapping tail that re-evaluates already-reduced segments.
 fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64]) -> f64 {
     let segments = xs.len().saturating_sub(1);
     if segments == 0 {
         return 0.0;
     }
     debug_assert!(!HAS_Z || zs.len() == xs.len());
-    // The columns are already contiguous (SoA), so consecutive-vertex deltas
-    // process in wide SIMD lanes with no gather; `hypot` is a scalar libcall
-    // LLVM cannot auto-vectorize, hence the explicit lanes. Small inputs (the
-    // common case) take the scalar guarded-sqrt fold, which doubles as the
-    // overflow/underflow rescue for SIMD chunks (it falls back to `hypot`
-    // itself exactly where needed).
+    // Short runs (roads / building rings): a tight scalar guarded-sqrt fold
+    // beats the SIMD driver setup once the residual tail is no longer an
+    // overlapping replay. Measured crossover stays at one full chunk for the
+    // long-line path below.
+    if segments < REDUCE_SIMD_MIN {
+        return (0..segments)
+            .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
+            .sum();
+    }
+    // Contiguous SoA columns → consecutive-vertex deltas in wide lanes with no
+    // gather. Compact guard: one combined squared-value bad mask before sqrt;
+    // cold scalar-hypot only for flagged lanes. Residual tail is scalar only
+    // (no overlap replay of already-reduced segments).
     let (x0, _) = xs[..segments].as_chunks::<REDUCE_LANES>();
     let (x1, _) = xs[1..=segments].as_chunks::<REDUCE_LANES>();
     let (y0, _) = ys[..segments].as_chunks::<REDUCE_LANES>();
@@ -839,62 +945,56 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
         let index = start / REDUCE_LANES;
         let dx = ReduceSimd::from_array(x1[index]) - ReduceSimd::from_array(x0[index]);
         let dy = ReduceSimd::from_array(y1[index]) - ReduceSimd::from_array(y0[index]);
-        // Keep per-lane op order identical to the old twin bodies so
-        // monomorphized asm matches (dz insert only in the HAS_Z arm).
         if HAS_Z {
             let dz = ReduceSimd::from_array(z1[index]) - ReduceSimd::from_array(z0[index]);
             let squared = dx * dx + dy * dy + dz * dz;
-            let length = squared.sqrt();
             let zero_delta = dx.simd_eq(ReduceSimd::splat(0.0))
                 & dy.simd_eq(ReduceSimd::splat(0.0))
                 & dz.simd_eq(ReduceSimd::splat(0.0));
-            let underflow = squared.simd_eq(ReduceSimd::splat(0.0)) & !zero_delta;
-            if length.is_finite().all() && !underflow.any() {
-                acc += length;
+            let bad = squared_norm_untrusted_mask(squared, zero_delta);
+            if bad.any() {
+                let length = squared.sqrt();
+                let bits = bad.to_bitmask();
+                let mut chunk = length.to_array();
+                for (lane, slot) in chunk.iter_mut().enumerate() {
+                    if bits & (1_u64 << lane) != 0 {
+                        *slot = line_length_segment_hypot::<HAS_Z>(xs, ys, zs, start + lane);
+                    }
+                }
+                scalar += chunk.iter().sum::<f64>();
             } else {
-                scalar += (start..start + REDUCE_LANES)
-                    .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
-                    .sum::<f64>();
+                acc += squared.sqrt();
             }
             return (acc, scalar);
         }
         let squared = dx * dx + dy * dy;
-        let length = squared.sqrt();
         let zero_delta = dx.simd_eq(ReduceSimd::splat(0.0)) & dy.simd_eq(ReduceSimd::splat(0.0));
-        let underflow = squared.simd_eq(ReduceSimd::splat(0.0)) & !zero_delta;
-        if length.is_finite().all() && !underflow.any() {
-            acc += length;
+        let bad = squared_norm_untrusted_mask(squared, zero_delta);
+        if bad.any() {
+            let length = squared.sqrt();
+            let bits = bad.to_bitmask();
+            let mut chunk = length.to_array();
+            for (lane, slot) in chunk.iter_mut().enumerate() {
+                if bits & (1_u64 << lane) != 0 {
+                    *slot = line_length_segment_hypot::<HAS_Z>(xs, ys, zs, start + lane);
+                }
+            }
+            scalar += chunk.iter().sum::<f64>();
         } else {
-            // Rare huge-coordinate overflow or tiny nonzero underflow: fall
-            // back to scalar `point_distance`, which uses `hypot` exactly for
-            // these lanes.
-            scalar += (start..start + REDUCE_LANES)
-                .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
-                .sum::<f64>();
+            acc += squared.sqrt();
         }
         (acc, scalar)
     };
-    let lanes = x0.len() * REDUCE_LANES;
     simd_reduce_f64(
         segments,
         ReduceSimd::splat(0.0),
         0.0,
         simd_fold,
         |scalar, range| {
-            if range.start == 0 {
-                return scalar
-                    + range
-                        .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
-                        .sum::<f64>();
-            }
             scalar
-                + line_length_overlap_tail::<HAS_Z>(xs, ys, zs, segments, lanes).unwrap_or_else(
-                    || {
-                        (lanes..segments)
-                            .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
-                            .sum()
-                    },
-                )
+                + range
+                    .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
+                    .sum::<f64>()
         },
         |acc, scalar| acc.reduce_sum() + scalar,
     )
@@ -913,7 +1013,7 @@ fn line_length_segment_hypot<const HAS_Z: bool>(
         let dy = ys[segment + 1] - ys[segment];
         let dz = zs[segment + 1] - zs[segment];
         let squared = dx * dx + dy * dy + dz * dz;
-        if squared.is_finite() && (squared != 0.0 || (dx == 0.0 && dy == 0.0 && dz == 0.0)) {
+        if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0 && dz == 0.0) {
             squared.sqrt()
         } else {
             dx.hypot(dy).hypot(dz)
@@ -923,43 +1023,5 @@ fn line_length_segment_hypot<const HAS_Z: bool>(
             Point::new_unchecked_xy(xs[segment], ys[segment]),
             Point::new_unchecked_xy(xs[segment + 1], ys[segment + 1]),
         )
-    }
-}
-
-/// Masked overlap window for the non-empty SIMD tail: re-reads the last full
-/// lane-width of segments, zeroes already-summed lanes, returns `None` when
-/// the window needs the scalar hypot rescue.
-fn line_length_overlap_tail<const HAS_Z: bool>(
-    xs: &[f64],
-    ys: &[f64],
-    zs: &[f64],
-    segments: usize,
-    lanes: usize,
-) -> Option<f64> {
-    // The last full lane-width of segments re-reads a few already-summed lanes;
-    // the lane mask zeroes those, so the tail costs one unaligned window
-    // instead of a scalar sqrt chain (zero-padded copies measured SLOWER).
-    let start = segments - REDUCE_LANES;
-    let dx = ReduceSimd::from_slice(&xs[start + 1..]) - ReduceSimd::from_slice(&xs[start..]);
-    let dy = ReduceSimd::from_slice(&ys[start + 1..]) - ReduceSimd::from_slice(&ys[start..]);
-    if HAS_Z {
-        let dz = ReduceSimd::from_slice(&zs[start + 1..]) - ReduceSimd::from_slice(&zs[start..]);
-        let lane_index = ReduceSimd::from_array(std::array::from_fn(|lane| lane as f64));
-        let fresh = lane_index.simd_ge(ReduceSimd::splat((lanes - start) as f64));
-        let squared = dx * dx + dy * dy + dz * dz;
-        let length = fresh.select(squared.sqrt(), ReduceSimd::splat(0.0));
-        let zero_delta = dx.simd_eq(ReduceSimd::splat(0.0))
-            & dy.simd_eq(ReduceSimd::splat(0.0))
-            & dz.simd_eq(ReduceSimd::splat(0.0));
-        let underflow = fresh & squared.simd_eq(ReduceSimd::splat(0.0)) & !zero_delta;
-        (length.is_finite().all() && !underflow.any()).then(|| length.reduce_sum())
-    } else {
-        let lane_index = ReduceSimd::from_array(std::array::from_fn(|lane| lane as f64));
-        let fresh = lane_index.simd_ge(ReduceSimd::splat((lanes - start) as f64));
-        let squared = dx * dx + dy * dy;
-        let length = fresh.select(squared.sqrt(), ReduceSimd::splat(0.0));
-        let zero_delta = dx.simd_eq(ReduceSimd::splat(0.0)) & dy.simd_eq(ReduceSimd::splat(0.0));
-        let underflow = fresh & squared.simd_eq(ReduceSimd::splat(0.0)) & !zero_delta;
-        (length.is_finite().all() && !underflow.any()).then(|| length.reduce_sum())
     }
 }

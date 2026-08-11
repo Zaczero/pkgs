@@ -2,7 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::support::{Point, Polygon, PyResult, Ring, Shape};
 
 pub(crate) fn box_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> PyResult<Polygon> {
     Ok(Polygon::new(

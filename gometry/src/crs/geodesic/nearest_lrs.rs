@@ -1,5 +1,9 @@
-use super::*;
 use crate::Finite;
+use crate::crs::geodesic::{
+    DistanceMode, EllipsoidMetric, Result, ensure_geodesic_lonlat_crs, ensure_geographic_coordseq,
+    ensure_geographic_domain, ensure_geographic_lonlat, normalize, with_geodesic,
+    with_geodesic_cache,
+};
 use crate::geometry::{
     CoordSeq, FrameDependentCaches, LineIndex, MeasureRange, Point, Shape, ShapeData,
 };

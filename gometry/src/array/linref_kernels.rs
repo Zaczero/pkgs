@@ -4,9 +4,14 @@
 )]
 use std::sync::Arc;
 
-use super::*;
-use crate::array::MissingMask;
-use crate::broadcast::{CollectRows, degrade_linref_float};
+use crate::array::{
+    Bound, CollectRows as _, DistanceUnit, GeometryArrayStorage, GeometryError, I64Param,
+    InterpolatePlan, MissingMask, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python,
+    RowSelection, Shape, crs, line_interpolate_points_coordseq, line_interpolate_points_shape,
+    line_locate_coordseq, note_array_row, parse_interpolate_plan, positive_int,
+    resolve_line_metric, rows_err,
+};
+use crate::broadcast::degrade_linref_float;
 use crate::geometry::{CoordSeq, CsrOffsetColumn};
 use crate::py::numpy::float64_array;
 
@@ -100,7 +105,7 @@ pub(crate) fn line_interpolate_points_rows(
         (Some(count), None) => {
             if normalized {
                 return Err(GeometryError::new_err(
-                    "normalized applies to distances; count samples fractions already",
+                    "normalized applies to at; count samples fractions already",
                 ));
             }
             let counts = I64Param::parse(count, "count", array.storage().len())?;
@@ -122,7 +127,7 @@ pub(crate) fn line_interpolate_points_rows(
         },
         _ => {
             return Err(GeometryError::new_err(
-                "line_interpolate_points requires exactly one of count or distances",
+                "line_interpolate requires exactly one of at or count",
             ));
         },
     };

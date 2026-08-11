@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import struct
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import gometry as gm
@@ -57,6 +59,7 @@ NEW_LCC_FAMILIES: tuple[tuple[str, str], ...] = (
     (LAMBERT_93, RGF93_GEO),
     (NAD83_2011, NAD83_2011_SPCS_LCC),
     (NAD83_2011_SPCS_LCC, NAD83_2011),
+    (NAD83, 'EPSG:2225'),
 )
 ANTARCTIC_STEREO = 'EPSG:3031'
 NSIDC_NORTH = 'EPSG:3413'
@@ -74,6 +77,22 @@ NEW_POLAR_STEREO_FAMILIES: tuple[tuple[str, str], ...] = (
     (WGS84_ARCTIC_A, WGS84),
     (WGS84, WGS84_ANTARCTIC_A),
     (WGS84_ANTARCTIC_A, WGS84),
+)
+NEW_EQUAL_AREA_AND_STEREA_FAMILIES: tuple[tuple[str, str], ...] = tuple(
+    pair
+    for source, target in (
+        ('EPSG:4258', 'EPSG:3035'),
+        (WGS84, 'EPSG:6931'),
+        (WGS84, 'EPSG:6932'),
+        (WGS84, 'EPSG:10592'),
+        (NAD83, 'EPSG:5070'),
+        (NAD83, 'EPSG:3005'),
+        ('EPSG:4267', 'EPSG:2964'),
+        ('EPSG:4289', 'EPSG:28992'),
+        ('EPSG:4179', 'EPSG:3844'),
+        ('EPSG:4140', 'EPSG:2036'),
+    )
+    for pair in ((source, target), (target, source))
 )
 NEW_TM_FAMILIES: tuple[tuple[str, str], ...] = (
     (ETRS89, ETRS89_UTM32),
@@ -103,19 +122,44 @@ ADMITTED_PAIRS: tuple[tuple[str, str], ...] = (
     *NEW_TM_FAMILIES,
     *NEW_LCC_FAMILIES,
     *NEW_POLAR_STEREO_FAMILIES,
+    *NEW_EQUAL_AREA_AND_STEREA_FAMILIES,
     *ALIAS_PAIRS,
 )
 _max_projected_error = 0.0
 _max_geographic_error = 0.0
 _projected_compare_count = 0
 _geographic_compare_count = 0
-_observer_catalog_scanned = 0
-_observer_catalog_admitted = 0
-_observer_catalog_parity_passed = 0
 FALLBACK_TO_PROJ: tuple[tuple[str, str], ...] = (
-    ('EPSG:4289', 'EPSG:28992'),
-    (ETRS89, 'EPSG:3035'),
+    ('EPSG:10346', 'EPSG:3408'),
+    ('EPSG:10346', 'EPSG:3409'),
+    ('EPSG:4267', 'EPSG:9311'),
+    ('EPSG:8252', 'EPSG:22639'),
+    ('EPSG:8255', 'EPSG:22739'),
+    ('EPSG:4227', 'EPSG:22780'),
+    ('EPSG:4169', 'EPSG:3102'),
+    ('EPSG:4903', 'EPSG:2062'),
+    ('EPSG:4326', 'EPSG:3035'),
+    ('EPSG:9470', 'EPSG:9476'),
+    ('EPSG:4157', 'EPSG:2066'),
+)
+
+NON_METRE_UNIT_CASES: tuple[tuple[str, str, str], ...] = (
+    ('EPSG:4168', 'EPSG:2136', 'Gold Coast foot'),
+    ('EPSG:4267', 'EPSG:2204', 'US survey foot'),
+    ('EPSG:4269', 'EPSG:2222', 'foot'),
+    ('EPSG:5464', 'EPSG:5589', "Clarke's foot"),
+    ('EPSG:4243', 'EPSG:24370', 'Indian yard'),
+    ('EPSG:4272', 'EPSG:27291', 'British yard (Sears 1922)'),
+)
+
+NON_METRE_SCALAR_BATCH_CASES: tuple[tuple[str, str], ...] = (
+    *((source, target) for source, target, _ in NON_METRE_UNIT_CASES),
     (NAD83, 'EPSG:2225'),
+    (NAD83, 'EPSG:3421'),
+    (NAD83, 'EPSG:2229'),
+    (NAD83, 'EPSG:2263'),
+    (NAD83, 'EPSG:2272'),
+    (NAD83, 'EPSG:2276'),
 )
 
 
@@ -355,7 +399,7 @@ def _assert_pair_parity_both_directions(
     *,
     tol_m: float = OBSERVER_TOL_M,
     tol_deg: float = OBSERVER_TOL_DEG,
-) -> None:
+) -> tuple[tuple[float, float], tuple[float, float]]:
     """Assert gometry matches pyproj for geo→target and target→geo."""
     pair = (source, target)
     src = _wgs84_for_pyproj(source)
@@ -375,6 +419,113 @@ def _assert_pair_parity_both_directions(
         tol=tol_deg,
         context=f'{(target, source)} inverse coord={gometry_xy}',
     )
+    return ref_xy, ref_lonlat
+
+
+def last_transform_engine() -> str | None:
+    return gm.crs_cache_info()['last_transform_engine']
+
+
+INVALID_LATITUDE_CASES: tuple[tuple[str, str], ...] = (
+    ('EPSG:4258', 'EPSG:3035'),  # LAEA
+    ('EPSG:4269', 'EPSG:5070'),  # Albers equal area
+    ('EPSG:4289', 'EPSG:28992'),  # oblique stereographic
+    ('EPSG:4258', 'EPSG:25832'),  # transverse Mercator
+    ('EPSG:4171', 'EPSG:2154'),  # Lambert conformal conic
+)
+
+
+@pytest.mark.parametrize(('source', 'target'), INVALID_LATITUDE_CASES)
+@pytest.mark.parametrize('batch', [False, True], ids=['scalar', 'batch'])
+@pytest.mark.parametrize('latitude', [-100.0, 100.0], ids=['south', 'north'])
+def test_in_core_rejects_invalid_geographic_latitude(
+    source: str, target: str, *, batch: bool, latitude: float
+) -> None:
+    ref = pyproj.Transformer.from_crs(source, target, always_xy=True)
+    with pytest.raises(pyproj.exceptions.ProjError):
+        ref.transform(10.0, latitude, errcheck=True)
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    gm.crs_transform(source, target, 10.0, 0.0)
+    assert last_transform_engine() == 'in_core'
+    args = ([10.0], [latitude]) if batch else (10.0, latitude)
+    with pytest.raises(gm.TransformError, match=r'latitude.*domain'):
+        gm.crs_transform(source, target, *args)
+
+
+@pytest.mark.parametrize('batch', [False, True], ids=['scalar', 'batch'])
+@pytest.mark.parametrize(
+    ('target', 'latitude'), [('EPSG:6931', 90.0), ('EPSG:6932', -90.0)]
+)
+def test_in_core_accepts_exact_valid_poles(
+    target: str, latitude: float, *, batch: bool
+) -> None:
+    gm.crs_clear_cache()
+    args = ([0.0], [latitude]) if batch else (0.0, latitude)
+    result = gm.crs_transform(WGS84, target, *args)
+    values = result[0] if batch else result
+    assert all(math.isfinite(float(value)) for value in values)
+    assert last_transform_engine() == 'in_core'
+
+
+@pytest.mark.parametrize('batch', [False, True], ids=['scalar', 'batch'])
+def test_in_core_normalizes_finite_unbounded_longitude(batch: bool) -> None:
+    gm.crs_clear_cache()
+    args = ([-276.0], [40.0]) if batch else (-276.0, 40.0)
+    equivalent = ([84.0], [40.0]) if batch else (84.0, 40.0)
+    actual = gm.crs_transform(NAD83, NAD83_SPCS_TM, *args)
+    expected = gm.crs_transform(NAD83, NAD83_SPCS_TM, *equivalent)
+    if batch:
+        actual = actual[0]
+        expected = expected[0]
+    assert tuple(actual) == pytest.approx(tuple(expected), abs=ABS_TOL_M)
+    assert last_transform_engine() == 'in_core'
+
+
+@pytest.mark.parametrize(
+    ('target', 'antipode'), [('EPSG:6931', -90.0), ('EPSG:6932', 90.0)]
+)
+def test_polar_laea_rejects_only_the_direction_ambiguous_antipode(
+    target: str, antipode: float
+) -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(gm.TransformError, match='Azimuthal Equal Area domain'):
+        gm.crs_transform(WGS84, target, 0.0, antipode)
+    interior = math.nextafter(antipode, 0.0)
+    actual = gm.crs_transform(WGS84, target, 0.0, interior)
+    assert all(math.isfinite(value) for value in actual)
+    assert last_transform_engine() == 'in_core'
+    invalid = math.nextafter(antipode, math.copysign(math.inf, antipode))
+    with pytest.raises(gm.TransformError, match=r'latitude.*domain'):
+        gm.crs_transform(WGS84, target, 0.0, invalid)
+
+
+def test_oblique_laea_exact_antipode_is_rejected_but_neighbors_are_finite() -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(gm.TransformError, match='Azimuthal Equal Area domain'):
+        gm.crs_transform('EPSG:4258', 'EPSG:3035', -170.0, -52.0)
+    for latitude in (
+        math.nextafter(-52.0, -math.inf),
+        math.nextafter(-52.0, math.inf),
+    ):
+        result = gm.crs_transform('EPSG:4258', 'EPSG:3035', -170.0, latitude)
+        assert all(math.isfinite(value) for value in result)
+    assert last_transform_engine() == 'in_core'
+
+
+def test_aea_southern_negative_n_inverse_branch_matches_pyproj() -> None:
+    source, target = (WGS84, 'EPSG:9191')
+    gm.crs_clear_cache()
+    _assert_pair_parity_both_directions(source, target, 174.0, -41.0)
+    assert last_transform_engine() == 'in_core'
+
+
+@pytest.mark.parametrize('target', ['EPSG:2229', 'EPSG:2263', 'EPSG:2272', 'EPSG:2276'])
+def test_additional_non_metre_pairs_match_pyproj_in_core(target: str) -> None:
+    lon, lat = _pick_test_lonlat(NAD83, target) or (-100.0, 40.0)
+    gm.crs_clear_cache()
+    _assert_pair_parity_both_directions(NAD83, target, lon, lat)
+    assert last_transform_engine() == 'in_core'
 
 
 def _enumerate_epsg_geo_projected_pairs() -> list[tuple[str, str]]:
@@ -483,6 +634,113 @@ def test_web_mercator_forward_inverse_round_trip_sparse(lon: float, lat: float) 
     assert gometry_lonlat[1] == pytest.approx(lat, abs=ABS_TOL_DEG)
 
 
+def _f64_bits(value: float) -> int:
+    return struct.unpack('>Q', struct.pack('>d', value))[0]
+
+
+@pytest.mark.parametrize('zero', [0.0, -0.0])
+def test_web_mercator_preserves_exact_signed_zero(zero: float) -> None:
+    expected_bits = _f64_bits(zero)
+    forward = gm.crs_transform(4326, 3857, 10.0, zero)
+    assert _f64_bits(forward[1]) == expected_bits
+    inverse = gm.crs_transform(3857, 4326, 10.0, zero)
+    assert _f64_bits(inverse[1]) == expected_bits
+    round_trip = gm.crs_transform(3857, 4326, *forward)
+    assert _f64_bits(round_trip[1]) == expected_bits
+    forward_batch = gm.crs_transform(4326, 3857, [10.0], [zero])
+    assert _f64_bits(float(forward_batch[0, 1])) == expected_bits
+    inverse_batch = gm.crs_transform(3857, 4326, [10.0], [zero])
+    assert _f64_bits(float(inverse_batch[0, 1])) == expected_bits
+
+
+def test_web_mercator_nonzero_formula_is_bit_identical() -> None:
+    latitude = 1.0
+    latitude_radians = float(Fraction(latitude) * Fraction(math.pi) / 180)
+    expected = float(Fraction(6_378_137.0)) * math.log(
+        math.tan(math.pi / 4.0 + latitude_radians / 2.0)
+    )
+    actual = gm.crs_transform(4326, 3857, 0.0, latitude)[1]
+    assert _f64_bits(actual) == _f64_bits(expected)
+
+    northing = 1_000_000.0
+    northing_radius_ratio = float(Fraction(northing) / Fraction(6_378_137.0))
+    expected_latitude = (
+        (2.0 * math.atan(math.exp(northing_radius_ratio)) - math.pi / 2.0)
+        * 180.0
+        / math.pi
+    )
+    actual_latitude = gm.crs_transform(3857, 4326, 0.0, northing)[1]
+    assert _f64_bits(actual_latitude) == _f64_bits(expected_latitude)
+
+
+def test_nad83_california_zone_1_us_survey_foot_is_in_core() -> None:
+    source, target = (NAD83, 'EPSG:2225')
+    lon, lat = _pick_test_lonlat(source, target) or (-122.0, 40.0)
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    _assert_pair_parity_both_directions(source, target, lon, lat)
+    assert last_transform_engine() == 'in_core'
+
+
+@pytest.mark.parametrize(('source', 'target'), NON_METRE_SCALAR_BATCH_CASES)
+def test_non_metre_scalar_batch_bit_identity(source: str, target: str) -> None:
+    lon, lat = _pick_test_lonlat(source, target) or (0.0, 0.0)
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    point = gm.Point(lon, lat, crs=source)
+    scalar_forward = point.to_crs(target)
+    batch_forward = gm.GeometryArray([point] * 1000).to_crs(target)
+    expected_forward = (_f64_bits(scalar_forward.x), _f64_bits(scalar_forward.y))
+    assert all(
+        (_f64_bits(row.x), _f64_bits(row.y)) == expected_forward
+        for row in batch_forward
+    ), f'{source} -> {target} scalar/batch forward bits differ'
+
+    scalar_inverse = scalar_forward.to_crs(source)
+    batch_inverse = batch_forward.to_crs(source)
+    expected_inverse = (_f64_bits(scalar_inverse.x), _f64_bits(scalar_inverse.y))
+    assert all(
+        (_f64_bits(row.x), _f64_bits(row.y)) == expected_inverse
+        for row in batch_inverse
+    ), f'{target} -> {source} scalar/batch inverse bits differ'
+    assert last_transform_engine() == 'in_core'
+
+
+@pytest.mark.parametrize(('source', 'target', 'unit_name'), NON_METRE_UNIT_CASES)
+def test_each_non_metre_unit_family_is_in_core(
+    source: str, target: str, unit_name: str
+) -> None:
+    assert pyproj.CRS(target).axis_info[0].unit_name == unit_name
+    lon, lat = _pick_test_lonlat(source, target) or (0.0, 0.0)
+    gm.crs_clear_cache()
+    _assert_pair_parity_both_directions(source, target, lon, lat)
+    assert last_transform_engine() == 'in_core'
+
+
+def test_non_metre_zero_origin_preserves_exact_zero_bits() -> None:
+    # EPSG:6861 has both false origins equal to zero and foot axes.
+    point = gm.Point(-122.5, 44.083333333333336, crs='EPSG:6783')
+    scalar = point.to_crs('EPSG:6861')
+    batch = gm.GeometryArray([point]).to_crs('EPSG:6861')[0]
+    assert (_f64_bits(scalar.x), _f64_bits(scalar.y)) == (0, 0)
+    assert (_f64_bits(batch.x), _f64_bits(batch.y)) == (0, 0)
+
+
+def test_nevada_east_largest_false_origin_matches_pyproj() -> None:
+    source, target = (NAD83, 'EPSG:3421')
+    points = [
+        (lon, lat)
+        for lon in (-116.9, -116.2, -115.5, -114.8, -114.1)
+        for lat in (35.1, 36.8, 38.5, 40.2, 41.9)
+    ]
+    assert len(points) == 25
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    for lon, lat in points:
+        _assert_pair_parity_both_directions(source, target, lon, lat)
+    assert last_transform_engine() == 'in_core'
+
+
 @pytest.mark.parametrize('pair', ADMITTED_PAIRS)
 def test_admitted_pair_forward_reverse_roundtrip(pair: tuple[str, str]) -> None:
     source, target = pair
@@ -519,44 +777,97 @@ def test_in_core_pairs_do_not_warm_proj_pipeline() -> None:
 
 
 @pytest.mark.exhaustive
-def test_observer_admitted_pairs_match_pyproj() -> None:
+@pytest.mark.parametrize('chunk', range(8), ids=lambda value: f'chunk-{value}')
+def test_observer_admitted_pairs_match_pyproj(chunk: int) -> None:
     """Every in-core-admitted EPSG geo↔projected pair must match pyproj.
 
     Opt-in (full EPSG catalog scan): ``pytest -m exhaustive``. The sparse admitted-pair
     matrix elsewhere in this file keeps deterministic CRS parity in the default lane.
     """
-    global \
-        _observer_catalog_scanned, \
-        _observer_catalog_admitted, \
-        _observer_catalog_parity_passed
-    pairs = _enumerate_epsg_geo_projected_pairs()
+    all_pairs = _enumerate_epsg_geo_projected_pairs()
+    # Keep each catalog sweep below the ordinary 60-second node timeout. The
+    # partition is deterministic and every pair still exercises both directions
+    # and the independent pyproj oracle exactly once in its owning node.
+    pairs = all_pairs[chunk::8]
     scanned = len(pairs)
     admitted = 0
-    parity_passed = 0
+    oracle_results: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    admitted_by_method: dict[str, int] = {}
+    non_metre_by_method: dict[str, int] = {}
+    non_metre_admitted = 0
+
+    def shared_domain_failure_or_fail(
+        source: str,
+        target: str,
+        x: float,
+        y: float,
+        gometry_error: gm.TransformError,
+    ) -> None:
+        try:
+            reference = pyproj.Transformer.from_crs(source, target, always_xy=True)
+            reference_xy = reference.transform(x, y, errcheck=True)
+        except pyproj.exceptions.ProjError:
+            return
+        assert all(math.isfinite(value) for value in reference_xy)
+        pytest.fail(
+            f'{source} -> {target} admitted transform raised while pyproj '
+            f'produced {reference_xy}: {gometry_error}'
+        )
+
     for source, target in pairs:
         gm.crs_clear_cache()
-        assert bucket_entries('proj_pipeline') == 0
+        assert last_transform_engine() is None
         lonlat = _pick_test_lonlat(source, target)
         if lonlat is None:
             continue
         lon, lat = lonlat
         try:
             gometry_xy = gm.crs_transform(source, target, lon, lat)
+        except gm.TransformError as gometry_error:
+            if last_transform_engine() != 'in_core':
+                continue
+            shared_domain_failure_or_fail(source, target, lon, lat, gometry_error)
+            continue
+        if last_transform_engine() == 'proj':
+            continue
+        assert last_transform_engine() == 'in_core'
+        gm.crs_clear_cache()
+        assert last_transform_engine() is None
+        try:
             gm.crs_transform(target, source, gometry_xy[0], gometry_xy[1])
-        except gm.TransformError:
+        except gm.TransformError as gometry_error:
+            if last_transform_engine() != 'in_core':
+                continue
+            shared_domain_failure_or_fail(
+                target,
+                source,
+                gometry_xy[0],
+                gometry_xy[1],
+                gometry_error,
+            )
             continue
-        if bucket_entries('proj_pipeline') != 0:
+        if last_transform_engine() == 'proj':
             continue
+        assert last_transform_engine() == 'in_core'
         admitted += 1
-        _assert_pair_parity_both_directions(source, target, lon, lat)
-        parity_passed += 1
-    _observer_catalog_scanned = scanned
-    _observer_catalog_admitted = admitted
-    _observer_catalog_parity_passed = parity_passed
-    assert scanned > 4000, f'expected full EPSG projected catalog, got {scanned}'
-    assert admitted > 0, 'observer found no in-core-admitted pairs'
-    assert parity_passed == admitted, (
-        f'catalog scan={scanned} admitted={admitted} parity_passed={parity_passed}'
+        projected = pyproj.CRS(target)
+        method = projected.coordinate_operation
+        assert method is not None
+        method_code = method.method_code
+        admitted_by_method[method_code] = admitted_by_method.get(method_code, 0) + 1
+        if projected.axis_info[0].unit_conversion_factor != 1.0:
+            non_metre_admitted += 1
+            non_metre_by_method[method_code] = (
+                non_metre_by_method.get(method_code, 0) + 1
+            )
+        oracle_results.append(
+            _assert_pair_parity_both_directions(source, target, lon, lat)
+        )
+    assert scanned >= 500, f'expected one-eighth of full projected catalog, got {scanned}'
+    assert admitted == len(oracle_results) > 0, (
+        f'catalog chunk={chunk} scan={scanned} admitted={admitted} '
+        f'non_metre_admitted={non_metre_admitted} methods={admitted_by_method} '
+        f'non_metre_methods={non_metre_by_method}'
     )
 
 
@@ -570,22 +881,41 @@ def test_non_incore_pairs_fall_back_to_proj(pair: tuple[str, str]) -> None:
     else:
         lon, lat = lonlat
     gm.crs_clear_cache()
-    assert bucket_entries('proj_pipeline') == 0
+    assert last_transform_engine() is None
     gm.crs_transform(geo, proj, lon, lat)
-    assert bucket_entries('proj_pipeline') > 0, (
-        f'{proj} wrongly admitted to in_core (proj_pipeline stayed cold)'
-    )
+    assert last_transform_engine() == 'proj', f'{proj} wrongly admitted to in_core'
     _assert_pair_parity_both_directions(geo, proj, lon, lat)
+
+
+def test_non_default_transform_options_fall_back_to_proj() -> None:
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    actual = gm.crs_transform(4326, 3857, 10.0, 50.0, only_best=False)
+    expected = pyproj.Transformer.from_crs(
+        4326, 3857, always_xy=True, only_best=False
+    ).transform(10.0, 50.0)
+    _assert_xy_parity(actual, expected, tol=ABS_TOL_M, context='only_best=False')
+    assert last_transform_engine() == 'proj'
 
 
 def test_standard_literal_pairs_stay_in_core() -> None:
     gm.crs_clear_cache()
-    assert bucket_entries('proj_pipeline') == 0
+    assert last_transform_engine() is None
     gm.crs_transform(WGS84, WEB_MERCATOR, 10.0, 50.0)
-    assert bucket_entries('proj_pipeline') == 0
+    assert last_transform_engine() == 'in_core'
     gm.crs_clear_cache()
-    assert bucket_entries('proj_pipeline') == 0
+    assert last_transform_engine() is None
     gm.crs_transform('CRS84', WEB_MERCATOR, 10.0, 50.0)
+    assert last_transform_engine() == 'in_core'
+
+
+def test_degraded_proj_transform_reports_engine_after_pipeline_eviction() -> None:
+    gm.crs_clear_cache()
+    # PROJ lacks the CONUS and Kansas NAD27 grids, so this transform degrades.
+    with pytest.warns(gm.AccuracyWarning, match='us_noaa_conus[.]tif'):
+        gm.crs_transform('EPSG:4267', 'EPSG:4326', -100.0, 40.0)
+    assert last_transform_engine() == 'proj'
+    assert gm.crs_cache_info()['transform_invocations'] == 1
     assert bucket_entries('proj_pipeline') == 0
 
 

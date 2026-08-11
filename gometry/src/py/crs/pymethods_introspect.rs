@@ -1,7 +1,10 @@
-use crate::py::crs::*;
+use crate::py::crs::{Bound, PyCrs, PyResult, Python, crs, pymethods};
 #[pymethods]
 impl PyCrs {
     /// Whether this CRS is geographic (lon/lat on an ellipsoid).
+    ///
+    /// For a compound CRS this is ``True`` when **any component** is
+    /// geographic (not root-kind only) — e.g. ``EPSG:9707`` (WGS 84 + height).
     ///
     /// Returns
     /// -------
@@ -13,6 +16,9 @@ impl PyCrs {
 
     /// Whether this CRS is projected (planar, metric).
     ///
+    /// For a compound CRS this is ``True`` when **any component** is
+    /// projected (not root-kind only).
+    ///
     /// Returns
     /// -------
     /// bool
@@ -23,6 +29,9 @@ impl PyCrs {
 
     /// Whether this CRS is vertical (height/depth only).
     ///
+    /// For a compound CRS this is ``True`` when **any component** is
+    /// vertical (not root-kind only).
+    ///
     /// Returns
     /// -------
     /// bool
@@ -32,6 +41,9 @@ impl PyCrs {
     }
 
     /// Whether this CRS is geocentric (earth-centered Cartesian).
+    ///
+    /// For a compound CRS this is ``True`` when **any component** is
+    /// geocentric (not root-kind only).
     ///
     /// Returns
     /// -------
@@ -236,7 +248,9 @@ impl PyCrs {
     /// -------
     /// CrsInfo
     #[getter]
-    fn info(&self) -> PyResult<crs::CrsInfo> {
-        Ok(self.cached_info()?.clone())
+    fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        // Receiver-local cache (not the free ``crs_info`` bounded global LRU):
+        // held CRS objects must not thrash that capacity-64 cache.
+        self.cached_info_dict(py)
     }
 }

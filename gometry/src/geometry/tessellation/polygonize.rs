@@ -1,7 +1,13 @@
+use ahash::HashSetExt as _;
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
-use super::*;
+use crate::geometry::{
+    Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, PointKey,
+    Polygon, PolygonizeFull, Ring, Segment, Shape, XY, compare_point_slices, line_segments,
+    open_xy_cycle_winding, ordered_edge, orient_ring, ring_contains_interior, ring_decision_area,
+    same_point,
+};
 
 type Face = (Vec<XY>, f64);
 

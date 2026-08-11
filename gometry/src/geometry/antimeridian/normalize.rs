@@ -2,8 +2,12 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::error::Result;
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, RepairMethod, Ring,
+    Segment, Shape, ShapeData, ValidationIssue, shape_encloses_pole, shape_has_polar_ring,
+    shared_segment_part,
+};
 
 /// Planar-correct normalization for frame-aware topology: drop Z/M (topology
 /// is 2D) and split geographic seam crossings. Valid XY topology splits

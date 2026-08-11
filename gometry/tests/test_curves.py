@@ -57,8 +57,9 @@ def test_curve_frames_and_errors() -> None:
     assert (gm.Point(3.0, 4.0)).spatial_key(curve='hilbert') == 0
     keys = (gm.GeometryArray([])).spatial_key(curve='hilbert')
     ndarray_lane(keys, np.uint64, shape=(0,))
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        (gm.from_wkt('POINT EMPTY')).spatial_key(curve='hilbert')
+    # An empty geometry has no key: `None`, like `bounds` and the rest of the
+    # extent-accessor family. The ARRAY sentinel below is unchanged.
+    assert (gm.from_wkt('POINT EMPTY')).spatial_key(curve='hilbert') is None
     rows = gm.GeometryArray([gm.Point(0, 0), gm.from_wkt('POINT EMPTY'), None])
     sentinel = np.iinfo(np.uint64).max
     assert rows.spatial_key(curve='hilbert').tolist() == [0, sentinel, sentinel]

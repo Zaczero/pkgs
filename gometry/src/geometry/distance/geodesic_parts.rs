@@ -1,10 +1,13 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::{
+    CapGroup, GEODESIC_CAP_GROUP, GeodesicScratchGuard, RowProbe, collect_point_only_into,
+    geodesic_ordered_rows_into, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+};
+use crate::geometry::{
+    FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicPartsKey, GeodesicSegment, Point,
+    Segment, Shape, ShapeData, XY, predicates,
+};
 pub(crate) fn geodesic_pair_spans_antimeridian(start: Point, end: Point) -> bool {
-    super::predicates::spans_antimeridian(Segment {
+    predicates::spans_antimeridian(Segment {
         start: XY::new(start.x, start.y),
         end: XY::new(end.x, end.y),
     })

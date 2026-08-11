@@ -1,7 +1,11 @@
 use std::ptr;
 
-use super::*;
-use crate::crs::*;
+use crate::crs::catalog::catalog;
+use crate::crs::{
+    CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedUnits, CrsCatalogInfo, CrsCatalogOptions,
+    CrsError, CrsObjectKind, OwnedUnitList, UnitInfo, UtmCatalogOptions, cstring,
+    ensure_thread_caches_current, lru_resolve, proj_context_error_message, with_proj_context,
+};
 use crate::error::Result;
 use crate::text::str_contains_ignore_ascii_case;
 
@@ -61,11 +65,11 @@ pub(crate) fn unit_info(authority: &str, code: &str) -> Result<UnitInfo> {
         let mut name = ptr::null();
         let mut conversion_factor = 0.0;
         let mut category = ptr::null();
-        // SAFETY: context/authority/code are valid for this call; output pointers
-        // reference initialized local storage and returned strings are copied.
+        // SAFETY: DOC-H. Typed context; authority/code CStrings live; OUT slots
+        // exclusive locals; returned strings copied immediately.
         let found = unsafe {
             proj_sys::proj_uom_get_info_from_database(
-                context,
+                context.as_ptr(),
                 authority.as_ptr(),
                 code.as_ptr(),
                 &raw mut name,
@@ -83,8 +87,8 @@ pub(crate) fn unit_info(authority: &str, code: &str) -> Result<UnitInfo> {
         Ok(UnitInfo {
             authority: Some(authority.to_string_lossy().into_owned()),
             code: Some(code.to_string_lossy().into_owned()),
-            name: string_from_ptr(name),
-            category: string_from_ptr(category),
+            name: proj_c_string!(name),
+            category: proj_c_string!(category),
             conversion_factor,
             proj_short_name: None,
         })
@@ -101,15 +105,48 @@ pub(crate) fn units(
             "unit authority must be a non-empty string".to_owned(),
         ));
     }
+    ensure_thread_caches_current();
+    let authority_owned = authority.to_owned();
+    let category_owned = category.map(str::to_owned);
+    CRS_UNITS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let index = lru_resolve(
+            &mut cache,
+            CRS_UNITS_CACHE_CAPACITY,
+            |item| {
+                item.authority == authority_owned
+                    && item.category.as_deref() == category_owned.as_deref()
+                    && item.allow_deprecated == allow_deprecated
+            },
+            || {
+                Ok(CachedUnits {
+                    authority: authority_owned.clone(),
+                    category: category_owned.clone(),
+                    allow_deprecated,
+                    items: units_uncached(authority, category, allow_deprecated)?.into(),
+                })
+            },
+        )?;
+        Ok(cache[index].items.to_vec())
+    })
+}
+
+fn units_uncached(
+    authority: &str,
+    category: Option<&str>,
+    allow_deprecated: bool,
+) -> Result<Vec<UnitInfo>> {
+    use std::ptr::NonNull;
+
     let authority = cstring(authority)?;
     let category = category.map(cstring).transpose()?;
     with_proj_context(|context| {
         let mut count = 0;
-        // SAFETY: context/authority/category are valid for the call. PROJ returns
-        // a caller-owned null-terminated-ish list with count entries.
+        // SAFETY: DOC-H. Typed context; authority/category live; OUT count
+        // exclusive; returns caller-owned list with count entries.
         let list = unsafe {
             proj_sys::proj_get_units_from_database(
-                context,
+                context.as_ptr(),
                 authority.as_ptr(),
                 category
                     .as_ref()
@@ -118,36 +155,14 @@ pub(crate) fn units(
                 &raw mut count,
             )
         };
-        if list.is_null() {
-            // SAFETY: context is valid for this immediate PROJ error inspection.
-            let error = unsafe { proj_sys::proj_context_errno(context) };
-            if error == 0 {
+        let Some(list) = NonNull::new(list) else {
+            if context.errno() == 0 {
                 return Ok(Vec::new());
             }
             return Err(CrsError::invalid(proj_context_error_message(context)));
-        }
-        let mut units = Vec::with_capacity(count.max(0) as usize);
-        for index in 0..count {
-            // SAFETY: PROJ returned count entries.
-            let info = unsafe { *list.add(index as usize) };
-            if info.is_null() {
-                continue;
-            }
-            // SAFETY: info points to a PROJ_UNIT_INFO owned by list until destroy.
-            let info = unsafe { &*info };
-            units.push(UnitInfo {
-                authority: string_from_ptr(info.auth_name),
-                code: string_from_ptr(info.code),
-                name: string_from_ptr(info.name),
-                category: string_from_ptr(info.category),
-                conversion_factor: info.conv_factor,
-                proj_short_name: string_from_ptr(info.proj_short_name),
-            });
-        }
-        // SAFETY: list is owned by caller and destroyed once here.
-        unsafe {
-            proj_sys::proj_unit_list_destroy(list);
-        }
-        Ok(units)
+        };
+        // SAFETY: non-null list + count; unique ownership to Drop guard.
+        let list = unsafe { OwnedUnitList::from_owned(list, count) };
+        Ok(list.into_units())
     })?
 }

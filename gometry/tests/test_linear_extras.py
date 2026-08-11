@@ -40,7 +40,7 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
         line.line_interpolate([1.0], count=2)
     with pytest.raises(gm.GeometryError, match='count must be >= 1, got 0'):
         line.line_interpolate(count=0)
-    with pytest.raises(gm.GeometryError, match='normalized applies to distances'):
+    with pytest.raises(gm.GeometryError, match='normalized applies to at'):
         line.line_interpolate(count=2, normalized=True)
     with pytest.raises(TypeError, match='LineString'):
         gm.box(0, 0, 1, 1).line_interpolate(count=2)
@@ -121,8 +121,8 @@ def test_extremes_picks_first_tied_vertex_and_carries_zm() -> None:
     assert (north.x, north.y) == (2.0, 3.0)
     lifted = gm.LineString([(0, 0), (1, 1)], z=[5, 6], crs=3857).extremes()
     assert lifted.west.z == 5.0 and lifted.west.crs == 'EPSG:3857'
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.from_wkt('POINT EMPTY').extremes()
+    # An empty geometry has no extremes: `None`, like `bounds`.
+    assert gm.from_wkt('POINT EMPTY').extremes() is None
     rows = gm.GeometryArray([gm.Point(1, 2), gm.box(0, 0, 5, 5)]).extremes()
     assert isinstance(rows, gm.Extremes)
     west, south, east, north = rows
@@ -286,3 +286,30 @@ def test_w4b_interpolate_m_endpoint_exact_and_multipart_prefix() -> None:
     assert p0[-1][2] == pytest.approx(100.0)
     assert p1[0][2] == pytest.approx(100.0)
     assert p1[-1][2] == 200.0
+
+
+def test_extent_accessors_answer_none_uniformly_on_an_empty_scalar() -> None:
+    """Every extent accessor describes what is THERE, or `None`.
+
+    `extremes` and `spatial_key` were the only two that raised, while `bounds`,
+    `bounds_3d`, `min_z` and `z_range` all returned `None` and BOTH array forms
+    already degraded per row. A parameter error is still an error, whatever the
+    geometry.
+    """
+    empty = gm.from_wkt('POLYGON EMPTY')
+    assert empty.bounds is None
+    assert empty.bounds_3d is None
+    assert empty.min_z is None
+    assert empty.z_range is None
+    assert empty.extremes() is None
+    assert empty.spatial_key() is None
+
+    # non-empty still answers
+    point = gm.Point(0, 0)
+    assert point.bounds == (0.0, 0.0, 0.0, 0.0)
+    assert point.extremes() is not None
+    assert point.spatial_key() == 0
+
+    # a bad parameter is an error even on an empty geometry
+    with pytest.raises(gm.GeometryError):
+        empty.spatial_key(level=99)

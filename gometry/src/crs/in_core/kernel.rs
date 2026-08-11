@@ -1,10 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+#![expect(
+    clippy::unreadable_literal,
+    reason = "authalic series coefficients retain PROJ's published numerator and denominator spellings"
 )]
 //! Shared projection-kernel types for in-core fast paths.
 
-use super::params::OperationSpec;
+use crate::crs::in_core::params::OperationSpec;
 use crate::error::Result;
 
 pub(super) const EPS10: f64 = 1.0e-10;
@@ -59,6 +59,80 @@ pub(super) fn phi2(ts: f64, e: f64) -> Option<f64> {
         phi = next;
     }
     None
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Authalic {
+    es: f64,
+    e: f64,
+    pub(super) qp: f64,
+    apa: [f64; 6],
+}
+
+impl Authalic {
+    pub(super) fn new(ellipsoid: Ellipsoid) -> Option<Self> {
+        let es = eccentricity_squared(ellipsoid);
+        let e = es.sqrt();
+        if !(0.0..1.0).contains(&es) || e == 0.0 {
+            return None;
+        }
+        let one_es = 1.0 - es;
+        let qp = one_es * (1.0 / one_es + e.atanh() / e);
+        let n = ellipsoid.n;
+        let poly = |coeffs: &[f64]| coeffs.iter().rev().fold(0.0, |v, c| v * n + c);
+        let apa = [
+            n * poly(&[
+                4.0 / 3.0,
+                4.0 / 45.0,
+                -16.0 / 35.0,
+                -2582.0 / 14175.0,
+                60136.0 / 467775.0,
+                28112932.0 / 212837625.0,
+            ]),
+            n.powi(2)
+                * poly(&[
+                    46.0 / 45.0,
+                    152.0 / 945.0,
+                    -11966.0 / 14175.0,
+                    -21016.0 / 51975.0,
+                    251310128.0 / 638512875.0,
+                ]),
+            n.powi(3)
+                * poly(&[
+                    3044.0 / 2835.0,
+                    3802.0 / 14175.0,
+                    -94388.0 / 66825.0,
+                    -8797648.0 / 10945935.0,
+                ]),
+            n.powi(4)
+                * poly(&[
+                    6059.0 / 4725.0,
+                    41072.0 / 93555.0,
+                    -1472637812.0 / 638512875.0,
+                ]),
+            n.powi(5) * poly(&[768272.0 / 467775.0, 455935736.0 / 638512875.0]),
+            n.powi(6) * 4210684958.0 / 1915538625.0,
+        ];
+        qp.is_finite().then_some(Self { es, e, qp, apa })
+    }
+
+    pub(super) fn q(self, sin_phi: f64) -> f64 {
+        let esin = self.e * sin_phi;
+        (1.0 - self.es) * (sin_phi / (1.0 - esin * esin) + esin.atanh() / self.e)
+    }
+
+    pub(super) fn beta(self, phi: f64) -> f64 {
+        (self.q(phi.sin()) / self.qp).clamp(-1.0, 1.0).asin()
+    }
+
+    pub(super) fn inverse_beta(self, beta: f64) -> f64 {
+        beta + self
+            .apa
+            .iter()
+            .enumerate()
+            .map(|(i, c)| c * (2.0 * (i + 1) as f64 * beta).sin())
+            .sum::<f64>()
+    }
 }
 
 pub(in crate::crs) trait ProjectionKernel: Sized + Copy {

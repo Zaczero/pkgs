@@ -1,4 +1,4 @@
-use super::*;
+use crate::geometry::access::*;
 use crate::geometry::{RingWinding, closed_columns_winding, ring_area_measure_columns};
 
 #[test]
@@ -84,11 +84,13 @@ fn ring_winding_stable_near_cancellation_when_measurement_may_differ() {
         RingWinding::CounterClockwise
     );
     let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
+    // First vertex is the origin — the measurement origin-shift is a no-op.
+    let (ox, oy) = (xs[0], ys[0]);
     let scalar_reference = xs
         .array_windows::<2>()
         .zip(ys.array_windows::<2>())
         .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
-            area + (x0 * y1 - x1 * y0)
+            area + ((x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy))
         })
         / 2.0;
     assert!(scalar_reference > 0.0);

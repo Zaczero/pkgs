@@ -1,10 +1,14 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use geographiclib_rs::Geodesic;
 
-use super::*;
+#[cfg(test)]
+use crate::crs::geodesic::geodesic_counters;
+use crate::crs::geodesic::{
+    GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GEODESIC_LINE_CAPS, GEODESIC_LINE_OUTMASK,
+    GOLDEN_FALLBACK_ITERATIONS, GOLDEN_FALLBACK_TOLERANCE_METRES, GOLDEN_RATIO,
+    GOLDEN_SECTION_TOLERANCE_METRES, GeodesicLine, GeodesicLineKey, InverseGeodesic as _,
+    MIN_REDUCED_LENGTH_METRES, NEWTON_MAX_ITERATIONS, geo_azimuths, geo_inverse,
+    interpolate_optional_ordinate, inverse_azimuths, inverse_distance,
+};
 use crate::geometry::{GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate};
 
 /// Whether geodesic segments `a`–`b` and `c`–`d` properly cross, via the
@@ -55,6 +59,10 @@ pub(crate) fn geodesic_segments_cross(
 /// inequality), so when that bound is already `>= best` the costly along-track
 /// search is skipped and the cheaper `min(d_a, d_b)` endpoint distance
 /// returned.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_point_to_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -64,6 +72,10 @@ pub(crate) fn geodesic_point_to_segment(
     geodesic_segment_minimum(geodesic, point, segment, best).distance
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_locate_on_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -82,6 +94,10 @@ pub(crate) fn geodesic_locate_on_segment(
 /// for realistic edges), bracketed by endpoint derivative signs, with
 /// branch-and-bound pruning. Golden-section is the fallback when Newton cannot
 /// maintain a valid bracket (near-conjugate segments, non-finite derivatives).
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_foot_on_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -92,6 +108,10 @@ pub(crate) fn geodesic_foot_on_segment(
     geodesic_segment_witness_at(geodesic, segment, minimum.distance, minimum.along)
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
     let key = GeodesicLineKey {
         semi_major_bits: geodesic.a.to_bits(),
@@ -153,6 +173,10 @@ pub(crate) struct NewtonProbe {
     m21: f64,
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_segment_witness_at(
     geodesic: &Geodesic,
     segment: GeodesicSegment,
@@ -198,6 +222,10 @@ pub(crate) fn geodesic_segment_witness_at(
     }
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_segment_minimum(
     geodesic: &Geodesic,
     point: Point,
@@ -307,6 +335,10 @@ pub(crate) fn cross_track_seed_along(
     f64::midpoint(from_a, from_b).clamp(0.0, segment_length)
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_segment_minimum_newton(
     geodesic: &Geodesic,
     point: Point,
@@ -428,6 +460,10 @@ pub(crate) fn away_from_probe_azimuth(azi2_pq: f64) -> f64 {
     azi2_pq + 180.0
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_segment_minimum_golden(
     geodesic: &Geodesic,
     point: Point,

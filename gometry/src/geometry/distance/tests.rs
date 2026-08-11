@@ -1,7 +1,174 @@
-use super::*;
+use crate::geometry::distance::hausdorff::HAUSDORFF_SMALL_TARGET_MAX_VERTICES;
+use crate::geometry::distance::*;
+use crate::geometry::*;
 
 pub(super) fn p(x: f64, y: f64) -> Point {
     Point::new_unchecked_xy(x, y)
+}
+
+#[test]
+fn continuous_hausdorff_keeps_tiny_parallel_separation() {
+    let separation = 1e-300;
+    let left = line(vec![p(0.0, 0.0), p(2.0 * separation, 0.0)]);
+    let right = line(vec![p(0.0, separation), p(2.0 * separation, separation)]);
+    assert_eq!(
+        left.hausdorff_distance(&right).to_bits(),
+        separation.to_bits()
+    );
+
+    let base = 1e200_f64;
+    let huge_separation = f64::from_bits(base.to_bits() + 16) - base;
+    let left = line(vec![p(0.0, base), p(1.0, base)]);
+    let right = line(vec![
+        p(0.0, base + huge_separation),
+        p(1.0, base + huge_separation),
+    ]);
+    assert_eq!(
+        left.hausdorff_distance(&right).to_bits(),
+        huge_separation.to_bits()
+    );
+
+    let left = line(vec![
+        p(0.0, base),
+        p(0.25, base),
+        p(0.75, base),
+        p(1.0, base),
+    ]);
+    let right = line(vec![
+        p(0.0, base + huge_separation),
+        p(0.25, base + huge_separation),
+        p(0.75, base + huge_separation),
+        p(1.0, base + huge_separation),
+    ]);
+    assert_eq!(
+        left.hausdorff_distance(&right).to_bits(),
+        huge_separation.to_bits()
+    );
+}
+
+#[test]
+fn point_segment_distance_divides_before_unscaling_tiny_area() {
+    let end = 1e-200_f64;
+    let midpoint = end / 2.0;
+    let offset_y = f64::from_bits(midpoint.to_bits() + 1);
+    let actual = shape_impl::robust_point_segment_distance(XY::new(midpoint, offset_y), Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(end, end),
+    });
+    // `Fraction` from these STORED doubles gives
+    // d² = (offset_y - midpoint)² / 2 exactly. Its correctly-rounded square
+    // root is 0x1.6a09e667f3bcdp-719; dividing by rounded sqrt(2) is one ulp low.
+    let expected = f64::from_bits(1_370_959_738_765_786_061);
+    assert!(actual > 0.0);
+    assert_eq!(actual.to_bits(), expected.to_bits());
+}
+
+#[test]
+fn continuous_hausdorff_preserves_underflowed_local_determinant() {
+    let length = 2.0_f64.powi(996);
+    let height = 2.0_f64.powi(396);
+    let offset = 2.0_f64.powi(344);
+    let baseline = line(vec![p(0.0, 0.0), p(length, height)]);
+    let graph = line(vec![
+        p(0.0, 0.0),
+        p(height, 0.0),
+        p(length, height + offset),
+    ]);
+    assert_eq!(
+        baseline.hausdorff_distance(&graph).to_bits(),
+        offset.to_bits()
+    );
+    assert_eq!(
+        graph.hausdorff_distance(&baseline).to_bits(),
+        offset.to_bits()
+    );
+}
+
+#[test]
+fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition() {
+    for exponent in [154, 155] {
+        let length = 10.0_f64.powi(exponent);
+        let height = 10.0_f64.powi(-exponent);
+        let baseline = line(vec![p(0.0, 0.0), p(length, 0.0)]);
+        let bent = line(vec![
+            p(0.0, height),
+            p(length / 2.0, 2.0 * height),
+            p(length, height),
+        ]);
+        let expected = 2.0 * height;
+        assert_eq!(
+            baseline.hausdorff_distance(&bent).to_bits(),
+            expected.to_bits(),
+            "reciprocal-axis Hausdorff failed at e={exponent}"
+        );
+        assert_eq!(
+            bent.hausdorff_distance(&baseline).to_bits(),
+            expected.to_bits()
+        );
+    }
+}
+
+#[test]
+fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
+    for exponent in [154, 200, 300] {
+        let length = 10.0_f64.powi(exponent);
+        let half_gap = 10.0_f64.powi(-exponent);
+        let source = line(vec![p(-length, 0.0), p(length, 0.0)]);
+        let target = multiline(vec![vec![p(-length, 0.0), p(-half_gap, 0.0)], vec![
+            p(half_gap, 0.0),
+            p(length, 0.0),
+        ]]);
+        assert_eq!(
+            shape_impl::robust_point_segment_distance(XY::new(0.0, 0.0), Segment {
+                start: XY::new(-length, 0.0),
+                end: XY::new(-half_gap, 0.0),
+            },)
+            .to_bits(),
+            half_gap.to_bits(),
+        );
+        assert_eq!(
+            shape_impl::robust_directed_hausdorff(&source, &target).to_bits(),
+            half_gap.to_bits(),
+        );
+        assert_eq!(
+            source.hausdorff_distance(&target).to_bits(),
+            half_gap.to_bits(),
+            "reciprocal-axis target gap failed at e={exponent}"
+        );
+    }
+}
+
+#[test]
+fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
+    for exponent in [154, 200, 300] {
+        let length = 10.0_f64.powi(exponent);
+        let height = 10.0_f64.powi(-exponent);
+        for swap in [false, true] {
+            let xy = |x: f64, y: f64| if swap { p(y, x) } else { p(x, y) };
+            let horizontal = line(vec![xy(-length, 10.0 * height), xy(length, 10.0 * height)]);
+            let vertical = line(vec![xy(0.0, -height), xy(0.0, height)]);
+            let lower = line(vec![xy(0.0, -height), xy(0.0, -height / 2.0)]);
+            let upper = line(vec![xy(0.0, height / 2.0), xy(0.0, height)]);
+            let source = Shape::GeometryCollection(vec![horizontal.clone(), vertical]);
+            let target = Shape::GeometryCollection(vec![horizontal, lower, upper]);
+            let expected = height / 2.0;
+            assert!(
+                source
+                    .hausdorff_distance(&target)
+                    .to_bits()
+                    .abs_diff(expected.to_bits())
+                    <= 4,
+                "minor-axis collection gap failed at e={exponent}, swap={swap}"
+            );
+            assert!(
+                target
+                    .hausdorff_distance(&source)
+                    .to_bits()
+                    .abs_diff(expected.to_bits())
+                    <= 4
+            );
+        }
+    }
 }
 
 #[expect(
@@ -368,8 +535,8 @@ fn geodesic_group_cap_pruning_case() -> (&'static str, Shape, Shape) {
 }
 
 #[expect(
-    clippy::float_cmp,
-    reason = "BVH must preserve exact cap-sweep witnesses"
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
 pub(super) fn assert_same_witness(
     name: &str,
@@ -544,6 +711,14 @@ fn segment_aware_hausdorff_empty_and_point_semantics() {
         Shape::Point(p(0.0, 0.0)).hausdorff_distance(&Shape::Point(p(3.0, 4.0))),
         5.0,
     );
+    let subnormal = 1.5e-162;
+    assert_eq!(
+        Shape::Point(p(0.0, 0.0))
+            .hausdorff_distance(&Shape::Point(p(subnormal, 0.0)))
+            .to_bits(),
+        subnormal.to_bits(),
+        "a point pair is a complete continuous Hausdorff problem; its squared distance may underflow"
+    );
     assert_hausdorff_close(
         line(vec![p(0.0, 0.0), p(10.0, 0.0)]).hausdorff_distance(&line(vec![
             p(0.0, 1.0),
@@ -552,6 +727,15 @@ fn segment_aware_hausdorff_empty_and_point_semantics() {
         ])),
         8.0,
     );
+}
+
+#[test]
+fn backtracking_collinear_line_is_not_a_single_endpoint_segment() {
+    let left = line(vec![p(0.0, 0.0), p(10.0, 0.0), p(-5.0, 0.0)]);
+    let right = line(vec![p(-5.0, 1.0), p(0.0, 1.0)]);
+    let expected = 101.0_f64.sqrt();
+    assert_hausdorff_close(left.hausdorff_distance(&right), expected);
+    assert_hausdorff_close(right.hausdorff_distance(&left), expected);
 }
 
 fn wiggly_line_columns(vertex_count: usize, y_offset: f64) -> (Vec<f64>, Vec<f64>) {

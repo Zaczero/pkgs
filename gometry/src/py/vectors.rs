@@ -2,10 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Bulk result containers and internal PEP-3118 buffer holders.
 //!
 //! Public numeric lanes return read-only NumPy ndarrays; [`Groups`] is the
@@ -24,7 +20,7 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyBufferError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySequence};
-use pyo3::{IntoPyObjectExt, ffi};
+use pyo3::{IntoPyObjectExt as _, ffi};
 
 use crate::HeapSize;
 use crate::array::PyGeometryArray;
@@ -32,7 +28,7 @@ use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
-use crate::py::numpy::{frozen_i64_view, int64_array};
+use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 
 /// Format a short preview list of already-rendered row strings.
@@ -113,6 +109,7 @@ enum GroupsValues {
     name = "Groups",
     module = "gometry",
     frozen,
+    immutable_type,
     sequence,
     generic,
     skip_from_py_object
@@ -127,8 +124,12 @@ pub struct Groups {
     rows: Range<usize>,
 }
 
-#[path = "vectors_ctor.rs"]
-mod vectors_ctor;
+// Frozen + immutable Arc<[i64]> backing: the only owner admitted to
+// `frozen_i64_view` (Item C). A mutable pyclass cannot implement Sealed.
+impl frozen_i64_owner::Sealed for Groups {}
+impl ImmutableI64Owner for Groups {}
+
+mod ctor;
 
 impl Groups {
     /// Row `i`'s window into the full int64 values buffer.
@@ -295,9 +296,8 @@ impl RowContainer for Groups {
     }
 }
 
-#[path = "vectors_iter.rs"]
-mod vectors_iter;
-pub(crate) use vectors_iter::GroupsIter;
+mod iter;
+pub(crate) use iter::GroupsIter;
 
 #[pymethods]
 impl Groups {
@@ -703,6 +703,11 @@ impl Groups {
 
     /// Copy into a plain nested Python list.
     ///
+    /// Returns
+    /// -------
+    /// list of list
+    ///     Materialized rows of the grouped values.
+    ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
@@ -831,7 +836,7 @@ pub(crate) fn _unpickle_cell_groups(
 /// Internal zero-copy buffer holder for `f64` coordinate columns (Arrow
 /// export). Not part of the public surface — constructed from Rust only
 /// and consumed through PEP-3118 (`pa.py_buffer`).
-#[pyclass(name = "_Float64Buffer", module = "gometry", frozen)]
+#[pyclass(name = "_Float64Buffer", module = "gometry", frozen, immutable_type)]
 pub(crate) struct Float64Buffer {
     storage: Arc<[f64]>,
     range: Range<usize>,
@@ -893,7 +898,7 @@ impl Float64Buffer {
 /// Internal zero-copy buffer holder for `i32` columns (Arrow list
 /// offsets). Not part of the public surface — constructed from Rust only
 /// and consumed through PEP-3118 (`pa.py_buffer`).
-#[pyclass(name = "_Int32Buffer", module = "gometry", frozen)]
+#[pyclass(name = "_Int32Buffer", module = "gometry", frozen, immutable_type)]
 pub(crate) struct Int32Buffer {
     storage: Arc<[i32]>,
 }

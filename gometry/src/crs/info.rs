@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! CRS introspection public API: `info`/`axis_order`/`factors`/`factor_columns`
 //! and operation lookup (`operation_info`/`operation_info_at`).
 //!
@@ -9,9 +5,37 @@
 //! private in the parent `crs` module) via `use super::*`; re-exported at
 //! `crs`.
 
-use super::*;
+use crate::crs::{
+    CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY, CString,
+    CachedCrsInfo, CachedProjectionFactorsObject, CrsError, CrsInfo, CrsProjOptions, DatumInfo,
+    EngineInfo, OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns,
+    ProjectionFactors, TransformOptions, c_option_ptrs, copy_proj_c_string,
+    create_crs_transform_object, cstring, ensure_thread_caches_current, lru_resolve, normalize,
+    normalize_pair, proj_context_error_message, with_proj_context, with_proj_diagnostic_pipeline,
+    with_proj_pipeline,
+};
 use crate::error::Result;
 use crate::geometry::column_all_finite;
+
+#[derive(Clone, Copy)]
+pub(crate) enum AngularUnit {
+    Degrees,
+    Radians,
+}
+
+impl AngularUnit {
+    const fn from_radians(radians: bool) -> Self {
+        if radians {
+            Self::Radians
+        } else {
+            Self::Degrees
+        }
+    }
+
+    pub(super) const fn is_radians(self) -> bool {
+        matches!(self, Self::Radians)
+    }
+}
 
 pub(crate) fn info(value: &str) -> Result<std::sync::Arc<CrsInfo>> {
     ensure_thread_caches_current();
@@ -47,8 +71,26 @@ fn datum_is_dynamic(datum: &DatumInfo) -> bool {
 
 /// Whether a CRS admits a coordinate epoch in PROJ — the question behind the
 /// epoch-through-`to_crs` policy. One cached `info` lookup per distinct CRS.
+///
+/// Recurses through compound sub-CRSs and datum ensembles: a compound whose
+/// horizontal component is dynamic (e.g. EPSG:9707 = WGS 84 + height) is
+/// dynamic even when the compound object's own datum slot is empty.
 pub(crate) fn is_dynamic(value: &str) -> Result<bool> {
-    Ok(info(value)?.datum.as_ref().is_some_and(datum_is_dynamic))
+    is_dynamic_info(info(value)?.as_ref())
+}
+
+fn is_dynamic_info(crs: &CrsInfo) -> Result<bool> {
+    if crs.datum.as_ref().is_some_and(datum_is_dynamic) {
+        return Ok(true);
+    }
+    // Compound components only — never re-resolve a datum/ensemble authority
+    // code as a CRS (EPSG:6326 is a datum ensemble, not a constructible CRS).
+    for sub in &crs.sub_crs {
+        if !sub.crs.is_empty() && is_dynamic(&sub.crs)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn factors(
@@ -57,7 +99,12 @@ pub(crate) fn factors(
     latitude: f64,
     radians: bool,
 ) -> Result<ProjectionFactors> {
-    let mut factors = factors_batch(target, &[longitude], &[latitude], radians)?;
+    let mut factors = factors_batch(
+        target,
+        &[longitude],
+        &[latitude],
+        AngularUnit::from_radians(radians),
+    )?;
     Ok(factors.remove(0))
 }
 
@@ -65,7 +112,7 @@ pub(crate) fn factors_batch(
     target: &str,
     longitudes: &[f64],
     latitudes: &[f64],
-    radians: bool,
+    unit: AngularUnit,
 ) -> Result<Vec<ProjectionFactors>> {
     if longitudes.len() != latitudes.len() {
         return Err(CrsError::invalid(
@@ -90,9 +137,7 @@ pub(crate) fn factors_batch(
         longitudes
             .iter()
             .zip(latitudes)
-            .map(|(&longitude, &latitude)| {
-                cache[index].object.factors(longitude, latitude, radians)
-            })
+            .map(|(&longitude, &latitude)| cache[index].object.factors(longitude, latitude, unit))
             .collect()
     })
 }
@@ -119,6 +164,7 @@ pub(crate) fn factor_columns(
     latitudes: &[f64],
     radians: bool,
 ) -> Result<ProjectionFactorColumns> {
+    let unit = AngularUnit::from_radians(radians);
     if longitudes.len() != latitudes.len() {
         return Err(CrsError::invalid(
             "factor coordinates must have the same length".to_owned(),
@@ -141,7 +187,7 @@ pub(crate) fn factor_columns(
         )?;
         cache[index]
             .object
-            .factor_columns(longitudes, latitudes, radians)
+            .factor_columns(longitudes, latitudes, unit)
     })
 }
 
@@ -149,20 +195,14 @@ fn projection_factors_object(target: &str) -> Result<CachedProjectionFactorsObje
     let target_definition = cstring(target)?;
     let context =
         ProjContext::new().map_err(|error| CrsError::crs_create(target, error.to_string()))?;
-    let target_object =
-        create_crs_transform_object(context.as_ptr(), target_definition.as_ptr(), target, None)?;
-    let mut projection =
-        projection_string_for_factors(context.as_ptr(), target_object.as_ptr(), target)?;
+    let target_object = create_crs_transform_object(&context, &target_definition, target, None)?;
+    let mut projection = projection_string_for_factors(&context, &target_object, target)?;
     if let Some(stripped) = projection.strip_suffix(" +type=crs") {
         projection.truncate(stripped.len());
     }
     let projection_definition = cstring(projection.as_str())?;
-    let projection_object = create_crs_transform_object(
-        context.as_ptr(),
-        projection_definition.as_ptr(),
-        &projection,
-        None,
-    )?;
+    let projection_object =
+        create_crs_transform_object(&context, &projection_definition, &projection, None)?;
     Ok(CachedProjectionFactorsObject {
         crs: target.to_owned(),
         object: ProjObject {
@@ -173,25 +213,24 @@ fn projection_factors_object(target: &str) -> Result<CachedProjectionFactorsObje
 }
 
 fn projection_string_for_factors(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *mut proj_sys::PJ,
+    context: &ProjContext,
+    object: &OwnedPj,
     target: &str,
 ) -> Result<String> {
     let options = CrsProjOptions::default();
     let c_options = options.to_c_options()?;
     let option_ptrs = c_option_ptrs(&c_options);
-    // SAFETY: `context` and `object` are live PROJ handles owned by RAII
-    // guards in the caller; `option_ptrs` is null-terminated and points to C
-    // strings that live for this call.
+    // SAFETY: DOC-H. Typed live context/object; option_ptrs null-terminated and
+    // points to C strings that live for this call.
     let value = unsafe {
         proj_sys::proj_as_proj_string(
-            context,
-            object,
+            context.as_ptr(),
+            object.as_ptr(),
             proj_sys::PJ_PROJ_STRING_TYPE_PJ_PROJ_5,
             option_ptrs.as_ptr(),
         )
     };
-    string_from_ptr(value)
+    proj_c_string!(value)
         .ok_or_else(|| CrsError::export(target, "PROJ string", proj_context_error_message(context)))
 }
 pub(crate) fn operation_info(
@@ -258,15 +297,23 @@ pub(crate) fn operation_info_at(
     })
 }
 
-pub(super) fn proj_info_paths(info: proj_sys::PJ_INFO) -> Vec<String> {
+/// Copy path entries from a `proj_info()` snapshot under [`PROJ_INFO_LOCK`].
+///
+/// # Safety
+///
+/// Call only while holding the lock that serialized `proj_info()` and while
+/// the returned `paths` pointers remain valid (before any concurrent
+/// `proj_info()` can free them). `path_count` is the count reported by that
+/// same call.
+unsafe fn proj_info_paths_locked(info: &proj_sys::PJ_INFO) -> Vec<String> {
     if info.paths.is_null() || info.path_count == 0 {
         return Vec::new();
     }
     let mut paths = Vec::with_capacity(info.path_count);
     for index in 0..info.path_count {
-        // SAFETY: PROJ reports path_count elements in the paths array.
+        // SAFETY: LIST(path_count) under the lock that owns the snapshot.
         let path = unsafe { *info.paths.add(index) };
-        if let Some(path) = string_from_ptr(path) {
+        if let Some(path) = proj_c_string!(path) {
             paths.push(path);
         }
     }
@@ -286,48 +333,94 @@ pub(crate) const DATABASE_METADATA_KEYS: [&str; 10] = [
     "PROJ.VERSION",
 ];
 
-pub(super) fn database_metadata(context: *mut proj_sys::PJ_CONTEXT) -> Vec<(String, String)> {
+pub(super) fn database_metadata(context: &ProjContext) -> Vec<(String, String)> {
     DATABASE_METADATA_KEYS
         .iter()
         .filter_map(|key| {
             let key_c = CString::new(*key).ok()?;
-            // SAFETY: context is valid and key_c is a valid C string for the call.
-            let value =
-                unsafe { proj_sys::proj_context_get_database_metadata(context, key_c.as_ptr()) };
-            string_from_ptr(value).map(|value| ((*key).to_owned(), value))
+            // SAFETY: DOC-H. Typed live context; key_c is a live CString for the
+            // call; returned string is context-lifetime and copied immediately.
+            let value = unsafe {
+                proj_sys::proj_context_get_database_metadata(context.as_ptr(), key_c.as_ptr())
+            };
+            proj_c_string!(value).map(|value| ((*key).to_owned(), value))
         })
         .collect()
 }
 
 pub(crate) fn engine_info() -> Result<EngineInfo> {
-    // SAFETY: proj_info returns a value struct with static/bound PROJ-owned strings
-    // copied immediately by string_from_ptr.
-    let info = unsafe { proj_sys::proj_info() };
+    // `proj_info()` returns pointers into PROJ's mutable global metadata
+    // storage. Concurrent `proj_info()` rewrites/frees that backing after the
+    // call returns (reproduced on free-threaded CPython 3.14t: corrupt search
+    // paths and empty version strings). Own every string *immediately* under a
+    // process-wide lock, before any other PROJ/context work can run.
+    let snapshot = owned_proj_info_snapshot();
     with_proj_context(|context| {
-        // SAFETY: context is valid for these metadata calls.
+        // SAFETY: DOC-H. Typed live context; returned paths/directory are
+        // context-lifetime C strings copied immediately.
         let (database_path, user_writable_directory) = unsafe {
             (
-                string_from_ptr(proj_sys::proj_context_get_database_path(context)),
-                string_from_ptr(proj_sys::proj_context_get_user_writable_directory(
-                    context, 0,
+                copy_proj_c_string(proj_sys::proj_context_get_database_path(context.as_ptr())),
+                copy_proj_c_string(proj_sys::proj_context_get_user_writable_directory(
+                    context.as_ptr(),
+                    0,
                 )),
             )
         };
         EngineInfo {
             backend: "proj-sys/libPROJ",
             bundled_proj: true,
-            version: string_from_ptr(info.version),
-            release: string_from_ptr(info.release),
-            major: info.major,
-            minor: info.minor,
-            patch: info.patch,
-            search_path: string_from_ptr(info.searchpath),
-            paths: proj_info_paths(info),
+            version: snapshot.version,
+            release: snapshot.release,
+            major: snapshot.major,
+            minor: snapshot.minor,
+            patch: snapshot.patch,
+            search_path: snapshot.search_path,
+            paths: snapshot.paths,
             database_path,
             database_metadata: database_metadata(context),
             user_writable_directory,
         }
     })
+}
+
+/// Owned snapshot of every `proj_info()` string field.
+///
+/// Captured under [`PROJ_INFO_LOCK`] so concurrent callers cannot free/rewrite
+/// the global backing mid-copy.
+struct OwnedProjInfo {
+    version: Option<String>,
+    release: Option<String>,
+    major: i32,
+    minor: i32,
+    patch: i32,
+    search_path: Option<String>,
+    paths: Vec<String>,
+}
+
+/// Serializes `proj_info()` + all string copies. PROJ releases its own mutex
+/// before returning, so without this lock two free-threaded callers race on
+/// the mutable global string backing.
+static PROJ_INFO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn owned_proj_info_snapshot() -> OwnedProjInfo {
+    let _guard = PROJ_INFO_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: held under PROJ_INFO_LOCK; all returned C-string pointers are
+    // copied into owned Rust storage before the lock is released, so no other
+    // thread can rewrite/free the global backing while we read them.
+    let info = unsafe { proj_sys::proj_info() };
+    OwnedProjInfo {
+        version: proj_c_string!(info.version),
+        release: proj_c_string!(info.release),
+        major: info.major,
+        minor: info.minor,
+        patch: info.patch,
+        search_path: proj_c_string!(info.searchpath),
+        // SAFETY: still under PROJ_INFO_LOCK; paths remain live until unlock.
+        paths: unsafe { proj_info_paths_locked(&info) },
+    }
 }
 
 #[cfg(test)]

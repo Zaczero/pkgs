@@ -1,9 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-use crate::geometry::*;
+use std::simd::cmp::SimdPartialOrd as _;
+use std::simd::num::SimdFloat as _;
+
+use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
+use crate::geometry::{
+    CoordSeq, Coordinates, De9im, Dimension, HashMap, HashMapExt as _, Ordering, Point, PointKey,
+    PointSetIndex, Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment,
+    SegmentIndex, Shape, VertexProvenance, XY, effective_dimension, point_distance,
+    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ray_crossing_is_right,
+    ring_winding, same_point, segment_projection, simd_mask_any, squared_norm_is_trustworthy,
+    try_point_distance_squared, try_point_segment_distance_squared, wrap_index,
+};
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles): the
 /// closed remainder is the linework whose even-odd parity is well-defined.
@@ -139,7 +145,7 @@ pub(in crate::geometry) fn face_interior_point(face: &[XY]) -> XY {
 /// clearance is infinite. Both `minimum_clearance` (the scalar) and
 /// `minimum_clearance_line` (the witness line) fold this one scan, so the
 /// two surfaces can never disagree.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct MinimumClearanceWitness {
     pub(crate) plan: [VertexProvenance; 2],
     pub(crate) distance_squared: f64,
@@ -150,97 +156,177 @@ pub(crate) fn minimum_clearance_witness(shape: &Shape) -> Option<MinimumClearanc
     if points.len() < 2 {
         return None;
     }
-
     let segments = indexed_segments(shape);
-    let mut witness: Option<MinimumClearanceWitness> = None;
+    if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
+        minimum_clearance_witness_indexed(&points, &segments)
+    } else {
+        minimum_clearance_witness_brute(&points, &segments)
+    }
+}
+
+/// Indexed nearest-query path (large multipoints / dense linework).
+fn minimum_clearance_witness_indexed(
+    points: &[Point],
+    segments: &[IndexedSegment],
+) -> Option<MinimumClearanceWitness> {
+    let first_point_index_by_xy = first_point_index_by_xy(points);
+    let vertex_index = PointSetIndex::build(points.iter().copied());
+    let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
-    let indexed = points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS;
-    let first_point_index_by_xy = first_point_index_by_xy(&points);
-    if indexed {
-        // Both quadratic phases become pruned nearest queries; min over
-        // positive distances is evaluation-order independent, so the result
-        // matches the brute scans exactly.
-        let vertex_index = PointSetIndex::build(points.iter().copied());
-        for (point_index, point) in points.iter().enumerate() {
-            if let Some((other, distance_squared)) = vertex_index.nearest_other(*point)
-                && distance_squared < clearance_squared
-            {
-                clearance_squared = distance_squared;
-                let other_index = first_point_index_by_xy[&PointKey::new(other)];
-                witness = Some(MinimumClearanceWitness {
-                    plan: [
-                        VertexProvenance::Input(point_index),
-                        VertexProvenance::Input(other_index),
-                    ],
-                    distance_squared,
-                });
-            }
-        }
-        let segment_index =
-            SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy));
-        for (point_index, point) in points.iter().enumerate() {
-            if let Some((segment_index, _segment, distance_squared)) = segment_index
-                .nearest_segment_ordinal_if(*point, clearance_squared, |segment, distance| {
-                    distance > 0.0
-                        && !same_point(*point, segment.start)
-                        && !same_point(*point, segment.end)
-                })
-            {
-                clearance_squared = distance_squared;
-                let segment = segments[segment_index];
-                witness = Some(MinimumClearanceWitness {
-                    plan: [
-                        VertexProvenance::Input(point_index),
-                        VertexProvenance::OnSegment {
-                            i: segment.start,
-                            j: segment.end,
-                            fraction: segment_projection_fraction(*point, segment.xy),
-                        },
-                    ],
-                    distance_squared,
-                });
-            }
-        }
-        return witness;
-    }
-    for (left_index, left) in points.iter().enumerate() {
-        for (offset, right) in points[(left_index + 1)..].iter().enumerate() {
-            let distance_squared = point_distance_squared(*left, *right);
-            if distance_squared > 0.0 && distance_squared < clearance_squared {
-                clearance_squared = distance_squared;
-                witness = Some(MinimumClearanceWitness {
-                    plan: [
-                        VertexProvenance::Input(left_index),
-                        VertexProvenance::Input(left_index + 1 + offset),
-                    ],
-                    distance_squared,
-                });
-            }
-        }
-    }
     for (point_index, point) in points.iter().enumerate() {
-        for segment in &segments {
-            if same_point(*point, segment.xy.start) || same_point(*point, segment.xy.end) {
-                continue;
-            }
-            let distance_squared = point_segment_distance_squared(*point, segment.xy);
-            if distance_squared > 0.0 && distance_squared < clearance_squared {
-                clearance_squared = distance_squared;
-                witness = Some(MinimumClearanceWitness {
-                    plan: [
-                        VertexProvenance::Input(point_index),
-                        VertexProvenance::OnSegment {
-                            i: segment.start,
-                            j: segment.end,
-                            fraction: segment_projection_fraction(*point, segment.xy),
-                        },
-                    ],
-                    distance_squared,
-                });
-            }
+        if let Some((other, raw_sq)) = vertex_index.nearest_other(*point)
+            && let Some(distance_squared) =
+                admit_clearance_squared(raw_sq, clearance_squared, || point_distance(*point, other))
+        {
+            clearance_squared = distance_squared;
+            let other_index = first_point_index_by_xy[&PointKey::new(other)];
+            witness = Some(MinimumClearanceWitness {
+                plan: [
+                    VertexProvenance::Input(point_index),
+                    VertexProvenance::Input(other_index),
+                ],
+                distance_squared,
+            });
+        }
+    }
+    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy));
+    for (point_index, point) in points.iter().enumerate() {
+        // Untrustworthy best must not prune the R-tree (would hide nearer segments).
+        let probe_best = if clearance_squared.is_normal() {
+            clearance_squared
+        } else {
+            f64::INFINITY
+        };
+        if let Some((seg_i, _segment, raw_sq)) =
+            segment_index.nearest_segment_ordinal_if(*point, probe_best, |segment, _distance| {
+                !same_point(*point, segment.start) && !same_point(*point, segment.end)
+            })
+            && let Some(distance_squared) =
+                admit_clearance_squared(raw_sq, clearance_squared, || {
+                    point_segment_distance(*point, segments[seg_i].xy)
+                })
+        {
+            clearance_squared = distance_squared;
+            let segment = segments[seg_i];
+            witness = Some(MinimumClearanceWitness {
+                plan: [
+                    VertexProvenance::Input(point_index),
+                    VertexProvenance::OnSegment {
+                        i: segment.start,
+                        j: segment.end,
+                        projection: segment_projection(*point, segment.xy),
+                    },
+                ],
+                distance_squared,
+            });
         }
     }
     witness
+}
+
+/// Brute O(n²) path for small multipoints / sparse linework.
+fn minimum_clearance_witness_brute(
+    points: &[Point],
+    segments: &[IndexedSegment],
+) -> Option<MinimumClearanceWitness> {
+    let mut witness = None;
+    let mut clearance_squared = f64::INFINITY;
+    for (left_index, left) in points.iter().enumerate() {
+        for (offset, right) in points[(left_index + 1)..].iter().enumerate() {
+            if same_point(*left, *right) {
+                continue;
+            }
+            // Normal squares compare in squared space; false-zero / subnormal
+            // residuals recompute in distance space (1.5e-162 not dropped,
+            // 2.2e-162 not quantized).
+            let Some(distance_squared) = admit_clearance_from_try(
+                try_point_distance_squared(*left, *right),
+                clearance_squared,
+                || point_distance(*left, *right),
+            ) else {
+                continue;
+            };
+            clearance_squared = distance_squared;
+            witness = Some(MinimumClearanceWitness {
+                plan: [
+                    VertexProvenance::Input(left_index),
+                    VertexProvenance::Input(left_index + 1 + offset),
+                ],
+                distance_squared,
+            });
+        }
+    }
+    for (point_index, point) in points.iter().enumerate() {
+        for segment in segments {
+            if same_point(*point, segment.xy.start) || same_point(*point, segment.xy.end) {
+                continue;
+            }
+            let Some(distance_squared) = admit_clearance_from_try(
+                try_point_segment_distance_squared(*point, segment.xy),
+                clearance_squared,
+                || point_segment_distance(*point, segment.xy),
+            ) else {
+                continue;
+            };
+            clearance_squared = distance_squared;
+            witness = Some(MinimumClearanceWitness {
+                plan: [
+                    VertexProvenance::Input(point_index),
+                    VertexProvenance::OnSegment {
+                        i: segment.start,
+                        j: segment.end,
+                        projection: segment_projection(*point, segment.xy),
+                    },
+                ],
+                distance_squared,
+            });
+        }
+    }
+    witness
+}
+
+/// True when candidate distance `d` is strictly closer than the current
+/// clearance tracked as a (possibly untrustworthy) squared residual.
+fn clearance_beats_distance(clearance_squared: f64, d: f64) -> bool {
+    if clearance_squared.is_normal() {
+        d < clearance_squared.sqrt()
+    } else if !clearance_squared.is_finite() {
+        // Still at +inf sentinel.
+        true
+    } else {
+        // Prior best was zero/subnormal placeholder — compare via sqrt of the
+        // placeholder when it is positive finite.
+        clearance_squared <= 0.0 || d < clearance_squared.sqrt()
+    }
+}
+
+/// Admit a candidate clearance residual: normal positive squares compare in
+/// squared space; false-zero / subnormal residuals recompute via `honest_d`.
+fn admit_clearance_squared(
+    raw_sq: f64,
+    clearance_squared: f64,
+    honest_d: impl FnOnce() -> f64,
+) -> Option<f64> {
+    if squared_norm_is_trustworthy(raw_sq, false) {
+        (raw_sq > 0.0 && raw_sq < clearance_squared).then_some(raw_sq)
+    } else {
+        let d = honest_d();
+        (d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d)
+    }
+}
+
+/// Brute-path twin of [`admit_clearance_squared`] over a `try_*` Option square.
+fn admit_clearance_from_try(
+    tried: Option<f64>,
+    clearance_squared: f64,
+    honest_d: impl FnOnce() -> f64,
+) -> Option<f64> {
+    if let Some(sq) = tried {
+        admit_clearance_squared(sq, clearance_squared, honest_d)
+    } else {
+        let d = honest_d();
+        (d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d)
+    }
 }
 
 #[derive(Clone, Copy)]

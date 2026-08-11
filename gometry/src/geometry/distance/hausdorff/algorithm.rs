@@ -2,16 +2,33 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::hausdorff::{
+    HausdorffProbeResult, HausdorffTargetLike, hausdorff_segment_tight_upper_bound_squared,
+    segment_radius_coverage_certified, stats,
+};
+use crate::geometry::{Segment, XY};
 
 /// Guarded `sqrt` for a squared planar distance (measurement lane — no
 /// `hypot`/`mul_add` on the fast path).
+///
+/// A squared residual is a faithful magnitude only when **normal** (same rule
+/// as [`crate::geometry::squared_norm_is_trustworthy`] / finishers). Zero and
+/// negative map to 0; positive subnormals are **not** trusted as final
+/// distances — intermediate Hausdorff upper bounds that only hold the square
+/// still take `sqrt` (slightly loose is pruning-safe); public finishers must
+/// recompute via [`crate::geometry::finish_planar_squared_min`].
 pub(crate) fn sqrt_distance_squared(squared: f64) -> f64 {
-    if squared <= 0.0 { 0.0 } else { squared.sqrt() }
+    if squared.is_normal() {
+        squared.sqrt()
+    } else if squared <= 0.0 {
+        0.0
+    } else if squared.is_finite() {
+        // Positive subnormal: not a faithful final magnitude. Intermediate
+        // 1-Lipschitz bounds remain conservative if slightly large.
+        squared.sqrt()
+    } else {
+        squared
+    }
 }
 
 /// Loose 1-Lipschitz upper bound for the shape-level directed sweep (non-column

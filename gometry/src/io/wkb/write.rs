@@ -1,22 +1,67 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::io::wkb::{
+    CoordSeq, Coordinates, EWKB_SRID_FLAG, EmptyKind, IoError, IoGeometryKind, LineSeq, Point,
+    Polygon, Result, Shape, WKB_COUNT, WKB_HEADER_BASE, WkbAxes, extended_srid_code,
+    require_serializable_axes, wkb_coords_len, wkb_dimension, wkb_type,
+};
 
 pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Result<Vec<u8>> {
-    let srid = wkb_srid(crs, include_srid)?;
+    // One path, no coordinate-count gate (the old `< 32` cliff). Classify once,
+    // reserve, write. Capacity is a *byte* decision on the classified form:
+    // - non-collection: `encoded_len` is arithmetic on known lengths → exact;
+    // - GeometryCollection: `encoded_len` re-classifies members → cheap
+    //   coord-based overestimate instead (measured dual-build).
+    // Reject heterogeneous-axis multiparts before inventing missing Z/M as 0.
+    require_serializable_axes(shape)?;
+    // Resolve the SRID once and thread it through length + header so the
+    // wire-alias table (CRS84→4326) cannot diverge between the two.
+    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
     let geometry = WkbShape::classify(shape);
-    // Size the buffer once from the exact serialized length, so even a
-    // million-vertex geometry fills with no reallocation churn.
-    let mut out = Vec::with_capacity(geometry.encoded_len(srid));
-    geometry.write(&mut out, crs, include_srid)?;
+    let capacity = match geometry.body {
+        WkbBody::GeometryCollection(geoms) => geoms
+            .iter()
+            .fold(32_usize, |acc, child| {
+                acc.saturating_add(64)
+                    .saturating_add(child.coord_count().saturating_mul(16))
+            })
+            .max(256),
+        _ => geometry.encoded_len(srid.is_some()),
+    };
+    let mut out = Vec::with_capacity(capacity);
+    geometry.write(&mut out, srid)?;
+    Ok(out)
+}
+
+/// Exact serialized length (including EWKB SRID when applicable).
+pub(crate) fn to_wkb_len(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Result<usize> {
+    require_serializable_axes(shape)?;
+    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
+    Ok(WkbShape::classify(shape).encoded_len(srid.is_some()))
+}
+
+/// Write WKB/EWKB into a pre-sized buffer (exact length from [`to_wkb_len`]).
+/// Used by `PyBytes::new_with` so large scalar encodes skip a Vec→bytes copy.
+pub(crate) fn write_wkb_into(
+    out: &mut [u8],
+    shape: &Shape,
+    crs: Option<&str>,
+    include_srid: bool,
+) -> Result<()> {
+    require_serializable_axes(shape)?;
+    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
+    let geometry = WkbShape::classify(shape);
     debug_assert_eq!(
         out.len(),
-        geometry.encoded_len(srid),
-        "WKB classification length drifted from its writer"
+        geometry.encoded_len(srid.is_some()),
+        "WKB destination length drifted from classification"
     );
-    Ok(out)
+    let mut cursor = WkbBuf { buf: out, pos: 0 };
+    geometry.write(&mut cursor, srid)?;
+    debug_assert_eq!(
+        cursor.pos,
+        out.len(),
+        "WKB writer under/over-filled the destination"
+    );
+    Ok(())
 }
 
 pub(crate) fn write_wkb_to(
@@ -25,12 +70,23 @@ pub(crate) fn write_wkb_to(
     crs: Option<&str>,
     include_srid: bool,
 ) -> Result<()> {
-    wkb_srid(crs, include_srid)?;
-    WkbShape::classify(shape).write(out, crs, include_srid)
+    require_serializable_axes(shape)?;
+    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
+    WkbShape::classify(shape).write(out, srid)
 }
 
-fn wkb_srid(crs: Option<&str>, include_srid: bool) -> Result<bool> {
-    extended_srid_code(crs, include_srid, "EWKB").map(|code| code.is_some())
+/// Cursor over a pre-sized mutable byte buffer for exact-size WKB fills.
+struct WkbBuf<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl WkbBuf<'_> {
+    fn write_at(&mut self, bytes: &[u8]) {
+        let end = self.pos + bytes.len();
+        self.buf[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+    }
 }
 
 trait WkbOut {
@@ -47,6 +103,72 @@ trait WkbOut {
         zs: Option<&[f64]>,
         ms: Option<&[f64]>,
     ) -> Result<()>;
+}
+
+impl WkbOut for WkbBuf<'_> {
+    fn push_byte(&mut self, value: u8) {
+        self.buf[self.pos] = value;
+        self.pos += 1;
+    }
+
+    fn extend_bytes(&mut self, bytes: &[u8]) {
+        self.write_at(bytes);
+    }
+
+    fn write_columns(
+        &mut self,
+        xs: &[f64],
+        ys: &[f64],
+        zs: Option<&[f64]>,
+        ms: Option<&[f64]>,
+    ) -> Result<()> {
+        let count = xs.len();
+        if ys.len() != count
+            || zs.is_some_and(|z| z.len() != count)
+            || ms.is_some_and(|m| m.len() != count)
+        {
+            return Err(IoError::wkb(
+                "WKB coordinate columns have mismatched lengths",
+            ));
+        }
+        let dimension = 2 + usize::from(zs.is_some()) + usize::from(ms.is_some());
+        let byte_len = count * dimension * size_of::<f64>();
+        let end = self.pos + byte_len;
+        let bytes = &mut self.buf[self.pos..end];
+        let (lanes, rest) = bytes.as_chunks_mut::<8>();
+        debug_assert!(rest.is_empty());
+        match (zs, ms) {
+            (None, None) => {
+                let stream = std::iter::zip(xs, ys).flat_map(|(&x, &y)| [x, y]);
+                for (lane, value) in std::iter::zip(lanes, stream) {
+                    *lane = value.to_le_bytes();
+                }
+            },
+            (Some(zs), None) => {
+                let stream =
+                    std::iter::zip(std::iter::zip(xs, ys), zs).flat_map(|((&x, &y), &z)| [x, y, z]);
+                for (lane, value) in std::iter::zip(lanes, stream) {
+                    *lane = value.to_le_bytes();
+                }
+            },
+            (None, Some(ms)) => {
+                let stream =
+                    std::iter::zip(std::iter::zip(xs, ys), ms).flat_map(|((&x, &y), &m)| [x, y, m]);
+                for (lane, value) in std::iter::zip(lanes, stream) {
+                    *lane = value.to_le_bytes();
+                }
+            },
+            (Some(zs), Some(ms)) => {
+                let stream = std::iter::zip(std::iter::zip(std::iter::zip(xs, ys), zs), ms)
+                    .flat_map(|(((&x, &y), &z), &m)| [x, y, z, m]);
+                for (lane, value) in std::iter::zip(lanes, stream) {
+                    *lane = value.to_le_bytes();
+                }
+            },
+        }
+        self.pos = end;
+        Ok(())
+    }
 }
 
 impl WkbOut for Vec<u8> {
@@ -82,52 +204,48 @@ impl WkbOut for Vec<u8> {
         }
         let dimension = 2 + usize::from(zs.is_some()) + usize::from(ms.is_some());
         let byte_len = count * dimension * size_of::<f64>();
+        // Safe fill: reserve once, then write LE bytes through `extend_from_slice`.
+        // The previous path formed `&mut [u8]` over `spare_capacity_mut()`
+        // (`MaybeUninit<u8>`) before initialization — that is UB per the
+        // standard library contract for `from_raw_parts_mut`. A correct
+        // `MaybeUninit` write + `set_len` is possible, but the measured cost of
+        // this fully safe form is within noise of the custom fill on realistic
+        // multi-vertex WKB encode (see scratch B1 cost notes).
         let base = self.len();
         self.reserve(byte_len);
-        // SAFETY: `reserve` guarantees `spare_capacity_mut().len() >= byte_len`.
-        // `byte_len` is an exact multiple of 8, so `as_chunks_mut::<8>` yields
-        // `byte_len / 8` whole `[u8; 8]` lanes and an empty remainder. Each arm
-        // zips those lanes 1:1 with the flattened ordinate stream; the
-        // length check above proves the stream has exactly `byte_len / 8`
-        // ordinates, so `zip` writes every lane and `set_len` commits only
-        // fully-initialized bytes. Assigning `*lane = value.to_le_bytes()`
-        // stores into a fixed-size array (no per-store bounds check).
-        unsafe {
-            let spare = self.spare_capacity_mut();
-            let bytes = std::slice::from_raw_parts_mut(spare.as_mut_ptr().cast::<u8>(), byte_len);
-            let (lanes, rest) = bytes.as_chunks_mut::<8>();
-            debug_assert!(rest.is_empty());
-            match (zs, ms) {
-                (None, None) => {
-                    let stream = std::iter::zip(xs, ys).flat_map(|(&x, &y)| [x, y]);
-                    for (lane, value) in std::iter::zip(lanes, stream) {
-                        *lane = value.to_le_bytes();
-                    }
-                },
-                (Some(zs), None) => {
-                    let stream = std::iter::zip(std::iter::zip(xs, ys), zs)
-                        .flat_map(|((&x, &y), &z)| [x, y, z]);
-                    for (lane, value) in std::iter::zip(lanes, stream) {
-                        *lane = value.to_le_bytes();
-                    }
-                },
-                (None, Some(ms)) => {
-                    let stream = std::iter::zip(std::iter::zip(xs, ys), ms)
-                        .flat_map(|((&x, &y), &m)| [x, y, m]);
-                    for (lane, value) in std::iter::zip(lanes, stream) {
-                        *lane = value.to_le_bytes();
-                    }
-                },
-                (Some(zs), Some(ms)) => {
-                    let stream = std::iter::zip(std::iter::zip(std::iter::zip(xs, ys), zs), ms)
-                        .flat_map(|(((&x, &y), &z), &m)| [x, y, z, m]);
-                    for (lane, value) in std::iter::zip(lanes, stream) {
-                        *lane = value.to_le_bytes();
-                    }
-                },
-            }
-            self.set_len(base + byte_len);
+        match (zs, ms) {
+            (None, None) => {
+                for (&x, &y) in std::iter::zip(xs, ys) {
+                    self.extend_from_slice(&x.to_le_bytes());
+                    self.extend_from_slice(&y.to_le_bytes());
+                }
+            },
+            (Some(zs), None) => {
+                for ((&x, &y), &z) in std::iter::zip(std::iter::zip(xs, ys), zs) {
+                    self.extend_from_slice(&x.to_le_bytes());
+                    self.extend_from_slice(&y.to_le_bytes());
+                    self.extend_from_slice(&z.to_le_bytes());
+                }
+            },
+            (None, Some(ms)) => {
+                for ((&x, &y), &m) in std::iter::zip(std::iter::zip(xs, ys), ms) {
+                    self.extend_from_slice(&x.to_le_bytes());
+                    self.extend_from_slice(&y.to_le_bytes());
+                    self.extend_from_slice(&m.to_le_bytes());
+                }
+            },
+            (Some(zs), Some(ms)) => {
+                for (((&x, &y), &z), &m) in
+                    std::iter::zip(std::iter::zip(std::iter::zip(xs, ys), zs), ms)
+                {
+                    self.extend_from_slice(&x.to_le_bytes());
+                    self.extend_from_slice(&y.to_le_bytes());
+                    self.extend_from_slice(&z.to_le_bytes());
+                    self.extend_from_slice(&m.to_le_bytes());
+                }
+            },
         }
+        debug_assert_eq!(self.len(), base + byte_len);
         Ok(())
     }
 }
@@ -246,8 +364,8 @@ impl<'a> WkbShape<'a> {
         WKB_HEADER_BASE + if srid { 4 } else { 0 } + self.body.encoded_len(self.axes)
     }
 
-    fn write(self, out: &mut impl WkbOut, crs: Option<&str>, include_srid: bool) -> Result<()> {
-        write_wkb_header(out, self.kind, self.axes, crs, include_srid);
+    fn write(self, out: &mut impl WkbOut, srid: Option<u32>) -> Result<()> {
+        write_wkb_header(out, self.kind, self.axes, srid);
         self.body.write(out, self.axes)
     }
 }
@@ -304,7 +422,8 @@ impl WkbBody<'_> {
             Self::MultiPoint(points) => {
                 write_u32(out, checked_len(points.len())?);
                 for point in points {
-                    write_wkb_header(out, IoGeometryKind::Point, axes, None, false);
+                    // Nested members never re-embed SRID (PostGIS top-level only).
+                    write_wkb_header(out, IoGeometryKind::Point, axes, None);
                     write_point(out, point, axes);
                 }
                 Ok(())
@@ -313,7 +432,7 @@ impl WkbBody<'_> {
             Self::MultiLineString(lines) => {
                 write_u32(out, checked_len(lines.len())?);
                 for line in lines {
-                    write_wkb_header(out, IoGeometryKind::LineString, axes, None, false);
+                    write_wkb_header(out, IoGeometryKind::LineString, axes, None);
                     write_wkb_sequence(out, line, axes)?;
                 }
                 Ok(())
@@ -322,7 +441,7 @@ impl WkbBody<'_> {
             Self::MultiPolygon(polygons) => {
                 write_u32(out, checked_len(polygons.len())?);
                 for polygon in polygons {
-                    write_wkb_header(out, IoGeometryKind::Polygon, axes, None, false);
+                    write_wkb_header(out, IoGeometryKind::Polygon, axes, None);
                     write_wkb_polygon(out, polygon, axes)?;
                 }
                 Ok(())
@@ -330,7 +449,7 @@ impl WkbBody<'_> {
             Self::GeometryCollection(geometries) => {
                 write_u32(out, checked_len(geometries.len())?);
                 for geometry in geometries {
-                    WkbShape::classify(geometry).write(out, None, false)?;
+                    WkbShape::classify(geometry).write(out, None)?;
                 }
                 Ok(())
             },
@@ -365,22 +484,15 @@ fn wkb_polygon_body_len(polygon: &Polygon, axes: WkbAxes) -> usize {
             .sum::<usize>()
 }
 
-fn write_wkb_header(
-    out: &mut impl WkbOut,
-    kind: IoGeometryKind,
-    axes: WkbAxes,
-    crs: Option<&str>,
-    include_srid: bool,
-) {
+fn write_wkb_header(out: &mut impl WkbOut, kind: IoGeometryKind, axes: WkbAxes, srid: Option<u32>) {
     out.push_byte(1);
-    let mut geometry_type = wkb_type(kind, axes, include_srid);
-    let srid = if include_srid {
-        crs.and_then(crs::parse_epsg).inspect(|_| {
-            geometry_type |= EWKB_SRID_FLAG;
-        })
-    } else {
-        None
-    };
+    // `srid` is the already-resolved integer from `extended_srid_code` —
+    // never re-parse the CRS string here (wire aliases live only in that
+    // single resolver).
+    let mut geometry_type = wkb_type(kind, axes, srid.is_some());
+    if srid.is_some() {
+        geometry_type |= EWKB_SRID_FLAG;
+    }
     write_u32(out, geometry_type);
     if let Some(srid) = srid {
         write_u32(out, srid);
@@ -453,7 +565,9 @@ fn checked_len(value: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Ring;
     use crate::geometry::{MOrdinate, ZOrdinate};
+    use crate::io::parse_wkb;
 
     fn xy(x: f64, y: f64) -> Point {
         Point::new_unchecked_xy(x, y)
@@ -478,78 +592,35 @@ mod tests {
         )
     }
 
-    fn outer_wkb_type(bytes: &[u8]) -> u32 {
-        assert_eq!(bytes[0], 1, "little-endian byte order");
-        u32::from_le_bytes(bytes[1..5].try_into().expect("4 type bytes"))
-    }
-
-    /// A mixed-axis homogeneous multipart serializes with the union axes on the
-    /// outer AND every child header, so the round trip yields the fully-promoted
-    /// shape (absent Z/M filled with 0.0) — never an outer-Z / child-XY body.
-    fn assert_promotes_to_union_axes(mixed: &Shape, promoted: &Shape, outer_type: u32) {
-        let bytes = to_wkb(mixed, None, false).expect("mixed nested WKB writes");
-        assert_eq!(
-            bytes.len(),
-            wkb_len(mixed, false),
-            "length matches classifier"
-        );
-        assert_eq!(
-            outer_wkb_type(&bytes),
-            outer_type,
-            "outer carries union axes"
-        );
-        // Re-parsing proves every child header carried the union Z flag: a
-        // child written as an XY type/body would parse back to an XY member and
-        // fail this equality against the all-Z promoted shape.
-        assert_eq!(
-            &parse_wkb(&bytes).expect("promoted WKB parses").shape,
-            promoted,
+    /// Mixed-axis multiparts must not invent missing Z/M as 0.0 on write.
+    fn assert_rejects_mixed_axes(mixed: &Shape) {
+        let err = to_wkb(mixed, None, false).expect_err("mixed axes must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("share one coordinate axes") || msg.contains("promote"),
+            "unexpected error: {msg}"
         );
     }
 
     #[test]
-    fn mixed_axes_multiline_promotes_members_to_union_axes() {
-        assert_promotes_to_union_axes(
-            &Shape::MultiLineString(vec![
-                line(&[xy(0.0, 0.0), xy(1.0, 1.0)]),
-                line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)]),
-            ]),
-            &Shape::MultiLineString(vec![
-                line(&[xyz(0.0, 0.0, 0.0), xyz(1.0, 1.0, 0.0)]),
-                line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)]),
-            ]),
-            1005, // WKBMultiLineStringZ
-        );
+    fn mixed_axes_multiline_rejects_on_write() {
+        assert_rejects_mixed_axes(&Shape::MultiLineString(vec![
+            line(&[xy(0.0, 0.0), xy(1.0, 1.0)]),
+            line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)]),
+        ]));
     }
 
     #[test]
-    fn mixed_axes_multipolygon_promotes_members_to_union_axes() {
-        assert_promotes_to_union_axes(
-            &Shape::MultiPolygon(vec![
-                polygon(&[xy(0.0, 0.0), xy(1.0, 0.0), xy(1.0, 1.0), xy(0.0, 0.0)]),
-                polygon(&[
-                    xyz(2.0, 2.0, 1.0),
-                    xyz(3.0, 2.0, 2.0),
-                    xyz(3.0, 3.0, 3.0),
-                    xyz(2.0, 2.0, 1.0),
-                ]),
+    fn mixed_axes_multipolygon_rejects_on_write() {
+        assert_rejects_mixed_axes(&Shape::MultiPolygon(vec![
+            polygon(&[xy(0.0, 0.0), xy(1.0, 0.0), xy(1.0, 1.0), xy(0.0, 0.0)]),
+            polygon(&[
+                xyz(2.0, 2.0, 1.0),
+                xyz(3.0, 2.0, 2.0),
+                xyz(3.0, 3.0, 3.0),
+                xyz(2.0, 2.0, 1.0),
             ]),
-            &Shape::MultiPolygon(vec![
-                polygon(&[
-                    xyz(0.0, 0.0, 0.0),
-                    xyz(1.0, 0.0, 0.0),
-                    xyz(1.0, 1.0, 0.0),
-                    xyz(0.0, 0.0, 0.0),
-                ]),
-                polygon(&[
-                    xyz(2.0, 2.0, 1.0),
-                    xyz(3.0, 2.0, 2.0),
-                    xyz(3.0, 3.0, 3.0),
-                    xyz(2.0, 2.0, 1.0),
-                ]),
-            ]),
-            1006, // WKBMultiPolygonZ
-        );
+        ]));
     }
 
     /// Collections keep genuinely heterogeneous members (no axis promotion),

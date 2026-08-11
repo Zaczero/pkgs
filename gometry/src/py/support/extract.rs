@@ -2,8 +2,13 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::geometry::{LineSeq, MOrdinate, ShapePart, ZOrdinate};
+use crate::py::support::{
+    Bound, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, classify_input,
+    coerce_geometry, coordinate_values, exact_geometry, is_mapping_like, is_py_bytes_or_bytearray,
+    push_ring_shapes, pyfunction, with_one_byte_buffer,
+};
 
 pub(crate) enum CoercedCollectedGeometryItems {
     Items(Vec<PyGeometry>),
@@ -93,6 +98,42 @@ fn coerce_generic_geometry_items(
         .collect()
 }
 
+/// Pure-bytes GeometryArray ingest: parse WKB/EWKB rows with one SRID
+/// canonicalize per distinct code (same cache as bulk `from_wkb`).
+fn coerce_collected_wkb_items(
+    items: &[Bound<'_, PyAny>],
+    note_rows: bool,
+) -> PyResult<CoercedCollectedGeometryItems> {
+    let mut rows = Vec::with_capacity(items.len());
+    let mut saw_embedded = false;
+    let mut srid_cache = crate::io::SridCrsCache::default();
+    for (row, item) in items.iter().enumerate() {
+        let note = |err: PyErr| {
+            if note_rows {
+                crate::note_array_row(err, row)
+            } else {
+                err
+            }
+        };
+        let parsed = parse_wkb_payload(item).map_err(note)?;
+        let embedded = srid_cache
+            .resolve(parsed.srid)
+            .map_err(|err| note(err.into()))?;
+        saw_embedded |= embedded.is_some();
+        rows.push((parsed.shape, embedded.map(crate::crs_arc)));
+    }
+    if !saw_embedded {
+        return Ok(CoercedCollectedGeometryItems::FramelessShapes(
+            rows.into_iter().map(|(shape, _)| shape).collect(),
+        ));
+    }
+    Ok(CoercedCollectedGeometryItems::Items(
+        rows.into_iter()
+            .map(|(shape, crs)| PyGeometry::with_epoch(shape, crs, None))
+            .collect(),
+    ))
+}
+
 pub(crate) fn coerce_collected_geometry_items(
     items: &[Bound<'_, PyAny>],
     note_rows: bool,
@@ -143,29 +184,7 @@ pub(crate) fn coerce_collected_geometry_items(
     }
 
     if items.iter().all(is_py_bytes_or_bytearray) {
-        let mut rows = Vec::with_capacity(items.len());
-        let mut saw_embedded = false;
-        for (row, item) in items.iter().enumerate() {
-            let parsed = parse_wkb_payload(item).map_err(|err| {
-                if note_rows {
-                    crate::note_array_row(err, row)
-                } else {
-                    err
-                }
-            })?;
-            saw_embedded |= parsed.crs.is_some();
-            rows.push((parsed.shape, parsed.crs.map(crate::crs_arc)));
-        }
-        if !saw_embedded {
-            return Ok(CoercedCollectedGeometryItems::FramelessShapes(
-                rows.into_iter().map(|(shape, _)| shape).collect(),
-            ));
-        }
-        return Ok(CoercedCollectedGeometryItems::Items(
-            rows.into_iter()
-                .map(|(shape, crs)| PyGeometry::with_epoch(shape, crs, None))
-                .collect(),
-        ));
+        return coerce_collected_wkb_items(items, note_rows);
     }
     let mut all_mapping_or_interface = true;
     for item in items {
@@ -209,12 +228,44 @@ pub(crate) fn coerce_collected_geometry_items(
     ))
 }
 
+/// Run a bulk unary op over a `Geometry`, a `GeometryArray`, or any raw
+/// iterable of geometry-like values.
+///
+/// The raw-iterable lane is what earns `gm.parts`/`gm.rings` a place beside
+/// `geom.parts` and `GeometryArray.parts()` under Rule 4 — the constitution's
+/// own justification for these free functions is "a free function exists only
+/// for raw iterables", so refusing one was self-refuting. Every sibling bulk
+/// free function (`gm.area`, `gm.length`, `gm.bounds`) already accepts it.
+fn bulk_unary_over_values<T>(
+    geom: &Bound<'_, PyAny>,
+    scalar: impl FnOnce(&PyGeometry) -> PyResult<T>,
+    array: impl FnOnce(&PyGeometryArray) -> PyResult<T>,
+) -> PyResult<T> {
+    match crate::GeometryValues::parse(geom)? {
+        crate::GeometryValues::One(_) | crate::GeometryValues::Array(_) => {
+            crate::dispatch::dispatch_unary_simple_same(geom, scalar, array)
+        },
+        crate::GeometryValues::Collected(items) => {
+            let mut items = items.into_items();
+            let frame = crate::Frame::resolve_items(
+                &mut items,
+                crate::FrameAdoption {
+                    crs: None,
+                    epoch: None,
+                },
+                "GeometryArray",
+            )?;
+            array(&PyGeometryArray::pack_or_mixed(items, frame))
+        },
+    }
+}
+
 /// Component geometries of a multipart geometry.
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     The geometry (or array of geometries) to operate on.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values
+///     The geometry, array, or iterable materialized as an array.
 ///
 /// Returns
 /// -------
@@ -232,15 +283,11 @@ pub(crate) fn coerce_collected_geometry_items(
 /// POINT (1 1)
 #[pyfunction]
 pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
-    crate::dispatch::dispatch_unary_simple_same(
+    bulk_unary_over_values(
         geom,
         |geometry| {
-            Ok(PyGeometryArray::mixed(
-                geometry
-                    .shape
-                    .parts()
-                    .map(|shape| PyGeometry::with_frame(shape, geometry.frame.clone()))
-                    .collect(),
+            Ok(PyGeometryArray::from_shapes(
+                geometry.shape.parts().collect(),
                 geometry.frame.clone(),
             ))
         },
@@ -258,11 +305,11 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
                         ShapePart::Polygon(polygon) => Shape::Polygon(polygon.clone()),
                         ShapePart::Nested(nested) => nested.clone(),
                     };
-                    parts.push(PyGeometry::with_frame(part, frame.clone()));
+                    parts.push(part);
                     false
                 });
             }
-            Ok(PyGeometryArray::mixed(parts, frame))
+            Ok(PyGeometryArray::from_shapes(parts, frame))
         },
     )
 }
@@ -271,8 +318,8 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     The geometry (or array of geometries) to operate on.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values
+///     The geometry, array, or iterable materialized as an array.
 ///
 /// Returns
 /// -------
@@ -290,20 +337,19 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
 /// 2
 #[pyfunction]
 pub(crate) fn rings(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
-    crate::dispatch::dispatch_unary_simple_same(
+    bulk_unary_over_values(
         geom,
         |geometry| {
             let mut rings = Vec::new();
-            push_rings(geometry, &mut rings)?;
-            Ok(PyGeometryArray::mixed(rings, geometry.frame.clone()))
+            push_ring_shapes(geometry.shape.shape(), &mut rings)?;
+            Ok(PyGeometryArray::from_shapes(rings, geometry.frame.clone()))
         },
         |array| {
             let mut rings = Vec::new();
             for (_, shape) in array.present_shape_rows() {
-                let geometry = PyGeometry::with_frame(shape.into_owned(), array.frame.clone());
-                push_rings(&geometry, &mut rings)?;
+                push_ring_shapes(&shape, &mut rings)?;
             }
-            Ok(PyGeometryArray::mixed(rings, array.frame.clone()))
+            Ok(PyGeometryArray::from_shapes(rings, array.frame.clone()))
         },
     )
 }
@@ -408,7 +454,7 @@ pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon
             if let Shape::Polygon(polygon) = geometry.shape.shape() {
                 return Ok(polygon.clone());
             }
-            return Err(PyTypeError::new_err(
+            return Err(crate::py::errors::geometry_type_err(
                 "multi_polygon geometry members must be Polygon geometries",
             ));
         }
@@ -447,4 +493,31 @@ pub(crate) fn optional_coordinates(
         )));
     }
     Ok(Some(values))
+}
+
+pub(crate) fn parse_wkb_payload(value: &Bound<'_, PyAny>) -> PyResult<crate::io::WkbGeometry> {
+    parse_wkb_payload_bytes(value, |wkb| Ok(crate::io::parse_wkb(wkb)?))
+}
+
+/// Bulk-lane WKB parse through the shared exact-Arc decoder (batch token).
+pub(crate) fn parse_wkb_payload_batch(
+    value: &Bound<'_, PyAny>,
+    arena: &crate::io::WkbCoordArena,
+) -> PyResult<crate::io::WkbGeometry> {
+    parse_wkb_payload_bytes(value, |wkb| Ok(crate::io::parse_wkb_batch(wkb, arena)?))
+}
+
+pub(crate) fn parse_wkb_payload_bytes<T>(
+    value: &Bound<'_, PyAny>,
+    parse: impl FnOnce(&[u8]) -> PyResult<T>,
+) -> PyResult<T> {
+    // One shared extractor: signed and unsigned one-byte buffers (bytes,
+    // bytearray, memoryview, array.array('B'|'b'), …).
+    with_one_byte_buffer(value, parse).map_err(|err| {
+        if err.is_instance_of::<PyTypeError>(value.py()) {
+            PyTypeError::new_err("expected WKB bytes or iterable of WKB bytes")
+        } else {
+            err
+        }
+    })
 }

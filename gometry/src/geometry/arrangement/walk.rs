@@ -2,8 +2,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::geometry::*;
+use crate::geometry::arrangement::{Face, WindingWeight};
+use crate::geometry::{
+    HashMap, PointKey, Segment, XY, axis_pow2_scale, open_xy_cycle_decision, same_point,
+    scaled_residual, wrap_index,
+};
 
 pub(crate) fn split_ring_at_pinches(
     ring: &[XY],
@@ -250,6 +253,8 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
             continue;
         }
         let origin = points[vertex];
+        let (scale_x, scale_y) =
+            departure_scales(points, origin, range.clone().map(|slot| targets[slot]));
         row.clear();
         // Pseudo-angle (monotonic in true angle, no libm `atan2` call):
         // only the CYCLIC order matters to the face walk, so the rotated
@@ -257,7 +262,7 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
         row.extend(range.clone().map(|slot| {
             let to = points[targets[slot] as usize];
             (
-                crate::geometry::predicates::pseudo_angle(to.x - origin.x, to.y - origin.y),
+                departure_angle(origin, to, scale_x, scale_y),
                 targets[slot],
                 multiplicities[slot],
             )
@@ -268,4 +273,28 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
             multiplicities[offset] = multiplicity;
         }
     }
+}
+
+/// One common positive diagonal frame for a vertex fan. Applying the same
+/// frame to every departure preserves its cyclic order, while scaling before
+/// subtraction keeps opposite finite extremes finite.
+pub(crate) fn departure_scales(
+    points: &[XY],
+    origin: XY,
+    targets: impl IntoIterator<Item = u32>,
+) -> (f64, f64) {
+    let (mut max_x, mut max_y) = (origin.x.abs(), origin.y.abs());
+    for target in targets {
+        let point = points[target as usize];
+        max_x = max_x.max(point.x.abs());
+        max_y = max_y.max(point.y.abs());
+    }
+    (axis_pow2_scale(max_x), axis_pow2_scale(max_y))
+}
+
+pub(crate) fn departure_angle(origin: XY, target: XY, scale_x: f64, scale_y: f64) -> f64 {
+    crate::geometry::predicates::pseudo_angle(
+        scaled_residual(target.x, origin.x, scale_x),
+        scaled_residual(target.y, origin.y, scale_y),
+    )
 }

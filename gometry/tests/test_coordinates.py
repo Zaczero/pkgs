@@ -203,6 +203,78 @@ def test_get_coordinates() -> None:
     np.testing.assert_array_equal(iterable, [[5.0, 6.0], [7.0, 8.0]])
 
 
+def test_get_coordinates_return_index_packed_lines() -> None:
+    """Packed identity lines: matrix + CSR-derived logical row index."""
+    lines = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 0)]),
+        gm.LineString([(2, 0), (3, 0), (4, 0)]),
+        gm.LineString([(5, 0), (6, 0)]),
+    ])
+    matrix, index = gm.get_coordinates(lines, return_index=True)
+    assert matrix.shape == (7, 2)
+    assert matrix.dtype == np.float64
+    assert matrix.flags.writeable is False
+    assert index.dtype == np.int64
+    assert index.flags.writeable is False
+    np.testing.assert_array_equal(
+        matrix,
+        [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]],
+    )
+    np.testing.assert_array_equal(index, [0, 0, 1, 1, 1, 2, 2])
+    np.testing.assert_array_equal(lines.coords.row_index, index)
+
+
+def test_get_coordinates_return_index_polygons_with_holes() -> None:
+    """Polygon shell+holes flatten depth-first; index spans every ring vertex."""
+    poly = gm.Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)],
+        holes=[[(1, 1), (2, 1), (2, 2), (1, 2), (1, 1)]],
+    )
+    other = gm.Polygon([(10, 10), (11, 10), (11, 11), (10, 10)])
+    arr = gm.GeometryArray([poly, other])
+    matrix, index = gm.get_coordinates(arr, return_index=True)
+    assert matrix.shape == (5 + 5 + 4, 2)
+    np.testing.assert_array_equal(index, [0] * 10 + [1] * 4)
+    np.testing.assert_array_equal(arr.coords.row_index, index)
+    # Shell first vertex, then hole first vertex, then second polygon.
+    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
+    np.testing.assert_array_equal(matrix[5], [1.0, 1.0])
+    np.testing.assert_array_equal(matrix[10], [10.0, 10.0])
+
+
+def test_get_coordinates_return_index_mixed_array() -> None:
+    mixed = gm.GeometryArray([
+        gm.Point(0, 0),
+        gm.LineString([(1, 1), (2, 2)]),
+        gm.Polygon([(3, 3), (4, 3), (4, 4), (3, 3)]),
+    ])
+    matrix, index = gm.get_coordinates(mixed, return_index=True)
+    assert matrix.shape == (1 + 2 + 4, 2)
+    np.testing.assert_array_equal(index, [0, 1, 1, 2, 2, 2, 2])
+    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
+    np.testing.assert_array_equal(matrix[1], [1.0, 1.0])
+    np.testing.assert_array_equal(matrix[3], [3.0, 3.0])
+
+
+def test_get_coordinates_return_index_gathered_selection() -> None:
+    """Gather preserves logical (not physical) row numbers in the index."""
+    base = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 0)]),
+        gm.LineString([(2, 0), (3, 0), (4, 0)]),
+        gm.LineString([(5, 0), (6, 0)]),
+    ])
+    gathered = base[[2, 0]]
+    matrix, index = gm.get_coordinates(gathered, return_index=True)
+    assert matrix.tolist() == [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]]
+    # Logical rows of the gathered view are 0 then 1 — not physical 2, 0.
+    np.testing.assert_array_equal(index, [0, 0, 1, 1])
+    np.testing.assert_array_equal(gathered.coords.row_index, index)
+    # Window slice also keeps logical ids starting at 0.
+    window = base[1:]
+    _, win_index = gm.get_coordinates(window, return_index=True)
+    np.testing.assert_array_equal(win_index, [0, 0, 0, 1, 1])
+
+
 def _coordinate_roundtrip_geometries() -> list[gm.Geometry]:
     return [
         gm.Point(1, 2),
@@ -221,15 +293,9 @@ def _coordinate_roundtrip_geometries() -> list[gm.Geometry]:
         gm.MultiLineString([[(0, 0), (1, 1)], [(2, 2), (3, 3)]]),
         gm.MultiPolygon([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)]),
         gm.GeometryCollection([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])]),
-        # D22: heterogeneous member axes — identity must still round-trip.
+        # D22: heterogeneous GeometryCollection member axes — identity round-trip.
+        # (MultiLineString / MultiPolygon mixed axes are rejected at construction.)
         gm.GeometryCollection([gm.Point(1, 2, z=3), gm.Point(4, 5)]),
-        gm.MultiLineString([[(0, 0), (1, 1)], [(0, 0, 5), (1, 1, 6)]]),
-        gm.MultiPolygon(
-            [
-                [[(0, 0), (1, 0), (1, 1), (0, 0)]],
-                [[(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 0, 1)]],
-            ]
-        ),
     ]
 
 

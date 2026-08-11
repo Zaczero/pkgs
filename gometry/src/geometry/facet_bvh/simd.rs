@@ -1,7 +1,7 @@
 use std::simd::Simd;
-use std::simd::num::SimdFloat;
+use std::simd::num::SimdFloat as _;
 
-use super::*;
+use crate::geometry::facet_bvh::FACET_SEGMENTS;
 
 type FacetSimd = Simd<f64, FACET_SEGMENTS>;
 
@@ -33,7 +33,10 @@ pub(crate) fn simd_point_facet_distance_squared(xs: &[f64], ys: &[f64], px: f64,
     let qy = FacetSimd::splat(py) - y0;
     let zero = FacetSimd::splat(0.0);
     let fraction = ((qx * dx + qy * dy) / length2).simd_clamp(zero, FacetSimd::splat(1.0));
-    let ex = (fraction * dx + x0) - FacetSimd::splat(px);
-    let ey = (fraction * dy + y0) - FacetSimd::splat(py);
+    // Keep the residual in the segment-start frame. Reconstructing a world-
+    // coordinate foot before subtracting the probe loses a small distance at
+    // large (including ordinary UTM) coordinate bases.
+    let ex = qx - fraction * dx;
+    let ey = qy - fraction * dy;
     (ex * ex + ey * ey).reduce_min()
 }

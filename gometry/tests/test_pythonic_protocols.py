@@ -28,6 +28,38 @@ import pytest
 from gometry import _lib
 
 
+def test_native_pyclass_type_objects_are_immutable() -> None:
+    """Every native value type rejects class-level monkeypatching."""
+    native_types = [
+        value
+        for value in vars(_lib).values()
+        if isinstance(value, type)
+        and value.__module__.startswith('gometry')
+        and not issubclass(value, BaseException)
+    ]
+    assert native_types
+    mutable = []
+    unexpected_errors = []
+    for native_type in native_types:
+        try:
+            type.__setattr__(native_type, '_w6_type_mutation_probe', True)
+        except TypeError as error:
+            if 'immutable' not in str(error):
+                unexpected_errors.append((native_type.__name__, str(error)))
+        else:
+            mutable.append(native_type.__name__)
+            type.__delattr__(native_type, '_w6_type_mutation_probe')
+    assert not unexpected_errors, unexpected_errors
+    assert not mutable, f'mutable native type objects: {mutable}'
+
+
+def test_registered_native_sequences_declare_sequence_flag() -> None:
+    """ABC registration and native pattern-matching flags stay in parity."""
+    sequence_flag = 1 << 5  # CPython's Py_TPFLAGS_SEQUENCE.
+    for native_type in gm._NATIVE_SEQUENCE_TYPES:
+        assert native_type.__flags__ & sequence_flag, native_type.__name__
+
+
 def _regular_polygon(
     center_x: float, center_y: float, vertices: int = 32
 ) -> gm.Polygon:
@@ -689,6 +721,90 @@ def test_nbytes_and_sizeof_report_real_payload() -> None:
     line_zm = gm.LineString([(0, 0), (1, 1)], z=[0, 1], m=[2, 3])
     assert line_zm.nbytes == 2 * 4 * 8
     assert sys.getsizeof(line_zm) >= line_zm.nbytes
+
+
+def test_scalar_geometry_sizeof_counts_shapedata_without_forcing_caches() -> None:
+    """Honest retained-cost model: ShapeData Arc + initialized caches only.
+
+    Cold ``__sizeof__`` must not build lazy products (size stable across two
+    cold reads). Warming bounds / prepare may grow the reported size; it must
+    never shrink. Absolute sizes are not pinned — layout can evolve.
+    """
+    point = gm.Point(1.0, 2.0)
+    line = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
+    poly = gm.box(0.0, 0.0, 1.0, 1.0)
+
+    for geom in (point, line, poly):
+        cold_a = geom.__sizeof__()
+        cold_b = geom.__sizeof__()
+        assert cold_a == cold_b
+        # Must exceed the coordinate-only nbytes path (ShapeData Arc is real).
+        assert cold_a > geom.nbytes
+        _ = geom.bounds
+        warm = geom.__sizeof__()
+        assert warm >= cold_a
+
+    # Prepared path may install additional products on the shared handle.
+    prepared_poly = poly.prepare()
+    assert prepared_poly.__sizeof__() >= poly.__sizeof__()
+    # Second prepare-side sizeof must not force further growth by itself.
+    again = prepared_poly.__sizeof__()
+    assert again == prepared_poly.__sizeof__()
+
+    # Leaf scalars: coordinate payload + ShapeData header under the unified
+    # Arc retained-size policy (pointee layout + control block + nested heap).
+    assert gm.Point(1.0, 2.0).__sizeof__() == 456
+    assert gm.LineString([(0.0, 0.0), (1.0, 1.0)]).__sizeof__() == 472
+
+
+def test_container_sizeof_scales_with_members_parts_and_holes() -> None:
+    """``__sizeof__`` must count container allocations, not only ordinate bytes.
+
+    A GeometryCollection of empty points has nbytes=0 but retains a Vec of
+    Shape members; MultiPolygon parts and polygon holes likewise grow the
+    retained native cost at every nesting level. Cold reads never force
+    lazy caches.
+    """
+    empty = gm.Point()
+    sizes = []
+    for n in (0, 1, 10, 100, 1_000, 10_000):
+        gc = gm.GeometryCollection([empty] * n) if n else gm.GeometryCollection([])
+        cold_a = gc.__sizeof__()
+        cold_b = gc.__sizeof__()
+        assert cold_a == cold_b, 'sizeof must not force lazy caches'
+        sizes.append(cold_a)
+    # Strictly increasing with member count (Vec capacity / nested payload).
+    for prev, cur, n in zip(
+        sizes[:-1], sizes[1:], (1, 10, 100, 1_000, 10_000), strict=True
+    ):
+        assert cur > prev, f'GC sizeof failed to grow at n={n}: {sizes}'
+    # 10k empty points retain ~hundreds of KB of Shape storage, not a flat 360.
+    assert sizes[-1] > 100_000, sizes
+
+    mp_sizes = []
+    for n in (1, 10, 100):
+        mp = gm.MultiPolygon([
+            gm.box(float(i), 0.0, float(i) + 1.0, 1.0) for i in range(n)
+        ])
+        mp_sizes.append(mp.__sizeof__())
+    assert mp_sizes[0] < mp_sizes[1] < mp_sizes[2], mp_sizes
+
+    hole_sizes = []
+    shell = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    for n in (0, 1, 10, 100):
+        holes = [
+            [(1.0 + i, 1.0), (2.0 + i, 1.0), (2.0 + i, 2.0), (1.0 + i, 2.0)]
+            for i in range(n)
+        ]
+        poly = gm.Polygon(shell, holes=holes if n else None)
+        hole_sizes.append(poly.__sizeof__())
+    assert hole_sizes[0] < hole_sizes[1] < hole_sizes[2] < hole_sizes[3], hole_sizes
+
+    # Nested containers accounted at every level.
+    inner = gm.GeometryCollection([empty] * 50)
+    outer = gm.GeometryCollection([inner] * 20)
+    assert outer.__sizeof__() > inner.__sizeof__()
+    assert outer.__sizeof__() > gm.GeometryCollection([empty] * 20).__sizeof__()
 
 
 def test_packed_geometry_array_nbytes_is_logical_for_slices() -> None:

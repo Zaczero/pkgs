@@ -2,11 +2,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::collections::{HashSet, HashSetExt};
+use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    GeodesicMetric, Point, PointKey, VertexProvenance, emit_from_original, shape_from_open_hull,
-    smallest_enclosing_circle,
+    GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original,
+    shape_from_open_hull, smallest_enclosing_circle,
+};
+use crate::py::support::{
+    Bound, Crs, Frame, FromPyObject, Polygon, PolygonizeFull, Py, PyAny, PyAnyMethods as _, PyErr,
+    PyGeometryArray, PyResult, PyTypeError, Python, Result, Shape, VoronoiBoundary, exact_geometry,
+    polygonize_result_type, py_geometry_array,
 };
 
 /// Non-optional Voronoi `clip` input: Rust default is padded; explicit Python
@@ -43,7 +47,7 @@ pub(crate) fn voronoi_boundary_from_value<'a>(
 ) -> PyResult<VoronoiBoundary<'a>> {
     if let Some(geometry) = exact_geometry(clip) {
         let Shape::Polygon(polygon) = geometry.shape.shape() else {
-            return Err(PyTypeError::new_err(
+            return Err(crate::py::errors::geometry_type_err(
                 "Voronoi clip geometry must be a Polygon",
             ));
         };
@@ -74,6 +78,44 @@ pub(crate) fn voronoi_boundary_from_value<'a>(
     }
 }
 
+/// Owned form used by detached array row walks. Scalar calls can borrow the
+/// supplied clip directly, while an array must carry the same resolved clip
+/// through the existing cumulative-budget helper across every row.
+pub(crate) enum OwnedVoronoiBoundary {
+    Padded,
+    Envelope,
+    Polygon(Polygon),
+}
+
+impl OwnedVoronoiBoundary {
+    pub(crate) const fn as_borrowed(&self) -> VoronoiBoundary<'_> {
+        match self {
+            Self::Padded => VoronoiBoundary::Padded,
+            Self::Envelope => VoronoiBoundary::Envelope,
+            Self::Polygon(polygon) => VoronoiBoundary::Polygon(polygon),
+        }
+    }
+}
+
+pub(crate) fn owned_voronoi_boundary(
+    py: Python<'_>,
+    clip: &VoronoiClipInput,
+    frame: &Frame,
+    operation: &'static str,
+) -> PyResult<OwnedVoronoiBoundary> {
+    let supplied = match clip {
+        VoronoiClipInput::Default => return Ok(OwnedVoronoiBoundary::Padded),
+        VoronoiClipInput::Supplied(value) => value.bind(py),
+    };
+    Ok(
+        match voronoi_boundary_from_value(supplied, frame.crs_ref(), frame.epoch(), operation)? {
+            VoronoiBoundary::Padded => OwnedVoronoiBoundary::Padded,
+            VoronoiBoundary::Envelope => OwnedVoronoiBoundary::Envelope,
+            VoronoiBoundary::Polygon(polygon) => OwnedVoronoiBoundary::Polygon(polygon.clone()),
+        },
+    )
+}
+
 /// Shared engine for every Voronoi spelling (`voronoi_polygons` /
 /// `voronoi_edges` × scalar / array): resolve `tolerance` and the clip
 /// boundary once against the subject frame, run the per-shape diagram
@@ -84,8 +126,13 @@ pub(crate) fn voronoi_flatten<S: std::borrow::Borrow<Shape>>(
     frame: Frame,
     tolerance: f64,
     clip: &VoronoiClipInput,
-    operation: &str,
-    kernel: fn(&Shape, f64, VoronoiBoundary<'_>) -> Result<Vec<Shape>>,
+    operation: &'static str,
+    kernel: fn(
+        &Shape,
+        f64,
+        VoronoiBoundary<'_>,
+        &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Vec<Shape>>,
 ) -> PyResult<PyGeometryArray> {
     let supplied = match clip {
         VoronoiClipInput::Default => None,
@@ -97,49 +144,12 @@ pub(crate) fn voronoi_flatten<S: std::borrow::Borrow<Shape>>(
             voronoi_boundary_from_value(bound, frame.crs_ref(), frame.epoch(), operation)?
         },
     };
-    let mut items = Vec::new();
+    let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
+    let mut cells = Vec::new();
     for shape in shapes {
-        for cell in kernel(shape.borrow(), tolerance, boundary)? {
-            items.push(PyGeometry::with_frame(cell, frame.clone()));
-        }
+        cells.extend(kernel(shape.borrow(), tolerance, boundary, &mut budget)?);
     }
-    Ok(PyGeometryArray::mixed(items, frame))
-}
-
-/// Per-row [`Groups`](crate::py::vectors::Groups) sibling of [`voronoi_flatten`]:
-/// each input geometry's Voronoi cells form one ragged group (missing rows
-/// yield empty groups), so which cells came from which input is preserved.
-pub(crate) fn voronoi_groups(
-    py: Python<'_>,
-    array: &PyGeometryArray,
-    tolerance: f64,
-    clip: &VoronoiClipInput,
-    operation: &str,
-    kernel: fn(&Shape, f64, VoronoiBoundary<'_>) -> Result<Vec<Shape>>,
-) -> PyResult<crate::py::vectors::Groups> {
-    let frame = array.frame.clone();
-    let supplied = match clip {
-        VoronoiClipInput::Default => None,
-        VoronoiClipInput::Supplied(value) => Some(value.bind(py)),
-    };
-    let boundary = match &supplied {
-        None => VoronoiBoundary::Padded,
-        Some(bound) => {
-            voronoi_boundary_from_value(bound, frame.crs_ref(), frame.epoch(), operation)?
-        },
-    };
-    let mut shapes = Vec::new();
-    let mut offsets = vec![0_i64];
-    for (missing, shape) in array.masked_shape_rows() {
-        if !missing {
-            shapes.extend(kernel(&shape, tolerance, boundary)?);
-        }
-        offsets.push(shapes.len() as i64);
-    }
-    crate::py::vectors::Groups::from_geometry_flat(
-        PyGeometryArray::from_shapes(shapes, frame),
-        offsets,
-    )
+    Ok(PyGeometryArray::from_shapes(cells, frame))
 }
 
 pub(crate) fn py_polygonize_full(
@@ -187,6 +197,27 @@ pub(crate) fn metric_constructive_shape(
         },
         crate::crs::MetricModel::Geodesic(_) => {
             geodesic_local_shape(shape, crs, true, |shape| kernel(shape, distance))
+        },
+    }
+}
+
+/// [`metric_constructive_shape`] with one generated-work budget threaded
+/// through the projected kernel.  Geographic local projection is a frame
+/// change, not a new operation: it deliberately receives the caller's budget.
+pub(crate) fn metric_constructive_shape_budgeted(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    distance: f64,
+    budget: &mut crate::geometry::ExpansionBudget,
+    kernel: impl FnOnce(&Shape, f64, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            kernel(shape, distance / to_metre.get(), budget)
+        },
+        crate::crs::MetricModel::Geodesic(_) => {
+            geodesic_local_shape(shape, crs, true, |shape| kernel(shape, distance, budget))
         },
     }
 }
@@ -370,7 +401,7 @@ pub(crate) fn metric_interpolate_m(
         },
         crate::crs::MetricModel::Geodesic(geodesic_crs) => {
             crate::crs::with_ellipsoid_metric(geodesic_crs, &[shape], |metric| {
-                use crate::geometry::GeodesicMetric;
+                use crate::geometry::GeodesicMetric as _;
                 shape.interpolate_m(range, overwrite, |a, b| metric.segment_length(a, b))
             })
         },

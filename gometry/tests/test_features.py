@@ -1,5 +1,6 @@
 """GeoJSON Feature and FeatureCollection boundary behavior."""
 
+import copy
 import json
 import math
 import pickle
@@ -87,7 +88,7 @@ def test_feature_helpers_preserve_properties_round_trip() -> None:
     assert isinstance(features, gm.Features)
     geometries, properties, ids = features
     assert isinstance(geometries, gm.GeometryArray)
-    assert geometries.crs == 'EPSG:4326'
+    assert geometries.crs == 'OGC:CRS84'
     assert [g.to_wkt() for g in geometries] == [point.to_wkt(), box.to_wkt()]
     assert properties == ({'name': 'A'}, {'name': 'B'})
     assert ids == (7, None)
@@ -228,6 +229,35 @@ def test_from_features_native_generator_and_json_sequence_match() -> None:
     assert generated.geometries.is_missing.tolist() == [False, True]
     assert generated.properties == text.properties == ({'row': 0}, None)
     assert generated.ids == text.ids == ('a', None)
+
+
+def test_features_copy_replace_and_identity_eq() -> None:
+    """``copy.replace`` restores the frozen-dataclass contract; ``__eq__``
+    short-circuits on identity.
+    """
+    geometries = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    features = gm.Features(geometries, [{'a': 1}, {'a': 2}], [1, 2])
+
+    replaced = copy.replace(features, ids=[8, 9])
+    assert isinstance(replaced, gm.Features)
+    assert replaced is not features
+    assert replaced.ids == (8, 9)
+    assert replaced.geometries == features.geometries
+    assert replaced.properties == features.properties
+    assert features.ids == (1, 2)
+
+    props_replaced = copy.replace(features, properties=[{'b': 0}, None])
+    assert props_replaced.properties == ({'b': 0}, None)
+    assert props_replaced.ids == (1, 2)
+
+    with pytest.raises(
+        TypeError, match=r'Features\.__replace__\(\) got an unexpected keyword'
+    ):
+        copy.replace(features, banana=1)  # type: ignore[call-arg]
+
+    # Identity short-circuit: equal to self without walking columns.
+    assert features == features  # noqa: PLR0124 — deliberate self-equality check
+    assert features != replaced
 
 
 def test_features_record_validates_alignment_and_has_bounded_repr() -> None:

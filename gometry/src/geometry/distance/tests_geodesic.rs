@@ -1,13 +1,22 @@
-use super::tests::{
+use crate::crs::with_ellipsoid_metric;
+use crate::error::Result;
+use crate::geometry::distance::frechet::frechet_dp_columns;
+use crate::geometry::distance::geodesic_parts::{
+    geodesic_cap_from_parts, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
+    geodesic_dwithin_sweep_with_parts, geodesic_sweep_with_parts,
+};
+use crate::geometry::distance::geodesic_sweep::geodesic_capped_witness_sweep_with_parts;
+use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
     brute_geodesic_nearest_points, dense_antimeridian_polygon, dense_polygon,
     geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases, geodesic_nearest_oracle_cases, line,
     multipoint, p, polygon,
 };
-use super::*;
-use crate::crs::with_ellipsoid_metric;
-use crate::error::Result;
-use crate::geometry::{GeodesicMetric, Shape, ShapeData};
+use crate::geometry::distance::{
+    GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
+    geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+};
+use crate::geometry::{FrameDependentCaches, GeodesicMetric, Shape, ShapeData};
 
 fn brute_geodesic_directed_hausdorff(
     source: &Shape,
@@ -41,6 +50,10 @@ fn brute_geodesic_directed_hausdorff(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
     let peak = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let far = line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]);
@@ -56,6 +69,10 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
     for (name, probes, target, expect_bvh) in geodesic_bvh_oracle_cases() {
         with_ellipsoid_metric("EPSG:4326", &[&probes, &target], |metric| {
@@ -139,6 +156,10 @@ fn geodesic_distance_matches_brute_scalar_oracle() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
     let mut cases = geodesic_distance_oracle_cases();
     cases.extend([
@@ -227,6 +248,10 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn geodesic_nearest_points_matches_brute_ordered_witnesses() -> Result<()> {
     for (name, left, right) in geodesic_nearest_oracle_cases() {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
@@ -311,6 +336,10 @@ fn banded_frechet_matches_full_dp_bit_for_bit() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
     let cases = [
         ("line", line(vec![p(-1.0, 0.0), p(1.0, 0.0)])),

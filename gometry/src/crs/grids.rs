@@ -1,9 +1,11 @@
 //! PROJ grid database introspection (`grid_info`).
 //!
-//! The public entry point and its raw-pointer context helper stay private in the
+//! The public entry point and its typed-context helper stay private in the
 //! parent `crs` module, reached via `use super::*`; re-exported at `crs`.
 
-use super::*;
+use crate::crs::{
+    CString, CrsError, GridDatabaseInfo, ProjContext, cstring, ptr, with_proj_context,
+};
 use crate::error::Result;
 
 pub(crate) fn grid_info(name: &str) -> Result<GridDatabaseInfo> {
@@ -16,7 +18,7 @@ pub(crate) fn grid_info(name: &str) -> Result<GridDatabaseInfo> {
 }
 
 pub(super) fn grid_info_for_context(
-    context: *mut proj_sys::PJ_CONTEXT,
+    context: &ProjContext,
     name: &str,
     grid_name: &CString,
 ) -> Result<GridDatabaseInfo> {
@@ -26,11 +28,11 @@ pub(super) fn grid_info_for_context(
     let mut direct_download = 0;
     let mut open_license = 0;
     let mut available = 0;
-    // SAFETY: context and grid_name are valid for the call; output pointers
-    // reference initialized local storage and returned strings are copied.
+    // SAFETY: DOC-H. Typed live context; grid_name is a live CString; OUT slots
+    // are exclusive locals; returned strings are copied immediately.
     let found = unsafe {
         proj_sys::proj_grid_get_info_from_database(
-            context,
+            context.as_ptr(),
             grid_name.as_ptr(),
             &raw mut full_name,
             &raw mut package_name,
@@ -45,8 +47,10 @@ pub(super) fn grid_info_for_context(
     }
     Ok(GridDatabaseInfo {
         name: name.to_owned(),
-        full_name: string_from_ptr(full_name),
-        package_name: string_from_ptr(package_name),
+        full_name: proj_c_string!(full_name),
+        package_name: proj_c_string!(package_name),
+        url: proj_c_string!(url),
+        direct_download: direct_download != 0,
         available: available != 0,
     })
 }

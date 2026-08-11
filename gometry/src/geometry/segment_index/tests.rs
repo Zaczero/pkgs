@@ -1,6 +1,8 @@
 use std::ops::ControlFlow;
 
-use super::{CHAIN_MIN_SEGMENTS, RUN_NODING_MIN, for_each_candidate_pair, single_chain};
+use crate::geometry::segment_index::{
+    CHAIN_MIN_SEGMENTS, RUN_NODING_MIN, for_each_candidate_pair, single_chain,
+};
 use crate::geometry::{Segment, XY, segments_intersect};
 
 #[cfg(test)]
@@ -11,8 +13,6 @@ mod sweep_characterization {
     //! thresholds. The exact kernels are the final filter, so the sweep's only
     //! correctness duty is completeness; this test locks it so any later change
     //! to the sweep's input representation that loses a candidate fails loudly.
-    use std::collections::BTreeSet;
-
     use super::*;
 
     fn structured_pool(n: usize) -> Vec<Segment> {
@@ -77,13 +77,30 @@ mod sweep_characterization {
         pool
     }
 
-    fn visited_pairs<const RUN_MIN: usize>(pool: &[Segment]) -> BTreeSet<(usize, usize)> {
-        let mut seen = BTreeSet::new();
+    /// One unordered pair packed into a single sortable key.  The pair sets
+    /// here reach the low millions, where a sorted `Vec` of packed keys costs
+    /// a fraction of a `BTreeSet` of tuples in both allocation and probe time.
+    fn pair_key(a: usize, b: usize) -> u64 {
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        ((lo as u64) << 32) | hi as u64
+    }
+
+    fn visited_pairs<const RUN_MIN: usize>(pool: &[Segment]) -> Vec<u64> {
+        let mut seen = Vec::new();
         let _ = for_each_candidate_pair::<RUN_MIN>(pool, single_chain, |a, b| {
-            let key = if a < b { (a, b) } else { (b, a) };
-            assert!(seen.insert(key), "pair {key:?} visited more than once");
+            seen.push(pair_key(a, b));
             ControlFlow::Continue(())
         });
+        seen.sort_unstable();
+        // Sorting makes a repeat visit an adjacent duplicate, so the
+        // never-visited-twice half of the contract survives the switch away
+        // from a set that rejected the second insert.
+        let duplicate = seen.windows(2).find(|pair| pair[0] == pair[1]);
+        assert!(
+            duplicate.is_none(),
+            "pair {:?} visited more than once",
+            duplicate.map(|pair| (pair[0] >> 32, pair[0] & 0xFFFF_FFFF))
+        );
         seen
     }
 
@@ -91,24 +108,49 @@ mod sweep_characterization {
     fn sweep_covers_every_intersecting_pair() {
         // Sizes spanning the brute (<6), flat-sweep, and run-sweep branches for
         // BOTH thresholds (RUN_NODING_MIN = 512, CHAIN_MIN_SEGMENTS = 1024).
-        for &n in &[4_usize, 20, 200, 600, 1100, 2000] {
+        // 1100 is the largest size needed: it is already above both, so every
+        // branch is entered. The oracle below is quadratic in n, so a size
+        // beyond the last threshold buys no coverage at several times the cost.
+        for &n in &[4_usize, 20, 200, 600, 1100] {
             let pool = structured_pool(n);
-            let mut truly_intersecting: BTreeSet<(usize, usize)> = BTreeSet::new();
+            // `segments_intersect` is the exact orientation predicate, with an
+            // interval filter and a stored-dyadic fallback behind it. Running
+            // it on all n^2 pairs makes the oracle cost far more than the sweep
+            // it checks, so separated envelopes — which prove non-intersection
+            // outright — screen the pairs first.
+            let envelopes = pool
+                .iter()
+                .map(|s| {
+                    [
+                        s.start.x.min(s.end.x),
+                        s.start.y.min(s.end.y),
+                        s.start.x.max(s.end.x),
+                        s.start.y.max(s.end.y),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let mut truly_intersecting: Vec<u64> = Vec::new();
             for i in 0..n {
                 for j in (i + 1)..n {
+                    let (a, b) = (envelopes[i], envelopes[j]);
+                    if a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1] {
+                        continue;
+                    }
                     if segments_intersect(pool[i], pool[j]) {
-                        truly_intersecting.insert((i, j));
+                        truly_intersecting.push(pair_key(i, j));
                     }
                 }
             }
+            truly_intersecting.sort_unstable();
             for visited in [
                 visited_pairs::<RUN_NODING_MIN>(&pool),
                 visited_pairs::<CHAIN_MIN_SEGMENTS>(&pool),
             ] {
                 for &pair in &truly_intersecting {
                     assert!(
-                        visited.contains(&pair),
-                        "n={n}: intersecting pair {pair:?} dropped by the sweep",
+                        visited.binary_search(&pair).is_ok(),
+                        "n={n}: intersecting pair {:?} dropped by the sweep",
+                        (pair >> 32, pair & 0xFFFF_FFFF),
                     );
                 }
             }

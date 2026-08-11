@@ -2,8 +2,8 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::geometry::*;
+use crate::geometry::overlay::{OverlayOp, window_clip_shape};
+use crate::geometry::{Bounds, CoordSeq, Coordinates as _, Point, Polygon, Ring, Shape, ShapeData};
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DimensionalParts<'a> {
     pub(crate) points: Vec<Point>,

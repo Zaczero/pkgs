@@ -1,16 +1,21 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! CRS transform roundtrip-error metrics and operation enumeration
 //! (`roundtrip_errors`/`operations_info`).
 //!
 //! `&str`-keyed; the raw-pointer PROJ-list helpers stay private in the parent
 //! `crs` module and are reached via `use super::*`; re-exported at `crs`.
 
-use std::simd::StdFloat;
+use std::simd::StdFloat as _;
+use std::simd::cmp::SimdPartialEq as _;
+use std::simd::num::SimdFloat as _;
 
-use super::*;
+use crate::crs::{
+    CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CachedCrsOperations, CrsError,
+    OperationInfo, OwnedPj, ProjContext, ProjDirection, ProjObjList, ProjOperationFactoryContext,
+    TransformOptions, Transformer, create_crs_transform_object, cstring,
+    ensure_thread_caches_current, is_wgs84_lonlat, lonlat_to_web_mercator_xy, lru_resolve,
+    normalize_pair, operation_info, operation_info_from_pj, proj_context_error_message,
+    validate_coordinate_lanes, web_mercator_to_lonlat_xy, with_proj_diagnostic_pipeline,
+};
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, simd_indexed_map_f64};
 
@@ -207,13 +212,13 @@ fn roundtrip_web_mercator_errors(
         |index| {
             let dx = roundtrip_x[index] - x[index];
             let dy = roundtrip_y[index] - y[index];
-            (dx * dx + dy * dy).sqrt()
+            roundtrip_norm(dx, dy, 0.0, 0.0)
         },
         |start| {
             let chunk = start / REDUCE_LANES;
             let dx = ReduceSimd::from_array(rtx[chunk]) - ReduceSimd::from_array(ox[chunk]);
             let dy = ReduceSimd::from_array(rty[chunk]) - ReduceSimd::from_array(oy[chunk]);
-            (dx * dx + dy * dy).sqrt()
+            roundtrip_norm_lanes(dx, dy, ReduceSimd::splat(0.0), ReduceSimd::splat(0.0))
         },
     );
     Ok(errors)
@@ -253,12 +258,16 @@ pub(crate) fn roundtrip_error_distances(
             let dy = roundtrip_lane_delta(roundtrip_y, original_y, chunk);
             let dz = roundtrip_optional_lane_delta(original_z, roundtrip_z, chunk);
             let dt = roundtrip_optional_lane_delta(original_t, roundtrip_t, chunk);
-            (dx * dx + dy * dy + dz * dz + dt * dt).sqrt()
+            roundtrip_norm_lanes(dx, dy, dz, dt)
         },
     );
     errors
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn roundtrip_error_distances_zt(
     roundtrip_x: &[f64],
     roundtrip_y: &[f64],
@@ -325,9 +334,7 @@ pub(crate) fn roundtrip_error_distances_zt(
                     roundtrip_lane_delta(roundtrip_t, original_t, chunk),
                 ),
             };
-            (dx * dx + dy * dy + dz * dz + dt * dt)
-                .sqrt()
-                .copy_to_slice(out_chunk);
+            roundtrip_norm_lanes(dx, dy, dz, dt).copy_to_slice(out_chunk);
         }
     }
     let lanes = chunks * REDUCE_LANES;
@@ -361,6 +368,10 @@ pub(crate) fn roundtrip_error_distances_zt(
 
 /// Scalar zip fill for roundtrip error (length-exact column zips — no free
 /// index bounds checks).
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn roundtrip_error_zt_scalar(
     out: &mut [f64],
     roundtrip_x: &[f64],
@@ -377,7 +388,7 @@ fn roundtrip_error_zt_scalar(
             ) {
                 let dx = rx - ox;
                 let dy = ry - oy;
-                *slot = (dx * dx + dy * dy).sqrt();
+                *slot = roundtrip_norm(dx, dy, 0.0, 0.0);
             }
         },
         crate::Zt::Z((original_z, roundtrip_z)) => {
@@ -389,7 +400,7 @@ fn roundtrip_error_zt_scalar(
                 let dx = rx - ox;
                 let dy = ry - oy;
                 let dz = rz - oz;
-                *slot = (dx * dx + dy * dy + dz * dz).sqrt();
+                *slot = roundtrip_norm(dx, dy, dz, 0.0);
             }
         },
         crate::Zt::T((original_t, roundtrip_t)) => {
@@ -401,7 +412,7 @@ fn roundtrip_error_zt_scalar(
                 let dx = rx - ox;
                 let dy = ry - oy;
                 let dt = rt - ot;
-                *slot = (dx * dx + dy * dy + dt * dt).sqrt();
+                *slot = roundtrip_norm(dx, dy, 0.0, dt);
             }
         },
         crate::Zt::Zt {
@@ -418,7 +429,7 @@ fn roundtrip_error_zt_scalar(
                 let dy = ry - oy;
                 let dz = rz - oz;
                 let dt = rt - ot;
-                *slot = (dx * dx + dy * dy + dz * dz + dt * dt).sqrt();
+                *slot = roundtrip_norm(dx, dy, dz, dt);
             }
         },
     }
@@ -460,7 +471,7 @@ fn roundtrip_error_at(
     let dt = original_t
         .zip(roundtrip_t)
         .map_or(0.0, |(original, result)| result[index] - original[index]);
-    (dx * dx + dy * dy + dz * dz + dt * dt).sqrt()
+    roundtrip_norm(dx, dy, dz, dt)
 }
 
 fn transform_web_mercator_coordinates(
@@ -520,21 +531,13 @@ pub(crate) fn operations_info_uncached(
     let target_crs = cstring(target)?;
     let context = ProjContext::new()
         .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
-    let source_object = create_crs_transform_object(
-        context.as_ptr(),
-        source_crs.as_ptr(),
-        source,
-        options.source_epoch,
-    )?;
-    let target_object = create_crs_transform_object(
-        context.as_ptr(),
-        target_crs.as_ptr(),
-        target,
-        options.target_epoch,
-    )?;
-    let factory = ProjOperationFactoryContext::new(context.as_ptr(), options)?;
-    // SAFETY: `context`, `source_object`, `target_object`, and `factory` are valid,
-    // non-null PROJ pointers owned by live RAII guards for the duration of this call.
+    let source_object =
+        create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
+    let target_object =
+        create_crs_transform_object(&context, &target_crs, target, options.target_epoch)?;
+    let factory = ProjOperationFactoryContext::new(&context, options)?;
+    // SAFETY: DOC-H. Typed live context/objects/factory on creating thread;
+    // returns uniquely owned object list or null.
     let list = unsafe {
         proj_sys::proj_create_operations(
             context.as_ptr(),
@@ -543,18 +546,17 @@ pub(crate) fn operations_info_uncached(
             factory.as_ptr(),
         )
     };
-    if list.is_null() {
-        let message = proj_context_error_message(context.as_ptr());
+    // SAFETY: non-null returns are uniquely owned by the caller.
+    let Some(list) = (unsafe { ProjObjList::try_from_owned(list) }) else {
+        let message = proj_context_error_message(&context);
         return Err(CrsError::transform_create(source, target, message));
-    }
-    // SAFETY: list is a non-null PROJ object list owned for the rest of this fn.
-    let list = unsafe { ProjObjList::from_owned(list) };
-    let operations = operation_infos_from_list(context.as_ptr(), &list, source, target, options);
+    };
+    let operations = operation_infos_from_list(&context, &list, source, target, options);
     Ok(operations)
 }
 
 pub(super) fn operation_infos_from_list(
-    context: *mut proj_sys::PJ_CONTEXT,
+    context: &ProjContext,
     list: &ProjObjList,
     source: &str,
     target: &str,
@@ -566,15 +568,14 @@ pub(super) fn operation_infos_from_list(
         let Some(operation) = list.get(context, index) else {
             continue;
         };
-        // SAFETY: `context` is a valid PJ_CONTEXT and `operation` is a valid, non-null
-        // PJ from `list.get`, live for this iteration.
-        let normalized =
-            unsafe { proj_sys::proj_normalize_for_visualization(context, operation.as_ptr()) };
-        let operation_for_info = if normalized.is_null() {
-            operation.as_ptr()
-        } else {
-            normalized
+        // SAFETY: DOC-H. Typed context + owned operation; returns uniquely owned
+        // normalized PJ or null.
+        let normalized = unsafe {
+            proj_sys::proj_normalize_for_visualization(context.as_ptr(), operation.as_ptr())
         };
+        // SAFETY: non-null normalized is uniquely owned; bind immediately.
+        let normalized = unsafe { OwnedPj::try_from_owned(normalized) };
+        let operation_for_info = normalized.as_ref().unwrap_or(&operation);
         operations.push(operation_info_from_pj(
             context,
             operation_for_info,
@@ -583,12 +584,46 @@ pub(super) fn operation_infos_from_list(
             options.source_epoch,
             options.target_epoch,
         ));
-        if !normalized.is_null() {
-            // SAFETY: `normalized` was null-checked and is an owned PROJ handle.
-            unsafe {
-                OwnedPj::from_owned(normalized);
-            }
-        }
     }
     operations
+}
+
+fn roundtrip_norm(dx: f64, dy: f64, dz: f64, dt: f64) -> f64 {
+    let squared = dx * dx + dy * dy + dz * dz + dt * dt;
+    if squared.is_finite() && (squared != 0.0 || (dx == 0.0 && dy == 0.0 && dz == 0.0 && dt == 0.0))
+    {
+        squared.sqrt()
+    } else {
+        dx.hypot(dy).hypot(dz).hypot(dt)
+    }
+}
+
+fn roundtrip_norm_lanes(
+    dx: ReduceSimd,
+    dy: ReduceSimd,
+    dz: ReduceSimd,
+    dt: ReduceSimd,
+) -> ReduceSimd {
+    let squared = dx * dx + dy * dy + dz * dz + dt * dt;
+    let zero_delta = dx.simd_eq(ReduceSimd::splat(0.0))
+        & dy.simd_eq(ReduceSimd::splat(0.0))
+        & dz.simd_eq(ReduceSimd::splat(0.0))
+        & dt.simd_eq(ReduceSimd::splat(0.0));
+    let bad = !squared.is_finite() | (squared.simd_eq(ReduceSimd::splat(0.0)) & !zero_delta);
+    let result = squared.sqrt();
+    if !bad.any() {
+        return result;
+    }
+    let bits = bad.to_bitmask();
+    let mut out = result.to_array();
+    let xs = dx.to_array();
+    let ys = dy.to_array();
+    let zs = dz.to_array();
+    let ts = dt.to_array();
+    for lane in 0..REDUCE_LANES {
+        if bits & (1 << lane) != 0 {
+            out[lane] = roundtrip_norm(xs[lane], ys[lane], zs[lane], ts[lane]);
+        }
+    }
+    ReduceSimd::from_array(out)
 }

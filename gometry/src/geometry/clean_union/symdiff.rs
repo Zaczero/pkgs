@@ -1,4 +1,9 @@
-use super::*;
+use crate::geometry::clean_union::{
+    BoundaryContacts, Operand, OperandPool, OrientedRing, assemble_rings,
+    build_transverse_sections, difference_chain_rings, reassemble_to_rings, seed_membership,
+    with_section_scratch,
+};
+use crate::geometry::{Shape, XY};
 /// `symmetric_difference` = (a−b) ∪ (b−a). For proper-cross-only cases, the
 /// two pieces touch at crossing points, so a single combined arc walk would
 /// PINCH (two outgoing arcs per crossing vertex). Instead reassemble each clean

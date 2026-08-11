@@ -7,10 +7,10 @@
 //! dynamic overflow tree. Node fields are `pub(super)` — the nearest
 //! frontier and the convex descent in `mod.rs` walk levels directly.
 
-use rstar::{AABB, Envelope};
+use rstar::{AABB, Envelope as _};
 
-use super::IndexEntry;
 use crate::HeapSize;
+use crate::py::index::IndexEntry;
 
 /// STR node fan-out. 16 keeps the tree shallow (100k rows ≈ 6.7k nodes over
 /// 4 levels) while each node's children still scan as one cache line burst.
@@ -40,6 +40,10 @@ pub(super) struct StaticStrTree {
 }
 
 impl StaticStrTree {
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(super) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
     }

@@ -1,12 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
-use super::storage_helpers::column_window;
-use super::*;
 use crate::HeapSize;
+use crate::array::storage_helpers::column_window;
+use crate::array::{
+    CoordSeq, CsrOffsetColumn, GeometryError, Point, PolygonLevel, PyResult, RingLevel, Shape,
+    ShapeRow,
+};
 use crate::geometry::{CoordWindow, LineSeq};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +49,11 @@ pub struct RowWindow {
 }
 
 impl RowWindow {
+    /// `physical_len` MUST be the backing storage's true row count. A
+    /// `RowSelection::window(start, len)` constructor used to pass
+    /// `start + len` here, which made the assertion `start <= start + len &&
+    /// len <= len` — vacuously true in every build, so it could never fire.
+    /// Callers now pass the real length and the tripwire means something.
     fn trusted(start: usize, len: usize, physical_len: usize) -> Self {
         debug_assert!(
             start <= physical_len && len <= physical_len - start,
@@ -111,14 +115,6 @@ impl RowSelection {
         Self::Window(RowWindow::trusted(start, len, physical_len))
     }
 
-    pub fn window(start: usize, len: usize) -> Self {
-        Self::Window(RowWindow::trusted(
-            start,
-            len,
-            start.checked_add(len).expect("row window end overflow"),
-        ))
-    }
-
     pub fn as_deref(&self) -> RowSelectionRef<'_> {
         match self {
             Self::Identity => RowSelectionRef::Identity,
@@ -138,6 +134,10 @@ impl RowSelection {
         !self.is_identity()
     }
 
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
     pub(crate) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
     }
@@ -213,7 +213,13 @@ impl RowSelectionRef<'_> {
 
 #[derive(Clone, Debug)]
 pub enum GeometryArrayStorage {
-    Mixed(Vec<PyGeometry>),
+    /// Heterogeneous (or non-packable) rows owned as plain shapes.
+    ///
+    /// The array frame, missing mask, prepared-row cache, and frame-cache
+    /// sidecars live on [`PyGeometryArray`] — not per-row scalar wrappers.
+    /// Scalar extract (`arr[i]`) and prepared kernels materialize
+    /// [`ShapeData`] once into the array-side prepared cache.
+    Mixed(Vec<Shape>),
     Points {
         coords: Arc<CoordSeq>,
         row_map: RowSelection,
@@ -535,7 +541,7 @@ impl LineRows<'_> {
 }
 
 enum PhysicalRow<'a> {
-    Mixed(&'a PyGeometry),
+    Mixed(&'a Shape),
     Point(Point),
     Line(&'a CoordSeq, std::ops::Range<usize>),
     Polygon(&'a CoordSeq, &'a [i32], std::ops::Range<usize>),
@@ -543,7 +549,7 @@ enum PhysicalRow<'a> {
 
 enum PhysicalRowsIter<'a> {
     Mixed {
-        items: &'a [PyGeometry],
+        items: &'a [Shape],
         index: usize,
     },
     Points {
@@ -708,7 +714,7 @@ impl<'a> Iterator for ShapesIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rows.next()? {
-            PhysicalRow::Mixed(item) => Some(std::borrow::Cow::Borrowed(item.shape.shape())),
+            PhysicalRow::Mixed(shape) => Some(std::borrow::Cow::Borrowed(shape)),
             PhysicalRow::Point(point) => Some(std::borrow::Cow::Owned(Shape::Point(point))),
             PhysicalRow::Line(coords, window) => Some(std::borrow::Cow::Owned(Shape::LineString(
                 LineSeq::from_trusted(coords.view(CoordWindow::trusted(window, coords.len()))),
@@ -732,6 +738,29 @@ impl ExactSizeIterator for ShapesIter<'_> {
     }
 }
 
+// SAFETY: `ShapesIter` always yields exactly `size_hint().0` items — never
+// fewer. The lower/upper bounds come from `PhysicalRowsIter`, which tracks a
+// fixed logical length set once at construction and advances a monotoic
+// `index` by exactly one on every successful `next`:
+//
+// - Mixed: `len = items.len()`; yields `items[index]` while `index < len`.
+//   Missing array rows are still present as placeholder `Shape` entries in
+//   the mixed column — they count toward len and are yielded (the array
+//   missing-mask is orthogonal and not consulted here).
+// - Points / Lines / Polygons: `len = {point,line,polygon}_logical_len(...)`
+//   which is `RowSelectionRef::len(physical_len)`:
+//     Identity → physical_len
+//     Window { len } → len
+//     Gather(map) → map.len()
+//   Each `next` resolves `physical_row(row_map, index)` (or the CSR window
+//   for that logical row) and always returns `Some` while `index < len`.
+//
+// There is no filtering, short-circuit, or fallible yield path that can
+// return `None` before exhaustion. A bad gather index is a construction-
+// time/`debug_assert` defect, not a shorter iterator. Do not spread this
+// impl to other iterators without an independent exactness proof.
+unsafe impl std::iter::TrustedLen for ShapesIter<'_> {}
+
 pub struct RowsIter<'a> {
     rows: PhysicalRowsIter<'a>,
 }
@@ -749,7 +778,7 @@ impl<'a> Iterator for RowsIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rows.next()? {
-            PhysicalRow::Mixed(item) => Some(ShapeRow::Handle(&item.shape)),
+            PhysicalRow::Mixed(shape) => Some(ShapeRow::Shape(shape)),
             PhysicalRow::Point(point) => Some(ShapeRow::Point(point)),
             PhysicalRow::Line(coords, window) => {
                 Some(ShapeRow::Line(coords, window.start, window.end))
@@ -779,6 +808,32 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::geometry::{CoordSeq, Point, Shape};
+
+    /// Exhaust `ShapesIter` and assert every remaining `size_hint` equals the
+    /// actual remaining yield count (TrustedLen contract).
+    fn assert_shapes_iter_exact(storage: &GeometryArrayStorage) {
+        let expected_len = storage.len();
+        let mut iter = storage.iter_shapes();
+        let (lo, hi) = iter.size_hint();
+        assert_eq!(lo, expected_len);
+        assert_eq!(hi, Some(expected_len));
+        let mut yielded = 0_usize;
+        while iter.next().is_some() {
+            yielded += 1;
+            let remaining = expected_len - yielded;
+            let (lo, hi) = iter.size_hint();
+            assert_eq!(lo, remaining, "size_hint lower after {yielded} yields");
+            assert_eq!(
+                hi,
+                Some(remaining),
+                "size_hint upper after {yielded} yields"
+            );
+        }
+        assert_eq!(yielded, expected_len);
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert!(iter.next().is_none());
+    }
 
     #[test]
     fn checked_gather_rejects_out_of_range_physical_rows() {
@@ -791,5 +846,159 @@ mod tests {
         assert_eq!(row_map.as_deref().len(3), 2);
         assert_eq!(physical_row(row_map.as_deref(), 0), 2);
         assert_eq!(physical_row(row_map.as_deref(), 1), 0);
+    }
+
+    #[test]
+    fn shapes_iter_size_hint_exact_mixed() {
+        let storage = GeometryArrayStorage::Mixed(vec![
+            Shape::Point(Point::new_unchecked_xy(0.0, 0.0)),
+            Shape::Point(Point::new_unchecked_xy(1.0, 1.0)),
+            Shape::typed_empty(
+                crate::geometry::EmptyKind::Point,
+                crate::geometry::CoordinateAxes::XY,
+            ),
+        ]);
+        assert_shapes_iter_exact(&storage);
+    }
+
+    #[test]
+    fn shapes_iter_size_hint_exact_points_identity_window_gather() {
+        let coords = Arc::new(CoordSeq::from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            None,
+            None,
+        ));
+        let identity = GeometryArrayStorage::Points {
+            coords: Arc::clone(&coords),
+            row_map: RowSelection::Identity,
+        };
+        assert_shapes_iter_exact(&identity);
+
+        let window = GeometryArrayStorage::Points {
+            coords: Arc::clone(&coords),
+            row_map: RowSelection::window_trusted(1, 2, 3),
+        };
+        assert_shapes_iter_exact(&window);
+
+        let gather = GeometryArrayStorage::Points {
+            coords,
+            row_map: RowSelection::gather_checked(Arc::from([3_usize, 0, 2]), 4, "test").unwrap(),
+        };
+        assert_shapes_iter_exact(&gather);
+    }
+
+    #[test]
+    fn shapes_iter_size_hint_exact_lines_identity_window_gather() {
+        let coords = Arc::new(CoordSeq::from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            None,
+            None,
+        ));
+        // Three lines: verts [0,2), [2,4), [4,6)
+        let offsets = crate::geometry::CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap();
+        let identity = GeometryArrayStorage::Lines {
+            coords: Arc::clone(&coords),
+            offsets: offsets.clone(),
+            row_map: RowSelection::Identity,
+        };
+        assert_shapes_iter_exact(&identity);
+
+        let window = GeometryArrayStorage::Lines {
+            coords: Arc::clone(&coords),
+            offsets: offsets.clone(),
+            row_map: RowSelection::window_trusted(0, 2, 2),
+        };
+        assert_shapes_iter_exact(&window);
+
+        let gather = GeometryArrayStorage::Lines {
+            coords,
+            offsets,
+            row_map: RowSelection::gather_checked(Arc::from([2_usize, 0]), 3, "test").unwrap(),
+        };
+        assert_shapes_iter_exact(&gather);
+    }
+
+    #[test]
+    fn shapes_iter_size_hint_exact_polygons_identity_window_gather() {
+        // Two triangles: ring verts 0..4 and 4..8 (closed).
+        let coords = Arc::new(CoordSeq::from_vecs(
+            vec![0.0, 1.0, 1.0, 0.0, 10.0, 11.0, 11.0, 10.0],
+            vec![0.0, 0.0, 1.0, 0.0, 10.0, 10.0, 11.0, 10.0],
+            None,
+            None,
+        ));
+        let ring_offsets = crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(
+            vec![0, 4, 8],
+            8,
+        )
+        .unwrap();
+        let polygon_offsets =
+            crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_new(
+                vec![0, 1, 2],
+                2,
+            )
+            .unwrap();
+        let identity = GeometryArrayStorage::Polygons {
+            coords: Arc::clone(&coords),
+            ring_offsets: ring_offsets.clone(),
+            polygon_offsets: polygon_offsets.clone(),
+            row_map: RowSelection::Identity,
+        };
+        assert_shapes_iter_exact(&identity);
+
+        let window = GeometryArrayStorage::Polygons {
+            coords: Arc::clone(&coords),
+            ring_offsets: ring_offsets.clone(),
+            polygon_offsets: polygon_offsets.clone(),
+            row_map: RowSelection::window_trusted(1, 1, 2),
+        };
+        assert_shapes_iter_exact(&window);
+
+        let gather = GeometryArrayStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map: RowSelection::gather_checked(Arc::from([1_usize, 0]), 2, "test").unwrap(),
+        };
+        assert_shapes_iter_exact(&gather);
+    }
+
+    #[test]
+    fn shapes_iter_size_hint_exact_empty_storages() {
+        assert_shapes_iter_exact(&GeometryArrayStorage::Mixed(Vec::new()));
+        let empty_pts = GeometryArrayStorage::Points {
+            coords: Arc::new(CoordSeq::from_vecs(vec![], vec![], None, None)),
+            row_map: RowSelection::Identity,
+        };
+        assert_shapes_iter_exact(&empty_pts);
+    }
+}
+
+#[cfg(test)]
+mod row_window_assertion_tests {
+    use super::*;
+
+    /// The `RowWindow::trusted` tripwire must be able to FIRE.
+    ///
+    /// It previously could not: `RowSelection::window(start, len)` passed
+    /// `start + len` as `physical_len`, reducing the assertion to
+    /// `start <= start + len && len <= len`. This pins that a window past the
+    /// end of the backing storage is now rejected in a debug build.
+    // The tripwire is a `debug_assert!`, so it exists only where
+    // `debug-assertions` is on. Without this gate the test cannot pass under
+    // `cargo nextest run --release`, which CI runs as a second pass.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must reference existing physical rows")]
+    fn window_assertion_is_not_vacuous() {
+        let _ = RowSelection::window_trusted(2, 5, 4);
+    }
+
+    #[test]
+    fn window_inside_physical_rows_is_accepted() {
+        let selection = RowSelection::window_trusted(1, 2, 4);
+        assert!(matches!(selection, RowSelection::Window(_)));
     }
 }

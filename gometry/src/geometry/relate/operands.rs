@@ -1,9 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-use crate::geometry::*;
+use ahash::HashSetExt as _;
+
+use crate::geometry::relate::{De9im, Loc, RelateTopology};
+use crate::geometry::{
+    CoordSeq, Coordinates as _, DimMode, Dimension, HashSet, Point, PointKey, Polygon, Segment,
+    Shape, XY, dimension, line_contains_point, multiline_contains_point, point_on_segment,
+    ring_winding, same_point,
+};
 
 pub(crate) fn polygon_parts(shape: &Shape) -> Option<&[Polygon]> {
     match shape {

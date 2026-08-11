@@ -130,6 +130,7 @@ unreachable_pub = "warn"
 lto = true
 codegen-units = 1
 debug = "line-tables-only"
+strip = "symbols"
 trim-paths = "all"
 
 [profile.dev]

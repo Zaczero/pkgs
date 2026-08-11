@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! CRS/epoch metadata helpers shared across every binary and array surface.
 //!
 //! [`Frame::common`] resolves the shared frame of a sequence, and the
@@ -15,7 +11,7 @@ use smol_str::SmolStr;
 
 use crate::crs::CrsError;
 use crate::error::Result;
-use crate::*;
+use crate::{Crs, PyGeometry, crs, crs_label};
 
 /// Frame-compatibility errors: operands or collection items disagree on CRS
 /// or coordinate-epoch metadata. Pairwise conflicts surface as
@@ -186,10 +182,34 @@ impl Frame {
     }
 
     /// Build from parts already known valid — internal propagation from a
-    /// valid parent. Panics on a non-dynamic epoch frame (same invariant as
-    /// [`Self::new`]); trusted callers must not pass incoherent pairs.
+    /// valid parent, which by contract already upheld `epoch ⟹ dynamic crs`.
+    ///
+    /// Constructs directly rather than re-running [`Self::new`]. That checked
+    /// constructor consults PROJ (`crs::is_dynamic`), so routing trusted
+    /// propagation through it had two costs: a `.expect()` turned any *PROJ*
+    /// failure — an unavailable database after `crs_configure`, an exotic CRS —
+    /// into a panic across the FFI boundary, reported as "epoch requires a
+    /// dynamic CRS", which misdescribes the cause; and it paid a database
+    /// lookup on every internal propagation site. The invariant is re-checked
+    /// under `debug_assert!` only, as an own-bug tripwire.
     pub(crate) fn from_trusted_parts(crs: Option<Crs>, epoch: Option<f64>) -> Self {
-        Self::new(crs, epoch).expect("epoch requires a dynamic CRS")
+        match (crs, epoch) {
+            (Some(crs), Some(epoch)) => {
+                // `unwrap_or(true)`: a PROJ lookup failure is not evidence of a
+                // broken invariant, so it must not trip the assertion.
+                debug_assert!(
+                    crs::is_dynamic(&crs).unwrap_or(true),
+                    "from_trusted_parts got an epoch on a static CRS: {crs}"
+                );
+                Self::CrsEpoch(crs, epoch)
+            },
+            (Some(crs), None) => Self::Crs(crs),
+            (None, None) => Self::None,
+            (None, Some(_)) => {
+                debug_assert!(false, "from_trusted_parts got an epoch with no CRS");
+                Self::None
+            },
+        }
     }
 
     /// The CRS as a borrow.
@@ -219,10 +239,26 @@ impl Frame {
         }
     }
 
-    /// Resolve the common output frame for a binary operation.
+    /// Resolve the common output frame for two operands.
     ///
-    /// Both operands must agree on CRS presence/value and coordinate epoch;
-    /// mismatches are rejected before any coordinate operation runs.
+    /// Presence must match (None/None ok; None/Some fails). Epochs keep the
+    /// exact/presence rule. CRS labels may differ when they name the same
+    /// frame under [`crs_operationally_equal`]; the **left** label is then
+    /// preserved as output metadata — the coordinate result is commutative,
+    /// the label is left-biased.
+    ///
+    /// This is the *only* frame-agreement rule. There used to be a second,
+    /// stricter one for sites that select one stored label (array fill and
+    /// replace, index insertion), on the grounds that admitting a differently
+    /// spelled CRS would relabel the value. It does relabel it — but only ever
+    /// between spellings of the same frame, because the comparator rejects
+    /// every genuine difference. The practical effect of the split was that a
+    /// `GeometryArray` could measure and compare a pair of geometries it then
+    /// refused to hold, so it is gone.
+    ///
+    /// Structural identity is a different question and is *not* this: geometry
+    /// `__eq__`/`__hash__`/`equals_identical` still compare stored labels
+    /// exactly, because `CRS(4326) != CRS("OGC:CRS84")` as objects.
     pub(crate) fn compatible(&self, other: &Self, operation: &str) -> Result<Self> {
         Self::compatible_parts(
             self.crs_ref(),
@@ -233,10 +269,8 @@ impl Frame {
         )
     }
 
-    /// Borrowed-parts form of [`Self::compatible`] for the remaining
-    /// low-level broadcast/index helpers that already hold CRS/epoch fields
-    /// separately. Keeps the compatibility rule and error messages owned by
-    /// `Frame`.
+    /// Borrowed-parts form of [`Self::compatible`] for low-level
+    /// broadcast/index helpers that already hold CRS/epoch fields separately.
     pub(crate) fn compatible_parts(
         left_crs: Option<&Crs>,
         left_epoch: Option<f64>,
@@ -245,8 +279,19 @@ impl Frame {
         operation: &str,
     ) -> Result<Self> {
         let crs = match (left_crs, right_crs) {
-            (Some(left), Some(right)) if left == right => Some(left.clone()),
             (None, None) => None,
+            (Some(left), Some(right)) => {
+                if crs_operationally_equal(left, right)? {
+                    Some(left.clone())
+                } else {
+                    return Err(FrameError::CrsMismatch {
+                        operation: operation.into(),
+                        left: Some(left.clone()),
+                        right: Some(right.clone()),
+                    }
+                    .into());
+                }
+            },
             (left, right) => {
                 return Err(FrameError::CrsMismatch {
                     operation: operation.into(),
@@ -271,16 +316,30 @@ impl Frame {
         Self::new(crs, epoch)
     }
 
-    /// Strict shared frame: every item must agree on CRS (all absent or all
-    /// equal) and coordinate epoch (all absent or all equal). Mixed frames are
+    /// Shared frame: every item must agree on CRS and coordinate epoch (all
+    /// absent, or all naming the same frame). Genuinely mixed frames are
     /// rejected rather than silently coerced. Empty input carries no metadata.
     /// The single frame a collection, array, index, or reduction operates in.
+    ///
+    /// CRS agreement is [`crs_operationally_equal`], so `EPSG:4326` and
+    /// `OGC:CRS84` items combine and the **first** item's label is the stored
+    /// one — the same left-biased rule binary results already use. That is not
+    /// a silent retag: the comparator admits a pair only when the coordinates
+    /// mean the same thing under either label, and it rejects every genuine
+    /// difference (datum, deriving conversion, units, axis direction,
+    /// dimension). Before this, an array constructor was the lone lane that
+    /// refused a pair every predicate and metric already accepted.
     pub(crate) fn common(items: &[PyGeometry], context: &str) -> Result<Self> {
         let Some(first) = items.first() else {
             return Ok(Self::None);
         };
         for (index, item) in items.iter().enumerate().skip(1) {
-            if item.crs_ref() != first.crs_ref() {
+            let agrees = match (first.crs_ref(), item.crs_ref()) {
+                (None, None) => true,
+                (Some(left), Some(right)) => crs_operationally_equal(left, right)?,
+                _ => false,
+            };
+            if !agrees {
                 return Err(FrameError::SharedCrs {
                     context: context.into(),
                     index,
@@ -320,8 +379,13 @@ impl Frame {
         let first_crs = items[0].crs_ref().cloned();
         let first_epoch = items[0].epoch();
         let crs = if let Some(crs) = explicit.crs {
+            // An explicit `crs=` is the requested output label, so items only
+            // have to *agree* with it (see `common`); every item is then
+            // retagged to the label the caller asked for.
             for (index, item) in items.iter().enumerate() {
-                if item.crs_ref().is_some_and(|existing| *existing != crs) {
+                if let Some(existing) = item.crs_ref()
+                    && !crs_operationally_equal(existing, &crs)?
+                {
                     return Err(FrameError::SharedCrs {
                         context: context.into(),
                         index,
@@ -336,8 +400,15 @@ impl Frame {
             }
             Some(crs)
         } else {
+            // No explicit label: the first item's label is the stored one, and
+            // later items only have to name the same frame.
             for (index, item) in items.iter().enumerate().skip(1) {
-                if item.crs_ref() != first_crs.as_ref() {
+                let agrees = match (first_crs.as_ref(), item.crs_ref()) {
+                    (None, None) => true,
+                    (Some(left), Some(right)) => crs_operationally_equal(left, right)?,
+                    _ => false,
+                };
+                if !agrees {
                     return Err(FrameError::SharedCrs {
                         context: context.into(),
                         index,
@@ -345,6 +416,13 @@ impl Frame {
                         other: item.crs_ref().cloned(),
                     }
                     .into());
+                }
+            }
+            if let Some(label) = first_crs.as_ref() {
+                for item in items.iter_mut() {
+                    if item.crs_ref().is_some_and(|existing| existing != label) {
+                        item.set_crs_keep_epoch(Some(label.clone()));
+                    }
                 }
             }
             first_crs
@@ -382,12 +460,6 @@ impl Frame {
             }
         }
         Self::new(crs, first_epoch)
-    }
-
-    /// Strict shared frame of already-validated outputs: every item must agree
-    /// on CRS and coordinate epoch. Empty input carries no metadata.
-    pub(crate) fn of_uniform(items: &[PyGeometry], context: &str) -> Result<Self> {
-        Self::common(items, context)
     }
 }
 
@@ -499,6 +571,28 @@ pub(crate) fn epochs_equal(left: f64, right: f64) -> bool {
     left == right
 }
 
+/// Do two CRS labels name the same frame for computation — string-equal, or
+/// operationally equivalent under PROJ's axis-order-agnostic comparison?
+///
+/// The epoch sibling of this question is [`epochs_equal`]. The literal equality
+/// fast path means the common case never reaches PROJ or its comparison cache.
+///
+/// This is the *only* CRS-agreement predicate: a hand-rolled attribute
+/// checklist was proposed and killed by counterexample (it unified EPSG:2180
+/// with EPSG:2177, identical on datum/ellipsoid/prime meridian/units/dimension
+/// yet ~3000 km apart, because the deriving conversion is load-bearing). Never
+/// reintroduce one.
+pub(crate) fn crs_operationally_equal(left: &Crs, right: &Crs) -> Result<bool> {
+    if left == right {
+        return Ok(true);
+    }
+    crs::same(
+        left.as_str(),
+        right.as_str(),
+        crs::CrsComparison::IgnoreAxisOrder,
+    )
+}
+
 pub(crate) fn crs_arc(value: impl Into<Crs>) -> Crs {
     value.into()
 }
@@ -509,6 +603,29 @@ pub(crate) fn crs_arc_str(value: &str) -> Crs {
 
 pub(crate) const fn crs_arc_static(value: &'static str) -> Crs {
     SmolStr::new_inline(value)
+}
+
+/// The WGS84 lon/lat label gometry stamps on geometry it originates itself:
+/// grid cells and their coverages, decoded polylines, decoded `geojson`.
+///
+/// `OGC:CRS84` rather than `EPSG:4326` because it names the lon/lat axis order
+/// these coordinates are actually stored in, and because it is what RFC 7946,
+/// GeoParquet and GeoArrow all mandate.
+///
+/// It is a single constant because the two spellings are **not** interchangeable
+/// as stored labels: `CRS(4326) != CRS("OGC:CRS84")` by design (object identity
+/// is not operational compatibility), so a second spelling anywhere means two
+/// parsers can produce arrays that refuse to concatenate. Route every stored
+/// WGS84 label through here.
+///
+/// This is a *stored label*, not a computation reference frame. Code that
+/// transforms **to** lon/lat for a geodesic calculation names its target
+/// separately and must not use this.
+pub(crate) const WGS84_LONLAT: &str = "OGC:CRS84";
+
+/// [`WGS84_LONLAT`] as a ready-to-store [`Crs`].
+pub(crate) const fn wgs84_crs() -> Crs {
+    crs_arc_static(WGS84_LONLAT)
 }
 
 #[cfg(test)]
@@ -538,6 +655,50 @@ mod tests {
             err.kind(),
             crate::error::ErrorKind::Frame(FrameError::CrsMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn compatible_accepts_axis_order_aliases_and_keeps_left_label() {
+        let epsg = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), None);
+        let crs84 = Frame::from_trusted_parts(Some(crs_arc_static("OGC:CRS84")), None);
+
+        let left_epsg = epsg.compatible(&crs84, "intersection").unwrap();
+        assert_eq!(left_epsg.crs_str(), Some("EPSG:4326"));
+
+        let left_crs84 = crs84.compatible(&epsg, "intersection").unwrap();
+        assert_eq!(left_crs84.crs_str(), Some("OGC:CRS84"));
+    }
+
+    /// The property that makes one relaxed rule safe everywhere: agreement is
+    /// PROJ's axis-order-agnostic equivalence, which admits a pair only when
+    /// the coordinates mean the same thing under either label.
+    ///
+    /// EPSG:2180 and EPSG:2177 are the standing counterexample — identical on
+    /// datum, ellipsoid, prime meridian, units and dimension, so an attribute
+    /// checklist would unify them, yet the same raw coordinate lands ~3000 km
+    /// apart because the deriving conversion differs. 3857/3395 likewise
+    /// (~32.75 km in Y), and 4326/4258 differ by datum.
+    #[test]
+    fn compatible_rejects_same_attribute_different_conversion() {
+        let frame =
+            |code: &'static str| Frame::from_trusted_parts(Some(crs_arc_static(code)), None);
+        for (left, right) in [
+            ("EPSG:2180", "EPSG:2177"),
+            ("EPSG:3857", "EPSG:3395"),
+            ("EPSG:4326", "EPSG:4258"),
+            ("EPSG:4326", "EPSG:4979"),
+        ] {
+            let Err(err) = frame(left).compatible(&frame(right), "intersection") else {
+                panic!("{left} and {right} are different frames, yet resolved to one label");
+            };
+            assert!(
+                matches!(
+                    err.kind(),
+                    crate::error::ErrorKind::Frame(FrameError::CrsMismatch { .. })
+                ),
+                "{left} vs {right} must fail as a CRS mismatch, got {err:?}"
+            );
+        }
     }
 
     #[test]

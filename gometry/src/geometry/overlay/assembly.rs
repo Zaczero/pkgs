@@ -1,5 +1,11 @@
-use super::*;
-use crate::geometry::*;
+use crate::geometry::overlay::{
+    DimensionalParts, OverlayOp, dedup_points, empty_shape_for_dimension,
+    for_each_overlapping_pair, for_each_segment_overlap_point,
+};
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, LineSeq, Point, PointKey,
+    Polygon, Segment, Shape, XY, point_on_segment,
+};
 pub(crate) fn line_line_cross_points(left: &[Segment], right: &[Segment]) -> Vec<Point> {
     let mut candidates: Vec<XY> = Vec::new();
     for_each_overlapping_pair::<false>(left, right, |l, r| {

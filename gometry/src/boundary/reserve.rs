@@ -22,22 +22,28 @@
 //! one outcome: success or clean proportional `MemoryError` from the allocator.
 //! Never reject with "too large to materialize" or a bare-stream ceiling; that
 //! invents a list-vs-generator asymmetry. The collector's retained output
-//! grows fallibly; a caller's per-item mapping may own separate storage.
+//! grows fallibly; a caller's per-item mapping must also use fallible
+//! allocation when it owns separate storage on an unbounded path (see
+//! [`collect_py_iter`]).
 
 use pyo3::exceptions::{PyMemoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PySequence;
 
-/// Soft upper bound for a single reservation from an external length *hint*.
-/// Large enough for legitimate multi-million-row columns; small enough that a
-/// `sys.maxsize` / `i64::MAX` hint cannot force a multi-gigabyte empty `Vec`.
-/// Applied only as a clamp on hints — never as a product-wide validity cap.
-pub(crate) const MAX_RESERVE_HINT: usize = 1 << 26; // 64 Mi elements
+/// Soft upper bound for a single **initial** reservation from an external
+/// length *hint* (`__len__`, etc.). Large enough to avoid thrash on typical
+/// batch sizes; small enough that a lying `sys.maxsize` / `i64::MAX` hint
+/// cannot force a multi-gigabyte empty `Vec` before the first item is
+/// yielded. Growth after the first item stays fallible via `try_reserve` /
+/// `try_reserve_next` on actual observed elements — never promote a hint to
+/// an exact allocation or iteration count (AGENTS carrier 3).
+pub(crate) const MAX_RESERVE_HINT: usize = 1 << 12; // 4096 elements
 
 /// Fallibly reserve capacity for `additional` more elements, treating the
 /// count as an untrusted **hint**. Oversized hints are clamped to
 /// [`MAX_RESERVE_HINT`] (never rejected); `try_reserve` turns overflow / OOM
-/// into a clean Python error instead of a panic.
+/// into a clean Python error instead of a panic. This only sizes the initial
+/// chunk — honest large streams grow fallibly as items arrive.
 pub(crate) fn try_reserve_hint<T>(vec: &mut Vec<T>, additional: usize) -> PyResult<()> {
     let additional = additional.min(MAX_RESERVE_HINT);
     if additional == 0 {
@@ -80,28 +86,71 @@ pub(crate) fn try_vec_with_capacity_hint<T>(capacity: usize) -> PyResult<Vec<T>>
     Ok(vec)
 }
 
-/// Fallibly push one element, growing capacity without trusting a bulk hint.
-/// Used when collecting untrusted Python sequences that must never call
-/// `Vec::with_capacity` on a lying `__len__`.
+/// Message for outer-vector growth failure on untrusted streams.
+pub(crate) const GROW_SEQUENCE_OOM: &str = "failed to grow sequence buffer from untrusted input";
+
+/// Message for fallible owned-string construction on untrusted streams.
+pub(crate) const STRING_ALLOC_OOM: &str = "failed to allocate string from untrusted input";
+
+/// Probe whether `vec` needs a growth reservation; fallible, no `PyErr` yet.
 ///
-/// Growth is pure fallible reservation — no element-count ceiling. This
-/// protects the retained vector's allocation boundary; callers that map input
-/// items own any separate per-item allocation boundary.
-fn try_reserve_next<T>(vec: &mut Vec<T>) -> PyResult<()> {
+/// Returns `Err(())` on allocator failure. Callers that already hold retained
+/// untrusted output **must drop that output before** converting to
+/// [`PyMemoryError`] — boxing a `PyErr` while the heap is exhausted aborts
+/// with `memory allocation of N bytes failed` instead of a catchable error.
+fn try_reserve_next_raw<T>(vec: &mut Vec<T>) -> Result<(), ()> {
     if vec.len() == vec.capacity() {
         // Double (or start at 8); fallible so capacity overflow is a clean error.
         let additional = vec.capacity().max(8);
-        vec.try_reserve(additional).map_err(|_| {
-            PyMemoryError::new_err("failed to grow sequence buffer from untrusted input")
-        })?;
+        vec.try_reserve(additional).map_err(|_| ())?;
     }
     Ok(())
 }
 
+/// Fallibly push one element, growing capacity without trusting a bulk hint.
+///
+/// On OOM the **item is dropped** with the vector contents before the
+/// `PyMemoryError` is constructed, so exception boxing has address-space
+/// headroom under `RLIMIT_AS`.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
-    try_reserve_next(vec)?;
+    if try_reserve_next_raw(vec).is_err() {
+        drop(item);
+        vec.clear();
+        // Return capacity to the allocator when possible so `PyErr` boxing can
+        // succeed under a tight RLIMIT_AS.
+        vec.shrink_to_fit();
+        return Err(PyMemoryError::new_err(GROW_SEQUENCE_OOM));
+    }
     vec.push(item);
     Ok(())
+}
+
+/// Fallibly copy a UTF-8 slice into an owned [`String`].
+///
+/// `Err(())` means the allocator refused the reservation — **do not** build a
+/// `PyErr` until any large retained buffers that exhausted memory have been
+/// dropped (see [`collect_py_iter`]). Use [`string_alloc_error`] after free.
+///
+/// On unbounded ingest paths, `String::from` / `extract::<String>` allocate
+/// infallibly and abort under OOM instead of surfacing `MemoryError`.
+pub(crate) fn try_string_from_str(s: &str) -> Result<String, ()> {
+    let mut buf = Vec::<u8>::new();
+    buf.try_reserve_exact(s.len()).map_err(|_| ())?;
+    buf.extend_from_slice(s.as_bytes());
+    // SAFETY: `s` is valid UTF-8; we only copied its bytes into reserved space.
+    Ok(unsafe { String::from_utf8_unchecked(buf) })
+}
+
+/// [`PyMemoryError`] for [`try_string_from_str`] failure — call only after
+/// releasing retained untrusted output that exhausted the heap.
+pub(crate) fn string_alloc_error() -> PyErr {
+    PyMemoryError::new_err(STRING_ALLOC_OOM)
+}
+
+/// [`PyMemoryError`] for outer-vector growth failure — call only after
+/// releasing retained untrusted output.
+pub(crate) fn grow_sequence_error() -> PyErr {
+    PyMemoryError::new_err(GROW_SEQUENCE_OOM)
 }
 
 /// Checked sum of untrusted lengths. Overflow becomes a clean value error.
@@ -240,31 +289,43 @@ pub(crate) fn is_one_byte_buffer(value: &Bound<'_, PyAny>) -> bool {
         || pyo3::buffer::PyBuffer::<i8>::get(value).is_ok()
 }
 
-/// Borrow the raw bytes of any one-byte buffer and hand them to ``f``.
+/// Hand the bytes of any one-byte buffer to ``f``.
 ///
 /// Accepts ``bytes``/``bytearray``/``memoryview`` and other buffer-protocol
 /// exporters with itemsize 1 — both unsigned (``'B'``) and signed (``'b'``).
-/// The buffer is held for the duration of ``f``.
+///
+/// Free-threading soundness: zero-copy `&[u8]` is allowed **only** for
+/// known-immutable ``bytes`` (`extract::<&[u8]>` is PyBytes-only). Mutable
+/// carriers (`bytearray`, writable `memoryview`, NumPy, …) are **copied**
+/// before parse — a `PyBuffer` pins the allocation but does not stop another
+/// thread mutating contents, and forming a plain `&[u8]` over that memory is
+/// aliasing UB.
 pub(crate) fn with_one_byte_buffer<R>(
     value: &Bound<'_, PyAny>,
     f: impl FnOnce(&[u8]) -> PyResult<R>,
 ) -> PyResult<R> {
+    // Immutable bytes only — PyO3's `&[u8]` extract is PyBytes-gated.
     if let Ok(bytes) = value.extract::<&[u8]>() {
         return f(bytes);
     }
     if let Ok(buffer) = pyo3::buffer::PyBuffer::<u8>::get(value) {
-        return with_typed_one_byte_buffer(&buffer, value.py(), f);
+        return with_u8_buffer_owned(&buffer, value.py(), f);
     }
     if let Ok(buffer) = pyo3::buffer::PyBuffer::<i8>::get(value) {
-        return with_typed_one_byte_buffer(&buffer, value.py(), f);
+        return with_i8_buffer_owned(&buffer, value.py(), f);
     }
     Err(PyTypeError::new_err(
         "expected a one-byte buffer (bytes, bytearray, memoryview, or array.array)",
     ))
 }
 
-fn with_typed_one_byte_buffer<T: pyo3::buffer::Element + Copy, R>(
-    buffer: &pyo3::buffer::PyBuffer<T>,
+/// Copy a `u8` `PyBuffer` into an exclusive `Vec<u8>`, then hand `&[u8]` to ``f``.
+///
+/// The slice always refers to the Rust-owned `Vec` — never to the Python
+/// exporter's memory — so concurrent free-threaded mutators of the original
+/// `bytearray` / writable `memoryview` cannot alias through this borrow.
+fn with_u8_buffer_owned<R>(
+    buffer: &pyo3::buffer::PyBuffer<u8>,
     py: Python<'_>,
     f: impl FnOnce(&[u8]) -> PyResult<R>,
 ) -> PyResult<R> {
@@ -273,19 +334,26 @@ fn with_typed_one_byte_buffer<T: pyo3::buffer::Element + Copy, R>(
             "expected a one-byte buffer (itemsize 1)",
         ));
     }
-    if buffer.is_c_contiguous() {
-        let ptr = buffer.buf_ptr().cast::<u8>();
-        let len = buffer.len_bytes();
-        // SAFETY: buffer is held for this scope, C-contiguous one-byte items,
-        // and `len_bytes` is the authoritative length.
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        return f(bytes);
-    }
+    // `to_vec` → PyBuffer_ToContiguous into exclusively owned Rust storage.
     let owned = buffer.to_vec(py)?;
-    // One-byte element: reinterpret storage as u8 without changing layout.
-    // SAFETY: `T` is u8 or i8 (item_size == 1); same length in bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(owned.as_ptr().cast::<u8>(), owned.len()) };
-    f(bytes)
+    f(&owned)
+}
+
+/// Copy a signed one-byte `PyBuffer` into an exclusive `Vec<u8>`, then parse.
+fn with_i8_buffer_owned<R>(
+    buffer: &pyo3::buffer::PyBuffer<i8>,
+    py: Python<'_>,
+    f: impl FnOnce(&[u8]) -> PyResult<R>,
+) -> PyResult<R> {
+    if buffer.item_size() != 1 {
+        return Err(PyTypeError::new_err(
+            "expected a one-byte buffer (itemsize 1)",
+        ));
+    }
+    let signed = buffer.to_vec(py)?;
+    // Bit-preserving i8 → u8 on exclusive storage (no alias into Python memory).
+    let owned: Vec<u8> = signed.into_iter().map(|b| b as u8).collect();
+    f(&owned)
 }
 
 /// Collect a Python sequence/iterable of extractable items without trusting
@@ -345,14 +413,38 @@ pub(crate) fn collect_i64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyRe
 /// THE mandatory entry for every Python-iterable → `Vec` boundary.
 ///
 /// `__len__` is a clamped **hint** only; every element is grown via
-/// [`try_push`]. Callers that need a mapped type pass a closure; the identity
-/// map (`|item| Ok(item)`) materializes the raw `Bound` items.
+/// fallible reservation before the map runs. Callers that need a mapped type
+/// pass a closure; the identity map (`|item| Ok(item)`) materializes the raw
+/// `Bound` items.
 ///
 /// Prefer this over `iter.collect::<PyResult<Vec<_>>>()` or bare `Vec::push`
 /// loops — those grow infallibly until Rust aborts on capacity overflow / OOM.
 /// There is no bare-stream element ceiling: a finite generator of N elements
-/// succeeds the same way as a list of N. The retained output grows through
-/// fallible reservation; `map` may itself allocate while constructing an item.
+/// succeeds the same way as a list of N.
+///
+/// ## Full no-abort invariant (outer growth **and** the map)
+///
+/// Reservation-before-map alone is **not** the complete boundary. It only
+/// makes growth of the outer `Vec<T>` fallible. If `map` itself performs an
+/// infallible Rust heap allocation (e.g. `extract::<String>()`, `String::from`,
+/// an uncapped `Vec` push, `Arc::from` of a slice), that allocation can still
+/// abort under `RLIMIT_AS` with `memory allocation of N bytes failed` while
+/// the outer `try_reserve` still has room for another `T` slot. On unbounded
+/// public ingest paths the map must therefore either:
+/// - perform no per-item Rust heap allocation beyond what this collector
+///   already reserved (identity / `Copy` / Arc-clone of an existing handle), or
+/// - route every new owned allocation through a fallible path
+///   ([`try_string_from_str`], nested `collect_py_iter` / `try_push`, etc.).
+///
+/// ## Drop retained output before boxing `PyErr`
+///
+/// Under a tight address-space cap the retained `Vec` may be what exhausted
+/// the heap. Constructing `PyMemoryError` (a Rust `PyErr` box) while that
+/// `Vec` still holds every item aborts instead of raising. This collector
+/// drops `out` before any OOM `PyErr` is built; maps that build `PyErr` on
+/// their own OOM path must use [`try_string_from_str`]'s `Err(())` form (or
+/// equivalent) so the collector can free first — see
+/// [`crate::py::crs::functions_config`] for the search-path loop.
 pub(crate) fn collect_py_iter<'py, T>(
     values: &Bound<'py, PyAny>,
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
@@ -362,16 +454,29 @@ pub(crate) fn collect_py_iter<'py, T>(
     if let Ok(hint) = values.len() {
         try_reserve_hint(&mut out, hint)?;
     }
-    for item in values.try_iter()? {
-        // Reserve before mapping. Mapping one iterable member commonly makes
-        // several small Rust/Python allocations (a Polygon hole builds its
-        // coordinate columns, for example). If `out` is at capacity, doing
-        // that work first can hit an infallible allocation under RLIMIT_AS
-        // before `try_push` has a chance to turn the next growth into
-        // `MemoryError`. The reservation is otherwise identical and remains
-        // purely fallible; only its order is the security boundary.
-        try_reserve_next(&mut out)?;
-        out.push(map(item?)?);
+    let mut iter = values.try_iter()?;
+    loop {
+        let item = match iter.next() {
+            None => break,
+            Some(Ok(item)) => item,
+            Some(Err(err)) => {
+                drop(out);
+                return Err(err);
+            },
+        };
+        // Reserve a slot for `T` before mapping so outer growth is fallible.
+        // Free retained items *before* boxing `PyMemoryError` (see invariant).
+        if try_reserve_next_raw(&mut out).is_err() {
+            drop(out);
+            return Err(grow_sequence_error());
+        }
+        match map(item) {
+            Ok(value) => out.push(value),
+            Err(err) => {
+                drop(out);
+                return Err(err);
+            },
+        }
     }
     Ok(out)
 }
@@ -393,16 +498,45 @@ pub(crate) fn collect_py_iter_exact<'py, T>(
 ) -> PyResult<Vec<T>> {
     let mut out = try_vec_with_capacity(expected)?;
     let mut iter = values.try_iter()?;
-    for _ in 0..=expected {
+    for _ in 0..expected {
         let Some(item) = iter.next() else {
             break;
         };
-        try_push(&mut out, map(item?)?)?;
+        let item = match item {
+            Ok(item) => item,
+            Err(err) => {
+                drop(out);
+                return Err(err);
+            },
+        };
+        let value = match map(item) {
+            Ok(value) => value,
+            Err(err) => {
+                drop(out);
+                return Err(err);
+            },
+        };
+        // try_push frees `out` on OOM before boxing PyErr.
+        try_push(&mut out, value)?;
     }
     if out.len() != expected {
-        return Err(on_len(out.len()));
+        let got = out.len();
+        drop(out);
+        return Err(on_len(got));
     }
-    Ok(out)
+    // Surplus detection BEFORE mapping: do not run caller code whose result
+    // would be discarded (side-effecting maps, expensive decode, etc.).
+    match iter.next() {
+        None => Ok(out),
+        Some(Err(err)) => {
+            drop(out);
+            Err(err)
+        },
+        Some(Ok(_extra)) => {
+            drop(out);
+            Err(on_len(expected.saturating_add(1)))
+        },
+    }
 }
 
 #[cfg(test)]

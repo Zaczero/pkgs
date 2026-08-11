@@ -111,7 +111,9 @@ def test_overlay_handles_every_dimension_combination() -> None:
         ),
     ],
 )
-def test_token_rejections_follow_the_canonical_template(trigger, message, param) -> None:
+def test_token_rejections_follow_the_canonical_template(
+    trigger, message, param
+) -> None:
     """Every unknown-token rejection reads ``unknown <concept> <value>;
     [did you mean '<closest>'? ]expected 'a', 'b', or 'c'`` — pinned so the
     template cannot drift (the did-you-mean clause appears when a valid
@@ -145,7 +147,9 @@ def test_token_rejections_follow_the_canonical_template(trigger, message, param)
             id='buffer-quadrant-segments',
         ),
         pytest.param(
-            lambda: gm.h3_cover(gm.box(-1, -1, 1, 1, crs=4326), resolution=7, max_cells=1),
+            lambda: gm.h3_cover(
+                gm.box(-1, -1, 1, 1, crs=4326), resolution=7, max_cells=1
+            ),
             'max_cells',
             1,
             id='h3-cover-budget',

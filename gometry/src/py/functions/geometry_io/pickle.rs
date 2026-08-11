@@ -2,10 +2,21 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use super::guard_embedded_crs_conflict;
 use crate::array::{MissingMask, RowSelection};
-use crate::py::errors::{CRSError, GeometryError};
-use crate::*;
+use crate::py::errors::{CRSError, ParseFormat, parse_error};
+use crate::py::wire_crs::{SridFrameAdmission, guard_embedded_crs_conflict};
+use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, Typed, parse_wkb_geometry};
+
+/// Pickle is trusted-code persistence, but malformed payloads still must not
+/// enter packed storage. Keep the existing reconstruction checks and classify
+/// their failures as serialized-input parse errors.
+struct GeometryError;
+
+impl GeometryError {
+    fn new_err(message: impl Into<String>) -> PyErr {
+        parse_error(message, ParseFormat::Pickle)
+    }
+}
 
 // --- Pickle support ----------------------------------------------------------
 //
@@ -108,33 +119,20 @@ pub(crate) fn _unpickle_geometry_array(
     let fallback = deserialized_crs(crs)?;
     let mask = pickled_missing_mask(rows.len(), missing, "mixed-array", None)?;
     let mut parsed_rows = crate::try_vec_with_capacity(rows.len())?;
-    // Resolve one shared array frame FIRST through the same SharedRowCrs
-    // admission bulk `from_wkb` uses: an SRID-established frame mixed with a
-    // CRS-free row is CRSMismatchError (no silent stamp). Explicit payload
-    // `crs=` still covers plain rows (normal pickle round-trip). Epoch
-    // validation runs after this scan so EWKB-only CRS + epoch matches bulk
-    // `from_wkb(..., epoch=...)` (R16). Masked rows are skipped.
-    let mut shared_rows = super::SharedRowCrs::Unseen;
+    // Numeric SRID admission (same as bulk from_wkb): resolve each distinct
+    // code once, first-conflict row preserved, explicit payload crs= covers
+    // plain rows. Masked rows establish no CRS.
+    let mut frame_admit = SridFrameAdmission::new(fallback, None);
     for (row, wkb) in rows.iter().enumerate() {
         if mask.as_ref().is_some_and(|mask| mask[row]) {
             crate::try_push(&mut parsed_rows, None)?;
             continue;
         }
         let parsed = crate::io::parse_wkb(wkb)?;
-        guard_embedded_crs_conflict(parsed.crs.as_deref(), fallback.as_deref(), "EWKB SRID")?;
-        let row_crs = match parsed.crs.as_deref() {
-            Some(embedded) => {
-                let embedded = crate::crs::canonicalize(embedded).map_err(|err| {
-                    CRSError::new_err(format!("invalid EWKB SRID in geometry array pickle: {err}"))
-                })?;
-                Some(embedded)
-            },
-            None => None,
-        };
-        shared_rows.admit(row_crs, fallback.as_ref(), row, "geometry array pickle")?;
+        frame_admit.admit_srid(parsed.srid, row, "geometry array pickle", "EWKB SRID")?;
         crate::try_push(&mut parsed_rows, Some(parsed))?;
     }
-    let shared = shared_rows.into_crs(fallback);
+    let shared = frame_admit.finish()?;
     let epoch = crate::deserialized_epoch(epoch, shared.as_deref())?;
     let frame = Frame::new(shared, epoch)?;
     let mut items = crate::try_vec_with_capacity(rows.len())?;
@@ -291,7 +289,9 @@ pub(crate) fn _unpickle_polygon_array(
             .map_err(|_| {
                 GeometryError::new_err("polygon-array pickle polygon offsets are not a valid CSR")
             })?;
-    validate_pickled_polygon_rings(&seq, &ring_offsets)?;
+    // Shared untrusted ring policy with WKT/WKB: silent-close XY-open rings
+    // (may grow the coordinate columns) or reject Z/M-open / too-short.
+    let (seq, ring_offsets) = admit_pickled_polygon_rings(seq, ring_offsets)?;
     validate_pickled_polygon_shells(&polygon_offsets)?;
     let crs = deserialized_crs(crs)?;
     let epoch = crate::deserialized_epoch(epoch, crs.as_deref())?;
@@ -311,45 +311,81 @@ pub(crate) fn _unpickle_polygon_array(
     }
 }
 
-/// Untrusted pickle boundary: every ring span must have at least four
-/// coordinates and be closed on **every active ordinate** before the trusted
-/// packed constructor — the same admission as [`crate::array::ring_seq_is_packable`]
-/// / [`same_active_position`] (XY-only closure is not enough for Z/M rings).
-/// Zero-coordinate rings are rejected (no `n == 0` exemption).
-fn validate_pickled_polygon_rings(
-    seq: &crate::geometry::CoordSeq,
-    ring_offsets: &crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
-) -> PyResult<()> {
-    use crate::geometry::{Ring, same_active_position};
+/// Untrusted pickle ring boundary — same policy as WKT/WKB
+/// ([`crate::io::admit_closed_ring`]):
+/// silent-close XY-open rings (≥3 corners), reject Z/M-open and too-short.
+/// When any ring is open the coordinate columns and ring CSR are rebuilt so
+/// packed storage still holds closed rings only.
+fn admit_pickled_polygon_rings(
+    seq: crate::geometry::CoordSeq,
+    ring_offsets: crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
+) -> PyResult<(
+    crate::geometry::CoordSeq,
+    crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
+)> {
+    use crate::geometry::{CoordSeqBuilder, Ring, same_active_position};
+
     let width = seq.len();
-    for [start, end] in ring_offsets.array_windows::<2>() {
-        let start = usize::try_from(*start).map_err(|_| {
-            GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
-        })?;
-        let end = usize::try_from(*end).map_err(|_| {
-            GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
-        })?;
-        if end < start || end > width {
-            return Err(GeometryError::new_err(
-                "polygon-array pickle ring offsets are not a valid CSR",
-            ));
-        }
+    let windows: Vec<(usize, usize)> = ring_offsets
+        .array_windows::<2>()
+        .map(|[start, end]| {
+            let start = usize::try_from(*start).map_err(|_| {
+                GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
+            })?;
+            let end = usize::try_from(*end).map_err(|_| {
+                GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
+            })?;
+            if end < start || end > width {
+                return Err(GeometryError::new_err(
+                    "polygon-array pickle ring offsets are not a valid CSR",
+                ));
+            }
+            Ok((start, end))
+        })
+        .collect::<PyResult<_>>()?;
+
+    // Fast path: every ring already fully closed on active ordinates and long
+    // enough — no rebuild (the common gometry-written pickle case).
+    let already_closed = windows.iter().all(|&(start, end)| {
         let n = end - start;
-        if n < Ring::MIN_VERTICES_CLOSED {
-            return Err(GeometryError::new_err(
-                "polygon-array pickle ring is shorter than four coordinates",
-            ));
-        }
-        // Full active Point (X/Y/Z/M) — matches pack_admission::ring_seq_is_packable.
-        let first = seq.point_at(start);
-        let last = seq.point_at(end - 1);
-        if !same_active_position(first, last) {
-            return Err(GeometryError::new_err(
-                "polygon-array pickle ring must be closed",
-            ));
-        }
+        n >= Ring::MIN_VERTICES_CLOSED
+            && same_active_position(seq.point_at(start), seq.point_at(end - 1))
+    });
+    if already_closed {
+        return Ok((seq, ring_offsets));
     }
-    Ok(())
+
+    // Rebuild through the shared admitter (silent-close / reject).
+    let mut builder = CoordSeqBuilder::like_coords(&seq, width.saturating_add(windows.len()));
+    let mut new_offsets: Vec<i32> = Vec::with_capacity(windows.len().saturating_add(1));
+    new_offsets.push(0);
+    for (start, end) in windows {
+        let n = end - start;
+        let mut ring_builder = CoordSeqBuilder::like_coords(&seq, n.saturating_add(1));
+        for index in start..end {
+            ring_builder.push_at(&seq, index);
+        }
+        let ring_seq = ring_builder.finish().map_err(PyErr::from)?;
+        let admitted = crate::io::admit_closed_ring(ring_seq).map_err(|error| {
+            // Prefer the domain message (closed / short) over a bare GeometryError.
+            GeometryError::new_err(error.to_string())
+        })?;
+        let coords = admitted.coords();
+        for index in 0..coords.len() {
+            builder.push_at(coords, index);
+        }
+        let next = i32::try_from(builder.len()).map_err(|_| {
+            GeometryError::new_err("polygon-array pickle exceeds the offset domain")
+        })?;
+        new_offsets.push(next);
+    }
+    let seq = builder.finish().map_err(PyErr::from)?;
+    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_arc_i32(
+        std::sync::Arc::<[i32]>::from(new_offsets),
+        seq.len(),
+    )
+    .map_err(|_| GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR"))?;
+    Ok((seq, ring_offsets))
 }
 
 /// Every polygon CSR window must cover at least one ring (`end > start`).
@@ -451,24 +487,43 @@ fn pickled_missing_mask(
 /// Decode the shared column payload of the packed-array picklers.
 /// Every physical ordinate must be finite — the reducer never emits orphan
 /// NaN placeholders on packed lanes.
+///
+/// Columns fill exact final `Arc`s (no `Vec` intermediate). Element count is
+/// **derived from each column's byte length** (`len / 8`), never from a
+/// separate trusted `size_hint` — same class of fix as the WKB exact-Arc
+/// decoder. Validation messages and reconstruction semantics are unchanged.
 fn pickled_coordseq(
     xs: &[u8],
     ys: &[u8],
     zs: Option<&[u8]>,
     ms: Option<&[u8]>,
 ) -> PyResult<CoordSeq> {
-    let column = |bytes: &[u8]| -> PyResult<Vec<f64>> {
+    use std::mem::MaybeUninit;
+    use std::sync::Arc;
+
+    let column = |bytes: &[u8]| -> PyResult<Arc<[f64]>> {
         if !bytes.len().is_multiple_of(size_of::<f64>()) {
             return Err(GeometryError::new_err(
                 "malformed packed-array pickle column",
             ));
         }
-        Ok(bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|chunk| f64::from_le_bytes(*chunk))
-            .collect())
+        // Proven count from the byte span (not a caller-supplied length).
+        let chunks = bytes.as_chunks::<8>().0;
+        let len = chunks.len();
+        let mut arc: Arc<[MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
+        // SAFETY: unique Arc; every slot is written from the LE bytes below
+        // (enumerate over all `len` chunks). Trusted-code persistence (pickle):
+        // not an authenticity boundary.
+        unsafe {
+            let dst = Arc::get_mut(&mut arc)
+                .unwrap_unchecked()
+                .as_mut_ptr()
+                .cast::<f64>();
+            for (i, chunk) in chunks.iter().enumerate() {
+                dst.add(i).write(f64::from_le_bytes(*chunk));
+            }
+            Ok(arc.assume_init())
+        }
     };
     let xs = column(xs)?;
     let ys = column(ys)?;
@@ -482,5 +537,5 @@ fn pickled_coordseq(
             "packed-array pickle columns differ in length",
         ));
     }
-    Ok(CoordSeq::from_owned_columns(xs, ys, zs, ms)?)
+    Ok(CoordSeq::from_arc_columns(xs, ys, zs, ms)?)
 }

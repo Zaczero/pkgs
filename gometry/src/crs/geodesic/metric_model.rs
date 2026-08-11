@@ -1,17 +1,16 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use geographiclib_rs::Geodesic;
 
-use super::*;
+use crate::crs::geodesic::{
+    CrsError, CrsInfo, DEGREE_TO_RADIAN, Result, ensure_geodesic_lonlat_crs, info, normalize,
+    with_geodesic_cache,
+};
 use crate::text::str_contains_ignore_ascii_case;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PositiveFiniteScale(f64);
 
 impl PositiveFiniteScale {
-    const ONE: Self = Self(1.0);
+    pub(crate) const ONE: Self = Self(1.0);
 
     fn try_new(unit: f64, error: impl FnOnce(&str) -> crate::error::Error) -> Result<Self> {
         if unit.is_finite() && unit > 0.0 {
@@ -145,19 +144,65 @@ pub(crate) fn metric_model(crs: Option<&str>) -> Result<MetricModel> {
     crs.map_or(Ok(MetricModel::COORDINATE), metric_model_for)
 }
 
-pub(crate) fn metric_model_for(crs: &str) -> Result<MetricModel> {
+/// The horizontal component a metric resolves against.
+///
+/// Both `metric_model_for` and `metric_model_meters` walk compound CRS to the
+/// same horizontal component by the same rules; they differ only in what they
+/// build once they arrive. Keeping the walk here means a fix to the compound
+/// traversal cannot be applied to one and forgotten on the other — they were
+/// previously verbatim copies diverging in two lines.
+enum HorizontalComponent {
+    /// A geographic CRS: measured geodesically on its own ellipsoid.
+    Geodesic(String),
+    /// A projected/engineering CRS, with the info its axis validation needs.
+    ///
+    /// The CRS name comes from `info.crs`, not a separate owned copy of the
+    /// caller's string: that allocated on every call purely for error text,
+    /// and it made the two lanes name the CRS differently — the geodesic arm
+    /// reports PROJ's normalized name while this one reported whatever
+    /// spelling the caller happened to pass.
+    Planar { info: std::sync::Arc<CrsInfo> },
+}
+
+fn horizontal_component(crs: &str) -> Result<HorizontalComponent> {
     let info = info(crs)?;
-    if info.kind.starts_with("geographic") {
-        ensure_geographic_degree_units(crs, &info)?;
-        return Ok(MetricModel::Geodesic(info.crs.clone()));
+    // Recursive geographic: compound horizontal components included.
+    if info.is_geographic() {
+        // Degree-axis check on the geographic component (compound → first
+        // geographic sub-CRS when the root is not itself geographic).
+        if info.kind.starts_with("geographic") {
+            ensure_geographic_degree_units(crs, &info)?;
+            return Ok(HorizontalComponent::Geodesic(info.crs.clone()));
+        }
+        if let Some(sub) = info
+            .sub_crs
+            .iter()
+            .find(|sub| sub.kind.starts_with("geographic") && !sub.crs.is_empty())
+        {
+            return horizontal_component(&sub.crs);
+        }
+        if let Some(sub) = info.sub_crs.first().filter(|sub| !sub.crs.is_empty()) {
+            return horizontal_component(&sub.crs);
+        }
     }
     if info.kind == "compound"
         && let Some(sub) = info.sub_crs.first().filter(|sub| !sub.crs.is_empty())
     {
-        return metric_model_for(&sub.crs);
+        return horizontal_component(&sub.crs);
     }
-    planar_to_metre(crs, &info)?;
-    Ok(MetricModel::COORDINATE)
+    Ok(HorizontalComponent::Planar { info })
+}
+
+pub(crate) fn metric_model_for(crs: &str) -> Result<MetricModel> {
+    Ok(match horizontal_component(crs)? {
+        HorizontalComponent::Geodesic(name) => MetricModel::Geodesic(name),
+        // Validate the axes, then discard the scale: the CRS-natural default
+        // reports native coordinate units, not metres.
+        HorizontalComponent::Planar { info } => {
+            planar_to_metre(&info.crs, &info)?;
+            MetricModel::COORDINATE
+        },
+    })
 }
 
 /// Resolve an explicit meter-denominated [`MetricModel`] for a CRS.
@@ -167,18 +212,13 @@ pub(crate) fn metric_model_for(crs: &str) -> Result<MetricModel> {
 /// callers are rejected before reaching this helper because they have no meter
 /// scale.
 pub(crate) fn metric_model_meters(crs: &str) -> Result<MetricModel> {
-    let info = info(crs)?;
-    if info.kind.starts_with("geographic") {
-        ensure_geographic_degree_units(crs, &info)?;
-        return Ok(MetricModel::Geodesic(info.crs.clone()));
-    }
-    if info.kind == "compound"
-        && let Some(sub) = info.sub_crs.first().filter(|sub| !sub.crs.is_empty())
-    {
-        return metric_model_meters(&sub.crs);
-    }
-    Ok(MetricModel::Planar {
-        to_metre: planar_to_metre(crs, &info)?,
+    Ok(match horizontal_component(crs)? {
+        HorizontalComponent::Geodesic(name) => MetricModel::Geodesic(name),
+        // Same walk as the CRS-natural resolver; here the axis factor is kept
+        // so outputs scale to SI metres.
+        HorizontalComponent::Planar { info } => MetricModel::Planar {
+            to_metre: planar_to_metre(&info.crs, &info)?,
+        },
     })
 }
 
@@ -250,9 +290,9 @@ pub(crate) fn ensure_geographic_degree_units(crs: &str, info: &CrsInfo) -> Resul
 /// projected 2D CRS is accepted: its Z ordinate inherits the horizontal linear
 /// unit. A CRS-free geometry (`crs` is `None`) is accepted, with ordinates in
 /// bare coordinate units (caveat emptor).
-pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<f64> {
+pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<PositiveFiniteScale> {
     let Some(crs) = crs else {
-        return Ok(1.0);
+        return Ok(PositiveFiniteScale::ONE);
     };
     let fail = |message: &str| CrsError::vertical_units(crs, message);
     let crs_info = info(crs)?;
@@ -271,9 +311,13 @@ pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<f64> {
             "axis units differ (e.g. meter vs foot); use one consistent linear unit",
         ));
     }
-    // Meters per coordinate unit: callers scale 3D outputs so they are SI like
-    // the 2D metrics (`1.0` for a CRS-free or meter CRS, `0.3048…` for feet).
-    Ok(unit_value)
+    // Meters per coordinate unit (`1.0` for a CRS-free or meter CRS, `0.3048…`
+    // for feet). This is the factor an explicit `unit='meters'` scales by — it
+    // is NOT applied by default. 3D metrics report the CRS's own linear unit,
+    // exactly like their 2D siblings; scaling unconditionally used to make
+    // `line.length_3d` come back in metres while `line.length` came back in
+    // feet, for the very same line.
+    Ok(unit)
 }
 
 /// Linear (length) unit conversion factors of every axis, recursing into the
@@ -332,21 +376,4 @@ pub(crate) fn is_angular_unit(unit: &str) -> bool {
     ANGULAR
         .iter()
         .any(|angular| str_contains_ignore_ascii_case(unit, angular))
-}
-
-/// Geodesic distance (meters) between two lon/lat points on `crs`'s ellipsoid.
-pub(crate) fn geodesic_distance_crs(
-    crs: &str,
-    lon1: f64,
-    lat1: f64,
-    lon2: f64,
-    lat2: f64,
-) -> Result<f64> {
-    ensure_geographic_lonlat(lon1, lat1)?;
-    ensure_geographic_lonlat(lon2, lat2)?;
-    with_geodesic(crs, |geodesic| {
-        // Distance-only capability (the 4-tuple impl also grades azimuths).
-        let distance: f64 = geodesic.inverse(lat1, lon1, lat2, lon2);
-        finite(distance, "geodesic distance")
-    })
 }

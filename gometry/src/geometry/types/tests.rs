@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::*;
+use crate::geometry::types::*;
 
 mod csr_offset_column_tests {
     use super::*;
@@ -96,6 +96,42 @@ mod csr_offset_column_tests {
             assert_eq!(trusted.as_slice(), checked.as_slice());
         }
     }
+
+    /// Naked near-`i32::MAX` slices must return an error — never hit
+    /// `unchecked_add` overflow (audit B6 / round-13 CSR repro).
+    #[test]
+    fn csr_offset_rebase_concat_trusted_rejects_overflow() {
+        let err =
+            CsrOffsetColumn::<()>::rebase_concat_trusted(&[0, i32::MAX], &[0, 1, 0], usize::MAX)
+                .expect_err("overflowing tail must error");
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Geometry(
+                GeometryErrorKind::OffsetCapacityExceeded | GeometryErrorKind::MalformedCsrOffsets
+            )
+        ));
+        let err = CsrOffsetColumn::<()>::rebase_concat_trusted(
+            &[0, i32::MAX],
+            &[0, i32::MAX, 0],
+            usize::MAX,
+        )
+        .expect_err("double-max tail must error");
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
+    }
+
+    /// Non-monotonic tail ends must error rather than produce a false CSR.
+    #[test]
+    fn csr_offset_rebase_concat_trusted_rejects_non_monotonic_tail() {
+        let err = CsrOffsetColumn::<()>::rebase_concat_trusted(&[0, 5], &[0, 3, 1], 100)
+            .expect_err("non-monotonic tail must error");
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +152,10 @@ mod coordseq_builder_tests {
         let err = builder.finish().unwrap_err();
         assert!(matches!(
             err.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch)
+            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: CoordinateAxes::XY,
+                got: CoordinateAxes::XYZ,
+            })
         ));
     }
 
@@ -129,7 +168,10 @@ mod coordseq_builder_tests {
         let err = CoordSeq::try_from_points(&points).unwrap_err();
         assert!(matches!(
             err.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch)
+            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: CoordinateAxes::XY,
+                got: CoordinateAxes::XYZ,
+            })
         ));
     }
 
@@ -149,7 +191,10 @@ mod coordseq_builder_tests {
         let err = builder.finish().unwrap_err();
         assert!(matches!(
             err.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch)
+            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: CoordinateAxes::XY,
+                got: CoordinateAxes::XYZ,
+            })
         ));
     }
 

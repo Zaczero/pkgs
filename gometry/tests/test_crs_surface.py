@@ -143,9 +143,13 @@ def test_utm_wraps_longitudes_across_the_antimeridian_like_proj() -> None:
 
 def test_to_crs_uses_proj_for_authority_crs_outside_fast_path() -> None:
     point = gm.Point(530000, 180000, z=42, m=7, crs=27700)
-    lonlat = point.to_crs(4326)
-    web = point.to_crs(3857)
-    batch = gm.points([530000, 700000], [180000, 570000], crs=27700).to_crs(4326)
+    # PROJ lacks OSTN15, so British National Grid transforms degrade explicitly.
+    with pytest.warns(gm.AccuracyWarning, match='uk_os_OSTN15_NTv2_OSGBtoETRS[.]tif'):
+        lonlat = point.to_crs(4326)
+    with pytest.warns(gm.AccuracyWarning, match='uk_os_OSTN15_NTv2_OSGBtoETRS[.]tif'):
+        web = point.to_crs(3857)
+    with pytest.warns(gm.AccuracyWarning, match='uk_os_OSTN15_NTv2_OSGBtoETRS[.]tif'):
+        batch = gm.points([530000, 700000], [180000, 570000], crs=27700).to_crs(4326)
     assert lonlat.crs == 'EPSG:4326'
     assert lonlat.coordinate_axes == 'XYZM'
     assert lonlat.coords.to_nested() == pytest.approx([

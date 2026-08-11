@@ -1,18 +1,20 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Binary-op operand classification: a Python argument resolved once into a
 //! scalar `Geometry` or a `GeometryArray`, plus the native-type extractors.
 
-use super::*;
 use crate::boundary::metadata::Frame;
+use crate::broadcast::{
+    Arc, Bound, GeoJsonDecodeContext, GeometryArrayStorage, PyAny, PyAnyMethods as _, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, PyTypeError, PyTypeMethods as _,
+    coerce_geojson_geometry_value, crs_arc, ensure_same_len, is_mapping_like, is_one_byte_buffer,
+    parse_geojson_geometry_value,
+};
 
 pub(crate) fn parse_wkb_geometry(value: &[u8]) -> PyResult<PyGeometry> {
     let geometry = crate::io::parse_wkb(value)?;
+    let crs = crate::io::crs_from_optional_srid(geometry.srid)?;
     Ok(PyGeometry::with_frame(
         geometry.shape,
-        Frame::new(geometry.crs.map(crs_arc), None)?,
+        Frame::new(crs.map(crs_arc), None)?,
     ))
 }
 
@@ -165,8 +167,9 @@ pub(crate) fn coerce_geometry(
 
 pub(crate) fn parse_wkb_geometry_from_payload(item: &Bound<'_, PyAny>) -> PyResult<PyGeometry> {
     let geometry = crate::parse_wkb_payload(item)?;
+    let crs = crate::io::crs_from_optional_srid(geometry.srid)?;
     Ok(PyGeometry::with_frame(
         geometry.shape,
-        Frame::new(geometry.crs.map(crs_arc), None)?,
+        Frame::new(crs.map(crs_arc), None)?,
     ))
 }

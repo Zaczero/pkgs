@@ -1,8 +1,5 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::geometry::*;
+use crate::boundary::geographic::normalized_geographic_pole;
+use crate::geometry::{Coordinates, Point, Polygon, Segment, Shape};
 
 /// Whether the geodesic short path between a segment's endpoints crosses the
 /// antimeridian, i.e. the lon/lat (planar) representation takes the long way
@@ -115,12 +112,10 @@ pub(crate) enum PolePosition {
     Exterior,
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "only an exact ±90 vertex is the pole; any other latitude is a real value"
-)]
 fn ring_has_pole_vertex<C: Coordinates + ?Sized>(ring: &C, pole_lat: f64) -> bool {
-    ring.iter_coords().any(|coord| coord.y == pole_lat)
+    let north = pole_lat.is_sign_positive();
+    ring.iter_coords()
+        .any(|coord| normalized_geographic_pole(coord.y) == Some(north))
 }
 
 fn polygon_has_pole_vertex(polygon: &Polygon, pole_lat: f64) -> bool {
@@ -180,16 +175,37 @@ fn collection_pole_position(positions: impl IntoIterator<Item = PolePosition>) -
 
 /// Whether ``point`` sits at a geographic pole (``Some(true)`` north,
 /// ``Some(false)`` south, ``None`` otherwise).
-#[expect(
-    clippy::float_cmp,
-    reason = "only the literal ±90 inputs are the poles; anything else is a real latitude"
-)]
 pub(crate) fn point_is_geographic_pole(point: Point) -> Option<bool> {
-    if point.y == 90.0 {
-        Some(true)
-    } else if point.y == -90.0 {
-        Some(false)
-    } else {
-        None
+    normalized_geographic_pole(point.y)
+}
+
+/// Whether any stored coordinate denotes a physical pole after geographic
+/// admission normalization.  This is deliberately structural rather than a
+/// container-specific special case: every collection spelling shares it.
+pub(crate) fn shape_reaches_geographic_pole(shape: &Shape) -> bool {
+    match shape {
+        Shape::Point(point) => point_is_geographic_pole(*point).is_some(),
+        Shape::MultiPoint(points) => points
+            .points()
+            .any(|point| point_is_geographic_pole(point).is_some()),
+        Shape::LineString(line) => line
+            .iter_coords()
+            .any(|point| point_is_geographic_pole(point).is_some()),
+        Shape::MultiLineString(lines) => lines.iter().any(|line| {
+            line.iter_coords()
+                .any(|point| point_is_geographic_pole(point).is_some())
+        }),
+        Shape::Polygon(polygon) => polygon.rings().any(|ring| {
+            ring.iter_coords()
+                .any(|point| point_is_geographic_pole(point).is_some())
+        }),
+        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+            polygon.rings().any(|ring| {
+                ring.iter_coords()
+                    .any(|point| point_is_geographic_pole(point).is_some())
+            })
+        }),
+        Shape::GeometryCollection(parts) => parts.iter().any(shape_reaches_geographic_pole),
+        Shape::Empty(..) => false,
     }
 }

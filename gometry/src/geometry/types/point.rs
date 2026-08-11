@@ -1,5 +1,7 @@
-use super::*;
 use crate::error::Result;
+use crate::geometry::types::{
+    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, XY, ZOrdinate,
+};
 use crate::geometry::{decimal_scale, quantize_to_scale};
 
 impl Point {

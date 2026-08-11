@@ -1,26 +1,26 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use numpy::PyArrayMethods;
+use numpy::PyArrayMethods as _;
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{PyAny, PyAnyMethods, PyTuple};
-use pyo3::{Bound, IntoPyObject, Py, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
+use pyo3::prelude::PyAnyMethods as _;
+use pyo3::types::{PyAny, PyTuple};
+use pyo3::{Bound, IntoPyObject as _, Py, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
 
-use super::*;
 use crate::HeapSize;
 use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows};
 use crate::broadcast::py_bool_or_not_implemented;
-use crate::collections::{HashMap, HashMapExt};
+use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{CoordSeq, LineSeq};
-use crate::py::cells::*;
+use crate::py::cells::h3::{
+    DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
+    h3_edge_index, h3_vertex_index, validate_h3_index_ids,
+};
+use crate::py::cells::{GridKind, Point, PyCellArray, Shape};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
 
 /// An immutable array of H3 topological vertex ids.
@@ -31,18 +31,24 @@ use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
     name = "H3VertexArray",
     module = "gometry",
     frozen,
+    immutable_type,
     sequence,
     weakref,
     skip_from_py_object
 )]
 #[derive(Clone, Debug)]
-pub(super) struct PyH3VertexArray {
+pub(crate) struct PyH3VertexArray {
     ids: Arc<[u64]>,
     selection: RowSelection,
 }
 
 /// Lazy iterator over an `H3VertexArray`'s vertices.
-#[pyclass(name = "H3VertexArrayIterator", module = "gometry", frozen)]
+#[pyclass(
+    name = "H3VertexArrayIterator",
+    module = "gometry",
+    frozen,
+    immutable_type
+)]
 pub(super) struct PyH3VertexArrayIter {
     source: PyH3VertexArray,
     state: crate::py::row::RowIterState,
@@ -56,18 +62,24 @@ pub(super) struct PyH3VertexArrayIter {
     name = "H3EdgeArray",
     module = "gometry",
     frozen,
+    immutable_type,
     sequence,
     weakref,
     skip_from_py_object
 )]
 #[derive(Clone, Debug)]
-pub(super) struct PyH3EdgeArray {
+pub(crate) struct PyH3EdgeArray {
     ids: Arc<[u64]>,
     selection: RowSelection,
 }
 
 /// Lazy iterator over an `H3EdgeArray`'s edges.
-#[pyclass(name = "H3EdgeArrayIterator", module = "gometry", frozen)]
+#[pyclass(
+    name = "H3EdgeArrayIterator",
+    module = "gometry",
+    frozen,
+    immutable_type
+)]
 pub(super) struct PyH3EdgeArrayIter {
     source: PyH3EdgeArray,
     state: crate::py::row::RowIterState,
@@ -179,12 +191,12 @@ macro_rules! h3_index_array_common {
                 if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
                     let len = logical.end - logical.start;
                     let selection = match self.selection_ref() {
-                        RowSelectionRef::Identity => RowSelection::window(logical.start, len),
+                        RowSelectionRef::Identity => RowSelection::window_trusted(logical.start, len, self.ids.len()),
                         RowSelectionRef::Window {
                             start: base,
                             len: base_len,
                         } if logical.start <= base_len && logical.end <= base_len => {
-                            RowSelection::window(base + logical.start, len)
+                            RowSelection::window_trusted(base + logical.start, len, self.ids.len())
                         },
                         map => row_selection_from_logical_rows(map, self.ids.len(), logical),
                     };
@@ -693,7 +705,7 @@ impl PyH3VertexArray {
     /// Returns
     /// -------
     /// GeometryArray
-    ///     One ``Point`` (lon/lat, ``EPSG:4326``) per vertex.
+    ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per vertex.
     #[getter]
     fn point(&self) -> crate::PyGeometryArray {
         let points: Vec<crate::geometry::XY> = self
@@ -709,10 +721,7 @@ impl PyH3VertexArray {
             })
             .collect();
         let coords = CoordSeq::from_xy(&points);
-        crate::PyGeometryArray::packed_points(
-            coords,
-            crate::Frame::Crs(crate::crs_arc_static("EPSG:4326")),
-        )
+        crate::PyGeometryArray::packed_points(coords, crate::Frame::Crs(crate::wgs84_crs()))
     }
 }
 
@@ -793,7 +802,7 @@ impl PyH3EdgeArray {
     /// Returns
     /// -------
     /// GeometryArray
-    ///     One ``LineString`` (lon/lat, ``EPSG:4326``) per edge.
+    ///     One ``LineString`` (lon/lat, ``OGC:CRS84``) per edge.
     #[getter]
     fn line(&self) -> crate::PyGeometryArray {
         let shapes = self
@@ -811,10 +820,7 @@ impl PyH3EdgeArray {
                 )
             })
             .collect();
-        crate::PyGeometryArray::from_shapes(
-            shapes,
-            crate::Frame::Crs(crate::crs_arc_static("EPSG:4326")),
-        )
+        crate::PyGeometryArray::from_shapes(shapes, crate::Frame::Crs(crate::wgs84_crs()))
     }
 
     /// Length of every edge in meters (spherical, like `H3Cell.area`).

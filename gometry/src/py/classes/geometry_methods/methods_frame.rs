@@ -2,9 +2,16 @@
 
 use pyo3::types::PyDict;
 
-use super::*;
 use crate::boundary::metadata::FrameEdit;
+use crate::py::classes::geometry_methods::{
+    Bound, CRSError, PyAny, PyErr, PyGeometry, PyResult, Python, Typed, pymethods,
+};
+use crate::py::crs::drain_accuracy_warning;
 use crate::py::replace::{ReplacePresence, reject_unknown_kwargs, replace_crs, replace_epoch};
+use crate::{
+    Arc, GeometryTransformFrame, PyCrs, PyPreparedGeometry, coordinate_epoch_option, crs, crs_arc,
+    parse_crs, parse_geometry_transform_options,
+};
 
 #[pymethods]
 impl PyGeometry {
@@ -107,7 +114,7 @@ impl PyGeometry {
             overwrite,
         }
         .apply(&self.frame)?;
-        Ok(Typed(Self::with_frame(self.shape.clone(), frame)))
+        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
     }
 
     /// Declare (or clear) the coordinate epoch without moving coordinates.
@@ -146,7 +153,7 @@ impl PyGeometry {
     pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
-        Ok(Typed(Self::with_frame(self.shape.clone(), frame)))
+        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
     }
 
     /// Return a copy with the given CRS/epoch metadata replaced.
@@ -185,7 +192,7 @@ impl PyGeometry {
             .apply(&frame)
             .map_err(PyErr::from)?;
         }
-        Ok(Typed(Self::with_frame(self.shape.clone(), frame)))
+        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
     }
 
     /// Reproject coordinates to a target CRS.
@@ -209,19 +216,23 @@ impl PyGeometry {
     ///     dynamic (time-dependent). A static target clears it.
     ///
     /// authority : str, optional
-    ///     Restrict candidate transforms to this authority (e.g. ``'EPSG'``).
+    ///     Restrict candidate coordinate operations to this authority
+    ///     (e.g. ``'EPSG'``).
     ///
     /// accuracy : float, optional
-    ///     Maximum acceptable transformation accuracy, in meters.
+    ///     Maximum acceptable operation accuracy, in meters.
     ///
     /// allow_ballpark : bool, optional
-    ///     Allow low-accuracy ballpark transforms when no precise one exists.
+    ///     Allow low-accuracy ballpark operations when no precise one exists.
     ///
     /// only_best : bool, optional
-    ///     Use only the single best transform; no fallback.
+    ///     Use only the single best operation; no fallback.
     ///
     /// force_over : bool, optional
-    ///     Keep coordinates on the source side of the antimeridian (no wrap).
+    ///     Keep coordinates on the source side of the antimeridian instead of
+    ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
+    ///     ``only_best``, this also collapses operation selection to a single
+    ///     candidate, so enumerating surfaces return exactly one operation.
     ///
     /// Returns
     /// -------
@@ -259,6 +270,7 @@ impl PyGeometry {
     ))]
     pub fn to_crs(
         &self,
+        py: Python<'_>,
         crs: &Bound<'_, PyAny>,
         area_of_interest: Option<&Bound<'_, PyAny>>,
         epoch: Option<&Bound<'_, PyAny>>,
@@ -289,9 +301,8 @@ impl PyGeometry {
         }
         let transformer =
             crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
-        Ok(Typed(Self::with_frame(
-            transformer.transform_shape(&self.shape)?,
-            frame.output,
-        )))
+        let shape = transformer.transform_shape(&self.shape)?;
+        drain_accuracy_warning(py)?;
+        Ok(Typed(Self::with_frame(shape, frame.output)))
     }
 }

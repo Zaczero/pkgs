@@ -1,4 +1,7 @@
-use super::*;
+use crate::geometry::clean_union::{HashMap, polygon_parts_to_shape, topology};
+use crate::geometry::{
+    CoordSeq, HashMapExt as _, PointKey, Polygon, Ring, Shape, XY, open_xy_cycle_winding,
+};
 
 /// Endpoint-chain the directed result-boundary arcs into rings, then classify
 /// CCW shells / CW holes and assemble a `Polygon`/`MultiPolygon`.

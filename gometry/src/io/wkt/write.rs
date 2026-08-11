@@ -1,8 +1,7 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::io::wkt::{
+    CoordinateAxes, Coordinates, EmptyKind, IoError, Point, Polygon, Result, Shape,
+    extended_srid_code, require_serializable_axes,
+};
 
 pub(crate) fn to_wkt(shape: &Shape) -> String {
     format_wkt(shape, None, WktNumberFormat::Shortest)
@@ -19,6 +18,8 @@ pub(crate) fn to_wkt_with_dimension(
     crs: Option<&str>,
     include_srid: bool,
 ) -> Result<String> {
+    // Reject heterogeneous-axis multiparts before inventing missing Z/M as 0.
+    require_serializable_axes(shape)?;
     let body = format_wkt(shape, output_dimension, WktNumberFormat::Shortest);
     match wkt_srid_prefix(crs, include_srid)? {
         Some(prefix) => Ok(format!("{prefix}{body}")),
@@ -84,11 +85,10 @@ impl WktNumberFormat {
             Self::Trimmed(precision) => {
                 let start = out.len();
                 let _ = write!(out, "{value:.*}", usize::from(precision));
-                if out[start..].contains('.') {
-                    let keep = out[start..]
-                        .trim_end_matches('0')
-                        .trim_end_matches('.')
-                        .len();
+                if let Some(rendered) = out.get(start..)
+                    && rendered.contains('.')
+                {
+                    let keep = rendered.trim_end_matches('0').trim_end_matches('.').len();
                     out.truncate(start + keep);
                 }
             },

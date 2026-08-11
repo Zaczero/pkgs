@@ -11,13 +11,13 @@
 //! live in [`crate::grid::cell_set`] via [`HierarchicalId`]; this module
 //! re-exports them for existing `crate::grid::s2::cell_set::` call sites.
 
-use super::cellid::CellId;
-use super::projection::MAX_LEVEL;
 pub(crate) use crate::grid::cell_set::{
     compact_with_floor, normalize, uncompact, uncompact_unlimited,
 };
 #[cfg(test)]
 use crate::grid::cell_set::{contains_any, difference, intersection, union};
+use crate::grid::s2::cellid::CellId;
+use crate::grid::s2::projection::MAX_LEVEL;
 
 enum CellIdChildren {
     Leaf,

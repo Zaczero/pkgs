@@ -518,7 +518,8 @@ def test_sample_points_is_deterministic_and_area_weighted() -> None:
     assert [(p.x, p.y) for p in gm.Point(7, 8).sample_points(3, seed=1)] == [
         (7.0, 8.0)
     ] * 3
-    sliver = gm.from_wkt('POLYGON ((0 0, 2 0, 0 0))')
+    # Degenerate area-zero triangle (closed, ≥4 verts) samples its boundary.
+    sliver = gm.from_wkt('POLYGON ((0 0, 2 0, 1 0, 0 0))')
     boundary_samples = sliver.sample_points(10, seed=6)
     assert all(0 <= p.x <= 2 and p.y == 0 for p in boundary_samples)
     titan = gm.box(0, 0, 1e155, 1e155)
@@ -560,9 +561,9 @@ def test_sample_points_error_gates() -> None:
     rows = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.from_wkt('POLYGON EMPTY')])
     with pytest.raises(gm.GeometryError, match='length-2'):
         rows.sample_points([1], seed=1)
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty') as info:
-        rows.sample_points(3, seed=1)
-    assert 'array element 1' in ''.join(info.value.__notes__)
+    # An empty ROW degrades to an empty group — one bad row never fails the
+    # batch. The scalar surface (asserted above) still raises.
+    assert [len(group) for group in rows.sample_points(3, seed=1)] == [3, 0]
 
 
 def test_vertex_inventing_ops_have_fixed_2d_results() -> None:

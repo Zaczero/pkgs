@@ -1,10 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use geographiclib_rs::Geodesic;
 
-use super::*;
+use crate::crs::geodesic::{
+    DirectGeodesic, InverseGeodesic, LowerBoundKernel, cached_lower_bound_kernel,
+    geodesic_foot_on_segment, geodesic_locate_on_segment, geodesic_point_to_segment,
+    geodesic_segments_cross, interpolate_optional_ordinate,
+};
 use crate::geometry::{
     GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate,
 };
@@ -122,8 +122,8 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
 
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point {
         let (length, azimuth, _) = geo_distance_azimuths(self.geodesic, a, b);
-        let (lat, lon, _): (f64, f64, f64) =
-            geo_direct(self.geodesic, a, azimuth, length * fraction);
+        // Lat/lon-only direct — final azimuth is unused.
+        let (lat, lon): (f64, f64) = geo_direct(self.geodesic, a, azimuth, length * fraction);
         Point::new_axes(
             lon,
             lat,

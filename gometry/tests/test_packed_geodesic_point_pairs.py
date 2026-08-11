@@ -49,20 +49,24 @@ def test_packed_geodesic_point_pair_out_of_domain_latitude_raises_same_error() -
     good = gm.points([0.0], [0.0], crs=WGS84)
     bad = gm.points([0.0], [95.0], crs=WGS84)
     with pytest.raises(
-        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as packed:
         gm.distance(good, bad)
     with pytest.raises(
-        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as scalar:
         gm.distance(next(iter(good)), next(iter(bad)))
     assert str(packed.value) == str(scalar.value)
     with pytest.raises(
-        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as packed_dw:
         gm.dwithin(good, bad, 1000.0)
     with pytest.raises(
-        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as scalar_dw:
         gm.dwithin(next(iter(good)), next(iter(bad)), 1000.0)
     assert str(packed_dw.value) == str(scalar_dw.value)

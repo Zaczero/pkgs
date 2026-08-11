@@ -1,5 +1,11 @@
-use super::*;
-use crate::geometry::*;
+use crate::geometry::arrangement::{
+    Arrangement, Columns, Face, FinishSpares, RegionSpares, TypedSpares, WindingWeight,
+    arrangement_spares_with, build_csr, dedup_vertices_and_edges, order_single_loop_rows,
+    positional_loop_cuts, positional_loop_pieces, region_spares_with, restore_typed_spares,
+    single_loop_cuts, single_loop_pieces, sort_rows_counterclockwise, split_ring_at_pinches,
+    take_typed_spares, walk_faces,
+};
+use crate::geometry::{HashMap, PointKey, Segment, XY, wrap_index};
 
 impl Arrangement<i32> {
     /// Build from noded directed segments with unit weights. Coincident

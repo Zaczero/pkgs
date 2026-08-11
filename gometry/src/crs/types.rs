@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Public CRS data-transfer objects: `CrsInfo` and the metadata/options/
 //! catalog structs returned across the CRS API. Pure data — no logic, FFI, or
 //! caches; the engine in the sibling modules produces and consumes them.
@@ -17,7 +13,7 @@ use pyo3::IntoPyObject;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use super::Confidence;
+use crate::crs::Confidence;
 
 crate::tokens::token_enum! {
     /// How `CRS.same_as` compares two CRS — one mutually-exclusive choice
@@ -485,6 +481,8 @@ pub(crate) struct GridDatabaseInfo {
     pub name: String,
     pub full_name: Option<String>,
     pub package_name: Option<String>,
+    pub url: Option<String>,
+    pub direct_download: bool,
     pub available: bool,
 }
 
@@ -662,6 +660,10 @@ pub(crate) struct CacheInfo {
     pub total_entries: usize,
     pub total_capacity: usize,
     pub buckets: Vec<CacheBucketInfo>,
+    /// Engine selected by the most recent transform on this thread.
+    pub last_transform_engine: Option<&'static str>,
+    /// Actual in-core batches and PROJ calls since the current cache generation.
+    pub transform_invocations: usize,
 }
 
 #[derive(Debug, Clone, Default, IntoPyObject)]

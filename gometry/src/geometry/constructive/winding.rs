@@ -2,117 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
-
-fn charge_scaled(
-    budget: &mut ExpansionBudget,
-    count: usize,
-    factor: usize,
-    constant: usize,
-) -> Result<()> {
-    let scaled = ExpansionBudget::product(budget.operation(), "quadrant_segments", count, factor)?;
-    budget.add(scaled)?;
-    budget.add(constant)?;
-    Ok(())
-}
-
-fn charge_buffer_shape(
-    shape: &Shape,
-    quadrant_segments: usize,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    let circle = quadrant_segments
-        .checked_mul(4)
-        .and_then(|value| value.checked_add(1))
-        .unwrap_or(usize::MAX);
-    let stroke_overhead = quadrant_segments
-        .checked_mul(8)
-        .and_then(|value| value.checked_add(8))
-        .unwrap_or(usize::MAX);
-    match shape {
-        Shape::Point(_) => {
-            budget.add(circle)?;
-        },
-        Shape::MultiPoint(points) => {
-            let total =
-                ExpansionBudget::product("buffer", "quadrant_segments", points.len(), circle)?;
-            budget.add(total)?;
-        },
-        Shape::LineString(line) => charge_scaled(budget, line.len(), 4, stroke_overhead)?,
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                charge_scaled(budget, line.len(), 4, stroke_overhead)?;
-            }
-        },
-        Shape::Polygon(polygon) => {
-            for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                // Degenerate polygon rings fall back to stroked linework, so
-                // charge the larger stroke bound rather than only raw offset.
-                charge_scaled(budget, ring.len(), 4, stroke_overhead)?;
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                    charge_scaled(budget, ring.len(), 4, stroke_overhead)?;
-                }
-            }
-        },
-        Shape::GeometryCollection(parts) => {
-            for part in parts {
-                charge_buffer_shape(part, quadrant_segments, budget)?;
-            }
-        },
-        Shape::Empty(..) => {},
-    }
-    Ok(())
-}
-
-/// Conservative exact-shape bound for arc-amplified buffer construction.
-/// The coefficients mirror the winding emitters' documented capacities.
-pub(crate) fn validate_buffer_expansion(
-    shape: &Shape,
-    quadrant_segments: std::num::NonZeroU32,
-) -> Result<()> {
-    let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-    charge_buffer_shape(shape, quadrant_segments.get() as usize, &mut budget)
-}
-
-fn charge_offset_shape(shape: &Shape, overhead: usize, budget: &mut ExpansionBudget) -> Result<()> {
-    match shape {
-        Shape::LineString(line) => charge_scaled(budget, line.len(), 3, overhead),
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                charge_scaled(budget, line.len(), 3, overhead)?;
-            }
-            Ok(())
-        },
-        Shape::GeometryCollection(parts) => {
-            for part in parts {
-                charge_offset_shape(part, overhead, budget)?;
-            }
-            Ok(())
-        },
-        _ => Ok(()),
-    }
-}
-
-pub(crate) fn validate_offset_expansion(
-    shape: &Shape,
-    quadrant_segments: std::num::NonZeroU32,
-) -> Result<()> {
-    let q = quadrant_segments.get() as usize;
-    let overhead = q
-        .checked_mul(4)
-        .and_then(|value| value.checked_add(2))
-        .unwrap_or(usize::MAX);
-    let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
-    charge_offset_shape(shape, overhead, &mut budget)
-}
+use crate::geometry::constructive::{
+    Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
+    emit_cap, extend_cleaned, raw_offset_loop, strict_cycle, winding_region,
+};
+use crate::geometry::{
+    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, LineSeq, Orientation, Point,
+    Polygon, Ring, Shape, column_all_finite, dedup_consecutive_points, line_is_simple, orientation,
+    polygon_parts_to_shape, ring_winding, shell_is_convex,
+};
 
 /// A polygon encloses no interior when every ring has zero signed area — it
 /// is collinear, coincident, or otherwise degenerate, and is geometrically
@@ -176,32 +74,117 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
     }
 }
 
-/// Expansion of a convex hole-free polygon: each edge offsets outward and
-/// consecutive offset edges join per the style rule (arc, miter, or bevel
-/// chord) — the offset of a convex ring never self-intersects, so no
-/// boolean resolution runs at all (the general engine pays its full
-/// noding/graph machinery even for a box). `None` routes everything else
-/// — concave shells, holes, erosion, degenerate rings, coordinate
-/// overflow — onward. XY output, like every buffer (a 2-D operation).
-pub(crate) fn convex_buffer(
+/// Convex hole-free polygonal buffer — constructive fast path for both
+/// expansion and certified erosion.
+///
+/// **Expansion** (`distance > 0`): each edge offsets outward and consecutive
+/// offset edges join per the style rule (arc, miter, or bevel chord). A
+/// convex ring's outward offset never self-intersects, so no boolean
+/// resolution runs (the general engine pays its full noding/graph machinery
+/// even for a box).
+///
+/// **Erosion** (`distance < 0`): build the raw inward-offset loop (CW shell
+/// walk, same machinery as [`erosion_loops`]) and **accept only when the
+/// result is simple and correctly oriented** (Clockwise — the monotone
+/// eroded shell). Self-intersection or inversion rejects (`None`) and the
+/// caller falls through to [`winding_erosion_budgeted`] unchanged. That certificate
+/// is the only gate: it never rewrites concave/styled-erosion semantics
+/// (bevel corner allowances, deep notches, …). Distance zero stays on the
+/// winding valid-region path. XY output, like every buffer.
+pub(crate) fn convex_buffer_budgeted(
     polygon: &Polygon,
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
-    if distance <= 0.0 || !polygon.holes.is_empty() {
-        return None;
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
+    if distance == 0.0 || !polygon.holes.is_empty() {
+        return Ok(None);
     }
     if !shell_is_convex(polygon.shell.coords()) {
-        return None;
+        return Ok(None);
     }
-    let strict = strict_cycle(polygon.shell.coords(), false)?;
-    let (mut xs, mut ys) = raw_offset_loop(&strict, distance, rule, quadrant_segments)?;
-    xs.push(xs[0]);
-    ys.push(ys[0]);
-    let seq = CoordSeq::from_owned_columns(xs, ys, None, None).ok()?;
-    Some(Shape::Polygon(Polygon::new(
-        Ring::from_trusted_closed(seq),
+    if distance > 0.0 {
+        let Some(strict) = strict_cycle(polygon.shell.coords(), false) else {
+            return Ok(None);
+        };
+        let Some((mut xs, mut ys)) =
+            raw_offset_loop(&strict, distance, rule, quadrant_segments, budget)?
+        else {
+            return Ok(None);
+        };
+        close_xy_loop(&mut xs, &mut ys, budget)?;
+        let Ok(seq) = CoordSeq::from_owned_columns(xs, ys, None, None) else {
+            return Ok(None);
+        };
+        return Ok(Some(Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(seq),
+            Vec::new(),
+        ))));
+    }
+    // Negative distance: inward offset + validity certificate.
+    convex_erosion_certified(polygon, -distance, rule, quadrant_segments, budget)
+}
+
+/// Inward raw offset of a convex hole-free shell, accepted only when simple
+/// and CW (the exact monotone eroded result). `None` → winding erosion.
+fn convex_erosion_certified(
+    polygon: &Polygon,
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
+    // CW shell walk so the right-side offset goes inward (mirrors erosion_loops).
+    let Some(strict) = strict_cycle(polygon.shell.coords(), true) else {
+        return Ok(None);
+    };
+    let Some((xs, ys)) = raw_offset_loop(&strict, distance, rule, quadrant_segments, budget)?
+    else {
+        return Ok(None);
+    };
+    Ok(simple_erosion_polygon(&xs, &ys, budget)?.map(Shape::Polygon))
+}
+
+/// One eroded offset loop as a directly valid polygon.
+///
+/// The raw offset is a CW open walk. Reverse into a closed CCW ring in one
+/// allocation (arrangement shell convention), then accept only when the
+/// result is CCW and simple — inversion (was CCW open → CW after reverse)
+/// and self-intersection reject to [`winding_erosion_budgeted`].
+fn simple_erosion_polygon(
+    xs: &[f64],
+    ys: &[f64],
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Polygon>> {
+    if xs.len() < 3 {
+        return Ok(None);
+    }
+    // This is the direct output owner: the raw walk remains open for the
+    // winding engine, while the certified erosion result appends its closure.
+    budget.add(1)?;
+    let mut ring_xs = Vec::with_capacity(xs.len() + 1);
+    let mut ring_ys = Vec::with_capacity(ys.len() + 1);
+    // Reverse the CW offset into CCW presentation while closing.
+    for i in (0..xs.len()).rev() {
+        ring_xs.push(xs[i]);
+        ring_ys.push(ys[i]);
+    }
+    ring_xs.push(ring_xs[0]);
+    ring_ys.push(ring_ys[0]);
+    let Ok(ring) = CoordSeq::from_owned_columns(ring_xs, ring_ys, None, None) else {
+        return Ok(None);
+    };
+    // Original CW offset → CCW here. Inversion/degenerate was non-CW open
+    // and becomes non-CCW after reverse.
+    if !ring_winding(&ring).is_ccw() {
+        return Ok(None);
+    }
+    if !line_is_simple(&ring) {
+        return Ok(None);
+    }
+    Ok(Some(Polygon::new(
+        Ring::from_trusted_closed(ring),
         Vec::new(),
     )))
 }
@@ -219,21 +202,33 @@ pub(crate) fn convex_buffer(
 ///    algebra.
 ///
 /// `None` falls back to the geo engine (degenerate shells, overflow).
-pub(in crate::geometry) fn winding_buffer(
+pub(in crate::geometry) fn winding_buffer_budgeted(
     polygons: &[Polygon],
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
     let mut loops: Vec<LoopColumns> = Vec::new();
     for polygon in polygons {
-        expansion_loops(&mut loops, polygon, distance, rule, quadrant_segments)?;
+        if expansion_loops(
+            &mut loops,
+            polygon,
+            distance,
+            rule,
+            quadrant_segments,
+            budget,
+        )?
+        .is_none()
+        {
+            return Ok(None);
+        }
     }
     let parts = winding_region(&loops, |winding| winding >= 1);
     if parts.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(polygon_parts_to_shape(parts))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// Erosion (negative buffer) of polygonal input — the mirrored
@@ -243,18 +238,30 @@ pub(in crate::geometry) fn winding_buffer(
 /// is the SHELL (over-erosion pinches and vanishes), so shells take the
 /// per-loop cleaning that holes take under expansion. Fully eroded input
 /// legitimately yields the empty polygon.
-pub(in crate::geometry) fn winding_erosion(
+pub(in crate::geometry) fn winding_erosion_budgeted(
     polygons: &[Polygon],
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
     let mut loops: Vec<LoopColumns> = Vec::new();
     for polygon in polygons {
-        erosion_loops(&mut loops, polygon, distance, rule, quadrant_segments)?;
+        if erosion_loops(
+            &mut loops,
+            polygon,
+            distance,
+            rule,
+            quadrant_segments,
+            budget,
+        )?
+        .is_none()
+        {
+            return Ok(None);
+        }
     }
     let parts = winding_region(&loops, |winding| winding <= -1);
-    Some(polygon_parts_to_shape(parts))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// Stroke buffer of lineal input through the winding engine: every chain
@@ -265,28 +272,34 @@ pub(in crate::geometry) fn winding_erosion(
 /// flat (the direct chord), square (extended by the distance); outside
 /// joins follow `rule`; zero-length chains are disks (GEOS semantics).
 /// `None` falls back to the geo engine (overflow).
-pub(in crate::geometry) fn winding_stroke(
+pub(in crate::geometry) fn winding_stroke_budgeted(
     chains: &[&CoordSeq],
     distance: f64,
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
     let mut loops: Vec<LoopColumns> = Vec::new();
     let mut clean = true;
     for chain in chains {
-        clean &= stroke_loops(
+        let Some(stroke_clean) = stroke_loops(
             &mut loops,
             chain,
             distance,
             cap_style,
             rule,
             quadrant_segments,
-        )?;
+            budget,
+        )?
+        else {
+            return Ok(None);
+        };
+        clean &= stroke_clean;
     }
     if loops.is_empty() {
         // Every chain was empty: the buffer is legitimately empty.
-        return Some(Shape::empty_polygon());
+        return Ok(Some(Shape::empty_polygon()));
     }
     // Direct-stroke fast path: a SINGLE emitted loop with only OUTSIDE
     // joins that closes into a simple, positive-area ring IS the buffer
@@ -297,24 +310,32 @@ pub(in crate::geometry) fn winding_stroke(
     // and take the winding engine unchanged.
     if clean
         && let [(xs, ys)] = loops.as_slice()
-        && let Some(polygon) = simple_stroke_polygon(xs, ys)
+        && let Some(polygon) = simple_stroke_polygon(xs, ys, budget)?
     {
-        return Some(Shape::Polygon(polygon));
+        return Ok(Some(Shape::Polygon(polygon)));
     }
     let parts = winding_region(&loops, |winding| winding >= 1);
     if parts.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(polygon_parts_to_shape(parts))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// One stroke loop as a directly valid polygon: close the columns into a
 /// ring and accept only a simple, positive-area result (the complete gate
 /// for the single-loop fast path; anything else falls back to winding).
-fn simple_stroke_polygon(xs: &[f64], ys: &[f64]) -> Option<Polygon> {
+fn simple_stroke_polygon(
+    xs: &[f64],
+    ys: &[f64],
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Polygon>> {
     if xs.len() < 3 {
-        return None;
+        return Ok(None);
     }
+    // The direct-stroke result owns this final closure; charge it before the
+    // exact final columns are allocated so raw-walk accounting cannot stop one
+    // coordinate short of the public ring.
+    budget.add(1)?;
     let mut ring_xs = Vec::with_capacity(xs.len() + 1);
     let mut ring_ys = Vec::with_capacity(ys.len() + 1);
     ring_xs.extend_from_slice(xs);
@@ -322,12 +343,12 @@ fn simple_stroke_polygon(xs: &[f64], ys: &[f64]) -> Option<Polygon> {
     ring_xs.push(xs[0]);
     ring_ys.push(ys[0]);
     let ring = CoordSeq::from_columns(ring_xs.into(), ring_ys.into(), None, None);
-    (ring_winding(&ring).is_ccw()
+    Ok((ring_winding(&ring).is_ccw()
         && Shape::LineString(LineSeq::from_trusted(ring.clone())).is_simple())
     .then(|| Polygon {
         shell: Ring::from_trusted_closed(ring),
         holes: Vec::new().into(),
-    })
+    }))
 }
 
 /// Buffer of a whole `GeometryCollection` in ONE winding pass: every part
@@ -337,37 +358,114 @@ fn simple_stroke_polygon(xs: &[f64], ys: &[f64]) -> Option<Polygon> {
 /// buffers each part and runs a boolean union cascade). Negative
 /// distances erode the polygonal parts (their union of erosions is the
 /// `winding <= -1` region) and annihilate puntal/lineal parts exactly.
-pub(in crate::geometry) fn winding_collection(
+pub(in crate::geometry) fn winding_collection_budgeted(
     parts: &[Shape],
     distance: f64,
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
     let mut loops: Vec<LoopColumns> = Vec::new();
     if distance <= 0.0 {
         // Distance 0 included: the unmoved flipped rings select the
         // valid region of the polygonal parts (see `winding_route`).
-        collection_erosion_loops(&mut loops, parts, -distance, rule, quadrant_segments)?;
+        if collection_erosion_loops(
+            &mut loops,
+            parts,
+            -distance,
+            rule,
+            quadrant_segments,
+            budget,
+        )?
+        .is_none()
+        {
+            return Ok(None);
+        }
         let pieces = winding_region(&loops, |winding| winding <= -1);
-        return Some(polygon_parts_to_shape(pieces));
+        return Ok(Some(polygon_parts_to_shape(pieces)));
     }
-    collection_loops(
+    if collection_loops(
         &mut loops,
         parts,
         distance,
         cap_style,
         rule,
         quadrant_segments,
-    )?;
+        budget,
+    )?
+    .is_none()
+    {
+        return Ok(None);
+    }
     if loops.is_empty() {
-        return Some(Shape::empty_polygon());
+        return Ok(Some(Shape::empty_polygon()));
     }
     let pieces = winding_region(&loops, |winding| winding >= 1);
     if pieces.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(polygon_parts_to_shape(pieces))
+    Ok(Some(polygon_parts_to_shape(pieces)))
+}
+
+// Direct constructive tests characterize these algorithms without an FFI
+// operation boundary. Keep that focused surface test-only: production always
+// threads the caller's shared budget, while these bounded fixtures retain the
+// concise historical helpers.
+#[cfg(test)]
+pub(crate) fn convex_buffer(
+    polygon: &Polygon,
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+) -> Option<Shape> {
+    let mut budget = ExpansionBudget::new("constructive test", "quadrant_segments");
+    convex_buffer_budgeted(polygon, distance, rule, quadrant_segments, &mut budget)
+        .expect("bounded constructive test must not exhaust generated-work budget")
+}
+
+#[cfg(test)]
+pub(crate) fn winding_buffer(
+    polygons: &[Polygon],
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+) -> Option<Shape> {
+    let mut budget = ExpansionBudget::new("constructive test", "quadrant_segments");
+    winding_buffer_budgeted(polygons, distance, rule, quadrant_segments, &mut budget)
+        .expect("bounded constructive test must not exhaust generated-work budget")
+}
+
+#[cfg(test)]
+pub(crate) fn winding_erosion(
+    polygons: &[Polygon],
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+) -> Option<Shape> {
+    let mut budget = ExpansionBudget::new("constructive test", "quadrant_segments");
+    winding_erosion_budgeted(polygons, distance, rule, quadrant_segments, &mut budget)
+        .expect("bounded constructive test must not exhaust generated-work budget")
+}
+
+#[cfg(test)]
+pub(crate) fn winding_stroke(
+    chains: &[&CoordSeq],
+    distance: f64,
+    cap_style: BufferCapStyle,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+) -> Option<Shape> {
+    let mut budget = ExpansionBudget::new("constructive test", "quadrant_segments");
+    winding_stroke_budgeted(
+        chains,
+        distance,
+        cap_style,
+        rule,
+        quadrant_segments,
+        &mut budget,
+    )
+    .expect("bounded constructive test must not exhaust generated-work budget")
 }
 
 /// One ordinate-column loop of the raw offset linework.
@@ -383,21 +481,29 @@ pub(crate) fn expansion_loops(
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<()> {
-    let shell = strict_cycle(polygon.shell.coords(), false)?;
-    loops.push(raw_offset_loop(&shell, distance, rule, quadrant_segments)?);
+    budget: &mut ExpansionBudget,
+) -> Result<Option<()>> {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), false) else {
+        return Ok(None);
+    };
+    let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
+        return Ok(None);
+    };
+    loops.push(raw);
     for hole in polygon.holes.iter() {
         // Degenerate (zero-area) holes do not affect the buffer.
         let Some(ring) = strict_cycle(hole.coords(), true) else {
             continue;
         };
-        let raw = raw_offset_loop(&ring, distance, rule, quadrant_segments)?;
+        let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
+            return Ok(None);
+        };
         extend_cleaned(loops, &raw);
     }
-    Some(())
+    Ok(Some(()))
 }
 
-/// Append one polygon's erosion loops (see [`winding_erosion`]): the
+/// Append one polygon's erosion loops (see [`winding_erosion_budgeted`]): the
 /// flipped-orientation walks, with the SHELL taking the per-loop
 /// inversion cleaning.
 pub(crate) fn erosion_loops(
@@ -406,9 +512,14 @@ pub(crate) fn erosion_loops(
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<()> {
-    let shell = strict_cycle(polygon.shell.coords(), true)?;
-    let raw = raw_offset_loop(&shell, distance, rule, quadrant_segments)?;
+    budget: &mut ExpansionBudget,
+) -> Result<Option<()>> {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), true) else {
+        return Ok(None);
+    };
+    let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
+        return Ok(None);
+    };
     // Surviving eroded lobes are CW pieces; keep them CW (they ARE the
     // negative-winding region's boundary in the final pass).
     extend_cleaned(loops, &raw);
@@ -418,9 +529,12 @@ pub(crate) fn erosion_loops(
         };
         // Grown holes never invert; their self-crossings (reflex
         // corners) resolve in the global winding.
-        loops.push(raw_offset_loop(&ring, distance, rule, quadrant_segments)?);
+        let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
+            return Ok(None);
+        };
+        loops.push(raw);
     }
-    Some(())
+    Ok(Some(()))
 }
 
 /// Append one chain's stroke loop. Chains that dedup to a single point
@@ -435,7 +549,8 @@ pub(crate) fn stroke_loops(
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<bool> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<bool>> {
     // Reused per-thread gather: the second of the two per-row emitter
     // allocations (the reversed-side scratch is the other).
     thread_local! {
@@ -449,11 +564,14 @@ pub(crate) fn stroke_loops(
     });
     dedup_consecutive_points(&mut points);
     let result = match points.as_slice() {
-        [] => Some(true),
+        [] => Ok(Some(true)),
         [point] => {
-            loops.push(circle_loop(*point, distance, quadrant_segments)?);
+            let Some(circle) = circle_loop(*point, distance, quadrant_segments, budget)? else {
+                return Ok(None);
+            };
+            loops.push(circle);
             // A lone circle is simple by construction.
-            Some(true)
+            Ok(Some(true))
         },
         chain => {
             // A collinear polyline (including one that folds back, like a
@@ -470,12 +588,13 @@ pub(crate) fn stroke_loops(
             } else {
                 chain
             };
-            raw_stroke_loop(chain, distance, cap_style, rule, quadrant_segments).map(
-                |(columns, clean)| {
-                    loops.push(columns);
-                    clean
-                },
-            )
+            let Some((columns, clean)) =
+                raw_stroke_loop(chain, distance, cap_style, rule, quadrant_segments, budget)?
+            else {
+                return Ok(None);
+            };
+            loops.push(columns);
+            Ok(Some(clean))
         },
     };
     GATHER.with(|cell| cell.replace(points));
@@ -489,8 +608,12 @@ pub(crate) fn circle_loop(
     center: Point,
     distance: f64,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<LoopColumns> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<LoopColumns>> {
     let steps = 4 * quadrant_segments.get() as usize;
+    // Circle size is exact without walking it, so admit the exact realized
+    // count before the allocation rather than applying an input estimate.
+    budget.add(steps)?;
     let mut xs = Vec::with_capacity(steps);
     let mut ys = Vec::with_capacity(steps);
     // Rotation recurrence — one `sin_cos` per circle (see `emit_arc`).
@@ -507,9 +630,9 @@ pub(crate) fn circle_loop(
         ys.push(center.y + distance * sin_theta);
     }
     if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return None;
+        return Ok(None);
     }
-    Some((xs, ys))
+    Ok(Some((xs, ys)))
 }
 
 /// The buffer of a single point: the inscribed-circle polygon directly —
@@ -518,15 +641,28 @@ pub(crate) fn point_buffer(
     center: Point,
     distance: f64,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<Shape> {
-    let (mut xs, mut ys) = circle_loop(center, distance, quadrant_segments)?;
-    xs.push(xs[0]);
-    ys.push(ys[0]);
-    let seq = CoordSeq::from_owned_columns(xs, ys, None, None).ok()?;
-    Some(Shape::Polygon(Polygon::new(
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
+    let steps = 4 * quadrant_segments.get() as usize;
+    // `circle_loop` emits the open circle and `close_xy_loop` appends the
+    // statically known final coordinate. Reserve the whole realized polygon
+    // before the 16M open-circle allocation, not one coordinate too late.
+    budget.check_additional(
+        steps
+            .checked_add(1)
+            .expect("u32 quadrant-segment circle count fits usize"),
+    )?;
+    let Some((mut xs, mut ys)) = circle_loop(center, distance, quadrant_segments, budget)? else {
+        return Ok(None);
+    };
+    close_xy_loop(&mut xs, &mut ys, budget)?;
+    let Ok(seq) = CoordSeq::from_owned_columns(xs, ys, None, None) else {
+        return Ok(None);
+    };
+    Ok(Some(Shape::Polygon(Polygon::new(
         Ring::from_trusted_closed(seq),
         Vec::new(),
-    )))
+    ))))
 }
 
 /// Collect expansion loops across a collection's parts, recursively.
@@ -537,38 +673,92 @@ pub(crate) fn collection_loops(
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<()> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<()>> {
     for part in parts {
         match part {
-            Shape::Point(point) => loops.push(circle_loop(*point, distance, quadrant_segments)?),
+            Shape::Point(point) => {
+                let Some(circle) = circle_loop(*point, distance, quadrant_segments, budget)? else {
+                    return Ok(None);
+                };
+                loops.push(circle);
+            },
             Shape::MultiPoint(points) => {
                 for point in points.iter_coords() {
-                    loops.push(circle_loop(point, distance, quadrant_segments)?);
+                    let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)?
+                    else {
+                        return Ok(None);
+                    };
+                    loops.push(circle);
                 }
             },
             Shape::LineString(chain) => {
-                stroke_loops(loops, chain, distance, cap_style, rule, quadrant_segments)?;
+                if stroke_loops(
+                    loops,
+                    chain,
+                    distance,
+                    cap_style,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                )?
+                .is_none()
+                {
+                    return Ok(None);
+                }
             },
             Shape::MultiLineString(lines) => {
                 for chain in lines {
-                    stroke_loops(loops, chain, distance, cap_style, rule, quadrant_segments)?;
+                    if stroke_loops(
+                        loops,
+                        chain,
+                        distance,
+                        cap_style,
+                        rule,
+                        quadrant_segments,
+                        budget,
+                    )?
+                    .is_none()
+                    {
+                        return Ok(None);
+                    }
                 }
             },
             Shape::Polygon(polygon) => {
-                expansion_loops(loops, polygon, distance, rule, quadrant_segments)?;
+                if expansion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
             },
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    expansion_loops(loops, polygon, distance, rule, quadrant_segments)?;
+                    if expansion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
+                        .is_none()
+                    {
+                        return Ok(None);
+                    }
                 }
             },
             Shape::GeometryCollection(inner) => {
-                collection_loops(loops, inner, distance, cap_style, rule, quadrant_segments)?;
+                if collection_loops(
+                    loops,
+                    inner,
+                    distance,
+                    cap_style,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                )?
+                .is_none()
+                {
+                    return Ok(None);
+                }
             },
             Shape::Empty(..) => {},
         }
     }
-    Some(())
+    Ok(Some(()))
 }
 
 /// Collect erosion loops across a collection's polygonal parts,
@@ -579,24 +769,43 @@ pub(crate) fn collection_erosion_loops(
     distance: f64,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<()> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<()>> {
     for part in parts {
         match part {
             Shape::Polygon(polygon) => {
-                erosion_loops(loops, polygon, distance, rule, quadrant_segments)?;
+                if erosion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
             },
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    erosion_loops(loops, polygon, distance, rule, quadrant_segments)?;
+                    if erosion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
+                        .is_none()
+                    {
+                        return Ok(None);
+                    }
                 }
             },
-            Shape::GeometryCollection(inner) => {
-                collection_erosion_loops(loops, inner, distance, rule, quadrant_segments)?;
+            Shape::GeometryCollection(inner)
+                if collection_erosion_loops(
+                    loops,
+                    inner,
+                    distance,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                )?
+                .is_none() =>
+            {
+                return Ok(None);
             },
             _ => {},
         }
     }
-    Some(())
+    Ok(Some(()))
 }
 
 /// The extent segment `[lo, hi]` of a collinear chain (≥ 3 distinct-adjacent
@@ -637,7 +846,7 @@ pub(crate) fn collinear_extent(chain: &[Point]) -> Option<[Point; 2]> {
 }
 
 /// One closed raw stroke loop around an open chain (see
-/// [`winding_stroke`]). Interior joins follow the polygon rules: the
+/// [`winding_stroke_budgeted`]). Interior joins follow the polygon rules: the
 /// styled join on the outside of a turn, crossings (or through-vertex
 /// excursions for deep folds) on the inside.
 pub(crate) fn raw_stroke_loop(
@@ -646,60 +855,120 @@ pub(crate) fn raw_stroke_loop(
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
     quadrant_segments: std::num::NonZeroU32,
-) -> Option<(LoopColumns, bool)> {
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(LoopColumns, bool)>> {
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
+    let (clean, count_len) = {
+        let mut count_only = WalkCount::budgeted(budget);
+        let Some(clean) = emit_stroke_loop(
+            chain,
+            distance,
+            cap_style,
+            rule,
+            step_angle,
+            &mut count_only,
+        )?
+        else {
+            return Ok(None);
+        };
+        if !count_only.all_finite() {
+            return Ok(None);
+        }
+        (clean, count_only.len())
+    };
+    budget.add(count_len)?;
+    let mut columns = WalkColumns::new(count_len, false);
+    let Some(real_clean) =
+        emit_stroke_loop(chain, distance, cap_style, rule, step_angle, &mut columns)?
+    else {
+        return Ok(None);
+    };
+    debug_assert_eq!(columns.len(), count_len);
+    let (xs, ys, _) = columns.into_columns();
+    Ok(Some(((xs, ys), clean && real_clean)))
+}
+
+fn emit_stroke_loop<S: WalkSink>(
+    chain: &[Point],
+    distance: f64,
+    cap_style: BufferCapStyle,
+    rule: WalkJoinRule,
+    step_angle: f64,
+    sink: &mut S,
+) -> Result<Option<bool>> {
     let count = chain.len();
-    let mut xs = Vec::with_capacity(4 * count + 8 * quadrant_segments as usize + 8);
-    let mut ys = Vec::with_capacity(xs.capacity());
     // Forward (right) side, end cap, backward (left) side, start cap.
-    let right_clean = stroke_side(chain, false, distance, rule, step_angle, &mut xs, &mut ys)?;
+    let Some(right_clean) = stroke_side(chain, false, distance, rule, step_angle, sink)? else {
+        return Ok(None);
+    };
     let (end_prev, end) = (chain[count - 2], chain[count - 1]);
-    let (enx, eny) = unit_right_normal(end_prev, end)?;
+    let Some((enx, eny)) = unit_right_normal(end_prev, end) else {
+        return Ok(None);
+    };
     emit_cap(
-        end, enx, eny, distance, cap_style, step_angle, &mut xs, &mut ys,
-    );
-    let left_clean = stroke_side(chain, true, distance, rule, step_angle, &mut xs, &mut ys)?;
+        end,
+        enx,
+        eny,
+        distance,
+        cap_style,
+        step_angle,
+        (count - 1) as u32,
+        sink,
+    )?;
+    let Some(left_clean) = stroke_side(chain, true, distance, rule, step_angle, sink)? else {
+        return Ok(None);
+    };
     let (start_next, start) = (chain[1], chain[0]);
-    let (snx, sny) = unit_right_normal(start_next, start)?;
-    emit_cap(
-        start, snx, sny, distance, cap_style, step_angle, &mut xs, &mut ys,
-    );
-    if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return None;
-    }
-    Some(((xs, ys), right_clean && left_clean))
+    let Some((snx, sny)) = unit_right_normal(start_next, start) else {
+        return Ok(None);
+    };
+    emit_cap(start, snx, sny, distance, cap_style, step_angle, 0, sink)?;
+    Ok(Some(right_clean && left_clean))
 }
 
 /// Unit right-side normal of the edge `from -> to` (`None` for degenerate
 /// or overflowing edges).
 pub(crate) fn unit_right_normal(from: Point, to: Point) -> Option<(f64, f64)> {
     let (dx, dy) = (to.x - from.x, to.y - from.y);
-    let length = (dx * dx + dy * dy).sqrt();
+    let squared = dx * dx + dy * dy;
+    // Ordinary finite normal: fast squared-length path (bit-stable).
+    if squared.is_normal() {
+        let length = squared.sqrt();
+        return Some((dy / length, -dx / length));
+    }
+    // Zero / subnormal / overflow: max-abs normalize so stadium buffers of
+    // length 1e-200 and 1e155 stay representable.
+    let scale = dx.abs().max(dy.abs());
+    if scale == 0.0 || !scale.is_finite() {
+        return None;
+    }
+    let (nx, ny) = (dx / scale, dy / scale);
+    let length = (nx * nx + ny * ny).sqrt();
     if length == 0.0 || !length.is_finite() {
         return None;
     }
-    Some((dy / length, -dx / length))
+    Some((ny / length, -nx / length))
 }
 
 /// Emit the inscribed arc points of a join/cap around `center` from
 /// `from_angle` sweeping counter-clockwise by `sweep` (normalized into
 /// `[0, tau)`), stepping at most `step_angle`.
-pub(crate) fn emit_arc(
+pub(crate) fn emit_arc<S: WalkSink>(
     center: Point,
     from_angle: f64,
     mut sweep: f64,
     distance: f64,
     step_angle: f64,
-    xs: &mut Vec<f64>,
-    ys: &mut Vec<f64>,
-) {
+    source: u32,
+    sink: &mut S,
+) -> Result<()> {
     if sweep < 0.0 {
         sweep += std::f64::consts::TAU;
     }
     let steps = (sweep / step_angle).ceil() as usize;
     if steps <= 1 {
-        return;
+        return Ok(());
     }
     // Rotation recurrence: two `sin_cos` calls per ARC instead of two
     // libm calls per vertex; drift over <= a full circle of steps is
@@ -711,9 +980,13 @@ pub(crate) fn emit_arc(
             cos_theta * cos_step - sin_theta * sin_step,
             sin_theta * cos_step + cos_theta * sin_step,
         );
-        xs.push(center.x + distance * cos_theta);
-        ys.push(center.y + distance * sin_theta);
+        sink.push(
+            center.x + distance * cos_theta,
+            center.y + distance * sin_theta,
+            source,
+        )?;
     }
+    Ok(())
 }
 
 /// One directed side of a stroke: right-offset edges with the polygon
@@ -723,15 +996,14 @@ pub(crate) fn emit_arc(
 /// `Excursion` — a consuming inside `Cross` trims its overlap away, but
 /// an excursion lobe cancels ONLY in the winding selection, so its raw
 /// loop can never be a directly valid ring.
-pub(crate) fn stroke_side(
+pub(crate) fn stroke_side<S: WalkSink>(
     chain: &[Point],
     reversed: bool,
     distance: f64,
     rule: WalkJoinRule,
     step_angle: f64,
-    xs: &mut Vec<f64>,
-    ys: &mut Vec<f64>,
-) -> Option<bool> {
+    sink: &mut S,
+) -> Result<Option<bool>> {
     // Reused per-thread scratch: bulk buffers stroke thousands of rows,
     // and the reversed-side gather was one of two allocations per row.
     thread_local! {
@@ -746,14 +1018,16 @@ pub(crate) fn stroke_side(
         })
     });
     let walk: &[Point] = backward.as_deref().unwrap_or(chain);
-    let plan = WalkPlan::new(walk, false, distance, rule, step_angle)?;
+    let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle) else {
+        return Ok(None);
+    };
     let excursion_free = plan
         .joins
         .iter()
         .all(|join| !matches!(join, WalkJoin::Excursion));
-    plan.emit(step_angle, xs, ys);
+    plan.emit_into(step_angle, sink)?;
     if let Some(scratch) = backward {
         BACKWARD.with(|cell| cell.replace(scratch));
     }
-    Some(excursion_free)
+    Ok(Some(excursion_free))
 }

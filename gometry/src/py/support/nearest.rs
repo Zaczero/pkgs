@@ -4,8 +4,12 @@
 )]
 use std::sync::Arc;
 
-use super::*;
 use crate::array::MissingMask;
+use crate::py::support::{
+    CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
+    PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
+    line_locate_shape, metric_nearest_points, resolve_line_metric, resolve_metric, rows_err,
+};
 
 pub(crate) fn py_geometry_array(shapes: Vec<Shape>, frame: &Frame) -> PyGeometryArray {
     PyGeometryArray::from_shapes(shapes, frame.clone())
@@ -128,7 +132,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         "nearest_points",
     )?;
     let model = resolve_metric(fixed.crs_str(), unit, "nearest_points")?;
-    let fixed_shape = fixed.shape.clone();
+    let fixed_shape = Arc::clone(&fixed.shape);
     let fixed_cache = Arc::clone(&fixed.frame_cache);
     let storage = Arc::clone(array.storage_arc());
     let array_owned = array.clone();

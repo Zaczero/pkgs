@@ -2,7 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
+use crate::py::methods::unary_constructive_methods::{
+    Bound, DefaultedF64Input, DistanceUnit, F64Param, Py, PyAny, PyErr, PyGeometry,
+    PyGeometryArray, PyResult, Python, pymethods,
+};
 
 unary_shape_method!(
     centroid,

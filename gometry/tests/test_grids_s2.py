@@ -2,11 +2,65 @@
 exact membership predicates, compaction, and antimeridian-aware bounds.
 """
 
+import math
 import operator
 
 import gometry as gm
 import numpy as np
 import pytest
+
+
+def _assert_seam_within_matches_linear_source(source: gm.Geometry) -> None:
+    """``within`` is the exact raw lon/lat source relation, not S2's loop API.
+
+    This is the independently enumerated finite L8 universe of true S2 cells
+    wholly inside the stored 179°→181°, -1°→1° linear source. It is pinned by
+    token rather than derived from the coverer, sampled points, or a cell's
+    four-corner chord proxy; it includes the sub-ULP retained seam sheet.
+    """
+    overlap = gm.s2_cover(source, level=8, cell_rule='overlap')
+    within = gm.s2_cover(source, level=8, cell_rule='within')
+    expected = {
+        '65545',
+        '6554d',
+        '6554f',
+        '65551',
+        '65553',
+        '65555',
+        '65557',
+        '65559',
+        '6555b',
+        '6ffe3',
+        '6ffe5',
+        '6ffef',
+        '6fff1',
+        '6fff7',
+        '6fff9',
+        '6fffb',
+        '6fffd',
+        '6ffff',
+        '70001',
+        '70003',
+        '70005',
+        '70007',
+        '70009',
+        '7000f',
+        '70011',
+        '7001b',
+        '7001d',
+        '7aaa5',
+        '7aaa7',
+        '7aaa9',
+        '7aaab',
+        '7aaad',
+        '7aaaf',
+        '7aab1',
+        '7aab3',
+        '7aabb',
+    }
+    assert len(expected) == 36
+    assert expected <= {cell.token for cell in overlap.cells}
+    assert {cell.token for cell in within.cells} == expected
 
 
 def test_s2_point_cell_boundary_and_parent() -> None:
@@ -40,9 +94,9 @@ def test_s2_point_cell_boundary_and_parent() -> None:
     assert cell.intersects(parent)
     assert {cell, geometry_cell, parent} == {cell, parent}
     assert hash(cell) == hash(geometry_cell)
-    assert cell.center.crs == 'EPSG:4326'
+    assert cell.center.crs == 'OGC:CRS84'
     assert boundary.geometry_type == 'Polygon'
-    assert boundary.crs == 'EPSG:4326'
+    assert boundary.crs == 'OGC:CRS84'
     assert (
         gm.CellArray([cell.token], type=gm.S2Cell).polygon[0].to_wkt()
         == boundary.to_wkt()
@@ -73,7 +127,7 @@ def test_s2_bounds_coverage_membership() -> None:
     assert int(coverage.cells[0]) in coverage
     assert coverage.cells[0].token in coverage
     assert gm.S2Cell(30.0, 52.0, level=12) not in coverage
-    assert coverage.cells.polygon.crs == 'EPSG:4326'
+    assert coverage.cells.polygon.crs == 'OGC:CRS84'
     with_parents = coverage.with_parents(min_level=10)
     assert set(map(str, coverage.cells)) <= set(map(str, with_parents.cells))
     assert len(set(map(str, with_parents.cells))) == len(with_parents)
@@ -130,7 +184,9 @@ def test_s2_coverage_level_mod_propagation() -> None:
     assert fixed.compact().uncompact(8).level_mod == 2
     assert pickle.loads(pickle.dumps(fixed)).level_mod == 2
 
-    adaptive = gm.s2_cover(area, min_level=6, max_level=10, target_cells=16, level_mod=3)
+    adaptive = gm.s2_cover(
+        area, min_level=6, max_level=10, target_cells=16, level_mod=3
+    )
     assert adaptive.level_mod == 3
     assert adaptive.level is None
     assert adaptive.compact().level_mod == 3
@@ -187,6 +243,484 @@ def test_s2_coverage_compact_uncompact_round_trip() -> None:
         coverage.uncompact(2)
     assert compacted.covers(gm.Point(21.0, 52.0, crs=4326)) is True
     assert compacted.covers(gm.Point(30.0, 52.0, crs=4326)) is False
+
+
+def test_s2_cover_long_horizontal_includes_containing_cells() -> None:
+    """Planar lon/lat source edges must not omit cells that intersect them.
+
+    Face 0's true spherical footprint reaches lat -45° at lon 0 while the
+    four-corner chord proxy has a southern edge at ≈-35.26°. Spans past
+    2*acos(tan(40°)) ≈ 65.91° send both endpoints off face 0 and used to prune
+    the entire face-0 subtree via an unsound proxy-negative certificate.
+    """
+    probe = gm.Point(0.0, -40.0, crs=4326)
+    for span in (0.01, 1.0, 20.0, 65.9, 66.0, 100.0):
+        half = span / 2.0
+        source = gm.LineString([(-half, -40.0), (half, -40.0)], crs=4326)
+        coverage = gm.s2_cover(source, level=10)
+        source_tokens = {c.token for c in coverage.cells}
+        point_tokens = {c.token for c in gm.s2_cover(probe, level=10).cells}
+        assert coverage.covers(probe), f'span={span} covers(probe)'
+        assert point_tokens <= source_tokens, (
+            f'span={span}: probe cells {point_tokens} not subset of cover'
+        )
+    # Explicit witnesses at the face-0 midpoint cell.
+    line100 = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
+    assert '1d5' in {c.token for c in gm.s2_cover(line100, level=4).cells}
+    assert '1d4aab' in {c.token for c in gm.s2_cover(line100, level=10).cells}
+    # Collapse was independent of target level.
+    for level in range(11):
+        cov = gm.s2_cover(line100, level=level)
+        tokens = {c.token for c in cov.cells}
+        pt = {c.token for c in gm.s2_cover(probe, level=level).cells}
+        assert cov.covers(probe), f'level={level} covers'
+        assert pt <= tokens, f'level={level}: {pt} not in cover'
+
+
+def test_s2_cover_collinear_midpoint_is_invariant() -> None:
+    """Adding a collinear midpoint must not change the planar cover.
+
+    The pre-fix proxy path treated the two-vertex and densified lines as
+    different geometries (414 vs 1274 cells at L10) solely because the extra
+    discrete vertex prevented a bad parent-face rejection.
+    """
+    sparse = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
+    dense = gm.LineString([(-50.0, -40.0), (0.0, -40.0), (50.0, -40.0)], crs=4326)
+    visible: dict[str, set[str]] = {}
+    for rule in ('center', 'within', 'overlap', 'bbox'):
+        sparse_cells = {
+            cell.token for cell in gm.s2_cover(sparse, level=10, cell_rule=rule).cells
+        }
+        dense_cells = {
+            cell.token for cell in gm.s2_cover(dense, level=10, cell_rule=rule).cells
+        }
+        assert sparse_cells == dense_cells, rule
+        visible[rule] = sparse_cells
+    assert len(visible['overlap']) == 1274
+
+
+def test_s2_pole_touching_sources_keep_every_pole_owner() -> None:
+    """Pole closure may not be undone by non-pole vertex longitude windows."""
+    sources = [
+        (
+            gm.LineString([(-60.0, 80.0), (-60.0, 90.0)], crs=4326),
+            gm.Point(-60.0, 90.0, crs=4326),
+        ),
+        (
+            gm.Polygon(
+                [(-60.0, 80.0), (0.0, 90.0), (60.0, 80.0), (-60.0, 80.0)],
+                crs=4326,
+            ),
+            gm.Point(0.0, 90.0, crs=4326),
+        ),
+    ]
+    for source, pole in sources:
+        assert gm.covers(source, pole)
+        for level in (0, 4, 8):
+            coverage = gm.s2_cover(source, level=level)
+            owners = {cell.token for cell in gm.s2_cover(pole, level=level).cells}
+            cells = {cell.token for cell in coverage.cells}
+            assert coverage.covers(pole), f'{source.geometry_type} level={level}'
+            assert owners <= cells, (
+                f'{source.geometry_type} level={level}: {owners - cells}'
+            )
+
+
+def _s2_pole_shape_family(latitude: float, longitude: float) -> dict[str, gm.Geometry]:
+    """Every grid carrier of one physical pole, including one-member wrappers."""
+    near = 80.0 if latitude > 0.0 else -80.0
+    line = [(longitude - 10.0, latitude), (longitude + 10.0, latitude)]
+    cap = [
+        (longitude - 10.0, near),
+        (longitude + 10.0, near),
+        (longitude + 10.0, latitude),
+        (longitude - 10.0, latitude),
+    ]
+    point = gm.Point(longitude, latitude, crs=4326)
+    single_line = gm.LineString(line, crs=4326)
+    polygon = gm.Polygon(cap, crs=4326)
+    return {
+        'point': point,
+        'line': single_line,
+        'multi_point': gm.MultiPoint([(longitude, latitude)], crs=4326),
+        'multi_line': gm.MultiLineString([line], crs=4326),
+        'polygon': polygon,
+        'multi_polygon': gm.MultiPolygon([cap], crs=4326),
+        'collection': gm.GeometryCollection([polygon], crs=4326),
+    }
+
+
+def test_s2_pole_normalization_and_one_member_decomposition_are_closed() -> None:
+    """Every accepted pole spelling shares one canonical source everywhere.
+
+    The outer-ULP carrier is the regression: before construction, certificates,
+    and membership all used the same normalized source, S2 could emit no cells
+    while the resulting empty coverage claimed to cover its input.  The matrix
+    includes all source kinds, every visible rule, both hemispheres, both ULP
+    neighbours, and a depth sweep; one-member aggregate rows must be identical
+    to their atomic counterpart rather than merely approximately equivalent.
+    """
+    atomic = {
+        'point': 'point',
+        'line': 'line',
+        'multi_point': 'point',
+        'multi_line': 'line',
+        'polygon': 'polygon',
+        'multi_polygon': 'polygon',
+        'collection': 'polygon',
+    }
+    for pole in (90.0, -90.0):
+        for latitude in (
+            math.nextafter(pole, 0.0),
+            math.nextafter(pole, math.copysign(math.inf, pole)),
+        ):
+            actual = _s2_pole_shape_family(latitude, 0.0)
+            for name, source in actual.items():
+                # The inward neighbour is a distinct stored double; only the
+                # representation must disappear.  Compare every container to
+                # its atomic component at that *same* latitude rather than
+                # accidentally testing a clamp to the exact pole.
+                reference = actual[atomic[name]]
+                for level in range(5):
+                    for rule in ('overlap', 'bbox', 'center', 'within'):
+                        coverage = gm.s2_cover(source, level=level, cell_rule=rule)
+                        assert coverage.covers(source), (
+                            pole,
+                            latitude,
+                            name,
+                            level,
+                            rule,
+                        )
+                        assert {cell.token for cell in coverage.cells} == {
+                            cell.token
+                            for cell in gm.s2_cover(
+                                reference, level=level, cell_rule=rule
+                            ).cells
+                        }, (pole, latitude, name, level, rule)
+
+
+def test_s2_bbox_uses_the_same_atomic_union_and_global_budget() -> None:
+    """Separated aggregate carriers cannot manufacture their gap's bbox cells."""
+    components = (
+        gm.Point(-120.0, 20.0, crs=4326),
+        gm.Point(120.0, 20.0, crs=4326),
+    )
+    aggregates = (
+        gm.MultiPoint(components, crs=4326),
+        gm.MultiLineString(
+            [[(-121.0, 20.0), (-120.0, 20.0)], [(120.0, 20.0), (121.0, 20.0)]],
+            crs=4326,
+        ),
+        gm.GeometryCollection(components, crs=4326),
+    )
+    for aggregate in aggregates:
+        if isinstance(aggregate, gm.MultiLineString):
+            atomic = tuple(
+                gm.LineString(line, crs=4326)
+                for line in [
+                    [(-121.0, 20.0), (-120.0, 20.0)],
+                    [(120.0, 20.0), (121.0, 20.0)],
+                ]
+            )
+        else:
+            atomic = components
+        expected = {
+            cell.token
+            for component in atomic
+            for cell in gm.s2_cover(component, level=4, cell_rule='bbox').cells
+        }
+        covered = gm.s2_cover(
+            aggregate, level=4, cell_rule='bbox', max_cells=len(expected)
+        )
+        assert {cell.token for cell in covered.cells} == expected
+        with pytest.raises(gm.GeometryError, match='max_cells'):
+            gm.s2_cover(
+                aggregate, level=4, cell_rule='bbox', max_cells=len(expected) - 1
+            )
+
+
+def test_s2_cover_superset_invariant_over_handwritten_corpus() -> None:
+    """Every point the coverage covers() must lie in some returned cell.
+
+    Membership answers against the retained source, so covers(probe) can hold
+    even when the discrete cell set omits the containing cell — that is the
+    defect class this suite pins.
+    """
+    level = 8
+    corpus: list[tuple[gm.Geometry, list[gm.Point]]] = [
+        (
+            gm.LineString([(10.0, 20.0), (12.0, 20.0)], crs=4326),
+            [
+                gm.Point(10.0, 20.0, crs=4326),
+                gm.Point(11.0, 20.0, crs=4326),
+                gm.Point(12.0, 20.0, crs=4326),
+            ],
+        ),
+        (
+            gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326),
+            [
+                gm.Point(-50.0, -40.0, crs=4326),
+                gm.Point(-25.0, -40.0, crs=4326),
+                gm.Point(0.0, -40.0, crs=4326),
+                gm.Point(25.0, -40.0, crs=4326),
+                gm.Point(50.0, -40.0, crs=4326),
+            ],
+        ),
+        (
+            gm.LineString([(-30.0, -10.0), (40.0, 25.0)], crs=4326),
+            [
+                gm.Point(-30.0, -10.0, crs=4326),
+                gm.Point(5.0, 7.5, crs=4326),
+                gm.Point(40.0, 25.0, crs=4326),
+            ],
+        ),
+        (
+            gm.LineString([(179.0, 0.0), (-179.0, 0.0)], crs=4326),
+            [
+                gm.Point(179.0, 0.0, crs=4326),
+                gm.Point(180.0, 0.0, crs=4326),
+                gm.Point(-180.0, 0.0, crs=4326),
+                gm.Point(-179.0, 0.0, crs=4326),
+            ],
+        ),
+        (
+            gm.LineString([(0.0, 80.0), (10.0, 85.0)], crs=4326),
+            [
+                gm.Point(0.0, 80.0, crs=4326),
+                gm.Point(5.0, 82.5, crs=4326),
+                gm.Point(10.0, 85.0, crs=4326),
+            ],
+        ),
+        (
+            gm.Polygon(
+                [
+                    (-10.0, -50.0),
+                    (10.0, -50.0),
+                    (10.0, -30.0),
+                    (-10.0, -30.0),
+                    (-10.0, -50.0),
+                ],
+                crs=4326,
+            ),
+            [
+                gm.Point(0.0, -40.0, crs=4326),
+                gm.Point(-10.0, -50.0, crs=4326),
+                gm.Point(10.0, -30.0, crs=4326),
+            ],
+        ),
+    ]
+    for source, probes in corpus:
+        coverage = gm.s2_cover(source, level=level)
+        for probe in probes:
+            assert coverage.covers(probe), f'{source!r} covers {probe!r}'
+            # `coverage.covers()` answers against its retained source, not the
+            # emitted cell set.  Construct the closed S2 owner independently
+            # from the stored probe and demand an emitted ancestor; removing
+            # that owner leaves the source predicate true but fails here.
+            owner = gm.S2Cell(probe, level=level)
+            assert any(cell.contains(owner) for cell in coverage.cells), (
+                f'{source!r} has no emitted level-{level} owner for {probe!r}'
+            )
+
+
+@pytest.mark.parametrize(
+    ('longitude', 'latitude', 'expected_level_2'),
+    [
+        (0.0, 0.0, {'05', '0f', '11', '1b'}),
+        (90.0, 0.0, {'25', '2f', '31', '3b'}),
+        (-90.0, 0.0, {'85', '8f', '91', '9b'}),
+        (180.0, 0.0, {'65', '6f', '71', '7b'}),
+        (37.0, 90.0, {'45', '4f', '51', '5b'}),
+        (-37.0, -90.0, {'a5', 'af', 'b1', 'bb'}),
+    ],
+)
+def test_s2_closed_point_owners_are_independent_of_source_representation(
+    longitude: float,
+    latitude: float,
+    expected_level_2: set[str],
+) -> None:
+    """Hard-coded cube-seam/pole owners; never ask the Point coverer for them.
+
+    The literal L2 owner sets are the independent oracle; the same equality
+    is checked at neighbouring levels and through every one-member public
+    carrier.  Whether an implementation shares an internal point owner is
+    deliberately irrelevant to this public oracle.
+    """
+    point = gm.Point(longitude, latitude, crs=4326)
+    sources = [
+        point,
+        gm.MultiPoint([point], crs=4326),
+        gm.GeometryCollection([point], crs=4326),
+        gm.LineString([(longitude, latitude), (longitude, latitude)], crs=4326),
+    ]
+    for level in (1, 2, 5):
+        for rule in ('overlap', 'bbox'):
+            token_sets = [
+                {
+                    cell.token
+                    for cell in gm.s2_cover(source, level=level, cell_rule=rule).cells
+                }
+                for source in sources
+            ]
+            assert all(tokens == token_sets[0] for tokens in token_sets[1:])
+            if level == 2:
+                assert token_sets[0] == expected_level_2
+
+
+@pytest.mark.parametrize(
+    ('longitude', 'latitude', 'expected'),
+    [
+        (
+            37.0,
+            math.nextafter(90.0, 0.0),
+            {1: {'44'}, 2: {'45'}, 5: {'4554'}},
+        ),
+        (
+            37.0,
+            math.nextafter(90.0, math.inf),
+            {
+                1: {'44', '4c', '54', '5c'},
+                2: {'45', '4f', '51', '5b'},
+                5: {'4554', '4ffc', '5004', '5aac'},
+            },
+        ),
+        (
+            -37.0,
+            math.nextafter(-90.0, 0.0),
+            {1: {'bc'}, 2: {'bb'}, 5: {'baac'}},
+        ),
+        (
+            -37.0,
+            math.nextafter(-90.0, -math.inf),
+            {
+                1: {'a4', 'ac', 'b4', 'bc'},
+                2: {'a5', 'af', 'b1', 'bb'},
+                5: {'a554', 'affc', 'b004', 'baac'},
+            },
+        ),
+    ],
+)
+def test_s2_pole_ulp_point_owners_match_literal_closed_cell_oracles(
+    longitude: float,
+    latitude: float,
+    expected: dict[int, set[str]],
+) -> None:
+    """ULP-neighbour ownership is literal, not another call into the coverer.
+
+    Both signs of the inward and outward ULP are material: the stored double
+    on one side is a single interior owner, while the other is normalized to
+    the closed pole and owns four face cells.  `center` and `within` correctly
+    remain empty for all point-like carriers; overlap/bbox must emit exactly
+    the hard-coded S2 tokens at each level.
+    """
+    point = gm.Point(longitude, latitude, crs=4326)
+    sources = (
+        point,
+        gm.MultiPoint([point], crs=4326),
+        gm.GeometryCollection([point], crs=4326),
+        gm.LineString([(longitude, latitude), (longitude, latitude)], crs=4326),
+    )
+    for source in sources:
+        for level, overlap_bbox in expected.items():
+            for rule in ('overlap', 'bbox', 'center', 'within'):
+                actual = {
+                    cell.token
+                    for cell in gm.s2_cover(source, level=level, cell_rule=rule).cells
+                }
+                assert actual == (
+                    overlap_bbox if rule in {'overlap', 'bbox'} else set()
+                )
+
+
+def test_s2_adaptive_target_is_global_and_component_order_independent() -> None:
+    """One adaptive target is invariant under set-identical source spelling.
+
+    Source topology, not raw component order or ring traversal, decides
+    whether a component contributes support.  The scalar and one-row packed
+    matrix covers every S2 cell rule, nested/one-member collections,
+    containment by a polygon, and semantically equal reversed/rotated rings.
+    """
+    west = gm.box(-121.0, 19.0, -119.0, 21.0, crs=4326)
+    east = gm.box(119.0, 19.0, 121.0, 21.0, crs=4326)
+    forward = gm.MultiPolygon([west, east], crs=4326)
+    reverse = gm.MultiPolygon([east, west], crs=4326)
+    duplicate = gm.GeometryCollection([west, east, west], crs=4326)
+    for target in (3, 5, 7, 16, 64):
+        first = {cell.token for cell in gm.s2_cover(forward, target_cells=target).cells}
+        second = {
+            cell.token for cell in gm.s2_cover(reverse, target_cells=target).cells
+        }
+        duplicate_tokens = {
+            cell.token for cell in gm.s2_cover(duplicate, target_cells=target).cells
+        }
+        assert first == second == duplicate_tokens, (
+            'equivalent component ordering or duplication changed one global target'
+        )
+        cells = list(gm.s2_cover(forward, target_cells=target).cells)
+        assert not any(
+            left != right and left.contains(right) for left in cells for right in cells
+        )
+
+    area = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326)
+    redundant = gm.GeometryCollection([area, gm.Point(1.23, 2.34, crs=4326)], crs=4326)
+    for target in (64, 128):
+        assert {
+            cell.token for cell in gm.s2_cover(area, target_cells=target).cells
+        } == {cell.token for cell in gm.s2_cover(redundant, target_cells=target).cells}
+
+    outer = gm.box(-20.0, -20.0, 20.0, 20.0, crs=4326)
+    contained_polygon = gm.box(-2.0, -2.0, 2.0, 2.0, crs=4326)
+    contained_line = gm.LineString([(-1.0, 0.0), (1.0, 0.0)], crs=4326)
+    ring = list(outer.exterior.coords)[:-1]
+    rotated = gm.Polygon(ring[2:] + ring[:2], crs=4326)
+    reversed_ring = gm.Polygon(list(reversed(ring)), crs=4326)
+    variants = (
+        gm.GeometryCollection([outer, contained_polygon], crs=4326),
+        gm.GeometryCollection([contained_polygon, outer], crs=4326),
+        gm.GeometryCollection([outer, contained_line], crs=4326),
+        gm.GeometryCollection(
+            [outer, gm.LineString(list(reversed(contained_line.coords)), crs=4326)],
+            crs=4326,
+        ),
+        gm.GeometryCollection([outer, rotated], crs=4326),
+        gm.GeometryCollection([outer, reversed_ring], crs=4326),
+        gm.GeometryCollection(
+            [gm.GeometryCollection([contained_polygon], crs=4326), outer], crs=4326
+        ),
+        gm.GeometryCollection([outer], crs=4326),
+    )
+    for target in (5, 8, 16, 64):
+        for rule in ('overlap', 'bbox', 'center', 'within'):
+            expected = {
+                cell.token
+                for cell in gm.s2_cover(
+                    outer,
+                    min_level=0,
+                    max_level=12,
+                    target_cells=target,
+                    cell_rule=rule,
+                    max_cells=1,
+                ).cells
+            }
+            for source in variants:
+                scalar = gm.s2_cover(
+                    source,
+                    min_level=0,
+                    max_level=12,
+                    target_cells=target,
+                    cell_rule=rule,
+                    max_cells=1,
+                )
+                packed = gm.s2_cover(
+                    gm.GeometryArray([source]),
+                    min_level=0,
+                    max_level=12,
+                    target_cells=target,
+                    cell_rule=rule,
+                    max_cells=1,
+                )[0]
+                assert {cell.token for cell in scalar.cells} == expected
+                assert {cell.token for cell in packed} == expected
 
 
 def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
@@ -382,11 +916,12 @@ def test_s2_bounding_cell_signed_zero_bbox_is_level30_leaf() -> None:
     assert mixed == gm.S2Cell(0.0, 1.0, level=30)
 
 
-def test_s2_cover_partial_polar_overlap_excludes_opposite_wedges() -> None:
-    """Partial-lon polar box: overlap must not force-include opposite polar wedges.
+def test_s2_cover_partial_polar_overlap_fails_open_without_vertex_negative() -> None:
+    """Partial-lon polar bounds retain ambiguous closed polar wedges.
 
-    Oracle: ``box(0,80,10,85)`` L4 overlap == ``{455,457,4f9,4ff}`` (no ``501``/
-    ``5ab``). Full-longitude caps and antimeridian R19 cases stay intact.
+    A full-longitude ``rect_bound`` is a sound outer bound, while four non-pole
+    vertices are not a negative certificate. The ambiguous level-4 wedges stay
+    in the overlap cover rather than being silently pruned.
 
     Antimeridian-touching partial polar boxes must still cover cells that meet
     the shared ±180 meridian (east spelling ``box(170,80,180,85)`` includes L4
@@ -394,8 +929,7 @@ def test_s2_cover_partial_polar_overlap_excludes_opposite_wedges() -> None:
     """
     partial = gm.box(0.0, 80.0, 10.0, 85.0, crs=4326)
     tokens = {c.token for c in gm.s2_cover(partial, level=4, cell_rule='overlap').cells}
-    assert tokens == {'455', '457', '4f9', '4ff'}
-    assert '501' not in tokens and '5ab' not in tokens
+    assert tokens == {'455', '457', '4f9', '4ff', '501', '5ab'}
 
     # East vs west antimeridian spellings: shared ±180 must keep seam cells.
     east = gm.box(170.0, 80.0, 180.0, 85.0, crs=4326)
@@ -421,18 +955,22 @@ def test_s2_cover_partial_polar_overlap_excludes_opposite_wedges() -> None:
         crs=4326,
     )
     assert len(gm.s2_cover(seam, level=8, cell_rule='overlap').cells) == 64
-    assert len(gm.s2_cover(seam, level=8, cell_rule='within').cells) == 36
+    _assert_seam_within_matches_linear_source(seam)
 
     # Non-polar within: interior ⊆ overlap (Berlin box has interior cells at L12).
     berlin = gm.box(13.3, 52.4, 13.5, 52.6, crs=4326)
-    b_within = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within').cells}
-    b_overlap = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap').cells}
+    b_within = {
+        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within').cells
+    }
+    b_overlap = {
+        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap').cells
+    }
     assert b_within
     assert b_within <= b_overlap
 
 
-def test_s2_cover_within_polar_and_antimeridian_match_s2sphere() -> None:
-    """Within must not under-select full-longitude polar / seam interior cells.
+def test_s2_cover_within_polar_and_antimeridian_honors_source_geometry() -> None:
+    """Within preserves polar interiors and raw antimeridian source edges.
 
     Outer/overlap fixed-level covers stay at the prior oracles (polar L4 = 16,
     antimeridian L8 = 64).
@@ -448,12 +986,16 @@ def test_s2_cover_within_polar_and_antimeridian_match_s2sphere() -> None:
         crs=4326,
     )
     assert len(gm.s2_cover(seam, level=8, cell_rule='overlap').cells) == 64
-    assert len(gm.s2_cover(seam, level=8, cell_rule='within').cells) == 36
+    _assert_seam_within_matches_linear_source(seam)
 
     # Non-polar within: interior ⊆ overlap (Berlin box has interior cells at L12).
     berlin = gm.box(13.3, 52.4, 13.5, 52.6, crs=4326)
-    b_within = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within').cells}
-    b_overlap = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap').cells}
+    b_within = {
+        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within').cells
+    }
+    b_overlap = {
+        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap').cells
+    }
     assert b_within
     assert b_within <= b_overlap
 
@@ -597,7 +1139,9 @@ def test_rect_coverage_compact_uncompact_with_parents() -> None:
 def test_s2_coverage_closed_cell_and_partition_properties() -> None:
     seam_point = gm.Point(180, 0, crs=4326)
     tokens = {cell.token for cell in gm.s2_cover(seam_point, level=5).cells}
-    assert tokens == {'6554', '6ffc'}
+    # A cube-seam/grid-vertex point has four closed S2 owners.  These are
+    # literal independent identities, not derived through the Point coverer.
+    assert tokens == {'6554', '6ffc', '7004', '7aac'}
     polygon = gm.Polygon([(20.2, 51.2), (21.8, 51.4), (20.9, 52.8)], crs=4326)
     coverage = gm.s2_cover(polygon, level=8)
     outer = {cell.token for cell in coverage.cells}

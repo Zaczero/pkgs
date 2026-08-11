@@ -1,15 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use h3o::{CellIndex, LatLng, Resolution};
 
-use super::cell::h3_grid_ring_cells;
-use super::tile::h3_cell_shape;
 use crate::H3_MAX_RESOLUTION;
 use crate::geometry::{Point, Shape};
 use crate::grid::UncompactBudgetExceeded;
 use crate::grid::cell::{CellPickleArg, GridCell};
+use crate::py::cells::h3::cell::h3_grid_ring_cells;
+use crate::py::cells::h3::tile::h3_cell_shape;
 
 fn h3_kernel_area_m2(cell: CellIndex) -> f64 {
     cell.area_m2()

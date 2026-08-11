@@ -2,7 +2,11 @@
 //! [`PySpatialIndex`], plus the envelope builder shared by insert lanes.
 
 use crate::collections::sort_row_ids;
-use crate::py::index::*;
+use crate::py::index::{
+    AABB, Bounds, Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult,
+    PySpatialIndex, Shape, ShapeRow, geodesic_prunable_point, index_envelope, index_metadata,
+    point_index_envelope,
+};
 
 impl PySpatialIndex {
     pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
@@ -15,11 +19,16 @@ impl PySpatialIndex {
         self.rows.is_live(handle)
     }
 
-    pub(crate) fn geometry_at_handle(&self, handle: usize) -> crate::PyGeometry {
-        crate::PyGeometry::with_frame(
+    /// Geometry at a live handle, ready for the Python leaf-typed boundary.
+    ///
+    /// Public pymethods must return [`crate::Typed`] so `isinstance(..., Point)`
+    /// (and the other leaves) holds — a bare [`crate::PyGeometry`] silently
+    /// yields the base `Geometry` class.
+    pub(crate) fn geometry_at_handle(&self, handle: usize) -> crate::Typed {
+        crate::Typed(crate::PyGeometry::with_frame(
             crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)),
             self.metadata.clone().unwrap_or_default(),
-        )
+        ))
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
@@ -28,7 +37,13 @@ impl PySpatialIndex {
         // indexable below — so a failed empty insert never frame-locks a fresh
         // index (which must stay free to accept any frame).
         if self.metadata.is_some() {
-            self.ensure_query_compatible(geometry, "spatial index insert")?;
+            // Exact identity: indexed geometries are later returned with the
+            // index's single CRS label — do not silently retag.
+            self.ensure_frame_compatible(
+                geometry.crs_ref(),
+                geometry.epoch(),
+                "spatial index insert",
+            )?;
         }
         // Geographic-ness of the EFFECTIVE frame: the index frame when set, else
         // this geometry's own frame (which becomes the index frame on the first
@@ -39,22 +54,13 @@ impl PySpatialIndex {
             None => crate::geometry::is_geographic_frame(&geometry.frame),
         };
         let envelope = if let Shape::Point(point) = geometry.shape.shape() {
-            AABB::from_point([point.x, point.y])
+            point_index_envelope(*point, geographic)
         } else {
             let bounds = geometry
                 .shape
                 .bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            // Geographic antimeridian-crossing rows need the wrapped-band
-            // envelope, exactly like build-time rows (build.rs) — the planar
-            // bounds is the spurious false-middle box that would exclude the
-            // row's true extent from envelope narrowing (e.g. a later
-            // `query_pairs` missing the pair against a lower-id row).
-            if geographic && geometry.shape.shape().crosses_antimeridian() {
-                crossing_index_envelope(geometry.shape.shape(), bounds)
-            } else {
-                bounds_envelope(bounds)
-            }
+            index_envelope(geometry.shape.shape(), bounds, geographic)
         };
         // The geometry is indexable — adopt the frame on the first insert, commit.
         if self.metadata.is_none() {
@@ -137,6 +143,7 @@ impl PySpatialIndex {
     pub(crate) fn check_insert_frame(&self, frame: &Frame) -> PyResult<()> {
         match &self.metadata {
             Some(_) => {
+                // Exact identity — see insert_one.
                 self.ensure_frame_compatible(frame.crs_ref(), frame.epoch(), "spatial index insert")
             },
             None => Ok(()),
@@ -175,17 +182,13 @@ impl PySpatialIndex {
 
 fn insert_envelope(row: ShapeRow<'_>, bounds: Bounds, geographic: bool) -> AABB<[f64; 2]> {
     if let ShapeRow::Point(point) = row {
-        return AABB::from_point([point.x, point.y]);
+        return point_index_envelope(point, geographic);
     }
     if let Some(point) = row.with_shape(|shape| match shape {
         Shape::Point(point) => Some(*point),
         _ => None,
     }) {
-        return AABB::from_point([point.x, point.y]);
+        return point_index_envelope(point, geographic);
     }
-    if geographic && row.with_shape(Shape::crosses_antimeridian) {
-        row.with_shape(|shape| crossing_index_envelope(shape, bounds))
-    } else {
-        bounds_envelope(bounds)
-    }
+    row.with_shape(|shape| index_envelope(shape, bounds, geographic))
 }

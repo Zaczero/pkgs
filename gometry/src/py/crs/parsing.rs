@@ -1,4 +1,8 @@
-use crate::py::crs::*;
+use crate::py::crs::{
+    Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
+    PyInt, PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple,
+    PyTupleMethods as _, PyTypeError, coordinate_input, crs, crs_arc, finite_f64_required,
+};
 // ---- CRS/CF input parsing (relocated from the crate root; consumed here and
 // by the crate-central `parse_crs`) ----
 
@@ -200,14 +204,6 @@ pub(super) fn required_cf_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<f
         .ok_or_else(|| CRSError::new_err(format!("CF CRS dictionary requires {key}")))
 }
 
-pub(super) fn cf_float_or_first(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
-    if let Some(value) = dict.get_item(key)? {
-        let values = coordinate_input(dict.py(), &value, key)?;
-        return Ok(values.values.first().copied());
-    }
-    Ok(None)
-}
-
 /// Parse CF `standard_parallel` as one or two values; reject empty and extras.
 pub(super) fn cf_standard_parallels(dict: &Bound<'_, PyDict>) -> PyResult<(f64, Option<f64>)> {
     let Some(value) = dict.get_item("standard_parallel")? else {
@@ -225,6 +221,74 @@ pub(super) fn cf_standard_parallels(dict: &Bound<'_, PyDict>) -> PyResult<(f64, 
         _ => Err(CRSError::new_err(
             "CF CRS dictionary standard_parallel must have 1 or 2 values",
         )),
+    }
+}
+
+fn cf_ellipsoid(dict: &Bound<'_, PyDict>) -> PyResult<(f64, Option<f64>, String)> {
+    let earth_radius = dict_f64(dict, "earth_radius")?;
+    let semi_major_axis = dict_f64(dict, "semi_major_axis")?;
+    let semi_minor_axis = dict_f64(dict, "semi_minor_axis")?;
+    let inverse_flattening = dict_f64(dict, "inverse_flattening")?;
+    let (semi_major, ellipsoid) = match (
+        earth_radius,
+        semi_major_axis,
+        semi_minor_axis,
+        inverse_flattening,
+    ) {
+        (Some(radius), None, None, None) => (radius, format!("+a={radius} +b={radius}")),
+        (Some(_), ..) => {
+            return Err(CRSError::new_err(
+                "CF CRS dictionary earth_radius cannot be combined with another ellipsoid descriptor",
+            ));
+        },
+        (None, Some(semi_major), Some(semi_minor), None) => {
+            (semi_major, format!("+a={semi_major} +b={semi_minor}"))
+        },
+        (None, Some(semi_major), Some(semi_minor), Some(inverse_flattening)) => {
+            let implied_semi_minor = cf_semi_minor_axis(semi_major, inverse_flattening)?;
+            let tolerance = 8.0 * f64::EPSILON * semi_minor.abs().max(implied_semi_minor.abs());
+            if (semi_minor - implied_semi_minor).abs() > tolerance {
+                return Err(CRSError::new_err(
+                    "CF CRS dictionary semi_minor_axis and inverse_flattening are contradictory ellipsoid descriptors",
+                ));
+            }
+            (semi_major, format!("+a={semi_major} +b={semi_minor}"))
+        },
+        (None, Some(semi_major), None, Some(0.0)) => {
+            (semi_major, format!("+a={semi_major} +b={semi_major}"))
+        },
+        (None, Some(semi_major), None, Some(inverse_flattening)) if inverse_flattening > 0.0 => (
+            semi_major,
+            format!("+a={semi_major} +rf={inverse_flattening}"),
+        ),
+        (None, Some(_), None, Some(_)) => {
+            return Err(CRSError::new_err(
+                "CF CRS dictionary inverse_flattening must be zero or positive",
+            ));
+        },
+        (None, Some(_), None, None) => {
+            return Err(CRSError::new_err(
+                "CF CRS dictionary requires semi_minor_axis or inverse_flattening",
+            ));
+        },
+        (None, None, ..) => {
+            return Err(CRSError::new_err(
+                "CF CRS dictionary requires earth_radius or semi_major_axis",
+            ));
+        },
+    };
+    Ok((semi_major, inverse_flattening, ellipsoid))
+}
+
+fn cf_semi_minor_axis(semi_major: f64, inverse_flattening: f64) -> PyResult<f64> {
+    if inverse_flattening == 0.0 {
+        Ok(semi_major)
+    } else if inverse_flattening > 0.0 {
+        Ok(semi_major * (1.0 - inverse_flattening.recip()))
+    } else {
+        Err(CRSError::new_err(
+            "CF CRS dictionary inverse_flattening must be zero or positive",
+        ))
     }
 }
 
@@ -246,42 +310,38 @@ pub(super) fn cf_grid_mapping_to_proj(
             "unsupported CF grid_mapping_name: {grid_mapping}"
         )));
     }
-    let semi_major = required_cf_f64(dict, "semi_major_axis")?;
-    let ellipsoid = if let Some(inverse_flattening) = dict_f64(dict, "inverse_flattening")? {
-        format!("+a={semi_major} +rf={inverse_flattening}")
-    } else {
-        format!(
-            "+a={semi_major} +b={}",
-            required_cf_f64(dict, "semi_minor_axis")?
-        )
-    };
+    let (semi_major, inverse_flattening, ellipsoid) = cf_ellipsoid(dict)?;
     let prime_meridian = dict_f64(dict, "longitude_of_prime_meridian")?
         .filter(|value| *value != 0.0)
         .map(|value| format!(" +pm={value}"))
         .unwrap_or_default();
     let base = format!("{ellipsoid}{prime_meridian}");
-    let false_easting = dict_f64(dict, "false_easting")?.unwrap_or(0.0);
-    let false_northing = dict_f64(dict, "false_northing")?.unwrap_or(0.0);
+
+    if grid_mapping == "latitude_longitude" {
+        return if (semi_major - 6_378_137.0).abs() <= f64::EPSILON
+            && inverse_flattening.is_some_and(|value| (value - 298.257_223_563).abs() <= 1e-12)
+        {
+            Ok("OGC:CRS84".to_owned())
+        } else {
+            Ok(format!("+proj=longlat {base} +type=crs"))
+        };
+    }
+
+    // CF false_easting/northing are in projected native units; PROJ +x_0/+y_0
+    // are metres even when +units=us-ft / +units=ft (EPSG/PROJ pattern).
+    let (units, to_metre) = cf_projected_units(dict)?;
+    let false_easting = dict_f64(dict, "false_easting")?.unwrap_or(0.0) * to_metre;
+    let false_northing = dict_f64(dict, "false_northing")?.unwrap_or(0.0) * to_metre;
 
     match grid_mapping {
-        "latitude_longitude" => {
-            if (semi_major - 6_378_137.0).abs() <= f64::EPSILON
-                && dict_f64(dict, "inverse_flattening")?
-                    .is_some_and(|value| (value - 298.257_223_563).abs() <= 1e-12)
-            {
-                Ok("OGC:CRS84".to_owned())
-            } else {
-                Ok(format!("+proj=longlat {base} +type=crs"))
-            }
-        },
         "transverse_mercator" => Ok(format!(
-            "+proj=tmerc +lat_0={} +lon_0={} +k_0={} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
+            "+proj=tmerc +lat_0={} +lon_0={} +k_0={} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
             dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(0.0),
             required_cf_f64(dict, "longitude_of_central_meridian")?,
             required_cf_f64(dict, "scale_factor_at_central_meridian")?,
         )),
         "lambert_azimuthal_equal_area" => Ok(format!(
-            "+proj=laea +lat_0={} +lon_0={} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
+            "+proj=laea +lat_0={} +lon_0={} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
             required_cf_f64(dict, "latitude_of_projection_origin")?,
             required_cf_f64(dict, "longitude_of_projection_origin")?,
         )),
@@ -291,40 +351,109 @@ pub(super) fn cf_grid_mapping_to_proj(
                 .map(|value| format!(" +lat_2={value}"))
                 .unwrap_or_default();
             Ok(format!(
-                "+proj=lcc +lat_0={} +lon_0={} +lat_1={lat_1}{lat_2} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
+                "+proj=lcc +lat_0={} +lon_0={} +lat_1={lat_1}{lat_2} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
                 dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(lat_1),
                 required_cf_f64(dict, "longitude_of_central_meridian")?,
             ))
         },
-        "mercator" => {
-            let scale = dict_f64(dict, "scale_factor_at_projection_origin")?
-                .map(|value| format!(" +k_0={value}"))
-                .unwrap_or_default();
-            let lat_ts = cf_float_or_first(dict, "standard_parallel")?
-                .map(|value| format!(" +lat_ts={value}"))
-                .unwrap_or_default();
-            Ok(format!(
-                "+proj=merc +lat_0={} +lon_0={}{scale}{lat_ts} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
-                dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(0.0),
-                dict_f64(dict, "longitude_of_projection_origin")?.unwrap_or(0.0),
-            ))
-        },
+        "mercator" => cf_mercator_proj(dict, &base, units, false_easting, false_northing),
         "polar_stereographic" => {
-            // Parse standard_parallel once (optional; default 90°).
-            let lat_ts = cf_float_or_first(dict, "standard_parallel")?.unwrap_or(90.0);
-            let lat_0 = dict_f64(dict, "latitude_of_projection_origin")?
-                .unwrap_or_else(|| if lat_ts < 0.0 { -90.0 } else { 90.0 });
-            Ok(format!(
-                "+proj=stere +lat_0={lat_0} +lat_ts={lat_ts} +lon_0={} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
-                required_cf_f64(dict, "straight_vertical_longitude_from_pole")?,
-            ))
+            cf_polar_stereographic_proj(dict, &base, units, false_easting, false_northing)
         },
         "lambert_cylindrical_equal_area" => Ok(format!(
-            "+proj=cea +lat_ts={} +lon_0={} +x_0={false_easting} +y_0={false_northing} {base} +units=m +type=crs",
+            "+proj=cea +lat_ts={} +lon_0={} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
             required_cf_f64(dict, "standard_parallel")?,
             dict_f64(dict, "longitude_of_central_meridian")?.unwrap_or(0.0),
         )),
         _ => unreachable!("unsupported CF grid mappings are rejected before conversion"),
+    }
+}
+
+fn cf_mercator_proj(
+    dict: &Bound<'_, PyDict>,
+    base: &str,
+    units: &str,
+    false_easting: f64,
+    false_northing: f64,
+) -> PyResult<String> {
+    let scale = dict_f64(dict, "scale_factor_at_projection_origin")?
+        .map(|value| format!(" +k_0={value}"))
+        .unwrap_or_default();
+    let lat_ts = cf_optional_standard_parallel(dict)?
+        .map(|value| format!(" +lat_ts={value}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "+proj=merc +lat_0={} +lon_0={}{scale}{lat_ts} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
+        dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(0.0),
+        dict_f64(dict, "longitude_of_projection_origin")?.unwrap_or(0.0),
+    ))
+}
+
+/// Polar stereo by defining parameters (CF/EPSG), not method names:
+///   Variant A: `scale_factor_at_projection_origin` → `+k_0`
+///   Variant B: `standard_parallel` → `+lat_ts`
+fn cf_polar_stereographic_proj(
+    dict: &Bound<'_, PyDict>,
+    base: &str,
+    units: &str,
+    false_easting: f64,
+    false_northing: f64,
+) -> PyResult<String> {
+    let lon_0 = required_cf_f64(dict, "straight_vertical_longitude_from_pole")?;
+    if let Some(k0) = dict_f64(dict, "scale_factor_at_projection_origin")? {
+        let lat_0 = dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(90.0);
+        // Reject empty/extra standard_parallel if the key is present.
+        if dict.get_item("standard_parallel")?.is_some() {
+            let _ = cf_optional_standard_parallel(dict)?;
+        }
+        return Ok(format!(
+            "+proj=stere +lat_0={lat_0} +lon_0={lon_0} +k_0={k0} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs"
+        ));
+    }
+    let lat_ts = cf_optional_standard_parallel(dict)?.unwrap_or(90.0);
+    let lat_0 = dict_f64(dict, "latitude_of_projection_origin")?
+        .unwrap_or_else(|| if lat_ts < 0.0 { -90.0 } else { 90.0 });
+    Ok(format!(
+        "+proj=stere +lat_0={lat_0} +lat_ts={lat_ts} +lon_0={lon_0} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs"
+    ))
+}
+
+/// Optional `standard_parallel` for polar stereo / mercator: absent → `None`;
+/// present → exactly one finite value (empty list / extras raise).
+pub(super) fn cf_optional_standard_parallel(dict: &Bound<'_, PyDict>) -> PyResult<Option<f64>> {
+    let Some(value) = dict.get_item("standard_parallel")? else {
+        return Ok(None);
+    };
+    let values = coordinate_input(dict.py(), &value, "standard_parallel")?;
+    match values.values.as_slice() {
+        [first] => Ok(Some(*first)),
+        [] => Err(CRSError::new_err(
+            "CF CRS dictionary standard_parallel must not be empty",
+        )),
+        _ => Err(CRSError::new_err(
+            "CF CRS dictionary standard_parallel must have exactly 1 value for this projection",
+        )),
+    }
+}
+
+/// Projected linear units from admitted CF metadata (`units` / `proj_units`).
+///
+/// Returns `(+units= token, metres per native unit)` so false easting/northing
+/// can be converted to the metre-valued `+x_0`/`+y_0` PROJ expects even when
+/// the projected CRS is foot-based. Defaults to metres when omitted.
+fn cf_projected_units(dict: &Bound<'_, PyDict>) -> PyResult<(&'static str, f64)> {
+    let Some(text) = dict_string(dict, "units")?.or(dict_string(dict, "proj_units")?) else {
+        return Ok(("m", 1.0));
+    };
+    match text.as_str() {
+        "m" | "metre" | "meter" | "metres" | "meters" => Ok(("m", 1.0)),
+        "ft" | "foot" | "feet" => Ok(("ft", 0.3048)),
+        "us-ft" | "US survey foot" | "us_survey_foot" | "ftUS" => {
+            Ok(("us-ft", 0.304_800_609_601_219))
+        },
+        other => Err(CRSError::new_err(format!(
+            "unsupported CF projected units {other:?}; expected m, ft, or us-ft"
+        ))),
     }
 }
 

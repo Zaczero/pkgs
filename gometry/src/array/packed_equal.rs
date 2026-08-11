@@ -2,13 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
-use std::simd::num::SimdFloat;
+use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
+use std::simd::num::SimdFloat as _;
 
 use pyo3::Python;
 
-use super::packed_columns::{LineColumns, PackedColumns, PointColumns, PolygonColumns, XyColumns};
-use super::*;
+use crate::array::packed_columns::{
+    LineColumns, PackedColumns, PointColumns, PolygonColumns, XyColumns,
+};
+use crate::array::{GeometryArrayStorage, PyGeometryArray, PyResult, column_window};
 use crate::geometry::{
     ReduceSimd, pair_select_mask, same_topological_coordinate, topology_coordinate_bits_simd,
 };
@@ -50,8 +52,8 @@ fn packed_lines_equal_exact_columns_impl<const Z: bool, const M: bool>(
         None
     };
     left_offsets
-        .windows(2)
-        .zip(right_offsets.windows(2))
+        .array_windows::<2>()
+        .zip(right_offsets.array_windows::<2>())
         .map(|(lw, rw)| {
             let lw = lw[0] as usize..lw[1] as usize;
             let rw = rw[0] as usize..rw[1] as usize;
@@ -114,8 +116,8 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
         None
     };
     left_polys
-        .windows(2)
-        .zip(right_polys.windows(2))
+        .array_windows::<2>()
+        .zip(right_polys.array_windows::<2>())
         .map(|(lp, rp)| {
             let lr_start = lp[0] as usize;
             let lr_end = lp[1] as usize;

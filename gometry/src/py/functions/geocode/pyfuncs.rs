@@ -4,9 +4,18 @@
 )]
 use pyo3::types::PyTuple;
 
-use super::pluscode::*;
-use super::shortlink::*;
-use super::*;
+use crate::py::functions::geocode::pluscode::{
+    olc_decode, olc_encode, olc_recover, olc_require_full, olc_shorten, validate_pluscode_length,
+};
+use crate::py::functions::geocode::shortlink::{shortlink_decode, shortlink_encode};
+use crate::py::functions::geocode::{
+    Bound, CodeInput, IntoPyObject as _, Py, PyAny, PyErr, PyResult, Python, pyfunction,
+};
+use crate::{
+    F64Param, Frame, GeometryError, PyGeometry, PyGeometryArray, Shape, Typed,
+    broadcast_coordinate_group, coordinate_input, exact_geometry, exact_geometry_array,
+    finite_coordinate_required,
+};
 
 fn geocode_array_codes(
     array: &PyGeometryArray,
@@ -70,7 +79,7 @@ fn geocode_encode_broadcast(
     validate_raw_domain: bool,
     operation: impl Fn(f64, f64) -> PyResult<String> + Copy,
 ) -> PyResult<Py<PyAny>> {
-    use pyo3::IntoPyObjectExt;
+    use pyo3::IntoPyObjectExt as _;
 
     if let Some(geometry) = exact_geometry(value) {
         if lat.is_some() {
@@ -132,7 +141,7 @@ fn code_lonlat_broadcast(
     lat: &Bound<'_, PyAny>,
     operation: impl Fn(&str, f64, f64) -> PyResult<String> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
-    use pyo3::IntoPyObjectExt;
+    use pyo3::IntoPyObjectExt as _;
 
     match CodeInput::parse(code, "code")? {
         CodeInput::Scalar(code) => operation(
@@ -187,12 +196,11 @@ fn code_lonlat_broadcast(
 ///
 /// Notes
 /// -----
-/// Bare longitude/latitude inputs follow the canonical Open Location Code
-/// convention: latitude is clipped to ``[-90, 90]`` and longitude is wrapped
-/// into ``[-180, 180)`` before encoding (so ``lon=181`` or ``lat=91`` encode
-/// rather than raise). Only non-finite coordinates are rejected. Geometry and
-/// `GeometryArray` inputs carry real spatial data and are still validated
-/// against the WGS84 lon/lat domain.
+/// Bare longitude/latitude and geometry inputs are validated against the
+/// WGS84 lon/lat domain before encoding. Out-of-domain finite coordinates
+/// raise ``InvalidGeometryError`` rather than silent clip/wrap (the OLC
+/// reference clips, but gometry rejects so huge finite inputs cannot mint
+/// a code for a different location).
 ///
 /// Examples
 /// --------
@@ -208,11 +216,12 @@ pub(crate) fn pluscode_encode(
     length: i64,
 ) -> PyResult<Py<PyAny>> {
     let length = validate_pluscode_length(length)?;
-    let encode = |lon: f64, lat: f64| Ok(olc_encode(lat, lon, length));
-    // Bare coordinates follow OLC's clip/wrap convention. Geometry inputs
-    // remain strict WGS84 spatial data, enforced by `lonlat_shape` and the
-    // array path above.
-    geocode_encode_broadcast(py, value, lat, false, encode)
+    let encode = |lon: f64, lat: f64| {
+        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+        Ok(olc_encode(lat, lon, length))
+    };
+    // Strict WGS84 domain for bare coordinates and geometries alike.
+    geocode_encode_broadcast(py, value, lat, true, encode)
 }
 
 /// Return the rectangular cell a plus code covers, as a WGS84 ``Polygon``.
@@ -225,7 +234,7 @@ pub(crate) fn pluscode_encode(
 /// Returns
 /// -------
 /// Polygon or GeometryArray
-///     The code cell(s), CRS EPSG:4326.
+///     The code cell(s), CRS ``OGC:CRS84``.
 ///
 /// Raises
 /// ------
@@ -249,7 +258,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             area.lat_hi,
         )?))
     }
-    let frame = Frame::new(Some("EPSG:4326".into()), None)?;
+    let frame = Frame::new(Some(crate::boundary::metadata::WGS84_LONLAT.into()), None)?;
     match CodeInput::parse(code, "code")? {
         CodeInput::Scalar(code) => Ok(Typed(PyGeometry::with_frame(polygon_shape(&code)?, frame))
             .into_pyobject(py)?
@@ -308,6 +317,7 @@ pub(crate) fn pluscode_shorten(
     lat: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
+        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
         olc_shorten(code, lat, lon)
     })
 }
@@ -347,6 +357,7 @@ pub(crate) fn pluscode_recover(
     lat: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
+        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
         olc_recover(code, lat, lon)
     })
 }

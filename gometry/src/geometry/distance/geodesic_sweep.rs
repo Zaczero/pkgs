@@ -1,8 +1,10 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::GeodesicScratchGuard;
+use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
+use crate::geometry::{
+    GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
+    GeodesicWitnessCandidate, Point, Segment, WitnessPointOutcome, geodesic_witness_is_better,
+    witness_refine_limit,
+};
 pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +44,10 @@ impl GeodesicSweepCapsAccum {
         }
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     pub(crate) fn push_segment(&mut self, segment: GeodesicSegment, metric: &impl GeodesicMetric) {
         if self.anchor.is_none() {
             self.anchor = Some(segment.start);
@@ -125,6 +131,10 @@ impl GeodesicSweepCaps {
 pub(crate) trait GeodesicSweepEdge {
     fn start(&self) -> Point;
     fn end(&self) -> Point;
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the metric is consumed only through its trait contract; a named generic would not clarify this object-safe API"
+    )]
     fn length(&self, metric: &impl GeodesicMetric) -> f64;
 }
 
@@ -198,6 +208,10 @@ pub(crate) fn geodesic_sweep_caps_into<'a, E: GeodesicSweepEdge>(
     })
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_ordered_rows_into(
     vertices: &[Point],
     caps: GeodesicSweepCapsView<'_>,
@@ -500,6 +514,10 @@ fn geodesic_capped_witness_vertex_with_parts(
     best
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_witness_sweep_with_parts(
     vertices: &[Point],
     target_parts: &GeodesicParts,
@@ -555,7 +573,7 @@ impl GeodesicParts {
     pub(crate) fn geodesic_bvh(&self, metric: &impl GeodesicMetric) -> Option<&GeodesicFacetBvh> {
         self.facet_bvh
             .get_or_init(|| {
-                (self.segments.len() >= GEODESIC_BVH_MIN_INDEXED_SEGMENTS)
+                (self.segments.len() >= BVH_MIN_INDEXED_SEGMENTS)
                     .then(|| GeodesicFacetBvh::build(&self.segments, metric))
                     .flatten()
             })

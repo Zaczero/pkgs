@@ -1,9 +1,15 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
+use std::simd::num::SimdFloat as _;
+use std::simd::{Select as _, StdFloat as _};
+
 use crate::error::Result;
+use crate::geometry::constructive::reversed_points;
+use crate::geometry::{
+    AxisFrame, BinaryHeap, CoordSeq, Coordinates, GeometryErrorKind, Ordering, Point, REDUCE_LANES,
+    ReduceSimd, compare_f64, compare_point_slices, compare_points, power_of_two_exponent,
+    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, simd_map_f64,
+    topology_coordinate_bits_simd, try_simd_map_f64, wrap_index,
+};
 pub(crate) fn normalized_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     let forward: Vec<Point> = points.iter_coords().collect();
     // A CLOSED line canonicalizes to the lexicographically smallest of all
@@ -238,7 +244,7 @@ pub(crate) fn snap_column_simd(
         column,
         &mut out,
         |value| {
-            let snapped = ((value - origin) / size).round() * size + origin;
+            let snapped = stable_snap_ordinate(value, origin, size);
             if !snapped.is_finite() {
                 return Err(GeometryErrorKind::SnapGridTooFine.into());
             }
@@ -250,8 +256,23 @@ pub(crate) fn snap_column_simd(
         },
         |value| {
             let snapped = ((value - vorigin) / vsize).round() * vsize + vorigin;
+            // SIMD path may overflow extreme value/origin pairs; fall back
+            // per-lane via the scalar stable form when any lane is non-finite.
             if !snapped.abs().simd_lt(infinity).all() {
-                return Err(GeometryErrorKind::SnapGridTooFine.into());
+                let mut out_lane = snapped.to_array();
+                let values = value.to_array();
+                for lane in 0..REDUCE_LANES {
+                    if !out_lane[lane].is_finite() {
+                        out_lane[lane] = stable_snap_ordinate(values[lane], origin, size);
+                        if !out_lane[lane].is_finite() {
+                            return Err(GeometryErrorKind::SnapGridTooFine.into());
+                        }
+                    }
+                }
+                let snapped = ReduceSimd::from_array(out_lane);
+                let changed = topology_coordinate_bits_simd(value)
+                    .simd_ne(topology_coordinate_bits_simd(snapped));
+                return Ok(changed.select(snapped, value));
             }
             let changed = topology_coordinate_bits_simd(value)
                 .simd_ne(topology_coordinate_bits_simd(snapped));
@@ -261,21 +282,113 @@ pub(crate) fn snap_column_simd(
     Ok(out)
 }
 
+/// `((v - origin) / size).round() * size + origin` with power-of-two
+/// pre-scale so `v=1e308, origin=-1e308, size=1e308` stays finite.
+///
+/// Algebra: `k = round((v - origin) / size)`, result = `origin + k * size`.
+/// Scale `v` and `origin` together before the subtraction so the difference
+/// does not overflow; `size` stays in world units for the final multiply.
+fn stable_snap_ordinate(value: f64, origin: f64, size: f64) -> f64 {
+    let classic = ((value - origin) / size).round() * size + origin;
+    if classic.is_finite() {
+        return classic;
+    }
+    if size == 0.0 || !size.is_finite() {
+        return classic;
+    }
+    // Avoid (value - origin) overflow: form k = round(value/size - origin/size),
+    // then result = size * (origin/size + k) so k*size never materializes alone
+    // (2 * 1e308 overflows, but 1e308 * ( -1 + 2) is fine).
+    let v_over = value / size;
+    let o_over = origin / size;
+    if v_over.is_finite() && o_over.is_finite() {
+        let k = (v_over - o_over).round();
+        let result = size * (o_over + k);
+        if result.is_finite() {
+            return result;
+        }
+    }
+    // Last resort: scale value and origin before subtraction.
+    let max_abs = value.abs().max(origin.abs());
+    if max_abs == 0.0 || !max_abs.is_finite() {
+        return classic;
+    }
+    let exp = max_abs.log2().floor();
+    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
+    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let delta = value * scale - origin * scale;
+    let sized = size * scale;
+    if sized == 0.0 || !sized.is_finite() || !delta.is_finite() {
+        return classic;
+    }
+    let k = (delta / sized).round();
+    let result = (origin * scale + k * sized) / scale;
+    if result.is_finite() { result } else { classic }
+}
+
+/// Chain-wide per-axis power-of-two frame for VW scoring, returning framed
+/// columns (when needed) and the area threshold in that frame.
+fn vw_frame_columns(
+    xs: &[f64],
+    ys: &[f64],
+    distance_tolerance: f64,
+) -> (Option<Vec<f64>>, Option<Vec<f64>>, f64) {
+    let ox = xs[0];
+    let oy = ys[0];
+    let mut max_abs_x = ox.abs();
+    let mut max_abs_y = oy.abs();
+    for index in 0..xs.len() {
+        max_abs_x = max_abs_x.max(xs[index].abs());
+        max_abs_y = max_abs_y.max(ys[index].abs());
+    }
+    let world_area_tol = crate::geometry::vw_area_tolerance(distance_tolerance);
+    let max_abs = max_abs_x.max(max_abs_y);
+    let use_frame = max_abs > 0.0
+        && max_abs.is_finite()
+        && (max_abs_x < 1e-8
+            || max_abs_y < 1e-8
+            || max_abs_x > 1e8
+            || max_abs_y > 1e8
+            || !world_area_tol.is_normal());
+    if !use_frame {
+        return (None, None, world_area_tol);
+    }
+    let Some(frame) =
+        AxisFrame::from_origin_extents(Point::new_unchecked_xy(ox, oy), max_abs_x, max_abs_y)
+    else {
+        return (None, None, world_area_tol);
+    };
+    let fxs: Vec<f64> = xs.iter().map(|&x| frame.frame_xy(x, oy).x).collect();
+    let fys: Vec<f64> = ys.iter().map(|&y| frame.frame_xy(ox, y).y).collect();
+    // A VW score is an area, so map its distance-square threshold through both
+    // exact scale exponents together.  Forming the world threshold first
+    // would make a valid huge tolerance `+inf` before the rescue could scale
+    // it back down.
+    let exponent = power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y());
+    let framed_area =
+        0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
+    (Some(fxs), Some(fys), framed_area)
+}
+
 #[doc(hidden)]
-/// The Visvalingam-Whyatt keep mask over raw columns: `keep` is cleared and
-/// refilled (reusable across rows); `Some(kept_count)` unless the chain is
-/// too short to simplify. The packed-array lane appends kept vertices
-/// straight into new CSR columns from this mask.
+/// Visvalingam-Whyatt keep mask. `distance_tolerance` is the public
+/// distance-scale threshold (same units as `simplify`/`coverage_simplify`);
+/// the area threshold is derived **after** any chain-wide power-of-two frame
+/// so huge inputs (tol² → +inf in world units) still compare correctly.
 pub(crate) fn vw_keep(
     xs: &[f64],
     ys: &[f64],
-    area_tolerance: f64,
+    distance_tolerance: f64,
     keep: &mut Vec<bool>,
 ) -> Option<usize> {
     let count = xs.len();
     if count < 3 {
         return None;
     }
+    let (framed_xs, framed_ys, area_tol) = vw_frame_columns(xs, ys, distance_tolerance);
+    let xs = framed_xs.as_deref().unwrap_or(xs);
+    let ys = framed_ys.as_deref().unwrap_or(ys);
+    let area_tolerance = area_tol;
     let area = |a: usize, b: usize, c: usize| -> f64 {
         0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a])).abs()
     };
@@ -351,16 +464,16 @@ pub(crate) fn vw_keep(
 /// vertices drop in ascending effective-area order (binary heap over the
 /// non-negative area BITS — bit order IS numeric order — with lazy
 /// invalidation over doubly-linked neighbors) until every survivor's
-/// triangle area reaches `area_tolerance`. Endpoints are pinned, so a
-/// closed ring keeps its closure. Survivors keep their Z/M.
-pub(crate) fn vw_filter(points: &CoordSeq, area_tolerance: f64) -> CoordSeq {
+/// triangle area reaches the distance-scale threshold. Endpoints are pinned,
+/// so a closed ring keeps its closure. Survivors keep their Z/M.
+pub(crate) fn vw_filter(points: &CoordSeq, distance_tolerance: f64) -> CoordSeq {
     let count = points.coord_count();
     if count < 3 {
         return points.clone();
     }
     let (xs, ys) = (points.xs(), points.ys());
     let mut keep = Vec::new();
-    if vw_keep(xs, ys, area_tolerance, &mut keep).is_none() {
+    if vw_keep(xs, ys, distance_tolerance, &mut keep).is_none() {
         return points.clone();
     }
     points.select(
@@ -368,4 +481,24 @@ pub(crate) fn vw_filter(points: &CoordSeq, area_tolerance: f64) -> CoordSeq {
             .enumerate()
             .filter_map(|(index, &kept)| kept.then_some(index)),
     )
+}
+
+#[cfg(test)]
+mod vw_frame_tests {
+    use super::*;
+
+    #[test]
+    fn opposite_sign_extremes_scale_each_operand_before_the_frame_subtraction() {
+        let xs = [-1e308, 0.0, 1e308];
+        let ys = [0.0, 1e307, 0.0];
+        // This calls the exact VW frame used by simplify. Its finite output
+        // proves the residual is `x*s - origin*s`; `(x-origin)*s` overflows
+        // before it can be scaled.
+        let (Some(fxs), Some(fys), _) = vw_frame_columns(&xs, &ys, 5e307) else {
+            panic!("opposite-sign extreme coordinates require a VW frame");
+        };
+        assert!(fxs.iter().chain(&fys).all(|value| value.is_finite()));
+        assert_eq!(fxs[0].to_bits(), 0.0_f64.to_bits());
+        assert!(fxs[2] > fxs[1] && fxs[1] > fxs[0]);
+    }
 }

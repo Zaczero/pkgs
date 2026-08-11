@@ -406,7 +406,10 @@ def test_cleanup_and_segmentize_are_rust_backed() -> None:
     )
     collapsed = gm.LineString([(0, 0), (0, 0)]).remove_repeated_points()
     snapped = gm.snap(gm.LineString([(0, 0), (0.1, 0)]), gm.Point(0, 0), 1.0)
-    segmented = line.remove_repeated_points().segmentize(1.0)
+    # `line` is EPSG:4326, where `segmentize` measures along the ellipsoid;
+    # this assertion is about Z/M carry through the subdivision, so it asks for
+    # coordinate-space subdivision explicitly.
+    segmented = line.remove_repeated_points().segmentize(1.0, unit='planar')
     segmented_array = cast(
         'gm.GeometryArray',
         gm.GeometryArray([gm.LineString([(0, 0), (2, 0)])]).segmentize(0.5),
@@ -437,7 +440,9 @@ def test_densify_is_rust_backed() -> None:
     )
     assert densified.to_wkt() == 'LINESTRING ZM (0 0 0 1, 1.5 0 3 2.5, 3 0 6 4)'
     assert densified_array[0].to_wkt() == 'LINESTRING (0 0, 1 0, 2 0)'
-    with pytest.raises(gm.GeometryError, match=r'fraction must be in \(0, 1\], got 1.5'):
+    with pytest.raises(
+        gm.GeometryError, match=r'fraction must be in \(0, 1\], got 1.5'
+    ):
         line.segmentize(fraction=1.5)
 
 

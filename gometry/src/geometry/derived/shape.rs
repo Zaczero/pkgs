@@ -1,9 +1,39 @@
-use super::*;
 use crate::error::Result;
-use crate::geometry::*;
+use crate::geometry::derived::{
+    areal_centroid, canonicalize_concave_hull_points, collection_surface_point, lineal_centroid,
+    lineal_surface_point, minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point,
+    native_concave_hull, point_centroid, polygonal_surface_point, polylabel_point,
+    shape_from_open_hull, smallest_enclosing_circle,
+};
+use crate::geometry::{
+    BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, EmptyKind, GeometryErrorKind, LineSeq,
+    Point, Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, empty_geometry,
+};
 use crate::{NonNegative, Positive};
 
 impl Shape {
+    pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
+        // Empty input has no rectangle: `POLYGON EMPTY` (the operation's areal
+        // output type), not the untyped collection the hull yields.
+        if self.is_empty() {
+            return Ok(Self::empty_polygon());
+        }
+        let points = self.points_vec();
+        let open = monotone_chain_hull(&points);
+        if open.len() < 3 {
+            return carry_ordinates(
+                shape_from_open_hull(&open, Self::empty_polygon),
+                &[self],
+                "minimum_rotated_rectangle",
+                false,
+            );
+        }
+        Ok(Self::Polygon(Polygon {
+            shell: Ring::from_trusted_closed(minimum_area_rectangle(&open)?),
+            holes: Vec::new().into(),
+        }))
+    }
+
     pub fn centroid(&self) -> Result<Self> {
         // The centroid is always a point; an empty geometry has the empty point
         // as its centroid (Shapely semantics). Own kernel — the JTS/GEOS

@@ -1,16 +1,16 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::element::BulkElement;
-use super::metric::{Lane, MetricScratch, OpCtx};
-use super::operation::Operation;
-use super::packed::{
-    PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
-    try_unary_packed_f64,
-};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    CollectRows, GeometryInput, classify_input, expected_geometry_or_array, rows_err,
+    BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
+    rows_err,
+};
+use crate::dispatch::metric::{Lane, MetricScratch, OpCtx};
+use crate::dispatch::operation::Operation;
+use crate::dispatch::packed::{
+    PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
+    try_unary_packed_f64,
 };
 use crate::error::Result;
 use crate::geometry::{Shape, is_geographic_frame};
@@ -42,6 +42,24 @@ pub(crate) fn unary_scalar<R: BulkElement>(
         .map_err(PyErr::from)
 }
 
+/// How the per-row unary fallback materializes a [`ShapeData`] handle.
+///
+/// Pure topology transforms only need the bare shape; persisting prepared
+/// state (or frame caches) on every row is a memory leak against the
+/// caller's intent. Validity/simplicity and other genuine `ShapeData`
+/// consumers keep the prepared/array-cached path. Distance-basis linref
+/// needs a frame cache without necessarily needing prepared persistence.
+#[derive(Clone, Copy)]
+enum UnaryRowMode {
+    /// Transient stack handle — no prepared-slot or frame-cache write.
+    ShapeOnly,
+    /// Persist large/mixed prepared handles into the array cache; still no
+    /// eager frame-cache acquisition.
+    Prepared,
+    /// Transient `ShapeData` + per-row frame cache (distance-basis linref).
+    ShapeWithFrameCache,
+}
+
 /// Array geometry lane: resolve metric once, try packed fast paths, else per-row kernel.
 pub(crate) fn unary_array<R: BulkElement>(
     py: Python<'_>,
@@ -64,11 +82,32 @@ pub(crate) fn unary_array<R: BulkElement>(
     {
         return result;
     }
-    if let Some(result) = try_unary_packed_array(py, array, op, packed) {
+    if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return Ok(result?.into_pyobject(py)?.unbind().into());
     }
-    let (values, output_frame) = run_unary_rows(py, array, resolver, op_name, kernel)?;
+    // Bool/fact kernels (is_valid/is_simple/…) amortize prepared state across
+    // repeats; distance-basis linref needs a frame cache; pure geometry
+    // transforms use the Shape-only lane.
+    let mode = unary_row_mode(op);
+    let (values, output_frame) = run_unary_rows(py, array, resolver, op_name, mode, kernel)?;
     R::bulk_into_py_masked(values, py, &output_frame, array.missing())
+}
+
+const fn unary_row_mode(op: Operation) -> UnaryRowMode {
+    match op {
+        Operation::IsValid
+        | Operation::IsSimple
+        | Operation::IsRing
+        | Operation::Bounds
+        | Operation::ClipByRect => UnaryRowMode::Prepared,
+        // Distance-basis LRS kernels read `ctx.left_frame_cache`; M-basis
+        // siblings ignore it. Acquiring only for these ops keeps simplify /
+        // reverse / etc. cache-free.
+        Operation::LineInterpolate | Operation::LineSubstring | Operation::LineLocate => {
+            UnaryRowMode::ShapeWithFrameCache
+        },
+        _ => UnaryRowMode::ShapeOnly,
+    }
 }
 
 /// The per-row unary lane shared by every array return type: resolve the
@@ -78,6 +117,7 @@ fn run_unary_rows<T: BulkElement>(
     array: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     op_name: &str,
+    mode: UnaryRowMode,
     kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<T> + Send + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
     let frame = array.frame.clone();
@@ -99,16 +139,31 @@ fn run_unary_rows<T: BulkElement>(
                         // element's missing value (NaN / false / placeholder).
                         return Ok(T::missing_value());
                     }
-                    let row_cache = array.row_frame_cache(row);
+                    let row_cache;
+                    let left_frame_cache = match mode {
+                        UnaryRowMode::ShapeWithFrameCache => {
+                            row_cache = array.row_frame_cache(row);
+                            Some(row_cache.as_ref())
+                        },
+                        UnaryRowMode::ShapeOnly | UnaryRowMode::Prepared => None,
+                    };
                     let ctx = OpCtx {
                         frame,
                         geographic,
                         metric,
                         lane: Lane::Array(row),
-                        left_frame_cache: Some(&row_cache),
+                        left_frame_cache,
                         right_frame_cache: None,
                     };
-                    array.with_row_data(row, shape_row, |data| kernel(data, &ctx))
+                    match mode {
+                        UnaryRowMode::ShapeOnly | UnaryRowMode::ShapeWithFrameCache => {
+                            // Transient handle — never write prepared slots.
+                            shape_row.with_data(|data| kernel(data, &ctx))
+                        },
+                        UnaryRowMode::Prepared => {
+                            array.with_row_data(row, shape_row, |data| kernel(data, &ctx))
+                        },
+                    }
                 })
                 .collect_rows()
         })
@@ -132,6 +187,10 @@ pub(crate) fn unary_scalar_shape(
 /// Array geometry method returning a `GeometryArray` — natively, without the
 /// Python-object round-trip (`Py<PyAny>` -> downcast -> borrow -> clone) the
 /// generic lane would pay.
+///
+/// Geometry-returning unaries: prefer pure-`Shape` fallback (no prepared
+/// persistence). Distance-basis linref still acquires a frame cache via
+/// [`unary_row_mode`].
 pub(crate) fn unary_array_shapes(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -140,12 +199,65 @@ pub(crate) fn unary_array_shapes(
     packed: Option<&PackedUnary>,
     kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    if let Some(result) = try_unary_packed_array(py, array, op, packed) {
+    let resolver = op.resolver_with_unit(unit);
+    if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
     }
-    let resolver = op.resolver_with_unit(unit);
-    let (shapes, frame) = run_unary_rows(py, array, resolver, op.name(), kernel)?;
+    let (shapes, frame) =
+        run_unary_rows(py, array, resolver, op.name(), unary_row_mode(op), kernel)?;
     Ok(PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(array.missing().cloned()))
+}
+
+/// Geometry-returning array lane for constructive operations whose generated
+/// work must be bounded across the entire logical array.  It intentionally
+/// stays serial inside one detached closure: the mutable budget is the owner
+/// shared by rows, while the kernel threads it into all nested parts/rings.
+pub(crate) fn unary_array_shapes_budgeted(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    op: Operation,
+    unit: Option<DistanceUnit>,
+    parameter: &'static str,
+    mut kernel: impl FnMut(
+        &crate::ShapeData,
+        &OpCtx<'_>,
+        &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Shape>
+    + Send,
+) -> PyResult<PyGeometryArray> {
+    let resolver = op.resolver_with_unit(unit);
+    let frame = array.frame.clone();
+    let output_frame = frame.clone();
+    let geographic = is_geographic_frame(&frame);
+    let mut metric_scratch = MetricScratch::default();
+    let metric = resolver.resolve_ctx(&frame, op.name(), &mut metric_scratch)?;
+    let missing = array.missing().cloned();
+    let array = array.clone();
+    let shapes = py
+        .detach(move || {
+            let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
+            array
+                .storage()
+                .iter_rows()
+                .enumerate()
+                .map(|(row, shape_row)| {
+                    if array.is_row_missing(row) {
+                        return Ok(Shape::empty_point());
+                    }
+                    let ctx = OpCtx {
+                        frame: &frame,
+                        geographic,
+                        metric,
+                        lane: Lane::Array(row),
+                        left_frame_cache: None,
+                        right_frame_cache: None,
+                    };
+                    shape_row.with_data(|data| kernel(data, &ctx, &mut budget))
+                })
+                .collect_rows()
+        })
+        .map_err(rows_err)?;
+    Ok(PyGeometryArray::from_shapes(shapes, output_frame).with_missing_mask(missing))
 }
 
 /// Unified unary scalar/array dispatch: classify once, resolve metric once,

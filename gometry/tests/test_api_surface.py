@@ -354,8 +354,8 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: line.segmentize(huge), 'max_length'),
         (lambda: line.clip_by_rect(huge, 0, 1, 1), 'minx'),
         (lambda: line.clip_by_rect(huge, 0, 1, 1), 'minx'),
-        (lambda: line.line_interpolate(huge), 'distance'),
-        (lambda: line.line_interpolate(huge), 'distance'),
+        (lambda: line.line_interpolate(huge), 'at'),
+        (lambda: line.line_interpolate(huge), 'at'),
         (lambda: line.line_substring(huge, 1), 'start'),
         (lambda: line.line_substring(0, huge), 'end'),
         (lambda: polygon.concave_hull(concavity=huge), TypeError, 'concavity'),
@@ -562,11 +562,14 @@ def test_readme_quickstart_stays_executable() -> None:
     roundtrip = cast(
         'gm.GeometryArray', gm.from_arrow(gm.GeometryArray([point, area]).to_arrow())
     )
-    feature_geom = gm.from_geojson({
-        'type': 'Feature',
-        'properties': {},
-        'geometry': point.__geo_interface__,
-    })
+    feature_geom = gm.from_geojson(
+        {
+            'type': 'Feature',
+            'properties': {},
+            'geometry': point.__geo_interface__,
+        },
+        crs=4326,
+    )
     strict_geom = gm.require(feature_geom, crs=4326, axes='XY')
     assert len(roundtrip) == 2
     assert strict_geom.crs == 'EPSG:4326'
@@ -590,6 +593,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'crs_download_grid',
     }
     expected = [
+        'AccuracyWarning',
         'CRS',
         'CRSError',
         'CRSMismatchError',
@@ -672,6 +676,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'intersects_xy',
         'join',
         'length',
+        'length_3d',
         'line_strings',
         'multi_line_strings',
         'multi_points',
@@ -771,7 +776,7 @@ def test_cell_protocol_conformance() -> None:
 def test_coverage_protocol_conformance() -> None:
     """Every coverage class satisfies ``gometry.Coverage`` structurally.
 
-    Annotated assignments in ``tests/test_typing_conformance.py`` are the
+    Annotated assignments in ``tests/typing/test_conformance.py`` are the
     static gate; these runtime asserts lock the shared surface when only
     pytest runs.
     """
@@ -787,7 +792,10 @@ def test_coverage_protocol_conformance() -> None:
     for cov in coverages:
         assert len(cov.cells) == len(cov)
         assert len(cov.interior_cells) + len(cov.boundary_cells) == len(cov.cells)
-        assert cov.covers(probe) or not cov.covers(probe)
+        covers = cov.covers(probe)
+        assert isinstance(covers, bool)
+        # Membership is exact against the source geometry, not the cell outline.
+        assert covers is True
         assert isinstance(cov.contains(probe), bool)
         assert isinstance(cov.intersects(probe), bool)
         outline = cov.to_polygon()
@@ -828,3 +836,83 @@ def test_nary_reductions_are_consistent_across_the_trio() -> None:
         gm.box(0, 0, 3, 3),
         gm.box(1, 1, 4, 4),
     ])
+
+
+def test_geographic_array_nary_reductions_use_seam_topology() -> None:
+    """R15 C5: array aggregates share the free n-ary topology dispatch."""
+    left = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 20), (170, 20), (170, 0)], crs='OGC:CRS84'
+    )
+    right = gm.Polygon(
+        [(175, 10), (-175, 10), (-175, 30), (175, 30), (175, 10)], crs='OGC:CRS84'
+    )
+    values = gm.GeometryArray([left, right]).set_epoch(2020.5)
+
+    for name in ('intersection_all', 'symmetric_difference_all'):
+        from_array = getattr(values, name)()
+        from_free = getattr(gm, name)(values)
+        # Both source polygons cross the antimeridian. The free route's split
+        # topology result is therefore a real independent expected path, not a
+        # same-frame planar coincidence.
+        assert gm.equals(from_array, from_free)
+        assert from_array.area == pytest.approx(from_free.area)
+        assert from_array.crs == from_free.crs == 'OGC:CRS84'
+        assert from_array.epoch == from_free.epoch == 2020.5
+
+        # Aggregate conventions must retain their existing missing and
+        # one-row behaviour while using the same frame-aware dispatch.
+        with_missing = gm.GeometryArray([left, None, right]).set_epoch(2020.5)
+        assert gm.equals(getattr(with_missing, name)(), from_free)
+        single = gm.GeometryArray([left]).set_epoch(2020.5)
+        assert gm.equals(getattr(single, name)(), getattr(gm, name)(single))
+
+
+def test_bulk_free_functions_accept_raw_iterables_uniformly() -> None:
+    """Every bulk free function takes the same input vocabulary.
+
+    Rule 4's justification for `gm.parts`/`gm.rings` existing beside `geom.parts`
+    and `GeometryArray.parts()` is precisely "a free function exists only for raw
+    iterables" — so refusing one was self-refuting. `gm.area`/`gm.bounds` always
+    accepted them.
+    """
+    point = gm.Point(0, 0)
+    line = gm.LineString([(0, 0), (1, 1)])
+    donut = gm.Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)], holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]]
+    )
+
+    assert gm.area([point, line]).tolist() == [0.0, 0.0]
+    assert len(gm.parts([point, line])) == 2
+    assert len(gm.rings([donut])) == 2
+    # generators and tuples, not just lists
+    assert len(gm.parts(g for g in (point, line))) == 2
+    assert len(gm.rings((donut, donut))) == 4
+    # and the array/scalar forms keep working
+    assert len(gm.parts(gm.GeometryArray([point, line]))) == 2
+    assert len(gm.rings(donut)) == 2
+
+
+def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
+    """A wrong geometry KIND raises `GeometryTypeError`, not a bare `TypeError`.
+
+    These escaped `except gm.GeometryError` entirely. `GeometryTypeError`
+    dual-bases `(GeometryError, TypeError)`, so both spellings catch them and no
+    existing handler breaks. A wrong *Python* type still raises plain
+    `TypeError` — that distinction is the point.
+    """
+    point = gm.Point(0, 0)
+    triangle = gm.MultiPoint([(0, 0), (1, 1), (0, 1)])
+    for label, call in (
+        ('rings on an array of points', lambda: gm.rings(gm.GeometryArray([point]))),
+        ('rings on a raw iterable', lambda: gm.rings([point])),
+        (
+            'voronoi clip of the wrong kind',
+            lambda: triangle.voronoi_polygons(clip=point),
+        ),
+        ('multi_polygons member kind', lambda: gm.multi_polygons([[point]])),
+    ):
+        with pytest.raises(gm.GeometryTypeError) as info:
+            call()
+        # dual base: anyone catching plain TypeError still catches it
+        assert isinstance(info.value, TypeError), label
+        assert isinstance(info.value, gm.GeometryError), label

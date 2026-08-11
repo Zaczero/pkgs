@@ -1,8 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::crs::*;
+use crate::crs::{
+    CRS_COMPARISON_CACHE, CRS_COMPARISON_CACHE_CAPACITY, CRS_EXPORT_CACHE,
+    CRS_EXPORT_CACHE_CAPACITY, CachedCrsComparison, CachedCrsExport, CrsComparison,
+    CrsComparisonKey, CrsExportKey, CrsExportKind, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
+    CrsWktOptions, EllipsoidCatalogInfo, OnceLock, PrimeMeridianCatalogInfo, ProjObject,
+    ProjOperationCatalogInfo, WktVersion, ensure_thread_caches_current,
+    first_static_string_from_ptr, info, lru_resolve, normalize,
+};
 use crate::error::Result;
 
 pub(crate) fn proj_operations() -> Vec<ProjOperationCatalogInfo> {
@@ -12,36 +15,25 @@ pub(crate) fn proj_operations() -> Vec<ProjOperationCatalogInfo> {
 }
 
 fn proj_operations_uncached() -> Vec<ProjOperationCatalogInfo> {
-    proj_static_list(
-        || {
-            // SAFETY: PROJ returns a process-static null-terminated array.
-            unsafe { proj_sys::proj_list_operations() }
-        },
-        |info| {
-            let id = string_from_ptr(info.id)?;
-            Some(ProjOperationCatalogInfo {
-                id,
-                description: first_static_string_from_ptr(info.descr),
-            })
-        },
-    )
-}
-
-fn proj_static_list<T, R>(
-    list_fn: impl FnOnce() -> *const T,
-    mut map_info: impl FnMut(&T) -> Option<R>,
-) -> Vec<R> {
     let mut items = Vec::new();
-    let mut current = list_fn();
+    // SAFETY: DOC-STATIC. PROJ returns an immutable process-static array of
+    // PJ_OPERATIONS records terminated by a sentinel whose `id` field is null
+    // (PROJ loops `for (p = proj_list_operations(); p->id; ++p)`). The mapper
+    // reads `id` first and returns None at the sentinel; pointer arithmetic
+    // advances only after a non-sentinel record.
+    let mut current = unsafe { proj_sys::proj_list_operations() };
     while !current.is_null() {
-        // SAFETY: current is within PROJ's process-static null-terminated
-        // array. Each mapped field is copied before returning to Rust/Python.
+        // SAFETY: current points at a process-static record; id is read first.
         let info = unsafe { &*current };
-        let Some(item) = map_info(info) else {
+        let Some(id) = proj_c_string!(info.id) else {
             break;
         };
-        items.push(item);
-        // SAFETY: advancing one element within PROJ's null-terminated array.
+        items.push(ProjOperationCatalogInfo {
+            id,
+            // SAFETY: descr is process-static char** (or null on sentinel).
+            description: unsafe { first_static_string_from_ptr(info.descr) },
+        });
+        // SAFETY: advance one record within the static sentinel-terminated array.
         current = unsafe { current.add(1) };
     }
     items
@@ -52,21 +44,26 @@ pub(crate) fn ellipsoids() -> Vec<EllipsoidCatalogInfo> {
 }
 
 fn ellipsoids_uncached() -> Vec<EllipsoidCatalogInfo> {
-    proj_static_list(
-        || {
-            // SAFETY: PROJ returns a process-static null-terminated array.
-            unsafe { proj_sys::proj_list_ellps() }
-        },
-        |info| {
-            let id = string_from_ptr(info.id)?;
-            Some(EllipsoidCatalogInfo {
-                id,
-                semi_major: string_from_ptr(info.major),
-                definition: string_from_ptr(info.ell),
-                name: string_from_ptr(info.name),
-            })
-        },
-    )
+    let mut items = Vec::new();
+    // SAFETY: DOC-STATIC. Process-static ellipsoid records terminated by a
+    // sentinel whose `id` is null (not a pointer-null-terminated array).
+    let mut current = unsafe { proj_sys::proj_list_ellps() };
+    while !current.is_null() {
+        // SAFETY: current points at a process-static record; id is read first.
+        let info = unsafe { &*current };
+        let Some(id) = proj_c_string!(info.id) else {
+            break;
+        };
+        items.push(EllipsoidCatalogInfo {
+            id,
+            semi_major: proj_c_string!(info.major),
+            definition: proj_c_string!(info.ell),
+            name: proj_c_string!(info.name),
+        });
+        // SAFETY: advance one record within the static sentinel-terminated array.
+        current = unsafe { current.add(1) };
+    }
+    items
 }
 
 pub(crate) fn prime_meridians() -> Vec<PrimeMeridianCatalogInfo> {
@@ -76,19 +73,24 @@ pub(crate) fn prime_meridians() -> Vec<PrimeMeridianCatalogInfo> {
 }
 
 fn prime_meridians_uncached() -> Vec<PrimeMeridianCatalogInfo> {
-    proj_static_list(
-        || {
-            // SAFETY: PROJ returns a process-static null-terminated array.
-            unsafe { proj_sys::proj_list_prime_meridians() }
-        },
-        |info| {
-            let id = string_from_ptr(info.id)?;
-            Some(PrimeMeridianCatalogInfo {
-                id,
-                definition: string_from_ptr(info.defn),
-            })
-        },
-    )
+    let mut items = Vec::new();
+    // SAFETY: DOC-STATIC. Process-static prime-meridian records terminated by a
+    // sentinel whose `id` is null (not a pointer-null-terminated array).
+    let mut current = unsafe { proj_sys::proj_list_prime_meridians() };
+    while !current.is_null() {
+        // SAFETY: current points at a process-static record; id is read first.
+        let info = unsafe { &*current };
+        let Some(id) = proj_c_string!(info.id) else {
+            break;
+        };
+        items.push(PrimeMeridianCatalogInfo {
+            id,
+            definition: proj_c_string!(info.defn),
+        });
+        // SAFETY: advance one record within the static sentinel-terminated array.
+        current = unsafe { current.add(1) };
+    }
+    items
 }
 
 pub(crate) fn to_wkt_with_options(
@@ -203,11 +205,17 @@ pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result
     ensure_thread_caches_current();
     let left = normalize(left)?;
     let right = normalize(right)?;
-    let criterion = comparison.criterion();
+    // Order the pair so (A,B) and (B,A) share one cache entry (comparison is
+    // commutative for both exact and ignore-axis-order modes).
+    let (left, right) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
     let key = CrsComparisonKey {
         left,
         right,
-        criterion,
+        mode: comparison,
     };
     CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
@@ -216,9 +224,7 @@ pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result
             CRS_COMPARISON_CACHE_CAPACITY,
             |item| item.key == key,
             || {
-                let left = ProjObject::new(&key.left)?;
-                let right = ProjObject::new(&key.right)?;
-                let value = left.is_equivalent_to(&right, key.criterion);
+                let value = crs_same_uncached(&key.left, &key.right, key.mode)?;
                 Ok(CachedCrsComparison {
                     key: key.clone(),
                     value,
@@ -227,6 +233,50 @@ pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result
         )?;
         Ok(cache[index].value)
     })
+}
+
+/// Single horizontal geographic or projected CRS (top-level kind only).
+/// Compound, vertical, engineering, bound, and geocentric stay exact and are
+/// not admitted into the axis-order-agnostic path.
+fn is_single_horizontal_crs(info: &CrsInfo) -> bool {
+    matches!(
+        info.kind,
+        "geographic_2d" | "geographic_3d" | "geographic" | "projected"
+    )
+}
+
+/// Uncached CRS comparison. `IgnoreAxisOrder` is the operational coordinate
+/// predicate: single horizontal geographic/projected CRS of equal axis count,
+/// each `proj_normalize_for_visualization`'d, then compared with
+/// `PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS`. `Exact` stays a strict PROJ
+/// equivalence. Both negative and positive results are cached by the caller.
+fn crs_same_uncached(left: &str, right: &str, mode: CrsComparison) -> Result<bool> {
+    if left == right {
+        return Ok(true);
+    }
+    match mode {
+        CrsComparison::Exact => {
+            let left = ProjObject::new(left)?;
+            let right = ProjObject::new(right)?;
+            Ok(left.is_equivalent_to(&right, mode.criterion()))
+        },
+        CrsComparison::IgnoreAxisOrder => {
+            let left_info = info(left)?;
+            let right_info = info(right)?;
+            if !is_single_horizontal_crs(&left_info) || !is_single_horizontal_crs(&right_info) {
+                // Compound / vertical / engineering / bound / mixed kinds: no
+                // axis-order relaxation — only the string-equality short path
+                // above can accept them.
+                return Ok(false);
+            }
+            if left_info.axes.len() != right_info.axes.len() {
+                return Ok(false);
+            }
+            let left = ProjObject::new(left)?.into_normalized_for_visualization()?;
+            let right = ProjObject::new(right)?.into_normalized_for_visualization()?;
+            Ok(left.is_equivalent_to(&right, mode.criterion()))
+        },
+    }
 }
 
 pub(crate) fn cached_crs_export<F>(key: &CrsExportKey, produce: F) -> Result<String>

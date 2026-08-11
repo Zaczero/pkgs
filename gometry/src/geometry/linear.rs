@@ -2,17 +2,18 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Linear-referencing and measured-line operations on `Shape`: interpolate /
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
 
-use super::*;
 use crate::Finite;
 use crate::error::Result;
+use crate::geometry::{
+    CoordSeq, Coordinates, Distance3dParts, GeometryErrorKind, LineIndex, LineSeq, Ordering,
+    PlanarMetric, Point, Segment, SegmentProjection, Shape, ShapeData, distance_3d_with_parts,
+    lerp_point, point_distance, same_point, segment_projection, shape_axes_all_z,
+    squared_norm_is_trustworthy,
+};
 
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
 ///
@@ -31,15 +32,15 @@ impl MeasureRange {
     /// Raw distance bounds for `line_substring` (finiteness only — order is
     /// checked post-normalization in [`LineIndex::substring`]).
     pub(crate) fn substring_distance(start: f64, end: f64) -> Result<Self> {
-        let start = Finite::try_new("start_distance", start)?.get();
-        let end = Finite::try_new("end_distance", end)?.get();
+        let start = Finite::try_new("start", start)?.get();
+        let end = Finite::try_new("end", end)?.get();
         Ok(Self { start, end })
     }
 
     /// Raw measure bounds for `line_substring_m`.
     pub(crate) fn substring_measure(start: f64, end: f64) -> Result<Self> {
-        let start = Finite::try_new("start_m", start)?.get();
-        let end = Finite::try_new("end_m", end)?.get();
+        let start = Finite::try_new("start", start)?.get();
+        let end = Finite::try_new("end", end)?.get();
         if start > end {
             return Err(GeometryErrorKind::SubstringMeasureOrder(start, end).into());
         }
@@ -47,6 +48,10 @@ impl MeasureRange {
     }
 
     /// Measure ramp bounds for `interpolate_m`.
+    ///
+    /// Its public parameters really are `start_m`/`end_m` — unlike
+    /// `line_substring`, which is `start`/`end` under EVERY `basis`. Name each
+    /// after its own signature.
     pub(crate) fn interpolate_m(start: f64, end: f64) -> Result<Self> {
         let start = Finite::try_new("start_m", start)?.get();
         let end = Finite::try_new("end_m", end)?.get();
@@ -151,21 +156,98 @@ impl ShapeData {
 /// Collision Detection*, ClosestPtSegmentSegment in distance form). A
 /// degenerate endpoint pair (`p == q`) acts as a point, so point/point,
 /// point/segment, and segment/segment all share this one kernel.
-#[expect(clippy::many_single_char_names, reason = "standard math notation")]
 pub(crate) fn segment_segment_distance_3d(
     p1: [f64; 3],
     q1: [f64; 3],
     p2: [f64; 3],
     q2: [f64; 3],
 ) -> f64 {
-    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    // Same honesty contract as [`finish_planar_squared_min`]: ordinary
+    // positive finite answers stay on the fast path (bit-identical); zero and
+    // non-finite results recompute in a scaled local frame / endpoint hypot
+    // so false-zero underflow and overflow cannot masquerade as contact/inf.
+    let classic = segment_segment_distance_3d_local(p1, q1, p2, q2);
+    if classic > 0.0 && classic.is_finite() {
+        // Finite positive is trustworthy only when intermediate differences
+        // could not have overflowed: if any absolute coordinate is huge,
+        // re-evaluate with power-of-two scale *before* subtraction.
+        let max_abs = p1
+            .into_iter()
+            .chain(q1)
+            .chain(p2)
+            .chain(q2)
+            .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+        if max_abs < 1e150 {
+            return classic;
+        }
+    }
+    finish_distance_3d_min(
+        if classic > 0.0 && classic.is_finite() {
+            0.0
+        } else {
+            classic
+        },
+        || {
+            // Scale original operands BEFORE subtraction so ±1e308 pairs do not
+            // overflow the direction vector to inf (which yielded wrong finite
+            // distances ≈1.4e308 for crossing axes).
+            let max_abs = p1
+                .into_iter()
+                .chain(q1)
+                .chain(p2)
+                .chain(q2)
+                .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+            if !(max_abs.is_finite() && max_abs > 0.0) {
+                return endpoint_pair_min_distance_3d(p1, q1, p2, q2);
+            }
+            let scale = 1.0 / max_abs;
+            let scl = |pt: [f64; 3]| [pt[0] * scale, pt[1] * scale, pt[2] * scale];
+            let local = segment_segment_distance_3d_local(scl(p1), scl(q1), scl(p2), scl(q2));
+            if local.is_finite() {
+                local / scale
+            } else {
+                endpoint_pair_min_distance_3d(p1, q1, p2, q2)
+            }
+        },
+    )
+}
+
+/// 3D twin of [`finish_planar_squared_min`]: when the fast answer is zero or
+/// non-finite, recompute; true contact may still return 0.
+fn finish_distance_3d_min(classic: f64, recompute: impl FnOnce() -> f64) -> f64 {
+    if classic > 0.0 && classic.is_finite() {
+        classic
+    } else {
+        let rescued = recompute();
+        // Prefer a finite positive rescue over false-zero / overflow classic.
+        if rescued.is_finite() {
+            rescued
+        } else {
+            classic
+        }
+    }
+}
+
+/// Ericson segment–segment closest-point distance in a pre-normalized frame
+/// (caller ensures dots stay finite when possible).
+#[expect(clippy::many_single_char_names, reason = "Ericson textbook notation")]
+fn segment_segment_distance_3d_local(
+    p1: [f64; 3],
+    q1: [f64; 3],
+    p2: [f64; 3],
+    q2: [f64; 3],
+) -> f64 {
+    let sub = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
     let d1 = sub(q1, p1);
     let d2 = sub(q2, p2);
     let r = sub(p1, p2);
     let a = dot(d1, d1);
     let e = dot(d2, d2);
     let f = dot(d2, r);
+    if !a.is_finite() || !e.is_finite() {
+        return f64::INFINITY;
+    }
     let (s, t);
     if a == 0.0 && e == 0.0 {
         s = 0.0;
@@ -185,13 +267,24 @@ pub(crate) fn segment_segment_distance_3d(
                 reason = "textbook segment-segment closest-point denominator a*e - b*b (Ericson, Real-Time Collision Detection); clippy's a*b suggestion is wrong"
             )]
             let denom = a * e - b * b;
-            let s0 = if denom == 0.0 {
+            let s0 = if denom == 0.0 || !denom.is_finite() {
                 0.0
             } else {
-                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+                let num = b * f - c * e;
+                if num.is_finite() {
+                    (num / denom).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
             };
-            let t0 = (b * s0 + f) / e;
-            if t0 < 0.0 {
+            let t0 = if e == 0.0 {
+                0.0
+            } else {
+                let num = b * s0 + f;
+                if num.is_finite() { num / e } else { 0.0 }
+            };
+            // Clamp t; recompute s on the boundary (same for non-finite or t<0).
+            if !t0.is_finite() || t0 < 0.0 {
                 t = 0.0;
                 s = (-c / a).clamp(0.0, 1.0);
             } else if t0 > 1.0 {
@@ -203,10 +296,82 @@ pub(crate) fn segment_segment_distance_3d(
             }
         }
     }
+    // Classic `p + d*param` (bit-identical to the pre-rescue path when finite).
     let c1 = [p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s];
     let c2 = [p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t];
     let diff = sub(c1, c2);
-    dot(diff, diff).sqrt()
+    let squared = dot(diff, diff);
+    if squared_norm_is_trustworthy(squared, diff[0] == 0.0 && diff[1] == 0.0 && diff[2] == 0.0) {
+        squared.sqrt()
+    } else {
+        hypot3(diff[0], diff[1], diff[2])
+    }
+}
+
+fn hypot3(dx: f64, dy: f64, dz: f64) -> f64 {
+    let scale = dx.abs().max(dy.abs()).max(dz.abs());
+    if scale == 0.0 {
+        return 0.0;
+    }
+    if !scale.is_finite() {
+        // One component is already non-finite.
+        return f64::INFINITY;
+    }
+    let (x, y, z) = (dx / scale, dy / scale, dz / scale);
+    scale * (x * x + y * y + z * z).sqrt()
+}
+
+fn endpoint_pair_min_distance_3d(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> f64 {
+    let ends_a = [p1, q1];
+    let ends_b = [p2, q2];
+    let mut best = f64::INFINITY;
+    for a in ends_a {
+        for b in ends_b {
+            let d = hypot3(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+            if d < best {
+                best = d;
+            }
+        }
+    }
+    // Also project each endpoint onto the other segment via 1D parameter
+    // using length-normalized directions when possible.
+    for &pt in &ends_a {
+        best = best.min(point_segment_distance_3d(pt, p2, q2));
+    }
+    for &pt in &ends_b {
+        best = best.min(point_segment_distance_3d(pt, p1, q1));
+    }
+    best
+}
+
+fn point_segment_distance_3d(point: [f64; 3], start: [f64; 3], end: [f64; 3]) -> f64 {
+    let ab = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let ap = [
+        point[0] - start[0],
+        point[1] - start[1],
+        point[2] - start[2],
+    ];
+    let ab_len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let param = if ab_len2 == 0.0 || !ab_len2.is_finite() {
+        0.0
+    } else {
+        let num = ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2];
+        if num.is_finite() {
+            (num / ab_len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let closest = [
+        start[0] * (1.0 - param) + end[0] * param,
+        start[1] * (1.0 - param) + end[1] * param,
+        start[2] * (1.0 - param) + end[2] * param,
+    ];
+    hypot3(
+        point[0] - closest[0],
+        point[1] - closest[1],
+        point[2] - closest[2],
+    )
 }
 
 impl Shape {
@@ -229,8 +394,7 @@ impl Shape {
             let (dx, dy, dz) = (b.x - a.x, b.y - a.y, bz - az);
             let squared = dx * dx + dy * dy + dz * dz;
             return Ok(
-                if squared.is_finite() && (squared != 0.0 || (dx == 0.0 && dy == 0.0 && dz == 0.0))
-                {
+                if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0 && dz == 0.0) {
                     squared.sqrt()
                 } else {
                     dx.hypot(dy).hypot(dz)
@@ -398,8 +562,8 @@ impl Shape {
                 start: (*start).into(),
                 end: (*end).into(),
             };
-            let fraction = segment_projection_fraction(point, segment);
-            let projected = lerp_point(*start, *end, fraction);
+            let projection = segment_projection(point, segment);
+            let projected = projection.interpolate_point(*start, *end);
             let distance = point_distance(point, projected);
             if distance < best_distance {
                 best_distance = distance;
@@ -484,54 +648,89 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     points: &[Point],
     tolerance: f64,
 ) -> Vec<Vec<Point>> {
-    if line.coord_count() < 2 {
-        return vec![line.iter_coords().collect()];
+    let coords: Vec<Point> = line.iter_coords().collect();
+    if coords.len() < 2 {
+        return vec![coords];
     }
-    let total = line_segments(line)
-        .map(|segment| point_distance(segment.start, segment.end))
-        .sum::<f64>();
-    if total == 0.0 {
-        return vec![line.iter_coords().collect()];
-    }
+    let Some(first_live) = coords
+        .array_windows::<2>()
+        .position(|pair| point_distance(pair[0], pair[1]) > 0.0)
+    else {
+        return vec![coords];
+    };
+    let last_live = coords
+        .array_windows::<2>()
+        .rposition(|pair| point_distance(pair[0], pair[1]) > 0.0)
+        .expect("a first live segment has a last live segment");
 
-    let mut offsets = points
+    let mut cuts = points
         .iter()
-        .filter_map(|point| line_point_offset(line, *point, tolerance))
-        .filter(|offset| *offset > 0.0 && *offset < total)
+        .filter_map(|point| line_point_offset(&coords, *point, tolerance))
+        .filter(|(index, projection)| {
+            !(*index == first_live && projection.is_start()
+                || *index == last_live && projection.is_end())
+        })
         .collect::<Vec<_>>();
-    offsets.sort_by(f64::total_cmp);
-    offsets.dedup_by(|left, right| (*left - *right).abs() <= tolerance);
-
-    if offsets.is_empty() {
-        return vec![line.iter_coords().collect()];
-    }
-
-    let mut pieces = Vec::with_capacity(offsets.len() + 1);
-    let mut start = 0.0;
-    for offset in offsets {
-        if let Some(piece) = line_piece_between(line, start, offset) {
-            pieces.push(piece);
+    cuts.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp_along(&right.1))
+    });
+    cuts.dedup_by(|left, right| {
+        if left.0 != right.0 {
+            return false;
         }
-        start = offset;
+        if left.1.cmp_along(&right.1).is_eq() {
+            return true;
+        }
+        if tolerance == 0.0 {
+            return false;
+        }
+        let start = coords[left.0];
+        let end = coords[left.0 + 1];
+        point_distance(
+            left.1.interpolate_point(start, end),
+            right.1.interpolate_point(start, end),
+        ) <= tolerance
+    });
+
+    if cuts.is_empty() {
+        return vec![coords];
     }
-    if let Some(piece) = line_piece_between(line, start, total) {
+
+    let mut pieces = Vec::with_capacity(cuts.len() + 1);
+    let mut piece = vec![coords[0]];
+    let mut cuts = cuts.into_iter().peekable();
+    for (segment_index, pair) in coords.array_windows::<2>().enumerate() {
+        while cuts
+            .peek()
+            .is_some_and(|(cut_index, _)| *cut_index == segment_index)
+        {
+            let (_, projection) = cuts.next().expect("peeked cut exists");
+            let point = projection.interpolate_point(pair[0], pair[1]);
+            push_distinct_point(&mut piece, point);
+            if piece.len() >= 2 {
+                pieces.push(std::mem::replace(&mut piece, vec![point]));
+            }
+        }
+        push_distinct_point(&mut piece, pair[1]);
+    }
+    if piece.len() >= 2 {
         pieces.push(piece);
     }
     pieces
 }
 
-/// Distance along `line` at which `point` lies on it within `tolerance`
-/// (coordinate units), if any. `tolerance == 0.0` requires the point to lie
-/// exactly on the linework.
+/// Segment-local position at which `point` lies on `line` within `tolerance`
+/// (coordinate units), if any. `tolerance == 0.0` requires exact membership.
 pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
     line: &C,
     point: Point,
     tolerance: f64,
-) -> Option<f64> {
-    let mut offset = 0.0;
+) -> Option<(usize, SegmentProjection)> {
     let mut best = None;
     let mut best_distance = f64::INFINITY;
-    for [start, end] in line.segment_pairs() {
+    for (segment_index, [start, end]) in line.segment_pairs().enumerate() {
         let length = point_distance(start, end);
         if length == 0.0 {
             continue;
@@ -540,58 +739,15 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
             start: start.xy(),
             end: end.xy(),
         };
-        let fraction = segment_projection_fraction(point, segment);
-        let projected = lerp_point(start, end, fraction);
+        let projection = segment_projection(point, segment);
+        let projected = projection.interpolate_point(start, end);
         let distance = point_distance(point, projected);
         if distance <= tolerance && distance < best_distance {
             best_distance = distance;
-            best = Some(length * fraction + offset);
+            best = Some((segment_index, projection));
         }
-        offset += length;
     }
     best
-}
-
-/// Sub-line of `line` between the `start` and `end` offsets along it.
-pub(super) fn line_piece_between<C: Coordinates + ?Sized>(
-    line: &C,
-    start: f64,
-    end: f64,
-) -> Option<Vec<Point>> {
-    if start >= end {
-        return None;
-    }
-    let mut result = Vec::new();
-    let mut offset = 0.0;
-    for [seg_start, seg_end] in line.segment_pairs() {
-        let length = point_distance(seg_start, seg_end);
-        if length == 0.0 {
-            continue;
-        }
-        let segment_start = offset;
-        let segment_end = offset + length;
-        if segment_end < start {
-            offset = segment_end;
-            continue;
-        }
-        if segment_start > end {
-            break;
-        }
-        let from = start.max(segment_start);
-        let to = end.min(segment_end);
-        if from <= to {
-            push_distinct_point(
-                &mut result,
-                lerp_point(seg_start, seg_end, (from - segment_start) / length),
-            );
-            push_distinct_point(
-                &mut result,
-                lerp_point(seg_start, seg_end, (to - segment_start) / length),
-            );
-        }
-        offset = segment_end;
-    }
-    (result.len() >= 2).then_some(result)
 }
 
 /// Append `point` unless it duplicates the current last vertex.

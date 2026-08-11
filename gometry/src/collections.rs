@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Project-wide hash collections — one place that picks the hasher so every map
 //! and set in the crate is consistent.
 //!
@@ -19,7 +15,7 @@
 //! (none exists today; H3 `CellIndex` is a foreign `NonZero` wrapper without an
 //! `IsEnabled` impl).
 
-use std::hash::BuildHasher;
+use std::hash::BuildHasher as _;
 use std::sync::LazyLock;
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};

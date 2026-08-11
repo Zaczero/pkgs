@@ -1,15 +1,11 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+//! Generic coverage iterator + rectangular-grid coverage `#[pymethods]` helpers.
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! Generic coverage iterator + rectangular-grid coverage `#[pymethods]` helpers.
 
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
@@ -17,15 +13,16 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyList};
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Shape, ShapeData, is_geographic_frame};
+use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{CellDepth, GridCell, RectGridCell};
-use crate::grid::coverer::{self, RectCell};
+use crate::grid::coverer;
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, CoveragePredicate, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
 use crate::py::row::RowContainer;
 use crate::{
-    HeapSize, PyGeometry, Typed, crs_arc_static, exact_geometry, expected_geometry_or_array,
-    lonlat_shape, validate_lonlat_shape,
+    HeapSize, PyGeometry, Typed, exact_geometry, expected_geometry_or_array, lonlat_shape,
+    validate_lonlat_shape,
 };
 
 /// One typed coverage cell stored canonically as its public 64-bit key.
@@ -213,13 +210,6 @@ impl<C: CoverageCell> CoverageCells<C> {
             .map_or(Some(physical), |rows| rows.binary_search(&physical).ok())
     }
 
-    pub(crate) fn same_ids(&self, other: &Self) -> bool {
-        // Compare logical storage ids directly — no wrapper reconstruction.
-        self.len() == other.len()
-            && (0..self.len())
-                .all(|row| self.ids[self.physical(row)] == other.ids[other.physical(row)])
-    }
-
     pub(crate) fn cell_array(&self, kind: GridKind) -> PyCellArray {
         let selection = self
             .selected
@@ -266,25 +256,32 @@ pub(crate) struct CoveragePartition<C> {
 }
 
 impl<C: CoverageCell> CoveragePartition<C> {
+    /// Build from a **sorted** `(cell, is_interior)` stream (coverer / polyfill
+    /// contract). Adjacent duplicate tags are merged (interior wins); the stream
+    /// is not re-sorted.
     pub(crate) fn from_sorted_tagged(cells: impl IntoIterator<Item = (C, bool)>) -> Self {
-        let mut tagged: Vec<(u64, bool)> = cells
-            .into_iter()
-            .map(|(cell, interior)| (cell.coverage_id(), interior))
-            .collect();
-        tagged.sort_unstable_by_key(|&(id, _)| id);
         let mut ids = Vec::new();
         let mut interior = Vec::new();
-        for (id, is_interior) in tagged {
-            if ids.last() == Some(&id) {
-                if is_interior && interior.last() != Some(&(ids.len() - 1)) {
-                    interior.push(ids.len() - 1);
+        let mut last_id: Option<u64> = None;
+        for (cell, is_interior) in cells {
+            let id = cell.coverage_id();
+            if let Some(prev) = last_id {
+                debug_assert!(
+                    id >= prev,
+                    "coverage tagged stream must be sorted by cell id"
+                );
+                if id == prev {
+                    if is_interior && interior.last() != Some(&(ids.len() - 1)) {
+                        interior.push(ids.len() - 1);
+                    }
+                    continue;
                 }
-                continue;
             }
             if is_interior {
                 interior.push(ids.len());
             }
             ids.push(id);
+            last_id = Some(id);
         }
         let ids = SortedUniqueCellIds::from_sorted_ids(ids);
         let interior = CheckedSelection::new(interior, ids.len());
@@ -313,19 +310,6 @@ impl<C: CoverageCell> CoveragePartition<C> {
                 selected.push(row);
             }
         }
-        CoverageCells::selected(
-            self.ids.clone(),
-            CheckedSelection::new(selected, self.ids.len()),
-        )
-    }
-
-    pub(crate) fn select(&self, keep: impl Fn(C) -> bool) -> CoverageCells<C> {
-        let selected: Vec<usize> = self
-            .ids
-            .iter()
-            .enumerate()
-            .filter_map(|(row, &id)| keep(C::from_coverage_id(id)).then_some(row))
-            .collect();
         CoverageCells::selected(
             self.ids.clone(),
             CheckedSelection::new(selected, self.ids.len()),
@@ -384,20 +368,22 @@ where
     }
 }
 
-/// One exact membership answer for a normalized candidate shape.
+/// One exact membership answer after the grid's canonical geographic mapping.
+///
+/// Construction and membership must consume the identical source
+/// representation.  In particular, the accepted one-ULP latitude sliver at a
+/// physical pole has no distinct location: leaving a query raw here would let
+/// an otherwise exact coverage reject the very source that created it.
 pub(crate) fn coverage_member(
     geometry: &PyGeometry,
     candidate: &Shape,
     predicate: CoveragePredicate,
 ) -> PyResult<bool> {
-    if let Shape::Point(point) = candidate {
+    let candidate = normalize_grid_source(candidate);
+    if let Shape::Point(point) = &candidate {
         return coverage_member_point(geometry, *point, predicate);
     }
-    Ok(predicate.test_data(
-        geometry,
-        &geometry.shape,
-        &ShapeData::from(candidate.clone()),
-    ))
+    Ok(predicate.test_data(geometry, &geometry.shape, &ShapeData::from(candidate)))
 }
 
 /// One exact membership answer for a lon/lat point.
@@ -407,13 +393,16 @@ pub(crate) fn coverage_member_point(
     predicate: CoveragePredicate,
 ) -> PyResult<bool> {
     crate::boundary::geographic::validate_lonlat_point(point)?;
+    let Shape::Point(point) = normalize_grid_source(&Shape::Point(point)) else {
+        unreachable!("normalizing a point preserves its geometry kind")
+    };
     Ok(predicate.test_point(geometry, &geometry.shape, point))
 }
 
 pub(crate) trait HierarchicalCoverageOps: Clone + Sized {
     type Cell: CoverageCell;
 
-    fn cells(&self) -> &CoverageCells<Self::Cell>;
+    fn coverage_cells(&self) -> &CoverageCells<Self::Cell>;
     fn cell_level(cell: &Self::Cell) -> u8;
     fn parse_floor(value: i64) -> PyResult<u8>;
     fn parse_target_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
@@ -468,7 +457,7 @@ where
 {
     let floor = C::parse_floor(floor)?;
     // Decorative with_parents ancestors must not participate in compact.
-    let frontier = hierarchical_coverage_frontier::<C>(coverage.cells())?;
+    let frontier = hierarchical_coverage_frontier::<C>(coverage.coverage_cells())?;
     let cells = C::compact_cells(frontier, floor)?;
     Ok(coverage.with_compacted_cells(cells))
 }
@@ -482,7 +471,7 @@ where
 {
     let depth = C::parse_target_depth(depth)?;
     if let Some(cell) = coverage
-        .cells()
+        .coverage_cells()
         .iter()
         .find(|cell| C::cell_level(cell) > depth)
     {
@@ -490,7 +479,7 @@ where
     }
     // Expand only the leaf frontier — uncompacting decorative parents would
     // invent sibling branches outside the factory covering.
-    let frontier = hierarchical_coverage_frontier::<C>(coverage.cells())?;
+    let frontier = hierarchical_coverage_frontier::<C>(coverage.coverage_cells())?;
     let cells = C::uncompact_cells(frontier, depth)?;
     Ok(coverage.with_uncompacted_cells(cells, depth))
 }
@@ -501,8 +490,8 @@ where
 {
     let floor = C::parse_floor(floor)?;
     // Explicit user transform — no cell budget re-cap.
-    let mut cells = Vec::with_capacity(coverage.cells().len());
-    for cell in coverage.cells().iter() {
+    let mut cells = Vec::with_capacity(coverage.coverage_cells().len());
+    for cell in coverage.coverage_cells().iter() {
         cells.push(cell);
         for depth in floor..C::cell_level(&cell) {
             if let Some(parent) = C::parent_cell(&cell, depth)? {
@@ -513,16 +502,17 @@ where
     Ok(coverage.with_parent_cells(cells, floor))
 }
 
-pub(crate) struct DissolveEdge<C> {
-    pub(crate) neighbor: C,
-    pub(crate) segment: CoordSeq,
-}
-
 pub(crate) trait GridDissolver {
     type Cell: Copy + Ord;
 
     fn fast_path_cells(cells: &[Self::Cell]) -> PyResult<Option<Vec<Self::Cell>>>;
-    fn boundary_edges(cell: Self::Cell) -> Vec<DissolveEdge<Self::Cell>>;
+    /// Cheap neighbor ids for adjacency pre-scan (no edge geometry).
+    fn adjacency_neighbors(cell: Self::Cell) -> impl Iterator<Item = Self::Cell>;
+    /// Exterior edge segments only (`neighbor` not in the prepared set).
+    fn exterior_edge_segments(
+        cell: Self::Cell,
+        is_member: &dyn Fn(Self::Cell) -> bool,
+    ) -> Vec<CoordSeq>;
     fn crosses_seam(segment: &CoordSeq) -> bool;
     fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape>;
 }
@@ -532,18 +522,31 @@ where
     D: GridDissolver,
 {
     let fallback_cells = if let Some(prepared) = D::fast_path_cells(cells)? {
-        let mut outline: Vec<CoordSeq> = Vec::with_capacity(prepared.len() * 4);
+        // Pre-scan adjacency without materializing edge geometry. Zero shared
+        // edges → MultiPolygon of per-cell polygons (no polygonize).
+        let any_adjacent = prepared.iter().any(|&cell| {
+            D::adjacency_neighbors(cell).any(|neighbor| prepared.binary_search(&neighbor).is_ok())
+        });
+        if !any_adjacent {
+            // No shared edges: assemble a MultiPolygon of the per-cell
+            // polygons directly — never pay union/polygonize.
+            return multipolygon_from_cell_shapes(
+                prepared
+                    .into_iter()
+                    .map(D::fallback_shape)
+                    .collect::<crate::error::Result<Vec<_>>>()?,
+            );
+        }
+        let is_member = |neighbor: D::Cell| prepared.binary_search(&neighbor).is_ok();
+        let mut outline: Vec<CoordSeq> = Vec::with_capacity(prepared.len() * 2);
         let mut crosses_seam = false;
         'scan: for &cell in &prepared {
-            for edge in D::boundary_edges(cell) {
-                if prepared.binary_search(&edge.neighbor).is_ok() {
-                    continue;
-                }
-                if D::crosses_seam(&edge.segment) {
+            for segment in D::exterior_edge_segments(cell, &is_member) {
+                if D::crosses_seam(&segment) {
                     crosses_seam = true;
                     break 'scan;
                 }
-                outline.push(edge.segment);
+                outline.push(segment);
             }
         }
         if !crosses_seam && let Some(typed) = polygonize_outline(outline)? {
@@ -558,6 +561,44 @@ where
         .map(D::fallback_shape)
         .collect::<crate::error::Result<_>>()?;
     coverage_to_polygon(&shapes)
+}
+
+/// Assemble one MultiPolygon (or single Polygon) from already-disjoint cell
+/// shapes — used when the dissolve pre-scan finds zero shared edges.
+fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
+    if shapes.is_empty() {
+        return Err(GeometryError::new_err(
+            "a coverage needs at least one cell to dissolve into a polygon",
+        ));
+    }
+    let mut polygons = Vec::with_capacity(shapes.len());
+    for shape in shapes {
+        match shape {
+            Shape::Polygon(polygon) => polygons.push(polygon),
+            Shape::MultiPolygon(parts) => polygons.extend(parts),
+            Shape::GeometryCollection(parts) => {
+                for part in parts {
+                    match part {
+                        Shape::Polygon(polygon) => polygons.push(polygon),
+                        Shape::MultiPolygon(multi) => polygons.extend(multi),
+                        _ => {},
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    if polygons.is_empty() {
+        return Err(GeometryError::new_err(
+            "a coverage needs at least one cell to dissolve into a polygon",
+        ));
+    }
+    let shape = if polygons.len() == 1 {
+        Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
+    } else {
+        Shape::MultiPolygon(polygons)
+    };
+    Ok(PyGeometry::typed_wgs84(shape))
 }
 
 fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
@@ -581,11 +622,7 @@ fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
     } else {
         Shape::MultiPolygon(polygons)
     };
-    Ok(Some(PyGeometry::typed_with_epoch(
-        shape,
-        Some(crs_arc_static("EPSG:4326")),
-        None,
-    )))
+    Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 
 pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
@@ -647,27 +684,127 @@ pub(crate) trait RectCoverageCell: CoverageCell {
     type Cell: RectGridCell + crate::grid::cell_set::HierarchicalId;
 
     fn from_rect_cell(cell: Self::Cell) -> Self;
-    fn rect_cell(self) -> Self::Cell;
     fn level(self) -> u8;
+}
+
+/// Rule-independent overlap partition for rectangular-grid inspection
+/// (`interior_cells` / `boundary_cells` / `explain`), keyed by source +
+/// factory depth + `max_cells`. Built lazily: visible-cell selection never
+/// forces it for non-overlap rules (same contract as H3/S2).
+#[derive(Debug)]
+pub(crate) struct RectMembership<W: RectCoverageCell> {
+    partition: OnceLock<Result<CoveragePartition<W>, crate::grid::CoverBudgetExceeded>>,
+    /// Split-normalized working shape for delayed overlap recompute.
+    cover_shape: Shape,
+    /// True when antimeridian split created storage distinct from the
+    /// membership geometry (only then is `cover_shape` counted in heap).
+    cover_is_split: bool,
+    factory_depth: u8,
+    marker: PhantomData<W>,
+}
+
+impl<W: RectCoverageCell> RectMembership<W> {
+    pub(crate) fn lazy(cover_shape: Shape, cover_is_split: bool, factory_depth: u8) -> Arc<Self> {
+        Arc::new(Self {
+            partition: OnceLock::new(),
+            cover_shape,
+            cover_is_split,
+            factory_depth,
+            marker: PhantomData,
+        })
+    }
+
+    pub(crate) fn seeded(
+        partition: CoveragePartition<W>,
+        cover_shape: Shape,
+        cover_is_split: bool,
+        factory_depth: u8,
+    ) -> Arc<Self> {
+        let lock = OnceLock::new();
+        let _ = lock.set(Ok(partition));
+        Arc::new(Self {
+            partition: lock,
+            cover_shape,
+            cover_is_split,
+            factory_depth,
+            marker: PhantomData,
+        })
+    }
+
+    pub(crate) const fn partition_slot(
+        &self,
+    ) -> &OnceLock<Result<CoveragePartition<W>, crate::grid::CoverBudgetExceeded>> {
+        &self.partition
+    }
+
+    pub(crate) const fn cover_shape(&self) -> &Shape {
+        &self.cover_shape
+    }
+
+    pub(crate) const fn factory_depth(&self) -> u8 {
+        self.factory_depth
+    }
+}
+
+impl<W: RectCoverageCell> HeapSize for RectMembership<W> {
+    fn heap_bytes(&self) -> usize {
+        let cover_bytes = if self.cover_is_split {
+            self.cover_shape.coordinate_bytes()
+        } else {
+            0
+        };
+        cover_bytes
+            + match self.partition.get() {
+                Some(Ok(partition)) => partition.heap_bytes(),
+                Some(Err(_)) | None => 0,
+            }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RectCoverageState<W: RectCoverageCell> {
     pub(crate) geometry: PyGeometry,
     pub(crate) cells: CoverageCells<W>,
-    pub(crate) partition: Arc<CoveragePartition<W>>,
+    pub(crate) membership: Arc<RectMembership<W>>,
     pub(crate) cell_rule: CellRule,
     pub(crate) depth: CellDepth,
-    /// Factory `max_cells` budget (serialized for pickle recompute — D07).
+    /// Factory `max_cells` budget (serialized for pickle — D07).
     /// `None` = unlimited (adult factory choice; recompute stays unbounded).
     pub(crate) max_cells: Option<usize>,
 }
 
 impl<W: RectCoverageCell> RectCoverageState<W> {
     pub(crate) fn retained_heap_bytes(&self) -> usize {
-        self.geometry.shape.shape().coordinate_bytes()
-            + self.partition.heap_bytes()
-            + self.cells.additional_heap_bytes(&self.partition)
+        let geometry_bytes = self.geometry.shape.shape().coordinate_bytes();
+        let membership_bytes = self.membership.heap_bytes();
+        match self.membership.partition_slot().get() {
+            Some(Ok(partition)) => {
+                geometry_bytes + membership_bytes + self.cells.additional_heap_bytes(partition)
+            },
+            Some(Err(_)) | None => geometry_bytes + membership_bytes + self.cells.heap_bytes(),
+        }
+    }
+
+    /// Resolve the overlap inspection partition, computing it once on first use.
+    /// May raise when the delayed overlap pass exceeds the factory `max_cells`.
+    pub(crate) fn partition<S: RectCoverSpec<Cell = W::Cell>>(
+        &self,
+    ) -> PyResult<&CoveragePartition<W>> {
+        let max_cells = self.max_cells;
+        let factory_depth = self.membership.factory_depth();
+        let cover_shape = self.membership.cover_shape();
+        let ready = self.membership.partition_slot().get_or_init(|| {
+            let covering = coverer::cover(cover_shape, S::roots(), factory_depth, max_cells)?;
+            Ok(CoveragePartition::from_sorted_tagged(
+                covering
+                    .into_iter()
+                    .map(|(cell, interior)| (W::from_rect_cell(cell), interior)),
+            ))
+        });
+        match ready {
+            Ok(partition) => Ok(partition),
+            Err(err) => Err(cover_budget_err(*err)),
+        }
     }
 
     /// Re-represent the visible cells without touching the exact membership
@@ -682,7 +819,7 @@ impl<W: RectCoverageCell> RectCoverageState<W> {
         Self {
             geometry: self.geometry.clone(),
             cells: CoverageCells::from_cells(cells),
-            partition: Arc::clone(&self.partition),
+            membership: Arc::clone(&self.membership),
             cell_rule: self.cell_rule,
             depth,
             max_cells: self.max_cells,
@@ -690,11 +827,9 @@ impl<W: RectCoverageCell> RectCoverageState<W> {
     }
 }
 
+/// Wrap rect kernel cells; `CoverageCells::from_cells` canonicalizes order.
 pub(crate) fn rect_coverage_cells<W: RectCoverageCell>(cells: Vec<W::Cell>) -> Vec<W> {
-    sorted_rect_cells(cells)
-        .into_iter()
-        .map(W::from_rect_cell)
-        .collect()
+    cells.into_iter().map(W::from_rect_cell).collect()
 }
 
 /// Build the shared geohash/tile coverage core.
@@ -706,14 +841,6 @@ pub(crate) fn empty_coverage_err(label: &str) -> PyErr {
 /// (the shared boundary mapping for every grid's `cover(...)` factory).
 pub(crate) fn cover_budget_err(err: crate::grid::CoverBudgetExceeded) -> PyErr {
     integer_parameter_error(err.to_string(), "max_cells", err.limit as i64)
-}
-
-/// Budget overflow while recomputing a pickled coverage's source partition.
-pub(crate) fn unpickle_cover_budget_err(err: crate::grid::CoverBudgetExceeded) -> PyErr {
-    GeometryError::new_err(format!(
-        "coverage reconstruction exceeds its recorded max_cells={}",
-        err.limit
-    ))
 }
 
 /// Parse the shared cover-factory `max_cells` parameter.
@@ -747,34 +874,58 @@ where
     W: RectCoverageCell,
 {
     let depth = S::parse_depth(depth)?;
-    let (membership, cover_shape) = coverage_factory_shapes(geometry, S::coverage_label())?;
-    let covering =
-        coverer::cover(&cover_shape, S::roots(), depth, max_cells).map_err(cover_budget_err)?;
-    let partition = Arc::new(CoveragePartition::from_sorted_tagged(
-        covering
-            .cells
-            .into_iter()
-            .map(|(cell, interior)| (W::from_rect_cell(cell), interior)),
-    ));
-    let cells = match cell_rule {
-        CellRule::Overlap | CellRule::Bbox => partition.all(),
-        CellRule::Within => partition.interior(),
-        // Center-rule probes the cover working shape (split-normalized).
-        CellRule::Center => partition.select(|cell| {
-            let bounds = cell.rect_cell().bounds();
-            Point::new(
-                f64::midpoint(bounds.minx(), bounds.maxx()),
-                f64::midpoint(bounds.miny(), bounds.maxy()),
+    let (membership_geometry, cover_shape, cover_is_split) =
+        coverage_factory_shapes(geometry, S::coverage_label())?;
+    let (membership, cells) = match cell_rule {
+        // Overlap/bbox already produce the full tagged product — seed so
+        // interior/boundary do not re-cover.
+        CellRule::Overlap | CellRule::Bbox => {
+            let covering = coverer::cover(&cover_shape, S::roots(), depth, max_cells)
+                .map_err(cover_budget_err)?;
+            let partition = CoveragePartition::from_sorted_tagged(
+                covering
+                    .into_iter()
+                    .map(|(cell, interior)| (W::from_rect_cell(cell), interior)),
+            );
+            let cells = partition.all();
+            (
+                RectMembership::seeded(partition, cover_shape, cover_is_split, depth),
+                cells,
             )
-            .is_ok_and(|center| cover_shape.covers_point(center))
-        }),
+        },
+        CellRule::Within => {
+            let covering = coverer::cover(&cover_shape, S::roots(), depth, max_cells)
+                .map_err(cover_budget_err)?;
+            let cells = CoverageCells::from_cells(
+                covering
+                    .into_iter()
+                    .filter(|&(_, interior)| interior)
+                    .map(|(cell, _)| W::from_rect_cell(cell))
+                    .collect(),
+            );
+            (
+                RectMembership::lazy(cover_shape, cover_is_split, depth),
+                cells,
+            )
+        },
+        // Native center descent: budget counts only visible center cells;
+        // inspection partition stays cold until first interior/boundary use.
+        CellRule::Center => {
+            let centers = coverer::cover_center(&cover_shape, S::roots(), depth, max_cells)
+                .map_err(cover_budget_err)?;
+            let cells = CoverageCells::from_cells(rect_coverage_cells::<W>(centers));
+            (
+                RectMembership::lazy(cover_shape, cover_is_split, depth),
+                cells,
+            )
+        },
     };
     let depth = CellDepth::from_levels(cells.iter().map(RectCoverageCell::level))
         .unwrap_or(CellDepth::Uniform(depth));
     Ok(RectCoverageState {
-        geometry: membership,
+        geometry: membership_geometry,
         cells,
-        partition,
+        membership,
         cell_rule,
         depth,
         max_cells,
@@ -835,40 +986,60 @@ where
 /// split-normalization topology uses. Membership storage keeps the unsplit
 /// lon/lat form (pole probes need the original container; non-point membership
 /// re-normalizes through [`topology_scalar_pair`]).
+///
+/// Returns `(working_shape, is_split)` — `is_split` is true only when
+/// antimeridian normalization allocated distinct storage from `lonlat`.
 pub(crate) fn cover_working_shape(
     frame: &crate::boundary::metadata::Frame,
     lonlat: &Shape,
-) -> PyResult<Shape> {
+) -> PyResult<(Shape, bool)> {
     if is_geographic_frame(frame) && lonlat.crosses_antimeridian() {
-        Ok(lonlat.split_antimeridian()?)
+        Ok((lonlat.split_antimeridian()?, true))
     } else {
-        Ok(lonlat.clone())
+        Ok((lonlat.clone(), false))
     }
 }
 
-/// Factory source for cover + membership: WGS84 lon/lat membership geometry
-/// (unsplit) and the coverer's working shape (split-normalized when needed).
-pub(crate) fn coverage_factory_shapes(
+/// Factory source retained by every coverage: canonical WGS84 lon/lat
+/// membership geometry.  New certified coverers consume this exact source
+/// directly; only the historical planar tilers need a split working image.
+pub(crate) fn coverage_factory_geometry(
     geometry: &PyGeometry,
     label: &str,
-) -> PyResult<(PyGeometry, Shape)> {
+) -> PyResult<PyGeometry> {
     let shape = lonlat_shape(geometry)?;
     validate_lonlat_shape(&shape)?;
+    // This is the sole public grid-source normalization point.  Every grid
+    // lane receives the same physical-pole spelling before it can derive a
+    // working image, a rectangle certificate, or aggregate components.
+    let shape = normalize_grid_source(&shape);
     if shape.is_empty() {
         return Err(empty_coverage_err(label));
     }
-    let cover_shape = cover_working_shape(&geometry.frame, &shape)?;
-    Ok((PyGeometry::wgs84(shape), cover_shape))
+    Ok(PyGeometry::wgs84(shape))
+}
+
+/// Factory source for the historical planar cover lanes: retained WGS84
+/// membership geometry (unsplit) plus their split-normalized working shape.
+///
+/// Returns `(membership_geometry, cover_shape, cover_is_split)`.
+pub(crate) fn coverage_factory_shapes(
+    geometry: &PyGeometry,
+    label: &str,
+) -> PyResult<(PyGeometry, Shape, bool)> {
+    let membership_geometry = coverage_factory_geometry(geometry, label)?;
+    let shape = membership_geometry.shape.as_ref();
+    let (cover_shape, cover_is_split) = cover_working_shape(&geometry.frame, shape)?;
+    Ok((membership_geometry, cover_shape, cover_is_split))
 }
 
 /// Normalize a coverage source through the same path as the public factories.
 ///
-/// Returns `(membership_geometry, cover_shape)` — membership keeps the unsplit
-/// lon/lat source; cover_shape is split-normalized for geographic crossings.
+/// Returns `(membership_geometry, cover_shape, cover_is_split)`.
 pub(crate) fn normalize_coverage_source(
     geometry: &Bound<'_, PyAny>,
     label: &str,
-) -> PyResult<(PyGeometry, Shape)> {
+) -> PyResult<(PyGeometry, Shape, bool)> {
     let geometry = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
@@ -878,12 +1049,11 @@ pub(crate) fn normalize_coverage_source(
 /// Rebuild a rectangular-grid coverage from a pickle payload.
 ///
 /// - Source is normalized through the factory lon/lat path.
-/// - `factory_depth` is the original cover depth (partition recompute key).
+/// - `factory_depth` is the original cover depth (lazy partition key).
 /// - `visible_depth` restores empty post-transform depth (uncompact etc.).
-/// - `max_cells` is the factory budget used to bound partition recompute (D07).
-///   `None` means the factory was unlimited — recompute stays unbounded (equals
-///   the factory's own work, not amplification from a tiny payload).
-/// - Partition is **recomputed** from source + factory_depth under that budget.
+/// - `max_cells` is the factory budget applied when inspection first materializes
+///   the partition (D07). `None` = unlimited.
+/// - Partition stays **cold** (same contract as H3 unpickle).
 /// - Visible `cells` are an exact list of primitive ids/tokens (D09).
 pub(crate) fn unpickle_rect_coverage_state<S, W, T, D, P>(
     geometry: &Bound<'_, PyAny>,
@@ -903,7 +1073,7 @@ where
     T: for<'a, 'py> pyo3::FromPyObject<'a, 'py> + Eq + std::hash::Hash + Clone,
 {
     let label = S::coverage_label();
-    let (geometry, cover_shape) = normalize_coverage_source(geometry, label)?;
+    let (geometry, cover_shape, cover_is_split) = normalize_coverage_source(geometry, label)?;
     let factory_depth = parse_depth_u8(factory_depth)?;
     if let Some(visible) = visible_depth {
         parse_depth_u8(visible)?;
@@ -912,53 +1082,21 @@ where
     let cell_rule = CellRule::parse(cell_rule)
         .map_err(|message| crate::py::errors::parameter_error(message, "cell_rule"))?;
     let cells_raw: Vec<T> = collect_coverage_sequence(cells, &format!("{label} coverage cells"))?;
-    let owned_cells = CoverageCells::from_cells(rect_coverage_cells::<W>(decode(cells_raw)?));
-    // Bound recompute by the factory's recorded max_cells. An inconsistent deep
-    // factory depth with a finite budget rejects before materializing billions
-    // of cells.
-    let covering = coverer::cover(&cover_shape, S::roots(), factory_depth, max_cells)
-        .map_err(unpickle_cover_budget_err)?;
-    let partition = Arc::new(CoveragePartition::from_sorted_tagged(
-        covering
-            .cells
-            .into_iter()
-            .map(|(cell, interior)| (W::from_rect_cell(cell), interior)),
-    ));
-    // Expected visible set matches the factory's cell_rule selection.
-    let expected = match cell_rule {
-        CellRule::Overlap | CellRule::Bbox => partition.all(),
-        CellRule::Within => partition.interior(),
-        CellRule::Center => partition.select(|cell| {
-            let bounds = cell.rect_cell().bounds();
-            Point::new(
-                f64::midpoint(bounds.minx(), bounds.maxx()),
-                f64::midpoint(bounds.miny(), bounds.maxy()),
-            )
-            .is_ok_and(|center| cover_shape.covers_point(center))
-        }),
-    };
-    let cells = if owned_cells.same_ids(&expected) {
-        expected
-    } else {
-        owned_cells
-    };
+    let cells = CoverageCells::from_cells(rect_coverage_cells::<W>(decode(cells_raw)?));
+    // Lazy membership: no overlap recompute on unpickle (D07 budget applies
+    // when inspection first materializes the partition).
+    let membership = RectMembership::lazy(cover_shape, cover_is_split, factory_depth);
     let depth = CellDepth::from_levels(cells.iter().map(RectCoverageCell::level))
         .or_else(|| visible_depth.map(CellDepth::Uniform))
         .unwrap_or(CellDepth::Uniform(factory_depth));
     Ok(RectCoverageState {
         geometry,
         cells,
-        partition,
+        membership,
         cell_rule,
         depth,
         max_cells,
     })
-}
-
-pub(crate) fn sorted_rect_cells<C: RectGridCell>(mut cells: Vec<C>) -> Vec<C> {
-    cells.sort_unstable_by_key(|cell| cell.hash_key());
-    cells.dedup_by_key(|cell| cell.hash_key());
-    cells
 }
 
 pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
@@ -999,10 +1137,12 @@ mod invariant_tests {
     }
 
     #[test]
-    fn partition_canonicalizes_ids_and_checks_selected_rows() {
+    fn partition_merges_adjacent_duplicate_tags_on_sorted_stream() {
+        // Caller promises a sorted stream; adjacent duplicates merge with
+        // interior winning.
         let partition = CoveragePartition::from_sorted_tagged([
-            (TestCell(4), false),
             (TestCell(2), true),
+            (TestCell(4), false),
             (TestCell(4), true),
         ]);
         assert_eq!(
@@ -1024,6 +1164,9 @@ mod invariant_tests {
         assert!(partition.boundary().is_empty());
     }
 
+    // Guards a `debug_assert!`, so it only exists where `debug-assertions` is
+    // on -- otherwise it cannot pass under `cargo nextest run --release`.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "coverage selection must be sorted and unique")]
     fn checked_selection_rejects_unsorted_rows() {
@@ -1034,7 +1177,7 @@ mod invariant_tests {
     fn coverage_frontier_strips_pure_ancestors() {
         use crate::grid::cell::GridCell;
         use crate::grid::tile::Tile;
-        let local = Tile::from_lonlat(0.05, 0.05, 12);
+        let local = Tile::from_lonlat(0.05, 0.05, 12).expect("in domain");
         let parent = GridCell::parent_at(local, 6).expect("parent");
         assert_eq!(coverage_frontier(&[local, parent]), [local]);
     }

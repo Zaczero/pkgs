@@ -61,7 +61,8 @@ def test_split_antimeridian_polygons_match_upstream_oracles() -> None:
     again = canonical.split_antimeridian()
     assert again.to_wkt() == canonical.to_wkt()
     donut = gm.from_geojson(
-        '{"type": "Polygon", "coordinates": [[[170, 40], [-170, 40], [-170, 60], [170, 60], [170, 40]],[[175, 45], [-175, 45], [-175, 55], [175, 55], [175, 45]]]}'
+        '{"type": "Polygon", "coordinates": [[[170, 40], [-170, 40], [-170, 60], [170, 60], [170, 40]],[[175, 45], [-175, 45], [-175, 55], [175, 55], [175, 45]]]}',
+        crs=4326,
     ).split_antimeridian()
     assert donut.geometry_type == 'MultiPolygon'
     halves = gm.parts(donut)
@@ -128,7 +129,10 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
 def test_split_antimeridian_gates() -> None:
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.LineString([(170, 0), (-170, 0)], crs=3857).split_antimeridian()
-    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(190, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'):
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(190, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+    ):
         gm.LineString([(190, 0), (200, 0)]).split_antimeridian()
     zm_ring = gm.from_wkt(
         'POLYGON Z ((-45 40 1, 45 40 1, 135 40 1, -135 40 1, -45 40 1))'
@@ -138,7 +142,8 @@ def test_split_antimeridian_gates() -> None:
     nad = gm.LineString([(170, -10), (-170, 10)], crs=4269).split_antimeridian()
     assert nad.geometry_type == 'MultiLineString'
     with pytest.raises(
-        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(181, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data'
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(181, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as info:
         gm.GeometryArray([
             gm.LineString([(0, 0), (1, 1)]),
@@ -690,7 +695,9 @@ def test_geographic_validation_does_not_hide_an_outside_crossing_hole() -> None:
     unrepairable = gm.Polygon(
         [(170, 0), (-170, 0), (170, 10), (-170, 10), (175, 5)], crs=4326
     )
-    with pytest.raises(gm.InvalidGeometryError, match='repair did not produce valid geometry'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match='repair did not produce valid geometry'
+    ):
         unrepairable.repair()
 
 

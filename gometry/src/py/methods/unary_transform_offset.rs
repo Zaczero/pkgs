@@ -6,8 +6,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
 use crate::py::errors::GeometryError;
+use crate::py::methods::unary_transform_methods::{
+    Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
+    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, PyAny, PyErr, PyGeometry,
+    PyGeometryArray, PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
+    finite_f64_required, parse_grid_size, pymethods, validate_buffer_miter_limit,
+    validate_buffer_quadrant_segments, validate_densify_fraction, validate_max_segment_length,
+    validate_smooth_iterations,
+};
 
 #[pymethods]
 impl PyGeometry {
@@ -219,15 +226,25 @@ impl PyGeometry {
 
     #[doc = doc_segmentize!(scalar)]
     #[pyo3(
-        signature = (max_length = None, /, *, fraction = None),
-        text_signature = "($self, max_length=None, /, *, fraction=None)"
+        signature = (max_length = None, /, *, fraction = None, unit = None),
+        text_signature = "($self, max_length=None, /, *, fraction=None, unit=None)"
     )]
     pub fn segmentize(
         &self,
         py: Python<'_>,
         max_length: Option<&Bound<'_, PyAny>>,
         fraction: Option<&Bound<'_, PyAny>>,
+        unit: Option<DistanceUnit>,
     ) -> PyResult<crate::Typed> {
+        // `fraction` subdivides each segment into a share of ITS OWN length, so
+        // it has no unit to override — pairing the two is a request that cannot
+        // be honoured either way round.
+        if fraction.is_some() && unit.is_some() {
+            return Err(GeometryError::new_err(
+                "segmentize fraction= subdivides by a share of each segment and has no unit; \
+                 pass max_length= to use unit=",
+            ));
+        }
         match (max_length, fraction) {
             (Some(max_length), None) => {
                 let max_length = F64Param::parse(max_length, "max_length", unary_len!(scalar))?;
@@ -237,7 +254,7 @@ impl PyGeometry {
                     py,
                     self,
                     crate::dispatch::Operation::Segmentize,
-                    None,
+                    unit,
                     default,
                     move |data, ctx| {
                         crate::dispatch::kernels::unary_segmentize(data, ctx, &max_length)
@@ -326,15 +343,14 @@ impl PyGeometryArray {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
-        unary_spine_shapes!(
-            array,
+        crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
             crate::dispatch::Operation::Buffer,
             unit,
-            default,
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_buffer(
+            "quadrant_segments",
+            move |data, ctx, budget| {
+                crate::dispatch::kernels::unary_buffer_budgeted(
                     data,
                     ctx,
                     &distance,
@@ -343,8 +359,9 @@ impl PyGeometryArray {
                     quadrant_segments,
                     miter_limit,
                     side,
+                    budget,
                 )
-            }
+            },
         )
     }
 
@@ -365,23 +382,23 @@ impl PyGeometryArray {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
-        unary_spine_shapes!(
-            array,
+        crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
             crate::dispatch::Operation::OffsetCurve,
             unit,
-            default,
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_offset_curve(
+            "quadrant_segments",
+            move |data, ctx, budget| {
+                crate::dispatch::kernels::unary_offset_curve_budgeted(
                     data,
                     ctx,
                     &distance,
                     join_style,
                     quadrant_segments,
                     miter_limit,
+                    budget,
                 )
-            }
+            },
         )
     }
 
@@ -445,22 +462,22 @@ impl PyGeometryArray {
         }
         let iterations = iterations.resolve(py, "iterations", unary_len!(array, self))?;
         iterations.try_validate(|value| validate_smooth_iterations(value).map(|_| ()))?;
-        unary_spine_shapes!(
-            array,
+        crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
             crate::dispatch::Operation::Smooth,
             None,
-            default,
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_smooth(
+            "iterations",
+            move |data, ctx, budget| {
+                crate::dispatch::kernels::unary_smooth_budgeted(
                     data,
                     ctx,
                     &iterations,
                     method,
                     keep_endpoints,
+                    budget,
                 )
-            }
+            },
         )
     }
 
@@ -533,15 +550,25 @@ impl PyGeometryArray {
 
     #[doc = doc_segmentize!(array)]
     #[pyo3(
-        signature = (max_length = None, /, *, fraction = None),
-        text_signature = "($self, max_length=None, /, *, fraction=None)"
+        signature = (max_length = None, /, *, fraction = None, unit = None),
+        text_signature = "($self, max_length=None, /, *, fraction=None, unit=None)"
     )]
     pub fn segmentize(
         &self,
         py: Python<'_>,
         max_length: Option<&Bound<'_, PyAny>>,
         fraction: Option<&Bound<'_, PyAny>>,
+        unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
+        // `fraction` subdivides each segment into a share of ITS OWN length, so
+        // it has no unit to override — pairing the two is a request that cannot
+        // be honoured either way round.
+        if fraction.is_some() && unit.is_some() {
+            return Err(GeometryError::new_err(
+                "segmentize fraction= subdivides by a share of each segment and has no unit; \
+                 pass max_length= to use unit=",
+            ));
+        }
         match (max_length, fraction) {
             (Some(max_length), None) => {
                 let max_length =
@@ -552,7 +579,7 @@ impl PyGeometryArray {
                     py,
                     self,
                     crate::dispatch::Operation::Segmentize,
-                    None,
+                    unit,
                     crate::dispatch::PackedUnary::Segmentize {
                         max_segment_length: max_length.clone()
                     },

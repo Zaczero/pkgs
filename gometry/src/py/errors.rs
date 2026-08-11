@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! The top-level `gometry` exception hierarchy and the single Rust→Python error
 //! seam.
 //!
@@ -19,7 +15,7 @@
 //! class directly (`GeometryError::new_err(...)`, `parse_error(...)`).
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyType};
@@ -61,7 +57,13 @@ create_exception!(
     gometry,
     ParseError,
     GeometryError,
-    "Serialized input (WKT, WKB, GeoJSON, GeoArrow) is malformed."
+    "Serialized input (WKT, WKB, GeoJSON, GeoArrow, or pickle) is malformed."
+);
+create_exception!(
+    gometry,
+    AccuracyWarning,
+    PyUserWarning,
+    "A CRS transform used a lower-accuracy fallback because a required grid is unavailable."
 );
 
 /// `create_exception!` is single-base, so the dual-base class is built once at
@@ -94,6 +96,13 @@ pub(crate) fn geometry_type_err(message: impl Into<String>) -> PyErr {
         Ok(class) => PyErr::from_type(class, (message.into(),)),
         Err(err) => err,
     })
+}
+
+fn geometry_type_err_with_expected(message: String, expected: &'static str) -> PyErr {
+    with_attrs(geometry_type_err(message), &[
+        ("expected", Attr::Str(expected)),
+        ("got", Attr::OptionalStr(None)),
+    ])
 }
 
 /// A boundary parameter error carrying its public parameter name. Token
@@ -181,62 +190,7 @@ pub(crate) fn epoch_mismatch_error(
     }
 }
 
-/// A `ParseError` carrying its `.format` tag (which codec rejected the
-/// input) — so the point/grid codecs match the WKT/WKB/GeoJSON contract.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ParseFormat {
-    Wkt,
-    Wkb,
-    GeoJson,
-    GeoArrow,
-    GeoParquet,
-    H3,
-    S2,
-    Geohash,
-    Tile,
-    Quadkey,
-    Polyline,
-    PlusCode,
-    OsmShortlink,
-}
-
-impl ParseFormat {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Wkt => "wkt",
-            Self::Wkb => "wkb",
-            Self::GeoJson => "geojson",
-            Self::GeoArrow => "geoarrow",
-            Self::GeoParquet => "geoparquet",
-            Self::H3 => "h3",
-            Self::S2 => "s2",
-            Self::Geohash => "geohash",
-            Self::Tile => "tile",
-            Self::Quadkey => "quadkey",
-            Self::Polyline => "polyline",
-            Self::PlusCode => "pluscode",
-            Self::OsmShortlink => "osm_shortlink",
-        }
-    }
-
-    pub(crate) const fn display(self) -> &'static str {
-        match self {
-            Self::Wkt => "WKT",
-            Self::Wkb => "WKB",
-            Self::GeoJson => "GeoJSON",
-            Self::GeoArrow => "GeoArrow",
-            Self::GeoParquet => "GeoParquet",
-            Self::H3 => "H3",
-            Self::S2 => "S2",
-            Self::Geohash => "geohash",
-            Self::Tile => "tile",
-            Self::Quadkey => "quadkey",
-            Self::Polyline => "polyline",
-            Self::PlusCode => "plus code",
-            Self::OsmShortlink => "osm shortlink",
-        }
-    }
-}
+pub(crate) use crate::error::ParseFormat;
 
 pub(crate) fn parse_error(message: impl Into<String>, format: ParseFormat) -> PyErr {
     with_attrs(ParseError::new_err(message.into()), &[(
@@ -257,6 +211,7 @@ enum Attr<'a> {
     Int(i64),
     Float(f64),
     OptionalFloat(Option<f64>),
+    OptionalInt(Option<i64>),
 }
 
 /// Best-effort structured attributes on a fresh error: handlers read
@@ -272,6 +227,7 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
                 Attr::Int(i) => exception.setattr(*name, *i),
                 Attr::Float(f) => exception.setattr(*name, *f),
                 Attr::OptionalFloat(optional) => exception.setattr(*name, *optional),
+                Attr::OptionalInt(optional) => exception.setattr(*name, *optional),
             };
         }
     });
@@ -293,14 +249,21 @@ impl From<Error> for PyErr {
                 // Wrong geometry kind for the operation → GeometryTypeError
                 // (a TypeError subclass — you handed the operation a geometry
                 // of the wrong type).
-                G::LineStringRequired
-                | G::LinealRequired
-                | G::SidedBufferRequiresLineal
-                | G::PointSplitterRequired
-                | G::PolygonRequired
-                | G::FrechetLineStringRequired
-                | G::SinglePolygonRequired
-                | G::CoveragePolygonalRequired => geometry_type_err(message),
+                G::LineStringRequired => geometry_type_err_with_expected(message, "LineString"),
+                G::LinealRequired | G::SidedBufferRequiresLineal => {
+                    geometry_type_err_with_expected(message, "LineString or MultiLineString")
+                },
+                G::PointSplitterRequired => {
+                    geometry_type_err_with_expected(message, "Point or MultiPoint")
+                },
+                G::PolygonRequired | G::CoveragePolygonalRequired => {
+                    geometry_type_err_with_expected(message, "Polygon or MultiPolygon")
+                },
+                G::FrechetLineStringRequired => geometry_type_err_with_expected(
+                    message,
+                    "LineString or single-line MultiLineString",
+                ),
+                G::SinglePolygonRequired => geometry_type_err_with_expected(message, "Polygon"),
                 // Invalid parameter values → the generic GeometryError (the
                 // stdlib raise-ValueError idiom; the message names the kwarg).
                 G::NonFinite { param, value }
@@ -319,16 +282,26 @@ impl From<Error> for PyErr {
                 | G::SubstringMeasureOrder(..)
                 | G::SnapGridTooFine
                 | G::InvalidDe9imPattern(_)
-                | G::GeneratedOutputTooLarge { .. }
                 | G::OffsetCapacityExceeded => GeometryError::new_err(message),
+                G::GeneratedOutputTooLarge {
+                    operation,
+                    parameter,
+                    produced,
+                    limit,
+                } => with_attrs(GeometryError::new_err(message), &[
+                    ("operation", Attr::Str(operation)),
+                    ("parameter", Attr::Str(parameter)),
+                    ("produced", Attr::Int(*produced as i64)),
+                    ("limit", Attr::Int(*limit as i64)),
+                ]),
                 // In-core projection failures → TransformError; an
                 // unsupported projected CRS is a CRS problem.
                 G::WebMercatorLatitude(_) | G::Projection(_) => TransformError::new_err(message),
                 // Structural and content rule violations → InvalidGeometryError.
                 G::NonFiniteCoordinate
                 | G::CoordinateLength(..)
-                | G::CoordinateAxesMismatch
-                | G::CoordinateRange
+                | G::CoordinateAxesMismatch { .. }
+                | G::CoordinateRange { .. }
                 | G::MalformedCsrOffsets
                 | G::RingTooShort(_)
                 | G::EmptyLinework
@@ -342,20 +315,26 @@ impl From<Error> for PyErr {
                 | G::NonMonotonicMeasure
                 | G::MeasureOverwrite
                 | G::MissingZ
-                | G::EmptyGeometrySequence { .. }
                 | G::LineStringTooShort
                 | G::UnrepairableLineString
                 | G::UnrepairableMultiLineString
                 | G::RepairFailed(_)
                 | G::Invalid(_) => InvalidGeometryError::new_err(message),
-                G::InvalidCoverage { operation } => with_attrs(
-                    InvalidGeometryError::new_err(message),
-                    &[("operation", Attr::Str(operation))],
-                ),
+                G::EmptyGeometrySequence { operation } | G::InvalidCoverage { operation } => {
+                    with_attrs(InvalidGeometryError::new_err(message), &[(
+                        "operation",
+                        Attr::Str(operation),
+                    )])
+                },
             },
             ErrorKind::Crs(kind) => match kind {
                 // Transform construction/execution → TransformError.
-                C::TransformCreate { .. } | C::Transform { .. } => TransformError::new_err(message),
+                C::TransformCreate { from, to, .. } | C::Transform { from, to, .. } => {
+                    with_attrs(TransformError::new_err(message), &[
+                        ("source", Attr::Str(from)),
+                        ("target", Attr::Str(to)),
+                    ])
+                },
                 // Every other CRS failure → CRSError.
                 C::VerticalUnits { crs, .. }
                 | C::MetricUnits { crs, .. }
@@ -370,10 +349,13 @@ impl From<Error> for PyErr {
             },
             // Malformed serialized input → ParseError, regardless of format
             // (`e.format` names which codec rejected it).
-            ErrorKind::Io(error) => with_attrs(ParseError::new_err(message), &[(
-                "format",
-                Attr::Str(error.format_label()),
-            )]),
+            ErrorKind::Io(error) => with_attrs(ParseError::new_err(message), &[
+                ("format", Attr::Str(error.format_label())),
+                (
+                    "position",
+                    Attr::OptionalInt(error.position().map(|value| value as i64)),
+                ),
+            ]),
             ErrorKind::Frame(kind) => match kind {
                 // Operands or collection items disagree on frame metadata;
                 // `e.left`/`e.right` carry the two frames for programmatic
@@ -437,16 +419,35 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CRSMismatchError", py.get_type::<CRSMismatchError>())?;
     m.add("TransformError", py.get_type::<TransformError>())?;
     m.add("ParseError", py.get_type::<ParseError>())?;
+    m.add("AccuracyWarning", py.get_type::<AccuracyWarning>())?;
     // Class-level None defaults for the structured attributes: operation-
     // raised errors set real values per instance (`with_attrs`); hand-built
     // instances read None instead of AttributeError.
     let geometry = py.get_type::<GeometryError>();
     geometry.setattr("param", py.None())?;
     geometry.setattr("value", py.None())?;
+    geometry.setattr("operation", py.None())?;
+    geometry.setattr("parameter", py.None())?;
+    geometry.setattr("produced", py.None())?;
+    geometry.setattr("limit", py.None())?;
     py.get_type::<CRSError>().setattr("crs", py.None())?;
     py.get_type::<InvalidGeometryError>()
         .setattr("operation", py.None())?;
+    py.get_type::<InvalidGeometryError>()
+        .setattr("parameter", py.None())?;
+    py.get_type::<InvalidGeometryError>()
+        .setattr("produced", py.None())?;
+    py.get_type::<InvalidGeometryError>()
+        .setattr("limit", py.None())?;
+    py.get_type::<TransformError>()
+        .setattr("source", py.None())?;
+    py.get_type::<TransformError>()
+        .setattr("target", py.None())?;
     py.get_type::<ParseError>().setattr("format", py.None())?;
+    py.get_type::<ParseError>().setattr("position", py.None())?;
+    let geometry_type = geometry_type_error(py)?;
+    geometry_type.setattr("expected", py.None())?;
+    geometry_type.setattr("got", py.None())?;
     let mismatch = py.get_type::<CRSMismatchError>();
     mismatch.setattr("field", py.None())?;
     mismatch.setattr("left", py.None())?;

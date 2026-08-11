@@ -33,6 +33,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Free Threading",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Rust",
   "Topic :: Scientific/Engineering :: GIS",
@@ -60,9 +61,17 @@ dev = [
   "h3",
   "libcst",
   "lonboard",
+  "markdown-exec>=1.9",
+  "maturin==1.14.1",
+  "mercantile>=1.2.1",
+  "mkdocs-gen-files>=0.5",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.27",
   "pandas",
   "polars",
+  "properdocs>=1.6",
   "pyarrow",
+  "pymdown-extensions>=10.7",
   "pyo3stubs",
   "pyperf",
   "pyproj",
@@ -74,13 +83,6 @@ dev = [
   "s2sphere",
   "scikit-learn",
   "shapely",
-  "markdown-exec>=1.9",
-  "maturin==1.14.1",
-  "mkdocs-gen-files>=0.5",
-  "mkdocs-material>=9.5",
-  "mkdocstrings[python]>=0.27",
-  "properdocs>=1.6",
-  "pymdown-extensions>=10.7",
 ]
 
 [build-system]
@@ -100,33 +102,31 @@ exclude_also = ["if _?TYPE_CHECKING:", "@overload"]
 bindings = "pyo3"
 module-name = "gometry._lib"
 python-source = "python"
-config = [
-  'patch.crates-io.geographiclib-rs.path="vendor/geographiclib-rs"',
-  'patch.crates-io.h3o.path="vendor/h3o"',
-  'patch.crates-io.proj-sys.path="vendor/proj-sys"',
-]
 include = [
   { path = "LICENSE-APACHE.md", format = "sdist" },
   { path = "LICENSE-MIT.md", format = "sdist" },
   { path = "LICENSE-THIRD-PARTY.md", format = "sdist" },
   { path = "rust-toolchain.toml", format = "sdist" },
-  { path = "vendor/**/*", format = "sdist" },
 ]
 exclude = [
   { path = ".pytest_cache/**", format = "sdist" },
   { path = ".ruff_cache/**", format = "sdist" },
   { path = ".venv/**", format = "sdist" },
-  { path = "benches/results/**", format = "sdist" },
   { path = "dist/**", format = "sdist" },
   { path = "fixtures/**", format = "sdist" },
-  { path = "vendor/h3o/dataset/**", format = "sdist" },
   { path = "htmlcov/**", format = "sdist" },
   { path = "site/**", format = "sdist" },
   { path = "target*/**", format = "sdist" },
-  { path = "vendor/**/target/**", format = "sdist" },
   "**/__pycache__/**",
   "**/*.py[co]",
 ]
+
+[tool.maturin.sbom]
+# The generated Rust BOM contains local `path+file://` component references
+# for the vendored patches. Those references would expose the ephemeral build
+# checkout in a published wheel; the release artifact carries licensing and
+# attestation separately, so omit the non-portable Rust BOM.
+rust = false
 
 [tool.mypy]
 # overload-overlap flags gometry's core scalar/array idiom (a scalar variant
@@ -149,7 +149,6 @@ typeCheckingMode = "standard"
 reportUnnecessaryCast = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 
-
 [tool.ruff]
 extend = "../ruff.toml"
 exclude = [".venv", ".ruff_cache", "site", "target*"]
@@ -160,7 +159,7 @@ exclude = [".venv", ".ruff_cache", "site", "target*"]
 # symbol beats duplicating prose across variants (gen-docs enforces placement).
 "python/gometry/_lib.pyi" = ["D418"]
 # Standalone gate scripts import tools/ siblings via a sys.path shim that must
-# precede the import (the _check_bench_regression.py / _gatelib.py pattern).
+# precede the import (the _gatelib.py sys.path pattern).
 "tools/**/*.py" = ["E402"]
 # Bench drivers/support scripts use the same late-import sys.path shim pattern.
 "benches/**/*.py" = ["E402", "I001"]
@@ -175,9 +174,14 @@ exclude = [".venv", ".ruff_cache", "site", "target*"]
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
 # Build inputs only: test changes must not invalidate the built wheel.
+# Key shipped Python/stub sources + explicit native Rust sources — never the
+# generated ``_lib*.so`` (matched by a bare ``python/gometry/**`` glob and would
+# self-invalidate the uv cache after every maturin develop).
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "Cargo.toml" },
+  { file = "Cargo.lock" },
   { file = "src/**/*.rs" },
-  { file = "python/gometry/**" },
+  { file = "python/gometry/**/*.py" },
+  { file = "python/gometry/**/*.pyi" },
 ]

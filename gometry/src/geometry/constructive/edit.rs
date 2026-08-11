@@ -2,14 +2,22 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::convert::Infallible;
 
-use super::*;
 use crate::NonNegative;
+use crate::geometry::constructive::{
+    Result, SegmentPlacement, decimal_scale, densify_points_budgeted, normalized_line,
+    quantize_column_simd, remove_repeated_line_points, remove_repeated_points,
+    segmentize_points_budgeted, snap_column_simd, split,
+};
+use crate::geometry::{
+    AxisFrame, Bounds, CoordSeq, CoordinateAxes, EmptyKind, ExpansionBudget, GeometryErrorKind,
+    HasM, HasZ, LineSeq, MOrdinate, Point, Polygon, ReduceSimd, Shape, Strictness, ZOrdinate,
+    carry_ordinates, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
+    clipped_linestring, column_all_finite, compare_point_slices, compare_points, compare_polygons,
+    compare_shapes, line_parts_to_shape, same_topological_coordinate, simd_xy_map_f64,
+    simd_xy_map_one_f64,
+};
 
 /// Which optional ordinate [`Shape::set_z`]/[`Shape::set_m`] act on.
 #[derive(Clone, Copy)]
@@ -22,6 +30,10 @@ impl CoordSeq {
     /// `op` over every `(x, y)` pair, Z/M columns carried through untouched —
     /// the columnar form of a per-point XY map (no `Point` gather, no axes
     /// re-derivation, one pass per column).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the one-pass coordinate callback is deliberately existential"
+    )]
     pub fn map_xy(&self, mut op: impl FnMut(f64, f64) -> (f64, f64)) -> Self {
         // Pre-sized output columns written by index (no push branch), so the
         // per-pair arithmetic vectorizes.
@@ -41,6 +53,10 @@ impl CoordSeq {
     /// Fallible [`map_xy`](Self::map_xy) for transforms that can overflow:
     /// the per-point finiteness validation is hoisted into one columnar pass
     /// over the produced ordinates.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the one-pass coordinate callback is deliberately existential"
+    )]
     pub fn try_map_xy(&self, op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
         let mapped = self.map_xy(op);
         if column_all_finite(mapped.xs()) && column_all_finite(mapped.ys()) {
@@ -86,7 +102,7 @@ impl CoordSeq {
                 ys,
                 out_x,
                 out_y,
-                |x, y| (a * x + b * y + xoff, d * x + e * y + yoff),
+                |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y),
                 |x, y| (va * x + vb * y + vxo, vd * x + ve * y + vyo),
             );
         } else if let Some(out_x) = out_x.as_mut() {
@@ -94,7 +110,7 @@ impl CoordSeq {
                 xs,
                 ys,
                 out_x,
-                |x, y| a * x + b * y + xoff,
+                |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y).0,
                 |x, y| {
                     ReduceSimd::splat(a) * x + ReduceSimd::splat(b) * y + ReduceSimd::splat(xoff)
                 },
@@ -104,11 +120,33 @@ impl CoordSeq {
                 xs,
                 ys,
                 out_y,
-                |x, y| d * x + e * y + yoff,
+                |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y).1,
                 |x, y| {
                     ReduceSimd::splat(d) * x + ReduceSimd::splat(e) * y + ReduceSimd::splat(yoff)
                 },
             );
+        }
+        // SIMD fast path may still overflow extreme operands; rescue any
+        // non-finite lane with the scalar stable form (ordinary mid-range
+        // stays bit-identical on the SIMD path when all finite).
+        if let Some(out_x) = out_x.as_mut() {
+            for (index, slot) in out_x.iter_mut().enumerate() {
+                let y_out = out_y.as_ref().map_or(ys[index], |col| col[index]);
+                if !slot.is_finite() || !y_out.is_finite() {
+                    let (sx, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, xs[index], ys[index]);
+                    *slot = sx;
+                    if let Some(out_y) = out_y.as_mut() {
+                        out_y[index] = sy;
+                    }
+                }
+            }
+        } else if let Some(out_y) = out_y.as_mut() {
+            for (index, slot) in out_y.iter_mut().enumerate() {
+                if !slot.is_finite() {
+                    let (_, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, xs[index], ys[index]);
+                    *slot = sy;
+                }
+            }
         }
         let x_finite = out_x.as_deref().is_none_or(column_all_finite);
         let y_finite = out_y.as_deref().is_none_or(column_all_finite);
@@ -144,6 +182,10 @@ impl CoordSeq {
     /// Fallible [`map_xy`](Self::map_xy) generic over the error: per-pair
     /// `op` failures (e.g. projection domain errors) propagate immediately,
     /// Z/M columns carry through untouched.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the one-pass coordinate callback is deliberately existential"
+    )]
     pub fn try_map_xy_with<E>(
         &self,
         mut op: impl FnMut(f64, f64) -> Result<(f64, f64), E>,
@@ -231,6 +273,10 @@ impl Shape {
     /// Fallible columnar XY transform generic over the error — the in-core
     /// CRS projections' engine (domain errors propagate per pair; Z/M carry
     /// through untouched, matching the per-point `with_xy` semantics).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the one-pass coordinate callback is deliberately existential"
+    )]
     pub fn map_xy_with<E>(
         &self,
         op: impl Fn(f64, f64) -> Result<(f64, f64), E> + Copy,
@@ -280,16 +326,12 @@ impl Shape {
         self.try_map_coordseqs(
             |seq| seq.try_affine(matrix),
             |point| {
-                let x = if affine_x_row_identity(a, b, xoff) {
-                    point.x
-                } else {
-                    a * point.x + b * point.y + xoff
-                };
-                let y = if affine_y_row_identity(d, e, yoff) {
-                    point.y
-                } else {
-                    d * point.x + e * point.y + yoff
-                };
+                let (x, y) =
+                    if affine_x_row_identity(a, b, xoff) && affine_y_row_identity(d, e, yoff) {
+                        (point.x, point.y)
+                    } else {
+                        stable_affine_xy(a, b, d, e, xoff, yoff, point.x, point.y)
+                    };
                 point.with_xy(x, y)
             },
         )
@@ -310,6 +352,42 @@ pub(crate) fn affine_x_row_identity(a: f64, b: f64, xoff: f64) -> bool {
 )]
 pub(crate) fn affine_y_row_identity(d: f64, e: f64, yoff: f64) -> bool {
     same_topological_coordinate(d, 0.0) && e == 1.0 && same_topological_coordinate(yoff, 0.0)
+}
+
+/// Affine map with power-of-two pre-scale of the input coordinates so
+/// cancelling huge products (`2*1e308 + (-2)*1e308`) stay finite. Ordinary
+/// mid-range inputs take the classic multiply-add (bit-identical).
+#[expect(
+    clippy::many_single_char_names,
+    reason = "a,b,d,e,x,y are the canonical affine matrix and point coordinates"
+)]
+fn stable_affine_xy(
+    a: f64,
+    b: f64,
+    d: f64,
+    e: f64,
+    xoff: f64,
+    yoff: f64,
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    let classic_x = a * x + b * y + xoff;
+    let classic_y = d * x + e * y + yoff;
+    if classic_x.is_finite() && classic_y.is_finite() {
+        return (classic_x, classic_y);
+    }
+    let max_abs = x.abs().max(y.abs());
+    if max_abs == 0.0 || !max_abs.is_finite() {
+        return (classic_x, classic_y);
+    }
+    // Map max |ordinate| into ~[0.5, 1).
+    let exp = max_abs.log2().floor();
+    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
+    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let (xs, ys) = (x * scale, y * scale);
+    let rx = (a * xs + b * ys) / scale + xoff;
+    let ry = (d * xs + e * ys) / scale + yoff;
+    (rx, ry)
 }
 
 impl Shape {
@@ -477,15 +555,83 @@ impl Shape {
 
     pub fn rotate(&self, angle: f64, origin: (f64, f64)) -> Result<Self> {
         let (sin, cos) = angle.sin_cos();
-        self.affine_transform(&affine_about(cos, -sin, sin, cos, origin))
+        self.affine_about_origin(cos, -sin, sin, cos, origin)
     }
 
     pub fn scale(&self, xfact: f64, yfact: f64, origin: (f64, f64)) -> Result<Self> {
-        self.affine_transform(&affine_about(xfact, 0.0, 0.0, yfact, origin))
+        self.affine_about_origin(xfact, 0.0, 0.0, yfact, origin)
     }
 
     pub fn skew(&self, xs: f64, ys: f64, origin: (f64, f64)) -> Result<Self> {
-        self.affine_transform(&affine_about(1.0, xs.tan(), ys.tan(), 1.0, origin))
+        self.affine_about_origin(1.0, xs.tan(), ys.tan(), 1.0, origin)
+    }
+
+    /// Linear map about `origin` evaluated as `origin + M*(p - origin)` so
+    /// extreme-but-finite centers do not overflow the expanded
+    /// `xoff = ox - a*ox` form (which can produce `inf - inf` NaNs).
+    fn affine_about_origin(
+        &self,
+        m00: f64,
+        m01: f64,
+        m10: f64,
+        m11: f64,
+        origin: (f64, f64),
+    ) -> Result<Self> {
+        let (ox, oy) = origin;
+        // Degenerate to identity when M = I (exact bit match — caller-built).
+        if same_topological_coordinate(m00, 1.0)
+            && same_topological_coordinate(m01, 0.0)
+            && same_topological_coordinate(m10, 0.0)
+            && same_topological_coordinate(m11, 1.0)
+        {
+            return Ok(self.clone());
+        }
+        self.map_points(&|point| {
+            // Classic form first (bit-stable for ordinary coordinates).
+            let dx = point.x - ox;
+            let dy = point.y - oy;
+            let mut x = ox + m00 * dx + m01 * dy;
+            let mut y = oy + m10 * dx + m11 * dy;
+            if !x.is_finite() || !y.is_finite() {
+                // Frame axes independently. A common scale chosen from a
+                // huge X turns a still-stored 1e-300 Y delta into zero before
+                // a diagonal scale can preserve it; packed execution already
+                // keeps that axis, so scalar must share the same frame rule.
+                let extent_x = point.x.abs().max(ox.abs());
+                let extent_y = point.y.abs().max(oy.abs());
+                if let Some(frame) = AxisFrame::from_origin_extents(
+                    Point::new_unchecked_xy(ox, oy),
+                    extent_x,
+                    extent_y,
+                ) {
+                    let local = frame.frame_xy(point.x, point.y);
+                    let sx = frame.scale_x();
+                    let sy = frame.scale_y();
+                    // Diagonal transforms are the common `scale` path.  They
+                    // stay entirely in their own axis frame: evaluating a
+                    // zero off-axis coefficient through `0 * (huge / tiny)`
+                    // would manufacture NaN and erase an unrelated axis.
+                    // General affine maps retain the cross terms below.
+                    let scaled_x = ox * sx
+                        + m00 * local.x
+                        + if m01 == 0.0 {
+                            0.0
+                        } else {
+                            (m01 * (local.y / sy)) * sx
+                        };
+                    let scaled_y = oy * sy
+                        + if m10 == 0.0 {
+                            0.0
+                        } else {
+                            (m10 * (local.x / sx)) * sy
+                        }
+                        + m11 * local.y;
+                    x = scaled_x / sx;
+                    y = scaled_y / sy;
+                }
+            }
+            Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
+        })
     }
 
     pub fn translate(&self, xoff: f64, yoff: f64) -> Result<Self> {
@@ -762,66 +908,98 @@ impl Shape {
     }
 
     /// Densify every segment chain by `fraction` (see `densify_points`) —
-    /// the vertex-refinement step behind ``densify=`` on the discrete
-    /// Hausdorff/Fréchet metrics. Caller validates `fraction` in `(0, 1]`.
+    /// the re-segmentation behind continuous Hausdorff and the vertex
+    /// refinement behind discrete Fréchet. Caller validates `fraction` in `(0, 1]`.
     pub fn densified(&self, fraction: f64) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("densify", "fraction");
+        self.densified_budgeted(fraction, &mut budget)
+    }
+
+    pub(crate) fn densified_budgeted(
+        &self,
+        fraction: f64,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(points) => {
-                Self::LineString(LineSeq::from_trusted(densify_points(points, fraction)?))
-            },
+            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
+                densify_points_budgeted(points, fraction, budget)?,
+            )),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .iter()
-                    .map(|line| Ok(LineSeq::from_trusted(densify_points(line, fraction)?)))
+                    .map(|line| {
+                        Ok(LineSeq::from_trusted(densify_points_budgeted(
+                            line, fraction, budget,
+                        )?))
+                    })
                     .collect::<Result<_>>()?,
             ),
-            Self::Polygon(polygon) => Self::Polygon(polygon.densified(fraction)?),
+            Self::Polygon(polygon) => Self::Polygon(polygon.densified_budgeted(fraction, budget)?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons
                     .iter()
-                    .map(|polygon| polygon.densified(fraction))
+                    .map(|polygon| polygon.densified_budgeted(fraction, budget))
                     .collect::<Result<_>>()?,
             ),
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
                     .iter()
-                    .map(|geometry| geometry.densified(fraction))
+                    .map(|geometry| geometry.densified_budgeted(fraction, budget))
                     .collect::<Result<_>>()?,
             ),
         })
     }
 
+    /// Planar `segmentize` — the CRS-free reading. CRS-aware callers resolve a
+    /// [`SegmentPlacement`] first and use [`Self::segmentize_budgeted`].
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)
+    }
+
+    pub(crate) fn segmentize_budgeted(
+        &self,
+        max_segment_length: f64,
+        placement: SegmentPlacement<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(segmentize_points(
-                points,
-                max_segment_length,
-            )?)),
+            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
+                segmentize_points_budgeted(points, max_segment_length, placement, budget)?,
+            )),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .iter()
                     .map(|line| {
-                        Ok(LineSeq::from_trusted(segmentize_points(
+                        Ok(LineSeq::from_trusted(segmentize_points_budgeted(
                             line,
                             max_segment_length,
+                            placement,
+                            budget,
                         )?))
                     })
                     .collect::<Result<_>>()?,
             ),
-            Self::Polygon(polygon) => Self::Polygon(polygon.segmentize(max_segment_length)?),
+            Self::Polygon(polygon) => {
+                Self::Polygon(polygon.segmentize_budgeted(max_segment_length, placement, budget)?)
+            },
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons
                     .iter()
-                    .map(|polygon| polygon.segmentize(max_segment_length))
+                    .map(|polygon| {
+                        polygon.segmentize_budgeted(max_segment_length, placement, budget)
+                    })
                     .collect::<Result<_>>()?,
             ),
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
                     .iter()
-                    .map(|geometry| geometry.segmentize(max_segment_length))
+                    .map(|geometry| {
+                        geometry.segmentize_budgeted(max_segment_length, placement, budget)
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             Self::Empty(..) => self.clone(),

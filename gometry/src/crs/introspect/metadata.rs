@@ -1,20 +1,21 @@
-use crate::crs::*;
+use std::ptr;
 
-pub(crate) fn area_of_use(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
-) -> Option<AreaOfUse> {
+use crate::crs::{AreaOfUse, AxisInfo, DomainInfo, OwnedPj, ProjContext, copy_proj_c_string};
+
+pub(crate) fn area_of_use(context: &ProjContext, object: &OwnedPj) -> Option<AreaOfUse> {
     let mut west = 0.0;
     let mut south = 0.0;
     let mut east = 0.0;
     let mut north = 0.0;
     let mut name = ptr::null();
-    // SAFETY: output pointers reference initialized local storage and object is a
-    // valid PROJ object.
+    // SAFETY: DOC-H. Typed live context/object on creating thread; output
+    // pointers reference initialized local storage exclusive for the call.
+    // Returned name is object-lifetime; copied immediately. PROJ invokes no
+    // Python callback.
     let ok = unsafe {
         proj_sys::proj_get_area_of_use(
-            context,
-            object,
+            context.as_ptr(),
+            object.as_ptr(),
             &raw mut west,
             &raw mut south,
             &raw mut east,
@@ -35,31 +36,30 @@ pub(crate) fn area_of_use(
         south,
         east,
         north,
-        name: string_from_ptr(name),
+        name: proj_c_string!(name),
     })
 }
 
-pub(crate) fn domain_infos(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
-) -> Vec<DomainInfo> {
-    // SAFETY: object is valid for the duration of metadata inspection.
-    let count = unsafe { proj_sys::proj_get_domain_count(object) };
+pub(crate) fn domain_infos(context: &ProjContext, object: &OwnedPj) -> Vec<DomainInfo> {
+    // SAFETY: DOC-H. Typed live object on creating thread.
+    let count = unsafe { proj_sys::proj_get_domain_count(object.as_ptr()) };
     if count <= 0 {
         return Vec::new();
     }
     (0..count)
         .map(|index| DomainInfo {
-            // SAFETY: object and domain index are valid for the metadata call.
-            scope: string_from_ptr(unsafe { proj_sys::proj_get_scope_ex(object, index) }),
+            // SAFETY: DOC-H. Object live; index within domain_count.
+            scope: unsafe {
+                copy_proj_c_string(proj_sys::proj_get_scope_ex(object.as_ptr(), index))
+            },
             area_of_use: area_of_use_ex(context, object, index),
         })
         .collect()
 }
 
 pub(crate) fn area_of_use_ex(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
+    context: &ProjContext,
+    object: &OwnedPj,
     domain_index: i32,
 ) -> Option<AreaOfUse> {
     let mut west = 0.0;
@@ -67,12 +67,12 @@ pub(crate) fn area_of_use_ex(
     let mut east = 0.0;
     let mut north = 0.0;
     let mut name = ptr::null();
-    // SAFETY: output pointers reference initialized local storage and object is a
-    // valid PROJ object.
+    // SAFETY: DOC-H. Typed owners; domain_index from reported count; OUT slots
+    // exclusive locals; name copied immediately.
     let ok = unsafe {
         proj_sys::proj_get_area_of_use_ex(
-            context,
-            object,
+            context.as_ptr(),
+            object.as_ptr(),
             domain_index,
             &raw mut west,
             &raw mut south,
@@ -86,46 +86,36 @@ pub(crate) fn area_of_use_ex(
         south,
         east,
         north,
-        name: string_from_ptr(name),
+        name: proj_c_string!(name),
     })
 }
 
 pub(crate) fn coordinate_system_type(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
+    context: &ProjContext,
+    object: &OwnedPj,
 ) -> Option<&'static str> {
-    // SAFETY: object is a valid PROJ CRS object. PROJ returns an owned coordinate
-    // system object or null when unavailable.
-    let coordinate_system = unsafe { proj_sys::proj_crs_get_coordinate_system(context, object) };
-    if coordinate_system.is_null() {
-        return None;
-    }
-    // SAFETY: coordinate_system is valid until destroyed below.
-    let type_ = unsafe { proj_sys::proj_cs_get_type(context, coordinate_system) };
-    // SAFETY: coordinate_system was returned by PROJ and is destroyed exactly once.
-    unsafe {
-        proj_sys::proj_destroy(coordinate_system);
-    }
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned CS or null.
+    let coordinate_system =
+        unsafe { proj_sys::proj_crs_get_coordinate_system(context.as_ptr(), object.as_ptr()) };
+    // SAFETY: non-null returns are uniquely owned by the caller.
+    let coordinate_system = unsafe { OwnedPj::try_from_owned(coordinate_system)? };
+    // SAFETY: DOC-H. Typed context + owned CS live on creating thread.
+    let type_ = unsafe { proj_sys::proj_cs_get_type(context.as_ptr(), coordinate_system.as_ptr()) };
     Some(coordinate_system_type_name(type_))
 }
 
-pub(crate) fn axes(
-    context: *mut proj_sys::PJ_CONTEXT,
-    object: *const proj_sys::PJ,
-) -> Vec<AxisInfo> {
-    // SAFETY: object is a valid PROJ CRS object. PROJ returns an owned coordinate
-    // system object or null when unavailable.
-    let coordinate_system = unsafe { proj_sys::proj_crs_get_coordinate_system(context, object) };
-    if coordinate_system.is_null() {
+pub(crate) fn axes(context: &ProjContext, object: &OwnedPj) -> Vec<AxisInfo> {
+    // SAFETY: DOC-H. Typed owners; returns uniquely owned CS or null.
+    let coordinate_system =
+        unsafe { proj_sys::proj_crs_get_coordinate_system(context.as_ptr(), object.as_ptr()) };
+    // SAFETY: non-null returns are uniquely owned.
+    let Some(coordinate_system) = (unsafe { OwnedPj::try_from_owned(coordinate_system) }) else {
         return Vec::new();
-    }
-    // SAFETY: coordinate_system is valid until destroyed below.
-    let count = unsafe { proj_sys::proj_cs_get_axis_count(context, coordinate_system) };
+    };
+    // SAFETY: DOC-H. Live owned CS + typed context.
+    let count =
+        unsafe { proj_sys::proj_cs_get_axis_count(context.as_ptr(), coordinate_system.as_ptr()) };
     if count <= 0 {
-        // SAFETY: coordinate_system was returned by PROJ and is destroyed exactly once.
-        unsafe {
-            proj_sys::proj_destroy(coordinate_system);
-        }
         return Vec::new();
     }
     let mut axes = Vec::with_capacity(count as usize);
@@ -137,12 +127,12 @@ pub(crate) fn axes(
         let mut unit_name = ptr::null();
         let mut unit_auth_name = ptr::null();
         let mut unit_code = ptr::null();
-        // SAFETY: output pointers reference initialized local storage and the
-        // coordinate system object remains valid during the call.
+        // SAFETY: DOC-H. Live CS; index in 0..count; OUT slots exclusive locals;
+        // returned C strings are object-lifetime and copied immediately.
         let ok = unsafe {
             proj_sys::proj_cs_get_axis_info(
-                context,
-                coordinate_system,
+                context.as_ptr(),
+                coordinate_system.as_ptr(),
                 index,
                 &raw mut name,
                 &raw mut abbreviation,
@@ -155,46 +145,39 @@ pub(crate) fn axes(
         };
         if ok != 0 {
             axes.push(AxisInfo {
-                name: string_from_ptr(name),
-                abbreviation: string_from_ptr(abbreviation),
-                direction: string_from_ptr(direction),
-                unit_name: string_from_ptr(unit_name),
+                name: proj_c_string!(name),
+                abbreviation: proj_c_string!(abbreviation),
+                direction: proj_c_string!(direction),
+                unit_name: proj_c_string!(unit_name),
                 unit_conversion_factor,
             });
         }
-    }
-    // SAFETY: coordinate_system was returned by PROJ and is destroyed exactly once.
-    unsafe {
-        proj_sys::proj_destroy(coordinate_system);
     }
     axes
 }
 
 pub(crate) fn compound_axis_metadata(
-    context: *mut proj_sys::PJ_CONTEXT,
-    crs: *const proj_sys::PJ,
+    context: &ProjContext,
+    crs: &OwnedPj,
 ) -> Option<(Vec<AxisInfo>, Vec<&'static str>)> {
     let mut axes = Vec::new();
     let mut axis_order = Vec::new();
     for index in 0..32 {
-        // SAFETY: crs is a valid CRS object. PROJ returns an owned sub-CRS
-        // object or null when the index is out of range/not applicable.
-        let sub_crs = unsafe { proj_sys::proj_crs_get_sub_crs(context, crs, index) };
-        if sub_crs.is_null() {
+        // SAFETY: DOC-H. Typed owners; returns uniquely owned sub-CRS or null.
+        let sub_crs =
+            unsafe { proj_sys::proj_crs_get_sub_crs(context.as_ptr(), crs.as_ptr(), index) };
+        // SAFETY: non-null returns are uniquely owned; Drop cleans each iteration.
+        let Some(sub_crs) = (unsafe { OwnedPj::try_from_owned(sub_crs) }) else {
             break;
-        }
-        let coordinate_system = coordinate_system_type(context, sub_crs);
-        let sub_axes = self::axes(context, sub_crs);
+        };
+        let coordinate_system = coordinate_system_type(context, &sub_crs);
+        let sub_axes = self::axes(context, &sub_crs);
         axis_order.extend(
             sub_axes
                 .iter()
                 .map(|axis| axis_role(coordinate_system, axis)),
         );
         axes.extend(sub_axes);
-        // SAFETY: sub_crs is owned by this loop iteration and no longer used.
-        unsafe {
-            proj_sys::proj_destroy(sub_crs);
-        }
     }
     (!axes.is_empty()).then_some((axes, axis_order))
 }

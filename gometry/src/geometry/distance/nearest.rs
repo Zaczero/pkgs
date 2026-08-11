@@ -1,8 +1,9 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use super::*;
+use crate::geometry::distance::parts_covers_point;
+use crate::geometry::{
+    BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, Point, PointSetIndex,
+    Segment, Shape, point_distance_squared, point_pair_distance_key, same_point,
+    segment_contact_point,
+};
 pub(crate) fn nearest_probe_to_parts(
     probe: &DistanceParts,
     target: &DistanceParts,
@@ -16,6 +17,7 @@ pub(crate) fn nearest_probe_to_parts(
         probe: oriented.candidate.probe,
         target: oriented.candidate.target,
         distance_squared: oriented.candidate.distance_squared,
+        distance_key: oriented.candidate.distance_key,
     });
     let incoming_distance = best.as_ref().map(|b| b.distance_squared);
     best = match target.bvh() {
@@ -28,15 +30,19 @@ pub(crate) fn nearest_probe_to_parts(
         if let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
-                if let Some((target_point, distance_squared)) = index.nearest(probe_point)
-                    && best
+                if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
+                    let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
+                    if best
                         .as_ref()
-                        .is_none_or(|b| distance_squared < b.distance_squared)
-                {
+                        .is_some_and(|candidate| !distance_key.cmp(&candidate.distance_key).is_lt())
+                    {
+                        continue;
+                    }
                     best = Some(NearestCandidate {
                         probe: probe_point,
                         target: target_point,
                         distance_squared,
+                        distance_key,
                     });
                 }
             }
@@ -44,22 +50,33 @@ pub(crate) fn nearest_probe_to_parts(
             for probe_point in probe.probe_points() {
                 for &target_point in &target.point_only {
                     let distance_squared = point_distance_squared(probe_point, target_point);
+                    let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
                     if best
                         .as_ref()
-                        .is_none_or(|b| distance_squared < b.distance_squared)
+                        .is_none_or(|candidate| distance_key.cmp(&candidate.distance_key).is_lt())
                     {
                         best = Some(NearestCandidate {
                             probe: probe_point,
                             target: target_point,
                             distance_squared,
+                            distance_key,
                         });
                     }
                 }
             }
         }
     }
-    let improved =
-        best.as_ref().map(|b| b.distance_squared) != incoming_distance || incoming.is_none();
+    let improved = incoming.as_ref().is_none_or(|previous| {
+        best.as_ref().is_some_and(|candidate| {
+            Some(candidate.distance_squared) != incoming_distance
+                || !same_point(candidate.probe, previous.candidate.probe)
+                || !same_point(candidate.target, previous.candidate.target)
+                || candidate
+                    .distance_key
+                    .cmp(&previous.candidate.distance_key)
+                    .is_lt()
+        })
+    });
     match (best, incoming, improved) {
         (Some(candidate), _, true) | (Some(candidate), None, _) => {
             Some(OrientedCandidate { candidate, swapped })
@@ -83,8 +100,10 @@ pub(crate) fn parts_boundary_witness(
     right: &Shape,
     right_parts: &DistanceParts,
 ) -> Option<Point> {
-    if let Some((left_segment, right_segment)) = parts_crossing_pair(left_parts, right_parts) {
-        return Some(segment_intersection_point(left_segment, right_segment).point());
+    if let Some((left_segment, right_segment)) = parts_crossing_pair(left_parts, right_parts)
+        && let Some(point) = segment_contact_point(left_segment, right_segment)
+    {
+        return Some(point.point());
     }
     if let Some(&point) = left_parts
         .point_only

@@ -510,18 +510,35 @@ def test_non_degree_geographic_crs_rejected_for_geodesic_metrics() -> None:
         )
 
 
-def test_to_wkb_rejects_srid_for_non_epsg_crs() -> None:
-    """EWKB SRID output fails loudly when the CRS has no EPSG integer SRID."""
-    geometry = gm.Point(0, 0, crs='OGC:CRS84')
+def test_to_wkb_wire_aliases_crs84_and_rejects_unknown() -> None:
+    """CRS84/CRS84h are exact PostGIS wire aliases; other non-EPSG CRS still raise."""
+    crs84 = gm.Point(10, 50, crs='OGC:CRS84')
+    ewkb = crs84.to_wkb(include_srid=True)
+    lost = gm.from_wkb(ewkb)
+    assert lost.crs == 'EPSG:4326'
+    assert gm.equals(lost, gm.Point(10, 50, crs=4326))
+    assert gm.from_wkb(ewkb, crs='OGC:CRS84').crs == 'OGC:CRS84'
+
+    crs84h = gm.Point(10, 50, z=0, crs='OGC:CRS84h')
+    ewkb_h = crs84h.to_wkb(include_srid=True)
+    assert gm.from_wkb(ewkb_h).crs == 'EPSG:4979'
+    assert gm.from_wkb(ewkb_h, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+
+    # A genuine conflict still raises (not every CRS is a wire alias of 4326).
+    with pytest.raises(gm.CRSMismatchError):
+        gm.from_wkb(ewkb, crs=4258)
+
+    # Non-alias non-EPSG CRS still cannot embed an SRID.
+    geometry = gm.Point(0, 0, crs='ESRI:102001')
     with pytest.raises(ValueError, match='EWKB SRID requires an EPSG-authority CRS'):
         geometry.to_wkb(include_srid=True)
 
 
-def test_geo_rs_non_finite_results_are_rejected() -> None:
-    """geo-rs conversions cannot reintroduce NaN/inf-bearing geometry."""
+def test_extreme_finite_line_centroid_stays_finite() -> None:
+    """A mathematically finite centroid may not inherit an overflowed weight."""
     line = gm.LineString([(1e308, 1e308), (-1e308, -1e308)])
-    with pytest.raises(ValueError, match='coordinates must be finite'):
-        line.centroid()
+    centroid = line.centroid()
+    assert (centroid.x, centroid.y) == (0.0, 0.0)
 
 
 def test_proj_out_of_domain_errors_stay_projection_flavored() -> None:
@@ -540,8 +557,9 @@ def test_empty_geographic_distance_metrics_match_planar() -> None:
     line = gm.LineString([(0, 0), (1, 1)], crs=4326)
     assert gm.distance(empty, line) == math.inf
     assert gm.hausdorff_distance(empty, line) == math.inf
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty linework'):
-        gm.frechet_distance(empty, line)
+    # Fréchet used to be the one that diverged, contradicting this test's own
+    # name; emptiness is total on the geodesic lane exactly as on the planar one.
+    assert gm.frechet_distance(empty, line) == math.inf
 
 
 def test_empty_geographic_buffer_and_zero_measures() -> None:
@@ -574,8 +592,11 @@ def test_huge_planar_coordinates_are_panic_free_and_finite() -> None:
     assert math.isfinite(huge.area)
     assert math.isfinite(huge.exterior.length)
     assert huge.bounds == (0.0, 0.0, 1e150, 1e150)
-    with pytest.raises(ValueError, match='finite'):
-        huge.centroid()
+    # Shared-scale centroid rescue keeps the geometric centre representable.
+    c = huge.centroid()
+    assert math.isfinite(c.x) and math.isfinite(c.y)
+    assert c.x == pytest.approx(0.5e150, rel=1e-9)
+    assert c.y == pytest.approx(0.5e150, rel=1e-9)
 
 
 def test_transform_batches_with_empty_members_and_extreme_longitudes() -> None:

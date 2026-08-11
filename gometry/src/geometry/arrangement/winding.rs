@@ -1,8 +1,4 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::geometry::*;
+use crate::geometry::{HashMap, PointKey, RingDecisionArea, XY};
 /// Per-half-edge winding weight: `i32` for single-selection consumers
 /// (buffers, coverage, dissolve), `[i32; 2]` for binary overlays (one
 /// winding per operand). The trait keeps the columns and the BFS fill

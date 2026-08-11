@@ -4,8 +4,17 @@
 )]
 use pyo3::types::PyDict;
 
-use super::packed_columns::XyColumns;
-use super::*;
+use crate::array::packed_columns::XyColumns;
+use crate::array::{
+    Bound, CsrOffsetColumn, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _,
+    MissingMask, PackedColumnError, PackedColumns, Py, PyAny, PyAnyMethods as _,
+    PyDictMethods as _, PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError,
+    PyTypeMethods as _, Python, RowSelectionRef, Shape, SpatialCurve, Typed,
+    bounds_3d_values_from_columns, bounds_values_from_columns_masked, concat_coord_columns, crs,
+    crs_label, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
+    line_measure_masked, polygon_measure_masked, pymethods, reduce_lines_or_polygons,
+    resolve_metric, segmented_planar_lengths, segmented_planar_lengths_3d,
+};
 
 #[pymethods]
 impl PyGeometryArray {
@@ -43,26 +52,7 @@ impl PyGeometryArray {
                         .map_or_else(|_| "<unknown>".to_owned(), |name| name.to_string(),)
                 ))
             })?;
-            if self.crs_ref() != other.crs_ref() {
-                return Err(crate::py::errors::crs_mismatch_error(
-                    format!(
-                        "concat requires a shared CRS; left is {}, right is {}",
-                        crs_label(self.crs_str()),
-                        crs_label(other.crs_str()),
-                    ),
-                    self.crs_str(),
-                    other.crs_str(),
-                    Some(index),
-                ));
-            }
-            if self.epoch() != other.epoch() {
-                return Err(crate::py::errors::epoch_mismatch_error(
-                    "concat requires a shared coordinate epoch",
-                    self.epoch(),
-                    other.epoch(),
-                    Some(index),
-                ));
-            }
+            self.ensure_concat_frame(&other, index)?;
             borrowed.push(other);
         }
         let mut arrays = Vec::with_capacity(borrowed.len() + 1);
@@ -232,7 +222,7 @@ impl PyGeometryArray {
     ///     If the CRS lacks linear axis units for a metric result.
     #[getter]
     pub fn length_3d(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(mut values) = self.length_3d_unary_packed(py)? {
+        if let Some(mut values) = self.length_3d_unary_packed(py, None, "length_3d")? {
             if let Some(mask) = self.missing() {
                 for (value, missing) in values.iter_mut().zip(mask.iter()) {
                     if *missing {
@@ -313,7 +303,7 @@ impl PyGeometryArray {
     /// >>> panes.intersection_all().to_wkt()
     /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
     pub fn intersection_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.reduce_overlay_all(py, Shape::intersection_all)
+        self.reduce_overlay_all(py, Shape::intersection_all_topo)
     }
 
     /// Symmetric difference of all present geometries.
@@ -341,7 +331,7 @@ impl PyGeometryArray {
     /// >>> panes.symmetric_difference_all().to_wkt()  # the duplicate cancels
     /// 'POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))'
     pub fn symmetric_difference_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.reduce_overlay_all(py, Shape::symmetric_difference_all)
+        self.reduce_overlay_all(py, Shape::symmetric_difference_all_topo)
     }
 
     /// Union all present geometries into one geometry.
@@ -381,7 +371,8 @@ impl PyGeometryArray {
             },
             |multipoint| vec![multipoint],
         );
-        let shape = py.detach(move || Shape::union_all(&shapes, strictness))?;
+        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        let shape = py.detach(move || Shape::union_all_topo(&shapes, geographic, strictness))?;
         Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
     }
 
@@ -484,12 +475,13 @@ impl PyGeometryArray {
             }
         }
         let frame = self.frame.clone();
-        let mut geometries = Vec::with_capacity(group_shapes.len());
-        for shapes in group_shapes {
-            let shape = py.detach(move || Shape::union_all(&shapes, strictness))?;
-            geometries.push(PyGeometry::with_frame(shape, frame.clone()));
+        let geographic = crate::geometry::is_geographic_frame(&frame);
+        let mut shapes = Vec::with_capacity(group_shapes.len());
+        for group in group_shapes {
+            let shape = py.detach(move || Shape::union_all_topo(&group, geographic, strictness))?;
+            shapes.push(shape);
         }
-        Ok((Self::pack_or_mixed(geometries, frame), groups)
+        Ok((Self::from_shapes(shapes, frame), groups)
             .into_pyobject(py)?
             .into_any()
             .unbind())
@@ -533,27 +525,26 @@ impl PyGeometryArray {
                     };
                     let XyColumns { xs, ys } = polygon_columns.xy();
                     let scale = to_metre.get() * to_metre.get();
-                    let ring_measure = |xs: &[f64], ys: &[f64], window: std::ops::Range<usize>| {
-                        let pairs = window.len().saturating_sub(1);
-                        crate::geometry::ring_area_measure_columns(xs, ys, pairs).get()
-                    };
-                    Ok(polygon_measure_masked(
-                        xs,
-                        ys,
-                        polygon_columns.ring_offsets(),
-                        polygon_columns.polygon_offsets(),
-                        RowSelectionRef::Identity,
-                        missing.as_deref(),
-                        ring_measure,
-                        |rings, ring| {
-                            let (start, end) = (rings.start, rings.end);
-                            let mut area = ring(start);
-                            for hole in start + 1..end {
-                                area -= ring(hole);
+                    let ring_offsets = polygon_columns.ring_offsets();
+                    let polygon_offsets = polygon_columns.polygon_offsets();
+                    let mut values = Vec::with_capacity(polygon_columns.rows());
+                    for row in 0..polygon_columns.rows() {
+                        if missing.as_deref().is_some_and(|mask| mask[row]) {
+                            values.push(f64::NAN);
+                            continue;
+                        }
+                        let rings =
+                            polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
+                        let area = crate::geometry::polygon_area_measure_with(|visit| {
+                            for ring_index in rings.clone() {
+                                let start = ring_offsets[ring_index] as usize;
+                                let end = ring_offsets[ring_index + 1] as usize;
+                                visit(&xs[start..end], &ys[start..end], ring_index > rings.start);
                             }
-                            area * scale
-                        },
-                    ))
+                        });
+                        values.push(area * scale);
+                    }
+                    Ok(values)
                 })
             },
             crs::MetricModel::Geodesic(geodesic_crs) => {
@@ -617,32 +608,21 @@ impl PyGeometryArray {
                         columns,
                         |line_columns| {
                             let XyColumns { xs, ys } = line_columns.xy();
-                            line_measure_masked(
+                            // Dual PerRun/ColumnStream over topology-only runs.
+                            segmented_planar_lengths(
+                                line_columns.segmented_runs(missing.as_deref()),
                                 xs,
                                 ys,
-                                line_columns.offsets(),
-                                RowSelectionRef::Identity,
-                                missing.as_deref(),
-                                |xs, ys, _window| {
-                                    crate::geometry::line_length_columns(xs, ys) * to_metre.get()
-                                },
+                                to_metre.get(),
                             )
                         },
                         |polygon_columns| {
                             let XyColumns { xs, ys } = polygon_columns.xy();
-                            let ring_measure =
-                                |xs: &[f64], ys: &[f64], _window: std::ops::Range<usize>| {
-                                    crate::geometry::line_length_columns(xs, ys)
-                                };
-                            polygon_measure_masked(
+                            segmented_planar_lengths(
+                                polygon_columns.segmented_runs(missing.as_deref()),
                                 xs,
                                 ys,
-                                polygon_columns.ring_offsets(),
-                                polygon_columns.polygon_offsets(),
-                                RowSelectionRef::Identity,
-                                missing.as_deref(),
-                                ring_measure,
-                                |rings, ring| rings.map(ring).sum::<f64>() * to_metre.get(),
+                                to_metre.get(),
                             )
                         },
                     ))
@@ -704,8 +684,14 @@ impl PyGeometryArray {
         }
     }
 
-    pub(crate) fn length_3d_unary_packed(&self, py: Python<'_>) -> PyResult<Option<Vec<f64>>> {
-        let to_metre = crs::ensure_3d_metric(self.crs_str())?;
+    pub(crate) fn length_3d_unary_packed(
+        &self,
+        py: Python<'_>,
+        unit: Option<DistanceUnit>,
+        op_name: &str,
+    ) -> PyResult<Option<Vec<f64>>> {
+        let to_metre =
+            crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op_name)?.coordinate_scale();
         if let GeometryArrayStorage::Points { .. } = self.storage() {
             return Ok(Some(
                 std::iter::repeat_n(0.0, self.storage().len()).collect(),
@@ -726,19 +712,12 @@ impl PyGeometryArray {
                         return std::iter::repeat_n(f64::NAN, line_columns.rows()).collect();
                     };
                     let XyColumns { xs, ys } = line_columns.xy();
-                    line_measure_masked(
+                    segmented_planar_lengths_3d(
+                        line_columns.segmented_runs(missing.as_deref()),
                         xs,
                         ys,
-                        line_columns.offsets(),
-                        RowSelectionRef::Identity,
-                        missing.as_deref(),
-                        |xs, ys, window| {
-                            crate::geometry::line_length_3d_columns(
-                                xs,
-                                ys,
-                                column_window(zs, &window),
-                            ) * to_metre
-                        },
+                        zs,
+                        to_metre,
                     )
                 },
                 |polygon_columns| {
@@ -746,18 +725,12 @@ impl PyGeometryArray {
                         return std::iter::repeat_n(f64::NAN, polygon_columns.rows()).collect();
                     };
                     let XyColumns { xs, ys } = polygon_columns.xy();
-                    let ring_measure = |xs: &[f64], ys: &[f64], window: std::ops::Range<usize>| {
-                        crate::geometry::line_length_3d_columns(xs, ys, column_window(zs, &window))
-                    };
-                    polygon_measure_masked(
+                    segmented_planar_lengths_3d(
+                        polygon_columns.segmented_runs(missing.as_deref()),
                         xs,
                         ys,
-                        polygon_columns.ring_offsets(),
-                        polygon_columns.polygon_offsets(),
-                        RowSelectionRef::Identity,
-                        missing.as_deref(),
-                        ring_measure,
-                        |rings, ring| rings.map(ring).sum::<f64>() * to_metre,
+                        zs,
+                        to_metre,
                     )
                 },
             ))
@@ -766,16 +739,18 @@ impl PyGeometryArray {
 
     pub(crate) fn bounds_unary_packed(&self, py: Python<'_>) -> PyResult<Option<Vec<f64>>> {
         let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        // Geographic crossing detection is shape-based; its existing generic
-        // lane already skips masked placeholders. Planar packed bounds can
-        // stay columnar by excluding missing rows before extrema reduction.
-        if geographic && self.has_missing() {
-            return Ok(None);
-        }
         let missing = self.missing().cloned();
         if let Some(values) = self.reduce_packed_columns_detached(py, move |columns| {
             Ok(if geographic {
-                geographic_bounds_values_from_columns(&columns)
+                missing.as_deref().map_or_else(
+                    || geographic_bounds_values_from_columns(&columns),
+                    |missing| {
+                        super::packed_column_kernels::geographic_bounds_values_from_columns_masked(
+                            &columns,
+                            Some(missing),
+                        )
+                    },
+                )
             } else {
                 bounds_values_from_columns_masked(&columns, missing.as_deref())
             })
@@ -787,32 +762,47 @@ impl PyGeometryArray {
 }
 
 impl PyGeometryArray {
+    /// The one frame check every `concat` entry point shares: the operands
+    /// must name the same frame, and the left array's stored label wins —
+    /// matching binary results and `GeometryArray` construction.
+    ///
+    /// `index` positions the offending operand in the caller's argument list
+    /// so the error names which array disagreed.
+    fn ensure_concat_frame(&self, other: &Self, index: usize) -> PyResult<()> {
+        let agrees = match (self.crs_ref(), other.crs_ref()) {
+            (None, None) => true,
+            (Some(left), Some(right)) => crate::crs_operationally_equal(left, right)?,
+            _ => false,
+        };
+        if !agrees {
+            return Err(crate::py::errors::crs_mismatch_error(
+                format!(
+                    "concat requires a shared CRS; left is {}, right is {}",
+                    crs_label(self.crs_str()),
+                    crs_label(other.crs_str()),
+                ),
+                self.crs_str(),
+                other.crs_str(),
+                Some(index),
+            ));
+        }
+        if self.epoch() != other.epoch() {
+            return Err(crate::py::errors::epoch_mismatch_error(
+                "concat requires a shared coordinate epoch",
+                self.epoch(),
+                other.epoch(),
+                Some(index),
+            ));
+        }
+        Ok(())
+    }
+
     fn concat_many(arrays: &[&Self]) -> PyResult<Self> {
         let first = arrays
             .first()
             .expect("concat_many always receives the method receiver");
         for (index, other) in arrays[1..].iter().enumerate() {
-            let index = index + 1;
-            if first.crs_ref() != other.crs_ref() {
-                return Err(crate::py::errors::crs_mismatch_error(
-                    format!(
-                        "concat requires a shared CRS; left is {}, right is {}",
-                        crs_label(first.crs_str()),
-                        crs_label(other.crs_str()),
-                    ),
-                    first.crs_str(),
-                    other.crs_str(),
-                    Some(index),
-                ));
-            }
-            if first.epoch() != other.epoch() {
-                return Err(crate::py::errors::epoch_mismatch_error(
-                    "concat requires a shared coordinate epoch",
-                    first.epoch(),
-                    other.epoch(),
-                    Some(index),
-                ));
-            }
+            first.ensure_concat_frame(other, index + 1)?;
         }
 
         let total_rows = arrays.iter().map(|array| array.storage().len()).sum();
@@ -835,18 +825,21 @@ impl PyGeometryArray {
             return Ok(packed.with_missing_mask(merged_mask));
         }
 
-        let mut items = Vec::with_capacity(total_rows);
+        let mut shapes = Vec::with_capacity(total_rows);
         for array in arrays {
             match array.storage() {
-                GeometryArrayStorage::Mixed(existing) => items.extend(existing.iter().cloned()),
+                GeometryArrayStorage::Mixed(existing) => shapes.extend(existing.iter().cloned()),
                 _ => {
-                    items.extend(array.storage().iter_shapes().map(|shape| {
-                        PyGeometry::with_frame(shape.into_owned(), first.frame.clone())
-                    }));
+                    shapes.extend(
+                        array
+                            .storage()
+                            .iter_shapes()
+                            .map(std::borrow::Cow::into_owned),
+                    );
                 },
             }
         }
-        Ok(Self::mixed(items, first.frame.clone()).with_missing_mask(merged_mask))
+        Ok(Self::from_shapes(shapes, first.frame.clone()).with_missing_mask(merged_mask))
     }
 
     pub(crate) fn concat_pair(&self, other: &Self) -> PyResult<Self> {
@@ -869,26 +862,7 @@ impl PyGeometryArray {
     }
 
     fn concat_pair_dense(&self, other: &Self) -> PyResult<Self> {
-        if self.crs_ref() != other.crs_ref() {
-            return Err(crate::py::errors::crs_mismatch_error(
-                format!(
-                    "concat requires a shared CRS; left is {}, right is {}",
-                    crs_label(self.crs_str()),
-                    crs_label(other.crs_str()),
-                ),
-                self.crs_str(),
-                other.crs_str(),
-                Some(1),
-            ));
-        }
-        if self.epoch() != other.epoch() {
-            return Err(crate::py::errors::epoch_mismatch_error(
-                "concat requires a shared coordinate epoch",
-                self.epoch(),
-                other.epoch(),
-                Some(1),
-            ));
-        }
+        self.ensure_concat_frame(other, 1)?;
         if let Some(joined) = self.try_concat_packed_points(other)? {
             return Ok(joined);
         }
@@ -957,9 +931,18 @@ impl PyGeometryArray {
                 right_polygons,
             );
         }
-        let mut items = self.items().into_owned();
-        items.extend(other.items().into_owned());
-        Ok(Self::mixed(items, self.frame.clone()))
+        let mut shapes: Vec<Shape> = self
+            .storage()
+            .iter_shapes()
+            .map(std::borrow::Cow::into_owned)
+            .collect();
+        shapes.extend(
+            other
+                .storage()
+                .iter_shapes()
+                .map(std::borrow::Cow::into_owned),
+        );
+        Ok(Self::from_shapes(shapes, self.frame.clone()))
     }
 }
 
@@ -970,7 +953,8 @@ impl PyGeometryArray {
     fn reduce_overlay_all(
         &self,
         py: Python<'_>,
-        kernel: impl FnOnce(&[Shape], crate::geometry::Strictness) -> crate::error::Result<Shape> + Send,
+        kernel: impl FnOnce(&[Shape], bool, crate::geometry::Strictness) -> crate::error::Result<Shape>
+        + Send,
     ) -> PyResult<crate::Typed> {
         let strictness = crate::geometry::Strictness::Lenient;
         let shapes = self.with_borrowed_shapes(|borrowed| {
@@ -979,10 +963,49 @@ impl PyGeometryArray {
                 .map(|shape| (*shape).clone())
                 .collect::<Vec<_>>()
         });
-        let shape = py.detach(move || kernel(&shapes, strictness))?;
+        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        let shape = py.detach(move || kernel(&shapes, geographic, strictness))?;
         Ok(crate::Typed(PyGeometry::with_frame(
             shape,
             self.frame.clone(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod geographic_masked_bounds_tests {
+    use super::*;
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::geometry::{LineSeq, Point};
+
+    fn line(points: &[(f64, f64)]) -> Shape {
+        Shape::LineString(LineSeq::from_trusted(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_unchecked_xy(x, y))
+                .collect::<Vec<_>>()
+                .into(),
+        ))
+    }
+
+    #[test]
+    fn geographic_missing_rows_keep_the_packed_bounds_lane() {
+        Python::initialize();
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                line(&[(170.0, 10.0), (-170.0, 20.0)]),
+                line(&[(99.0, 99.0), (100.0, 100.0)]),
+                line(&[(1.0, 2.0), (3.0, 4.0)]),
+            ],
+            Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame"),
+        )
+        .with_missing_mask(MissingMask::from_sparse(3, &[1]));
+
+        let values = Python::attach(|py| array.bounds_unary_packed(py))
+            .expect("packed bounds succeeds")
+            .expect("geographic missing rows stay on the packed lane");
+        assert_eq!(&values[0..4], &[170.0, 10.0, -170.0, 20.0]);
+        assert!(values[4..8].iter().all(|value| value.is_nan()));
+        assert_eq!(&values[8..12], &[1.0, 2.0, 3.0, 4.0]);
     }
 }

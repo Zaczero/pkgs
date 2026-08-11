@@ -1,12 +1,15 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::geometry::*;
+use crate::geometry::{
+    Bounds, CoordSeq, Coordinates, Dimension, HashMap, HashMapExt as _, IndexedSegment,
+    LineworkChains, Orientation, Point, PointKey, Polygon, Ring, Shape, ValidationIssue, XY,
+    classify_ring_pair, face_interior_point, for_each_overlapping_bounds_pair,
+    isolated_point_contact, orient_ring, orientation_xy, point_on_segment, ray_crossing_is_right,
+    ring_probe_point, same_point, settle_touches, topology, vertex_witness,
+    visit_interacting_pairs,
+};
 pub(crate) fn line_contains_point<C: Coordinates + ?Sized>(points: &C, point: Point) -> bool {
     if !points
         .segment_pairs()
@@ -270,12 +273,11 @@ pub(in crate::geometry) fn polygon_rings_issue(
 
     // Containment: every hole interior must sit inside the shell and
     // outside every other hole. With crossings excluded above, one probe
-    // point per hole decides each relation.
-    let hole_bounds: Vec<Option<Bounds>> = polygon
-        .holes
-        .iter()
-        .map(|hole| Bounds::from_coords(hole.coords()))
-        .collect();
+    // point per hole decides each relation. Shell containment is O(H);
+    // hole–hole nesting visits only OVERLAPPING bounds pairs via the shared
+    // sweep (never all-pairs compares of provably disjoint holes).
+    let mut hole_bounds: Vec<Bounds> = Vec::with_capacity(polygon.holes.len());
+    let mut probes: Vec<Point> = Vec::with_capacity(polygon.holes.len());
     for (index, hole) in polygon.holes.iter().enumerate() {
         let probe = ring_probe_point(hole.coords(), polygon.shell.coords());
         if ring_classify_point(polygon.shell.coords(), probe) != RingClass::Interior {
@@ -287,25 +289,48 @@ pub(in crate::geometry) fn polygon_rings_issue(
                 path,
             ));
         }
-        for (other_index, other) in polygon.holes.iter().enumerate() {
-            if other_index == index
-                || option_bounds_disjoint(hole_bounds[index], hole_bounds[other_index])
-            {
-                continue;
-            }
-            if ring_classify_point(other.coords(), probe) == RingClass::Interior {
-                let (a, b) = (index.min(other_index), index.max(other_index));
-                return Some(ValidationIssue::new(
-                    format!(
-                        "interior ring at index {a} and interior ring at index {b} intersect on an area"
-                    ),
-                    Some(probe),
-                    path,
-                ));
-            }
-        }
+        // Empty/degenerate hole bounds cannot nest — use an empty box so the
+        // sweep never pairs them. Degenerate rings already failed earlier
+        // gates in practice; this is a defensive alignment skip.
+        hole_bounds.push(Bounds::from_coords(hole.coords()).unwrap_or_else(|| {
+            Bounds::new_unchecked(
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            )
+        }));
+        probes.push(probe);
     }
-    None
+    let mut nest_issue: Option<ValidationIssue> = None;
+    let _ = for_each_overlapping_bounds_pair(&hole_bounds, |index, other_index| {
+        let other = &polygon.holes[other_index];
+        if ring_classify_point(other.coords(), probes[index]) == RingClass::Interior {
+            let (a, b) = (index.min(other_index), index.max(other_index));
+            nest_issue = Some(ValidationIssue::new(
+                format!(
+                    "interior ring at index {a} and interior ring at index {b} intersect on an area"
+                ),
+                Some(probes[index]),
+                path,
+            ));
+            return std::ops::ControlFlow::Break(());
+        }
+        let hole = &polygon.holes[index];
+        if ring_classify_point(hole.coords(), probes[other_index]) == RingClass::Interior {
+            let (a, b) = (index.min(other_index), index.max(other_index));
+            nest_issue = Some(ValidationIssue::new(
+                format!(
+                    "interior ring at index {a} and interior ring at index {b} intersect on an area"
+                ),
+                Some(probes[other_index]),
+                path,
+            ));
+            return std::ops::ControlFlow::Break(());
+        }
+        std::ops::ControlFlow::Continue(())
+    });
+    nest_issue
 }
 
 /// Member-pair validity of a multipolygon (each member already valid on
@@ -354,35 +379,52 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
 
     // Nesting/stacking without boundary contact: one shell probe per
     // member against every other member's area (holes honored — a member
-    // inside another's hole is valid).
-    let member_bounds: Vec<Option<Bounds>> = polygons
+    // inside another's hole is valid). Only OVERLAPPING member bounds are
+    // visited — the shared bounds sweep replaces the O(N²) all-pairs
+    // compare that paid even for provably disjoint multipolygon parts.
+    let member_bounds: Vec<Bounds> = polygons
         .iter()
-        .map(|polygon| Bounds::from_coords(polygon.shell.coords()))
+        .map(|polygon| {
+            Bounds::from_coords(polygon.shell.coords()).unwrap_or_else(|| {
+                Bounds::new_unchecked(
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                )
+            })
+        })
         .collect();
-    for (index, polygon) in polygons.iter().enumerate() {
-        for (other_index, other) in polygons.iter().enumerate() {
-            if other_index == index
-                || option_bounds_disjoint(member_bounds[index], member_bounds[other_index])
-            {
-                continue;
-            }
-            // A shell vertex OFF the other member's whole boundary decides
-            // the pair: no cross-member linework contact survived the pair
-            // scan, so any non-touch vertex lies strictly inside or
-            // outside — and touch points are finite, so the FIRST vertex
-            // almost always answers. (Probing the shell against ITSELF
-            // here once cost O(n²): every vertex is its own boundary.)
-            let probe = member_probe_point(polygon, other);
-            if other.contains_point(probe) {
-                return Some(ValidationIssue::new(
-                    overlap(index, other_index),
-                    Some(probe),
-                    path,
-                ));
-            }
+    let mut nest_issue: Option<ValidationIssue> = None;
+    let _ = for_each_overlapping_bounds_pair(&member_bounds, |index, other_index| {
+        // A shell vertex OFF the other member's whole boundary decides
+        // the pair: no cross-member linework contact survived the pair
+        // scan, so any non-touch vertex lies strictly inside or
+        // outside — and touch points are finite, so the FIRST vertex
+        // almost always answers.
+        let polygon = &polygons[index];
+        let other = &polygons[other_index];
+        let probe = member_probe_point(polygon, other);
+        if other.contains_point(probe) {
+            nest_issue = Some(ValidationIssue::new(
+                overlap(index, other_index),
+                Some(probe),
+                path,
+            ));
+            return std::ops::ControlFlow::Break(());
         }
-    }
-    None
+        let probe = member_probe_point(other, polygon);
+        if polygon.contains_point(probe) {
+            nest_issue = Some(ValidationIssue::new(
+                overlap(other_index, index),
+                Some(probe),
+                path,
+            ));
+            return std::ops::ControlFlow::Break(());
+        }
+        std::ops::ControlFlow::Continue(())
+    });
+    nest_issue
 }
 
 /// A representative point of `member` that avoids every ring of `other`

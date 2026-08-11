@@ -1,8 +1,4 @@
 #![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
@@ -11,14 +7,14 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use super::element::BulkElement;
-use super::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
 use crate::array::{GeometryArrayStorage, MissingMask, ShapeRow};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    CollectRows, GeometryInput, classify_required, paired_arrays, paired_arrays_len, rows_err,
+    BulkElement, CollectRows as _, GeometryInput, classify_required, paired_arrays,
+    paired_arrays_len, rows_err,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
+use crate::dispatch::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
 use crate::error::Result;
 use crate::geometry::{Dimension, Shape, ShapeData, is_geographic_frame};
 use crate::{PyGeometry, PyGeometryArray, Typed};
@@ -42,7 +38,6 @@ pub(crate) trait BinaryArrayFastPath<R>: Send + Sync {
         right: GeometryInput<'_>,
         op_name: &str,
         frame: &Frame,
-        geographic: bool,
         model: Option<&MetricModel>,
         metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>>;
@@ -59,7 +54,6 @@ impl<R: BulkElement> BinaryArrayFastPath<R> for NoBinaryFastPath {
         _right: GeometryInput<'_>,
         _op_name: &str,
         _frame: &Frame,
-        _geographic: bool,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -73,7 +67,6 @@ fn run_fast_path<R, F>(
     right: GeometryInput<'_>,
     op_name: &str,
     frame: &Frame,
-    geographic: bool,
     resolver: super::metric::MetricResolver,
     fast_path: &F,
 ) -> Option<PyResult<Py<PyAny>>>
@@ -91,10 +84,30 @@ where
         right,
         op_name,
         frame,
-        geographic,
         metric.and_then(MetricCtx::model),
         metric.and_then(MetricCtx::resolved),
     )
+}
+
+/// Whether the per-row binary fallback materializes frame-dependent caches.
+///
+/// Derived from [`MetricCtx`]: only `Metric` kernels (distance/dwithin/LRS)
+/// inspect cached fields. `None` and `Antimeridian` need no frame cache —
+/// acquiring an empty `FrameDependentCaches` Arc per row is retained memory
+/// with no payoff.
+#[derive(Clone, Copy)]
+enum FrameCachePolicy {
+    None,
+    Eager,
+}
+
+impl FrameCachePolicy {
+    const fn from_metric(metric: MetricCtx<'_>) -> Self {
+        match metric {
+            MetricCtx::Metric { .. } => Self::Eager,
+            MetricCtx::None | MetricCtx::Antimeridian(_) => Self::None,
+        }
+    }
 }
 
 fn run_array_rows<R, K>(
@@ -111,6 +124,7 @@ where
 {
     let array = array.clone();
     let missing = array.missing().cloned();
+    let frame_caches = FrameCachePolicy::from_metric(metric);
     py.detach(move || {
         let frame = &frame;
         array
@@ -121,13 +135,21 @@ where
                 if missing.as_ref().is_some_and(|mask| mask[row]) {
                     return Ok(R::missing_value());
                 }
-                let row_cache = array.row_frame_cache(row);
+                // Demand-driven: only MetricCtx::Metric asks for frame caches.
+                let row_cache;
+                let left_frame_cache = match frame_caches {
+                    FrameCachePolicy::Eager => {
+                        row_cache = array.row_frame_cache(row);
+                        Some(row_cache.as_ref())
+                    },
+                    FrameCachePolicy::None => None,
+                };
                 let ctx = OpCtx {
                     frame,
                     geographic,
                     metric,
                     lane: Lane::Array(row),
-                    left_frame_cache: Some(&row_cache),
+                    left_frame_cache,
                     right_frame_cache: None,
                 };
                 kernel(row, shape_row, &ctx)
@@ -163,6 +185,7 @@ where
     let right_array = right.clone();
     let missing = crate::array::missing::union_pair(left.missing(), right.missing());
     let row_missing = missing.clone();
+    let frame_caches = FrameCachePolicy::from_metric(metric);
     let values = py
         .detach(move || {
             let frame = &frame;
@@ -174,15 +197,23 @@ where
                     if row_missing.as_ref().is_some_and(|mask| mask[row]) {
                         return Ok(R::missing_value());
                     }
-                    let left_cache = left_array.row_frame_cache(row);
-                    let right_cache = right_array.row_frame_cache(row);
+                    let left_owned;
+                    let right_owned;
+                    let (left_frame_cache, right_frame_cache) = match frame_caches {
+                        FrameCachePolicy::Eager => {
+                            left_owned = left_array.row_frame_cache(row);
+                            right_owned = right_array.row_frame_cache(row);
+                            (Some(left_owned.as_ref()), Some(right_owned.as_ref()))
+                        },
+                        FrameCachePolicy::None => (None, None),
+                    };
                     let ctx = OpCtx {
                         frame,
                         geographic,
                         metric,
                         lane: Lane::Array(row),
-                        left_frame_cache: Some(&left_cache),
-                        right_frame_cache: Some(&right_cache),
+                        left_frame_cache,
+                        right_frame_cache,
                     };
                     kernel(row, left_row, right_row, &ctx)
                 })
@@ -220,9 +251,12 @@ where
     let output_frame = frame.clone();
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let fixed_shape = fixed.shape.clone();
+    let fixed_shape = Arc::clone(&fixed.shape);
     let fixed_cache = Arc::clone(&fixed.frame_cache);
     let array_handle = array.clone();
+    // Metric/predicate binary array×scalar: keep prepared handles (`&ShapeData`);
+    // frame caches are derived from MetricCtx. Never demote these kernels to
+    // bare `&Shape` (Deref coercion would drop prepared engines).
     let values = run_array_rows(
         py,
         array,
@@ -278,6 +312,7 @@ where
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let left_array = left.clone();
     let right_array = right.clone();
+    // Prepared handles; frame caches derived from MetricCtx.
     let (values, missing) = run_paired_rows(
         py,
         left,
@@ -330,7 +365,6 @@ where
                 GeometryInput::One(left),
                 op_name,
                 &right.frame,
-                is_geographic_frame(&left.frame) || is_geographic_frame(&right.frame),
                 resolver,
                 fast_path,
             ) {
@@ -345,7 +379,6 @@ where
                 GeometryInput::One(right),
                 op_name,
                 &left.frame,
-                is_geographic_frame(&left.frame) || is_geographic_frame(&right.frame),
                 resolver,
                 fast_path,
             ) {
@@ -360,7 +393,6 @@ where
                 GeometryInput::Many(right),
                 op_name,
                 &left.frame,
-                is_geographic_frame(&left.frame) || is_geographic_frame(&right.frame),
                 resolver,
                 fast_path,
             ) {
@@ -406,8 +438,8 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
         left_frame_cache: Some(&left.frame_cache),
         right_frame_cache: Some(&right.frame_cache),
     };
-    let left_shape = left.shape.clone();
-    let right_shape = right.shape.clone();
+    let left_shape = Arc::clone(&left.shape);
+    let right_shape = Arc::clone(&right.shape);
     let result = py.detach(move || kernel(&left_shape, &right_shape, &ctx))?;
     R::into_py(result, py, &frame)
 }
@@ -619,8 +651,8 @@ where
                 left_frame_cache: Some(&left.frame_cache),
                 right_frame_cache: Some(&right.frame_cache),
             };
-            let left_shape = left.shape.clone();
-            let right_shape = right.shape.clone();
+            let left_shape = Arc::clone(&left.shape);
+            let right_shape = Arc::clone(&right.shape);
             let shape = py.detach(move || {
                 invoke_topology_geometry_kernel(geographic, &left_shape, &right_shape, &|l, r| {
                     kernel(l, r, &ctx)
@@ -642,7 +674,6 @@ where
                 GeometryInput::One(left),
                 op_name,
                 &frame,
-                geographic,
                 None,
                 None,
             ) {
@@ -652,15 +683,17 @@ where
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
             let left_fixed = split_operand_arc_for_topology(geographic, &left.shape)?;
-            let right_array = right.clone();
+            // Overlay: transient ShapeData only (no prepared-slot persist;
+            // MetricCtx is None so no frame caches). Contained shortcuts still
+            // see a ShapeData handle.
             let shapes = run_array_rows(
                 py,
                 right,
                 &frame,
                 geographic,
                 metric,
-                move |row, right_row, ctx| {
-                    right_array.with_row_data(row, right_row, |right_data| {
+                move |_row, right_row, ctx| {
+                    right_row.with_data(|right_data| {
                         invoke_topology_geometry_kernel(
                             geographic,
                             &left_fixed,
@@ -684,7 +717,6 @@ where
                 right_epoch,
                 op_name,
             )?;
-            let geographic = is_geographic_frame(&frame);
             if let Some(result) = match right_in {
                 GeometryInput::One(right) => fast_path.try_dispatch(
                     py,
@@ -692,7 +724,6 @@ where
                     GeometryInput::One(right),
                     op_name,
                     &frame,
-                    geographic,
                     None,
                     None,
                 ),
@@ -702,7 +733,6 @@ where
                     GeometryInput::Many(right),
                     op_name,
                     &frame,
-                    geographic,
                     None,
                     None,
                 ),
@@ -753,12 +783,16 @@ where
     let geographic = is_geographic_frame(&frame);
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let left_bounds = left.cached_element_bounds();
+    // Prefer already-warm bounds caches, but do NOT force-initialize them:
+    // a pure overlay of two packed point arrays must not retain multi-MiB
+    // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.
+    let left_bounds = left.bounds_cache.get().cloned().flatten();
     let (shapes, output_missing) = match right {
         One(right) => {
             let right_shape = split_operand_arc_for_topology(geographic, &right.shape)?;
             let right_bounds = right_shape.bounds();
-            let right_dim: Dimension = right_shape.shape().topological_dimension();
+            let right_dim = right_shape.shape().topological_dimension();
+            // Pure topology overlay: MetricCtx is None → no frame caches.
             let shapes = run_array_rows(
                 py,
                 left,
@@ -766,7 +800,7 @@ where
                 geographic,
                 metric,
                 move |row, left_row, ctx| {
-                    let left_box = row_box(&left_bounds, row);
+                    let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     if let Some(result) = disjoint_shortcut.and_then(|shortcut| {
                         shortcut.resolve(
                             left_box,
@@ -798,7 +832,7 @@ where
         },
         Many(right) => {
             let rows = paired_arrays_len(left, right)?;
-            let right_bounds = right.cached_element_bounds();
+            let right_bounds = right.bounds_cache.get().cloned().flatten();
             run_paired_rows(
                 py,
                 left,
@@ -808,8 +842,9 @@ where
                 geographic,
                 metric,
                 move |row, left_row, right_row, ctx| {
-                    let (left_box, right_box) =
-                        (row_box(&left_bounds, row), row_box(&right_bounds, row));
+                    let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
+                    let right_box =
+                        row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
                     if let Some(result) = disjoint_shortcut.and_then(|shortcut| {
                         shortcut.resolve(
                             left_box,

@@ -149,7 +149,9 @@ def test_utm_catalog_matches_pyproj_database_oracle() -> None:
         datum_name='WGS 84', area_of_interest=area, contains=True
     )
     gometry_items = gm.crs_utm_zones(
-        datum_name='WGS 84', area=(20.0, 51.0, 22.0, 53.0), contains_area=True
+        datum_name='WGS 84',
+        area_of_interest=(20.0, 51.0, 22.0, 53.0),
+        contains_area_of_interest=True,
     )
     assert [item['crs'] for item in gometry_items] == [
         f'{item.auth_name}:{item.code}' for item in pyproj_items
@@ -530,7 +532,9 @@ def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> N
     hole = [(-72.7, 41.3), (-72.3, 41.3), (-72.3, 41.7), (-72.7, 41.7), (-72.7, 41.3)]
     line = gm.LineString(coordinates[:3], crs=4267)
     polygon = gm.Polygon(coordinates, holes=[hole], crs=4267)
-    projected_polygon = polygon.to_crs(3857)
+    # PROJ lacks ca_nrc_ntv2_0.tif, so this NAD27 transform degrades explicitly.
+    with pytest.warns(gm.AccuracyWarning, match='ca_nrc_ntv2_0[.]tif'):
+        projected_polygon = polygon.to_crs(3857)
     ellipsoid = gm.crs_info(4267)['ellipsoid']
     assert ellipsoid is not None
     geod = pyproj.Geod(
@@ -548,7 +552,9 @@ def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> N
         [point[0] for point in coordinates[:3]], [point[1] for point in coordinates[:3]]
     )
     assert polygon.area == pytest.approx(abs(expected_area))
-    assert projected_polygon.to_crs(4267).area == pytest.approx(abs(expected_area))
+    with pytest.warns(gm.AccuracyWarning, match='ca_nrc_ntv2_0[.]tif'):
+        restored_area = projected_polygon.to_crs(4267).area
+    assert restored_area == pytest.approx(abs(expected_area))
     assert polygon.length == pytest.approx(expected_perimeter)
     assert line.length == pytest.approx(expected_length)
 
@@ -748,7 +754,9 @@ def test_empty_result_typing_regression() -> None:
             gm.from_wkt(empty).minimum_rotated_rectangle().to_wkt() == 'POLYGON EMPTY'
         ), empty
     for fn in (gm.intersection_all, gm.symmetric_difference_all, gm.union_all):
-        with pytest.raises(gm.InvalidGeometryError, match='requires at least one geometry'):
+        with pytest.raises(
+            gm.InvalidGeometryError, match='requires at least one geometry'
+        ):
             fn([])
 
 

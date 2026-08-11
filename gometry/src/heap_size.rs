@@ -1,7 +1,3 @@
-#![allow(
-    clippy::arbitrary_source_item_ordering,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::hash::BuildHasher;
 use std::mem::{size_of, size_of_val};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -66,9 +62,10 @@ impl<T: HeapSize> HeapSize for Option<T> {
     }
 }
 
-impl<T: HeapSize + ?Sized> HeapSize for Box<T> {
+impl<T: HeapSize> HeapSize for Box<T> {
     fn heap_bytes(&self) -> usize {
-        (**self).heap_bytes()
+        // The box owns a heap allocation of `T` plus `T`'s nested heap.
+        size_of::<T>() + (**self).heap_bytes()
     }
 }
 
@@ -90,15 +87,31 @@ impl<T: HeapSize> HeapSize for Box<[T]> {
     }
 }
 
+/// Arc control-block size used by retained-size accounting (`__sizeof__`).
+///
+/// Policy (one place, every Arc holder): report the **logical retained footprint
+/// this handle keeps reachable** — the pointee layout (`size_of::<T>()` or
+/// `len * size_of` for slices), nested `HeapSize` heap, and the Arc control
+/// block. Shared Arcs are charged in full on every holder (same as counting a
+/// shared buffer reachable from this object). Views that select a subset of a
+/// parent must NOT route through these blanket impls for the parent's full
+/// slot table — they use logical/selected accounting instead (see
+/// `FrameCacheRows::heap_bytes`, `GeometryArrayStorage::logical_heap_bytes`).
+const ARC_CONTROL_BYTES: usize = size_of::<usize>() * 2;
+
 impl<T: HeapSize> HeapSize for Arc<T> {
     fn heap_bytes(&self) -> usize {
-        (**self).heap_bytes()
+        // Pointee layout + nested heap + control block (matches Box's
+        // size_of::<T>() + nested, plus the Arc header Box does not need).
+        ARC_CONTROL_BYTES + size_of::<T>() + (**self).heap_bytes()
     }
 }
 
 impl<T: HeapSize> HeapSize for Arc<[T]> {
     fn heap_bytes(&self) -> usize {
-        self.len() * size_of::<T>() + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+        ARC_CONTROL_BYTES
+            + self.len() * size_of::<T>()
+            + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
     }
 }
 

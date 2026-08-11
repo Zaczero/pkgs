@@ -2,8 +2,13 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use super::*;
-use crate::geometry::*;
+use crate::geometry::relate::{
+    De9im, LinealOperand, fully_covered, group_intervals_by_index, projection_interval,
+};
+use crate::geometry::{
+    SEGMENT_INDEX_MIN_PAIRS, SegmentContact, Shape, for_each_bipartite_index_pair,
+    point_on_segment, segment_contact, segment_envelopes_disjoint, shared_segment_part,
+};
 
 /// Native line × line DE-9IM from one classified contact scan.
 ///
@@ -27,8 +32,8 @@ pub(crate) fn lineal_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im>
     let mut bi = false;
     let mut bb = false;
     // Covered t-intervals per segment, filled by collinear runs.
-    let mut cover_a_flat: Vec<(usize, f64, f64)> = Vec::new();
-    let mut cover_b_flat: Vec<(usize, f64, f64)> = Vec::new();
+    let mut cover_a_flat = Vec::new();
+    let mut cover_b_flat = Vec::new();
     {
         let mut visit = |a_index: usize, b_index: usize| {
             let (left, right) = (a.segments[a_index], b.segments[b_index]);
@@ -42,13 +47,10 @@ pub(crate) fn lineal_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im>
             }
             if let Some((_, run)) = shared_segment_part(left, right) {
                 shared_run = true;
-                let clamp = |segment: Segment, point: XY| {
-                    segment_projection_fraction(point, segment).clamp(0.0, 1.0)
-                };
-                let (a0, a1) = (clamp(left, run[0]), clamp(left, run[1]));
-                cover_a_flat.push((a_index, a0.min(a1), a0.max(a1)));
-                let (b0, b1) = (clamp(right, run[0]), clamp(right, run[1]));
-                cover_b_flat.push((b_index, b0.min(b1), b0.max(b1)));
+                let (a0, a1) = projection_interval(left, run[0], run[1]);
+                cover_a_flat.push((a_index, a0, a1));
+                let (b0, b1) = projection_interval(right, run[0], run[1]);
+                cover_b_flat.push((b_index, b0, b1));
             }
             // Endpoint-involved contact points (run ends included — a
             // part endpoint inside a collinear run still grades the
@@ -85,8 +87,8 @@ pub(crate) fn lineal_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im>
             for_each_bipartite_index_pair(&a.segments, &b.segments, &mut visit);
         }
     }
-    let mut cover_a = group_intervals_by_index(&cover_a_flat, a.segments.len());
-    let mut cover_b = group_intervals_by_index(&cover_b_flat, b.segments.len());
+    let mut cover_a = group_intervals_by_index(cover_a_flat, a.segments.len());
+    let mut cover_b = group_intervals_by_index(cover_b_flat, b.segments.len());
     let mut matrix = [b'F'; 9];
     matrix[8] = b'2';
     matrix[0] = if shared_run {

@@ -1,4 +1,7 @@
-use super::*;
+use crate::py::crs::{
+    Bound, PyAny, PyAnyMethods as _, PyErr, PyResult, PyStringMethods as _, PyTypeError, crs,
+    pyfunction,
+};
 
 #[pyfunction(signature = (
     *,
@@ -57,35 +60,100 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     if let Ok(path) = parse_path(value, "search_paths") {
         return Ok(Some(vec![path]));
     }
-    // Fallible growth (D10): infinite search_paths streams → MemoryError.
-    let paths =
-        crate::collect_py_iter(value, |item| parse_path(&item, "search_paths entries")).map_err(
-            |err| {
-                if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(value.py())
-                    || (err.is_instance_of::<PyTypeError>(value.py())
-                        && !err.to_string().contains("not iterable"))
-                {
-                    err
-                } else {
-                    PyTypeError::new_err(
-                        "search_paths must be a string/path-like path or an iterable of string/path-like paths",
-                    )
-                }
+    // Specialized fallible loop (not bare collect_py_iter + extract::<String>):
+    // each path is an owned heap `String`. Outer `Vec` growth *and* per-item
+    // string reservation must be fallible, and retained output must be dropped
+    // *before* boxing `PyMemoryError` — otherwise RLIMIT_AS aborts while the
+    // exception is constructed (`memory allocation of N bytes failed`).
+    let mut paths = Vec::new();
+    if let Ok(hint) = value.len()
+        && crate::try_reserve_hint(&mut paths, hint).is_err()
+    {
+        return Err(crate::grow_sequence_error());
+    }
+    let Ok(mut iter) = value.try_iter() else {
+        return Err(PyTypeError::new_err(
+            "search_paths must be a string/path-like path or an iterable of string/path-like paths",
+        ));
+    };
+    loop {
+        let item = match iter.next() {
+            None => break,
+            Some(Ok(item)) => item,
+            Some(Err(err)) => {
+                drop(paths);
+                return Err(err);
             },
-        )?;
+        };
+        if paths.len() == paths.capacity() {
+            let additional = paths.capacity().max(8);
+            if paths.try_reserve(additional).is_err() {
+                drop(paths);
+                return Err(crate::grow_sequence_error());
+            }
+        }
+        match take_path_string(&item, "search_paths entries") {
+            Ok(owned) => paths.push(owned),
+            Err(PathTakeError::Oom) => {
+                drop(paths);
+                return Err(crate::string_alloc_error());
+            },
+            Err(PathTakeError::Err(err)) => {
+                drop(paths);
+                if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(value.py()) {
+                    return Err(err);
+                }
+                return Err(PyTypeError::new_err(
+                    "search_paths must be a string/path-like path or an iterable of string/path-like paths",
+                ));
+            },
+        }
+    }
     Ok(Some(paths))
 }
 
-fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> {
-    if let Ok(path) = value.extract::<String>() {
-        return Ok(path);
+enum PathTakeError {
+    /// Allocator refused the owned-string reservation (no `PyErr` yet).
+    Oom,
+    Err(PyErr),
+}
+
+/// Copy a string/path-like Python value into an owned Rust path string.
+///
+/// OOM is `PathTakeError::Oom` so the caller can drop retained buffers before
+/// boxing a `PyMemoryError`.
+fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<String, PathTakeError> {
+    if let Ok(py_str) = value.cast::<pyo3::types::PyString>() {
+        let s = py_str.to_str().map_err(PathTakeError::Err)?;
+        return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
     }
-    let os = value.py().import("os")?;
-    let path = os.getattr("fspath")?.call1((value,)).and_then(|path| {
-        path.extract::<String>()
-            .map_err(|_| PyTypeError::new_err(format!("{name} must resolve to a string path")))
-    })?;
-    Ok(path)
+    let os = value.py().import("os").map_err(PathTakeError::Err)?;
+    let path = os
+        .getattr("fspath")
+        .map_err(PathTakeError::Err)?
+        .call1((value,))
+        .map_err(|_| {
+            PathTakeError::Err(PyTypeError::new_err(format!(
+                "{name} must be a string or path-like path"
+            )))
+        })?;
+    if let Ok(py_str) = path.cast::<pyo3::types::PyString>() {
+        let s = py_str.to_str().map_err(PathTakeError::Err)?;
+        return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
+    }
+    Err(PathTakeError::Err(PyTypeError::new_err(format!(
+        "{name} must resolve to a string path"
+    ))))
+}
+
+fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> {
+    // Fallible owned copy: `extract::<String>()` allocates infallibly and can
+    // abort under RLIMIT_AS on unbounded `search_paths` streams.
+    match take_path_string(value, name) {
+        Ok(s) => Ok(s),
+        Err(PathTakeError::Oom) => Err(crate::string_alloc_error()),
+        Err(PathTakeError::Err(err)) => Err(err),
+    }
 }
 
 /// Return the current CRS engine configuration.
@@ -137,6 +205,9 @@ pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
 /// True
 pub(crate) fn crs_clear_cache() {
     crs::clear_cache();
+    // Drop Python-side catalog list materializations on this thread immediately
+    // (generation bump already invalidates on next access for other threads).
+    super::list_cache::clear_py_list_caches();
 }
 
 /// Statistics about the CRS caches.

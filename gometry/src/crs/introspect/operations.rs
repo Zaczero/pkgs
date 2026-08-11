@@ -1,36 +1,40 @@
-use super::*;
-use crate::crs::*;
-pub(crate) fn method_info(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *const proj_sys::PJ,
-) -> Option<MethodInfo> {
+use std::ptr;
+
+use crate::crs::introspect::crs_coordinate_operation_info_from_pj;
+use crate::crs::{
+    CrsCoordinateOperationInfo, GridInfo, MethodInfo, OperationParameterInfo, OwnedPj, ProjContext,
+};
+
+pub(crate) fn method_info(context: &ProjContext, operation: &OwnedPj) -> Option<MethodInfo> {
     let mut name = ptr::null();
     let mut authority = ptr::null();
     let mut code = ptr::null();
-    // SAFETY: output pointers reference initialized local storage and operation is
-    // a valid PROJ coordinate operation for this call path.
+    // SAFETY: DOC-H. Typed live context/operation; OUT slots exclusive locals;
+    // returned C strings are object-lifetime and copied immediately.
     let ok = unsafe {
         proj_sys::proj_coordoperation_get_method_info(
-            context,
-            operation,
+            context.as_ptr(),
+            operation.as_ptr(),
             &raw mut name,
             &raw mut authority,
             &raw mut code,
         )
     };
     (ok != 0).then(|| MethodInfo {
-        name: string_from_ptr(name),
-        authority: string_from_ptr(authority),
-        code: string_from_ptr(code),
+        name: proj_c_string!(name),
+        authority: proj_c_string!(authority),
+        code: proj_c_string!(code),
     })
 }
 
 pub(crate) fn operation_parameters(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *const proj_sys::PJ,
+    context: &ProjContext,
+    operation: &OwnedPj,
 ) -> Vec<OperationParameterInfo> {
-    // SAFETY: operation is a valid PROJ coordinate operation.
-    let count = unsafe { proj_sys::proj_coordoperation_get_param_count(context, operation) };
+    // SAFETY: DOC-H. Typed live context/operation on creating thread.
+    let count = unsafe {
+        proj_sys::proj_coordoperation_get_param_count(context.as_ptr(), operation.as_ptr())
+    };
     if count <= 0 {
         return Vec::new();
     }
@@ -46,12 +50,11 @@ pub(crate) fn operation_parameters(
         let mut unit_authority = ptr::null();
         let mut unit_code = ptr::null();
         let mut unit_category = ptr::null();
-        // SAFETY: output pointers reference initialized local storage and
-        // operation remains valid during the call.
+        // SAFETY: DOC-H. Index in 0..count; OUT slots exclusive; strings copied.
         let ok = unsafe {
             proj_sys::proj_coordoperation_get_param(
-                context,
-                operation,
+                context.as_ptr(),
+                operation.as_ptr(),
                 index,
                 &raw mut name,
                 &raw mut authority,
@@ -67,28 +70,27 @@ pub(crate) fn operation_parameters(
         };
         if ok != 0 {
             parameters.push(OperationParameterInfo {
-                name: string_from_ptr(name),
-                authority: string_from_ptr(authority),
-                code: string_from_ptr(code),
+                name: proj_c_string!(name),
+                authority: proj_c_string!(authority),
+                code: proj_c_string!(code),
                 value,
-                value_string: string_from_ptr(value_string),
+                value_string: proj_c_string!(value_string),
                 unit_conversion_factor,
-                unit_name: string_from_ptr(unit_name),
-                unit_authority: string_from_ptr(unit_authority),
-                unit_code: string_from_ptr(unit_code),
-                unit_category: string_from_ptr(unit_category),
+                unit_name: proj_c_string!(unit_name),
+                unit_authority: proj_c_string!(unit_authority),
+                unit_code: proj_c_string!(unit_code),
+                unit_category: proj_c_string!(unit_category),
             });
         }
     }
     parameters
 }
 
-pub(crate) fn grids(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *const proj_sys::PJ,
-) -> Vec<GridInfo> {
-    // SAFETY: operation is a valid PROJ coordinate operation.
-    let count = unsafe { proj_sys::proj_coordoperation_get_grid_used_count(context, operation) };
+pub(crate) fn grids(context: &ProjContext, operation: &OwnedPj) -> Vec<GridInfo> {
+    // SAFETY: DOC-H. Typed live context/operation.
+    let count = unsafe {
+        proj_sys::proj_coordoperation_get_grid_used_count(context.as_ptr(), operation.as_ptr())
+    };
     if count <= 0 {
         return Vec::new();
     }
@@ -101,12 +103,11 @@ pub(crate) fn grids(
         let mut direct_download = 0;
         let mut open_license = 0;
         let mut available = 0;
-        // SAFETY: output pointers reference initialized local storage and operation
-        // remains valid during the call.
+        // SAFETY: DOC-H. Index in 0..count; OUT slots exclusive; strings copied.
         let ok = unsafe {
             proj_sys::proj_coordoperation_get_grid_used(
-                context,
-                operation,
+                context.as_ptr(),
+                operation.as_ptr(),
                 index,
                 &raw mut short_name,
                 &raw mut full_name,
@@ -119,9 +120,9 @@ pub(crate) fn grids(
         };
         if ok != 0 {
             grids.push(GridInfo {
-                short_name: string_from_ptr(short_name),
-                full_name: string_from_ptr(full_name),
-                package_name: string_from_ptr(package_name),
+                short_name: proj_c_string!(short_name),
+                full_name: proj_c_string!(full_name),
+                package_name: proj_c_string!(package_name),
                 available: available != 0,
             });
         }
@@ -130,27 +131,27 @@ pub(crate) fn grids(
 }
 
 pub(crate) fn operation_steps(
-    context: *mut proj_sys::PJ_CONTEXT,
-    operation: *const proj_sys::PJ,
+    context: &ProjContext,
+    operation: &OwnedPj,
 ) -> Vec<CrsCoordinateOperationInfo> {
-    // SAFETY: operation is a valid PROJ operation. Non-concatenated operations
-    // report zero steps. Step objects returned by PROJ are owned by the caller.
-    let count = unsafe { proj_sys::proj_concatoperation_get_step_count(context, operation) };
+    // SAFETY: DOC-H. Typed owners; non-concatenated ops report zero steps.
+    let count = unsafe {
+        proj_sys::proj_concatoperation_get_step_count(context.as_ptr(), operation.as_ptr())
+    };
     if count <= 0 {
         return Vec::new();
     }
     let mut steps = Vec::with_capacity(count as usize);
     for index in 0..count {
-        // SAFETY: index is within the step count reported by PROJ.
-        let step = unsafe { proj_sys::proj_concatoperation_get_step(context, operation, index) };
-        if step.is_null() {
+        // SAFETY: DOC-H. Index in 0..count; returns uniquely owned step or null.
+        let step = unsafe {
+            proj_sys::proj_concatoperation_get_step(context.as_ptr(), operation.as_ptr(), index)
+        };
+        // SAFETY: non-null returns are uniquely owned; Drop after metadata copy.
+        let Some(step) = (unsafe { OwnedPj::try_from_owned(step) }) else {
             continue;
-        }
-        steps.push(crs_coordinate_operation_info_from_pj(context, step));
-        // SAFETY: `step` was just checked non-null and is owned by this guard.
-        unsafe {
-            OwnedPj::from_owned(step);
-        }
+        };
+        steps.push(crs_coordinate_operation_info_from_pj(context, &step));
     }
     steps
 }

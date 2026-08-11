@@ -1,6 +1,6 @@
-use super::*;
+use crate::geometry::{GeodesicMetric, GeodesicSegment, Point};
 pub(crate) const GEODESIC_HAUSDORFF_GOLDEN_TOLERANCE: f64 = 0.01;
-pub(crate) const GEODESIC_HAUSDORFF_GOLDEN_PHI: f64 = 1.618_033_988_749_895;
+pub(crate) const GEODESIC_HAUSDORFF_GOLDEN_PHI: f64 = std::f64::consts::GOLDEN_RATIO;
 
 pub(crate) fn geodesic_min_distance_to_target(
     point: Point,
@@ -35,6 +35,10 @@ pub(crate) fn geodesic_min_distance_to_target(
     cmin
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_max_min_on_source_segment(
     segment: GeodesicSegment,
     target_edges: &[GeodesicSegment],
