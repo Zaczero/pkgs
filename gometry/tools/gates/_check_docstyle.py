@@ -32,12 +32,25 @@ INIT_PATH = ROOT / 'python' / 'gometry' / '__init__.py'
 SRC_ROOT = ROOT / 'src'
 
 SECTION_NAMES = frozenset({
-    'Parameters', 'Other Parameters', 'Keyword Arguments',
-    'Returns', 'Yields', 'Receives', 'Attributes',
-    'Raises', 'Warns', 'See Also', 'Notes', 'References', 'Examples',
+    'Parameters',
+    'Other Parameters',
+    'Keyword Arguments',
+    'Returns',
+    'Yields',
+    'Receives',
+    'Attributes',
+    'Raises',
+    'Warns',
+    'See Also',
+    'Notes',
+    'References',
+    'Examples',
 })
 NAMED_TYPE_SECTIONS = frozenset({
-    'Parameters', 'Other Parameters', 'Keyword Arguments', 'Attributes',
+    'Parameters',
+    'Other Parameters',
+    'Keyword Arguments',
+    'Attributes',
 })
 RETURN_TYPE_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
 
@@ -52,9 +65,7 @@ DOUBLED_WORD_RE = re.compile(
     r'(?P<separator>[ \t\n]+)(?P=word)(?![\w\'-])',
     re.IGNORECASE,
 )
-TRAILING_DOUBLE_PERIOD_RE = re.compile(
-    r"(?<!\.)\.\.(?!\.)(?=(?:[)\]}'\"`*_]*)$)"
-)
+TRAILING_DOUBLE_PERIOD_RE = re.compile(r"(?<!\.)\.\.(?!\.)(?=(?:[)\]}'\"`*_]*)$)")
 SEE_ALSO_LINE_RE = re.compile(
     r'^(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)'
     r' : '
@@ -64,9 +75,7 @@ MERGED_SEE_ALSO_RE = re.compile(
     r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*:\s+[A-Z].*?\.'
     r'\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*:'
 )
-UNQUOTED_ENUM_RE = re.compile(
-    r'\{(?P<body>[^{}\'"`]*[A-Za-z_][^{}\'"`]*)\}'
-)
+UNQUOTED_ENUM_RE = re.compile(r'\{(?P<body>[^{}\'"`]*[A-Za-z_][^{}\'"`]*)\}')
 ASTERISK_AB_RE = re.compile(r'\*[ab]\*')
 GM_PREFIX_RE = re.compile(r'\b(?:gometry|gm)\.[A-Za-z_]\w*')
 PER_ELEMENT_RE = re.compile(r'\bper element\b', re.IGNORECASE)
@@ -84,38 +93,166 @@ BANNED_TERM_PATTERNS: tuple[tuple[str, str], ...] = (
 # callables (and "Test whether" is allowed). Properties should open with
 # "Whether" or a noun phrase — flag imperative "Test " on properties.
 CALLABLE_NOUN_OPENERS = frozenset({
-    'whether', 'the', 'a', 'an', 'area', 'length', 'distance', 'lazy',
-    'read-only', 'readonly', 'crs-aware', 'native', 'packed', 'vectorized',
-    'kind-preserving', 'element-wise', 'row-wise', 'one', 'same', 'full',
-    'partial', 'strict', 'lenient', 'exact', 'approximate', 'geodesic',
-    'planar', 'geographic', 'projected', 'ellipsoidal', 'spherical',
-    'cartesian', 'minimum', 'maximum', 'total', 'true', 'false', 'empty',
-    'missing', 'null', 'valid', 'invalid', 'simple', 'complex', 'convex',
-    'concave', 'closed', 'open', 'ring', 'boundary', 'interior', 'exterior',
-    'bounds', 'envelope', 'extent', 'range', 'span', 'width', 'height',
-    'depth', 'volume', 'mass', 'weight', 'density', 'pressure',
-    'temperature', 'energy', 'power', 'work', 'force', 'torque', 'moment',
-    'impulse', 'momentum', 'velocity', 'acceleration', 'jerk', 'speed',
-    'displacement', 'position', 'location', 'place', 'site', 'spot',
-    'coordinate', 'coordinates', 'ordinate', 'vertex', 'vertices', 'edge',
-    'edges', 'face', 'faces', 'cell', 'cells', 'token', 'tokens', 'id',
-    'ids', 'index', 'indexes', 'indices', 'row', 'rows', 'column', 'columns',
-    'array', 'arrays', 'geometry', 'geometries', 'shape', 'shapes',
-    'polygon', 'polygons', 'line', 'lines', 'point', 'points', 'rings', 'multipart', 'collection', 'collections', 'feature',
-    'features', 'coverage', 'coverages', 'prepared', 'unprepared',
-    'spatial', 'topological', 'metric',
+    'whether',
+    'the',
+    'a',
+    'an',
+    'area',
+    'length',
+    'distance',
+    'lazy',
+    'read-only',
+    'readonly',
+    'crs-aware',
+    'native',
+    'packed',
+    'vectorized',
+    'kind-preserving',
+    'element-wise',
+    'row-wise',
+    'one',
+    'same',
+    'full',
+    'partial',
+    'strict',
+    'lenient',
+    'exact',
+    'approximate',
+    'geodesic',
+    'planar',
+    'geographic',
+    'projected',
+    'ellipsoidal',
+    'spherical',
+    'cartesian',
+    'minimum',
+    'maximum',
+    'total',
+    'true',
+    'false',
+    'empty',
+    'missing',
+    'null',
+    'valid',
+    'invalid',
+    'simple',
+    'complex',
+    'convex',
+    'concave',
+    'closed',
+    'open',
+    'ring',
+    'boundary',
+    'interior',
+    'exterior',
+    'bounds',
+    'envelope',
+    'extent',
+    'range',
+    'span',
+    'width',
+    'height',
+    'depth',
+    'volume',
+    'mass',
+    'weight',
+    'density',
+    'pressure',
+    'temperature',
+    'energy',
+    'power',
+    'work',
+    'force',
+    'torque',
+    'moment',
+    'impulse',
+    'momentum',
+    'velocity',
+    'acceleration',
+    'jerk',
+    'speed',
+    'displacement',
+    'position',
+    'location',
+    'place',
+    'site',
+    'spot',
+    'coordinate',
+    'coordinates',
+    'ordinate',
+    'vertex',
+    'vertices',
+    'edge',
+    'edges',
+    'face',
+    'faces',
+    'cell',
+    'cells',
+    'token',
+    'tokens',
+    'id',
+    'ids',
+    'index',
+    'indexes',
+    'indices',
+    'row',
+    'rows',
+    'column',
+    'columns',
+    'array',
+    'arrays',
+    'geometry',
+    'geometries',
+    'shape',
+    'shapes',
+    'polygon',
+    'polygons',
+    'line',
+    'lines',
+    'point',
+    'points',
+    'rings',
+    'multipart',
+    'collection',
+    'collections',
+    'feature',
+    'features',
+    'coverage',
+    'coverages',
+    'prepared',
+    'unprepared',
+    'spatial',
+    'topological',
+    'metric',
 })
 
 # Ops that auto-split geographic antimeridian crossings — "(planar)" is wrong.
 AUTO_SPLIT_OPS = frozenset({
-    'contains', 'within', 'covers', 'covered_by', 'intersects', 'disjoint',
-    'touches', 'crosses', 'overlaps', 'equals', 'relate', 'relate_pattern',
-    'intersection', 'union', 'difference', 'symmetric_difference',
+    'contains',
+    'within',
+    'covers',
+    'covered_by',
+    'intersects',
+    'disjoint',
+    'touches',
+    'crosses',
+    'overlaps',
+    'equals',
+    'relate',
+    'relate_pattern',
+    'intersection',
+    'union',
+    'difference',
+    'symmetric_difference',
     'clip_by_rect',
 })
 # Genuinely planar-only — "(planar)" is allowed.
 GENUINELY_PLANAR_OPS = frozenset({
-    'simplify', 'smooth', 'convex_hull', 'buffer', 'offset_curve',
+    'simplify',
+    'smooth',
+    'convex_hull',
+    'buffer',
+    'offset_curve',
     'segmentize',
 })
 
@@ -149,12 +286,12 @@ MIRROR_PAIRS = frozenset({
 })
 
 SAME_NAME_NON_MIRRORS = {
-    'polygonize':
-        'GeometryArray method is row-wise; free function pools all linework',
+    'polygonize': 'GeometryArray method is row-wise; free function pools all linework',
 }
 
 # Doubled-word intentional allowlist: (symbol, normalized_phrase) -> rationale.
 DOUBLED_WORD_ALLOWLIST: dict[tuple[str, str], str] = {}
+
 
 @dataclass(frozen=True, slots=True)
 class ReciprocalFamily:
@@ -258,7 +395,10 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
     ReciprocalFamily(
         'linref',
         _owner_pairs(
-            'line_interpolate', 'line_substring', 'line_locate', 'interpolate_m',
+            'line_interpolate',
+            'line_substring',
+            'line_locate',
+            'interpolate_m',
         ),
         frozenset(),  # complete group — any links any other
         'linear referencing complete group',
@@ -266,7 +406,9 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
     ReciprocalFamily(
         'centroids',
         _owner_pairs(
-            'centroid', 'point_on_surface', 'polylabel',
+            'centroid',
+            'point_on_surface',
+            'polylabel',
             'maximum_inscribed_circle',
         ),
         frozenset(),
@@ -275,8 +417,12 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
     ReciprocalFamily(
         'distance_family',
         frozenset({
-            'distance', 'dwithin', 'hausdorff_distance', 'frechet_distance',
-            'nearest_points', 'shortest_line',
+            'distance',
+            'dwithin',
+            'hausdorff_distance',
+            'frechet_distance',
+            'nearest_points',
+            'shortest_line',
         }),
         frozenset(),
         'top-level distance complete group',
@@ -285,7 +431,8 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
         'coverage_valid_invalid',
         frozenset({'coverage_is_valid', 'GeometryArray.coverage_is_valid'}),
         frozenset({
-            'coverage_invalid_edges', 'GeometryArray.coverage_invalid_edges',
+            'coverage_invalid_edges',
+            'GeometryArray.coverage_invalid_edges',
         }),
         'coverage validity dual (free + GeometryArray)',
     ),
@@ -423,9 +570,7 @@ def segment_sections(
     for position, (index, name) in enumerate(starts):
         if index > 0 and lines[index - 1].text.strip():
             missing_blanks.append((index, lines[index - 1].text))
-        body_end = (
-            starts[position + 1][0] if position + 1 < len(starts) else len(lines)
-        )
+        body_end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
         sections.append(Section(name, index, index + 2, body_end))
     return tuple(sections), tuple(missing_blanks)
 
@@ -627,18 +772,22 @@ def load_inventory(
         qname = name
         seen_qnames.add(qname)
         if not doc.strip():
-            errors.append(ScanError(
-                message=f'public function has empty docstring: {qname}',
-                symbol=qname,
-                file='python/gometry/_lib.pyi',
-            ))
+            errors.append(
+                ScanError(
+                    message=f'public function has empty docstring: {qname}',
+                    symbol=qname,
+                    file='python/gometry/_lib.pyi',
+                )
+            )
             continue
-        docs.append(PublicDoc(
-            symbol=qname,
-            text=doc,
-            kind='function',
-            is_operation=True,
-        ))
+        docs.append(
+            PublicDoc(
+                symbol=qname,
+                text=doc,
+                kind='function',
+                is_operation=True,
+            )
+        )
 
     # Exported classes and their public members
     for name, cls in sorted(classes.items()):
@@ -647,21 +796,25 @@ def load_inventory(
         class_doc = _doc_from_node(cls) or ''
         seen_qnames.add(name)
         if class_doc.strip():
-            docs.append(PublicDoc(
-                symbol=name,
-                text=class_doc,
-                kind='class',
-                is_operation=False,
-            ))
+            docs.append(
+                PublicDoc(
+                    symbol=name,
+                    text=class_doc,
+                    kind='class',
+                    is_operation=False,
+                )
+            )
         else:
             # Class may legitimately have empty docs if it's an exception/marker;
             # still record as scanned via a placeholder so completeness holds.
-            docs.append(PublicDoc(
-                symbol=name,
-                text='',
-                kind='class',
-                is_operation=False,
-            ))
+            docs.append(
+                PublicDoc(
+                    symbol=name,
+                    text='',
+                    kind='class',
+                    is_operation=False,
+                )
+            )
 
         # Members: group overloads by name
         members: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = (
@@ -708,18 +861,22 @@ def load_inventory(
             if not doc.strip() and kind in ('method', 'property', 'function'):  # noqa: SIM102
                 # Still scan empty to completeness; flag if operation.
                 if is_op:
-                    errors.append(ScanError(
-                        message=f'public operation has empty docstring: {qname}',
-                        symbol=qname,
-                        file='python/gometry/_lib.pyi',
-                    ))
-            docs.append(PublicDoc(
-                symbol=qname,
-                text=doc or '',
-                kind=kind,
-                is_operation=is_op,
-                owner_class=name,
-            ))
+                    errors.append(
+                        ScanError(
+                            message=f'public operation has empty docstring: {qname}',
+                            symbol=qname,
+                            file='python/gometry/_lib.pyi',
+                        )
+                    )
+            docs.append(
+                PublicDoc(
+                    symbol=qname,
+                    text=doc or '',
+                    kind=kind,
+                    is_operation=is_op,
+                    owner_class=name,
+                )
+            )
 
     return docs, errors, frozenset(seen_qnames)
 
@@ -751,7 +908,12 @@ def _build_rust_index(root: Path = SRC_ROOT) -> dict[str, list[tuple[str, int]]]
                 for m in re.finditer(r'"((?:\\.|[^"\\])*)"', line):
                     lit = m.group(1)
                     # Unescape common sequences lightly
-                    lit = lit.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+                    lit = (
+                        lit
+                        .replace('\\n', '\n')
+                        .replace('\\t', '\t')
+                        .replace('\\"', '"')
+                    )
                     for piece in lit.splitlines():
                         key = piece.strip()
                         if key:
@@ -868,39 +1030,46 @@ def check_type_columns(
                 continue
             _start, _end, text = column
             if '`' in text:
-                findings.append(_v(
-                    doc,
-                    class_='type_column.backticks',
-                    section=section.name,
-                    entry=entry.header.text,
-                    current_text=text,
-                    suggested_fix=text.replace('`', ''),
-                    message='Type columns use bare identifiers, never code markup.',
-                ))
-            for match in NDARRAY_RE.finditer(text):
-                fixed = (
-                    text[: match.start()] + 'numpy.ndarray' + text[match.end() :]
+                findings.append(
+                    _v(
+                        doc,
+                        class_='type_column.backticks',
+                        section=section.name,
+                        entry=entry.header.text,
+                        current_text=text,
+                        suggested_fix=text.replace('`', ''),
+                        message='Type columns use bare identifiers, never code markup.',
+                    )
                 )
-                findings.append(_v(
-                    doc,
-                    class_='type_column.ndarray_spelling',
-                    section=section.name,
-                    entry=entry.header.text,
-                    current_text=text,
-                    suggested_fix=fixed,
-                    message='Use numpy.ndarray in NumPy-doc type columns.',
-                ))
+            for match in NDARRAY_RE.finditer(text):
+                fixed = text[: match.start()] + 'numpy.ndarray' + text[match.end() :]
+                findings.append(
+                    _v(
+                        doc,
+                        class_='type_column.ndarray_spelling',
+                        section=section.name,
+                        entry=entry.header.text,
+                        current_text=text,
+                        suggested_fix=fixed,
+                        message='Use numpy.ndarray in NumPy-doc type columns.',
+                    )
+                )
             # parameter name markup on the LHS
-            if section.name in NAMED_TYPE_SECTIONS and '`' in entry.header.text.split(':', 1)[0]:
-                findings.append(_v(
-                    doc,
-                    class_='numpydoc.parameter_name_markup',
-                    section=section.name,
-                    entry=entry.header.text,
-                    current_text=entry.header.text,
-                    suggested_fix=entry.header.text.replace('`', ''),
-                    message='Parameter names in type lines must be bare (no backticks).',
-                ))
+            if (
+                section.name in NAMED_TYPE_SECTIONS
+                and '`' in entry.header.text.split(':', 1)[0]
+            ):
+                findings.append(
+                    _v(
+                        doc,
+                        class_='numpydoc.parameter_name_markup',
+                        section=section.name,
+                        entry=entry.header.text,
+                        current_text=entry.header.text,
+                        suggested_fix=entry.header.text.replace('`', ''),
+                        message='Parameter names in type lines must be bare (no backticks).',
+                    )
+                )
     return findings
 
 
@@ -920,18 +1089,20 @@ def check_empty_raises(
             )
             if has_description:
                 continue
-            findings.append(_v(
-                doc,
-                class_='numpydoc.empty_raises_description',
-                section='Raises',
-                entry=entry.header.text,
-                current_text=entry.header.text,
-                suggested_fix=(
-                    'Add an indented complete sentence explaining exactly '
-                    'when this exception is raised.'
-                ),
-                message='Every Raises heading requires an indented description.',
-            ))
+            findings.append(
+                _v(
+                    doc,
+                    class_='numpydoc.empty_raises_description',
+                    section='Raises',
+                    entry=entry.header.text,
+                    current_text=entry.header.text,
+                    suggested_fix=(
+                        'Add an indented complete sentence explaining exactly '
+                        'when this exception is raised.'
+                    ),
+                    message='Every Raises heading requires an indented description.',
+                )
+            )
     return findings
 
 
@@ -942,15 +1113,17 @@ def check_missing_blank_before_section(
 ) -> list[Violation]:
     findings: list[Violation] = []
     for index, prev in missing_blanks:
-        findings.append(_v(
-            doc,
-            class_='numpydoc.missing_blank_before_section',
-            section=lines[index].text,
-            entry=None,
-            current_text=prev,
-            suggested_fix='Insert one blank line before the section header.',
-            message='A recognized section header must be preceded by a blank line.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='numpydoc.missing_blank_before_section',
+                section=lines[index].text,
+                entry=None,
+                current_text=prev,
+                suggested_fix='Insert one blank line before the section header.',
+                message='A recognized section header must be preceded by a blank line.',
+            )
+        )
     return findings
 
 
@@ -981,34 +1154,38 @@ def check_prose(
     masked = mask_backticks(prose)
 
     for match in DOUBLED_WORD_RE.finditer(masked):
-        phrase = f"{match.group('word')} {match.group('word')}".lower()
+        phrase = f'{match.group("word")} {match.group("word")}'.lower()
         key = (doc.symbol, phrase)
         if key in DOUBLED_WORD_ALLOWLIST:
             continue
-        findings.append(_v(
-            doc,
-            class_='prose.doubled_word',
-            section=None,
-            entry=None,
-            current_text=match.group(0),
-            suggested_fix=match.group('word'),
-            message=f"Doubled word {match.group('word')!r}.",
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='prose.doubled_word',
+                section=None,
+                entry=None,
+                current_text=match.group(0),
+                suggested_fix=match.group('word'),
+                message=f'Doubled word {match.group("word")!r}.',
+            )
+        )
 
     for i, line in enumerate(lines):
         if in_examples(i):
             continue
         m = TRAILING_DOUBLE_PERIOD_RE.search(line.text.rstrip())
         if m:
-            findings.append(_v(
-                doc,
-                class_='prose.trailing_double_period',
-                section=None,
-                entry=None,
-                current_text=line.text,
-                suggested_fix=line.text.rstrip()[:-1],
-                message='Trailing double period in prose.',
-            ))
+            findings.append(
+                _v(
+                    doc,
+                    class_='prose.trailing_double_period',
+                    section=None,
+                    entry=None,
+                    current_text=line.text,
+                    suggested_fix=line.text.rstrip()[:-1],
+                    message='Trailing double period in prose.',
+                )
+            )
     return findings
 
 
@@ -1082,52 +1259,60 @@ def check_see_also(
         for entry in entries(section, lines):
             # multiline entry?
             if any(d.text.strip() and d.text[:1].isspace() for d in entry.description):
-                findings.append(_v(
-                    doc,
-                    class_='see_also.multiline_entry',
-                    section='See Also',
-                    entry=entry.header.text,
-                    current_text=entry.header.text,
-                    suggested_fix='Rewrite as one short physical line.',
-                    message='See Also entries must be a single physical line.',
-                ))
+                findings.append(
+                    _v(
+                        doc,
+                        class_='see_also.multiline_entry',
+                        section='See Also',
+                        entry=entry.header.text,
+                        current_text=entry.header.text,
+                        suggested_fix='Rewrite as one short physical line.',
+                        message='See Also entries must be a single physical line.',
+                    )
+                )
             info = _parse_see_also_entry(entry.header.text)
             for issue in info['issues']:
-                findings.append(_v(  # noqa: PERF401
-                    doc,
-                    class_=issue,
-                    section='See Also',
-                    entry=entry.header.text,
-                    current_text=entry.header.text,
-                    suggested_fix='Normalize to `name : Description.`',
-                    message=f'See Also format: {issue}',
-                ))
+                findings.append(  # noqa: PERF401
+                    _v(
+                        doc,
+                        class_=issue,
+                        section='See Also',
+                        entry=entry.header.text,
+                        current_text=entry.header.text,
+                        suggested_fix='Normalize to `name : Description.`',
+                        message=f'See Also format: {issue}',
+                    )
+                )
             if info['valid'] and info['name']:
                 name = info['name']
                 # noncanonical: gm./gometry. prefix
                 if name.startswith(('gm.', 'gometry.')):
-                    findings.append(_v(
-                        doc,
-                        class_='see_also.noncanonical_name',
-                        section='See Also',
-                        entry=entry.header.text,
-                        current_text=name,
-                        suggested_fix=name.split('.', 1)[-1],
-                        message='See Also names must be bare, without gm./gometry. prefix.',
-                    ))
+                    findings.append(
+                        _v(
+                            doc,
+                            class_='see_also.noncanonical_name',
+                            section='See Also',
+                            entry=entry.header.text,
+                            current_text=name,
+                            suggested_fix=name.split('.', 1)[-1],
+                            message='See Also names must be bare, without gm./gometry. prefix.',
+                        )
+                    )
                     name = name.split('.', 1)[-1]
                 # resolve
                 logical = _resolve_see_also_target(name, doc, public_symbols)
                 if logical is None:
-                    findings.append(_v(
-                        doc,
-                        class_='see_also.unresolved_target',
-                        section='See Also',
-                        entry=entry.header.text,
-                        current_text=name,
-                        suggested_fix='Correct or delete the reference.',
-                        message=f'See Also target {name!r} does not resolve.',
-                    ))
+                    findings.append(
+                        _v(
+                            doc,
+                            class_='see_also.unresolved_target',
+                            section='See Also',
+                            entry=entry.header.text,
+                            current_text=name,
+                            suggested_fix='Correct or delete the reference.',
+                            message=f'See Also target {name!r} does not resolve.',
+                        )
+                    )
                 else:
                     desc = re.sub(r'\s+', ' ', (info['description'] or '').strip())
                     resolved.append((logical, desc))
@@ -1179,28 +1364,32 @@ def check_examples(
         return findings
     ex_sections = [s for s in sections if s.name == 'Examples']
     if not ex_sections:
-        findings.append(_v(
-            doc,
-            class_='examples.missing',
-            section='Examples',
-            entry=None,
-            current_text=None,
-            suggested_fix='Add an Examples section with >>> import gometry as gm',
-            message='Public operation is missing an Examples section.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='examples.missing',
+                section='Examples',
+                entry=None,
+                current_text=None,
+                suggested_fix='Add an Examples section with >>> import gometry as gm',
+                message='Public operation is missing an Examples section.',
+            )
+        )
         return findings
     body_lines = lines[ex_sections[0].body_start : ex_sections[0].body_end]
     body = '\n'.join(ln.text for ln in body_lines)
     if not body.strip():
-        findings.append(_v(
-            doc,
-            class_='examples.missing',
-            section='Examples',
-            entry=None,
-            current_text=None,
-            suggested_fix='Add at least one doctest example.',
-            message='Examples section is empty.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='examples.missing',
+                section='Examples',
+                entry=None,
+                current_text=None,
+                suggested_fix='Add at least one doctest example.',
+                message='Examples section is empty.',
+            )
+        )
         return findings
     parser = doctest.DocTestParser()
     try:
@@ -1208,15 +1397,17 @@ def check_examples(
     except Exception:
         examples = []
     if not examples:
-        findings.append(_v(
-            doc,
-            class_='examples.missing',
-            section='Examples',
-            entry=None,
-            current_text=None,
-            suggested_fix='Add at least one >>> doctest example.',
-            message='Examples section has no doctest examples.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='examples.missing',
+                section='Examples',
+                entry=None,
+                current_text=None,
+                suggested_fix='Add at least one >>> doctest example.',
+                message='Examples section has no doctest examples.',
+            )
+        )
         return findings
 
     has_canonical_import = False
@@ -1233,48 +1424,58 @@ def check_examples(
                         if alias.asname == 'gm' and len(node.names) == 1:
                             has_canonical_import = True
                         else:
-                            findings.append(_v(
-                                doc,
-                                class_='examples.import_style',
-                                section='Examples',
-                                entry=None,
-                                current_text=src.strip(),
-                                suggested_fix='import gometry as gm',
-                                message='gometry imports must be exactly `import gometry as gm`.',
-                            ))
-            if isinstance(node, ast.ImportFrom) and node.module and (
-                node.module == 'gometry' or node.module.startswith('gometry.')
+                            findings.append(
+                                _v(
+                                    doc,
+                                    class_='examples.import_style',
+                                    section='Examples',
+                                    entry=None,
+                                    current_text=src.strip(),
+                                    suggested_fix='import gometry as gm',
+                                    message='gometry imports must be exactly `import gometry as gm`.',
+                                )
+                            )
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == 'gometry' or node.module.startswith('gometry.'))
             ):
-                findings.append(_v(
-                    doc,
-                    class_='examples.import_style',
-                    section='Examples',
-                    entry=None,
-                    current_text=src.strip(),
-                    suggested_fix='import gometry as gm',
-                    message='Use `import gometry as gm`, not from-import.',
-                ))
+                findings.append(
+                    _v(
+                        doc,
+                        class_='examples.import_style',
+                        section='Examples',
+                        entry=None,
+                        current_text=src.strip(),
+                        suggested_fix='import gometry as gm',
+                        message='Use `import gometry as gm`, not from-import.',
+                    )
+                )
         # space after open paren
         for issue in _space_after_open_paren(src):
-            findings.append(_v(  # noqa: PERF401
+            findings.append(  # noqa: PERF401
+                _v(
+                    doc,
+                    class_='examples.space_after_open_paren',
+                    section='Examples',
+                    entry=None,
+                    current_text=issue,
+                    suggested_fix='Remove space after opening parenthesis.',
+                    message='Doctest has stray space after `(`.',
+                )
+            )
+    if not has_canonical_import:
+        findings.append(
+            _v(
                 doc,
-                class_='examples.space_after_open_paren',
+                class_='examples.import_style',
                 section='Examples',
                 entry=None,
-                current_text=issue,
-                suggested_fix='Remove space after opening parenthesis.',
-                message='Doctest has stray space after `(`.',
-            ))
-    if not has_canonical_import:
-        findings.append(_v(
-            doc,
-            class_='examples.import_style',
-            section='Examples',
-            entry=None,
-            current_text=None,
-            suggested_fix='import gometry as gm',
-            message='Examples block must include `import gometry as gm`.',
-        ))
+                current_text=None,
+                suggested_fix='import gometry as gm',
+                message='Examples block must include `import gometry as gm`.',
+            )
+        )
     return findings
 
 
@@ -1326,32 +1527,40 @@ def check_style(
     if summary:
         # strip leading backticks/markup
         cleaned = summary.lstrip('`').strip()
-        first_word = cleaned.split()[0].lower().rstrip('.,;:') if cleaned.split() else ''
+        first_word = (
+            cleaned.split()[0].lower().rstrip('.,;:') if cleaned.split() else ''
+        )
 
     # 1. mood heuristic
     if doc.kind in ('function', 'method') and doc.is_operation and summary:  # noqa: SIM102
         if summary.startswith('Whether ') or first_word in CALLABLE_NOUN_OPENERS:  # noqa: SIM102
             # allow "Test whether"
-            if not summary.startswith('Test whether') and not summary.startswith('Test '):
-                findings.append(_v(
-                    doc,
-                    class_='style.summary_not_imperative',
-                    section=None,
-                    entry=None,
-                    current_text=summary[:120],
-                    suggested_fix='Rewrite summary as an imperative verb phrase.',
-                    message='Callable summary should start with an imperative verb or "Test whether".',
-                ))
+            if not summary.startswith('Test whether') and not summary.startswith(
+                'Test '
+            ):
+                findings.append(
+                    _v(
+                        doc,
+                        class_='style.summary_not_imperative',
+                        section=None,
+                        entry=None,
+                        current_text=summary[:120],
+                        suggested_fix='Rewrite summary as an imperative verb phrase.',
+                        message='Callable summary should start with an imperative verb or "Test whether".',
+                    )
+                )
     if doc.kind == 'property' and summary and summary.startswith('Test '):
-        findings.append(_v(
-            doc,
-            class_='style.property_imperative',
-            section=None,
-            entry=None,
-            current_text=summary[:120],
-            suggested_fix='Use a noun phrase or "Whether ..." for properties.',
-            message='Property summary should be a noun phrase or "Whether ...".',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='style.property_imperative',
+                section=None,
+                entry=None,
+                current_text=summary[:120],
+                suggested_fix='Use a noun phrase or "Whether ..." for properties.',
+                message='Property summary should be a noun phrase or "Whether ...".',
+            )
+        )
 
     # 2. unquoted enum tokens in param type fields
     for section in sections:
@@ -1365,43 +1574,49 @@ def check_style(
             for m in UNQUOTED_ENUM_RE.finditer(text):
                 body = m.group('body')
                 # if any token lacks quotes
-                if re.search(r"[A-Za-z_]\w*", body):
-                    findings.append(_v(
-                        doc,
-                        class_='style.unquoted_enum_tokens',
-                        section=section.name,
-                        entry=entry.header.text,
-                        current_text=text,
-                        suggested_fix="Quote enum tokens: {'a', 'b'}",
-                        message='Enum tokens in type fields must be quoted.',
-                    ))
+                if re.search(r'[A-Za-z_]\w*', body):
+                    findings.append(
+                        _v(
+                            doc,
+                            class_='style.unquoted_enum_tokens',
+                            section=section.name,
+                            entry=entry.header.text,
+                            current_text=text,
+                            suggested_fix="Quote enum tokens: {'a', 'b'}",
+                            message='Enum tokens in type fields must be quoted.',
+                        )
+                    )
                     break
 
     # 3. *a* / *b* operand names
     prose = summary + '\n' + extended
     if ASTERISK_AB_RE.search(prose):
-        findings.append(_v(
-            doc,
-            class_='style.asterisk_ab_operands',
-            section=None,
-            entry=None,
-            current_text=ASTERISK_AB_RE.search(prose).group(0),  # type: ignore[union-attr]
-            suggested_fix='Use ``left`` / ``right`` operand names.',
-            message='Operand names *a*/*b* are forbidden; use left/right.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='style.asterisk_ab_operands',
+                section=None,
+                entry=None,
+                current_text=ASTERISK_AB_RE.search(prose).group(0),  # type: ignore[union-attr]
+                suggested_fix='Use ``left`` / ``right`` operand names.',
+                message='Operand names *a*/*b* are forbidden; use left/right.',
+            )
+        )
 
     # 4. gometry./gm. inside summary/extended
     for region_name, region in (('summary', summary), ('extended', extended)):
         for m in GM_PREFIX_RE.finditer(region):
-            findings.append(_v(  # noqa: PERF401
-                doc,
-                class_='style.gm_prefix_in_prose',
-                section=None,
-                entry=None,
-                current_text=m.group(0),
-                suggested_fix='Use a backticked bare name.',
-                message=f'{m.group(0)!r} inside {region_name} prose; reserve gm. for See Also.',
-            ))
+            findings.append(  # noqa: PERF401
+                _v(
+                    doc,
+                    class_='style.gm_prefix_in_prose',
+                    section=None,
+                    entry=None,
+                    current_text=m.group(0),
+                    suggested_fix='Use a backticked bare name.',
+                    message=f'{m.group(0)!r} inside {region_name} prose; reserve gm. for See Also.',
+                )
+            )
 
     # 5. self cross-reference
     bare = doc.symbol.split('.')[-1]
@@ -1410,60 +1625,69 @@ def check_style(
         rf'|\blike\s+``(?:gometry\.)?{re.escape(bare)}``'
     )
     if self_pat.search(summary) or self_pat.search(extended):
-        findings.append(_v(
-            doc,
-            class_='style.self_cross_reference',
-            section=None,
-            entry=None,
-            current_text=summary[:120],
-            suggested_fix='Remove self-referential gometry.<this> wording.',
-            message='Docstring self-references the same symbol via gometry./gm.',
-        ))
+        findings.append(
+            _v(
+                doc,
+                class_='style.self_cross_reference',
+                section=None,
+                entry=None,
+                current_text=summary[:120],
+                suggested_fix='Remove self-referential gometry.<this> wording.',
+                message='Docstring self-references the same symbol via gometry./gm.',
+            )
+        )
 
     # 6. banned terms
     full_prose = doc.text
     for term, cls in BANNED_TERM_PATTERNS:
         if term in full_prose:
-            findings.append(_v(
-                doc,
-                class_=cls,
-                section=None,
-                entry=None,
-                current_text=term,
-                suggested_fix=f'Remove or replace {term!r}.',
-                message=f'Banned term {term!r}.',
-            ))
+            findings.append(
+                _v(
+                    doc,
+                    class_=cls,
+                    section=None,
+                    entry=None,
+                    current_text=term,
+                    suggested_fix=f'Remove or replace {term!r}.',
+                    message=f'Banned term {term!r}.',
+                )
+            )
 
     # 7. per element on array types
     if doc.owner_class in ('GeometryArray', 'CellArray') or doc.symbol in (  # noqa: SIM102
-        'GeometryArray', 'CellArray',
+        'GeometryArray',
+        'CellArray',
     ):
         if PER_ELEMENT_RE.search(full_prose):
-            findings.append(_v(
-                doc,
-                class_='style.per_element',
-                section=None,
-                entry=None,
-                current_text='per element',
-                suggested_fix='Use "per row".',
-                message='GeometryArray/CellArray prose should say "per row", not "per element".',
-            ))
+            findings.append(
+                _v(
+                    doc,
+                    class_='style.per_element',
+                    section=None,
+                    entry=None,
+                    current_text='per element',
+                    suggested_fix='Use "per row".',
+                    message='GeometryArray/CellArray prose should say "per row", not "per element".',
+                )
+            )
 
     # 8. (planar) on auto-split ops
     bare_name = doc.symbol.split('.')[-1]
     if bare_name in AUTO_SPLIT_OPS and bare_name not in GENUINELY_PLANAR_OPS:  # noqa: SIM102
         if PLANAR_TAG_RE.search(summary) or PLANAR_TAG_RE.search(extended):
-            findings.append(_v(
-                doc,
-                class_='style.planar_on_autosplit',
-                section=None,
-                entry=None,
-                current_text='(planar)',
-                suggested_fix=(
-                    'Remove (planar); document antimeridian split-normalization instead.'
-                ),
-                message='Auto-split topology ops must not claim "(planar)".',
-            ))
+            findings.append(
+                _v(
+                    doc,
+                    class_='style.planar_on_autosplit',
+                    section=None,
+                    entry=None,
+                    current_text='(planar)',
+                    suggested_fix=(
+                        'Remove (planar); document antimeridian split-normalization instead.'
+                    ),
+                    message='Auto-split topology ops must not claim "(planar)".',
+                )
+            )
 
     # 9. Raises description not starting with "If "
     for section in sections:
@@ -1479,15 +1703,17 @@ def check_style(
                 continue
             first = desc_lines[0]
             if not first.startswith('If '):
-                findings.append(_v(
-                    doc,
-                    class_='style.raises_not_if',
-                    section='Raises',
-                    entry=entry.header.text,
-                    current_text=first,
-                    suggested_fix='Start Raises descriptions with "If ".',
-                    message='Raises description should start with "If ".',
-                ))
+                findings.append(
+                    _v(
+                        doc,
+                        class_='style.raises_not_if',
+                        section='Raises',
+                        entry=entry.header.text,
+                        current_text=first,
+                        suggested_fix='Start Raises descriptions with "If ".',
+                        message='Raises description should start with "If ".',
+                    )
+                )
     return findings
 
 
@@ -1506,21 +1732,23 @@ def check_reciprocity(
                 members.append(s)
             else:
                 # expand bare over owners already done; stale policy is fatal
-                findings.append(Violation(
-                    file='tools/gates/_check_docstyle.py',
-                    line=None,
-                    column=None,
-                    owner_file=None,
-                    owner_line=None,
-                    source_kind='config',
-                    symbol=s,
-                    class_='inventory.stale_reciprocity_policy',
-                    section=None,
-                    entry=None,
-                    current_text=s,
-                    suggested_fix='Update RECIPROCAL_FAMILIES to current public symbols.',
-                    message=f'ReciprocalFamily policy symbol {s!r} is not public.',
-                ))
+                findings.append(
+                    Violation(
+                        file='tools/gates/_check_docstyle.py',
+                        line=None,
+                        column=None,
+                        owner_file=None,
+                        owner_line=None,
+                        source_kind='config',
+                        symbol=s,
+                        class_='inventory.stale_reciprocity_policy',
+                        section=None,
+                        entry=None,
+                        current_text=s,
+                        suggested_fix='Update RECIPROCAL_FAMILIES to current public symbols.',
+                        message=f'ReciprocalFamily policy symbol {s!r} is not public.',
+                    )
+                )
         return members
 
     for fam in RECIPROCAL_FAMILIES:
@@ -1535,16 +1763,18 @@ def check_reciprocity(
                     doc = doc_by_symbol.get(src)
                     if doc is None:
                         continue
-                    findings.append(_v(
-                        doc,
-                        class_='see_also.missing_reciprocal',
-                        section='See Also',
-                        entry=None,
-                        current_text=None,
-                        suggested_fix=f'Add a See Also link within family {fam.key}.',
-                        message=f'Missing reciprocal link in complete group {fam.key}.',
-                        related_symbol=fam.key,
-                    ))
+                    findings.append(
+                        _v(
+                            doc,
+                            class_='see_also.missing_reciprocal',
+                            section='See Also',
+                            entry=None,
+                            current_text=None,
+                            suggested_fix=f'Add a See Also link within family {fam.key}.',
+                            message=f'Missing reciprocal link in complete group {fam.key}.',
+                            related_symbol=fam.key,
+                        )
+                    )
             continue
         for src in left:
             targets = {t for t, _ in see_also_graph.get(src, [])}
@@ -1552,32 +1782,36 @@ def check_reciprocity(
                 doc = doc_by_symbol.get(src)
                 if doc is None:
                     continue
-                findings.append(_v(
-                    doc,
-                    class_='see_also.missing_reciprocal',
-                    section='See Also',
-                    entry=None,
-                    current_text=None,
-                    suggested_fix=f'Link to one of: {", ".join(sorted(right))}.',
-                    message=f'Missing reciprocal See Also toward {fam.key} right side.',
-                    related_symbol=min(right) if right else fam.key,
-                ))
+                findings.append(
+                    _v(
+                        doc,
+                        class_='see_also.missing_reciprocal',
+                        section='See Also',
+                        entry=None,
+                        current_text=None,
+                        suggested_fix=f'Link to one of: {", ".join(sorted(right))}.',
+                        message=f'Missing reciprocal See Also toward {fam.key} right side.',
+                        related_symbol=min(right) if right else fam.key,
+                    )
+                )
         for src in right:
             targets = {t for t, _ in see_also_graph.get(src, [])}
             if not any(l in targets for l in left):
                 doc = doc_by_symbol.get(src)
                 if doc is None:
                     continue
-                findings.append(_v(
-                    doc,
-                    class_='see_also.missing_reciprocal',
-                    section='See Also',
-                    entry=None,
-                    current_text=None,
-                    suggested_fix=f'Link to one of: {", ".join(sorted(left))}.',
-                    message=f'Missing reciprocal See Also toward {fam.key} left side.',
-                    related_symbol=min(left) if left else fam.key,
-                ))
+                findings.append(
+                    _v(
+                        doc,
+                        class_='see_also.missing_reciprocal',
+                        section='See Also',
+                        entry=None,
+                        current_text=None,
+                        suggested_fix=f'Link to one of: {", ".join(sorted(left))}.',
+                        message=f'Missing reciprocal See Also toward {fam.key} left side.',
+                        related_symbol=min(left) if left else fam.key,
+                    )
+                )
     return findings
 
 
@@ -1622,12 +1856,8 @@ def _unwrap_geometry_array_receiver(node: ast.AST) -> ast.AST:
     if not isinstance(node, ast.Call):
         return node
     func = node.func
-    is_ga = (
-        (isinstance(func, ast.Name) and func.id == 'GeometryArray')
-        or (
-            isinstance(func, ast.Attribute)
-            and func.attr == 'GeometryArray'
-        )
+    is_ga = (isinstance(func, ast.Name) and func.id == 'GeometryArray') or (
+        isinstance(func, ast.Attribute) and func.attr == 'GeometryArray'
     )
     if is_ga and len(node.args) == 1 and not node.keywords:
         return node.args[0]
@@ -1702,11 +1932,7 @@ def _normalize_mirror_examples(doc: PublicDoc, name: str) -> collections.Counter
             receiver_dump = _dump_expr(receiver_node, env)
             args_dump = tuple(_dump_expr(a, env) for a in arg_nodes)
             kwargs = sorted(
-                (
-                    (kw.arg, _dump_expr(kw.value, env))
-                    for kw in node.keywords
-                    if kw.arg
-                ),
+                ((kw.arg, _dump_expr(kw.value, env)) for kw in node.keywords if kw.arg),
                 key=lambda x: x[0] or '',
             )
             expected = (ex_item.want or '').strip()
@@ -1722,11 +1948,7 @@ def check_mirror_parity(
     findings: list[Violation] = []
     by_symbol = {d.symbol: d for d in docs}
     # Discover overlaps: top-level function ∩ GeometryArray method
-    top_level = {
-        d.symbol
-        for d in docs
-        if d.kind == 'function' and '.' not in d.symbol
-    }
+    top_level = {d.symbol for d in docs if d.kind == 'function' and '.' not in d.symbol}
     ga_methods = {
         d.symbol.split('.', 1)[1]
         for d in docs
@@ -1739,21 +1961,23 @@ def check_mirror_parity(
         if name in SAME_NAME_NON_MIRRORS:
             continue
         if name not in MIRROR_PAIRS:
-            findings.append(Violation(
-                file='tools/gates/_check_docstyle.py',
-                line=None,
-                column=None,
-                owner_file=None,
-                owner_line=None,
-                source_kind='config',
-                symbol=name,
-                class_='inventory.unclassified_mirror_overlap',
-                section=None,
-                entry=None,
-                current_text=name,
-                suggested_fix='Add to MIRROR_PAIRS or SAME_NAME_NON_MIRRORS.',
-                message=f'Unclassified free/GeometryArray overlap: {name}',
-            ))
+            findings.append(
+                Violation(
+                    file='tools/gates/_check_docstyle.py',
+                    line=None,
+                    column=None,
+                    owner_file=None,
+                    owner_line=None,
+                    source_kind='config',
+                    symbol=name,
+                    class_='inventory.unclassified_mirror_overlap',
+                    section=None,
+                    entry=None,
+                    current_text=name,
+                    suggested_fix='Add to MIRROR_PAIRS or SAME_NAME_NON_MIRRORS.',
+                    message=f'Unclassified free/GeometryArray overlap: {name}',
+                )
+            )
             continue
         free = by_symbol.get(name)
         method = by_symbol.get(f'GeometryArray.{name}')
@@ -1764,69 +1988,79 @@ def check_mirror_parity(
         method_raises = _raises_headings(method)
         expected_method = free_raises - {'CRSMismatchError'}
         if method_raises != expected_method:
-            findings.append(_v(
-                method,
-                class_='mirror.raises_parity',
-                section='Raises',
-                entry=None,
-                current_text=str(sorted(method_raises)),
-                suggested_fix=(
-                    f'method Raises should equal free Raises - {{CRSMismatchError}}; '
-                    f'expected {sorted(expected_method)}'
-                ),
-                message='Mirror Raises heading sets diverge.',
-                related_symbol=name,
-            ))
-            findings.append(_v(
-                free,
-                class_='mirror.raises_parity',
-                section='Raises',
-                entry=None,
-                current_text=str(sorted(free_raises)),
-                suggested_fix='Align free-function Raises with GeometryArray method (+ CRSMismatchError only).',
-                message='Mirror Raises heading sets diverge.',
-                related_symbol=f'GeometryArray.{name}',
-            ))
+            findings.append(
+                _v(
+                    method,
+                    class_='mirror.raises_parity',
+                    section='Raises',
+                    entry=None,
+                    current_text=str(sorted(method_raises)),
+                    suggested_fix=(
+                        f'method Raises should equal free Raises - {{CRSMismatchError}}; '
+                        f'expected {sorted(expected_method)}'
+                    ),
+                    message='Mirror Raises heading sets diverge.',
+                    related_symbol=name,
+                )
+            )
+            findings.append(
+                _v(
+                    free,
+                    class_='mirror.raises_parity',
+                    section='Raises',
+                    entry=None,
+                    current_text=str(sorted(free_raises)),
+                    suggested_fix='Align free-function Raises with GeometryArray method (+ CRSMismatchError only).',
+                    message='Mirror Raises heading sets diverge.',
+                    related_symbol=f'GeometryArray.{name}',
+                )
+            )
         # See Also parity
         free_sa = _logical_see_also(free, public_symbols)
         method_sa = _logical_see_also(method, public_symbols)
         if set(free_sa) != set(method_sa):
-            findings.append(_v(
-                free,
-                class_='mirror.see_also_parity',
-                section='See Also',
-                entry=None,
-                current_text=str(sorted(free_sa)),
-                suggested_fix=f'Align See Also targets with GeometryArray.{name}.',
-                message='Mirror See Also logical target sets diverge.',
-                related_symbol=f'GeometryArray.{name}',
-            ))
-        for target in sorted(set(free_sa) & set(method_sa)):
-            if free_sa[target] != method_sa[target]:
-                findings.append(_v(  # noqa: PERF401
+            findings.append(
+                _v(
                     free,
                     class_='mirror.see_also_parity',
                     section='See Also',
-                    entry=target,
-                    current_text=free_sa[target],
-                    suggested_fix=method_sa[target],
-                    message=f'See Also description for {target} differs across mirror.',
+                    entry=None,
+                    current_text=str(sorted(free_sa)),
+                    suggested_fix=f'Align See Also targets with GeometryArray.{name}.',
+                    message='Mirror See Also logical target sets diverge.',
                     related_symbol=f'GeometryArray.{name}',
-                ))
+                )
+            )
+        for target in sorted(set(free_sa) & set(method_sa)):
+            if free_sa[target] != method_sa[target]:
+                findings.append(  # noqa: PERF401
+                    _v(
+                        free,
+                        class_='mirror.see_also_parity',
+                        section='See Also',
+                        entry=target,
+                        current_text=free_sa[target],
+                        suggested_fix=method_sa[target],
+                        message=f'See Also description for {target} differs across mirror.',
+                        related_symbol=f'GeometryArray.{name}',
+                    )
+                )
         # Examples parity
         free_ex = _normalize_mirror_examples(free, name)
         method_ex = _normalize_mirror_examples(method, name)
         if free_ex != method_ex:
-            findings.append(_v(
-                free,
-                class_='mirror.examples_parity',
-                section='Examples',
-                entry=None,
-                current_text=None,
-                suggested_fix=f'Align Examples with GeometryArray.{name} (AST-normalized).',
-                message='Mirror Examples counters diverge.',
-                related_symbol=f'GeometryArray.{name}',
-            ))
+            findings.append(
+                _v(
+                    free,
+                    class_='mirror.examples_parity',
+                    section='Examples',
+                    entry=None,
+                    current_text=None,
+                    suggested_fix=f'Align Examples with GeometryArray.{name} (AST-normalized).',
+                    message='Mirror Examples counters diverge.',
+                    related_symbol=f'GeometryArray.{name}',
+                )
+            )
     return findings
 
 
@@ -1884,10 +2118,12 @@ def collect_report(root: Path = ROOT) -> dict[str, object]:
         try:
             findings, resolved = scan_doc(doc, public_symbols)
         except Exception as exc:
-            errors.append(ScanError(
-                message=f'failed to scan {doc.symbol}: {exc}',
-                symbol=doc.symbol,
-            ))
+            errors.append(
+                ScanError(
+                    message=f'failed to scan {doc.symbol}: {exc}',
+                    symbol=doc.symbol,
+                )
+            )
             continue
         violations.extend(findings)
         see_also_graph[doc.symbol] = resolved
@@ -1940,7 +2176,10 @@ def _finalize(
             'by_class': dict(sorted(by_class.items())),
         },
         'violations': [v.to_json() for v in violations_sorted],
-        'errors': [e.to_json() for e in sorted(errors, key=lambda e: (e.symbol or '', e.message))],
+        'errors': [
+            e.to_json()
+            for e in sorted(errors, key=lambda e: (e.symbol or '', e.message))
+        ],
     }
 
 
@@ -1950,44 +2189,48 @@ def format_human(report: dict[str, object]) -> tuple[str, str]:
     by_class = summary['by_class']  # type: ignore[index]
     lines: list[str] = []
     lines.append(
-        f"docstyle: checked {summary['docstrings_scanned']} public docstrings; "
-        f"{summary['violations']} violations in {summary['symbols_with_violations']} symbols"
+        f'docstyle: checked {summary["docstrings_scanned"]} public docstrings; '
+        f'{summary["violations"]} violations in {summary["symbols_with_violations"]} symbols'
     )
     if not report['complete']:
-        lines.append(f"INCOMPLETE: {summary['errors']} errors")
+        lines.append(f'INCOMPLETE: {summary["errors"]} errors')
         for err in report['errors']:  # type: ignore[union-attr]
-            lines.append(f"  ERROR: {err.get('symbol') or ''}: {err['message']}")  # noqa: PERF401
+            lines.append(f'  ERROR: {err.get("symbol") or ""}: {err["message"]}')  # noqa: PERF401
     for cls, count in by_class.items():
         lines.append(f'  {cls}  {count}')
     lines.append('')
     for v in report['violations']:  # type: ignore[union-attr]
         loc = v.get('file') or 'unknown'
         if v.get('line') is not None:
-            loc = f"{loc}:{v['line']}"
+            loc = f'{loc}:{v["line"]}'
             if v.get('column') is not None:
-                loc = f"{loc}:{v['column']}"
-        lines.append(f"{loc}: [{v['class']}] {v['symbol']}")
+                loc = f'{loc}:{v["column"]}'
+        lines.append(f'{loc}: [{v["class"]}] {v["symbol"]}')
         if v.get('section'):
-            lines.append(f"  section: {v['section']}")
+            lines.append(f'  section: {v["section"]}')
         if v.get('current_text') is not None:
             ct = v['current_text']
             if isinstance(ct, str) and len(ct) > 100:
                 ct = ct[:100] + '...'
             lines.append(f'  current: {ct}')
-        lines.append(f"  fix: {v['suggested_fix']}")
+        lines.append(f'  fix: {v["suggested_fix"]}')
         lines.append('')
     stderr = '\n'.join(lines).rstrip() + '\n'
-    total = f"TOTAL DOCSTYLE VIOLATIONS: {summary['violations']}"
+    total = f'TOTAL DOCSTYLE VIOLATIONS: {summary["violations"]}'
     return stderr, total
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='gometry docstring style gate')
     parser.add_argument(
-        '--format', choices=('human', 'json'), default='human',
+        '--format',
+        choices=('human', 'json'),
+        default='human',
     )
     parser.add_argument(
-        '--root', type=Path, default=None,
+        '--root',
+        type=Path,
+        default=None,
         help='Repository root (default: auto-detect from this file).',
     )
     args = parser.parse_args(list(argv) if argv is not None else None)

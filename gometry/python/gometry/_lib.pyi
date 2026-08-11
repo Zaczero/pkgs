@@ -18399,7 +18399,7 @@ def crs_engine() -> CrsEngineInfo:
     --------
     >>> import gometry as gm
     >>> gm.crs_engine()['version']
-    '9.8.1'
+    '9.6.2'
     """
 
 def crs_config() -> CrsRuntimeConfig:

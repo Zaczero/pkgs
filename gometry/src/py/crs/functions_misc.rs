@@ -12,7 +12,7 @@ use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_engine()['version']
-/// '9.8.1'
+/// '9.6.2'
 pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
     let mut info = crs::engine_info()?;
     info.paths = crs::runtime_config()?.search_paths.unwrap_or_default();

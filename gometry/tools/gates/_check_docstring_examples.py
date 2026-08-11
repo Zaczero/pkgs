@@ -5,7 +5,7 @@ the compiled extension's ``__doc__``. This harness walks the public API — the 
 its top-level functions, every public class, and each class's public methods — runs the
 ``>>>`` examples found in their docstrings, and reports mismatches. It keeps the
 NumPy/Shapely-style ``Examples`` blocks honest: an example that drifts from real
-behaviour fails here (and in ``tests/test_docstring_examples.py``).
+behavior fails here.
 
 Run directly: ``python tools/gates/_check_docstring_examples.py`` (exit 1 on any failure).
 """
@@ -55,6 +55,9 @@ def run() -> tuple[int, int, int]:
 
 def main() -> int:
     documented, examples, failures = run()
+    if documented == 0:
+        failures += 1
+        print('no public docstring examples were discovered')
     print(f'docstrings with examples: {documented}')
     print(f'examples executed:        {examples}')
     print(f'TOTAL EXAMPLE FAILURES: {failures}')

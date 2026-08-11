@@ -1,8 +1,8 @@
 """Shared helpers for the ``tools/gates/_check_*.py`` gate scripts.
 
-Gate scripts run standalone (``.venv/bin/python tools/gates/_check_x.py``) and via
-the pytest wrappers (``conftest.load_tool``). Import this module the way
-``_check_bench_regression.py`` imports ``summarize_bench``::
+Gate scripts run through ``tools/check.py`` and remain independently executable
+for focused diagnosis. Unit tests import their internals through
+``conftest.load_tool``. Typical import pattern::
 
     _TOOLS_ROOT = Path(__file__).resolve().parents[1]
     if str(_TOOLS_ROOT) not in sys.path:

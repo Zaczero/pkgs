@@ -141,8 +141,7 @@ def collect_errors(site: Path = SITE) -> list[str]:
         })
         if unresolved:
             errors.append(
-                f'{path.relative_to(site)}: unresolved public type links: '
-                f'{unresolved}'
+                f'{path.relative_to(site)}: unresolved public type links: {unresolved}'
             )
     for name in sorted(exports):
         count = api_html.count(f'id="gometry.{name}"')

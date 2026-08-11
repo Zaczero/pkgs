@@ -57,6 +57,7 @@ OPTIONAL_EXPORTS = frozenset({
 })
 
 CLASS_EXPORTS = frozenset({
+    'AccuracyWarning',
     'CRS',
     'CRSError',
     'CRSMismatchError',
@@ -70,6 +71,7 @@ CLASS_EXPORTS = frozenset({
     'GeohashCoverage',
     'Geometry',
     'GeometryArray',
+    'GeometryCollection',
     'GeometryError',
     'GeometryParts',
     'GeometryTypeError',
@@ -170,6 +172,7 @@ PAGES: tuple[Page, ...] = (
                 'frechet_distance',
                 'hausdorff_distance',
                 'length',
+                'length_3d',
                 'nearest_points',
                 'shortest_line',
             ),
@@ -383,8 +386,11 @@ PAGES: tuple[Page, ...] = (
     Page(
         'errors',
         'Errors',
-        'The exception hierarchy for geometry, CRS, transformation, and parsing failures.',
-        (section(*ERRORS),),
+        'Warnings and exceptions for geometry, CRS, transformation, and parsing failures.',
+        (
+            section('AccuracyWarning', title='Warnings'),
+            section(*ERRORS, title='Exceptions'),
+        ),
         (('Errors & exceptions', '../guide/errors.md'),),
     ),
     Page(

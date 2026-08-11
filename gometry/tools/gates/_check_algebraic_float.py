@@ -42,6 +42,7 @@ WHITELIST = frozenset({
     'open_point_cycle_magnitude',
     'open_xy_cycle_magnitude',
     'shoelace_measure_columns',
+    'shoelace_shifted',
 })
 MEASUREMENT_FILES = frozenset({'src/geometry/area.rs'})
 DECISION_MODULES = frozenset({

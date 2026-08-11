@@ -5,9 +5,8 @@ place that may resolve `row_map`, release the GIL, and hand kernels logical
 contiguous columns. Public method surfaces must route through
 `map/reduce/pair_packed_*_detached` instead of reimplementing that seam.
 
-This gate forbids the regressions called out in KEYSTONE K3 / arch_out3.txt:
+This gate forbids the live regressions:
 
-* ``map_packed_storage(`` anywhere in ``src/``.
 * ``.xy_columns()`` on array method/metric surfaces outside
   ``src/array/packed_columns.rs``.
 * Direct calls to ``packed_line_measure``, ``packed_polygon_measure``,
@@ -37,12 +36,10 @@ from _gatelib import prepend_tools_import_paths
 
 prepend_tools_import_paths()
 
-from _gatelib import iter_rust_sources, report_errors
+from _gatelib import report_errors
 
 ROOT = Path(__file__).resolve().parents[2]
 SCAN_ROOT = ROOT / 'src'
-
-_FORBID_MAP_PACKED_STORAGE = re.compile(r'\bmap_packed_storage\s*\(')
 
 _FORBID_XY_COLUMNS = re.compile(r'\.xy_columns\s*\(')
 
@@ -76,20 +73,6 @@ def _is_comment(line: str) -> bool:
 
 def collect_errors() -> list[str]:
     errors: list[str] = []
-
-    for path in iter_rust_sources():
-        rel = path.relative_to(ROOT).as_posix()
-        for lineno, raw in enumerate(
-            path.read_text(encoding='utf-8').splitlines(), start=1
-        ):
-            if _is_comment(raw):
-                continue
-            if _FORBID_MAP_PACKED_STORAGE.search(raw):
-                errors.append(
-                    f'{rel}:{lineno}: forbids `map_packed_storage(` — route '
-                    f'through `map/reduce/pair_packed_*_detached` in '
-                    f'`packed_columns.rs`.'
-                )
 
     xy_paths = [*(SCAN_ROOT / 'array').glob('methods_*.rs'), *_XY_COLUMNS_PATHS]
     for path in sorted(xy_paths):

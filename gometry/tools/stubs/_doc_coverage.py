@@ -251,7 +251,12 @@ def required_raises(
     ) and owner in ('', 'GeometryArray'):
         if name != 'coverage_union':
             required.add('GeometryTypeError')
-        if name in ('coverage_is_valid', 'coverage_invalid_edges', 'coverage_simplify', 'coverage_clean'):
+        if name in (
+            'coverage_is_valid',
+            'coverage_invalid_edges',
+            'coverage_simplify',
+            'coverage_clean',
+        ):
             required.add('GeometryError')
         if name in ('coverage_simplify', 'coverage_union', 'coverage_clean'):
             required.add('InvalidGeometryError')
@@ -267,7 +272,12 @@ def required_raises(
     if name == 'to_crs':
         required |= {'CRSError', 'TransformError'}
     if qualname in ('crs_transform', 'crs_apply', 'crs_roundtrip'):
-        required |= {'CRSError', 'TransformError', 'InvalidGeometryError', 'GeometryError'}
+        required |= {
+            'CRSError',
+            'TransformError',
+            'InvalidGeometryError',
+            'GeometryError',
+        }
     if qualname == 'crs_transform_bounds':
         required |= {'CRSError', 'TransformError', 'GeometryError'}
     if qualname == 'crs_info':
@@ -339,7 +349,7 @@ def required_raises(
     return frozenset(required)
 
 
-@dataclass
+@dataclass(slots=True)
 class DocContract:
     """The documented parameters and sections of one docstring."""
 

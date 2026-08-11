@@ -62,7 +62,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Violation:
     path: str
     line: int
