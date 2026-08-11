@@ -17,9 +17,9 @@ with a per-call `unit='planar'` escape. Grid coverage uses `gm.h3_cover` /
 import gometry as gm
 city = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 station = gm.Point(2.35, 48.85, crs=4326)
-print(gm.contains(city, station))
-print(round(city.area / 1000000.0, 1))
-print(round(gm.area(city, unit='planar'), 4))
+print(gm.contains(city, station))                         # True
+print(f"{city.area / 1_000_000.0:.1f} km^2")              # 8217.6 km^2
+print(f"{gm.area(city, unit='planar'):.4f} degree^2")     # 1.0000 degree^2
 
 ```
 
@@ -30,11 +30,11 @@ import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 mask = gm.contains(area, points)
-print(type(mask).__name__, mask.tolist())
+print(type(mask).__name__, mask.tolist())                  # ndarray [True, False]
 bounds = points.bounds
-print(type(bounds).__name__, bounds.shape, bounds.dtype)
+print(type(bounds).__name__, bounds.shape, bounds.dtype)   # ndarray (2, 4) float64
 cover = gm.s2_cover(area, level=10, max_cells=None)
-print(cover.cell_rule, cover.covers(points))
+print(cover.cell_rule, cover.covers(points).tolist())      # overlap [True, False]
 
 ```
 
@@ -70,8 +70,8 @@ the CRS decide, so the default is the real-world answer:
 import gometry as gm
 
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(round(area.area))
-print(gm.area(area, unit='planar'))
+print(f"{area.area:.0f} m^2")                          # 30562197104 m^2
+print(f"{gm.area(area, unit='planar'):.1f} degree^2")  # 4.0 degree^2
 
 ```
 
