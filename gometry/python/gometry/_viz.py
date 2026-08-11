@@ -23,6 +23,33 @@ else:
 
 _LONBOARD_INSTALL = "install the 'gometry[viz]' extra"
 _lonboard_available: bool | None = None
+_VIZ_DEFAULTS = {
+    'scatterplot_kwargs': {
+        'get_fill_color': [28, 119, 195],
+        'radius_min_pixels': 4,
+        'radius_max_pixels': 18,
+        'opacity': 0.9,
+        'pickable': True,
+        'auto_highlight': True,
+    },
+    'path_kwargs': {
+        'get_color': [24, 102, 172],
+        'width_min_pixels': 2,
+        'width_max_pixels': 8,
+        'opacity': 0.9,
+        'pickable': True,
+        'auto_highlight': True,
+    },
+    'polygon_kwargs': {
+        'get_fill_color': [70, 145, 209, 80],
+        'get_line_color': [24, 102, 172, 220],
+        'line_width_min_pixels': 1,
+        'opacity': 0.5,
+        'pickable': True,
+        'auto_highlight': True,
+    },
+    'map_kwargs': {'height': 520},
+}
 
 
 def _lonboard_importable() -> bool:
@@ -143,14 +170,24 @@ def _lonboard_data(arr: GeometryArray, attributes: Any | None) -> Any:
     return attributes.add_column(0, 'geometry', Array.from_arrow(arr))
 
 
+def _viz_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge gometry's readable defaults with caller-supplied layer options."""
+    configured = dict(kwargs)
+    for name, defaults in _VIZ_DEFAULTS.items():
+        values = configured.get(name)
+        configured[name] = dict(defaults) | ({} if values is None else dict(values))
+    return configured
+
+
 def _lonboard_viz(arr: GeometryArray, attributes: Any | None, **kwargs: Any) -> Any:
     """Hand lonboard a GeoArrow capsule first; fall back to GeoJSON if needed."""
     lonboard = _require_lonboard()
+    configured = _viz_kwargs(kwargs)
 
     try:
-        return lonboard.viz(_lonboard_data(arr, attributes), **kwargs)
+        return lonboard.viz(_lonboard_data(arr, attributes), **configured)
     except (ImportError, TypeError):
-        return lonboard.viz(_feature_collection(arr, attributes), **kwargs)
+        return lonboard.viz(_feature_collection(arr, attributes), **configured)
 
 
 def explore(
@@ -172,8 +209,10 @@ def explore(
     attributes : Arrow table or mapping, optional
         Aligned feature columns carried into lonboard and GeoJSON tooltips.
     kwargs : mapping, optional
-        Keyword arguments forwarded to ``lonboard.viz`` (``scatterplot_kwargs``,
-        ``path_kwargs``, ``polygon_kwargs``, and ``map_kwargs``).
+        Keyword arguments forwarded to ``lonboard.viz``. The default map keeps
+        points, lines, and polygons visually distinct and makes features
+        inspectable on hover. Pass ``scatterplot_kwargs``, ``path_kwargs``,
+        ``polygon_kwargs``, or ``map_kwargs`` to tailor individual settings.
 
     Returns
     -------
@@ -209,24 +248,17 @@ def explore(
 
 
 def array_repr_html(arr: GeometryArray) -> str | None:
-    """Return lonboard embed HTML for Jupyter, or ``None`` to fall back to SVG."""
+    """Return standalone lonboard HTML, or ``None`` to fall back to SVG."""
     if not _lonboard_importable() or not _is_map_suitable(arr):
         return None
 
+    display_arr = _array_for_map(arr)
+    # Widget-state serialization runs in lonboard's worker pool after this call
+    # returns. Materialize the Arrow object so workers do not outlive the
+    # direct C-capsule handoff owned by ``display_arr``.
     try:
-        from ipywidgets.embed import embed_snippet
-
-        display_arr = _array_for_map(arr)
-        # Widget-state serialization runs in lonboard's worker pool after this
-        # call returns.  Materialize the Arrow object so those workers do not
-        # outlive the direct C-capsule handoff owned by ``display_arr``.
-        try:
-            data = display_arr.to_arrow()
-        except ModuleNotFoundError:
-            # Without PyArrow, lonboard serializes the direct capsule through
-            # arro3 and does not cross the crashing PyArrow worker boundary.
-            data = display_arr
-        map_obj = _require_lonboard().viz(data)
-        return embed_snippet(views=[map_obj], drop_defaults=True)
-    except Exception:
-        return None
+        data = display_arr.to_arrow()
+    except ModuleNotFoundError:
+        # Without PyArrow, lonboard serializes the direct capsule through arro3.
+        data = display_arr
+    return _require_lonboard().viz(data, **_viz_kwargs({})).to_html(title='gometry map')

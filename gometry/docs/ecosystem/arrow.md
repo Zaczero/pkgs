@@ -181,8 +181,9 @@ print("attribute columns:", attributes.column_names)
 
 Install `gometry[viz]` for interactive maps.
 [`GeometryArray._repr_html_`][gometry.GeometryArray] embeds a lonboard preview in
-Jupyter when lonboard is available; otherwise it falls back to the SVG grid used
-elsewhere in this documentation.
+Jupyter when lonboard is available; it uses lonboard's standalone HTML export so the
+same preview works wherever notebook HTML is rendered. Otherwise it falls back to the
+SVG grid used elsewhere in this documentation.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -195,7 +196,10 @@ print("explore available:", callable(gm.explore))
 
 `gm.explore` hands lonboard a **zero-copy GeoArrow capsule** when possible (the
 same capsule path as above); a GeoJSON feature-collection fallback runs only if the
-capsule handoff fails. Inputs need a CRS and finite bounds.
+capsule handoff fails. Inputs need a CRS and finite bounds. By default it presents
+a map where points, lines, and polygons remain distinct and features are inspectable
+on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
+`polygon_kwargs`, or `map_kwargs` to tailor individual settings.
 
 !!! note "Reprojection for display"
     lonboard expects WGS 84 longitude/latitude display coordinates. Arrays whose

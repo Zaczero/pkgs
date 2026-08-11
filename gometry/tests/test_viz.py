@@ -44,7 +44,8 @@ assert gm.explore(projected).__class__.__name__ == 'Map'
 import gometry as gm
 arr = gm.GeometryArray([gm.Point(2.35, 48.86, crs=4326), gm.Point(2.36, 48.87, crs=4326)])
 html = arr._repr_html_()
-assert '<svg' not in html
+assert '<!DOCTYPE html>' in html
+assert '<title>gometry map</title>' in html
 assert 'application/vnd.jupyter.widget-state+json' in html
 assert '<svg' in arr[0]._repr_html_()
 """,
@@ -100,27 +101,6 @@ def test_array_repr_html_falls_back_without_lonboard(
     assert not any(marker in html for marker in _lonboard_html_markers())
 
 
-def test_array_repr_html_falls_back_without_widget_embed(
-    geographic_points: gm.GeometryArray,
-) -> None:
-    import builtins
-
-    real_import = builtins.__import__
-
-    def blocked_import(name: str, *args: object, **kwargs: object) -> object:
-        if name == 'ipywidgets.embed':
-            raise ModuleNotFoundError('blocked')
-        return real_import(name, *args, **kwargs)
-
-    with (
-        mock.patch('gometry._viz._lonboard_available', True),
-        mock.patch('builtins.__import__', side_effect=blocked_import),
-    ):
-        from gometry._viz import array_repr_html
-
-        assert array_repr_html(geographic_points) is None
-
-
 def test_explore_rejects_unsuitable_input() -> None:
     with pytest.raises(gm.GeometryError, match='CRS and finite bounds'):
         gm.explore(gm.GeometryArray([gm.box(0, 0, 1, 1)]))
@@ -156,6 +136,40 @@ def test_explore_carries_attributes_into_lonboard(
     table = received[0]
     assert table.column_names == ['geometry', 'name']
     assert table.column('name').to_pylist() == ['a', 'b']
+
+
+def test_explore_applies_readable_defaults_and_keeps_overrides(
+    geographic_points: gm.GeometryArray,
+) -> None:
+    received: list[dict[str, object]] = []
+
+    class FakeLonboard:
+        @staticmethod
+        def viz(data: object, **kwargs: object) -> object:
+            del data
+            received.append(kwargs)
+            return object()
+
+    with mock.patch('gometry._viz._require_lonboard', return_value=FakeLonboard):
+        gm.explore(
+            geographic_points,
+            scatterplot_kwargs={'radius_min_pixels': 7},
+            polygon_kwargs={'opacity': 0.7},
+            map_kwargs={'height': 640},
+        )
+
+    kwargs = received[0]
+    assert kwargs['scatterplot_kwargs'] == {
+        'get_fill_color': [28, 119, 195],
+        'radius_min_pixels': 7,
+        'radius_max_pixels': 18,
+        'opacity': 0.9,
+        'pickable': True,
+        'auto_highlight': True,
+    }
+    assert kwargs['path_kwargs']['width_min_pixels'] == 2  # type: ignore[index]
+    assert kwargs['polygon_kwargs']['opacity'] == 0.7  # type: ignore[index]
+    assert kwargs['map_kwargs']['height'] == 640  # type: ignore[index]
 
 
 def test_lonboard_capsule_fallback_preserves_feature_properties(
