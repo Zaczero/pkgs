@@ -2,6 +2,7 @@ import asyncio
 import importlib.metadata
 import os
 import socket
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -1709,6 +1710,9 @@ async def test_suppressed_pathsend_with_trailers_writes_no_body_framing(
     assert get_trailers == []
 
 
+@pytest.mark.skipif(
+    sys.platform == 'win32', reason='requires POSIX inherited-listener semantics'
+)
 async def test_rolling_pathsend_eof_closes_http1_connection(tmp_path: Path) -> None:
     file_path = tmp_path / 'truncated-pathsend.bin'
     file_path.write_bytes(b'x' * (900 * 1024))

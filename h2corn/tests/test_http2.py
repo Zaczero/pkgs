@@ -301,11 +301,13 @@ async def test_http_scope_advertises_pathsend_extension() -> None:
             h2_request(port=server_port(server)), timeout=5
         )
 
-    assert extensions == {
+    expected = {
         'http.response.pathsend': {},
-        'http.response.zerocopysend': {},
         'http.response.early_hint': {},
     }
+    if sys.platform != 'win32':
+        expected['http.response.zerocopysend'] = {}
+    assert extensions == expected
     assert client is not None
     assert status == 204
     assert body == b''
@@ -332,12 +334,14 @@ async def test_http_scope_advertises_trailer_extension_when_request_accepts_it()
             timeout=5,
         )
 
-    assert extensions == {
+    expected = {
         'http.response.pathsend': {},
-        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }
+    if sys.platform != 'win32':
+        expected['http.response.zerocopysend'] = {}
+    assert extensions == expected
     assert status == 204
     assert body == b''
 
@@ -1086,12 +1090,14 @@ async def test_response_trailers_are_sent_when_request_accepts_them() -> None:
             timeout=5,
         )
 
-    assert extensions == {
+    expected = {
         'http.response.pathsend': {},
-        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }
+    if sys.platform != 'win32':
+        expected['http.response.zerocopysend'] = {}
+    assert extensions == expected
     assert status == 200
     assert body == b'payload'
     assert trailers == [(b'x-checksum', b'ok'), (b'x-finished', b'yes')]
@@ -1116,11 +1122,13 @@ async def test_response_trailers_require_request_te_trailers() -> None:
             h2_request(port=server_port(server)), timeout=5
         )
 
-    assert extensions == {
+    expected = {
         'http.response.pathsend': {},
-        'http.response.zerocopysend': {},
         'http.response.early_hint': {},
     }
+    if sys.platform != 'win32':
+        expected['http.response.zerocopysend'] = {}
+    assert extensions == expected
     assert status == 500
     assert body == b''
 
@@ -1523,12 +1531,14 @@ async def test_http_response_pathsend_can_be_followed_by_trailers(
             timeout=5,
         )
 
-    assert extensions == {
+    expected = {
         'http.response.pathsend': {},
-        'http.response.zerocopysend': {},
         'http.response.trailers': {},
         'http.response.early_hint': {},
     }
+    if sys.platform != 'win32':
+        expected['http.response.zerocopysend'] = {}
+    assert extensions == expected
     assert status == 200
     assert body == payload
     assert trailers == [(b'x-finished', b'yes')]

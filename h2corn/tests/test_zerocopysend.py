@@ -31,7 +31,12 @@ from tests._support import (
     server_port,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.skipif(
+        sys.platform == 'win32', reason='zerocopysend is a Unix-only extension'
+    ),
+]
 
 # Past the 1 MiB sendfile threshold, so these take the sendfile path where the
 # transport supports it. The small fixtures elsewhere stay under it and exercise

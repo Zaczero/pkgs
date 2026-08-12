@@ -6,6 +6,7 @@ that ignores one desynchronizes.
 """
 
 import asyncio
+import sys
 from typing import Literal
 
 import h2.connection
@@ -168,7 +169,10 @@ async def test_the_extension_is_not_offered_on_http1() -> None:
             request=b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
         )
 
-    assert seen == [['http.response.pathsend', 'http.response.zerocopysend']]
+    expected = ['http.response.pathsend']
+    if sys.platform != 'win32':
+        expected.append('http.response.zerocopysend')
+    assert seen == [expected]
 
 
 async def test_a_hint_before_start_is_an_application_error() -> None:

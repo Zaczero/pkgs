@@ -1,6 +1,7 @@
 import argparse
 import dataclasses
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -284,6 +285,8 @@ def test_config_bool_fields_reject_coercible_values(
 
 @pytest.mark.parametrize('field_name', _BOOL_FIELDS)
 def test_config_bool_fields_accept_exact_bool(field_name: str) -> None:
+    if field_name == 'reuse_port' and sys.platform == 'win32':
+        pytest.skip('reuse_port is unavailable on Windows')
     construct_config = cast('Callable[..., Config]', Config)
     for value in (True, False):
         config = construct_config(**{field_name: value})

@@ -2350,11 +2350,16 @@ async def test_wait_started_reports_a_configuration_serve_can_never_honour() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process configuration')
 @pytest.mark.parametrize(
     ('config', 'error_type', 'message'),
     [
         (
-            Config(port=0, pid=Path('server.pid'), user=os.getuid()),
+            Config(
+                port=0,
+                pid=Path('server.pid'),
+                user=os.getuid() if hasattr(os, 'getuid') else 1,
+            ),
             ValueError,
             'cannot combine pid',
         ),
