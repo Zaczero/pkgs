@@ -60,7 +60,6 @@ dev = [
   "geopandas",
   "h3",
   "libcst",
-  "lonboard",
   "markdown-exec>=1.9",
   "maturin==1.14.1",
   "mercantile>=1.2.1",
@@ -84,6 +83,7 @@ dev = [
   "scikit-learn",
   "shapely",
 ]
+viz = ["lonboard"]
 
 [build-system]
 requires = ["maturin~=1.14"]
@@ -185,3 +185,8 @@ cache-keys = [
   { file = "python/gometry/**/*.py" },
   { file = "python/gometry/**/*.pyi" },
 ]
+
+[tool.pkgs.ci]
+# Lonboard's GeoArrow dependency has no free-threaded wheel. Exercise it on
+# the primary standard-CPython cell without imposing it on every ABI.
+primary-test-groups = ["viz"]

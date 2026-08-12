@@ -887,7 +887,7 @@ def test_crs_operations_dict_cache_isolation() -> None:
 
 
 def _layout_v6_proj_db_src():
-    """Locate the built layout-v6 proj.db, respecting ``CARGO_TARGET_DIR``."""
+    """Locate the bundled layout-v6 proj.db built for these tests."""
     import os
     import sqlite3
     from pathlib import Path
@@ -895,23 +895,19 @@ def _layout_v6_proj_db_src():
     target_dir = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))
     candidates = sorted(
         target_dir.glob('**/share/proj/proj.db'),
-        key=lambda p: p.stat().st_size,
+        key=lambda path: path.stat().st_size,
         reverse=True,
     )
-    for cand in candidates:
-        con = None
+    for candidate in candidates:
+        con = sqlite3.connect(candidate)
         try:
-            con = sqlite3.connect(cand)
             minor = con.execute(
                 "SELECT value FROM metadata WHERE key='DATABASE.LAYOUT.VERSION.MINOR'"
             ).fetchone()
-        except sqlite3.Error:
-            continue
         finally:
-            if con is not None:
-                con.close()
+            con.close()
         if minor and minor[0] == '6':
-            return cand
+            return candidate
     pytest.fail(
         f'no layout-v6 proj.db under {target_dir}; build proj-sys before this test'
     )

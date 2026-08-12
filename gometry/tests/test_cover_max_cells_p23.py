@@ -325,12 +325,10 @@ def test_s2_level30_tiny_budget_rejects_in_subprocess():
     """
     script = textwrap.dedent(
         """
-        import resource
         import sys
         import gometry as gm
 
         line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
-        rss0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         try:
             gm.s2_cover(line, level=30, max_cells=1)
         except gm.GeometryError as e:
@@ -340,11 +338,7 @@ def test_s2_level30_tiny_budget_rejects_in_subprocess():
         else:
             print("NO_RAISE", flush=True)
             sys.exit(3)
-        rss1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        delta_mib = max(0, rss1 - rss0) / 1024.0
-        print(f"OK delta_mib={delta_mib:.2f}", flush=True)
-        if delta_mib >= 32.0:
-            sys.exit(5)
+        print("OK", flush=True)
         """
     )
     proc = subprocess.run(

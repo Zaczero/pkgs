@@ -502,8 +502,11 @@ import gometry as gm
 # path under test if init is deferred past the cap.
 import numpy  # noqa: F401
 
-# Cap address space so try_reserve fails as MemoryError rather than OOM-kill.
-resource.setrlimit(resource.RLIMIT_AS, ({as_bytes}, {as_bytes}))
+# macOS may report a soft limit above its immutable hard limit. Preserve that
+# hard limit while lowering only the soft ceiling used by this child process.
+_, hard = resource.getrlimit(resource.RLIMIT_AS)
+limit = {as_bytes} if hard == resource.RLIM_INFINITY else min({as_bytes}, hard)
+resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
 
 try:
 {indented}

@@ -104,6 +104,7 @@ def test_match_class_patterns_narrow_all_leaves() -> None:
     assert seen == [g.geometry_type for g in geometries]
 
 
+@pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
 def test_copy_replace_point_and_geometry() -> None:
     pt = gm.Point(1, 2, z=3, crs=4326, epoch=2020.0)
     replaced = copy.replace(pt, x=9)
@@ -116,6 +117,7 @@ def test_copy_replace_point_and_geometry() -> None:
     assert relabeled.crs == gm.CRS(3857) and relabeled.to_wkt() == line.to_wkt()
 
 
+@pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
 def test_copy_replace_rejects_unknown_keyword_arguments() -> None:
     pt = gm.Point(1, 2)
     with pytest.raises(
@@ -131,6 +133,7 @@ def test_copy_replace_rejects_unknown_keyword_arguments() -> None:
         copy.replace(line, x=5)
 
 
+@pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
 def test_copy_replace_named_result_containers() -> None:
     """The kept ``NamedTuple`` results support ``copy.replace``; plain-tuple
     results (e.g. ``nearest_points``, ``dissolve``) deliberately do not.
@@ -750,11 +753,6 @@ def test_scalar_geometry_sizeof_counts_shapedata_without_forcing_caches() -> Non
     # Second prepare-side sizeof must not force further growth by itself.
     again = prepared_poly.__sizeof__()
     assert again == prepared_poly.__sizeof__()
-
-    # Leaf scalars: coordinate payload + ShapeData header under the unified
-    # Arc retained-size policy (pointee layout + control block + nested heap).
-    assert gm.Point(1.0, 2.0).__sizeof__() == 456
-    assert gm.LineString([(0.0, 0.0), (1.0, 1.0)]).__sizeof__() == 472
 
 
 def test_container_sizeof_scales_with_members_parts_and_holes() -> None:

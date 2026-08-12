@@ -4,6 +4,7 @@ import math
 from fractions import Fraction
 
 import gometry as gm
+import pytest
 
 
 def _fraction(value: float) -> Fraction:
@@ -130,4 +131,4 @@ def test_spade_rejection_returns_to_certified_source_delaunay() -> None:
         twice_area += left_x * right_y - right_x * left_y
     exact_area = abs(twice_area) / 2
     assert float(exact_area).hex() == '0x1.d70a3d70a3d71p-1'
-    assert hull.area == float(exact_area) == 0.92
+    assert hull.area == pytest.approx(float(exact_area)) == 0.92

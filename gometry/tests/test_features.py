@@ -231,6 +231,7 @@ def test_from_features_native_generator_and_json_sequence_match() -> None:
     assert generated.ids == text.ids == ('a', None)
 
 
+@pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
 def test_features_copy_replace_and_identity_eq() -> None:
     """``copy.replace`` restores the frozen-dataclass contract; ``__eq__``
     short-circuits on identity.

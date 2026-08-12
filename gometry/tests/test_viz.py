@@ -10,6 +10,8 @@ from unittest import mock
 import gometry as gm
 import pytest
 
+pytest.importorskip('lonboard')
+
 
 def _lonboard_html_markers() -> tuple[str, ...]:
     return (

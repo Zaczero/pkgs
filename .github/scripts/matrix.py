@@ -11,6 +11,8 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
   using the newest PyPy minor uv can install that satisfies requires-python.
 * Build runners: pure → ubuntu only; rusty → native multi-arch including
   Windows ARM.
+* ``tool.pkgs.ci.primary-test-groups`` augments only the primary stable CPython
+  cell with package-declared uv dependency groups.
 
 Usage (from repo root):
 
@@ -274,13 +276,16 @@ def build_test_matrix(
     is_rusty: bool,
     freethreaded_linux: Sequence[Minor],
     pypy_selector: str | None,
+    primary_test_groups: Sequence[str],
 ) -> list[dict[str, str]]:
+    primary_sync_args = ' '.join(f'--group {group}' for group in primary_test_groups)
     matrix: list[dict[str, str]] = [
         {
             'os': LINUX_TEST_RUNNER,
             'python-version': str(minor),
             'freethreaded': 'false',
             'primary': 'true' if minor == primary else 'false',
+            'uv-sync-args': primary_sync_args if minor == primary else '',
         }
         for minor in stable_minors
     ]
@@ -290,6 +295,7 @@ def build_test_matrix(
             'python-version': str(primary),
             'freethreaded': 'false',
             'primary': 'false',
+            'uv-sync-args': '',
         }
         for runner in (MACOS_TEST_RUNNER, WINDOWS_TEST_RUNNER)
     )
@@ -300,6 +306,7 @@ def build_test_matrix(
                 'python-version': minor.freethreaded_selector,
                 'freethreaded': 'true',
                 'primary': 'false',
+                'uv-sync-args': '',
             }
             for minor in freethreaded_linux
             if minor.as_tuple >= MIN_FREETHREADED_MINOR
@@ -310,6 +317,7 @@ def build_test_matrix(
             'python-version': pypy_selector,
             'freethreaded': 'false',
             'primary': 'false',
+            'uv-sync-args': '',
         })
     return matrix
 
@@ -372,6 +380,7 @@ def resolve_matrix(
         is_rusty=is_rusty,
         freethreaded_linux=freethreaded_linux,
         pypy_selector=pypy_selector,
+        primary_test_groups=json.loads(info['primary-test-groups']),
     )
 
     build_runners = RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS

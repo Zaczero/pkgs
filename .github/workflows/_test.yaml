@@ -116,6 +116,11 @@ jobs:
           cache-workspaces: . -> target
           rustflags: ""
 
+      - name: Install SQLite command-line shell
+        if: needs.resolve.outputs.is-rusty == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: choco install sqlite -y --no-progress
+
       - name: Package before-test hook
         if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
         shell: bash
@@ -136,7 +141,7 @@ jobs:
           if [ "$FREETHREADED" = "true" ]; then
             export MATURIN_PEP517_ARGS="--profile dev"
           fi
-          uv sync --python "${{ matrix.python-version }}"
+          uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
           if [ "$FREETHREADED" = "true" ]; then
             uv run --python "${{ matrix.python-version }}" python -c \
               'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
@@ -172,13 +177,18 @@ jobs:
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       CIBW_BEFORE_ALL_LINUX:
-        'curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+        'dnf install -y sqlite && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
         --default-toolchain none && rustup toolchain install --profile minimal
         "$RUSTUP_TOOLCHAIN"'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Install SQLite command-line shell
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install sqlite -y --no-progress
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:

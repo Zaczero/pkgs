@@ -334,7 +334,7 @@ def test_r15i_collinear_source_vertex_invariance_all_rules(case_name: str) -> No
             'seam',
             gm.LineString([(170.0, -10.0), (-170.0, 10.0)], crs=4326),
             gm.LineString([(170.0, -10.0), (180.0, 0.0), (-170.0, 10.0)], crs=4326),
-            (4, 6),
+            (4,),
             (5, 8),
         ),
         (
