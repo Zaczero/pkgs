@@ -1,4 +1,5 @@
 import gc
+import sys
 import threading
 
 import pytest
@@ -281,13 +282,14 @@ def test_repr():
     assert repr(cache) == 'LRUCache(maxsize=5, currsize=2)'
 
 
+@pytest.mark.skipif(
+    not hasattr(sys, 'getrefcount'), reason='requires CPython reference counts'
+)
 def test_drop_releases_python_objects():
     """When the cache is dropped, references to stored values must be released."""
     cache = LRUCache[int, object](16)
     obj = object()
     obj_id = id(obj)
-
-    import sys
 
     base_refs = sys.getrefcount(obj)
     cache[1] = obj

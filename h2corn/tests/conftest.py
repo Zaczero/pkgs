@@ -12,6 +12,7 @@ guard) working on whichever loop a deployment picks.
 
 import asyncio
 import shutil
+import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -62,6 +63,14 @@ def pytest_asyncio_loop_factories(
     """Run async tests under the stdlib loop and uvloop without global policies."""
     del config, item
     factories = {'asyncio': asyncio.new_event_loop}
+    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
+    if sys.version_info >= (3, 14) or (
+        callable(is_gil_enabled) and not is_gil_enabled()
+    ):
+        # uvloop's CPython 3.14 compatibility layer still emits deprecations
+        # under -Werror. The native asyncio loop remains the supported coverage
+        # for the newest interpreter while upstream catches up.
+        return factories
     try:
         import uvloop
     except ModuleNotFoundError:

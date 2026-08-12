@@ -35,6 +35,7 @@ fast_hilbert = { version = "2.1.0", default-features = false }
 geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
+getrandom = { version = "0.3", default-features = false, features = ["std"] }
 # The pinned fork exposes raw H3 projection carriers needed by certified grid
 # predicates; upstream's public boundary API intentionally rounds them away.
 h3o = { git = "https://github.com/Zaczero/h3o.git", rev = "2b5bde491449c776cb9c1ae305a5f826f6d8e968", default-features = false, features = [

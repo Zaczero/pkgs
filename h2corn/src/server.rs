@@ -12,7 +12,7 @@ use std::os::fd::{FromRawFd as _, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
 #[cfg(windows)]
-use std::os::windows::io::{FromRawSocket, OwnedSocket};
+use std::os::windows::io::{FromRawSocket, OwnedSocket, RawSocket};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -52,6 +52,7 @@ use crate::sendfile::WriteTarget;
 use crate::tls::{ConnectionSecurity, TlsSessionInfo};
 use crate::{h1, h2, log, tls};
 
+#[cfg(unix)]
 pub(crate) type ListenerFd = OwnedFd;
 #[cfg(windows)]
 pub(crate) type ListenerFd = OwnedSocket;
@@ -247,7 +248,8 @@ pub(crate) fn own_serve_fds(
     let mut unique = HashSet::with_capacity(fds.len());
     let mut validated = Vec::with_capacity(fds.len());
     for fd in fds {
-        let fd = usize::try_from(fd).map_err(|_| "socket handle is outside the usize range")?;
+        let fd = RawSocket::try_from(fd)
+            .map_err(|_| "socket handle is outside the platform handle range")?;
         if !unique.insert(fd) {
             return Err("socket handles must be globally unique");
         }

@@ -764,6 +764,8 @@ async def app(scope, receive, send):
         if process is not None and process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
+        if process is not None and process.stderr is not None:
+            process.stderr.close()
         for fd in open_fds:
             try:
                 os.close(fd)

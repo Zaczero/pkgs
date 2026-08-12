@@ -28,6 +28,11 @@ pytestmark = pytest.mark.asyncio
 SERVER_MAX_FRAME_SIZE = 64 * 1024
 
 
+def _gil_is_disabled() -> bool:
+    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
+    return callable(is_gil_enabled) and not is_gil_enabled()
+
+
 def _decode_h2_settings_payload(payload: bytes) -> dict[int, int]:
     if len(payload) % 6 != 0:
         raise ValueError('SETTINGS payload must be a sequence of 6-byte pairs')
@@ -2578,7 +2583,10 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
     assert growth < 4096, f'{len(updates)} ignored updates retained {growth} KiB'
 
 
-@pytest.mark.skipif(sys.platform != 'linux', reason='reads /proc/self/status')
+@pytest.mark.skipif(
+    sys.platform != 'linux' or _gil_is_disabled(),
+    reason='requires a GIL build and /proc/self/status',
+)
 async def test_window_updates_after_local_half_close_retain_no_writer_state(
     tmp_path: Path,
 ) -> None:

@@ -4,7 +4,8 @@
 //! `&str`/`RuntimeConfig` API; the raw-pointer context mutators stay private in
 //! the parent `crs` module, reached via `use super::*`; re-exported at `crs`.
 
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 
 use smol_str::SmolStr;
@@ -32,9 +33,7 @@ fn proj_config_directory() -> Result<&'static std::path::Path> {
     match PROJ_CONFIG_DIRECTORY.get_or_init(|| {
         let temp = std::env::temp_dir();
         let mut random = [0_u8; 16];
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut source| source.read_exact(&mut random))
-            .map_err(|error| error.to_string())?;
+        getrandom::fill(&mut random).map_err(|error| error.to_string())?;
         let nonce = u128::from_ne_bytes(random);
         for _ in 0..128 {
             let sequence = PROJ_CONFIG_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -42,15 +41,17 @@ fn proj_config_directory() -> Result<&'static std::path::Path> {
                 "gometry-proj-{}-{nonce:032x}-{sequence}",
                 std::process::id()
             ));
-            match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o700);
+            match builder.create(&directory) {
                 Ok(()) => {
                     let ini = directory.join("proj.ini");
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .mode(0o600)
-                        .open(ini)
-                        .map_err(|error| error.to_string())?;
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create_new(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    let mut file = options.open(ini).map_err(|error| error.to_string())?;
                     file.write_all(PROJ_INI.as_bytes())
                         .map_err(|error| error.to_string())?;
                     return Ok(directory);

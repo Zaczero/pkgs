@@ -9,6 +9,7 @@ use bytes::Bytes;
 use rustix::fs::fcntl_rdadvise;
 #[cfg(target_os = "linux")]
 use rustix::fs::{Advice, fadvise};
+#[cfg(unix)]
 use rustix::fs::{CWD, FileType, Mode, OFlags, fstat, openat};
 use tokio::task::{JoinHandle, spawn_blocking};
 
@@ -298,6 +299,7 @@ pub(crate) fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result
 /// either preload or retain the same descriptor. Length comes from that fd's
 /// fstat (streamed) or from the bytes actually read (preloaded) — never from
 /// application `Content-Length`.
+#[cfg(unix)]
 fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), PathsendError> {
     let pathsend_io_error = |err: rustix::io::Errno| PathsendError::open_failed(&path, err.into());
     // NONBLOCK so FIFOs / other blocking objects cannot pin a pool thread on
@@ -338,6 +340,33 @@ fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), Pat
     let _ = fadvise(&file, 0, None, Advice::Sequential);
     #[cfg(target_os = "macos")]
     let _ = fcntl_rdadvise(&file, 0, len as u64);
+    Ok((PathSource::File(file), len))
+}
+
+#[cfg(windows)]
+fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), PathsendError> {
+    let mut file = File::open(&path).map_err(|err| PathsendError::open_failed(&path, err))?;
+    let metadata = file
+        .metadata()
+        .map_err(|err| PathsendError::open_failed(&path, err))?;
+    if !metadata.is_file() {
+        return Err(PathsendError::NotRegularFile { path });
+    }
+    let len = usize::try_from(metadata.len()).map_err(|_| {
+        PathsendError::open_failed(
+            &path,
+            io::Error::new(io::ErrorKind::InvalidData, "file size does not fit usize"),
+        )
+    })?;
+    if len <= PATHSEND_PRELOAD_MAX {
+        let mut data = Vec::with_capacity(len);
+        (&mut file)
+            .take(len as u64)
+            .read_to_end(&mut data)
+            .map_err(|err| PathsendError::open_failed(&path, err))?;
+        let read_len = data.len();
+        return Ok((PathSource::Buffered(data.into()), read_len));
+    }
     Ok((PathSource::File(file), len))
 }
 

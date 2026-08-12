@@ -100,6 +100,7 @@ fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatu
         error::PathsendError::OpenFailed { source, .. } => match source.kind() {
             ErrorKind::NotFound | ErrorKind::NotADirectory => Some(status_code::NOT_FOUND),
             ErrorKind::PermissionDenied => Some(status_code::FORBIDDEN),
+            #[cfg(unix)]
             // Unix sockets refuse ordinary open with ENXIO; treat like other
             // non-file objects that must not enter the pathsend body path.
             _ if source.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error()) => {

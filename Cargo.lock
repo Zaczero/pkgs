@@ -521,6 +521,7 @@ dependencies = [
  "delaunator",
  "fast_hilbert",
  "geographiclib-rs",
+ "getrandom 0.3.4",
  "h3o",
  "lexical-core",
  "libsqlite3-sys",
