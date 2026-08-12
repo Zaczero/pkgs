@@ -224,6 +224,18 @@ def test_every_gate_has_both_directions():
     assert sorted(CASES) == sorted(gate_names())
 
 
+def test_parser_gates_skip_on_pypy_before_importing_their_parser(tmp_path, monkeypatch):
+    """PyPy package tests retain interpreter-neutral stub checks."""
+    monkeypatch.setattr(
+        'pyo3stubs.gates.platform.python_implementation', lambda: 'PyPy'
+    )
+    cfg = make_config(tmp_path)
+    for name in ('text-signature', 'token-vocabulary', 'leaked-types', 'rust-nullability'):
+        result = gate(name).run(cfg)
+        assert result.status is Status.SKIPPED
+        assert 'Rust source parser has no PyPy wheel' in result.line
+
+
 @pytest.mark.parametrize('name', gate_names())
 def test_gate_is_clean(name, tmp_path, pristine_stub, pristine_src):
     """The pristine fixture satisfies every gate, and every gate runs.

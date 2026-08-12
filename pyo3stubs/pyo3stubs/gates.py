@@ -23,24 +23,25 @@ import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from importlib import import_module
+from typing import TYPE_CHECKING, cast
 
-from pyo3stubs.doc_contract import collect_errors as collect_doc_contract_errors
-from pyo3stubs.doc_structure import collect_errors as collect_doc_structure_errors
-from pyo3stubs.duality import collect_errors as collect_duality_errors
-from pyo3stubs.leaked_types import collect_errors as collect_leaked_types_errors
-from pyo3stubs.oracle import collect_stubtest_errors, collect_validity_errors
 from pyo3stubs.report import Findings
-from pyo3stubs.rust_nullability import collect_errors as collect_rust_nullability_errors
-from pyo3stubs.structural import collect_errors as collect_structural_errors
-from pyo3stubs.surface import collect_errors as collect_surface_errors
-from pyo3stubs.text_signature import collect_errors as collect_text_signature_errors
-from pyo3stubs.token_vocabulary import collect_errors as collect_token_vocabulary_errors
 
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
 
 Collector = Callable[['StubConfig'], list[str]]
+
+
+def _collector(module: str, name: str = 'collect_errors') -> Collector:
+    """Defer optional gate imports until the selected gate actually runs."""
+
+    def collect(cfg: StubConfig) -> list[str]:
+        collector = cast('Collector', getattr(import_module(module), name))
+        return collector(cfg)
+
+    return collect
 
 
 class Status(Enum):
@@ -82,6 +83,8 @@ class Gate:
     activated_by: str = ''
     #: Backed by mypy, which does not run outside CPython.
     requires_cpython: bool = False
+    #: Why the gate cannot run outside CPython.
+    cpython_reason: str = 'mypy does not run on this interpreter'
 
     @property
     def tier(self) -> str:
@@ -151,8 +154,8 @@ class Result:
             )
         if self.status is Status.SKIPPED:
             return (
-                f'{self.gate.name}: skipped — needs CPython, and mypy does not '
-                f'run on {platform.python_implementation()}'
+                f'{self.gate.name}: skipped — needs CPython, and '
+                f'{self.gate.cpython_reason}'
             )
         if self.status is Status.DISABLED:
             return f'{self.gate.name}: disabled by StubConfig.disabled_gates'
@@ -179,7 +182,7 @@ _GEN_DOCS = 'run `pyo3stubs gen-docs --config <shim>`'
 GATES: tuple[Gate, ...] = (
     Gate(
         name='validity',
-        collect=collect_validity_errors,
+        collect=_collector('pyo3stubs.oracle', 'collect_validity_errors'),
         summary='the stub type-checks on its own (mypy)',
         success='stub validity OK: mypy-clean',
         remedy='fix the stub until mypy is clean',
@@ -187,7 +190,7 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name='structural',
-        collect=collect_structural_errors,
+        collect=_collector('pyo3stubs.structural'),
         summary='overload hygiene, finality, signature coverage, __match_args__',
         success='structural checks OK',
         remedy='see each violation; they name the exact stub line',
@@ -195,15 +198,17 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name='text-signature',
-        collect=collect_text_signature_errors,
+        collect=_collector('pyo3stubs.text_signature'),
         summary='a manual text_signature agrees with the real signature',
         success='text_signature OK: matches signature attributes',
         remedy='correct the Rust attribute that documents the wrong shape',
         subject='text_signature attribute',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='surface',
-        collect=collect_surface_errors,
+        collect=_collector('pyo3stubs.surface'),
         summary='one operation keeps one option block on every surface',
         success='surface parity OK',
         remedy='add the missing option, or register the divergence with a reason',
@@ -212,7 +217,7 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name='duality',
-        collect=collect_duality_errors,
+        collect=_collector('pyo3stubs.duality'),
         summary='array method returns are derived from the scalar contract',
         success='scalar↔array duality OK',
         remedy='fix the array return, or exempt it with a reason',
@@ -221,32 +226,38 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name='token-vocabulary',
-        collect=collect_token_vocabulary_errors,
+        collect=_collector('pyo3stubs.token_vocabulary'),
         summary='stub Literal unions match the runtime token enums',
         success='token vocabulary OK',
         remedy='regenerate the Literal alias from the runtime vocabulary',
         activated_by='tokens',
         subject='token enum',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='leaked-types',
-        collect=collect_leaked_types_errors,
+        collect=_collector('pyo3stubs.leaked_types'),
         summary='every reachable pyclass is registered and publicly stubbed',
         success='no leaked types',
         remedy='register the class, add a public stub class, or allowlist it',
         subject='pyclass export',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='rust-nullability',
-        collect=collect_rust_nullability_errors,
+        collect=_collector('pyo3stubs.rust_nullability'),
         summary='every Option<..> Rust surface admits None in the stub',
         success='rust nullability OK: every Option surface admits None',
         remedy='widen the stub annotation with `| None`',
         subject='Option surface',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='doc-contract',
-        collect=collect_doc_contract_errors,
+        collect=_collector('pyo3stubs.doc_contract'),
         summary='every public symbol is documented, exactly once',
         success='doc contract OK',
         remedy='document it in the Rust `///` comment, or in the stub override',
@@ -254,7 +265,7 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name='doc-structure',
-        collect=collect_doc_structure_errors,
+        collect=_collector('pyo3stubs.doc_structure'),
         summary='documented prose describes the whole signature',
         success='doc structure OK',
         remedy='document the parameter, or the return, in the Rust `///`',
@@ -266,10 +277,12 @@ GATES: tuple[Gate, ...] = (
         summary='stub docstrings match the runtime ones',
         success='stub docstrings in sync',
         remedy=_GEN_DOCS,
+        requires_cpython=True,
+        cpython_reason='the doc generator has no PyPy wheel',
     ),
     Gate(
         name='stubtest',
-        collect=collect_stubtest_errors,
+        collect=_collector('pyo3stubs.oracle', 'collect_stubtest_errors'),
         summary='the stub matches the compiled runtime (mypy.stubtest)',
         success='stubtest OK: stub matches the runtime',
         remedy='fix the stub, or add a stubtest allowlist entry',

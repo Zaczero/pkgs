@@ -68,14 +68,14 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          cargo nextest run
+          cargo nextest run --no-tests pass
 
       - name: Test Rust release
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          cargo nextest run --release
+          cargo nextest run --no-tests pass --release
 
   test:
     needs: resolve
@@ -177,7 +177,8 @@ jobs:
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       CIBW_BEFORE_ALL_LINUX:
-        'dnf install -y sqlite && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+        'if command -v dnf >/dev/null; then dnf install -y sqlite; else apk add --no-cache sqlite; fi
+        && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
         --default-toolchain none && rustup toolchain install --profile minimal
         "$RUSTUP_TOOLCHAIN"'
     steps:
