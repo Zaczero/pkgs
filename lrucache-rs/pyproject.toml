@@ -34,8 +34,8 @@ dev = [
   "pytest>=9.1",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
-  "pyo3stubs; python_version >= '3.11'",
 ]
+ci = ["pyo3stubs; python_version >= '3.11'"]
 
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }

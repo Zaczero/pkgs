@@ -71,7 +71,6 @@ dev = [
   "properdocs>=1.6",
   "pyarrow",
   "pymdown-extensions>=10.7",
-  "pyo3stubs",
   "pyperf",
   "pyproj",
   "pytest>=9.1",
@@ -83,7 +82,7 @@ dev = [
   "scikit-learn",
   "shapely",
 ]
-viz = ["lonboard"]
+ci = ["lonboard", "pyo3stubs"]
 
 [build-system]
 requires = ["maturin~=1.14"]
@@ -185,8 +184,3 @@ cache-keys = [
   { file = "python/gometry/**/*.py" },
   { file = "python/gometry/**/*.pyi" },
 ]
-
-[tool.pkgs.ci]
-# Lonboard's GeoArrow dependency has no free-threaded wheel. Exercise it on
-# the primary standard-CPython cell without imposing it on every ABI.
-primary-test-groups = ["viz"]

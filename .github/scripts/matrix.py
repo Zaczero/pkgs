@@ -11,8 +11,8 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
   using the newest PyPy minor uv can install that satisfies requires-python.
 * Build runners: pure → ubuntu only; rusty → native multi-arch including
   Windows ARM.
-* ``tool.pkgs.ci.primary-test-groups`` augments only the primary stable CPython
-  cell with package-declared uv dependency groups.
+* A package ``ci`` dependency group augments only the primary stable CPython
+  cell. It owns tools that cannot install on every supported interpreter.
 
 Usage (from repo root):
 
@@ -276,16 +276,16 @@ def build_test_matrix(
     is_rusty: bool,
     freethreaded_linux: Sequence[Minor],
     pypy_selector: str | None,
-    primary_test_groups: Sequence[str],
+    ci_test_group: bool,
 ) -> list[dict[str, str]]:
-    primary_sync_args = ' '.join(f'--group {group}' for group in primary_test_groups)
+    ci_sync_args = '--group ci' if ci_test_group else ''
     matrix: list[dict[str, str]] = [
         {
             'os': LINUX_TEST_RUNNER,
             'python-version': str(minor),
             'freethreaded': 'false',
             'primary': 'true' if minor == primary else 'false',
-            'uv-sync-args': primary_sync_args if minor == primary else '',
+            'uv-sync-args': ci_sync_args if minor == primary else '',
         }
         for minor in stable_minors
     ]
@@ -380,7 +380,7 @@ def resolve_matrix(
         is_rusty=is_rusty,
         freethreaded_linux=freethreaded_linux,
         pypy_selector=pypy_selector,
-        primary_test_groups=json.loads(info['primary-test-groups']),
+        ci_test_group=info['ci-test-group'] == 'true',
     )
 
     build_runners = RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS

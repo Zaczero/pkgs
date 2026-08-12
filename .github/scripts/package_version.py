@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal, Never, assert_never
 
 VERSION_RE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+\Z')
-DEPENDENCY_GROUP_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*\Z')
 
 
 def fail(message: str) -> Never:
@@ -97,15 +96,7 @@ def package_info(package: str) -> dict[str, str]:
     pyproject = load_toml(path / 'pyproject.toml')
     project = pyproject['project']
     dependency_groups = pyproject.get('dependency-groups', {})
-    ci_config = pyproject.get('tool', {}).get('pkgs', {}).get('ci', {})
-    primary_test_groups = ci_config.get('primary-test-groups', [])
-    if not isinstance(primary_test_groups, list) or not all(
-        isinstance(group, str)
-        and DEPENDENCY_GROUP_RE.fullmatch(group)
-        and group in dependency_groups
-        for group in primary_test_groups
-    ):
-        fail(f'{path}: tool.pkgs.ci.primary-test-groups must name dependency groups')
+    ci_test_group = 'true' if 'ci' in dependency_groups else 'false'
     requires_python = project.get('requires-python', '')
     pypy = (
         'true'
@@ -125,7 +116,7 @@ def package_info(package: str) -> dict[str, str]:
             'is-rusty': 'true',
             'package': package,
             'pypy': pypy,
-            'primary-test-groups': json.dumps(primary_test_groups),
+            'ci-test-group': ci_test_group,
             'requires-python': requires_python,
             'type': 'python-rust',
             'version': cargo['version'],
@@ -159,7 +150,7 @@ def package_info(package: str) -> dict[str, str]:
             'is-rusty': 'false',
             'package': package,
             'pypy': pypy,
-            'primary-test-groups': json.dumps(primary_test_groups),
+            'ci-test-group': ci_test_group,
             'requires-python': requires_python,
             'type': 'python-static',
             'version': str(project['version']),
@@ -172,7 +163,7 @@ def package_info(package: str) -> dict[str, str]:
         'is-rusty': 'false',
         'package': package,
         'pypy': pypy,
-        'primary-test-groups': json.dumps(primary_test_groups),
+        'ci-test-group': ci_test_group,
         'requires-python': requires_python,
         'type': 'python',
         'version': read_python_version(version_path),

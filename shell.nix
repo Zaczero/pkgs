@@ -43,7 +43,7 @@ let
 
     (makeScript "activate" ''
       if [ -f pyproject.toml ]; then
-        uv sync
+        uv sync --all-groups
         if ${gnugrep}/bin/grep -q 'build-backend = "maturin"' pyproject.toml; then
           if ! .venv/bin/python - <<'PY'
       import sys
@@ -85,7 +85,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --quiet
+      uv sync --quiet --all-groups
       exec uv run --no-sync properdocs serve --no-strict --dev-addr 127.0.0.1:8765 "$@"
     '')
 
@@ -97,7 +97,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --quiet
+      uv sync --quiet --all-groups
       exec uv run --no-sync properdocs build --strict --clean "$@"
     '')
 
@@ -122,7 +122,7 @@ let
         echo "DRY RUN: nothing will be written to edge."
       fi
 
-      uv sync --quiet
+      uv sync --quiet --all-groups
       uv run --no-sync properdocs build --strict --clean
 
       echo "Target: edge:/var/www/$host/"

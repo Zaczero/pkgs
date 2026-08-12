@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,17 +45,18 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
     """Type-check the stub file with mypy; any diagnostic is an error."""
     from mypy import api
 
-    command = [
-        str(cfg.stub_path),
-        '--no-error-summary',
-        '--no-color-output',
-        '--soft-error-limit=-1',
-        '--no-incremental',
-        *cfg.mypy_args,
-    ]
-    if cfg.mypy_config is not None:
-        command += ['--config-file', str(cfg.mypy_config)]
-    stdout, stderr, status = api.run(command)
+    with TemporaryDirectory() as cache_dir:
+        command = [
+            str(cfg.stub_path),
+            '--no-error-summary',
+            '--no-color-output',
+            '--soft-error-limit=-1',
+            f'--cache-dir={cache_dir}',
+            *cfg.mypy_args,
+        ]
+        if cfg.mypy_config is not None:
+            command += ['--config-file', str(cfg.mypy_config)]
+        stdout, stderr, status = api.run(command)
     if status == 0:
         return []
     output = (stdout + stderr).strip()
