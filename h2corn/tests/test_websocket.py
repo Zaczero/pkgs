@@ -39,6 +39,15 @@ class _H2WsHandshake(NamedTuple):
     buffer: bytes
 
 
+async def _close_writer_after_expected_reset(writer: asyncio.StreamWriter) -> None:
+    """Release a client transport after the tested server-side reset."""
+    with suppress(ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+        writer.close()
+    writer.transport.abort()
+    with suppress(ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+        await writer.wait_closed()
+
+
 def _decode_ws_close_payload(payload: bytes) -> tuple[int, str]:
     if len(payload) < 2:
         raise ValueError('websocket close payload must include a code')
@@ -527,8 +536,7 @@ async def _h2_websocket_handshake(
                 writer.write(pending)
                 await writer.drain()
     finally:
-        writer.close()
-        await writer.wait_closed()
+        await _close_writer_after_expected_reset(writer)
 
     raise RuntimeError('websocket handshake stream ended unexpectedly')
 
@@ -750,8 +758,7 @@ async def _assert_h2_websocket_close_code(
                 handshake,
             )
         finally:
-            writer.close()
-            await writer.wait_closed()
+            await _close_writer_after_expected_reset(writer)
 
     assert terminal == 'ended'
     assert detail is None
@@ -781,8 +788,7 @@ async def _assert_http1_websocket_close_code(
                 await writer.drain()
             frames = await _read_http1_ws_server_result(reader)
         finally:
-            writer.close()
-            await writer.wait_closed()
+            await _close_writer_after_expected_reset(writer)
 
     close_frames = [(opcode, payload) for opcode, payload in frames if opcode == 0x8]
     assert [opcode for opcode, _ in close_frames] == [0x8]
@@ -1668,9 +1674,7 @@ async def test_http1_websocket_ping_timeout_with_full_inbound_queue(
             assert any(opcode == 0x9 for opcode, _ in frames)
             await asyncio.wait_for(done.wait(), timeout=2.0)
         finally:
-            writer.close()
-            with suppress(ConnectionResetError):
-                await writer.wait_closed()
+            await _close_writer_after_expected_reset(writer)
 
 
 @pytest.mark.parametrize('queued_messages', [32, 33, 64])
@@ -1713,9 +1717,7 @@ async def test_h2_websocket_ping_timeout_with_full_inbound_queue(
 
             await asyncio.wait_for(done.wait(), timeout=(interval + timeout) * 8)
         finally:
-            writer.close()
-            with suppress(ConnectionResetError):
-                await writer.wait_closed()
+            await _close_writer_after_expected_reset(writer)
 
 
 @pytest.mark.parametrize('transport', ['h2', 'http1'])

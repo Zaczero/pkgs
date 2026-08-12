@@ -20,6 +20,11 @@ from pathlib import Path
 import gometry as gm
 import pytest
 
+_requires_rlimit_as = pytest.mark.skipif(
+    sys.platform in {'darwin', 'win32'},
+    reason='requires an enforced resource.RLIMIT_AS',
+)
+
 
 def _run_child(
     script: str, *, timeout: float = 8.0
@@ -542,6 +547,7 @@ _POLYGON_HOLES_REPEAT = (
         ('gm.h3_union(itertools.repeat(gm.H3Cell(0.0, 0.0, resolution=5)), [])', False),
     ],
 )
+@_requires_rlimit_as
 def test_d10_infinite_iterable_memoryerror_not_abort(
     body: str, inner_arc_oom: bool
 ) -> None:
@@ -563,6 +569,7 @@ def test_d10_infinite_iterable_memoryerror_not_abort(
     assert 'MemoryError' in blob
 
 
+@_requires_rlimit_as
 def test_d10_polygon_holes_inner_arc_oom_memoryerror() -> None:
     """Only the documented allocator abort remains an expected limitation."""
     completed = _assert_terminates(
@@ -596,6 +603,7 @@ gm.H3EdgeArray(itertools.repeat(eid))
 """,
     ],
 )
+@_requires_rlimit_as
 def test_d10_h3_vertex_edge_array_repeat_terminates(body: str) -> None:
     """Sister path: H3VertexArray/H3EdgeArray id collect (was SIGABRT)."""
     completed = _assert_terminates(_d10_rlimit_script(body), timeout=30.0)
@@ -646,6 +654,7 @@ def test_n3_crs_configure_generator_2_20_matches_list() -> None:
         gm.crs_reset()
 
 
+@_requires_rlimit_as
 def test_n3_infinite_crs_configure_memoryerror_under_rlimit() -> None:
     """N3: infinite search_paths generator → catchable MemoryError under rlimit."""
     completed = _assert_terminates(

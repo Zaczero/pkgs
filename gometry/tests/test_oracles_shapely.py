@@ -183,7 +183,7 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     with warnings.catch_warnings():
         warnings.filterwarnings(
             'ignore',
-            message='divide by zero encountered in oriented_envelope',
+            message='(?:divide by zero|invalid value) encountered in oriented_envelope',
             category=RuntimeWarning,
         )
         expected_area = minimum_rotated_rectangle(shapely_left).area

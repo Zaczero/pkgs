@@ -20,6 +20,16 @@ from h2corn import Config
 
 from tests._support import open_fd_count
 
+_posix_supervisor = pytest.mark.skipif(
+    sys.platform == 'win32', reason='POSIX worker supervisor'
+)
+_unix_sockets = pytest.mark.skipif(
+    not hasattr(socket, 'AF_UNIX'), reason='unix sockets are not supported'
+)
+_posix_fd_bind = pytest.mark.skipif(
+    sys.platform == 'win32', reason='fd:// uses POSIX descriptor semantics'
+)
+
 
 def _ipv6_loopback_is_bindable() -> bool:
     """Whether this kernel namespace has IPv6 enabled, not merely compiled."""
@@ -231,6 +241,7 @@ def test_socket_path_cleanup_never_unlinks_a_replacement(
         new_listener.release()
 
 
+@_unix_sockets
 def test_unix_socket_failure_after_bind_leaves_no_path_behind(
     monkeypatch: pytest.MonkeyPatch,
     unix_socket_dir: Path,
@@ -252,6 +263,7 @@ def test_unix_socket_failure_after_bind_leaves_no_path_behind(
     assert not socket_path.exists()
 
 
+@_unix_sockets
 def test_build_unix_socket_applies_owner_ids(
     monkeypatch: pytest.MonkeyPatch,
     unix_socket_dir: Path,
@@ -540,6 +552,7 @@ def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
     assert _supervisor._CONTROL_READY in messages
 
 
+@_posix_supervisor
 def test_disabled_worker_healthcheck_never_creates_a_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -566,6 +579,7 @@ def test_disabled_worker_healthcheck_never_creates_a_deadline(
         os.close(write_fd)
 
 
+@_posix_supervisor
 def test_worker_retirement_gives_request_cleanup_and_lifespan_separate_deadlines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -605,6 +619,7 @@ def test_worker_retirement_gives_request_cleanup_and_lifespan_separate_deadlines
     os.close(write_fd)
 
 
+@_posix_supervisor
 def test_worker_retirement_capacity_evicts_the_oldest_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -787,6 +802,7 @@ async def app(scope, receive, send):
     ('restart', 'message'),
     [(False, b'S'), (True, b'R')],
 )
+@_posix_supervisor
 def test_worker_quiesce_message_transfers_kind_and_closes_writer(
     restart: bool,
     message: bytes,
@@ -803,6 +819,7 @@ def test_worker_quiesce_message_transfers_kind_and_closes_writer(
         os.close(read_fd)
 
 
+@_posix_supervisor
 def test_worker_quiesce_reports_nothing_when_the_worker_already_left() -> None:
     """A worker that closed its read end is already in the asked-for state."""
     from h2corn import _supervisor
@@ -815,6 +832,7 @@ def test_worker_quiesce_reports_nothing_when_the_worker_already_left() -> None:
         os.fstat(write_fd)
 
 
+@_posix_supervisor
 def test_worker_quiesce_reports_an_unexpected_failure_and_closes_the_channel() -> None:
     from h2corn import _supervisor
 
@@ -895,6 +913,7 @@ class _FakeWorkerProcess:
         'startup-log',
     ],
 )
+@_posix_supervisor
 def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
@@ -1012,6 +1031,7 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
         supervisor.selector.close()
 
 
+@_posix_supervisor
 def test_supervisor_reap_closes_each_owned_fd_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1075,6 +1095,7 @@ def test_supervisor_reap_closes_each_owned_fd_once(
         supervisor.selector.close()
 
 
+@_posix_supervisor
 def test_supervisor_wait_never_exceeds_what_the_selector_accepts() -> None:
     """A far-off deadline must not become an `OverflowError` in the loop.
 
@@ -1108,6 +1129,7 @@ def test_supervisor_wait_never_exceeds_what_the_selector_accepts() -> None:
         os.close(write_fd)
 
 
+@_posix_supervisor
 def test_worker_replacement_capacity_allows_one_bounded_retiring_generation() -> None:
     from h2corn import _supervisor
 
@@ -1132,6 +1154,7 @@ def test_worker_replacement_capacity_allows_one_bounded_retiring_generation() ->
     assert not can_spawn(process_count=target, active_workers=target)
 
 
+@_posix_supervisor
 def test_scale_down_during_reload_preserves_the_unready_replacement() -> None:
     # Insertion order mirrors two serving workers followed by their unready
     # rolling replacement. Reducing the target from two to one must retire the
@@ -1149,6 +1172,7 @@ def test_scale_down_during_reload_preserves_the_unready_replacement() -> None:
     assert supervisor.scale_down_candidate() == 12
 
 
+@_posix_supervisor
 def test_health_retired_reload_replacement_cannot_retire_healthy_target() -> None:
     from h2corn import _supervisor
 
@@ -1166,6 +1190,7 @@ def test_health_retired_reload_replacement_cannot_retire_healthy_target() -> Non
     assert not supervisor.is_viable_reload_replacement(12)
 
 
+@_posix_supervisor
 def test_failed_reload_replacement_spawn_leaves_no_cycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1186,6 +1211,7 @@ def test_failed_reload_replacement_spawn_leaves_no_cycle(
     assert supervisor.reload_cycle is None
 
 
+@_posix_supervisor
 def test_expected_retirement_does_not_count_as_a_worker_failure() -> None:
     from h2corn import _supervisor
 
@@ -1487,6 +1513,7 @@ app.loaded = os.environ['DEMO_APP_VALUE']
         ),
     ],
 )
+@_posix_fd_bind
 def test_build_sockets_preserves_fd_listener_family(
     unix_socket_dir: Path,
     family: int,
@@ -1495,7 +1522,7 @@ def test_build_sockets_preserves_fd_listener_family(
 
     listener = socket.socket(family, socket.SOCK_STREAM)
     with listener:
-        if family == socket.AF_UNIX:
+        if family == getattr(socket, 'AF_UNIX', None):
             listener.bind(str(unix_socket_dir / 'listener.sock'))
         else:
             listener.bind(('127.0.0.1', 0))
@@ -1520,6 +1547,7 @@ def test_build_sockets_preserves_fd_listener_family(
     sys.platform == 'darwin',
     reason='Darwin cannot query SO_ACCEPTCONN on inherited descriptors',
 )
+@_posix_fd_bind
 def test_adopting_a_descriptor_that_is_not_a_listener_is_refused() -> None:
     """
     An `fd://` bind names someone else's descriptor. A descriptor that
@@ -2523,6 +2551,7 @@ async def test_pre_native_exit_releases_created_listener(
     not _gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
+@_posix_fd_bind
 async def test_pre_native_exit_preserves_borrowed_fd() -> None:
     """A failed embedded lifespan releases only h2corn's borrowed-fd duplicate."""
     from h2corn import Server
@@ -2586,6 +2615,7 @@ def test_env_file_is_read_before_privileges_drop(
     assert vars(app)['loaded'] == 'from-file'
 
 
+@_posix_supervisor
 def test_crash_loop_is_detected_after_a_worker_was_once_healthy() -> None:
     """
     The gate asks whether anything is serving now, not whether anything ever
@@ -2612,6 +2642,7 @@ def test_crash_loop_is_detected_after_a_worker_was_once_healthy() -> None:
     )
 
 
+@_posix_supervisor
 def test_crash_loop_spares_a_fleet_that_still_has_a_healthy_worker() -> None:
     """One flapping worker must not take down workers that are serving."""
     supervisor = _supervisor_state(Config(workers=4))
@@ -2628,6 +2659,9 @@ def test_crash_loop_spares_a_fleet_that_still_has_a_healthy_worker() -> None:
     assert supervisor.fatal_error is None
 
 
+@pytest.mark.skipif(
+    sys.platform == 'win32', reason='the signal wakeup pipe is a POSIX mechanism'
+)
 def test_failed_wakeup_fd_installation_closes_its_pipe() -> None:
     """
     `set_wakeup_fd` is documented to raise off the main thread. The pipe was
@@ -2654,6 +2688,7 @@ def test_failed_wakeup_fd_installation_closes_its_pipe() -> None:
     assert leaked == [0]
 
 
+@_unix_sockets
 def test_interrupted_listener_acquisition_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
     unix_socket_dir: Path,
@@ -2682,7 +2717,14 @@ def test_interrupted_listener_acquisition_rolls_back(
     assert not first.exists(), 'the first socket path survived the interrupt'
 
 
-@pytest.mark.parametrize('kind', ['tcp', 'unix', 'borrowed'])
+@pytest.mark.parametrize(
+    'kind',
+    [
+        'tcp',
+        pytest.param('unix', marks=_unix_sockets),
+        pytest.param('borrowed', marks=_posix_fd_bind),
+    ],
+)
 def test_interrupted_listener_acquisition_releases_every_taken_listener(
     kind: str,
     unix_socket_dir: Path,
@@ -2754,6 +2796,7 @@ def test_interrupted_listener_acquisition_releases_every_taken_listener(
             os.close(later_borrowed_fd)
 
 
+@_unix_sockets
 def test_multibind_interruption_rolls_back_acquired_listeners_in_reverse(
     unix_socket_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2796,6 +2839,10 @@ def test_multibind_interruption_rolls_back_acquired_listeners_in_reverse(
     assert not third.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform in {'darwin', 'win32'},
+    reason='Darwin cannot query SO_ACCEPTCONN; fd:// is POSIX-only',
+)
 def test_rollback_detaches_borrowed_descriptors_it_never_owned() -> None:
     """
     A descriptor that arrived through `fd://` belongs to whoever handed it
@@ -2930,6 +2977,8 @@ def test_supervisor_prepares_tls_before_workers_with_mtls_files(
     assert prepared_seen[0] is prepared_seen[1]
 
 
+@_unix_sockets
+@_posix_fd_bind
 def test_successful_build_then_exception_releases_created_keeps_borrowed(
     unix_socket_dir: Path,
 ) -> None:
@@ -2960,6 +3009,8 @@ def test_successful_build_then_exception_releases_created_keeps_borrowed(
         assert not uds.exists()
 
 
+@_unix_sockets
+@_posix_fd_bind
 def test_tls_rejection_of_borrowed_unix_fd_detaches(
     tmp_path: Path,
     unix_socket_dir: Path,
@@ -3004,6 +3055,7 @@ def test_seqpacket_listener_is_rejected_and_remains_caller_owned() -> None:
         os.fstat(fd)
 
 
+@_posix_fd_bind
 def test_transfer_consumes_socket_second_transfer_impossible() -> None:
     from h2corn import _socket
 
@@ -3024,6 +3076,7 @@ def test_transfer_consumes_socket_second_transfer_impossible() -> None:
             remaining.release()
 
 
+@_posix_fd_bind
 def test_borrowed_release_detaches_never_closes() -> None:
     from h2corn import _socket
 

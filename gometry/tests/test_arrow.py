@@ -1461,8 +1461,6 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     without retaining storage. Empty chunks around real data must not appear as
     rows; non-empty chunk import stays unchanged.
     """
-    import resource
-
     arr = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326).to_arrow()
     empty = arr.slice(0, 0)
 
@@ -1471,18 +1469,22 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     n_empty = 250_000
     many_empty = pa.chunked_array([empty] * n_empty, type=arr.type)
     assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
-    max_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform.startswith('linux'):
+        import resource
+
+        max_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
-    max_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     assert len(out) == 0
     assert out.crs == 'EPSG:4326'
     assert out.to_wkt() == []
     # len==0 short-circuit: no O(chunk) walk — must not grow peak RSS by
     # O(chunk) (~tens of MiB from retaining wrappers). Wall-clock is not a
     # pytest gate (host-sensitive under -n auto).
-    assert (max_after - max_before) < 4096, (
-        f'from_arrow peak RSS grew {max_after - max_before} KiB (expected ~0)'
-    )
+    if sys.platform.startswith('linux'):
+        max_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        assert (max_after - max_before) < 4096, (
+            f'from_arrow peak RSS grew {max_after - max_before} KiB (expected ~0)'
+        )
 
     # Empty around real data: only present rows land.
     mixed = pa.chunked_array([empty, arr, empty, empty], type=arr.type)

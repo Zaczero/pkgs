@@ -580,7 +580,7 @@ mod tests {
         let path = temp_dir().join(format!("h2corn-pathsend-sock-{}-{}", id(), unique_suffix()));
         let _listener = UnixListener::bind(&path).expect("unix socket is bound");
         let err = open_pathsend_file_blocking(path.clone()).expect_err("socket is rejected");
-        // Linux open(2) of an AF_UNIX pathname fails with ENXIO before fstat;
+        // Linux reports ENXIO and Darwin reports EOPNOTSUPP before fstat;
         // either OpenFailed or NotRegularFile keeps it out of the body path.
         assert!(
             matches!(

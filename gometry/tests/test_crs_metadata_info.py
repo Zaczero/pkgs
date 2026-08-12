@@ -886,8 +886,8 @@ def test_crs_operations_dict_cache_isolation() -> None:
     assert gm.CRS(4326).operation(3857) == cold_op
 
 
-def _layout_v6_proj_db_src():
-    """Locate the bundled layout-v6 proj.db built for these tests."""
+def _bundled_proj_db_src():
+    """Locate the generated proj.db matching the bundled runtime."""
     import os
     import sqlite3
     from pathlib import Path
@@ -896,24 +896,26 @@ def _layout_v6_proj_db_src():
         os.environ.get(
             'CARGO_TARGET_DIR', Path(__file__).resolve().parents[2] / 'target'
         )
-    )
-    candidates = sorted(
-        target_dir.glob('**/share/proj/proj.db'),
-        key=lambda path: path.stat().st_size,
-        reverse=True,
-    )
+    ).resolve()
+    engine = gm.crs_engine()
+    expected = engine['database_metadata']
+    candidates = list(target_dir.glob('*/build/proj-sys-*/out/share/proj/proj.db'))
+    runtime_paths = {
+        Path(path).resolve() / 'proj.db'
+        for path in engine['search_path'].split(os.pathsep)
+    }
+    candidates.sort(key=lambda path: path.resolve() not in runtime_paths)
     for candidate in candidates:
         con = sqlite3.connect(candidate)
         try:
-            minor = con.execute(
-                "SELECT value FROM metadata WHERE key='DATABASE.LAYOUT.VERSION.MINOR'"
-            ).fetchone()
+            metadata = dict(con.execute('SELECT key, value FROM metadata'))
         finally:
             con.close()
-        if minor and minor[0] == '6':
+        if all(metadata.get(key) == value for key, value in expected.items()):
             return candidate
     pytest.fail(
-        f'no layout-v6 proj.db under {target_dir}; build proj-sys before this test'
+        f'no generated proj-sys proj.db under {target_dir} matches bundled '
+        f'PROJ {engine["version"]} metadata; build gometry before this test'
     )
 
 
@@ -940,7 +942,7 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
     """``crs_configure`` alone (no ``crs_clear_cache``) must re-resolve receivers."""
     import tempfile
 
-    src = _layout_v6_proj_db_src()
+    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
         path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CONFIGURE_ONLY')
         crs = gm.CRS(4326)
@@ -966,7 +968,7 @@ def test_crs_receiver_info_invalidates_on_clear_only() -> None:
     import tempfile
     from pathlib import Path
 
-    src = _layout_v6_proj_db_src()
+    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
         path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CLEAR_A')
         try:
@@ -996,7 +998,7 @@ def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
     import tempfile
     from pathlib import Path
 
-    src = _layout_v6_proj_db_src()
+    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         path_a = _copy_proj_db_with_4326_name(src, tmp_path / 'a', 'STALE_PATH_A')

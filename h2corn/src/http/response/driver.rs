@@ -101,9 +101,12 @@ fn pathsend_open_substitute_status(err: &error::H2CornError) -> Option<HttpStatu
             ErrorKind::NotFound | ErrorKind::NotADirectory => Some(status_code::NOT_FOUND),
             ErrorKind::PermissionDenied => Some(status_code::FORBIDDEN),
             #[cfg(unix)]
-            // Unix sockets refuse ordinary open with ENXIO; treat like other
-            // non-file objects that must not enter the pathsend body path.
-            _ if source.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error()) => {
+            // Unix sockets refuse ordinary open with ENXIO on Linux and
+            // EOPNOTSUPP on Darwin. Treat both like other non-file objects.
+            _ if [rustix::io::Errno::NXIO, rustix::io::Errno::OPNOTSUPP]
+                .into_iter()
+                .any(|errno| source.raw_os_error() == Some(errno.raw_os_error())) =>
+            {
                 Some(status_code::FORBIDDEN)
             },
             _ => None,
@@ -166,9 +169,9 @@ fn handle_http_event_sync(
 mod tests {
     use bytes::Bytes;
 
-    use super::{apply_http_event, finalize_response};
+    use super::{apply_http_event, finalize_response, pathsend_open_substitute_status};
     use crate::bridge::{HttpOutboundEvent, PayloadBytes};
-    use crate::error::H2CornError;
+    use crate::error::{H2CornError, PathsendError};
     use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::{
         FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions,
@@ -214,6 +217,21 @@ mod tests {
 
     fn final_status(status: HttpStatusCode) -> FinalResponseStatus {
         FinalResponseStatus::new(status).expect("test status is final")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_open_errors_substitute_forbidden() {
+        for errno in [rustix::io::Errno::NXIO, rustix::io::Errno::OPNOTSUPP] {
+            let err = H2CornError::from(PathsendError::open_failed(
+                std::path::Path::new("socket"),
+                std::io::Error::from_raw_os_error(errno.raw_os_error()),
+            ));
+            assert_eq!(
+                pathsend_open_substitute_status(&err),
+                Some(status_code::FORBIDDEN)
+            );
+        }
     }
 
     #[tokio::test]

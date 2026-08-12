@@ -171,7 +171,6 @@ def test_p18_geometry_collection_rejects_none_member_fail_fast() -> None:
     collections still construct.
     """
     import itertools
-    import signal
 
     message = 'contains missing geometries'
     pt = gm.Point(0.0, 0.0)
@@ -184,19 +183,10 @@ def test_p18_geometry_collection_rejects_none_member_fail_fast() -> None:
         gm.GeometryCollection([None])
     assert type(only_none.value) is gm.GeometryError
 
-    # Guard against a hang: fail-fast must fire before the alarm.
-    def _alarm_handler(_signum: int, _frame: object) -> None:
-        raise TimeoutError('GeometryCollection(itertools.repeat(None)) hung')
-
-    previous = signal.signal(signal.SIGALRM, _alarm_handler)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, 0.5)
-        with pytest.raises(gm.GeometryError, match=message) as infinite:
-            gm.GeometryCollection(itertools.repeat(None))
-        assert type(infinite.value) is gm.GeometryError
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous)
+    # The first item is invalid, so this does not advance the infinite iterator.
+    with pytest.raises(gm.GeometryError, match=message) as infinite:
+        gm.GeometryCollection(itertools.repeat(None))
+    assert type(infinite.value) is gm.GeometryError
 
     # Positive: multi-member and empty still construct.
     gc = gm.GeometryCollection([pt, gm.Point(1.0, 1.0)])

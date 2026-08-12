@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pickle
-import resource
 import subprocess
 import sys
 import textwrap
@@ -288,6 +287,10 @@ def test_s2_target_cells_respects_min_level_and_max_cells_stays_hard():
 
 def _rss_kib() -> int:
     """Current max RSS in KiB (Linux)."""
+    if not sys.platform.startswith('linux'):
+        return 0
+    import resource
+
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 

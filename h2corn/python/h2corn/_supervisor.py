@@ -66,7 +66,7 @@ _CONTROL_READY = b'Y'
 _CONTROL_LIFESPAN = b'L'
 _QUIESCE_RESTART = b'R'
 _QUIESCE_STOP = b'S'
-_RESTART_SIGNAL = signal.SIGUSR1
+_RESTART_SIGNAL = getattr(signal, 'SIGUSR1', None)
 # `epoll_wait` takes its timeout as a signed 32-bit count of milliseconds.
 _MAX_SELECT_TIMEOUT = (2**31 - 1) / 1000
 
@@ -109,6 +109,8 @@ class _Worker:
 def _restart_worker(worker: _WorkerProcess):
     if not worker.is_alive() or worker.pid is None:
         return
+    if _RESTART_SIGNAL is None:
+        raise NotImplementedError('worker restart is not supported on this platform')
     try:
         os.kill(worker.pid, _RESTART_SIGNAL)
     except OSError:
@@ -253,7 +255,10 @@ def _worker_entry(
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, server.shutdown)
         loop.add_signal_handler(signal.SIGTERM, server.shutdown)
-        if _RESTART_SIGNAL not in {signal.SIGINT, signal.SIGTERM}:
+        if _RESTART_SIGNAL is not None and _RESTART_SIGNAL not in {
+            signal.SIGINT,
+            signal.SIGTERM,
+        }:
             loop.add_signal_handler(
                 _RESTART_SIGNAL,
                 # Deliberately private on `Server`: an embedder driving its own
@@ -930,6 +935,10 @@ class _Supervisor:
             self.target_workers -= 1
 
     def run(self) -> None:
+        if sys.platform == 'win32':
+            raise NotImplementedError(
+                'worker supervisor mode is not supported on Windows'
+            )
         with (
             signal_wakeup_pipe() as wakeup,
             swap_signal_handlers({
