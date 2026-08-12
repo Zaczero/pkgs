@@ -1644,8 +1644,8 @@ where
             // RFC 9113 §5.1 permits updates that raced with stream closure.
             // They have no send-window owner left, so ignoring them is the
             // only action that cannot recreate writer state.
-            Some(StreamLifecycle::ResponseClosed | StreamLifecycle::Closed) => return Ok(false),
-            Some(StreamLifecycle::Open | StreamLifecycle::RequestClosed) => {},
+            Some(lifecycle) if !stream_owns_send_window(lifecycle) => return Ok(false),
+            Some(_) => {},
         }
         if state
             .writer
@@ -1672,6 +1672,13 @@ where
                 .map(|()| true),
         }
     }
+}
+
+const fn stream_owns_send_window(lifecycle: StreamLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        StreamLifecycle::Open | StreamLifecycle::RequestClosed
+    )
 }
 
 /// Wire-shape validation for `RST_STREAM`: non-zero stream and 4-byte payload.
@@ -2073,6 +2080,14 @@ mod tests {
         }
 
         updates
+    }
+
+    #[test]
+    fn only_streams_with_an_open_response_own_a_send_window() {
+        assert!(stream_owns_send_window(StreamLifecycle::Open));
+        assert!(stream_owns_send_window(StreamLifecycle::RequestClosed));
+        assert!(!stream_owns_send_window(StreamLifecycle::ResponseClosed));
+        assert!(!stream_owns_send_window(StreamLifecycle::Closed));
     }
 
     fn raw_frame(
