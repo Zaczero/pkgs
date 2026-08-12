@@ -21,5 +21,6 @@ def test_package_is_mypy_strict_clean():
         str(PACKAGE / 'pyproject.toml'),
         '--no-color-output',
         '--no-error-summary',
+        '--no-incremental',
     ])
     assert status == 0, stdout + stderr

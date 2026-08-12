@@ -49,6 +49,7 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
         '--no-error-summary',
         '--no-color-output',
         '--soft-error-limit=-1',
+        '--no-incremental',
         *cfg.mypy_args,
     ]
     if cfg.mypy_config is not None:

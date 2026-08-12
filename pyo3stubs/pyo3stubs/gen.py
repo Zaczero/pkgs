@@ -22,6 +22,7 @@ Requires ``libcst``. The runtime module and stub path come from the project's
 from __future__ import annotations
 
 import ast
+import inspect
 import types
 from collections import Counter
 from typing import TYPE_CHECKING, TypeVar
@@ -94,6 +95,7 @@ def _escape(text: str) -> str:
     Escaping a trailing quote fixes both. A carriage return needs escaping too:
     raw, the tokenizer folds it into a newline and the prose silently changes.
     """
+    text = '\n'.join('' if not line.strip() else line for line in text.split('\n'))
     # The body of a `"""` literal is safe exactly when it contains no run of
     # three quotes and does not end in one. Escape only the quotes that break
     # those two rules, so ordinary quoted prose stays readable in the stub.
@@ -113,11 +115,11 @@ def _escape(text: str) -> str:
 
 def _docstring_statement(doc: str, indent: str) -> cst.BaseStatement:
     """Build an indented triple-quoted docstring statement line."""
-    lines = _escape(doc).split('\n')
+    lines = _escape(inspect.cleandoc(doc)).split('\n')
     if len(lines) == 1:
         literal = f'"""{lines[0]}"""'
     else:
-        body = '\n'.join((indent + ln) if ln.strip() else '' for ln in lines[1:])
+        body = '\n'.join((indent + line) if line.strip() else '' for line in lines[1:])
         literal = f'"""{lines[0]}\n{body}\n{indent}"""'
     return cst.parse_statement(literal, config=cst.PartialParserConfig())
 
