@@ -11,9 +11,7 @@ permissions:
   contents: read
 
 env:
-  # CI dev builds retain debug assertions and overflow checks, but native-heavy
-  # suites should not run workspace crates at opt-level 0.
-  CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+  CARGO_PROFILE_DEV_OPT_LEVEL: "1"
 
 jobs:
   resolve:
