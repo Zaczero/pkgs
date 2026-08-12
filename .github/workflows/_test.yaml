@@ -33,7 +33,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          enable-cache: true
+          enable-cache: false
 
       - id: resolve
         shell: bash
@@ -56,7 +56,9 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
-          cache-workspaces: . -> target
+          cache-key: ${{ env.PACKAGE }}
+          cache-on-failure: false
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           # Empty: avoid RUSTFLAGS env overriding .cargo/config.toml target-cpu.
           rustflags: ""
 
@@ -99,9 +101,10 @@ jobs:
         with:
           cache-dependency-glob: |
             pyproject.toml
-          cache-suffix: ${{ env.PACKAGE }}-${{ matrix.os }}-py${{ matrix.python-version }}
+          cache-suffix: ${{ env.PACKAGE }}
           enable-cache: true
           python-version: ${{ matrix.python-version }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
           working-directory: ${{ env.PACKAGE }}
 
       - name: Install Rust toolchain
@@ -109,7 +112,11 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
-          cache-workspaces: . -> target
+          cache-key: ${{ env.PACKAGE }}
+          cache-on-failure: false
+          cache-save-if: >-
+            ${{ github.ref == 'refs/heads/main'
+                && (matrix.primary == 'true' || runner.os != 'Linux') }}
           rustflags: ""
 
       - name: Install SQLite command-line shell
@@ -169,9 +176,11 @@ jobs:
       CIBW_BUILD_FRONTEND: build[uv]
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-      CIBW_ENVIRONMENT_PASS_LINUX: RUSTUP_TOOLCHAIN
+      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
+      SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       CIBW_BEFORE_ALL_LINUX:
         'if command -v dnf >/dev/null; then dnf install -y sqlite; else apk add --no-cache sqlite; fi
         && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -187,6 +196,8 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
           enable-cache: true
+          cache-suffix: ${{ env.PACKAGE }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
           working-directory: ${{ env.PACKAGE }}
 
       - name: Install SQLite command-line shell
@@ -207,7 +218,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
-          cache-workspaces: . -> target
+          cache-key: ${{ env.PACKAGE }}
+          cache-on-failure: false
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: ${{ runner.os != 'Linux' }}
           rustflags: ""
 
       - name: Install cargo-about
@@ -215,6 +229,29 @@ jobs:
         uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: cargo-about@0.8.4
+
+      - name: Install sccache
+        if: needs.resolve.outputs.is-rusty == 'true'
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Configure compiler cache
+        if: needs.resolve.outputs.is-rusty == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Linux ]; then
+            exit
+          fi
+
+          sccache_dir=$(dirname "$SCCACHE_PATH")
+          {
+            printf '%s\n' "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro"
+            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE"
+            printf '%s\n' "CIBW_TEST_COMMAND=python -c \"import ${{ needs.resolve.outputs.import-name }}\" && /opt/sccache/sccache --show-stats"
+          } >> "$GITHUB_ENV"
 
       - name: Generate license files
         if: needs.resolve.outputs.is-release == 'true'

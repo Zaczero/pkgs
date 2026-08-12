@@ -34,6 +34,15 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(file)
 
 
+def ci_package_sort_key(package: str) -> tuple[bool, bool, str]:
+    """Put critical-path native packages ahead of shorter matrix entries."""
+    return (
+        package not in {'gometry', 'h2corn'},
+        not (Path(package) / 'Cargo.toml').is_file(),
+        package,
+    )
+
+
 def cargo_package_info(path: Path) -> dict[str, str]:
     result = subprocess.run(
         [
@@ -79,8 +88,14 @@ def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
         return packages
 
     if kind == 'test':
-        return sorted(
+        packages = [
             pyproject.parent.name for pyproject in Path('.').glob('*/pyproject.toml')
+        ]
+        # GitHub schedules matrix entries in declaration order when capacity is
+        # constrained. Start the critical-path native builds before short jobs.
+        return sorted(
+            packages,
+            key=ci_package_sort_key,
         )
 
     assert_never(kind)

@@ -60,19 +60,10 @@ dev = [
   "arro3-core",
   "geopandas",
   "h3",
-  "libcst",
-  "markdown-exec>=1.9",
-  "maturin==1.14.1",
   "mercantile>=1.2.1",
-  "mkdocs-gen-files>=0.5",
-  "mkdocs-material>=9.5",
-  "mkdocstrings[python]>=0.27",
   "pandas",
   "polars",
-  "properdocs>=1.6",
   "pyarrow",
-  "pymdown-extensions>=10.7",
-  "pyperf",
   "pyproj",
   "pytest>=9.1",
   "pytest-cov",
@@ -83,7 +74,18 @@ dev = [
   "scikit-learn",
   "shapely",
 ]
-ci = ["lonboard", "pyo3stubs"]
+docs = [
+  "libcst",
+  "markdown-exec>=1.9",
+  "maturin==1.14.1",
+  "mkdocs-gen-files>=0.5",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.27",
+  "properdocs>=1.6",
+  "pymdown-extensions>=10.7",
+  "pyperf",
+]
+ci = ["lonboard", "pyo3stubs", "pyyaml"]
 
 [build-system]
 requires = ["maturin~=1.14"]

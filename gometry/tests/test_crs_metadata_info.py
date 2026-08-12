@@ -899,19 +899,28 @@ def _bundled_proj_db_src():
     ).resolve()
     engine = gm.crs_engine()
     expected = engine['database_metadata']
-    candidates = list(target_dir.glob('*/build/proj-sys-*/out/share/proj/proj.db'))
     runtime_paths = {
         Path(path).resolve() / 'proj.db'
         for path in engine['search_path'].split(os.pathsep)
     }
-    candidates.sort(key=lambda path: path.resolve() not in runtime_paths)
+    candidates = [path for path in runtime_paths if path.is_file()]
+    candidates.extend(
+        path
+        for path in target_dir.glob('**/proj-sys-*/out/**/proj.db')
+        if path.resolve() not in runtime_paths
+    )
+    identity_keys = (
+        'PROJ.VERSION',
+        'DATABASE.LAYOUT.VERSION.MAJOR',
+        'DATABASE.LAYOUT.VERSION.MINOR',
+    )
     for candidate in candidates:
         con = sqlite3.connect(candidate)
         try:
             metadata = dict(con.execute('SELECT key, value FROM metadata'))
         finally:
             con.close()
-        if all(metadata.get(key) == value for key, value in expected.items()):
+        if all(metadata.get(key) == expected[key] for key in identity_keys):
             return candidate
     pytest.fail(
         f'no generated proj-sys proj.db under {target_dir} matches bundled '

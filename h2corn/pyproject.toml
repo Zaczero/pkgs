@@ -68,13 +68,6 @@ dev = [
   "h2corn[uvloop]",
   "hpack>=4.1.0",
   "hypercorn>=0.18.0",
-  "matplotlib>=3.10.8",
-  "mkdocs-gen-files>=0.5",
-  "mkdocs-material>=9.5",
-  "mkdocs-minify-plugin>=0.8",
-  "mkdocstrings[python]>=0.27",
-  "properdocs>=1.6",
-  "pymdown-extensions>=10.7",
   "pytest>=9.1",
   "pytest-asyncio>=1.4",
   "pytest-timeout>=2.4",
@@ -83,6 +76,15 @@ dev = [
   "trustme>=1.2.0",
   "uvicorn>=0.43.0",
   "websockets>=16.0",
+]
+docs = [
+  "matplotlib>=3.10.8",
+  "mkdocs-gen-files>=0.5",
+  "mkdocs-material>=9.5",
+  "mkdocs-minify-plugin>=0.8",
+  "mkdocstrings[python]>=0.27",
+  "properdocs>=1.6",
+  "pymdown-extensions>=10.7",
 ]
 ci = ["pyo3stubs"]
 

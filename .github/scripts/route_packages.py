@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from package_version import list_packages, load_toml
+from package_version import ci_package_sort_key, list_packages, load_toml
 
 ROOT_RUST_PATHS = frozenset({'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})
 
@@ -105,7 +105,7 @@ def route_paths(
             else:
                 selected.update(packages)
 
-    return sorted(selected)
+    return sorted(selected, key=ci_package_sort_key)
 
 
 def main() -> None:
