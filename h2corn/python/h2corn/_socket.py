@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import os
 import signal
@@ -287,10 +288,18 @@ def _adopt_listener(fd: int) -> _BorrowedListener:
         if sock.type != socket.SOCK_STREAM:
             raise ValueError(f'fd://{fd} is not a stream socket')
         accept_conn = getattr(socket, 'SO_ACCEPTCONN', None)
-        if accept_conn is not None and not sock.getsockopt(
-            socket.SOL_SOCKET, accept_conn
-        ):
-            raise ValueError(f'fd://{fd} is not listening')
+        if accept_conn is not None:
+            try:
+                listening = sock.getsockopt(socket.SOL_SOCKET, accept_conn)
+            except OSError as exc:
+                if sys.platform != 'darwin' or exc.errno != errno.ENOPROTOOPT:
+                    raise
+                # Darwin defines SO_ACCEPTCONN but does not implement the query.
+                # Inherited fd:// descriptors are a caller-owned contract; the
+                # native accept loop remains the authority there.
+                listening = True
+            if not listening:
+                raise ValueError(f'fd://{fd} is not listening')
     except BaseException:
         listener.release()
         raise

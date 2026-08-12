@@ -82,8 +82,7 @@ def assert_finite_eq(
 ) -> None:
     if math.isnan(got) or math.isnan(ref):
         fail(op, scale, 'NaN not allowed', got=got, ref=ref, endpoints=endpoints)
-    tolerance = math.ulp(ref) if ref == 0.0 else math.ulp(ref) / abs(ref)
-    if not math.isclose(got, ref, rel_tol=tolerance, abs_tol=tolerance):
+    if abs(got - ref) > math.ulp(ref):
         fail(
             op, scale, 'value != exact reference', got=got, ref=ref, endpoints=endpoints
         )

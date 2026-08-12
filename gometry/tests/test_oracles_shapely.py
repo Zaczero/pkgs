@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, cast
 
 import gometry as gm
@@ -179,9 +180,14 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert sum(
         triangle.area for triangle in gometry_polygon_triangles
     ) == pytest.approx(shapely_polygon_triangles.area)
-    assert left.minimum_rotated_rectangle().area == pytest.approx(
-        minimum_rotated_rectangle(shapely_left).area
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='divide by zero encountered in oriented_envelope',
+            category=RuntimeWarning,
+        )
+        expected_area = minimum_rotated_rectangle(shapely_left).area
+    assert left.minimum_rotated_rectangle().area == pytest.approx(expected_area)
     assert left.boundary().to_wkt() == boundary(shapely_left).wkt
     polygonize_input = gm.MultiLineString([
         [(0, 0), (1, 0)],

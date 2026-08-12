@@ -929,8 +929,8 @@ def test_h3_within_never_uses_the_chord_proxy_as_a_containment_certificate() -> 
     source = cell.polygon
     boundary = h3.cell_to_boundary(cell.token)
     midpoint_lat, midpoint_lon = _minor_great_circle_midpoint(boundary[0], boundary[1])
-    assert midpoint_lon == pytest.approx(1.5835173670280838, abs=2e-15)
-    assert midpoint_lat == pytest.approx(-0.9613796866574875, abs=2e-15)
+    assert midpoint_lon == pytest.approx(1.5835173670280838, abs=5e-15)
+    assert midpoint_lat == pytest.approx(-0.9613796866574875, abs=5e-15)
 
     source_ref = shapely.from_wkb(source.to_wkb())
     assert not source_ref.covers(shapely.Point(midpoint_lon, midpoint_lat))

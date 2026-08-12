@@ -1210,14 +1210,16 @@ async def test_http_response_pathsend_replaces_wrong_content_length(
     assert dict(headers)[b'content-length'] == str(len(payload)).encode()
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='requires POSIX special files')
 async def test_http_response_pathsend_rejects_non_regular_files(
     tmp_path: Path,
+    unix_socket_dir: Path,
 ) -> None:
     dir_path = tmp_path / 'dir'
     dir_path.mkdir()
     fifo_path = tmp_path / 'fifo'
     os.mkfifo(fifo_path)
-    sock_path = tmp_path / 'sock'
+    sock_path = unix_socket_dir / 'sock'
     # Bind then leave the socket path in place for pathsend to open.
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(sock_path))
@@ -1273,6 +1275,9 @@ def _threads_waiting_on_pipe() -> int:
     return blocked
 
 
+@pytest.mark.skipif(
+    sys.platform != 'linux', reason='inspects /proc thread wait channels'
+)
 async def test_http_response_pathsend_fifo_16_returns_to_baseline(
     tmp_path: Path,
 ) -> None:

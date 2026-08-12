@@ -16,6 +16,7 @@ property under test.
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -481,6 +482,7 @@ async def test_head_describes_the_length_without_a_body(tmp_path: Path) -> None:
             assert headers[b'content-length'] == str(len(data)).encode()
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='uses Linux procfs synthetic file')
 async def test_a_file_whose_size_is_not_its_length_is_rejected() -> None:
     """`st_size` is a snapshot; "until its end" is an I/O condition.
 

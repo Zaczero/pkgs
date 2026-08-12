@@ -2,6 +2,7 @@ import asyncio
 import socket
 import struct
 import zlib
+from contextlib import suppress
 from typing import NamedTuple
 
 import h2.config
@@ -1668,7 +1669,8 @@ async def test_http1_websocket_ping_timeout_with_full_inbound_queue(
             await asyncio.wait_for(done.wait(), timeout=2.0)
         finally:
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
 
 
 @pytest.mark.parametrize('queued_messages', [32, 33, 64])
@@ -1712,7 +1714,8 @@ async def test_h2_websocket_ping_timeout_with_full_inbound_queue(
             await asyncio.wait_for(done.wait(), timeout=(interval + timeout) * 8)
         finally:
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
 
 
 @pytest.mark.parametrize('transport', ['h2', 'http1'])

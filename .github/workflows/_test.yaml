@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # CI dev builds retain debug assertions and overflow checks, but native-heavy
+  # suites should not run workspace crates at opt-level 0.
+  CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -109,6 +114,11 @@ jobs:
           cache-workspaces: . -> target
           rustflags: ""
 
+      - name: Install SQLite command-line shell
+        if: inputs.package == 'gometry' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/install_sqlite.ps1
+
       - name: Package before-test hook
         if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
         shell: bash
@@ -180,6 +190,11 @@ jobs:
             pyproject.toml
           enable-cache: true
           working-directory: ${{ env.PACKAGE }}
+
+      - name: Install SQLite command-line shell
+        if: inputs.package == 'gometry' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/install_sqlite.ps1
 
       - name: Set reproducible build timestamp
         shell: bash

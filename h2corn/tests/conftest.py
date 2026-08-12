@@ -50,7 +50,7 @@ def unix_socket_dir() -> Iterator[Path]:
     (under `/private/var/folders/...`) overflows it, so bind under a short
     temp root instead.
     """
-    socket_dir = Path(tempfile.mkdtemp(prefix='h2c-', dir='/tmp'))
+    socket_dir = Path(tempfile.mkdtemp(prefix='h2c-'))
     try:
         yield socket_dir
     finally:

@@ -2724,22 +2724,22 @@ if __name__ == '__main__':
         # while staying a practical release gate.
         growth_budget_kib = 1280
         warmup_writers = []
-        if sys.implementation.name != 'CPython':
+        warmup_passes = 4 if sys.implementation.name != 'CPython' else 1
+        for _ in range(warmup_passes):
             # The first structurally new passes compile JIT traces and grow
             # allocator arenas, and collection does not return them. Charging
             # that one-off cost to whichever pass runs first makes the
             # control/attack comparison meaningless -- successive no-update
             # passes measured roughly 25 MiB, then 9 MiB, then 1 MiB, none of
-            # which is the defect. Warm until a no-update pass costs less than
-            # the budget the attack itself must fit in, so the measurement
-            # starts from a steady allocator. Hold every connection open, as
-            # the control and attack ones are.
-            for _ in range(4):
-                warmup_before = _resident_kib(server_pid)
-                _reader, warmup_writer, _conn = await exercise(False)
-                warmup_writers.append(warmup_writer)
-                if _resident_kib(server_pid) - warmup_before <= growth_budget_kib:
-                    break
+            # which is the defect. Warm the exact late-update shape until a pass
+            # costs less than the budget the measured attack itself must fit in,
+            # so all attack-only allocation paths are hot. Hold every connection
+            # open, as the control and measured attack ones are.
+            warmup_before = _resident_kib(server_pid)
+            _reader, warmup_writer, _conn = await exercise(True)
+            warmup_writers.append(warmup_writer)
+            if _resident_kib(server_pid) - warmup_before <= growth_budget_kib:
+                break
 
         before = _resident_kib(server_pid)
         control_reader, control_writer, control_conn = await exercise(False)

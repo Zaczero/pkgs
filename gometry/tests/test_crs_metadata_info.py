@@ -892,7 +892,11 @@ def _layout_v6_proj_db_src():
     import sqlite3
     from pathlib import Path
 
-    target_dir = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))
+    target_dir = Path(
+        os.environ.get(
+            'CARGO_TARGET_DIR', Path(__file__).resolve().parents[2] / 'target'
+        )
+    )
     candidates = sorted(
         target_dir.glob('**/share/proj/proj.db'),
         key=lambda path: path.stat().st_size,

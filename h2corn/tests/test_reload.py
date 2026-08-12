@@ -23,6 +23,8 @@ from h2corn._reload import (
     _watch_file_snapshot,
 )
 
+from tests._support import open_fd_count
+
 _linux_only = pytest.mark.skipif(
     sys.platform != 'linux', reason='inotify is Linux-only'
 )
@@ -700,6 +702,33 @@ def test_reload_child_stop_waits_for_and_kills_the_whole_process_group(
     assert not child.pycache_dir.exists()
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process groups')
+def test_reload_child_stop_treats_permission_denied_group_as_existing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    process = subprocess.Popen([sys.executable, '-c', 'pass'], process_group=0)
+    process.wait()
+    pycache_dir = tmp_path / 'pycache'
+    pycache_dir.mkdir()
+    child = reload_module._ReloadChild(process, pycache_dir, None)
+    probes = 0
+
+    def killpg(_pid: int, number: int) -> None:
+        nonlocal probes
+        if number == 0:
+            probes += 1
+            if probes == 1:
+                raise PermissionError
+            raise ProcessLookupError
+
+    monkeypatch.setattr(reload_module.os, 'killpg', killpg)
+    child.stop(0)
+
+    assert probes == 2
+    assert not pycache_dir.exists()
+
+
 def test_reload_child_spawn_failure_rolls_back_resources(
     monkeypatch,
     tmp_path: Path,
@@ -717,10 +746,10 @@ def test_reload_child_spawn_failure_rolls_back_resources(
 
     monkeypatch.setattr(reload_module.subprocess, 'Popen', boom)
 
-    before = set(os.listdir('/proc/self/fd'))
+    before = open_fd_count()
     with pytest.raises(OSError, match='spawn refused'):
         reload_module._ReloadChild.spawn(['example:app'], None, pass_fds=())
-    after = set(os.listdir('/proc/self/fd'))
+    after = open_fd_count()
 
     assert not pycache_dir.exists()
     assert before == after

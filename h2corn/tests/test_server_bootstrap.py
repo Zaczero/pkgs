@@ -18,6 +18,8 @@ from typing import Any, cast
 import pytest
 from h2corn import Config
 
+from tests._support import open_fd_count
+
 
 def _ipv6_loopback_is_bindable() -> bool:
     """Whether this kernel namespace has IPv6 enabled, not merely compiled."""
@@ -29,6 +31,13 @@ def _ipv6_loopback_is_bindable() -> bool:
     except OSError:
         return False
     return True
+
+
+def _assert_listener_accepts(listener: socket.socket) -> None:
+    with socket.socket(listener.family, socket.SOCK_STREAM) as client:
+        client.connect(listener.getsockname())
+        accepted, _ = listener.accept()
+        accepted.close()
 
 
 def _gil_is_disabled() -> bool:
@@ -431,6 +440,7 @@ def test_worker_entry_imports_after_privilege_drop(
     monkeypatch.setattr(_server, 'Server', FakeServer)
 
     import_settings = ImportSettings(target='example:app')
+    config = Config(loop='asyncio')
     closed_fds: list[int] = []
     real_close = os.close
 
@@ -446,10 +456,10 @@ def test_worker_entry_imports_after_privilege_drop(
 
         _supervisor._worker_entry(
             import_settings,
-            config=Config(),
+            config=config,
             fds=(),
             identity=_server.ProcessIdentity(),
-            prepared_tls=prepare_tls(Config()),
+            prepared_tls=prepare_tls(config),
             expected_supervisor_pid=os.getppid(),
             inherited_supervisor_fds=(inherited_control_fd, inherited_quiesce_fd),
         )
@@ -962,7 +972,7 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
         lambda _name: Context(),
     )
     supervisor = _supervisor_state(Config())
-    before = set(os.listdir('/proc/self/fd'))
+    before = open_fd_count()
     if failure == 'parent-close':
         failed_close = False
 
@@ -997,7 +1007,7 @@ def test_supervisor_spawn_rolls_back_every_partial_registration_failure(
             supervisor.spawn_worker()
         assert supervisor.workers == {}
         assert all(process.closed for process in processes)
-        assert set(os.listdir('/proc/self/fd')) == before
+        assert open_fd_count() == before
     finally:
         supervisor.selector.close()
 
@@ -1478,7 +1488,7 @@ app.loaded = os.environ['DEMO_APP_VALUE']
     ],
 )
 def test_build_sockets_preserves_fd_listener_family(
-    tmp_path: Path,
+    unix_socket_dir: Path,
     family: int,
 ) -> None:
     from h2corn import _socket
@@ -1486,7 +1496,7 @@ def test_build_sockets_preserves_fd_listener_family(
     listener = socket.socket(family, socket.SOCK_STREAM)
     with listener:
         if family == socket.AF_UNIX:
-            listener.bind(str(tmp_path / 'listener.sock'))
+            listener.bind(str(unix_socket_dir / 'listener.sock'))
         else:
             listener.bind(('127.0.0.1', 0))
         listener.listen(1)
@@ -1506,6 +1516,10 @@ def test_build_sockets_preserves_fd_listener_family(
         leases[0].release()
 
 
+@pytest.mark.skipif(
+    sys.platform == 'darwin',
+    reason='Darwin cannot query SO_ACCEPTCONN on inherited descriptors',
+)
 def test_adopting_a_descriptor_that_is_not_a_listener_is_refused() -> None:
     """
     An `fd://` bind names someone else's descriptor. A descriptor that
@@ -2468,7 +2482,7 @@ async def test_pre_native_exit_releases_created_listener(
             timeout_lifespan_startup=0.02 if exit_kind == 'timeout' else 60,
         ),
     )
-    fd_baseline = len(os.listdir('/proc/self/fd')) if sys.platform == 'linux' else None
+    fd_baseline = open_fd_count()
     serving = asyncio.create_task(server.serve())
     if exit_kind in {'cancel', 'shutdown'}:
         await asyncio.wait_for(entered.wait(), timeout=2)
@@ -2487,8 +2501,7 @@ async def test_pre_native_exit_releases_created_listener(
             await asyncio.wait_for(serving, timeout=2)
 
     assert server.addresses == ()
-    if fd_baseline is not None:
-        assert len(os.listdir('/proc/self/fd')) == fd_baseline
+    assert open_fd_count() == fd_baseline
     if listener_kind == 'tcp':
         assert port is not None
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
@@ -2525,8 +2538,8 @@ async def test_pre_native_exit_preserves_borrowed_fd() -> None:
         )
         with pytest.raises(RuntimeError, match='planned'):
             await asyncio.wait_for(server.serve(), timeout=2)
+        _assert_listener_accepts(listener)
         os.fstat(listener.fileno())
-        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
 
 
 def test_env_file_is_read_before_privileges_drop(
@@ -2623,11 +2636,11 @@ def test_failed_wakeup_fd_installation_closes_its_pipe() -> None:
     leaked: list[int] = []
 
     def probe() -> None:
-        before = len(os.listdir('/proc/self/fd'))
+        before = open_fd_count()
         for _ in range(5):
             with pytest.raises(ValueError), _socket.signal_wakeup_pipe():
                 pass
-        leaked.append(len(os.listdir('/proc/self/fd')) - before)
+        leaked.append(open_fd_count() - before)
 
     thread = threading.Thread(target=probe)
     thread.start()
@@ -2728,8 +2741,8 @@ def test_interrupted_listener_acquisition_releases_every_taken_listener(
     else:
         assert original_listener is not None
         try:
+            _assert_listener_accepts(original_listener)
             os.fstat(original_listener.fileno())
-            assert original_listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
         finally:
             original_listener.close()
             assert later_borrowed_fd is not None
@@ -2804,9 +2817,9 @@ def test_rollback_detaches_borrowed_descriptors_it_never_owned() -> None:
             )
 
         # Both are still the caller's, and the good one still accepts.
-        os.fstat(listener.fileno())
+        _assert_listener_accepts(listener)
         os.fstat(not_listening.fileno())
-        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+        _assert_listener_accepts(listener)
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX privilege drop')
@@ -2937,18 +2950,19 @@ def test_successful_build_then_exception_releases_created_keeps_borrowed(
             lease.release()
         # Borrowed: detached, still open and listening.
         os.fstat(borrowed_fd)
-        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+        _assert_listener_accepts(listener)
         # Created: socket closed and path unlinked.
         assert not uds.exists()
 
 
 def test_tls_rejection_of_borrowed_unix_fd_detaches(
     tmp_path: Path,
+    unix_socket_dir: Path,
 ) -> None:
     """TLS-on-Unix refusal must detach the caller's fd, never close it."""
     from h2corn import _socket
 
-    uds_path = tmp_path / 'tls-reject.sock'
+    uds_path = unix_socket_dir / 'tls-reject.sock'
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     with listener:
         listener.bind(str(uds_path))
@@ -2963,12 +2977,12 @@ def test_tls_rejection_of_borrowed_unix_fd_detaches(
                 )
             )
         os.fstat(fd)
-        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+        os.fstat(listener.fileno())
 
 
 @pytest.mark.skipif(
-    not hasattr(socket, 'SOCK_SEQPACKET') or sys.platform == 'win32',
-    reason='SOCK_SEQPACKET not available',
+    sys.platform != 'linux' or not hasattr(socket, 'SOCK_SEQPACKET'),
+    reason='Linux abstract SOCK_SEQPACKET listener contract',
 )
 def test_seqpacket_listener_is_rejected_and_remains_caller_owned() -> None:
     """Listening SOCK_SEQPACKET is not a stream socket and stays open."""

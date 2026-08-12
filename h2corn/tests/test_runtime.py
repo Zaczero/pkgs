@@ -23,6 +23,7 @@ from tests._support import (
     find_free_port,
     h2_request,
     http1_request,
+    open_fd_count,
     running_server,
     wait_for_port,
     wait_for_server,
@@ -80,27 +81,26 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
         await asyncio.sleep(0)
         gc.collect()
 
-    fd_baseline = len(os.listdir('/proc/self/fd')) if sys.platform == 'linux' else None
+    fd_baseline = open_fd_count()
     refs = [await run_once() for _ in range(serves)]
     await asyncio.sleep(0)
     gc.collect()
 
     assert all(ref() is None for ref in refs)
-    if fd_baseline is not None:
-        fd_count = len(os.listdir('/proc/self/fd'))
-        if sys.implementation.name == 'CPython':
-            assert fd_count == fd_baseline
-        else:
-            # Without reference counting the doorbell eventfds are released by
-            # whichever collection happens to reach them, so the count wobbles
-            # by a descriptor or two between samples rather than settling. It
-            # does not grow: measured across five consecutive batches it read
-            # 12, 14, 12, 11, 12.
-            #
-            # The property is that batches do not accumulate, so the bound is
-            # one descriptor per serve -- a real leak adds exactly `serves` and
-            # still fails, while the sampling wobble does not.
-            assert fd_count - fd_baseline < serves
+    fd_count = open_fd_count()
+    if sys.implementation.name == 'CPython':
+        assert fd_count == fd_baseline
+    else:
+        # Without reference counting the doorbell eventfds are released by
+        # whichever collection happens to reach them, so the count wobbles
+        # by a descriptor or two between samples rather than settling. It
+        # does not grow: measured across five consecutive batches it read
+        # 12, 14, 12, 11, 12.
+        #
+        # The property is that batches do not accumulate, so the bound is
+        # one descriptor per serve -- a real leak adds exactly `serves` and
+        # still fails, while the sampling wobble does not.
+        assert fd_count - fd_baseline < serves
 
 
 async def test_same_server_can_serve_twice_with_fresh_shutdown_state() -> None:
@@ -1959,6 +1959,7 @@ async def test_worker_supervisor_recycles_workers_after_max_requests(
     assert 'Stopped worker' in stderr
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='inspects Linux procfs children')
 async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_deadline(
     tmp_path: Path,
 ) -> None:

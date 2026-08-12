@@ -1,5 +1,7 @@
 import asyncio
+import os
 import socket
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +12,16 @@ import h2.events
 import h2.settings
 from h2corn import Config, Server
 from h2corn._config import TcpBindSpec, parse_bind_spec
+
+
+def open_fd_count() -> int:
+    """Count this process's descriptors or handles."""
+    if sys.platform == 'win32':
+        import psutil
+
+        return psutil.Process().num_handles()
+    fd_dir = '/proc/self/fd' if os.path.isdir('/proc/self/fd') else '/dev/fd'
+    return len(os.listdir(fd_dir))
 
 
 async def open_h2_connection(

@@ -890,6 +890,8 @@ class _ReloadChild:
                         os.killpg(self.process.pid, 0)
                     except ProcessLookupError:
                         return False
+                    except PermissionError:
+                        return True
                     return True
 
                 # Let the child supervisor orchestrate its normal shutdown.

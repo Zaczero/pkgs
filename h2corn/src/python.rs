@@ -1,4 +1,4 @@
-#[cfg(not(any(PyPy, GraalPy, Py_LIMITED_API)))]
+#[cfg(not(any(windows, PyPy, GraalPy, Py_LIMITED_API)))]
 mod dict_api {
     use std::ffi::c_int;
 
@@ -114,7 +114,7 @@ mod dict_api {
     }
 }
 
-#[cfg(any(PyPy, GraalPy, Py_LIMITED_API))]
+#[cfg(any(windows, PyPy, GraalPy, Py_LIMITED_API))]
 mod dict_api {
     use pyo3::types::PyDictMethods as _;
 

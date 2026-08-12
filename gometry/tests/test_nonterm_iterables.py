@@ -502,11 +502,10 @@ import gometry as gm
 # path under test if init is deferred past the cap.
 import numpy  # noqa: F401
 
-# macOS may report a soft limit above its immutable hard limit. Preserve that
-# hard limit while lowering only the soft ceiling used by this child process.
+# This disposable child never needs to raise its address-space ceiling again.
 _, hard = resource.getrlimit(resource.RLIMIT_AS)
 limit = {as_bytes} if hard == resource.RLIM_INFINITY else min({as_bytes}, hard)
-resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
+resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 try:
 {indented}

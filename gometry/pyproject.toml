@@ -53,10 +53,11 @@ arrow = ["pyarrow>=24.0.0"]
 pandas = ["pandas>=3.0.3"]
 polars = ["polars>=1.42.0"]
 geopandas = ["geopandas>=1.1.4"]
-viz = ["lonboard>=0.16.0"]
+viz = ["arro3-core", "lonboard>=0.16.0"]
 
 [dependency-groups]
 dev = [
+  "arro3-core",
   "geopandas",
   "h3",
   "libcst",
