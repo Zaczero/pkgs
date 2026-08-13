@@ -3,6 +3,7 @@ mod sink;
 
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
+use std::mem::MaybeUninit;
 use std::str;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -117,14 +118,78 @@ impl fmt::Display for IoSummaryDisplay {
     }
 }
 
-type AccessLogBuf = SmallVec<[u8; ACCESS_LOG_LINE_CAPACITY]>;
+pub(crate) enum AccessLogBuf {
+    Inline {
+        bytes: [MaybeUninit<u8>; ACCESS_LOG_LINE_CAPACITY],
+        len: u8,
+    },
+    Spilled(Vec<u8>),
+}
+
 type ClientLabelBuf = SmallVec<[u8; MAX_IPV6_CLIENT.len()]>;
 
-struct BytesWriter<'a, const N: usize>(&'a mut SmallVec<[u8; N]>);
+impl AccessLogBuf {
+    fn new() -> Self {
+        Self::Inline {
+            bytes: [MaybeUninit::uninit(); ACCESS_LOG_LINE_CAPACITY],
+            len: 0,
+        }
+    }
 
-impl<const N: usize> fmt::Write for BytesWriter<'_, N> {
+    fn append(&mut self, value: &[u8]) {
+        if let Self::Spilled(spilled) = self {
+            spilled.extend_from_slice(value);
+            return;
+        }
+
+        let used = match self {
+            Self::Inline { len, .. } => usize::from(*len),
+            Self::Spilled(_) => unreachable!(),
+        };
+        if used + value.len() <= ACCESS_LOG_LINE_CAPACITY {
+            let Self::Inline { bytes, len } = self else {
+                unreachable!();
+            };
+            let start = usize::from(*len);
+            // The prefix before `len` is initialized; this copy initializes the
+            // next disjoint range before publishing its new length.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    value.as_ptr(),
+                    bytes.as_mut_ptr().cast::<u8>().add(start),
+                    value.len(),
+                );
+            }
+            *len += value.len() as u8;
+            return;
+        }
+
+        let mut spilled = Vec::with_capacity(used + value.len());
+        spilled.extend_from_slice(self.as_slice());
+        spilled.extend_from_slice(value);
+        *self = Self::Spilled(spilled);
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Inline { bytes, len } => {
+                // Invariant: `len` is at most the inline capacity, and append only
+                // advances it after copying initialized bytes into the preceding
+                // prefix. Therefore exactly `bytes[..len]` may be viewed as `u8`.
+                unsafe {
+                    std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), usize::from(*len))
+                }
+            },
+            Self::Spilled(bytes) => bytes,
+        }
+    }
+}
+
+struct AccessLogWriter<'a>(&'a mut AccessLogBuf);
+
+impl fmt::Write for AccessLogWriter<'_> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
-        self.0.extend_from_slice(value.as_bytes());
+        self.0.append(value.as_bytes());
         Ok(())
     }
 }
@@ -611,7 +676,7 @@ fn emit_access_log<T>(
             );
         },
     }
-    sink::write_line(&line);
+    sink::write_line(line.as_slice());
 }
 
 fn format_listen_target(bind: &BindTarget, tls: bool) -> String {
@@ -649,7 +714,7 @@ fn write_access_log_line(
     io_summary: &dyn fmt::Display,
 ) {
     let _ = writeln!(
-        BytesWriter(line),
+        AccessLogWriter(line),
         "{client_label} {summary} {code} {io_summary}"
     );
 }
@@ -892,7 +957,9 @@ const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
     use std::net::SocketAddr;
+    use std::str;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -901,9 +968,9 @@ mod tests {
     use pyo3::Python;
 
     use super::{
-        AccessLogRequest, ClientLabelBuf, Escaped, RequestSummaryDisplay, RequestSummaryKind,
-        append_client_label, append_connection_client_label, write_bytes_to, write_duration_to,
-        write_io_summary_to,
+        AccessLogBuf, AccessLogRequest, ClientLabelBuf, Escaped, RequestSummaryDisplay,
+        RequestSummaryKind, append_client_label, append_connection_client_label, write_bytes_to,
+        write_duration_to, write_io_summary_to,
     };
     use crate::config::{ProxyConfig, ServerConfig};
     use crate::http::header_meta::RequestHeaderMeta;
@@ -920,6 +987,52 @@ mod tests {
         let mut out = String::new();
         f(&mut out);
         out
+    }
+
+    #[test]
+    fn access_log_buffer_has_the_correct_layout_and_spills_at_128() {
+        assert_eq!(size_of::<AccessLogBuf>(), 136);
+
+        let mut line = AccessLogBuf::new();
+        line.append(&[b'x'; 127]);
+        assert_eq!(line.as_slice(), &[b'x'; 127]);
+        assert!(matches!(line, AccessLogBuf::Inline { .. }));
+        line.append(b"y");
+        line.append(b"z");
+        assert_eq!(line.as_slice().len(), 129);
+        assert_eq!(&line.as_slice()[127..], b"yz");
+        assert!(matches!(line, AccessLogBuf::Spilled(_)));
+
+        line.append(&[b'z'; 4096]);
+        assert_eq!(line.as_slice().len(), 4225);
+        assert!(line.as_slice().ends_with(&[b'z'; 4096]));
+    }
+
+    #[test]
+    fn access_log_writer_matches_the_retained_smallvec_writer() {
+        let cases = [
+            vec![],
+            vec![b"".to_vec()],
+            vec![b"x".to_vec(); 129],
+            vec![vec![b'x'; 127], vec![b'y'], vec![b'z']],
+            vec![vec![b'q'; 128], b"suffix".to_vec()],
+            vec![
+                b"GET ".to_vec(),
+                b"/a\\b\"c".to_vec(),
+                b" HTTP/1.1".to_vec(),
+                b" 200".to_vec(),
+                b" 0.4ms\n".to_vec(),
+            ],
+        ];
+        for parts in cases {
+            let mut candidate = AccessLogBuf::new();
+            let mut baseline = smallvec::SmallVec::<[u8; super::ACCESS_LOG_LINE_CAPACITY]>::new();
+            for part in parts {
+                candidate.append(&part);
+                baseline.extend_from_slice(&part);
+            }
+            assert_eq!(candidate.as_slice(), baseline.as_slice());
+        }
     }
 
     fn format_client(host: &str, port: u16) -> String {

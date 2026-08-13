@@ -7,7 +7,7 @@ use std::fmt::{self, Write as _};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::config::LogFormat;
-use crate::log::{AccessLogBuf, BytesWriter, sink};
+use crate::log::{AccessLogBuf, AccessLogWriter, sink};
 
 /// The encoding for this process's stderr, published once at serve start.
 ///
@@ -76,7 +76,7 @@ impl Event {
     /// encoding comes from the one place it was published.
     pub(crate) fn emit(self, text: fmt::Arguments<'_>, fields: impl FnOnce(&mut JsonObject<'_>)) {
         let mut line = AccessLogBuf::new();
-        let out = &mut BytesWriter(&mut line);
+        let out = &mut AccessLogWriter(&mut line);
         match format() {
             LogFormat::Text => {
                 let _ = out.write_fmt(text);
@@ -90,7 +90,7 @@ impl Event {
                 object.finish();
             },
         }
-        sink::write_line(&line);
+        sink::write_line(line.as_slice());
     }
 
     /// The JSON arm for a producer that renders its own text.
@@ -198,6 +198,22 @@ pub(crate) fn set_format(format: LogFormat) {
         },
         Ordering::Relaxed,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_json_string;
+
+    #[test]
+    fn json_escaping_preserves_hostile_text_without_newlines() {
+        let mut output = String::new();
+        write_json_string(&mut output, "quote\" slash\\ newline\n tab\t nul\u{0}");
+        assert_eq!(
+            output,
+            "\"quote\\\" slash\\\\ newline\\n tab\\t nul\\u0000\""
+        );
+        assert!(!output.contains('\n'));
+    }
 }
 
 fn format() -> LogFormat {

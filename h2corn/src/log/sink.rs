@@ -144,20 +144,23 @@ pub(crate) fn flush(timeout: Duration) {
 fn stderr_is_regular_file() -> bool {
     #[cfg(unix)]
     {
-        use std::os::fd::BorrowedFd;
-
-        use rustix::fs::{FileType, fstat};
-
-        // SAFETY: file descriptor 2 is stderr, open for the whole life of the
-        // process, and the borrow does not outlive this call.
-        let stderr = unsafe { BorrowedFd::borrow_raw(2) };
-        fstat(stderr)
-            .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
+        fd_is_regular_file(libc::STDERR_FILENO)
     }
     #[cfg(not(unix))]
     {
         false
     }
+}
+
+#[cfg(unix)]
+fn fd_is_regular_file(fd: libc::c_int) -> bool {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstat initializes stat completely when it succeeds.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let stat = unsafe { stat.assume_init() };
+    stat.st_mode & libc::S_IFMT == libc::S_IFREG
 }
 
 fn drain_forever(sink: &'static LogSink) -> ! {
@@ -193,5 +196,47 @@ fn drain_forever(sink: &'static LogSink) -> ! {
         if pending.lines.is_empty() {
             sink.drained.notify_all();
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::fd_is_regular_file;
+
+    static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn regular_file_is_classified_without_taking_ownership() {
+        let path = std::env::temp_dir().join(format!(
+            "h2corn-sink-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        assert!(fd_is_regular_file(file.as_raw_fd()));
+        assert!(file.metadata().is_ok());
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_and_invalid_descriptors_are_not_regular_files() {
+        let (left, right) = UnixStream::pair().unwrap();
+        assert!(!fd_is_regular_file(left.as_raw_fd()));
+        assert!(!fd_is_regular_file(right.as_raw_fd()));
+        assert!(!fd_is_regular_file(-1));
+        assert!(!fd_is_regular_file(libc::c_int::MAX));
+        assert!(left.peer_addr().is_ok());
+        assert!(right.peer_addr().is_ok());
     }
 }
