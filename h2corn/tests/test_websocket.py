@@ -1082,7 +1082,7 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
                 extra_headers=[
                     (
                         b'forwarded',
-                        b'for=203.0.113.10;proto=https;host=example.com:9443',
+                        b'for=203.0.113.10;proto=https;host="example.com:9443"',
                     ),
                     (b'x-forwarded-prefix', b'/api'),
                 ],
