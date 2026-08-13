@@ -352,6 +352,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one shared request setup keeps the malformed and valid Forwarded cases comparable"
+    )]
     fn malformed_present_forwarded_keeps_transport_defaults_but_accepts_prefix() {
         for (forwarded, valid) in [
             (Bytes::from_static(b"for=203.0.113.10;proto=\"https"), false),

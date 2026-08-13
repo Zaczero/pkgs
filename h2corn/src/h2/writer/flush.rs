@@ -725,7 +725,7 @@ where
 
         stream.restore_body(body);
         if let Some(trailers) = stream.take_trailers_if_body_idle() {
-            let block = header_state.encode_trailers(&trailers)?;
+            let block = header_state.encode_trailers(&trailers);
             if let Err(error) =
                 write_header_block(writer, stream_id, true, &block, peer_max_frame_size).await
             {

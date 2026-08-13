@@ -2022,6 +2022,10 @@ headers = (Headers(0), Headers(1), Headers(2))
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one Python fixture shares iterator state across the precedence matrix"
+    )]
     fn generic_header_pairs_preserve_iterator_error_precedence() {
         init_python();
         Python::attach(|py| -> PyResult<()> {

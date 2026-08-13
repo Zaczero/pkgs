@@ -10,6 +10,7 @@ import sys
 import textwrap
 import threading
 import weakref
+from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import TypedDict
@@ -865,10 +866,13 @@ async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
     listener_fd = listener_endpoint.detach()
     quiesce_peer, quiesce_endpoint = socket.socketpair()
     quiesce_read = quiesce_endpoint.detach()
-    server = Server(
-        lambda *_args: None,
-        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
-    )
+    async def app(*_args: object) -> None:
+        pass
+
+    from h2corn._lib import prepare_tls
+
+    config = Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off')
+    server = Server(app, config)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -883,7 +887,7 @@ async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
             await server.serve_worker_fds(
                 [listener_fd],
                 quiesce_fd=quiesce_read if with_quiesce else None,
-                prepared_tls=None,
+                prepared_tls=prepare_tls(config),
             )
         listener_peer.settimeout(1)
         assert listener_peer.recv(1) == b''
@@ -901,6 +905,7 @@ async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
 
 async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) -> None:
     from h2corn import _lib
+    from h2corn._lib import prepare_tls
 
     listener_peer, listener_endpoint = socket.socketpair()
     quiesce_peer, quiesce_endpoint = socket.socketpair()
@@ -920,17 +925,21 @@ async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) 
         *,
         prepared_tls,
     ):
-        assert prepared_tls is None
+        assert prepared_tls is not None
         mark_started()
         started.set()
         await shutdown
 
     monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
-    server = Server(lambda *_args: None, Config(lifespan='off'))
+    async def app(*_args: object) -> None:
+        pass
+
+    config = Config(lifespan='off')
+    server = Server(app, config)
     try:
         serving = asyncio.create_task(
             server.serve_worker_fds(
-                [listener_fd], quiesce_fd=quiesce_fd, prepared_tls=None
+                [listener_fd], quiesce_fd=quiesce_fd, prepared_tls=prepare_tls(config)
             )
         )
         await asyncio.wait_for(started.wait(), timeout=2)
@@ -977,12 +986,15 @@ async def test_worker_startup_failure_releases_owned_resources_once(
     async def app(*_args):
         raise AssertionError('startup runner is replaced')
 
-    server = Server(app, Config(lifespan='on'))
+    from h2corn._lib import prepare_tls
+
+    config = Config(lifespan='on')
+    server = Server(app, config)
     monkeypatch.setattr(server, '_run_primary_startup', fail_startup)
 
     with pytest.raises(RuntimeError) as error:
         await server.serve_worker_fds(
-            [11, 12], quiesce_fd=quiesce_fd, prepared_tls=None
+            [11, 12], quiesce_fd=quiesce_fd, prepared_tls=prepare_tls(config)
         )
 
     assert error.value is sentinel
@@ -1104,9 +1116,9 @@ async def test_lease_owned_fds_claims_quiesce_before_invalid_listener(
 
     monkeypatch.setattr(_socket.os, 'close', record_close)
 
-    def values():
+    def values() -> Iterator[int]:
         yield listener_fd
-        yield []
+        yield []  # type: ignore[return-value]
 
     try:
         with pytest.raises(TypeError, match='listener fds must be integers'):
@@ -1131,9 +1143,9 @@ async def test_lease_owned_fds_preserves_type_error_and_closes_prior_fd() -> Non
     peer, endpoint = socket.socketpair()
     fd = endpoint.detach()
 
-    def values():
+    def values() -> Iterator[int]:
         yield fd
-        yield []
+        yield []  # type: ignore[return-value]
 
     try:
         with pytest.raises(TypeError, match='listener fds must be integers'):
@@ -1314,16 +1326,19 @@ async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
         return original(fd=fd)
 
     monkeypatch.setattr(_socket, '_InheritedListener', fail_after_first)
-    server = Server(
-        lambda *_args: None,
-        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
-    )
+    async def app(*_args: object) -> None:
+        pass
+
+    from h2corn._lib import prepare_tls
+
+    config = Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off')
+    server = Server(app, config)
     try:
         with pytest.raises(RuntimeError, match='lease construction failed'):
             await server.serve_worker_fds(
                 listeners,
                 quiesce_fd=quiesce_fd.detach(),
-                prepared_tls=None,
+                prepared_tls=prepare_tls(config),
             )
         for peer in listener_peers:
             peer.settimeout(1)
@@ -1433,10 +1448,13 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
 async def test_serve_fds_negative_handle_is_value_error() -> None:
     from h2corn._lib import prepare_tls, serve_fds
 
+    async def app(*_args: object) -> None:
+        pass
+
     config = Config(bind=('fd://0',), lifespan='off')
     with pytest.raises(ValueError):
         serve_fds(
-            lambda *_args: None,
+            app,
             [-1],
             config,
             asyncio.get_running_loop().create_future(),
@@ -1449,6 +1467,9 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
     closed_source: str,
 ) -> None:
     from h2corn._lib import prepare_tls, serve_fds
+
+    async def app(*_args: object) -> None:
+        pass
 
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
@@ -1475,7 +1496,7 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
     try:
         with pytest.raises(OSError):
             serve_fds(
-                lambda *_args: None,
+                app,
                 [invalid_fd] if closed_source == 'listener' else [listener_fd],
                 config,
                 asyncio.get_running_loop().create_future(),

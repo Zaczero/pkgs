@@ -303,6 +303,9 @@ impl BytesStr {
         Self::from_static_bytes(value.as_bytes())
     }
 
+    /// # Safety
+    ///
+    /// `value` must contain only ASCII bytes.
     pub(crate) unsafe fn from_validated_ascii(value: Bytes) -> Self {
         debug_assert!(value.iter().all(u8::is_ascii));
         Self(value)

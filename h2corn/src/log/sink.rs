@@ -25,6 +25,48 @@
 //! regular file does not, and there batching removes the entire logging
 //! penalty.
 
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::fd_is_regular_file;
+
+    static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn regular_file_is_classified_without_taking_ownership() {
+        let path = std::env::temp_dir().join(format!(
+            "h2corn-sink-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        assert!(fd_is_regular_file(file.as_raw_fd()));
+        file.metadata().unwrap();
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_and_invalid_descriptors_are_not_regular_files() {
+        let (left, right) = UnixStream::pair().unwrap();
+        assert!(!fd_is_regular_file(left.as_raw_fd()));
+        assert!(!fd_is_regular_file(right.as_raw_fd()));
+        assert!(!fd_is_regular_file(-1));
+        assert!(!fd_is_regular_file(libc::c_int::MAX));
+        left.peer_addr().unwrap();
+        right.peer_addr().unwrap();
+    }
+}
+
 use std::io::{self, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Once, OnceLock};
@@ -159,6 +201,7 @@ fn fd_is_regular_file(fd: libc::c_int) -> bool {
     if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
         return false;
     }
+    // SAFETY: the preceding successful fstat initialized every stat field.
     let stat = unsafe { stat.assume_init() };
     stat.st_mode & libc::S_IFMT == libc::S_IFREG
 }
@@ -196,47 +239,5 @@ fn drain_forever(sink: &'static LogSink) -> ! {
         if pending.lines.is_empty() {
             sink.drained.notify_all();
         }
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use std::fs::OpenOptions;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use super::fd_is_regular_file;
-
-    static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn regular_file_is_classified_without_taking_ownership() {
-        let path = std::env::temp_dir().join(format!(
-            "h2corn-sink-{}-{}",
-            std::process::id(),
-            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        assert!(fd_is_regular_file(file.as_raw_fd()));
-        assert!(file.metadata().is_ok());
-        drop(file);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn socket_and_invalid_descriptors_are_not_regular_files() {
-        let (left, right) = UnixStream::pair().unwrap();
-        assert!(!fd_is_regular_file(left.as_raw_fd()));
-        assert!(!fd_is_regular_file(right.as_raw_fd()));
-        assert!(!fd_is_regular_file(-1));
-        assert!(!fd_is_regular_file(libc::c_int::MAX));
-        assert!(left.peer_addr().is_ok());
-        assert!(right.peer_addr().is_ok());
     }
 }

@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use tokio::io::AsyncWrite;
 
-use crate::error::{H2CornError, H2Error};
+use crate::error::H2CornError;
 use crate::h2::writer::ENCODED_HEADER_BLOCK_CAPACITY;
 use crate::h2::writer::flush::write_frame;
 use crate::h2_frame;
@@ -67,18 +67,11 @@ impl HeaderEncodeState {
         self.block.as_ref()
     }
 
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "trailer encoding has the same typed fallible boundary as every protocol writer"
-    )]
-    pub(super) fn encode_trailers(
-        &mut self,
-        trailers: &ResponseTrailers,
-    ) -> Result<Bytes, H2Error> {
+    pub(super) fn encode_trailers(&mut self, trailers: &ResponseTrailers) -> Bytes {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
         encode_header_fields(&mut self.encoder, &mut self.block, trailers.as_fields());
-        Ok(self.block.clone().freeze())
+        self.block.clone().freeze()
     }
 
     pub(super) fn update_max_size(&mut self, peer: usize) {

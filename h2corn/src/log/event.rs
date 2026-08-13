@@ -200,6 +200,13 @@ pub(crate) fn set_format(format: LogFormat) {
     );
 }
 
+fn format() -> LogFormat {
+    match LOG_FORMAT.load(Ordering::Relaxed) {
+        0 => LogFormat::Text,
+        _ => LogFormat::Json,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::write_json_string;
@@ -213,12 +220,5 @@ mod tests {
             "\"quote\\\" slash\\\\ newline\\n tab\\t nul\\u0000\""
         );
         assert!(!output.contains('\n'));
-    }
-}
-
-fn format() -> LogFormat {
-    match LOG_FORMAT.load(Ordering::Relaxed) {
-        0 => LogFormat::Text,
-        _ => LogFormat::Json,
     }
 }

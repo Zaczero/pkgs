@@ -196,6 +196,14 @@ impl ListenerSource {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum OwnFdsError {
+    Structural(&'static str),
+    Io(io::Error),
+}
+
+pub(crate) type PythonRawHandle = i64;
+
 /// Consume whatever PROXY-protocol preamble `mode` promises is there.
 async fn read_proxy_preamble<R>(
     mode: ProxyProtocolMode,
@@ -212,14 +220,6 @@ where
         ProxyProtocolMode::V2 => read_proxy_v2(reader, actual_peer, trusted).await,
     }
 }
-
-#[derive(Debug)]
-pub(crate) enum OwnFdsError {
-    Structural(&'static str),
-    Io(io::Error),
-}
-
-pub(crate) type PythonRawHandle = i64;
 
 #[cfg(unix)]
 pub(crate) fn own_serve_fds(
@@ -259,8 +259,8 @@ pub(crate) fn own_serve_fds(
         })
         .transpose()?;
     let duplicate = |fd: i32| {
-        // fcntl accepts the raw value directly, so EBADF is reported without
-        // manufacturing an OwnedFd for the caller's descriptor.
+        // SAFETY: fcntl accepts an arbitrary raw descriptor number and reports
+        // EBADF without constructing a typed borrow of the caller's descriptor.
         let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
         if duplicated < 0 {
             Err(OwnFdsError::Io(io::Error::last_os_error()))
@@ -310,6 +310,8 @@ pub(crate) fn own_serve_fds(
         .into_iter()
         .map(|fd| {
             let mut info = std::mem::MaybeUninit::zeroed();
+            // SAFETY: `fd` is a validated socket handle and `info` is valid
+            // writable storage for WSAPROTOCOL_INFOW.
             let result = unsafe {
                 windows_sys::Win32::Networking::WinSock::WSADuplicateSocketW(
                     fd,
@@ -318,11 +320,16 @@ pub(crate) fn own_serve_fds(
                 )
             };
             if result != 0 {
+                // SAFETY: WSAGetLastError has no preconditions and returns the
+                // current thread's socket error after a failed WinSock call.
                 return Err(OwnFdsError::Io(io::Error::from_raw_os_error(unsafe {
                     windows_sys::Win32::Networking::WinSock::WSAGetLastError()
                 })));
             }
+            // SAFETY: a successful WSADuplicateSocketW initialized `info`.
             let info = unsafe { info.assume_init() };
+            // SAFETY: `info` came from WSADuplicateSocketW for this process and
+            // the requested flags create a new overlapped, non-inheritable socket.
             let duplicated = unsafe {
                 windows_sys::Win32::Networking::WinSock::WSASocketW(
                     windows_sys::Win32::Networking::WinSock::FROM_PROTOCOL_INFO,
@@ -335,6 +342,8 @@ pub(crate) fn own_serve_fds(
                 )
             };
             if duplicated == windows_sys::Win32::Networking::WinSock::INVALID_SOCKET {
+                // SAFETY: WSAGetLastError has no preconditions and returns the
+                // current thread's socket error after a failed WinSock call.
                 return Err(OwnFdsError::Io(io::Error::from_raw_os_error(unsafe {
                     windows_sys::Win32::Networking::WinSock::WSAGetLastError()
                 })));

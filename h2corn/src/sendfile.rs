@@ -53,13 +53,9 @@ impl WriteTarget for UnixOwnedWriteHalf {
 }
 
 #[cfg(target_os = "linux")]
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "the shared transport capability passes and advances an explicit offset"
-)]
 pub(crate) async fn sendfile_all_tcp(
-    writer: &mut BufWriter<TcpOwnedWriteHalf>,
-    file: &mut File,
+    writer: &BufWriter<TcpOwnedWriteHalf>,
+    file: &File,
     offset: &mut u64,
     len: usize,
 ) -> io::Result<()> {
@@ -67,7 +63,7 @@ pub(crate) async fn sendfile_all_tcp(
     while *offset < end {
         writer.get_ref().writable().await?;
         let remaining = (end - *offset) as usize;
-        match sendfile(writer.get_ref().as_ref(), &*file, Some(offset), remaining) {
+        match sendfile(writer.get_ref().as_ref(), file, Some(offset), remaining) {
             Ok(0) => {
                 return Err(Error::new(
                     ErrorKind::WriteZero,

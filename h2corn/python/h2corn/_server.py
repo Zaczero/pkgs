@@ -809,7 +809,7 @@ class Server:
 
         if release_pre_native_listeners is None:
 
-            def release_pre_native_listeners() -> BaseException | None:
+            def _release_bound_listeners() -> BaseException | None:
                 # Lifespan is the last fallible step before native ownership. A
                 # public startup error must not leave the bound descriptors (or a
                 # created Unix path) live while retained lifespan cleanup runs.
@@ -823,6 +823,8 @@ class Server:
                 with self._state_lock:
                     self._addresses = ()
                 return cleanup_error
+
+            release_pre_native_listeners = _release_bound_listeners
 
         lifespan = LifespanRunner(self.app)
         try:

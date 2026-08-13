@@ -142,6 +142,153 @@ pub(crate) struct ForwardedView<'a> {
     pub(crate) host: Option<(Cow<'a, str>, Option<u16>)>,
 }
 
+struct ForwardedParameterValue<'a> {
+    value: &'a str,
+    quoted: bool,
+}
+
+impl<'a> ForwardedParameterValue<'a> {
+    fn parse(value: &'a str) -> Option<Self> {
+        if let Some(value) = value.strip_prefix('"') {
+            let value = value.strip_suffix('"')?;
+            let mut escaped = false;
+            for &byte in value.as_bytes() {
+                if escaped {
+                    if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
+                        return None;
+                    }
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' || (byte < 0x20 && byte != b'\t') || byte == 0x7F {
+                    return None;
+                }
+            }
+            if escaped {
+                return None;
+            }
+            return Some(Self {
+                value,
+                quoted: true,
+            });
+        }
+        protocol_token_is_valid(value.as_bytes()).then_some(Self {
+            value,
+            quoted: false,
+        })
+    }
+
+    fn decode(self) -> Cow<'a, str> {
+        if !self.quoted || !self.value.as_bytes().contains(&b'\\') {
+            return Cow::Borrowed(self.value);
+        }
+
+        let mut decoded = Vec::with_capacity(self.value.len() - 1);
+        let mut bytes = self.value.bytes();
+        while let Some(byte) = bytes.next() {
+            decoded.push(if byte == b'\\' {
+                bytes
+                    .next()
+                    .expect("validated quoted-pair has an escaped byte")
+            } else {
+                byte
+            });
+        }
+        // SAFETY: the input was UTF-8 and quoted-pair removes only ASCII backslashes.
+        Cow::Owned(unsafe { String::from_utf8_unchecked(decoded) })
+    }
+
+    fn node(self) -> Result<Option<Cow<'a, str>>, ()> {
+        let quoted = self.quoted;
+        match self.decode() {
+            Cow::Borrowed(value) => match parse_forwarded_node(value, quoted).ok_or(())? {
+                ForwardedNode::Usable(host) => Ok(Some(Cow::Borrowed(host))),
+                ForwardedNode::Opaque => Ok(None),
+            },
+            Cow::Owned(value) => match parse_forwarded_node(&value, quoted).ok_or(())? {
+                ForwardedNode::Usable(host) => Ok(Some(Cow::Owned(host.to_owned()))),
+                ForwardedNode::Opaque => Ok(None),
+            },
+        }
+    }
+}
+
+struct ForwardedDelimiterCursor<'a> {
+    value: &'a str,
+    offset: usize,
+    delimiter: u8,
+}
+
+impl<'a> ForwardedDelimiterCursor<'a> {
+    const fn new(value: &'a str, delimiter: u8) -> Self {
+        Self {
+            value,
+            offset: 0,
+            delimiter,
+        }
+    }
+
+    fn next(&mut self) -> Option<Result<&'a str, ()>> {
+        if self.offset > self.value.len() {
+            return None;
+        }
+        let start = self.offset;
+        let bytes = self.value.as_bytes();
+        let mut quoted = false;
+        let mut escaped = false;
+        for (index, &byte) in bytes.iter().enumerate().skip(start) {
+            if (!quoted && byte < 0x20 && byte != b'\t') || byte == 0x7F {
+                self.offset = self.value.len() + 1;
+                return Some(Err(()));
+            }
+            if escaped {
+                if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
+                    self.offset = self.value.len() + 1;
+                    return Some(Err(()));
+                }
+                escaped = false;
+            } else if quoted && byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = !quoted;
+            } else if byte == self.delimiter && !quoted {
+                self.offset = index + 1;
+                return Some(self.value.get(start..index).ok_or(()));
+            }
+        }
+        self.offset = self.value.len() + 1;
+        if quoted || escaped {
+            Some(Err(()))
+        } else {
+            Some(self.value.get(start..).ok_or(()))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ForwardedExtensionName<'a>(&'a str);
+
+impl PartialEq for ForwardedExtensionName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for ForwardedExtensionName<'_> {}
+
+impl Hash for ForwardedExtensionName<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for byte in self.0.bytes() {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+    }
+}
+
+enum ForwardedNode<'a> {
+    Usable(&'a str),
+    Opaque,
+}
+
 impl ResponseHeaderScan {
     const fn new() -> Self {
         Self {
@@ -822,153 +969,6 @@ pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     true
 }
 
-struct ForwardedParameterValue<'a> {
-    value: &'a str,
-    quoted: bool,
-}
-
-impl<'a> ForwardedParameterValue<'a> {
-    fn parse(value: &'a str) -> Option<Self> {
-        if let Some(value) = value.strip_prefix('"') {
-            let value = value.strip_suffix('"')?;
-            let mut escaped = false;
-            for &byte in value.as_bytes() {
-                if escaped {
-                    if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
-                        return None;
-                    }
-                    escaped = false;
-                } else if byte == b'\\' {
-                    escaped = true;
-                } else if byte == b'"' || (byte < 0x20 && byte != b'\t') || byte == 0x7F {
-                    return None;
-                }
-            }
-            if escaped {
-                return None;
-            }
-            return Some(Self {
-                value,
-                quoted: true,
-            });
-        }
-        protocol_token_is_valid(value.as_bytes()).then_some(Self {
-            value,
-            quoted: false,
-        })
-    }
-
-    fn decode(self) -> Cow<'a, str> {
-        if !self.quoted || !self.value.as_bytes().contains(&b'\\') {
-            return Cow::Borrowed(self.value);
-        }
-
-        let mut decoded = Vec::with_capacity(self.value.len() - 1);
-        let mut bytes = self.value.bytes();
-        while let Some(byte) = bytes.next() {
-            decoded.push(if byte == b'\\' {
-                bytes
-                    .next()
-                    .expect("validated quoted-pair has an escaped byte")
-            } else {
-                byte
-            });
-        }
-        // SAFETY: the input was UTF-8 and quoted-pair removes only ASCII backslashes.
-        Cow::Owned(unsafe { String::from_utf8_unchecked(decoded) })
-    }
-
-    fn node(self) -> Result<Option<Cow<'a, str>>, ()> {
-        let quoted = self.quoted;
-        match self.decode() {
-            Cow::Borrowed(value) => match parse_forwarded_node(value, quoted).ok_or(())? {
-                ForwardedNode::Usable(host) => Ok(Some(Cow::Borrowed(host))),
-                ForwardedNode::Opaque => Ok(None),
-            },
-            Cow::Owned(value) => match parse_forwarded_node(&value, quoted).ok_or(())? {
-                ForwardedNode::Usable(host) => Ok(Some(Cow::Owned(host.to_owned()))),
-                ForwardedNode::Opaque => Ok(None),
-            },
-        }
-    }
-}
-
-struct ForwardedDelimiterCursor<'a> {
-    value: &'a str,
-    offset: usize,
-    delimiter: u8,
-}
-
-impl<'a> ForwardedDelimiterCursor<'a> {
-    const fn new(value: &'a str, delimiter: u8) -> Self {
-        Self {
-            value,
-            offset: 0,
-            delimiter,
-        }
-    }
-
-    fn next(&mut self) -> Option<Result<&'a str, ()>> {
-        if self.offset > self.value.len() {
-            return None;
-        }
-        let start = self.offset;
-        let bytes = self.value.as_bytes();
-        let mut quoted = false;
-        let mut escaped = false;
-        for (index, &byte) in bytes.iter().enumerate().skip(start) {
-            if (!quoted && byte < 0x20 && byte != b'\t') || byte == 0x7F {
-                self.offset = self.value.len() + 1;
-                return Some(Err(()));
-            }
-            if escaped {
-                if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
-                    self.offset = self.value.len() + 1;
-                    return Some(Err(()));
-                }
-                escaped = false;
-            } else if quoted && byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = !quoted;
-            } else if byte == self.delimiter && !quoted {
-                self.offset = index + 1;
-                return Some(self.value.get(start..index).ok_or(()));
-            }
-        }
-        self.offset = self.value.len() + 1;
-        if quoted || escaped {
-            Some(Err(()))
-        } else {
-            Some(self.value.get(start..).ok_or(()))
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ForwardedExtensionName<'a>(&'a str);
-
-impl PartialEq for ForwardedExtensionName<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq_ignore_ascii_case(other.0)
-    }
-}
-
-impl Eq for ForwardedExtensionName<'_> {}
-
-impl Hash for ForwardedExtensionName<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        for byte in self.0.bytes() {
-            state.write_u8(byte.to_ascii_lowercase());
-        }
-    }
-}
-
-enum ForwardedNode<'a> {
-    Usable(&'a str),
-    Opaque,
-}
-
 /// RFC 9110 7.8: protocol names are registered with a preferred case, but
 /// recipients should match them case-insensitively. The HTTP/1 side already
 /// does, via `header_contains_token`; matching exactly here made
@@ -1315,6 +1315,8 @@ fn normalize_forwarded_value(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use bytes::Bytes;
 
     use super::{
@@ -1665,7 +1667,6 @@ mod tests {
 
         let mut value = String::from("for=1.1.1.1");
         for index in 0..900 {
-            use std::fmt::Write;
             write!(value, ";x{index}=v").unwrap();
         }
         assert!(parse_forwarded_value(&value, &config).is_some());

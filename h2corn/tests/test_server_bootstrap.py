@@ -13,12 +13,15 @@ import tomllib
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from h2corn import Config
 
 from tests._support import open_fd_count
+
+if TYPE_CHECKING:
+    from h2corn._socket import ListenerLease
 
 _posix_supervisor = pytest.mark.skipif(
     sys.platform == 'win32', reason='POSIX worker supervisor'
@@ -2581,6 +2584,7 @@ async def test_pre_native_release_attempts_all_and_preserves_startup_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import Server
+    from h2corn._lib import prepare_tls
 
     sentinel = RuntimeError('sentinel startup failure')
     released: list[str] = []
@@ -2598,7 +2602,8 @@ async def test_pre_native_release_attempts_all_and_preserves_startup_error(
     async def app(*_args):
         raise AssertionError('startup runner is replaced')
 
-    server = Server(app, Config(lifespan='on'))
+    config = Config(lifespan='on')
+    server = Server(app, config)
     first = Lease('first', RuntimeError('cleanup failure'))
     second = Lease('second')
 
@@ -2610,8 +2615,8 @@ async def test_pre_native_release_attempts_all_and_preserves_startup_error(
     async def body(generation) -> None:
         await server._serve_with_primary_lifespan(
             generation,
-            [first, second],
-            prepared_tls=None,
+            cast('list[ListenerLease]', [first, second]),
+            prepared_tls=prepare_tls(config),
         )
 
     serving = asyncio.create_task(
@@ -2628,6 +2633,7 @@ async def test_shutdown_wins_startup_and_waits_for_retained_lifespan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from h2corn import Server, _server
+    from h2corn._lib import prepare_tls
 
     startup_entered = asyncio.Event()
     release_startup = asyncio.Event()
@@ -2665,10 +2671,11 @@ async def test_shutdown_wins_startup_and_waits_for_retained_lifespan(
             entered_retained_wait.set()
             await release_retained.wait()
 
-    server = Server(
-        object(),
-        Config(lifespan='on', timeout_lifespan_startup=0),
-    )
+    async def app(*_args: object) -> None:
+        pass
+
+    config = Config(lifespan='on', timeout_lifespan_startup=0)
+    server = Server(app, config)
     runner: FakeLifespanRunner | None = None
 
     def make_runner(_app) -> FakeLifespanRunner:
@@ -2698,9 +2705,9 @@ async def test_shutdown_wins_startup_and_waits_for_retained_lifespan(
     async def body(generation) -> None:
         await server._serve_with_primary_lifespan(
             generation,
-            listeners,
+            cast('list[ListenerLease]', listeners),
             release_pre_native_listeners=release_pre_native,
-            prepared_tls=None,
+            prepared_tls=prepare_tls(config),
         )
 
     def returned_settled(_task) -> None:

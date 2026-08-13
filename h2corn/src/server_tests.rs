@@ -1,6 +1,6 @@
 use std::io;
 use std::iter::repeat_with;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixListener;
 
 use rustix::fs::{OFlags, fcntl_setfl};
@@ -56,8 +56,8 @@ fn assert_pipe_eof(read: &OwnedFd) {
     loop {
         match rustix::io::read(read, &mut byte) {
             Ok(0) => return,
-            Ok(_) => continue,
-            Err(error) => panic!("unexpected pipe read error: {error}"),
+            Ok(_) => {},
+            Err(error) => unreachable!("unexpected pipe read error: {error}"),
         }
     }
 }
@@ -70,27 +70,27 @@ fn invalid_fd_outside_rlimit() -> Option<i64> {
     if result != 0 {
         return None;
     }
-    // `rlim_cur` is the first descriptor number outside the permitted table.
+    // SAFETY: the preceding successful getrlimit initialized the rlimit value.
     let limit = unsafe { limit.assume_init() }.rlim_cur;
     if limit == libc::RLIM_INFINITY {
         return None;
     }
     i64::try_from(limit)
         .ok()
-        .filter(|fd| *fd <= i32::MAX as i64)
+        .filter(|fd| *fd <= i64::from(i32::MAX))
 }
 
 #[test]
 fn serve_fd_duplicates_are_independent_of_sources() {
     let (read, source) = pipe().expect("pipe creation succeeds");
-    let (duplicates, _) = own_serve_fds(vec![source.as_raw_fd() as i64], None).unwrap();
+    let (duplicates, _) = own_serve_fds(vec![i64::from(source.as_raw_fd())], None).unwrap();
     drop(duplicates);
     rustix::io::write(&source, b"source").expect("source remains usable");
     drop(source);
     assert_pipe_eof(&read);
 
     let (read, source) = pipe().expect("pipe creation succeeds");
-    let (duplicates, _) = own_serve_fds(vec![source.as_raw_fd() as i64], None).unwrap();
+    let (duplicates, _) = own_serve_fds(vec![i64::from(source.as_raw_fd())], None).unwrap();
     drop(source);
     rustix::io::write(&duplicates[0], b"duplicate").expect("duplicate remains usable");
     drop(duplicates);
@@ -104,7 +104,7 @@ fn listener_duplication_failure_is_atomic_and_keeps_sources_open() {
         return;
     };
     let (read, source) = pipe().expect("pipe creation succeeds");
-    let error = own_serve_fds(vec![source.as_raw_fd() as i64, invalid_fd], None)
+    let error = own_serve_fds(vec![i64::from(source.as_raw_fd()), invalid_fd], None)
         .expect_err("closed descriptor must fail duplication");
     assert!(matches!(error, OwnFdsError::Io(_)));
     rustix::io::write(&source, b"still open").expect("source remains open");
@@ -119,7 +119,7 @@ fn quiesce_duplication_failure_is_atomic_and_keeps_sources_open() {
         return;
     };
     let (read, source) = pipe().expect("pipe creation succeeds");
-    let error = own_serve_fds(vec![source.as_raw_fd() as i64], Some(invalid_fd))
+    let error = own_serve_fds(vec![i64::from(source.as_raw_fd())], Some(invalid_fd))
         .expect_err("closed quiesce descriptor must fail duplication");
     assert!(matches!(error, OwnFdsError::Io(_)));
     rustix::io::write(&source, b"still open").expect("source remains open");
@@ -131,7 +131,7 @@ fn quiesce_duplication_failure_is_atomic_and_keeps_sources_open() {
 fn duplicated_descriptors_are_cloexec_without_changing_sources() {
     let (read, source) = pipe().expect("pipe creation succeeds");
     let source_flags = fcntl_getfd(&source).expect("source flags readable");
-    let (duplicates, _) = own_serve_fds(vec![source.as_raw_fd() as i64], None).unwrap();
+    let (duplicates, _) = own_serve_fds(vec![i64::from(source.as_raw_fd())], None).unwrap();
     let duplicate_flags = fcntl_getfd(&duplicates[0]).expect("duplicate flags readable");
     assert_eq!(source_flags, fcntl_getfd(&source).unwrap());
     assert!(duplicate_flags.contains(FdFlags::CLOEXEC));
@@ -143,7 +143,7 @@ fn duplicated_descriptors_are_cloexec_without_changing_sources() {
 #[test]
 fn structural_collisions_fail_before_any_duplication() {
     let (read, source) = pipe().expect("pipe creation succeeds");
-    let number = source.as_raw_fd() as i64;
+    let number = i64::from(source.as_raw_fd());
     assert!(matches!(
         own_serve_fds(vec![number], Some(number)),
         Err(OwnFdsError::Structural(_))

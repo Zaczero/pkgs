@@ -134,9 +134,7 @@ async def test_proxy_headers_infer_default_port_from_forwarded_scheme() -> None:
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    port = None
     async with running_server(app, config) as server:
-        port = server_port(server)
         status, body = await asyncio.wait_for(
             h2_request(
                 port=server_port(server),
@@ -211,9 +209,7 @@ async def test_proxy_headers_support_bracketed_ipv6_forwarded_values() -> None:
         proxy_headers=True,
         forwarded_allow_ips=('127.0.0.1',),
     )
-    port = None
     async with running_server(app, config) as server:
-        port = server_port(server)
         status, body = await asyncio.wait_for(
             h2_request(
                 port=server_port(server),
@@ -532,7 +528,7 @@ async def test_proxy_headers_reject_repeated_forwarded_fields(
                 port=server_port(server),
                 request=(
                     b'GET / HTTP/1.1\r\nHost: localhost\r\n'
-                    + b'Forwarded: ' + first + b'\r\n'
+                    b'Forwarded: ' + first + b'\r\n'
                     + b'Forwarded: ' + second + b'\r\n\r\n'
                 ),
             )

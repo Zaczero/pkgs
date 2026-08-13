@@ -129,7 +129,7 @@ pub(crate) enum AccessLogBuf {
 type ClientLabelBuf = SmallVec<[u8; MAX_IPV6_CLIENT.len()]>;
 
 impl AccessLogBuf {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self::Inline {
             bytes: [MaybeUninit::uninit(); ACCESS_LOG_LINE_CAPACITY],
             len: 0,
@@ -151,8 +151,9 @@ impl AccessLogBuf {
                 unreachable!();
             };
             let start = usize::from(*len);
-            // The prefix before `len` is initialized; this copy initializes the
-            // next disjoint range before publishing its new length.
+            // SAFETY: the initialized prefix ends at `start`; `value.len()` is
+            // bounded by the remaining inline capacity, so the destination is a
+            // disjoint in-bounds range. `len` is published only after this copy.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     value.as_ptr(),
@@ -173,9 +174,8 @@ impl AccessLogBuf {
     fn as_slice(&self) -> &[u8] {
         match self {
             Self::Inline { bytes, len } => {
-                // Invariant: `len` is at most the inline capacity, and append only
-                // advances it after copying initialized bytes into the preceding
-                // prefix. Therefore exactly `bytes[..len]` may be viewed as `u8`.
+                // SAFETY: `len` is bounded by the inline capacity and append
+                // advances it only after initializing the preceding byte range.
                 unsafe {
                     std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), usize::from(*len))
                 }
