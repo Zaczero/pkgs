@@ -873,6 +873,10 @@ class _ReloadChild:
             except ProcessLookupError:
                 # The whole group is already gone, which is the goal.
                 pass
+            except PermissionError:
+                # Darwin can reject a signal while an exited group leader has
+                # not been reaped yet. The outer group-existence loop retries.
+                self.process.poll()
 
         try:
             if sys.platform == 'win32':

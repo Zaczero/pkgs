@@ -43,6 +43,7 @@ async def _close_writer_after_expected_reset(writer: asyncio.StreamWriter) -> No
     """Release a client transport after the tested server-side reset."""
     with suppress(ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
         writer.close()
+    writer.transport.abort()
     with suppress(ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
         await writer.wait_closed()
 

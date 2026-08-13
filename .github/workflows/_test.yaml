@@ -154,6 +154,7 @@ jobs:
           # where a latent race is likeliest to trip an assertion.
           if [ "$FREETHREADED" = "true" ]; then
             export MATURIN_PEP517_ARGS="--profile dev"
+            export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
           uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
           if [ "$FREETHREADED" = "true" ]; then
@@ -163,7 +164,7 @@ jobs:
           uv run --python "${{ matrix.python-version }}" python -m pytest tests
 
       - name: Show compiler cache statistics
-        if: always() && needs.resolve.outputs.is-rusty == 'true'
+        if: always() && needs.resolve.outputs.is-rusty == 'true' && env.SCCACHE_GHA_RW_MODE == 'READ_WRITE'
         shell: bash
         run: |
           "$SCCACHE_PATH" --show-stats
@@ -264,10 +265,14 @@ jobs:
           fi
 
           sccache_dir=$(dirname "$SCCACHE_PATH")
+          test_command="python -c \"import ${{ needs.resolve.outputs.import-name }}\""
+          if [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
+            test_command+=" && /opt/sccache/sccache --show-stats"
+          fi
           {
             printf '%s\n' "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro"
             printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE"
-            printf '%s\n' "CIBW_TEST_COMMAND=python -c \"import ${{ needs.resolve.outputs.import-name }}\" && /opt/sccache/sccache --show-stats"
+            printf '%s\n' "CIBW_TEST_COMMAND=$test_command"
           } >> "$GITHUB_ENV"
 
       - name: Generate license files
