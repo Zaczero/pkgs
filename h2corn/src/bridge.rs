@@ -1064,10 +1064,20 @@ fn parse_header_iterable(
         let pair = item.try_iter().map_err(|_| {
             field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
         })?;
-        let fields = pair.collect::<Result<Vec<_>, _>>().map_err(|_| {
-            field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
-        })?;
-        let [name, value] = fields.as_slice() else {
+        let mut fields = [None, None];
+        let mut field_count = 0;
+        for field in pair {
+            let field = field.map_err(|_| {
+                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
+            })?;
+            if field_count < fields.len() {
+                fields[field_count] = Some(field);
+            }
+            if field_count < 3 {
+                field_count += 1;
+            }
+        }
+        let [Some(name), Some(value)] = fields else {
             return Err(field_type_error(
                 container,
                 "headers",
@@ -1075,14 +1085,22 @@ fn parse_header_iterable(
                 &item,
             ));
         };
-        let name = cast_exact_first::<PyBytes>(name)
+        if field_count != 2 {
+            return Err(field_type_error(
+                container,
+                "headers",
+                "two-item (bytes, bytes) pairs",
+                &item,
+            ));
+        }
+        let name = cast_exact_first::<PyBytes>(&name)
             .map_err(|_| {
-                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", name)
+                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
             })?
             .to_owned();
-        let value = cast_exact_first::<PyBytes>(value)
+        let value = cast_exact_first::<PyBytes>(&value)
             .map_err(|_| {
-                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", value)
+                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
             })?
             .to_owned();
         let name = PyBackedBytes::from(name);
@@ -1484,6 +1502,7 @@ pub(crate) fn parse_websocket_outbound_event(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::CString;
     use std::future::pending;
     use std::num::NonZeroU32;
     use std::sync::Arc;
@@ -1997,6 +2016,135 @@ headers = (Headers(0), Headers(1), Headers(2))
                 message.set_item("headers", headers?)?;
                 parse_http_outbound_event(&message).unwrap();
             }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn generic_header_pairs_preserve_iterator_error_precedence() {
+        init_python();
+        Python::attach(|py| -> PyResult<()> {
+            let locals = PyDict::new(py);
+            py.run(
+                c_str!(
+                    r#"
+class Pair:
+    def __init__(self, values, error=None):
+        self.values = values
+        self.error = error
+        self.index = 0
+        self.next_calls = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        self.next_calls += 1
+        if self.index < len(self.values):
+            value = self.values[self.index]
+            self.index += 1
+            return value
+        if self.error:
+            raise RuntimeError(self.error)
+        raise StopIteration
+
+class Headers:
+    def __init__(self, pair, error=None):
+        self.pair = pair
+        self.error = error
+    def __iter__(self):
+        yield self.pair
+        if self.error:
+            raise RuntimeError(self.error)
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )?;
+            let cases = [
+                ("Pair([], None)", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([b'x'], None)", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([b'x', b'y'], None)", None),
+                ("Pair([b'x', b'y', b'z'], None)", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([1, b'y', b'z'])", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([b'x', 1, b'z'])", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([1, b'y'], None)", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([b'x', 1], None)", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+                ("Pair([b'x', b'y'], 'late')", Some("http.response.start headers must be two-item (bytes, bytes) pairs, got Pair")),
+            ];
+            for (pair, expected) in cases {
+                let pair_code = CString::new(pair).unwrap();
+                let pair = py.eval(pair_code.as_c_str(), Some(&locals), None)?;
+                locals.set_item("pair", &pair)?;
+                let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
+                let message = py_dict!(py, {
+                    "type" => "http.response.start",
+                    "status" => 200,
+                    "headers" => headers,
+                });
+                let result = parse_http_outbound_event(&message);
+                if let Some(expected) = expected {
+                    assert_eq!(result.unwrap_err().to_string(), expected, "{pair}");
+                } else {
+                    assert!(result.is_ok(), "{pair}");
+                }
+            }
+
+            let pair = py.eval(c_str!("Pair([b'x', b'y', b'z'], 'late')"), Some(&locals), None)?;
+            locals.set_item("pair", &pair)?;
+            let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => headers,
+            });
+            assert_eq!(pair.getattr("next_calls")?.extract::<usize>()?, 0);
+            assert_eq!(
+                parse_http_outbound_event(&message).unwrap_err().to_string(),
+                "http.response.start headers must be two-item (bytes, bytes) pairs, got Pair"
+            );
+            assert_eq!(pair.getattr("next_calls")?.extract::<usize>()?, 4);
+
+            let pair = py.eval(c_str!("Pair([b'x', b'y'], 'inner')"), Some(&locals), None)?;
+            locals.set_item("pair", &pair)?;
+            let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => headers,
+            });
+            assert!(
+                parse_http_outbound_event(&message)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("two-item (bytes, bytes) pairs")
+            );
+
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => 1,
+            });
+            assert!(
+                parse_http_outbound_event(&message)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("an iterable of two-item (bytes, bytes) pairs")
+            );
+
+            let pair = py.eval(c_str!("Pair([b'x', b'y'], None)"), Some(&locals), None)?;
+            locals.set_item("pair", &pair)?;
+            let headers = py.eval(c_str!("Headers(pair, 'outer')"), Some(&locals), None)?;
+            let message = py_dict!(py, {
+                "type" => "http.response.start",
+                "status" => 200,
+                "headers" => headers,
+            });
+            assert!(
+                parse_http_outbound_event(&message)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("an iterable of two-item (bytes, bytes) pairs")
+            );
             Ok(())
         })
         .unwrap();
