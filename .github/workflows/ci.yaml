@@ -91,6 +91,9 @@ jobs:
   test:
     needs: detect
     if: needs.detect.outputs.packages != '[]'
+    permissions:
+      actions: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
