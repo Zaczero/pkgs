@@ -14,16 +14,16 @@ use crate::http::header_meta::ProxyHeaderSlots;
 use crate::http::types::{RequestHead, RequestHeaders};
 use crate::proxy_protocol::{ConnectionInfo, ServerEndpoint};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ScopeHost<'a> {
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Ip(&'a IpAddr),
 }
 
 impl ScopeHost<'_> {
     pub(crate) fn with_text<T>(self, f: impl FnOnce(&str) -> T) -> T {
         match self {
-            Self::Text(text) => f(text),
+            Self::Text(text) => f(&text),
             Self::Ip(ip) => {
                 let mut text = IpText::default();
                 write!(text, "{ip}").expect("an IP address fits in its fixed display buffer");
@@ -71,6 +71,8 @@ pub(crate) struct ScopeView<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 struct ProxyHeaderView<'a> {
     forwarded: Option<&'a str>,
+    forwarded_present: bool,
+    forwarded_duplicate: bool,
     x_forwarded_for: Option<&'a str>,
     x_forwarded_proto: Option<&'a str>,
     x_forwarded_host: Option<&'a str>,
@@ -90,13 +92,13 @@ fn default_server<'a>(
             ServerEndpoint::Tcp(server) => {
                 (ScopeHost::Ip(&server.ip), server.port.map(NonZeroU16::get))
             },
-            ServerEndpoint::Unix(path) => (ScopeHost::Text(path), None),
+            ServerEndpoint::Unix(path) => (ScopeHost::Text(Cow::Borrowed(path)), None),
         };
     }
     match config.binds.first() {
-        Some(BindTarget::Tcp { host, port }) => (ScopeHost::Text(host), Some(*port)),
-        Some(BindTarget::Unix { path }) => (ScopeHost::Text(path), None),
-        Some(BindTarget::Fd { .. }) | None => (ScopeHost::Text(""), None),
+        Some(BindTarget::Tcp { host, port }) => (ScopeHost::Text(Cow::Borrowed(host)), Some(*port)),
+        Some(BindTarget::Unix { path }) => (ScopeHost::Text(Cow::Borrowed(path)), None),
+        Some(BindTarget::Fd { .. }) | None => (ScopeHost::Text(Cow::Borrowed("")), None),
     }
 }
 
@@ -138,16 +140,20 @@ pub(crate) fn scope_view_with_defaults<'a>(
     let mut view = defaults.clone();
 
     let proxy_headers = request_proxy_headers(request);
-    let used_forwarded = if let Some(forwarded) = proxy_headers
-        .forwarded
-        .and_then(|value| parse_forwarded_value(value, config))
+    if !proxy_headers.forwarded_duplicate
+        && let Some(forwarded) = proxy_headers
+            .forwarded
+            .and_then(|value| parse_forwarded_value(value, config))
     {
         if let Some(host) = forwarded.client_host {
             let port = view.client.as_ref().map_or(0, |(_, port)| *port);
             view.client = Some((ScopeHost::Text(host), port));
         }
         if let Some(proto) = forwarded.proto {
-            view.scheme = normalize_scheme(proto);
+            view.scheme = match proto {
+                Cow::Borrowed(proto) => normalize_scheme(proto),
+                Cow::Owned(proto) => Cow::Owned(proto.to_ascii_lowercase()),
+            };
         }
         if let Some((host, port)) = forwarded.host {
             view.server = (
@@ -156,18 +162,15 @@ pub(crate) fn scope_view_with_defaults<'a>(
                     .or(view.server.1),
             );
         }
-        true
-    } else {
-        false
-    };
+    }
 
-    if !used_forwarded {
+    if !proxy_headers.forwarded_present {
         if let Some(host) = proxy_headers
             .x_forwarded_for
             .and_then(|value| parse_x_forwarded_for_value(value, config))
         {
             let port = view.client.as_ref().map_or(0, |(_, port)| *port);
-            view.client = Some((ScopeHost::Text(host), port));
+            view.client = Some((ScopeHost::Text(Cow::Borrowed(host)), port));
         }
         if let Some(proto) = proxy_headers
             .x_forwarded_proto
@@ -183,7 +186,7 @@ pub(crate) fn scope_view_with_defaults<'a>(
             && let Some((host, port)) = parse_host_port(host)
         {
             view.server = (
-                ScopeHost::Text(host),
+                ScopeHost::Text(Cow::Borrowed(host)),
                 port.or_else(|| default_port_for_scheme(&view.scheme))
                     .or(view.server.1),
             );
@@ -225,6 +228,8 @@ fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
 
     ProxyHeaderView {
         forwarded: proxy_header_value(headers, slots.forwarded),
+        forwarded_present: slots.forwarded.is_some(),
+        forwarded_duplicate: slots.forwarded_duplicate,
         x_forwarded_for: proxy_header_value(headers, slots.x_forwarded_for),
         x_forwarded_proto: proxy_header_value(headers, slots.x_forwarded_proto),
         x_forwarded_host: proxy_header_value(headers, slots.x_forwarded_host),
@@ -287,9 +292,10 @@ mod tests {
     use crate::config::ServerConfig;
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
-        BytesStr, H1RequestHeaders, HttpVersion, RequestHead, RequestHeaders, RequestTarget,
+        BytesStr, H1RequestHeaders, HttpVersion, KnownRequestHeaderName, RequestHead,
+        RequestHeaderName, RequestHeaderValue, RequestHeaders, RequestTarget,
     };
-    use crate::proxy_protocol::{ConnectionInfo, ServerEndpoint};
+    use crate::proxy_protocol::{ClientAddr, ConnectionInfo, ServerAddr, ServerEndpoint};
     use crate::runtime::test_fixtures;
 
     #[test]
@@ -343,5 +349,131 @@ mod tests {
         view.server
             .0
             .with_text(|host| assert_eq!(host, "/run/h2corn.sock"));
+    }
+
+    #[test]
+    fn malformed_present_forwarded_keeps_transport_defaults_but_accepts_prefix() {
+        for (forwarded, valid) in [
+            (Bytes::from_static(b"for=203.0.113.10;proto=\"https"), false),
+            (
+                Bytes::from_static(b"for=203.0.113.10;proto=1https;host=bad.example"),
+                false,
+            ),
+            (Bytes::from_static(b"for=\xff"), false),
+            (
+                Bytes::from_static(
+                    br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#,
+                ),
+                true,
+            ),
+            (
+                Bytes::from_static(
+                    br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#,
+                ),
+                true,
+            ),
+        ] {
+            let prefix = Bytes::from_static(b"/edge");
+            let mut header_meta = RequestHeaderMeta::default();
+            header_meta.observe_known_header_slice(
+                KnownRequestHeaderName::Forwarded,
+                forwarded.as_ref(),
+                0,
+                true,
+            );
+            header_meta.observe_known_header_slice(
+                KnownRequestHeaderName::XForwardedPrefix,
+                prefix.as_ref(),
+                1,
+                true,
+            );
+            let x_for = Bytes::from_static(b"192.0.2.66");
+            let x_proto = Bytes::from_static(b"https");
+            let x_host = Bytes::from_static(b"attacker.example");
+            let x_port = Bytes::from_static(b"9443");
+            for (name, value, index) in [
+                (KnownRequestHeaderName::XForwardedFor, &x_for, 2),
+                (KnownRequestHeaderName::XForwardedProto, &x_proto, 3),
+                (KnownRequestHeaderName::XForwardedHost, &x_host, 4),
+                (KnownRequestHeaderName::XForwardedPort, &x_port, 5),
+            ] {
+                header_meta.observe_known_header_slice(name, value.as_ref(), index, true);
+            }
+            let request = RequestHead {
+                http_version: HttpVersion::Http2,
+                method: Method::GET,
+                target: RequestTarget::normal(
+                    BytesStr::from_static("http"),
+                    BytesStr::from_static("/"),
+                ),
+                headers: RequestHeaders::from_h2(vec![
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::Forwarded),
+                        RequestHeaderValue::from_h2_validated(forwarded),
+                    ),
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPrefix),
+                        RequestHeaderValue::from_h2_validated(prefix),
+                    ),
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedFor),
+                        RequestHeaderValue::from_h2_validated(x_for),
+                    ),
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedProto),
+                        RequestHeaderValue::from_h2_validated(x_proto),
+                    ),
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedHost),
+                        RequestHeaderValue::from_h2_validated(x_host),
+                    ),
+                    (
+                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPort),
+                        RequestHeaderValue::from_h2_validated(x_port),
+                    ),
+                ]),
+                header_meta,
+            };
+            let info = ConnectionInfo {
+                actual_server: Some(ServerEndpoint::Tcp(ServerAddr {
+                    ip: "198.51.100.20".parse().unwrap(),
+                    port: Some(std::num::NonZeroU16::new(8443).unwrap()),
+                })),
+                proxy_headers_trusted: true,
+                client: Some(ClientAddr {
+                    ip: "192.0.2.66".parse().unwrap(),
+                    port: 41234,
+                }),
+                server: None,
+            };
+            let config = ServerConfig {
+                root_path: Box::from(""),
+                ..test_fixtures::server_config_parts()
+            };
+            let view = resolve_scope_view(&request, &config, &info);
+            if valid {
+                assert_eq!(view.scheme, "https");
+                view.client
+                    .unwrap()
+                    .0
+                    .with_text(|host| assert_eq!(host, "203.0.113.10"));
+                view.server
+                    .0
+                    .with_text(|host| assert_eq!(host, "good.example"));
+                assert_eq!(view.server.1, Some(8443));
+                assert_eq!(view.root_path, "/edge");
+                continue;
+            }
+            assert_eq!(view.scheme, "http");
+            view.client
+                .unwrap()
+                .0
+                .with_text(|host| assert_eq!(host, "192.0.2.66"));
+            view.server
+                .0
+                .with_text(|host| assert_eq!(host, "198.51.100.20"));
+            assert_eq!(view.server.1, Some(8443));
+            assert_eq!(view.root_path, "/edge");
+        }
     }
 }

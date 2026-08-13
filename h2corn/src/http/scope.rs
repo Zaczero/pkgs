@@ -124,7 +124,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         if !view.root_path.is_empty() => {
             "root_path" => root_path_to_python(py, &ctx.connection.config, view.root_path.as_ref()),
         },
-        "server" => server_scope_value(py, ctx, view.server, view.server != defaults.server)?,
+        "server" => server_scope_value(py, ctx, view.server.clone(), view.server != defaults.server)?,
         "headers" => headers_to_python(py, &request.headers)?,
         "extensions" => extensions,
         if !IS_HTTP => {
@@ -136,7 +136,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
         if IS_HTTP => {
             "method" => method_to_python(py, &request.method),
         },
-        if let Some(client) = client_scope_value(py, ctx, view.client, view.client != defaults.client)? => {
+        if let Some(client) = client_scope_value(py, ctx, view.client.clone(), view.client != defaults.client)? => {
             "client" => client,
         },
     }))

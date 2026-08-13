@@ -14,6 +14,7 @@ use crate::websocket::{
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProxyHeaderSlots {
     pub(crate) forwarded: Option<NonZeroU32>,
+    pub(crate) forwarded_duplicate: bool,
     pub(crate) x_forwarded_for: Option<NonZeroU32>,
     pub(crate) x_forwarded_proto: Option<NonZeroU32>,
     pub(crate) x_forwarded_host: Option<NonZeroU32>,
@@ -201,7 +202,12 @@ impl RequestHeaderMeta {
         match known_name {
             KnownRequestHeaderName::Forwarded => {
                 if collect_proxy_headers {
-                    self.rare_mut().proxy_headers.forwarded = Some(slot());
+                    let proxy = &mut self.rare_mut().proxy_headers;
+                    if proxy.forwarded.is_some() {
+                        proxy.forwarded_duplicate = true;
+                    } else {
+                        proxy.forwarded = Some(slot());
+                    }
                 }
             },
             KnownRequestHeaderName::XForwardedFor => {
@@ -329,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_header_slots_keep_the_last_match() {
+    fn repeated_forwarded_is_poisoned_without_losing_first_presence() {
         let mut meta = RequestHeaderMeta::default();
         meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 2, true);
         meta.observe_known_header(KnownRequestHeaderName::Forwarded, &Bytes::new(), 9, true);
@@ -347,7 +353,8 @@ mod tests {
         );
         let slots = *meta.proxy_headers().expect("proxy metadata sidecar exists");
 
-        assert_eq!(ProxyHeaderSlots::index(slots.forwarded), Some(9));
+        assert_eq!(ProxyHeaderSlots::index(slots.forwarded), Some(2));
+        assert!(slots.forwarded_duplicate);
         assert_eq!(ProxyHeaderSlots::index(slots.x_forwarded_proto), Some(7));
     }
 

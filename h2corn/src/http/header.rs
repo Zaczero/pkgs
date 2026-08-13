@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 #[cfg(not(target_os = "linux"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{iter, str};
@@ -11,7 +13,6 @@ use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
 #[cfg(target_os = "linux")]
 use rustix::time::{ClockId, clock_gettime};
-use smallvec::SmallVec;
 
 use crate::ascii;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
@@ -118,6 +119,14 @@ bitflags! {
         const HAS_SERVER = 1 << 0;
         const HAS_DATE = 1 << 1;
     }
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct ForwardedParameterNames: u8 {
+        const FOR = 1 << 0;
+        const BY = 1 << 1;
+        const HOST = 1 << 2;
+        const PROTO = 1 << 3;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,11 +135,11 @@ pub(crate) struct ResponseHeaderScan {
     flags: ResponseScanFlags,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ForwardedView<'a> {
-    pub(crate) client_host: Option<&'a str>,
-    pub(crate) proto: Option<&'a str>,
-    pub(crate) host: Option<(&'a str, Option<u16>)>,
+    pub(crate) client_host: Option<Cow<'a, str>>,
+    pub(crate) proto: Option<Cow<'a, str>>,
+    pub(crate) host: Option<(Cow<'a, str>, Option<u16>)>,
 }
 
 impl ResponseHeaderScan {
@@ -238,21 +247,6 @@ pub(crate) fn last_csv_token(value: &str) -> &str {
 /// `Forwarded` is the one header that needs the whole list rather than just its
 /// last element: its `for=` names a client and has to be walked back through
 /// trusted hops the way `X-Forwarded-For` is.
-fn csv_tokens(value: &str) -> SmallVec<[&str; 8]> {
-    let mut tokens = SmallVec::new();
-    let mut start = 0;
-    for delimiter in csv_delimiters(value) {
-        if let Some(token) = value.get(start..delimiter) {
-            tokens.push(token.trim_ascii());
-        }
-        start = delimiter + 1;
-    }
-    if let Some(token) = value.get(start..) {
-        tokens.push(token.trim_ascii());
-    }
-    tokens
-}
-
 pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     iter::from_fn(move || {
@@ -828,6 +822,153 @@ pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     true
 }
 
+struct ForwardedParameterValue<'a> {
+    value: &'a str,
+    quoted: bool,
+}
+
+impl<'a> ForwardedParameterValue<'a> {
+    fn parse(value: &'a str) -> Option<Self> {
+        if let Some(value) = value.strip_prefix('"') {
+            let value = value.strip_suffix('"')?;
+            let mut escaped = false;
+            for &byte in value.as_bytes() {
+                if escaped {
+                    if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
+                        return None;
+                    }
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' || (byte < 0x20 && byte != b'\t') || byte == 0x7F {
+                    return None;
+                }
+            }
+            if escaped {
+                return None;
+            }
+            return Some(Self {
+                value,
+                quoted: true,
+            });
+        }
+        protocol_token_is_valid(value.as_bytes()).then_some(Self {
+            value,
+            quoted: false,
+        })
+    }
+
+    fn decode(self) -> Cow<'a, str> {
+        if !self.quoted || !self.value.as_bytes().contains(&b'\\') {
+            return Cow::Borrowed(self.value);
+        }
+
+        let mut decoded = Vec::with_capacity(self.value.len() - 1);
+        let mut bytes = self.value.bytes();
+        while let Some(byte) = bytes.next() {
+            decoded.push(if byte == b'\\' {
+                bytes
+                    .next()
+                    .expect("validated quoted-pair has an escaped byte")
+            } else {
+                byte
+            });
+        }
+        // SAFETY: the input was UTF-8 and quoted-pair removes only ASCII backslashes.
+        Cow::Owned(unsafe { String::from_utf8_unchecked(decoded) })
+    }
+
+    fn node(self) -> Result<Option<Cow<'a, str>>, ()> {
+        let quoted = self.quoted;
+        match self.decode() {
+            Cow::Borrowed(value) => match parse_forwarded_node(value, quoted).ok_or(())? {
+                ForwardedNode::Usable(host) => Ok(Some(Cow::Borrowed(host))),
+                ForwardedNode::Opaque => Ok(None),
+            },
+            Cow::Owned(value) => match parse_forwarded_node(&value, quoted).ok_or(())? {
+                ForwardedNode::Usable(host) => Ok(Some(Cow::Owned(host.to_owned()))),
+                ForwardedNode::Opaque => Ok(None),
+            },
+        }
+    }
+}
+
+struct ForwardedDelimiterCursor<'a> {
+    value: &'a str,
+    offset: usize,
+    delimiter: u8,
+}
+
+impl<'a> ForwardedDelimiterCursor<'a> {
+    const fn new(value: &'a str, delimiter: u8) -> Self {
+        Self {
+            value,
+            offset: 0,
+            delimiter,
+        }
+    }
+
+    fn next(&mut self) -> Option<Result<&'a str, ()>> {
+        if self.offset > self.value.len() {
+            return None;
+        }
+        let start = self.offset;
+        let bytes = self.value.as_bytes();
+        let mut quoted = false;
+        let mut escaped = false;
+        for (index, &byte) in bytes.iter().enumerate().skip(start) {
+            if (!quoted && byte < 0x20 && byte != b'\t') || byte == 0x7F {
+                self.offset = self.value.len() + 1;
+                return Some(Err(()));
+            }
+            if escaped {
+                if !(byte == b'\t' || byte == b' ' || byte >= 0x21) || byte == 0x7F {
+                    self.offset = self.value.len() + 1;
+                    return Some(Err(()));
+                }
+                escaped = false;
+            } else if quoted && byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = !quoted;
+            } else if byte == self.delimiter && !quoted {
+                self.offset = index + 1;
+                return Some(self.value.get(start..index).ok_or(()));
+            }
+        }
+        self.offset = self.value.len() + 1;
+        if quoted || escaped {
+            Some(Err(()))
+        } else {
+            Some(self.value.get(start..).ok_or(()))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ForwardedExtensionName<'a>(&'a str);
+
+impl PartialEq for ForwardedExtensionName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for ForwardedExtensionName<'_> {}
+
+impl Hash for ForwardedExtensionName<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for byte in self.0.bytes() {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+    }
+}
+
+enum ForwardedNode<'a> {
+    Usable(&'a str),
+    Opaque,
+}
+
 /// RFC 9110 7.8: protocol names are registered with a preferred case, but
 /// recipients should match them case-insensitively. The HTTP/1 side already
 /// does, via `header_contains_token`; matching exactly here made
@@ -841,23 +982,205 @@ pub(crate) fn header_value_text(value: &[u8]) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn forwarded_ows_trim(value: &str) -> &str {
+    value.trim_matches(|byte| byte == ' ' || byte == '\t')
+}
+
+fn forwarded_obfuscated(value: &str) -> bool {
+    value.len() > 1
+        && value.as_bytes()[0] == b'_'
+        && value.as_bytes()[1..]
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn forwarded_port(value: &str) -> bool {
+    (!value.is_empty() && value.len() <= 5 && value.bytes().all(|byte| byte.is_ascii_digit()))
+        || forwarded_obfuscated(value)
+}
+
+fn parse_forwarded_node(value: &str, quoted: bool) -> Option<ForwardedNode<'_>> {
+    if value.starts_with('[') {
+        if !quoted {
+            return None;
+        }
+        let (host, rest) = value.split_once(']')?;
+        let host = host.strip_prefix('[')?;
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return None;
+        }
+        if !rest.is_empty() && !rest.strip_prefix(':').is_some_and(forwarded_port) {
+            return None;
+        }
+        return Some(ForwardedNode::Usable(host));
+    }
+    if value.contains(':') {
+        if !quoted {
+            return None;
+        }
+        let (host, port) = value.rsplit_once(':')?;
+        if !forwarded_port(port) {
+            return None;
+        }
+        if host.eq_ignore_ascii_case("unknown") || forwarded_obfuscated(host) {
+            return Some(ForwardedNode::Opaque);
+        }
+        if host.parse::<std::net::Ipv4Addr>().is_err() {
+            return None;
+        }
+        return Some(ForwardedNode::Usable(host));
+    }
+    if value.eq_ignore_ascii_case("unknown") || forwarded_obfuscated(value) {
+        return Some(ForwardedNode::Opaque);
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_ok() {
+        return Some(ForwardedNode::Usable(value));
+    }
+    None
+}
+
+fn forwarded_reg_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.iter().enumerate().all(|(index, &byte)| {
+            if byte == b'%' {
+                return index + 2 < bytes.len()
+                    && bytes[index + 1].is_ascii_hexdigit()
+                    && bytes[index + 2].is_ascii_hexdigit();
+            }
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                || matches!(
+                    byte,
+                    b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+                )
+        })
+}
+
+fn forwarded_ipv_future(value: &str) -> bool {
+    let Some((version, address)) = value
+        .strip_prefix(['v', 'V'])
+        .and_then(|value| value.split_once('.'))
+    else {
+        return false;
+    };
+    !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !address.is_empty()
+        && address.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'-' | b'.'
+                        | b'_'
+                        | b'~'
+                        | b':'
+                        | b'!'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'('
+                        | b')'
+                        | b'*'
+                        | b'+'
+                        | b','
+                        | b';'
+                        | b'='
+                )
+        })
+}
+
+fn parse_forwarded_authority(value: &str) -> Option<(&str, Option<u16>)> {
+    if value.starts_with('[') {
+        let (host, rest) = value.split_once(']')?;
+        let host = host.strip_prefix('[')?;
+        if host.parse::<std::net::Ipv6Addr>().is_err() && !forwarded_ipv_future(host) {
+            return None;
+        }
+        let port = if rest.is_empty() {
+            None
+        } else {
+            Some(parse_pos::<u16, false>(rest.strip_prefix(':')?.as_bytes()).ok()?)
+        };
+        return Some((host, port));
+    }
+    if value.contains(':') {
+        let (host, port) = value.rsplit_once(':')?;
+        if host.contains(':')
+            || (host.parse::<std::net::Ipv4Addr>().is_err() && !forwarded_reg_name(host))
+        {
+            return None;
+        }
+        return Some((host, Some(parse_pos::<u16, false>(port.as_bytes()).ok()?)));
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_err() && !forwarded_reg_name(value) {
+        return None;
+    }
+    Some((value, None))
+}
+
 fn parse_forwarded_element(element: &str) -> Option<ForwardedView<'_>> {
     let mut client_host = None;
     let mut proto = None;
     let mut host = None;
-
-    for part in element.split(';') {
-        let (name, value) = part.split_once('=')?;
-        let value = normalize_forwarded_value(value);
-        let name = name.trim_ascii();
-        if name.eq_ignore_ascii_case("for") {
-            if let Some((host_value, _)) = parse_host_port(value) {
-                client_host = Some(host_value);
-            }
-        } else if name.eq_ignore_ascii_case("proto") {
-            proto = Some(value);
+    let mut recognized_names = ForwardedParameterNames::empty();
+    let mut extension_names = None::<HashSet<ForwardedExtensionName<'_>>>;
+    let mut cursor = ForwardedDelimiterCursor::new(element, b';');
+    while let Some(part) = cursor.next() {
+        let parameter_part = forwarded_ows_trim(part.ok()?);
+        if parameter_part.is_empty() {
+            continue;
+        }
+        let (name, value) = parameter_part.split_once('=')?;
+        if !protocol_token_is_valid(name.as_bytes()) {
+            return None;
+        }
+        let parameter = ForwardedParameterValue::parse(value)?;
+        let recognized_name = if name.eq_ignore_ascii_case("for") {
+            ForwardedParameterNames::FOR
+        } else if name.eq_ignore_ascii_case("by") {
+            ForwardedParameterNames::BY
         } else if name.eq_ignore_ascii_case("host") {
-            host = parse_host_port(value);
+            ForwardedParameterNames::HOST
+        } else if name.eq_ignore_ascii_case("proto") {
+            ForwardedParameterNames::PROTO
+        } else {
+            ForwardedParameterNames::empty()
+        };
+        if recognized_name.is_empty() {
+            if !extension_names
+                .get_or_insert_with(HashSet::new)
+                .insert(ForwardedExtensionName(name))
+            {
+                return None;
+            }
+        } else {
+            if recognized_names.contains(recognized_name) {
+                return None;
+            }
+            recognized_names.insert(recognized_name);
+        }
+        if recognized_name == ForwardedParameterNames::FOR {
+            client_host = parameter.node().ok()?;
+        } else if recognized_name == ForwardedParameterNames::PROTO {
+            proto = Some(parameter.decode());
+            if !request_scheme_is_valid(proto.as_ref()?.as_bytes()) {
+                return None;
+            }
+        } else if recognized_name == ForwardedParameterNames::HOST {
+            let decoded = parameter.decode();
+            host = match decoded {
+                Cow::Borrowed(value) => {
+                    let (host, authority_port) = parse_forwarded_authority(value)?;
+                    Some((Cow::Borrowed(host), authority_port))
+                },
+                Cow::Owned(value) => {
+                    let (host, authority_port) = parse_forwarded_authority(&value)?;
+                    Some((Cow::Owned(host.to_owned()), authority_port))
+                },
+            };
+        } else if recognized_name == ForwardedParameterNames::BY {
+            parameter.node().ok()?;
         }
     }
 
@@ -880,30 +1203,44 @@ pub(crate) fn parse_forwarded_value<'a>(
     value: &'a str,
     config: &ServerConfig,
 ) -> Option<ForwardedView<'a>> {
-    let elements = csv_tokens(value);
-    let (last, earlier) = elements.split_last()?;
-    let nearest = parse_forwarded_element(last)?;
-
-    let mut client_host = nearest.client_host;
-    if client_host.is_some_and(|host| trusted_host_matches(&config.proxy.trusted_peers, host)) {
-        for element in earlier.iter().rev() {
-            // An element without a usable `for` ends the walk: the chain stops
-            // being attributable there, so the nearest untrusted hop we did
-            // resolve is the best answer available.
-            let Some(host) = parse_forwarded_element(element).and_then(|view| view.client_host)
-            else {
-                break;
-            };
-            client_host = Some(host);
-            if !trusted_host_matches(&config.proxy.trusted_peers, host) {
-                break;
-            }
+    let mut cursor = ForwardedDelimiterCursor::new(value, b',');
+    let mut selected = None;
+    let mut nearest = None;
+    let mut element_count = 0;
+    while let Some(element) = cursor.next() {
+        let element = element.ok()?;
+        let element = forwarded_ows_trim(element);
+        if element.is_empty() {
+            continue;
         }
+        element_count += 1;
+        let parsed = parse_forwarded_element(element)?;
+        let ForwardedView {
+            client_host,
+            proto,
+            host,
+        } = parsed;
+        if let Some(host) = client_host {
+            if trusted_host_matches(&config.proxy.trusted_peers, &host) {
+                if selected.is_none() {
+                    selected = Some(host);
+                }
+            } else {
+                selected = Some(host);
+            }
+        } else {
+            selected = None;
+        }
+        nearest = Some((proto, host));
     }
-
+    if element_count == 0 {
+        return None;
+    }
+    let (proto, host) = nearest?;
     Some(ForwardedView {
-        client_host,
-        ..nearest
+        client_host: selected,
+        proto,
+        host,
     })
 }
 
@@ -982,10 +1319,10 @@ mod tests {
 
     use super::{
         ResponseContentLength, civil_from_days, format_http_date, inspect_response_default_headers,
-        inspect_response_headers, last_csv_token, parse_content_length_header, parse_host_port,
-        parse_x_forwarded_for_value, prepare_fixed_length_response_headers_with_scan,
-        request_authority_is_valid, request_path_is_valid, request_scheme_is_valid,
-        trailer_field_name_is_forbidden,
+        inspect_response_headers, last_csv_token, parse_content_length_header,
+        parse_forwarded_value, parse_host_port, parse_x_forwarded_for_value,
+        prepare_fixed_length_response_headers_with_scan, request_authority_is_valid,
+        request_path_is_valid, request_scheme_is_valid, trailer_field_name_is_forbidden,
     };
     use crate::config::{
         ConfiguredResponseHeader, ProxyConfig, ResponseHeaderConfig, ServerConfig,
@@ -1182,6 +1519,156 @@ mod tests {
             parse_x_forwarded_for_value("1.1.1.1 \"GET /admin HTTP/1.1\" 200", &config),
             None,
         );
+    }
+
+    #[test]
+    fn forwarded_parser_accepts_quoted_delimiters_and_escaped_pairs() {
+        let config = test_fixtures::server_config_parts();
+        for value in [
+            r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#,
+            r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#,
+            r#"for="203.0.113.10";proto="https";host="good.example:8443";ext="edge;one""#,
+            r#"for="203.0.113.10";ext="edge\;one""#,
+            r#"for=203.0.113.10;ext="edge,one",for=198.51.100.7"#,
+            r#"for=203.0.113.10;ext="edge\,one",for=198.51.100.7"#,
+            "for=203.0.113.10;ext=unknown",
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+        }
+        let parsed = parse_forwarded_value(
+            r#"for="203.0.113.10";proto="https";host="good.example:8443";ext="edge\;one""#,
+            &config,
+        )
+        .expect("quoted delimiters and pairs are valid");
+        assert_eq!(parsed.client_host.as_deref(), Some("203.0.113.10"));
+        assert_eq!(parsed.proto.as_deref(), Some("https"));
+        assert_eq!(
+            parsed
+                .host
+                .as_ref()
+                .map(|(host, port)| (host.as_ref(), *port)),
+            Some(("good.example", Some(8443)))
+        );
+    }
+
+    #[test]
+    fn forwarded_parser_rejects_malformed_and_duplicate_parameters() {
+        let config = test_fixtures::server_config_parts();
+        for value in [
+            "for=1.1.1.1;proto",
+            "for=1.1.1.1;proto=https=oops",
+            "for=1.1.1.1;=https",
+            "for=1.1.1.1;proto=",
+            "for=1.1.1.1;proto=\"https\"junk",
+            "for=1.1.1.1;proto=\"https",
+            "for=1.1.1.1;proto=\"https\\",
+            "for=1.1.1.1;proto=https;proto=http",
+            "for=1.1.1.1;ext=x;EXT=y",
+            "for=1.1.1.1;ext=\"bad\u{0001}\"",
+            "for=1.1.1.1,proto=\"unterminated;for=2.2.2.2",
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn forwarded_parser_accepts_empty_optional_pairs_but_not_empty_list_elements() {
+        let config = test_fixtures::server_config_parts();
+        for value in [
+            ";for=1.1.1.1;",
+            ";;for=1.1.1.1;;proto=https;;",
+            "for=1.1.1.1;;proto=https",
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+        }
+        for value in [",for=1.1.1.1", "for=1.1.1.1,", "for=1.1.1.1,,proto=https"] {
+            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+        }
+        for value in ["", ",", ", ,\t,"] {
+            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn forwarded_parser_validates_nodes_and_authorities_atomically() {
+        let config = test_fixtures::server_config_parts();
+        for value in [
+            r#"for="203.0.113.10:abc";proto=https;host=good.example"#,
+            "for=203.0.113.10;proto=https;host=[bad",
+            "for=203.0.113.10;proto=https;host=2001:db8::1",
+            "for=203.0.113.10;proto=https;host=good%2.example",
+            "for=203.0.113.10;proto=https;host=good.example:65536",
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+        }
+        for value in [
+            "for=unknown;proto=https;host=good.example",
+            "for=_hidden;proto=https;host=good.example",
+            r#"for="[2001:db8::1]:443";proto=https;host=good.example"#,
+            "for=203.0.113.10;proto=https;host=good.example",
+            "for=203.0.113.10;proto=https;host=good%2Eexample",
+            "for=203.0.113.10;proto=https;host=999.999.999.999",
+            r#"for=203.0.113.10;proto=https;host="[v1.a]""#,
+            r#"for=203.0.113.10;proto=https;host="[Vf.a:b]:443""#,
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn forwarded_parser_matches_rfc_node_grammar() {
+        let config = test_fixtures::server_config_parts();
+        for value in [
+            "for=UNKNOWN",
+            "for=Unknown",
+            r#"for="unknown:443";by="Unknown:_trace""#,
+            r#"for="_hidden:123";by="_hidden:_port""#,
+            r#"for="203.0.113.10:99999";by="[2001:db8::1]:_port""#,
+            r#"for="[2001:db8::1]:12345""#,
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+        }
+        for value in [
+            "for=unknown:443",
+            r#"for="unknown:""#,
+            r#"for="_hidden:""#,
+            r#"for="_hidden:123456""#,
+            r#"for="_hidden:_trace!""#,
+            r#"for="203.0.113.10:123456""#,
+            r#"for="203.0.113.10:_trace!""#,
+            r#"for=203.0.113.10;by="_bad!";proto=https"#,
+            r#"for=203.0.113.10;by="203.0.113.999";proto=https"#,
+        ] {
+            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn forwarded_parser_validates_every_element_and_allows_unknown_extensions() {
+        let config = test_fixtures::server_config_parts();
+        assert!(
+            parse_forwarded_value("for=1.1.1.1;ext=valid, for=2.2.2.2;unknown=token", &config,)
+                .is_some()
+        );
+        assert!(
+            parse_forwarded_value("for=1.1.1.1;ext=valid, broken=\"unterminated", &config,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn forwarded_parser_detects_extension_duplicates_exactly() {
+        let config = test_fixtures::server_config_parts();
+        // These names collided in the former 1,024-bit probabilistic filter.
+        assert!(parse_forwarded_value("for=1.1.1.1;x8=a;x20=b", &config).is_some());
+        assert!(parse_forwarded_value("for=1.1.1.1;x8=a;X8=b", &config).is_none());
+
+        let mut value = String::from("for=1.1.1.1");
+        for index in 0..900 {
+            use std::fmt::Write;
+            write!(value, ";x{index}=v").unwrap();
+        }
+        assert!(parse_forwarded_value(&value, &config).is_some());
     }
 
     #[test]
