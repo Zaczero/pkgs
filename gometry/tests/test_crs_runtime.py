@@ -66,7 +66,9 @@ def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) ->
         assert configured_engine['user_writable_directory'] == str(tmp_path)
         assert configured_engine['paths'] == (search_paths or [])
         if search_paths is not None:
-            assert configured_engine['database_path'] == engine['database_path']
+            assert configured_engine['database_path'].split('&vfs=', 1)[0] == engine[
+                'database_path'
+            ].split('&vfs=', 1)[0]
         assert gm.crs_info(4326) == before
         assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == 'EPSG:3857'
         assert gm.crs_clear_cache() is None

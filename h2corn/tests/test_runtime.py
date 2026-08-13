@@ -3,7 +3,6 @@ import ctypes
 import gc
 import os
 import re
-import resource
 import signal
 import socket
 import sys
@@ -1466,6 +1465,8 @@ async def test_serve_fds_negative_handle_is_value_error() -> None:
 async def test_serve_fds_closed_positive_sources_raise_oserror(
     closed_source: str,
 ) -> None:
+    import resource
+
     from h2corn._lib import prepare_tls, serve_fds
 
     async def app(*_args: object) -> None:

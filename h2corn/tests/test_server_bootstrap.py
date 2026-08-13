@@ -1615,10 +1615,9 @@ def test_nonblocking_pipe_is_close_on_exec() -> None:
 
 
 def test_cli_trusted_proxy_flags_replace_base_values(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
+    from h2corn._cli import parse_cli
 
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text(
@@ -1626,78 +1625,38 @@ def test_cli_trusted_proxy_flags_replace_base_values(
 forwarded_allow_ips = ["127.0.0.1", "::1"]
 """.strip()
     )
-    captured = {}
-
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda app, config, **_kwargs: captured.setdefault('result', (app, config)),
-    )
-    monkeypatch.setattr(
-        sys,
-        'argv',
+    _, app, config = parse_cli(
         [
-            'h2corn',
-            '--config',
-            str(config_path),
-            '--forwarded-allow-ips',
-            '10.0.0.1, unix',
+            '--config', str(config_path), '--forwarded-allow-ips', '10.0.0.1, unix',
             'example:app',
-        ],
+        ]
     )
-
-    _server.main()
-
-    app, config = captured['result']
     assert app.target == 'example:app'
     assert app.factory is False
     assert config.forwarded_allow_ips == ('10.0.0.1', 'unix')
 
 
 def test_cli_repeated_bind_replaces_base_bind_values(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
+    from h2corn._cli import parse_cli
 
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('bind = ["127.0.0.1:9010"]')
-    captured = {}
-
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda _app, config, **_kwargs: captured.setdefault('config', config),
-    )
-    monkeypatch.setattr(
-        sys,
-        'argv',
+    _, _, config = parse_cli(
         [
-            'h2corn',
-            '--config',
-            str(config_path),
-            '--bind',
-            '127.0.0.1:9030',
-            '--bind',
-            'unix:/tmp/h2corn.sock',
-            'example:app',
-        ],
+            '--config', str(config_path), '--bind', '127.0.0.1:9030', '--bind',
+            'unix:/tmp/h2corn.sock', 'example:app',
+        ]
     )
-
-    _server.main()
-
-    assert captured['config'].bind == ('127.0.0.1:9030', 'unix:/tmp/h2corn.sock')
+    assert config.bind == ('127.0.0.1:9030', 'unix:/tmp/h2corn.sock')
 
 
 def test_cli_arguments_override_env_and_toml_values(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
+    from h2corn._cli import parse_cli
 
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text(
@@ -1707,155 +1666,66 @@ http1 = false
 access_log = false
 """.strip()
     )
-    captured = {}
-
     monkeypatch.setenv('H2CORN_PORT', '9020')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda _app, config, **_kwargs: captured.setdefault('config', config),
-    )
-    monkeypatch.setattr(
-        sys,
-        'argv',
+    _, _, config = parse_cli(
         [
-            'h2corn',
-            '--config',
-            str(config_path),
-            '--port',
-            '9030',
-            '--http1',
-            '--access-log',
+            '--config', str(config_path), '--port', '9030', '--http1', '--access-log',
             'example:app',
-        ],
+        ]
     )
-
-    _server.main()
-
-    assert captured['config'].bind == ('127.0.0.1:9030',)
-    assert captured['config'].http1 is True
-    assert captured['config'].access_log is True
+    assert config.bind == ('127.0.0.1:9030',)
+    assert config.http1 is True
+    assert config.access_log is True
 
 
 def test_cli_legacy_env_port_overrides_toml_listener(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
+    from h2corn._cli import parse_cli
 
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('port = 9010')
-    captured = {}
-
     monkeypatch.setenv('H2CORN_PORT', '9020')
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda _app, config, **_kwargs: captured.setdefault('config', config),
-    )
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['h2corn', '--config', str(config_path), 'example:app'],
-    )
-
-    _server.main()
-
-    assert captured['config'].bind == ('127.0.0.1:9020',)
+    _, _, config = parse_cli(['--config', str(config_path), 'example:app'])
+    assert config.bind == ('127.0.0.1:9020',)
 
 
-def test_cli_factory_flag_is_forwarded_to_import_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _server
-    from h2corn._cli import ImportSettings
+def test_cli_factory_flag_is_forwarded_to_import_target() -> None:
+    from h2corn._cli import ImportSettings, parse_cli
 
-    captured = {}
-
-    # The CLI hands the *unimported* target to the supervisor, so each worker
-    # imports it itself — that is what makes SIGHUP pick up new code.
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda app, config, **_kwargs: captured.setdefault('supervised', (app, config)),
-    )
-    monkeypatch.setattr(sys, 'argv', ['h2corn', '--factory', 'example:create_app'])
-
-    _server.main()
-
-    assert captured['supervised'][0] == ImportSettings(
+    _, import_settings, _ = parse_cli(['--factory', 'example:create_app'])
+    assert import_settings == ImportSettings(
         target='example:create_app',
         factory=True,
     )
 
 
 def test_cli_app_dir_is_forwarded_to_import_target(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
-    from h2corn._cli import ImportSettings
+    from h2corn._cli import ImportSettings, parse_cli
 
-    captured = {}
-
-    # The CLI hands the *unimported* target to the supervisor, so each worker
-    # imports it itself — that is what makes SIGHUP pick up new code.
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda app, config, **_kwargs: captured.setdefault('supervised', (app, config)),
+    _, import_settings, _ = parse_cli(
+        ['--app-dir', str(tmp_path / 'src'), 'example:app']
     )
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['h2corn', '--app-dir', str(tmp_path / 'src'), 'example:app'],
-    )
-
-    _server.main()
-
-    assert captured['supervised'][0] == ImportSettings(
+    assert import_settings == ImportSettings(
         target='example:app',
         app_dir=(tmp_path / 'src').resolve(),
     )
 
 
 def test_cli_env_file_is_forwarded_to_import_target(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from h2corn import _server
-    from h2corn._cli import ImportSettings
+    from h2corn._cli import ImportSettings, parse_cli
 
-    captured = {}
-
-    # The CLI hands the *unimported* target to the supervisor, so each worker
-    # imports it itself — that is what makes SIGHUP pick up new code.
-    from h2corn import _supervisor
-
-    monkeypatch.setattr(
-        _supervisor,
-        'serve_with_supervisor',
-        lambda app, config, **_kwargs: captured.setdefault('supervised', (app, config)),
+    _, import_settings, _ = parse_cli(
+        ['--env-file', str(tmp_path / '.env'), 'example:app']
     )
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['h2corn', '--env-file', str(tmp_path / '.env'), 'example:app'],
-    )
-
-    _server.main()
-
-    assert captured['supervised'][0] == ImportSettings(
+    assert import_settings == ImportSettings(
         target='example:app',
         env_file=(tmp_path / '.env').resolve(),
     )
