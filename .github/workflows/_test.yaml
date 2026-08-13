@@ -164,7 +164,8 @@ jobs:
       - name: Show compiler cache statistics
         if: always() && needs.resolve.outputs.is-rusty == 'true'
         shell: bash
-        run: "$SCCACHE_PATH" --show-stats
+        run: |
+          "$SCCACHE_PATH" --show-stats
 
       - name: Check package quality
         if: matrix.primary == 'true' && hashFiles(format('{0}/tools/check.py', inputs.package)) != ''
