@@ -259,7 +259,7 @@ fn get_indexed_name(
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
         _ => {
             let field = dynamic_entry(table, index)?;
-            Ok(field.clone().into_parts().0)
+            Ok(field.name_bytes())
         },
     }
 }
@@ -383,6 +383,46 @@ mod tests {
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].name(), b"host");
         assert_eq!(headers[0].value(), b"example.com");
+    }
+
+    #[test]
+    fn dynamic_indexed_name_survives_table_eviction() {
+        let mut decoder = Decoder::new(41);
+        let mut first = Bytes::from_static(b"\x40\x04name\x01v");
+        decoder.decode_bytes(&mut first, |_| {}).unwrap();
+
+        // The second entry reuses the first entry's name, then evicts it.
+        let mut second = Bytes::from_static(b"\x7e\x01w");
+        let mut retained_name = None;
+        decoder
+            .decode_bytes(&mut second, |field| {
+                retained_name = Some(field.into_parts().0);
+            })
+            .unwrap();
+
+        assert_eq!(retained_name.as_deref(), Some(b"name".as_slice()));
+
+        // A later insertion and eviction must not invalidate the callback-owned name.
+        let mut third = Bytes::from_static(b"\x40\x04next\x01z");
+        decoder.decode_bytes(&mut third, |_| {}).unwrap();
+        assert_eq!(retained_name.as_deref(), Some(b"name".as_slice()));
+    }
+
+    #[test]
+    fn static_indexed_name_literal_uses_static_name() {
+        let headers = decode_all(&[0x01, 0x01, b'x'], 0);
+        assert_eq!(headers[0].name(), b":authority");
+        assert_eq!(headers[0].value(), b"x");
+    }
+
+    #[test]
+    fn indexed_name_literal_invalid_index_is_unchanged() {
+        let mut decoder = Decoder::new(0);
+        let mut bytes = Bytes::from_static(&[0x7F, 0x61]);
+        assert_eq!(
+            decoder.decode_bytes(&mut bytes, |_| {}),
+            Err(DecoderError::InvalidTableIndex)
+        );
     }
 
     #[test]

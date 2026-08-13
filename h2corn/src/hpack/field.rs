@@ -34,6 +34,10 @@ impl HpackField {
         self.name.as_ref()
     }
 
+    pub(crate) fn name_bytes(&self) -> Bytes {
+        self.name.clone()
+    }
+
     pub(crate) fn value(&self) -> &[u8] {
         self.value.as_ref()
     }
