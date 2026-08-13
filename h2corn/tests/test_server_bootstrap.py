@@ -2576,6 +2576,179 @@ async def test_pre_native_exit_preserves_borrowed_fd() -> None:
         os.fstat(listener.fileno())
 
 
+@pytest.mark.asyncio
+async def test_pre_native_release_attempts_all_and_preserves_startup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import Server
+
+    sentinel = RuntimeError('sentinel startup failure')
+    released: list[str] = []
+
+    class Lease:
+        def __init__(self, name: str, error: BaseException | None = None) -> None:
+            self.name = name
+            self.error = error
+
+        def release(self) -> None:
+            released.append(self.name)
+            if self.error is not None:
+                raise self.error
+
+    async def app(*_args):
+        raise AssertionError('startup runner is replaced')
+
+    server = Server(app, Config(lifespan='on'))
+    first = Lease('first', RuntimeError('cleanup failure'))
+    second = Lease('second')
+
+    async def fail_startup(*_args, **_kwargs) -> None:
+        raise sentinel
+
+    monkeypatch.setattr(server, '_run_primary_startup', fail_startup)
+
+    async def body(generation) -> None:
+        await server._serve_with_primary_lifespan(
+            generation,
+            [first, second],
+            prepared_tls=None,
+        )
+
+    serving = asyncio.create_task(
+        server._await_generation(server._claim_generation(body))
+    )
+    with pytest.raises(RuntimeError, match='sentinel startup failure') as error:
+        await asyncio.wait_for(serving, timeout=2)
+    assert error.value is sentinel
+    assert released == ['second', 'first']
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wins_startup_and_waits_for_retained_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import Server, _server
+
+    startup_entered = asyncio.Event()
+    release_startup = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    discard_returned = asyncio.Event()
+    entered_retained_wait = asyncio.Event()
+    release_retained = asyncio.Event()
+    cleanup_sentinel = RuntimeError('retained cleanup sentinel')
+    releases: list[str] = []
+    release_calls = 0
+    returned_callbacks = 0
+    released_callbacks = 0
+
+    class FakeLifespanRunner:
+        def __init__(self, _app) -> None:
+            self.state: dict[str, Any] = {}
+            self.discard_timeouts: list[float | None] = []
+
+        async def startup(self, *, required: bool) -> None:
+            assert required
+            startup_entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_seen.set()
+                await release_startup.wait()
+                raise
+
+        async def discard_task(self, timeout: float | None = None) -> bool:
+            self.discard_timeouts.append(timeout)
+            discard_returned.set()
+            return False
+
+        async def wait_retained_task(self) -> None:
+            entered_retained_wait.set()
+            await release_retained.wait()
+
+    server = Server(
+        object(),
+        Config(lifespan='on', timeout_lifespan_startup=0),
+    )
+    runner: FakeLifespanRunner | None = None
+
+    def make_runner(_app) -> FakeLifespanRunner:
+        nonlocal runner
+        runner = FakeLifespanRunner(_app)
+        return runner
+
+    monkeypatch.setattr(_server, 'LifespanRunner', make_runner)
+
+    class Lease:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def release(self) -> None:
+            releases.append(self.name)
+
+    listeners = [Lease('first'), Lease('second')]
+
+    def release_pre_native() -> BaseException:
+        nonlocal release_calls
+        release_calls += 1
+        releases.append('pre-native')
+        for listener in reversed(listeners):
+            listener.release()
+        return cleanup_sentinel
+
+    async def body(generation) -> None:
+        await server._serve_with_primary_lifespan(
+            generation,
+            listeners,
+            release_pre_native_listeners=release_pre_native,
+            prepared_tls=None,
+        )
+
+    def returned_settled(_task) -> None:
+        nonlocal returned_callbacks
+        returned_callbacks += 1
+
+    def released_settled(_task) -> None:
+        nonlocal released_callbacks
+        released_callbacks += 1
+
+    generation = server._claim_generation(body)
+    generation.returned.add_done_callback(returned_settled)
+    generation.released.add_done_callback(released_settled)
+    public = asyncio.create_task(server._await_generation(generation))
+    await asyncio.wait_for(startup_entered.wait(), timeout=2)
+    server.shutdown()
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
+    release_startup.set()
+    await asyncio.wait_for(discard_returned.wait(), timeout=2)
+    assert runner is not None
+    assert runner.discard_timeouts == [0]
+    assert not generation.returned.done()
+    assert not generation.released.done()
+    assert not public.done()
+
+    await asyncio.wait_for(entered_retained_wait.wait(), timeout=2)
+    assert not generation.returned.done()
+    assert not generation.released.done()
+    assert not public.done()
+    assert releases == ['pre-native', 'second', 'first']
+
+    release_retained.set()
+    with pytest.raises(RuntimeError) as error:
+        await asyncio.wait_for(public, timeout=2)
+
+    assert error.value is cleanup_sentinel
+    with pytest.raises(RuntimeError) as release_error:
+        await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
+    assert release_error.value is cleanup_sentinel
+    assert generation.returned.done()
+    assert generation.released.done()
+    assert releases == ['pre-native', 'second', 'first']
+    assert release_calls == 1
+    assert returned_callbacks == 1
+    assert released_callbacks == 1
+    assert not isinstance(error.value, _server._StartupAborted)
+
+
 def test_env_file_is_read_before_privileges_drop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3056,21 +3229,17 @@ def test_seqpacket_listener_is_rejected_and_remains_caller_owned() -> None:
 
 
 @_posix_fd_bind
-def test_transfer_consumes_socket_second_transfer_impossible() -> None:
+def test_raw_handle_borrows_socket_repeatably() -> None:
     from h2corn import _socket
 
     leases = _socket._build_sockets(Config(bind=('127.0.0.1:0',)))
     try:
         lease = leases[0]
-        fd = lease.transfer()
-        assert lease.socket is None
-        with pytest.raises(RuntimeError, match='already transferred'):
-            lease.transfer()
-        # Released after transfer only drops the path claim; fd stays open
-        # until the native owner closes it.
+        fd = lease.raw_handle()
+        assert fd == lease.raw_handle()
         lease.release()
-        os.fstat(fd)
-        os.close(fd)
+        with pytest.raises(OSError):
+            os.fstat(fd)
     finally:
         for remaining in leases:
             remaining.release()

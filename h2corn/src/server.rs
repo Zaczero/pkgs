@@ -2,6 +2,28 @@
 #[path = "server_tests.rs"]
 mod tests;
 
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{OwnFdsError, own_serve_fds};
+
+    #[test]
+    fn negative_socket_handle_is_structural() {
+        assert!(matches!(
+            own_serve_fds(vec![-1], None),
+            Err(OwnFdsError::Structural(_))
+        ));
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn socket_handle_above_platform_range_is_structural() {
+        assert!(matches!(
+            own_serve_fds(vec![i64::from(u32::MAX) + 1], None),
+            Err(OwnFdsError::Structural(_))
+        ));
+    }
+}
+
 use std::collections::HashSet;
 use std::future::{Future, pending, poll_fn};
 use std::io;
@@ -191,49 +213,68 @@ where
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum OwnFdsError {
+    Structural(&'static str),
+    Io(io::Error),
+}
+
+pub(crate) type PythonRawHandle = i64;
+
 #[cfg(unix)]
 pub(crate) fn own_serve_fds(
     fds: Vec<i64>,
     quiesce_fd: Option<i64>,
-) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), &'static str> {
+) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), OwnFdsError> {
     let mut unique = HashSet::with_capacity(fds.len() + usize::from(quiesce_fd.is_some()));
     let mut validated = Vec::with_capacity(fds.len());
     for fd in fds {
-        let fd = i32::try_from(fd).map_err(|_| "file descriptor is outside the i32 range")?;
+        let fd = i32::try_from(fd)
+            .map_err(|_| OwnFdsError::Structural("file descriptor is outside the i32 range"))?;
         if fd < 0 {
-            return Err("file descriptors must be nonnegative");
+            return Err(OwnFdsError::Structural(
+                "file descriptors must be nonnegative",
+            ));
         }
         if !unique.insert(fd) {
-            return Err("file descriptors must be globally unique");
+            return Err(OwnFdsError::Structural(
+                "file descriptors must be globally unique",
+            ));
         }
         validated.push(fd);
     }
     let quiesce_fd = quiesce_fd
         .map(|fd| {
-            let fd = i32::try_from(fd).map_err(|_| "quiesce FD is outside the i32 range")?;
+            let fd = i32::try_from(fd)
+                .map_err(|_| OwnFdsError::Structural("quiesce FD is outside the i32 range"))?;
             if fd < 0 {
-                return Err("quiesce FD must be nonnegative");
+                return Err(OwnFdsError::Structural("quiesce FD must be nonnegative"));
             }
             if !unique.insert(fd) {
-                return Err("file descriptors must be globally unique");
+                return Err(OwnFdsError::Structural(
+                    "file descriptors must be globally unique",
+                ));
             }
             Ok(fd)
         })
         .transpose()?;
+    let duplicate = |fd: i32| {
+        // fcntl accepts the raw value directly, so EBADF is reported without
+        // manufacturing an OwnedFd for the caller's descriptor.
+        let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if duplicated < 0 {
+            Err(OwnFdsError::Io(io::Error::last_os_error()))
+        } else {
+            // SAFETY: fcntl returned a fresh descriptor owned by this call.
+            Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
+        }
+    };
     let fds = validated
         .into_iter()
-        .map(|fd| {
-            // SAFETY: Python transfers each socket exactly once with
-            // `socket.detach()` before entering Rust. The complete set was
-            // range- and uniqueness-validated before any ownership began.
-            unsafe { OwnedFd::from_raw_fd(fd) }
-        })
-        .collect();
-    let quiesce_fd = quiesce_fd.map(|fd| {
-        // SAFETY: this descriptor is valid by the same transfer contract and
-        // was validated against every listener before ownership began.
-        unsafe { OwnedFd::from_raw_fd(fd) }
-    });
+        .map(duplicate)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    let quiesce_fd = quiesce_fd.map(duplicate).transpose()?;
     Ok((fds, quiesce_fd))
 }
 
@@ -241,28 +282,68 @@ pub(crate) fn own_serve_fds(
 pub(crate) fn own_serve_fds(
     fds: Vec<i64>,
     quiesce_fd: Option<i64>,
-) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), &'static str> {
+) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), OwnFdsError> {
     if quiesce_fd.is_some() {
-        return Err("quiesce pipes are only supported on Unix");
+        return Err(OwnFdsError::Structural(
+            "quiesce pipes are only supported on Unix",
+        ));
     }
     let mut unique = HashSet::with_capacity(fds.len());
     let mut validated = Vec::with_capacity(fds.len());
     for fd in fds {
-        let fd = RawSocket::try_from(fd)
-            .map_err(|_| "socket handle is outside the platform handle range")?;
+        let fd = usize::try_from(fd).map_err(|_| {
+            OwnFdsError::Structural(
+                "socket handles must be nonnegative and fit the platform handle range",
+            )
+        })?;
+        let fd = RawSocket::try_from(fd).map_err(|_| {
+            OwnFdsError::Structural("socket handle is outside the platform handle range")
+        })?;
         if !unique.insert(fd) {
-            return Err("socket handles must be globally unique");
+            return Err(OwnFdsError::Structural(
+                "socket handles must be globally unique",
+            ));
         }
         validated.push(fd);
     }
     let fds = validated
         .into_iter()
         .map(|fd| {
-            // SAFETY: Python transfers each socket exactly once with
-            // `socket.detach()` and the complete set is uniqueness-validated.
-            unsafe { OwnedSocket::from_raw_socket(fd) }
+            let mut info = std::mem::MaybeUninit::zeroed();
+            let result = unsafe {
+                windows_sys::Win32::Networking::WinSock::WSADuplicateSocketW(
+                    fd,
+                    windows_sys::Win32::System::Threading::GetCurrentProcessId(),
+                    info.as_mut_ptr(),
+                )
+            };
+            if result != 0 {
+                return Err(OwnFdsError::Io(io::Error::from_raw_os_error(unsafe {
+                    windows_sys::Win32::Networking::WinSock::WSAGetLastError()
+                })));
+            }
+            let info = unsafe { info.assume_init() };
+            let duplicated = unsafe {
+                windows_sys::Win32::Networking::WinSock::WSASocketW(
+                    windows_sys::Win32::Networking::WinSock::FROM_PROTOCOL_INFO,
+                    windows_sys::Win32::Networking::WinSock::FROM_PROTOCOL_INFO,
+                    windows_sys::Win32::Networking::WinSock::FROM_PROTOCOL_INFO,
+                    &info,
+                    0,
+                    windows_sys::Win32::Networking::WinSock::WSA_FLAG_OVERLAPPED
+                        | windows_sys::Win32::Networking::WinSock::WSA_FLAG_NO_HANDLE_INHERIT,
+                )
+            };
+            if duplicated == windows_sys::Win32::Networking::WinSock::INVALID_SOCKET {
+                return Err(OwnFdsError::Io(io::Error::from_raw_os_error(unsafe {
+                    windows_sys::Win32::Networking::WinSock::WSAGetLastError()
+                })));
+            }
+            // SAFETY: WSASocketW returned a fresh socket owned by this call.
+            Ok(unsafe { OwnedSocket::from_raw_socket(duplicated) })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
     Ok((fds, None))
 }
 

@@ -3,6 +3,7 @@ import ctypes
 import gc
 import os
 import re
+import resource
 import signal
 import socket
 import sys
@@ -655,7 +656,7 @@ async def test_repeated_cancellation_cannot_interrupt_native_drain(
     shutdown_received = asyncio.Event()
     release_drain = asyncio.Event()
 
-    async def fake_serve_fds(
+    def fake_serve_fds(
         _app,
         fds,
         _config,
@@ -665,16 +666,15 @@ async def test_repeated_cancellation_cannot_interrupt_native_drain(
         ready_trigger,
         *_args,
         **_kwargs,
-    ) -> None:
-        ready_trigger()
-        native_started.set()
-        try:
+    ):
+        async def run() -> None:
+            ready_trigger()
+            native_started.set()
             assert await shutdown_trigger == 'stop'
             shutdown_received.set()
             await release_drain.wait()
-        finally:
-            for fd in fds:
-                os.close(fd)
+
+        return run()
 
     monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
 
@@ -707,7 +707,7 @@ async def test_native_cancelled_error_propagates_without_shutdown_spin(
 
     calls = 0
 
-    async def fake_serve_fds(
+    def fake_serve_fds(
         _app,
         fds,
         _config,
@@ -717,17 +717,17 @@ async def test_native_cancelled_error_propagates_without_shutdown_spin(
         ready_trigger,
         *_args,
         **_kwargs,
-    ) -> None:
+    ):
         nonlocal calls
         calls += 1
-        try:
-            if calls == 1:
-                raise asyncio.CancelledError
+        if calls == 1:
+            raise asyncio.CancelledError
+
+        async def run() -> None:
             ready_trigger()
             assert await shutdown_trigger == 'stop'
-        finally:
-            for fd in fds:
-                os.close(fd)
+
+        return run()
 
     monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
 
@@ -770,17 +770,11 @@ async def test_synchronous_native_setup_failure_clears_state_before_reuse(
         calls += 1
         published_addresses.append(server.addresses)
         if calls == 1:
-            for fd in fds:
-                os.close(fd)
             raise RuntimeError('synchronous native setup failed')
 
         async def run() -> None:
-            try:
-                ready_trigger()
-                assert await shutdown_trigger == 'stop'
-            finally:
-                for fd in fds:
-                    os.close(fd)
+            ready_trigger()
+            assert await shutdown_trigger == 'stop'
 
         return run()
 
@@ -863,7 +857,485 @@ async def test_server_rejects_concurrent_serve_calls() -> None:
         await asyncio.wait_for(first, timeout=2)
 
 
-async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
+@pytest.mark.parametrize('with_quiesce', [True, False])
+async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
+    with_quiesce: bool,
+) -> None:
+    listener_peer, listener_endpoint = socket.socketpair()
+    listener_fd = listener_endpoint.detach()
+    quiesce_peer, quiesce_endpoint = socket.socketpair()
+    quiesce_read = quiesce_endpoint.detach()
+    server = Server(
+        lambda *_args: None,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def active(_generation) -> None:
+        entered.set()
+        await release.wait()
+
+    generation = server._claim_generation(active)
+    await entered.wait()
+    try:
+        with pytest.raises(RuntimeError, match='active serve'):
+            await server.serve_worker_fds(
+                [listener_fd],
+                quiesce_fd=quiesce_read if with_quiesce else None,
+                prepared_tls=None,
+            )
+        listener_peer.settimeout(1)
+        assert listener_peer.recv(1) == b''
+        if with_quiesce:
+            quiesce_peer.settimeout(1)
+            assert quiesce_peer.recv(1) == b''
+        else:
+            os.close(quiesce_read)
+    finally:
+        release.set()
+        await asyncio.wait_for(generation.released, timeout=2)
+        listener_peer.close()
+        quiesce_peer.close()
+
+
+async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) -> None:
+    from h2corn import _lib
+
+    listener_peer, listener_endpoint = socket.socketpair()
+    quiesce_peer, quiesce_endpoint = socket.socketpair()
+    listener_fd = listener_endpoint.detach()
+    quiesce_fd = quiesce_endpoint.detach()
+    started = asyncio.Event()
+
+    async def fake_serve_fds(
+        _app,
+        _fds,
+        _config,
+        shutdown,
+        _retire_trigger,
+        _lifespan_handoff,
+        mark_started,
+        _quiesce_fd,
+        *,
+        prepared_tls,
+    ):
+        assert prepared_tls is None
+        mark_started()
+        started.set()
+        await shutdown
+
+    monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
+    server = Server(lambda *_args: None, Config(lifespan='off'))
+    try:
+        serving = asyncio.create_task(
+            server.serve_worker_fds(
+                [listener_fd], quiesce_fd=quiesce_fd, prepared_tls=None
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+        server.shutdown()
+        await asyncio.wait_for(serving, timeout=2)
+        listener_peer.settimeout(1)
+        quiesce_peer.settimeout(1)
+        assert listener_peer.recv(1) == b''
+        assert quiesce_peer.recv(1) == b''
+    finally:
+        listener_peer.close()
+        quiesce_peer.close()
+
+
+async def test_worker_startup_failure_releases_owned_resources_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = RuntimeError('worker startup sentinel')
+    releases: list[str] = []
+    quiesce_closes: list[int] = []
+
+    class Lease:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def release(self) -> None:
+            releases.append(self.name)
+
+    listeners = [Lease('first'), Lease('second')]
+    quiesce_fd = 73
+
+    monkeypatch.setattr(
+        server_module, 'lease_owned_fds', lambda *_args, **_kwargs: listeners
+    )
+    monkeypatch.setattr(
+        server_module.os,
+        'close',
+        quiesce_closes.append,
+    )
+
+    async def fail_startup(*_args, **_kwargs) -> None:
+        raise sentinel
+
+    async def app(*_args):
+        raise AssertionError('startup runner is replaced')
+
+    server = Server(app, Config(lifespan='on'))
+    monkeypatch.setattr(server, '_run_primary_startup', fail_startup)
+
+    with pytest.raises(RuntimeError) as error:
+        await server.serve_worker_fds(
+            [11, 12], quiesce_fd=quiesce_fd, prepared_tls=None
+        )
+
+    assert error.value is sentinel
+    assert releases == ['second', 'first']
+    assert quiesce_closes == [quiesce_fd]
+
+
+async def test_lease_owned_fds_closes_partial_construction(monkeypatch) -> None:
+    from h2corn import _socket
+
+    first_peer, first_endpoint = socket.socketpair()
+    second_peer, second_endpoint = socket.socketpair()
+    first_fd = first_endpoint.detach()
+    second_fd = second_endpoint.detach()
+    original = _socket._InheritedListener
+    calls = 0
+
+    def fail_after_first(*, fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError('lease construction failed')
+        return original(fd=fd)
+
+    monkeypatch.setattr(_socket, '_InheritedListener', fail_after_first)
+    try:
+        with pytest.raises(RuntimeError, match='lease construction failed'):
+            _socket.lease_owned_fds([first_fd, second_fd])
+        first_peer.settimeout(1)
+        second_peer.settimeout(1)
+        assert first_peer.recv(1) == b''
+        assert second_peer.recv(1) == b''
+    finally:
+        first_peer.close()
+        second_peer.close()
+
+
+async def test_lease_owned_fds_rolls_back_an_iterable_that_raises() -> None:
+    from h2corn import _socket
+
+    peers: list[socket.socket] = []
+    fds: list[int] = []
+    for _ in range(2):
+        peer, endpoint = socket.socketpair()
+        peers.append(peer)
+        fds.append(endpoint.detach())
+
+    def values():
+        yield from fds
+        raise RuntimeError('iteration failed')
+
+    try:
+        with pytest.raises(RuntimeError, match='iteration failed'):
+            _socket.lease_owned_fds(values())
+        for peer in peers:
+            peer.settimeout(1)
+            assert peer.recv(1) == b''
+    finally:
+        for peer in peers:
+            peer.close()
+
+
+async def test_lease_owned_fds_claims_quiesce_before_iterable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    listener_peer, listener_endpoint = socket.socketpair()
+    quiesce_peer, quiesce_endpoint = socket.socketpair()
+    listener_fd = listener_endpoint.detach()
+    quiesce_fd = quiesce_endpoint.detach()
+    real_close = os.close
+    closed: list[int] = []
+
+    def record_close(value: int) -> None:
+        if value == quiesce_fd:
+            closed.append(value)
+        real_close(value)
+
+    monkeypatch.setattr(_socket.os, 'close', record_close)
+
+    def values():
+        yield listener_fd
+        raise RuntimeError('iteration sentinel')
+
+    try:
+        with pytest.raises(RuntimeError, match='iteration sentinel'):
+            _socket.lease_owned_fds(values(), quiesce_fd=quiesce_fd)
+        listener_peer.settimeout(1)
+        quiesce_peer.settimeout(1)
+        assert listener_peer.recv(1) == b''
+        assert quiesce_peer.recv(1) == b''
+        assert closed == [quiesce_fd]
+    finally:
+        listener_peer.close()
+        quiesce_peer.close()
+        with suppress(OSError):
+            real_close(listener_fd)
+        with suppress(OSError):
+            real_close(quiesce_fd)
+
+
+async def test_lease_owned_fds_claims_quiesce_before_invalid_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    listener_peer, listener_endpoint = socket.socketpair()
+    quiesce_peer, quiesce_endpoint = socket.socketpair()
+    listener_fd = listener_endpoint.detach()
+    quiesce_fd = quiesce_endpoint.detach()
+    real_close = os.close
+    closed: list[int] = []
+
+    def record_close(value: int) -> None:
+        if value == quiesce_fd:
+            closed.append(value)
+        real_close(value)
+
+    monkeypatch.setattr(_socket.os, 'close', record_close)
+
+    def values():
+        yield listener_fd
+        yield []
+
+    try:
+        with pytest.raises(TypeError, match='listener fds must be integers'):
+            _socket.lease_owned_fds(values(), quiesce_fd=quiesce_fd)
+        listener_peer.settimeout(1)
+        quiesce_peer.settimeout(1)
+        assert listener_peer.recv(1) == b''
+        assert quiesce_peer.recv(1) == b''
+        assert closed == [quiesce_fd]
+    finally:
+        listener_peer.close()
+        quiesce_peer.close()
+        with suppress(OSError):
+            real_close(listener_fd)
+        with suppress(OSError):
+            real_close(quiesce_fd)
+
+
+async def test_lease_owned_fds_preserves_type_error_and_closes_prior_fd() -> None:
+    from h2corn import _socket
+
+    peer, endpoint = socket.socketpair()
+    fd = endpoint.detach()
+
+    def values():
+        yield fd
+        yield []
+
+    try:
+        with pytest.raises(TypeError, match='listener fds must be integers'):
+            _socket.lease_owned_fds(values())
+        peer.settimeout(1)
+        assert peer.recv(1) == b''
+    finally:
+        peer.close()
+        with suppress(OSError):
+            os.close(fd)
+
+
+async def test_lease_owned_fds_rejects_bool_quiesce_and_closes_normalized_fd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    closed: list[int] = []
+    monkeypatch.setattr(_socket.os, 'close', closed.append)
+
+    with pytest.raises(TypeError, match=re.escape('quiesce fd must be an integer')):
+        _socket.lease_owned_fds([], quiesce_fd=True)
+
+    assert closed == [1]
+
+
+async def test_lease_owned_fds_rejects_bool_listener_and_closes_normalized_fd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    closed: list[int] = []
+    monkeypatch.setattr(_socket.os, 'close', closed.append)
+
+    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
+        _socket.lease_owned_fds([False])
+
+    assert closed == [0]
+
+
+async def test_lease_owned_fds_bool_listener_aliases_prior_fd_without_double_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    closed: list[int] = []
+    monkeypatch.setattr(_socket.os, 'close', closed.append)
+
+    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
+        _socket.lease_owned_fds([0, False])
+
+    assert closed == [0]
+
+
+async def test_lease_owned_fds_bool_listener_aliases_quiesce_without_double_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    closed: list[int] = []
+    monkeypatch.setattr(_socket.os, 'close', closed.append)
+
+    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
+        _socket.lease_owned_fds([True], quiesce_fd=1)
+
+    assert closed == [1]
+
+
+async def test_lease_owned_fds_closes_prior_listener_before_bool_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    peer, endpoint = socket.socketpair()
+    listener_fd = endpoint.detach()
+    real_close = os.close
+    closed: list[int] = []
+
+    def record_close(value: int) -> None:
+        if value == listener_fd:
+            closed.append(value)
+            real_close(value)
+        elif value == 0:
+            closed.append(value)
+        else:
+            real_close(value)
+
+    monkeypatch.setattr(_socket.os, 'close', record_close)
+    try:
+        with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
+            _socket.lease_owned_fds([listener_fd, False])
+        peer.settimeout(1)
+        assert peer.recv(1) == b''
+        assert closed == [listener_fd, 0]
+    finally:
+        peer.close()
+        with suppress(OSError):
+            real_close(listener_fd)
+
+
+async def test_lease_owned_fds_rejects_duplicate_listener_without_double_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    peer, endpoint = socket.socketpair()
+    fd = endpoint.detach()
+    real_close = os.close
+    closed: list[int] = []
+
+    def record_close(value: int) -> None:
+        if value == fd:
+            closed.append(value)
+        real_close(value)
+
+    monkeypatch.setattr(_socket.os, 'close', record_close)
+    try:
+        with pytest.raises(ValueError, match='unique'):
+            _socket.lease_owned_fds([fd, fd])
+        peer.settimeout(1)
+        assert peer.recv(1) == b''
+        assert closed == [fd]
+    finally:
+        peer.close()
+        with suppress(OSError):
+            real_close(fd)
+
+
+async def test_lease_owned_fds_rejects_listener_quiesce_duplicate_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2corn import _socket
+
+    peer, endpoint = socket.socketpair()
+    fd = endpoint.detach()
+    real_close = os.close
+    closed: list[int] = []
+
+    def record_close(value: int) -> None:
+        if value == fd:
+            closed.append(value)
+        real_close(value)
+
+    monkeypatch.setattr(_socket.os, 'close', record_close)
+    try:
+        with pytest.raises(ValueError, match='unique'):
+            _socket.lease_owned_fds([fd], quiesce_fd=fd)
+        peer.settimeout(1)
+        assert peer.recv(1) == b''
+        assert closed == [fd]
+    finally:
+        peer.close()
+        with suppress(OSError):
+            real_close(fd)
+
+
+async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
+    monkeypatch,
+) -> None:
+    from h2corn import _socket
+
+    listener_peers = []
+    listeners = []
+    for _ in range(2):
+        peer, endpoint = socket.socketpair()
+        listener_peers.append(peer)
+        listeners.append(endpoint.detach())
+    quiesce_peer, quiesce_fd = socket.socketpair()
+    quiesce_peer.settimeout(1)
+    original = _socket._InheritedListener
+    calls = 0
+
+    def fail_after_first(*, fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError('lease construction failed')
+        return original(fd=fd)
+
+    monkeypatch.setattr(_socket, '_InheritedListener', fail_after_first)
+    server = Server(
+        lambda *_args: None,
+        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
+    )
+    try:
+        with pytest.raises(RuntimeError, match='lease construction failed'):
+            await server.serve_worker_fds(
+                listeners,
+                quiesce_fd=quiesce_fd.detach(),
+                prepared_tls=None,
+            )
+        for peer in listener_peers:
+            peer.settimeout(1)
+            assert peer.recv(1) == b''
+        assert quiesce_peer.recv(1) == b''
+    finally:
+        for peer in listener_peers:
+            peer.close()
+        quiesce_peer.close()
+
+
+async def test_serve_fds_count_mismatch_leaves_caller_handles_open() -> None:
     from h2corn._lib import prepare_tls, serve_fds
 
     async def app(scope, receive, send):
@@ -900,10 +1372,11 @@ async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
             with pytest.raises(asyncio.CancelledError):
                 await shutdown
         for fd in raw_fds:
-            with pytest.raises(OSError):
-                os.fstat(fd)
-        with pytest.raises(OSError):
-            os.fstat(quiesce_read_fd)
+            os.fstat(fd)
+        os.fstat(quiesce_read_fd)
+        for fd in raw_fds:
+            os.close(fd)
+        os.close(quiesce_read_fd)
 
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
@@ -914,7 +1387,19 @@ async def test_serve_fds_count_mismatch_closes_unadopted_handles() -> None:
 
 @pytest.mark.parametrize(
     ('listener_fds', 'quiesce_fd'),
-    [([-1], None), ([2**40], None), ([7, 7], None), ([7], 7)],
+    [
+        ([-1], None),
+        pytest.param(
+            [2**40],
+            None,
+            marks=pytest.mark.skipif(
+                sys.platform == 'win32' and ctypes.sizeof(ctypes.c_void_p) == 8,
+                reason='2**40 is within the 64-bit Windows handle range',
+            ),
+        ),
+        ([7, 7], None),
+        ([7], 7),
+    ],
 )
 async def test_serve_fds_rejects_unsafe_descriptor_ownership(
     listener_fds: list[int],
@@ -942,6 +1427,114 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
             quiesce_fd,
             prepared_tls=prepare_tls(config),
         )
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows ingress regression')
+async def test_serve_fds_negative_handle_is_value_error() -> None:
+    from h2corn._lib import prepare_tls, serve_fds
+
+    config = Config(bind=('fd://0',), lifespan='off')
+    with pytest.raises(ValueError):
+        serve_fds(
+            lambda *_args: None,
+            [-1],
+            config,
+            asyncio.get_running_loop().create_future(),
+            prepared_tls=prepare_tls(config),
+        )
+
+
+@pytest.mark.parametrize('closed_source', ['listener', 'quiesce'])
+async def test_serve_fds_closed_positive_sources_raise_oserror(
+    closed_source: str,
+) -> None:
+    from h2corn._lib import prepare_tls, serve_fds
+
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    listener.setblocking(False)
+    listener_fd = listener.detach()
+    read_fd, write_fd = os.pipe()
+    soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft_limit == resource.RLIM_INFINITY or soft_limit > 2**31 - 1:
+        os.close(listener_fd)
+        os.close(read_fd)
+        os.close(write_fd)
+        pytest.skip('RLIMIT_NOFILE is infinite or outside the native fd range')
+    invalid_fd = soft_limit
+    if closed_source == 'quiesce':
+        os.close(read_fd)
+        quiesce_fd = invalid_fd
+    else:
+        with suppress(OSError):
+            os.close(write_fd)
+        os.close(read_fd)
+        quiesce_fd = None
+    config = Config(bind=('fd://0',), lifespan='off')
+    try:
+        with pytest.raises(OSError):
+            serve_fds(
+                lambda *_args: None,
+                [invalid_fd] if closed_source == 'listener' else [listener_fd],
+                config,
+                asyncio.get_running_loop().create_future(),
+                quiesce_fd=quiesce_fd,
+                prepared_tls=prepare_tls(config),
+            )
+        if closed_source == 'quiesce':
+            os.fstat(listener_fd)
+    finally:
+        os.close(listener_fd)
+        with suppress(OSError):
+            os.close(read_fd)
+        with suppress(OSError):
+            os.close(write_fd)
+
+
+async def test_serve_fds_returns_awaitable_and_duplicates_sources() -> None:
+    from h2corn._lib import prepare_tls, serve_fds
+
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    listener.setblocking(False)
+    address = listener.getsockname()
+    listener_fd = listener.detach()
+    quiesce_read, quiesce_write = os.pipe()
+    shutdown = asyncio.get_running_loop().create_future()
+    config = Config(bind=('fd://0',), lifespan='off')
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'http':
+            await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b'fd-duplicate'})
+
+    try:
+        result = serve_fds(
+            app,
+            [listener_fd],
+            config,
+            shutdown,
+            quiesce_fd=quiesce_read,
+            prepared_tls=prepare_tls(config),
+        )
+        os.fstat(listener_fd)
+        os.fstat(quiesce_read)
+        assert hasattr(result, '__await__')
+        os.close(listener_fd)
+        os.close(quiesce_read)
+        await wait_for_port(address[1])
+        status, _, body, _ = await http1_request(
+            port=address[1],
+            request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+        )
+        assert status == 200
+        assert body == b'fd-duplicate'
+        os.write(quiesce_write, b'S')
+        await asyncio.wait_for(result, timeout=2)
+    finally:
+        os.close(quiesce_write)
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

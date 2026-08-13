@@ -27,7 +27,7 @@ from h2corn._systemd import notify_ready, notify_stopping
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from pathlib import Path
 
     from h2corn._lib import _LifespanHandoff, _PreparedTls
@@ -633,7 +633,7 @@ class Server:
 
     async def serve_worker_fds(
         self,
-        fds: list[int],
+        fds: Iterable[int],
         *,
         retire_trigger: Callable[[], None] | None = None,
         ready_trigger: Callable[[], None] | None = None,
@@ -646,9 +646,32 @@ class Server:
         Supervisor workers hand inherited listeners and control triggers here
         instead of rebinding. Ownership of `fds` transfers unconditionally.
         """
+        listeners = lease_owned_fds(fds, quiesce_fd=quiesce_fd)
+        released = False
+
+        def _release_owned() -> BaseException | None:
+            nonlocal released
+            if released:
+                return None
+            released = True
+            cleanup_error: BaseException | None = None
+            for listener in reversed(listeners):
+                try:
+                    listener.release()
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+            if quiesce_fd is not None:
+                try:
+                    os.close(quiesce_fd)
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+            if cleanup_error is not None:
+                return cleanup_error
+            return None
 
         async def _body(generation: _ServeGeneration) -> None:
-            listeners = lease_owned_fds(fds)
             try:
                 await self._serve_with_primary_lifespan(
                     generation,
@@ -657,13 +680,22 @@ class Server:
                     ready_trigger=ready_trigger,
                     drain_complete_trigger=drain_complete_trigger,
                     quiesce_fd=quiesce_fd,
+                    release_pre_native_listeners=_release_owned,
                     prepared_tls=prepared_tls,
                 )
-            finally:
-                for listener in reversed(listeners):
-                    listener.release()
+            except BaseException:
+                _release_owned()
+                raise
+            else:
+                cleanup_error = _release_owned()
+                if cleanup_error is not None:
+                    raise cleanup_error
 
-        generation = self._claim_generation(_body)
+        try:
+            generation = self._claim_generation(_body)
+        except BaseException:
+            _release_owned()
+            raise
         await self._await_generation(generation)
 
     def _warn_about_supervisor_only_settings(self) -> None:
@@ -756,6 +788,7 @@ class Server:
         ready_trigger: Callable[[], None] | None = None,
         drain_complete_trigger: Callable[[], None] | None = None,
         quiesce_fd: int | None = None,
+        release_pre_native_listeners: Callable[[], BaseException | None] | None = None,
         prepared_tls: _PreparedTls,
     ) -> None:
         """Run primary lifespan around the native server for one generation."""
@@ -774,14 +807,22 @@ class Server:
             )
             return
 
-        def release_pre_native_listeners() -> None:
-            # Lifespan is the last fallible step before native ownership. A
-            # public startup error must not leave the bound descriptors (or a
-            # created Unix path) live while retained lifespan cleanup runs.
-            for listener in reversed(listeners):
-                listener.release()
-            with self._state_lock:
-                self._addresses = ()
+        if release_pre_native_listeners is None:
+
+            def release_pre_native_listeners() -> BaseException | None:
+                # Lifespan is the last fallible step before native ownership. A
+                # public startup error must not leave the bound descriptors (or a
+                # created Unix path) live while retained lifespan cleanup runs.
+                cleanup_error: BaseException | None = None
+                for listener in reversed(listeners):
+                    try:
+                        listener.release()
+                    except BaseException as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
+                with self._state_lock:
+                    self._addresses = ()
+                return cleanup_error
 
         lifespan = LifespanRunner(self.app)
         try:
@@ -792,12 +833,15 @@ class Server:
                 startup_timeout,
                 release_pre_native_listeners,
             )
-        except _StartupAborted:
+        except _StartupAborted as exc:
             # Shutdown was requested before startup finished; the public
             # boundary settles without error and cancellation is re-raised
             # by the caller if that is how stop was asked for.
+            if exc.cleanup_error is not None:
+                raise exc.cleanup_error from None
             return
         except BaseException as exc:
+            # Startup is the primary failure; cleanup must not replace it.
             release_pre_native_listeners()
             await self._retain_until_lifespan_settles(
                 generation, lifespan, startup_timeout, exc
@@ -849,7 +893,7 @@ class Server:
         lifespan: LifespanRunner,
         mode: str,
         startup_timeout: float | None,
-        release_pre_native_listeners: Callable[[], None],
+        release_pre_native_listeners: Callable[[], BaseException | None],
     ) -> None:
         """Run primary lifespan startup, aborting if shutdown is requested first."""
         startup = asyncio.ensure_future(
@@ -877,8 +921,12 @@ class Server:
                 return
             # Shutdown won the race: abandon startup so a cooperative app
             # observes cancellation, and retain ownership if it does not.
-            release_pre_native_listeners()
-            self._finish_returned(generation, None)
+            try:
+                cleanup_error = release_pre_native_listeners()
+            except BaseException as exc:
+                cleanup_error = exc
+            if cleanup_error is None:
+                self._finish_returned(generation, None)
             startup.cancel()
             try:
                 await startup
@@ -887,7 +935,9 @@ class Server:
             settled = await lifespan.discard_task(startup_timeout)
             if not settled:
                 await lifespan.wait_retained_task()
-            raise _StartupAborted
+            if cleanup_error is not None:
+                self._finish_returned(generation, cleanup_error)
+            raise _StartupAborted(cleanup_error)
         finally:
             if not stop.done():
                 stop.cancel()
@@ -964,19 +1014,20 @@ class Server:
         # is requested, and whether it has passed is a question for the clock.
         drain_expires_at: float | None = None
         try:
-            native_serve = asyncio.ensure_future(
-                serve_fds(
-                    self.app,
-                    [listener.transfer() for listener in listeners],
-                    self.config,
-                    shutdown_task,
-                    retire_trigger,
-                    lifespan_handoff,
-                    _mark_started,
-                    quiesce_fd,
-                    prepared_tls=prepared_tls,
-                )
+            # Native duplication is synchronous. Keep the leases alive while
+            # it runs, then the caller may close them without affecting native.
+            native_result = serve_fds(
+                self.app,
+                [listener.raw_handle() for listener in listeners],
+                self.config,
+                shutdown_task,
+                retire_trigger,
+                lifespan_handoff,
+                _mark_started,
+                quiesce_fd,
+                prepared_tls=prepared_tls,
             )
+            native_serve = asyncio.ensure_future(native_result)
             while True:
                 shielded = asyncio.shield(native_serve)
                 try:
@@ -1053,10 +1104,19 @@ class Server:
                         quiesce_write_fd = None
                 if quiesce_write_fd is not None:
                     os.close(quiesce_write_fd)
+                # A caller-supplied quiesce source is borrowed by serve_fds.
+                # Its owner is serve_worker_fds (or the internal pipe branch
+                # below), not this native lifecycle.
+                if internal_quiesce_write_fd is not None:
+                    assert quiesce_fd is not None
+                    os.close(quiesce_fd)
 
 
 class _StartupAborted(BaseException):
     """Internal: primary lifespan startup stopped because shutdown was requested."""
+
+    def __init__(self, cleanup_error: BaseException | None = None) -> None:
+        self.cleanup_error = cleanup_error
 
 
 def serve(app: Application, config: Config | None = None) -> None:

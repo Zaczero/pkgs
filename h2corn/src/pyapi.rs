@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::conversion::FromPyObjectOwned;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use smallvec::SmallVec;
@@ -31,7 +31,9 @@ use crate::pyloop::{
     spawn_shard_thread,
 };
 use crate::runtime::{AppRuntime, AppRuntimeHandle, RuntimeLimits};
-use crate::server::{ListenerFd, QuiesceFd, own_serve_fds, serve_from_fds};
+use crate::server::{
+    ListenerFd, OwnFdsError, PythonRawHandle, QuiesceFd, own_serve_fds, serve_from_fds,
+};
 use crate::tls::{TlsMaterial, build_tls_config};
 
 const TOKIO_EVENT_INTERVAL: u32 = 31;
@@ -818,10 +820,10 @@ async fn run_serve_task(task: ServeTask) {
 #[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None, *, prepared_tls))]
 /// Adopt listener file descriptors and run one worker until shutdown.
 ///
-/// Takes ownership of every descriptor in `fds` and of `quiesce_fd`: they are
-/// closed when serving ends, and also when startup fails. Callers pass a
-/// descriptor they have already detached, never one they still hold — see
-/// `_socket._CreatedListener.transfer`.
+/// Borrows every descriptor in `fds` and `quiesce_fd` for this synchronous call,
+/// duplicating them before returning the awaitable. The caller retains and may
+/// close the sources immediately after return; native duplicates are closed
+/// when serving ends or startup fails.
 ///
 /// `prepared_tls` is required: PEM is converted once in `prepare_tls` and
 /// reused here. There is no path that reopens certificate files in a worker.
@@ -831,7 +833,7 @@ async fn run_serve_task(task: ServeTask) {
 /// app : object
 ///     The ASGI application to serve.
 /// fds : list of int
-///     Listener descriptors to adopt; ownership transfers to this call.
+///     Listener descriptors to borrow and duplicate.
 /// config : Config
 ///     The validated server configuration.
 /// shutdown_trigger : object
@@ -843,7 +845,7 @@ async fn run_serve_task(task: ServeTask) {
 /// ready_trigger : object, optional
 ///     Resolved once the worker is accepting connections.
 /// quiesce_fd : int, optional
-///     Descriptor signalling quiesce; ownership transfers to this call.
+///     Descriptor signalling quiesce; borrowed and duplicated on Unix.
 /// prepared_tls : _PreparedTls
 ///     The acceptor built once by ``prepare_tls``.
 ///
@@ -858,18 +860,21 @@ async fn run_serve_task(task: ServeTask) {
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
     app: Py<PyAny>,
-    fds: Vec<i64>,
+    fds: Vec<PythonRawHandle>,
     config: &Bound<'py, PyAny>,
     shutdown_trigger: Py<PyAny>,
     retire_trigger: Option<Py<PyAny>>,
     lifespan_handoff: Option<Py<LifespanHandoff>>,
     ready_trigger: Option<Py<PyAny>>,
-    quiesce_fd: Option<i64>,
+    quiesce_fd: Option<PythonRawHandle>,
     prepared_tls: PyRef<'_, PreparedTls>,
 ) -> PyResult<Bound<'py, PyAny>> {
     // Acquire RAII ownership before any fallible parsing/runtime setup. Every
     // early return and partial listener adoption now closes the remainder.
-    let (fds, quiesce_fd) = own_serve_fds(fds, quiesce_fd).map_err(PyValueError::new_err)?;
+    let (fds, quiesce_fd) = own_serve_fds(fds, quiesce_fd).map_err(|error| match error {
+        OwnFdsError::Structural(message) => PyValueError::new_err(message),
+        OwnFdsError::Io(error) => PyOSError::new_err(error),
+    })?;
     let py_config = PyConfig(config);
     let config = py_config.server_config(prepared_tls.0.clone())?;
     init_tokio_runtime(config.runtime_threads)?;

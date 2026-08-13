@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import io
+import operator
 import os
 import signal
 import socket
@@ -22,7 +23,7 @@ from h2corn._config import (
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from typing import Any, Self
 
 
@@ -132,16 +133,13 @@ class _CreatedListener:
     socket: socket.socket | None
     path: _OwnedSocketPath | None
 
-    def transfer(self) -> int:
+    def raw_handle(self) -> int:
         sock = self.socket
         if sock is None:
-            raise RuntimeError('listener already transferred')
-        self.socket = None
-        return sock.detach()
+            raise RuntimeError('listener already released')
+        return sock.fileno()
 
     def release(self) -> None:
-        # Untransferred: close the socket. Transferred: native already owns the
-        # fd; only the Unix-path claim remains until serving ends.
         sock = self.socket
         self.socket = None
         if sock is not None:
@@ -158,22 +156,17 @@ class _BorrowedListener:
 
     socket: socket.socket | None
 
-    def transfer(self) -> int:
+    def raw_handle(self) -> int:
         sock = self.socket
         if sock is None:
-            raise RuntimeError('listener already transferred')
-        self.socket = None
-        # `_adopt_listener()` owns a duplicate, so native serving can consume
-        # this fd without changing the caller's descriptor lifetime.
-        return sock.detach()
+            raise RuntimeError('listener already released')
+        return sock.fileno()
 
     def release(self) -> None:
-        # We detach before closing our duplicate, so this code cannot ever
-        # close the fd supplied by the caller.
         sock = self.socket
         self.socket = None
         if sock is not None:
-            os.close(sock.detach())
+            sock.close()
 
 
 @dataclass(slots=True)
@@ -191,11 +184,10 @@ class _InheritedListener:
 
     fd: int | None
 
-    def transfer(self) -> int:
+    def raw_handle(self) -> int:
         fd = self.fd
         if fd is None:
-            raise RuntimeError('listener already transferred')
-        self.fd = None
+            raise RuntimeError('listener already released')
         return fd
 
     def release(self) -> None:
@@ -379,13 +371,110 @@ def _build_tcp_listener(host: str, port: int, config: Config) -> _CreatedListene
     raise OSError(f'could not bind {host}:{port}: {last_error}') from last_error
 
 
-def lease_owned_fds(fds: Sequence[int]) -> tuple[_InheritedListener, ...]:
+def lease_owned_fds(
+    fds: Iterable[int],
+    *,
+    quiesce_fd: int | None = None,
+) -> tuple[_InheritedListener, ...]:
     """Lease fds a supervisor already transferred to this worker.
 
     These descriptors are this process's responsibility from entry, unlike
     ``fd://`` descriptors supplied by an embedding caller.
     """
-    return tuple(_InheritedListener(fd=fd) for fd in fds)
+    listeners: list[_InheritedListener] = []
+    raw_fds: list[int | None] = []
+    seen: set[int] = set()
+    current_fd: int | None = None
+    quiesce_owned = False
+
+    def close_raw_fds() -> None:
+        for fd in raw_fds:
+            if fd is None:
+                continue
+            try:
+                os.close(fd)
+            except BaseException:
+                pass
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except BaseException:
+                pass
+        if quiesce_owned and quiesce_fd is not None:
+            try:
+                os.close(quiesce_fd)
+            except BaseException:
+                pass
+
+    try:
+        if quiesce_fd is not None:
+            try:
+                normalized_quiesce_fd = operator.index(quiesce_fd)
+            except TypeError:
+                raise TypeError('quiesce fd must be an integer') from None
+            current_fd = normalized_quiesce_fd
+            if isinstance(quiesce_fd, bool):
+                raise TypeError('quiesce fd must be an integer')
+            quiesce_fd = normalized_quiesce_fd
+            seen.add(quiesce_fd)
+            quiesce_owned = True
+            current_fd = None
+
+        for fd in fds:
+            try:
+                normalized_fd = operator.index(fd)
+            except TypeError:
+                raise TypeError('listener fds must be integers') from None
+            if isinstance(fd, bool):
+                current_fd = None if normalized_fd in seen else normalized_fd
+                raise TypeError('listener fds must be integers')
+            current_fd = normalized_fd
+            if normalized_fd in seen:
+                current_fd = None
+                raise ValueError('listener fds must be unique')
+            seen.add(normalized_fd)
+            raw_fds.append(normalized_fd)
+            current_fd = None
+
+        # Construct leases only after the complete transferred set has one
+        # owner and has passed the duplicate check. A wrapped fd leaves the
+        # raw rollback set as soon as the wrapper owns it.
+        for index, fd in enumerate(raw_fds):
+            assert fd is not None
+            listener = _InheritedListener(fd=fd)
+            raw_fds[index] = None
+            try:
+                listeners.append(listener)
+            except BaseException:
+                try:
+                    listener.release()
+                except BaseException:
+                    pass
+                raise
+    except BaseException:
+        # Ownership transfers as each value is accepted. Wrapped and raw
+        # ownership are disjoint, so every unique descriptor is attempted once.
+        for listener in listeners:
+            try:
+                listener.release()
+            except BaseException:
+                pass
+        close_raw_fds()
+        raise
+    try:
+        return tuple(listeners)
+    except BaseException:
+        for listener in listeners:
+            try:
+                listener.release()
+            except BaseException:
+                pass
+        if quiesce_owned and quiesce_fd is not None:
+            try:
+                os.close(quiesce_fd)
+            except BaseException:
+                pass
+        raise
 
 
 def _build_sockets(
