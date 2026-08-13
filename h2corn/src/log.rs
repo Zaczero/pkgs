@@ -165,7 +165,13 @@ impl AccessLogBuf {
             return;
         }
 
-        let mut spilled = Vec::with_capacity(used + value.len());
+        // A first spill happens before the rest of the access-line fields are
+        // formatted. Leave room for that suffix rather than immediately
+        // reallocating and copying this prefix on the next append.
+        let capacity = (used + value.len())
+            .next_power_of_two()
+            .max(ACCESS_LOG_LINE_CAPACITY * 2);
+        let mut spilled = Vec::with_capacity(capacity);
         spilled.extend_from_slice(self.as_slice());
         spilled.extend_from_slice(value);
         *self = Self::Spilled(spilled);
@@ -1001,10 +1007,20 @@ mod tests {
         line.append(b"z");
         assert_eq!(line.as_slice().len(), 129);
         assert_eq!(&line.as_slice()[127..], b"yz");
-        assert!(matches!(line, AccessLogBuf::Spilled(_)));
+        let AccessLogBuf::Spilled(spilled) = &line else {
+            panic!("129 bytes must spill");
+        };
+        let spill_capacity = spilled.capacity();
+        assert!(spill_capacity >= 256);
+
+        line.append(&[b'a'; 127]);
+        let AccessLogBuf::Spilled(spilled) = &line else {
+            unreachable!();
+        };
+        assert_eq!(spilled.capacity(), spill_capacity);
 
         line.append(&[b'z'; 4096]);
-        assert_eq!(line.as_slice().len(), 4225);
+        assert_eq!(line.as_slice().len(), 4352);
         assert!(line.as_slice().ends_with(&[b'z'; 4096]));
     }
 
