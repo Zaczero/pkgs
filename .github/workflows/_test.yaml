@@ -10,9 +10,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_PROFILE_DEV_OPT_LEVEL: "1"
-
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -92,6 +89,8 @@ jobs:
     env:
       PACKAGE: ${{ inputs.package }}
       FREETHREADED: ${{ matrix.freethreaded }}
+      SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && matrix.primary == 'true' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -118,6 +117,17 @@ jobs:
             ${{ github.ref == 'refs/heads/main'
                 && (matrix.primary == 'true' || runner.os != 'Linux') }}
           rustflags: ""
+
+      - name: Install sccache
+        if: needs.resolve.outputs.is-rusty == 'true'
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Configure compiler cache
+        if: needs.resolve.outputs.is-rusty == 'true'
+        shell: bash
+        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
 
       - name: Install SQLite command-line shell
         if: inputs.package == 'gometry' && runner.os == 'Windows'
@@ -150,6 +160,11 @@ jobs:
               'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
           fi
           uv run --python "${{ matrix.python-version }}" python -m pytest tests
+
+      - name: Show compiler cache statistics
+        if: always() && needs.resolve.outputs.is-rusty == 'true'
+        shell: bash
+        run: "$SCCACHE_PATH" --show-stats
 
       - name: Check package quality
         if: matrix.primary == 'true' && hashFiles(format('{0}/tools/check.py', inputs.package)) != ''
