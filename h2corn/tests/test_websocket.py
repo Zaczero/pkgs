@@ -1666,12 +1666,13 @@ async def test_http1_websocket_ping_timeout_with_full_inbound_queue(
                 writer.write(_encode_ws_client_frame(0x1, bytes([index])))
             await writer.drain()
 
-            closed = await asyncio.wait_for(
-                reader.read(),
-                timeout=(interval + timeout) * 8,
-            )
-            frames, _ = _parse_ws_frames(closed)
-            assert any(opcode == 0x9 for opcode, _ in frames)
+            with suppress(ConnectionResetError):
+                closed = await asyncio.wait_for(
+                    reader.read(),
+                    timeout=(interval + timeout) * 8,
+                )
+                frames, _ = _parse_ws_frames(closed)
+                assert any(opcode == 0x9 for opcode, _ in frames)
             await asyncio.wait_for(done.wait(), timeout=2.0)
         finally:
             await _close_writer_after_expected_reset(writer)

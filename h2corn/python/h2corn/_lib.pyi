@@ -88,10 +88,10 @@ def serve_fds(
 ) -> Awaitable[None]:
     """Adopt listener file descriptors and run one worker until shutdown.
 
-    Takes ownership of every descriptor in `fds` and of `quiesce_fd`: they are
-    closed when serving ends, and also when startup fails. Callers pass a
-    descriptor they have already detached, never one they still hold — see
-    `_socket._CreatedListener.transfer`.
+    Borrows every descriptor in `fds` and `quiesce_fd` for this synchronous call,
+    duplicating them before returning the awaitable. The caller retains and may
+    close the sources immediately after return; native duplicates are closed
+    when serving ends or startup fails.
 
     `prepared_tls` is required: PEM is converted once in `prepare_tls` and
     reused here. There is no path that reopens certificate files in a worker.
@@ -101,7 +101,7 @@ def serve_fds(
     app : object
         The ASGI application to serve.
     fds : list of int
-        Listener descriptors to adopt; ownership transfers to this call.
+        Listener descriptors to borrow and duplicate.
     config : Config
         The validated server configuration.
     shutdown_trigger : object
@@ -113,7 +113,7 @@ def serve_fds(
     ready_trigger : object, optional
         Resolved once the worker is accepting connections.
     quiesce_fd : int, optional
-        Descriptor signalling quiesce; ownership transfers to this call.
+        Descriptor signalling quiesce; borrowed and duplicated on Unix.
     prepared_tls : _PreparedTls
         The acceptor built once by ``prepare_tls``.
 

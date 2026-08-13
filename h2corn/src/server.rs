@@ -45,10 +45,9 @@ use pyo3::prelude::*;
 use rustix::net::sockopt::set_tcp_quickack;
 #[cfg(unix)]
 use rustix::net::{AddressFamily, getsockname};
-use tokio::io::{
-    AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, ReadHalf, WriteHalf,
-    split,
-};
+#[cfg(unix)]
+use tokio::io::AsyncReadExt as _;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf, ReadHalf, WriteHalf, split};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream, unix::pipe::Receiver as QuiesceReceiver};
@@ -314,7 +313,7 @@ pub(crate) fn own_serve_fds(
             // writable storage for WSAPROTOCOL_INFOW.
             let result = unsafe {
                 windows_sys::Win32::Networking::WinSock::WSADuplicateSocketW(
-                    fd,
+                    fd as _,
                     windows_sys::Win32::System::Threading::GetCurrentProcessId(),
                     info.as_mut_ptr(),
                 )
@@ -349,7 +348,7 @@ pub(crate) fn own_serve_fds(
                 })));
             }
             // SAFETY: WSASocketW returned a fresh socket owned by this call.
-            Ok(unsafe { OwnedSocket::from_raw_socket(duplicated) })
+            Ok(unsafe { OwnedSocket::from_raw_socket(duplicated as _) })
         })
         .collect::<Result<Vec<_>, _>>()?
         .into_boxed_slice();

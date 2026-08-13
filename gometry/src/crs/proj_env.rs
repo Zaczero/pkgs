@@ -34,6 +34,14 @@ pub(super) unsafe fn context_destroy(ptr: *mut ContextRaw) {
     }
 }
 
+pub(super) fn cleanup_thread_context() {
+    // SAFETY: PROJ cleans up only its current thread's default context. All
+    // cached contexts are dropped before this runs.
+    unsafe {
+        proj_sys::proj_cleanup();
+    }
+}
+
 pub(super) fn create_failed() -> Error {
     CrsError::invalid("PROJ context creation returned null".to_owned())
 }

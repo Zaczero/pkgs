@@ -59,6 +59,7 @@ viz = ["arro3-core", "lonboard>=0.16.0"]
 dev = [
   "arro3-core",
   "geopandas",
+  "griffe",
   "h3",
   "mercantile>=1.2.1",
   "pandas",
@@ -69,6 +70,7 @@ dev = [
   "pytest-cov",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
+  "pyperf",
   "rtree",
   "s2sphere",
   "scikit-learn",
@@ -83,7 +85,6 @@ docs = [
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
-  "pyperf",
 ]
 ci = ["lonboard", "pyo3stubs", "pyyaml"]
 

@@ -949,6 +949,7 @@ def _copy_proj_db_with_4326_name(src, dest_dir, name: str):
 
 def test_crs_receiver_info_invalidates_on_configure_only() -> None:
     """``crs_configure`` alone (no ``crs_clear_cache``) must re-resolve receivers."""
+    import shutil
     import tempfile
 
     src = _bundled_proj_db_src()
@@ -968,6 +969,9 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
         finally:
             gm.crs_reset()
             gm.crs_clear_cache()
+        # Windows refuses to remove an open database, unlike Unix. This proves
+        # runtime reset releases PROJ's current-thread database handle.
+        shutil.rmtree(path)
     assert gm.crs_info(4326)['name'] == 'WGS 84'
 
 

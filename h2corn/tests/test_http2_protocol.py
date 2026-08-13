@@ -2610,7 +2610,10 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
     assert growth < 4096, f'{len(updates)} ignored updates retained {growth} KiB'
 
 
-@pytest.mark.skipif(sys.platform != 'linux', reason='reads /proc/self/status')
+@pytest.mark.skipif(
+    sys.platform != 'linux' or sys.implementation.name != 'cpython',
+    reason='requires Linux CPython RSS accounting',
+)
 async def test_header_only_responses_retain_no_more_than_body_responses() -> None:
     """
     A response that ends with its HEADERS — empty, HEAD, 204, 304 — used to

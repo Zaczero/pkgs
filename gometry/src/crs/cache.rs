@@ -8,7 +8,7 @@ use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, TransformOptions, UnitInfo, WktVersion,
+    ProjPipeline, ProjStringVersion, RefCell, TransformOptions, UnitInfo, WktVersion, proj_env,
     runtime_config_generation,
 };
 use crate::error::Result;
@@ -185,6 +185,7 @@ macro_rules! crs_cache {
         pub(crate) fn clear_thread_caches() {
             $($clear)*
             TRANSFORM_OBSERVATION.with(|observation| observation.set((None, 0)));
+            proj_env::cleanup_thread_context();
         }
         fn crs_reported_cache_buckets() -> Vec<CacheBucketInfo> {
             vec![ $($buckets)* ]
