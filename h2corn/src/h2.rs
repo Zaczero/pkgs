@@ -311,15 +311,6 @@ impl<R, W> H2ConnectionState<R, W> {
                     .release_connection_credit(flow_control_len, connection_window_threshold),
             };
         }
-        if stream.counts_toward_read_timeout
-            && let Some(timeout) = self.context.config.timeout_request_body_idle
-        {
-            self.request_deadlines.schedule(
-                state::RequestInputDeadlineKey::body(stream_id),
-                TokioInstant::now() + timeout,
-            );
-        }
-
         if discarded_len != 0 {
             self.connection_window.release(discarded_len);
             stream.receive_window.release(discarded_len);
@@ -351,6 +342,14 @@ impl<R, W> H2ConnectionState<R, W> {
                             .take_update(connection_window_threshold),
                     };
                 },
+            }
+            if stream.counts_toward_read_timeout
+                && let Some(timeout) = self.context.config.timeout_request_body_idle
+            {
+                self.request_deadlines.schedule(
+                    state::RequestInputDeadlineKey::body(stream_id),
+                    TokioInstant::now() + timeout,
+                );
             }
             let credit = self.input_flow.credit(
                 stream_id,

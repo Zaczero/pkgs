@@ -1706,12 +1706,25 @@ async def test_rapid_reset_flood_triggers_enhance_your_calm_goaway() -> None:
         assert body == b'ok'
 
 
-async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
+@pytest.mark.parametrize(
+    'idle_data',
+    [
+        pytest.param(b'', id='zero-length-data'),
+        pytest.param(b'pad', id='padding-only-data'),
+    ],
+)
+async def test_request_body_idle_timeout_only_resets_stalled_stream(
+    idle_data: bytes,
+) -> None:
+    padded = idle_data != b''
+    slow_bodies: list[bytes] = []
+
     async def app(scope, receive, send):
         if scope['path'] == '/slow':
             while True:
                 message = await receive()
                 assert message['type'] == 'http.request'
+                slow_bodies.append(message.get('body', b''))
                 if not message.get('more_body', False):
                     break
             await send({'type': 'http.response.start', 'status': 204, 'headers': []})
@@ -1734,7 +1747,7 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
                 (b':scheme', b'http'),
                 (b':authority', authority),
                 (b':path', b'/slow'),
-                (b'content-length', b'4'),
+                (b'content-length', b'100'),
             ],
             end_stream=False,
         )
@@ -1742,7 +1755,18 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
         writer.write(conn.data_to_send())
         await writer.drain()
 
-        await asyncio.sleep(0.2)
+        idle_payload = bytes([len(idle_data)]) + idle_data if padded else b''
+        for _ in range(4):
+            writer.write(
+                _encode_h2_frame(
+                    0x00,
+                    idle_payload,
+                    flags=0x08 if padded else 0,
+                    stream_id=slow_stream_id,
+                )
+            )
+            await writer.drain()
+            await asyncio.sleep(0.07)
 
         fast_stream_id = conn.get_next_available_stream_id()
         conn.send_headers(
@@ -1755,7 +1779,10 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
             ],
             end_stream=True,
         )
-        writer.write(conn.data_to_send())
+        writer.write(
+            _encode_h2_frame(0x00, b'late', stream_id=slow_stream_id)
+            + conn.data_to_send()
+        )
         await writer.drain()
 
         try:
@@ -1791,6 +1818,7 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream() -> None:
     assert slow_reset == int(h2.errors.ErrorCodes.CANCEL)
     assert fast_status == 200
     assert fast_body == b'fast'
+    assert b'late' not in slow_bodies
 
 
 async def test_h2_header_block_size_limit_resets_stream() -> None:
