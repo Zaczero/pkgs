@@ -64,7 +64,6 @@ _OVERLOAD_TARGETS: tuple[str, ...] = (
     'from_wkb',
     'Point',
     'bearing',
-    'destination',
     'point_between',
 )
 
@@ -199,6 +198,36 @@ def _check_overload_witnesses(errors: list[str]) -> None:
                 f'overload group {name!r}: missing negative type:ignore witness '
                 f'in {_NEGATIVES.relative_to(_ROOT)}'
             )
+
+    # ``destination`` is a receiver method, not a top-level free function.
+    # Keep its scalar/array narrowing and the two important misuse lanes
+    # covered without treating the method name as a module export.
+    destination_positive = (
+        re.search(r'POINT\.destination\s*\(', conf) is not None
+        and re.search(r'POINTS\.destination\s*\(', conf) is not None
+    )
+    if not destination_positive:
+        errors.append(
+            'destination method: missing Point and GeometryArray positive '
+            f'witnesses in {_CONFORMANCE.relative_to(_ROOT)}'
+        )
+    if re.search(
+        r'POINT\.destination\s*\([^\n]*path\s*=\s*[\'\"]rhumb[\'\"][^\n]*'
+        r'unit\s*=\s*[\'\"]meters[\'\"]',
+        neg,
+    ) is None:
+        errors.append(
+            'destination method: missing rhumb-unit negative type:ignore '
+            f'witness in {_NEGATIVES.relative_to(_ROOT)}'
+        )
+    if not (
+        re.search(r'POLY\.destination\s*\([^\n]*#\s*type:\s*ignore', neg)
+        and re.search(r'GEOMS\.destination\s*\([^\n]*#\s*type:\s*ignore', neg)
+    ):
+        errors.append(
+            'destination method: missing invalid receiver negative '
+            f'witnesses in {_NEGATIVES.relative_to(_ROOT)}'
+        )
 
 
 def _check_private_types_have_producers(exported: set[str], errors: list[str]) -> None:

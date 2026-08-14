@@ -6,9 +6,12 @@ rather than through a fixture that would have to carry one violation per rule.
 
 from __future__ import annotations
 
+import ast
+from typing import cast
+
 import pytest
 
-from pyo3stubs.doc_structure import _check
+from pyo3stubs.doc_structure import _check, _stub_parameters
 
 NUMPYDOC = """\
 Do the thing.
@@ -76,3 +79,57 @@ def test_a_documented_default_must_match_the_runtime():
     assert _check('sample', sample, doc) == [
         'sample.scale: documented default 3.0 != runtime 2.0'
     ]
+
+
+class _RuntimeBase:
+    def inherited(self, value: int, flag: bool = True) -> int:
+        return value if flag else -value
+
+
+class _RuntimeChild(_RuntimeBase):
+    pass
+
+
+STUB_OVERRIDE = cast(
+    'ast.FunctionDef',
+    ast.parse(
+        '''\
+@pytest.overload
+def inherited(self, value: int, flag: bool = False) -> int: ...
+def inherited(self, value: int, flag: bool = False) -> int:
+    """An inherited override.
+
+    Parameters
+    ----------
+    value : int
+        The value.
+    flag : bool, default False
+        Whether to keep the sign.
+
+    Returns
+    -------
+    int
+        The result.
+    """
+'''
+    ).body[-1],
+)
+
+
+def test_stub_only_inherited_override_uses_final_stub_signature() -> None:
+    assert _check(
+        'Child.inherited',
+        _RuntimeChild.inherited,
+        ast.get_docstring(STUB_OVERRIDE) or '',
+        parameters=_stub_parameters(STUB_OVERRIDE),
+    ) == []
+
+
+def test_stub_only_inherited_override_flags_stub_default_mismatch() -> None:
+    doc = (ast.get_docstring(STUB_OVERRIDE) or '').replace('default False', 'default True')
+    assert _check(
+        'Child.inherited',
+        _RuntimeChild.inherited,
+        doc,
+        parameters=_stub_parameters(STUB_OVERRIDE),
+    ) == ['Child.inherited.flag: documented default True != runtime False']

@@ -21,6 +21,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import (
     Any,
+    ClassVar,
     Generic,
     Literal,
     NamedTuple,
@@ -643,7 +644,7 @@ class Features:
 
     # Unhashable: property dicts are mutable. Frozen dataclass would also
     # refuse hashing when a field is unhashable at use time; be explicit.
-    __hash__ = None  # type: ignore[assignment]
+    __hash__: ClassVar[None] = None  # pyright: ignore[reportIncompatibleMethodOverride]
 
     def __replace__(self, /, **changes: Any) -> Features:
         """Return a new ``Features`` with the given fields replaced.
@@ -665,7 +666,16 @@ class Features:
             changes.get('ids', self.ids),
         )
 
-    def __reduce__(self):
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[Features],
+        tuple[
+            GeometryArray[Geometry],
+            tuple[dict[str, Any] | None, ...],
+            tuple[FeatureId, ...],
+        ],
+    ]:
         return (type(self), (self.geometries, self.properties, self.ids))
 
     def __iter__(

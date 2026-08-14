@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 import gometry as gm
+from gometry import _lib
 import numpy as np
 import pytest
 
@@ -70,6 +71,11 @@ FLAT_FAMILY_EXPORTS = {
     'osm_shortlink_encode',
     'osm_shortlink_location',
 }
+
+
+def test_flat_native_family_exports_are_direct_aliases() -> None:
+    for name in FLAT_FAMILY_EXPORTS:
+        assert getattr(gm, name) is getattr(_lib, name)
 
 
 def test_consolidated_algorithm_families_have_one_canonical_dispatch_surface() -> None:

@@ -108,13 +108,67 @@ def _parameters(obj: object) -> list[inspect.Parameter] | None:
     ]
 
 
-def _check(qualname: str, obj: object, doc: str) -> list[str]:
+def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
+    """Build signature parameters from a stub's canonical (last) def."""
+    args = node.args
+    positional = [*args.posonlyargs, *args.args]
+    defaults: list[ast.expr | None] = [None] * (
+        len(positional) - len(args.defaults)
+    ) + list(args.defaults)
+    parameters: list[inspect.Parameter] = []
+
+    def default_value(default: ast.expr | None) -> object:
+        if default is None:
+            return inspect.Parameter.empty
+        if isinstance(default, ast.Constant) and default.value is Ellipsis:
+            return ...
+        try:
+            return ast.literal_eval(default)
+        except (ValueError, SyntaxError):
+            return ast.unparse(default)
+
+    for arg, default in zip(positional, defaults, strict=True):
+        kind = (
+            inspect.Parameter.POSITIONAL_ONLY
+            if arg in args.posonlyargs
+            else inspect.Parameter.POSITIONAL_OR_KEYWORD
+        )
+        parameters.append(
+            inspect.Parameter(arg.arg, kind, default=default_value(default))
+        )
+    if args.vararg:
+        parameters.append(
+            inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL)
+        )
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+        parameters.append(
+            inspect.Parameter(
+                arg.arg,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=default_value(default),
+            )
+        )
+    if args.kwarg:
+        parameters.append(
+            inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD)
+        )
+    return [param for param in parameters if param.name not in ('self', 'cls')]
+
+
+def _check(
+    qualname: str,
+    obj: object,
+    doc: str,
+    *,
+    parameters: list[inspect.Parameter] | None = None,
+) -> list[str]:
     sections, google = _sections(inspect.cleandoc(doc))
     documented = _documented_parameters(sections.get('Parameters', ''), google=google)
     errors: list[str] = []
     if not ({'Returns', 'Yields'} & set(sections)):
         errors.append(f'{qualname}: no Returns section — document what it gives back')
-    parameters = _parameters(obj)
+    if parameters is None:
+        parameters = _parameters(obj)
     if parameters is None:
         return errors
     for param in parameters:
@@ -148,16 +202,23 @@ def collect_errors(cfg: StubConfig) -> Findings:
 
     exempt: set[str] = set()
 
-    def visit(qualname: str, obj: object) -> None:
+    def visit(
+        qualname: str,
+        obj: object,
+        *,
+        doc: str | None = None,
+        parameters: list[inspect.Parameter] | None = None,
+    ) -> None:
         nonlocal examined
-        doc = getattr(obj, '__doc__', None)
+        if doc is None:
+            doc = getattr(obj, '__doc__', None)
         if not callable(obj) or isinstance(obj, type) or not (doc or '').strip():
             return  # presence is the doc-contract gate's finding
         if qualname in cfg.doc_structure_allowlist:
             exempt.add(qualname)
             return
         examined += 1
-        errors.extend(_check(qualname, obj, doc or ''))
+        errors.extend(_check(qualname, obj, doc or '', parameters=parameters))
 
     for name in function_groups(ctx.stub_ast.body):
         if not name.startswith('_'):
@@ -166,9 +227,24 @@ def collect_errors(cfg: StubConfig) -> Findings:
         cls = getattr(runtime, class_name, None)
         if class_name.startswith('_') or not isinstance(cls, type):
             continue
-        for name in function_groups(node.body):
-            if not name.startswith('_') and name in vars(cls):
-                visit(f'{class_name}.{name}', getattr(cls, name, None))
+        for name, defs in function_groups(node.body).items():
+            if name.startswith('_'):
+                continue
+            qualname = f'{class_name}.{name}'
+            if name in vars(cls):
+                visit(qualname, getattr(cls, name, None))
+                continue
+            # The runtime resolves this member from a base class, but the stub
+            # override owns its prose and its canonical final overload.
+            carrier = defs[-1]
+            stub_doc = ast.get_docstring(carrier)
+            if stub_doc:
+                visit(
+                    qualname,
+                    getattr(cls, name, None),
+                    doc=stub_doc,
+                    parameters=_stub_parameters(carrier),
+                )
 
     errors += unused_allowlist_errors(
         'doc structure', cfg.doc_structure_allowlist, exempt

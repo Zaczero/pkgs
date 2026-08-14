@@ -234,7 +234,8 @@ for _public_type in (Cell, Coverage, Extremes, Features, PolygonizeResult):
     # `typing.get_type_hints()` must not need fake private globals on gometry.
     _public_type.__annotations__ = _get_type_hints(_public_type)
     _public_type.__module__ = __name__
-del _get_type_hints, _public_type
+    del _public_type
+del _get_type_hints
 
 del annotations
 

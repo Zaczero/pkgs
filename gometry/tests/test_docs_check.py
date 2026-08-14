@@ -164,3 +164,37 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
         path == 'gometry.GeometryArray' or path.endswith('.GeometryArray')
         for path in found
     ), found
+
+
+def test_griffe_uses_final_concrete_overload_as_canonical() -> None:
+    """The rendered implementation is the final non-Never overload."""
+    expand = load_tool('griffe_expand_aliases')
+    loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    doc_model = load_tool('check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py')
+    expected = doc_model._stub_overloads()
+    for member in pkg.members.values():
+        if not isinstance(member, griffe.Function) or not member.overloads:
+            continue
+        expected_return, expected_params = expected[member.canonical_path]
+        assert (
+            doc_model._public_annotation(str(member.returns))
+            == doc_model._public_annotation(expected_return)
+        ), member.name
+        assert tuple(
+            parameter.name for parameter in member.parameters
+            if parameter.name not in {'self', 'cls'}
+        ) == expected_params, member.name
+        assert all(
+            getattr(getattr(variant, 'returns', None), 'name', None)
+            not in {'Never', 'NoReturn'}
+            for variant in (member, *member.overloads)
+        ), member.name

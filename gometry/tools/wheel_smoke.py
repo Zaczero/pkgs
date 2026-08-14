@@ -354,11 +354,15 @@ SMOKE = r"""
 import importlib.metadata
 import json
 import sys
+import sysconfig
 
 import numpy as np
 import gometry as gm
 
 assert gm.__version__ == importlib.metadata.version('gometry')
+
+if sysconfig.get_config_var('Py_GIL_DISABLED'):
+    assert not sys._is_gil_enabled(), 'gometry re-enabled the GIL'
 
 optional = {'pyarrow', 'pandas', 'polars', 'geopandas', 'lonboard'}
 loaded_optional = sorted(optional & set(sys.modules))
@@ -388,7 +392,7 @@ def smoke_install(wheel: Path) -> None:
     with tempfile.TemporaryDirectory(prefix='gometry-wheel-smoke-') as tmp:
         venv_dir = Path(tmp) / 'venv'
         venv.EnvBuilder(with_pip=True).create(venv_dir)
-        python = venv_dir / 'bin' / 'python'
+        python = venv_dir / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         run([str(python), '-m', 'pip', 'install', str(wheel)])
         run([str(python), '-W', 'error', '-c', textwrap.dedent(SMOKE)])
 

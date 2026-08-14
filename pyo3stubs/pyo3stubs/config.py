@@ -162,6 +162,9 @@ class TokenConfig:
     types_module: str
     vocabulary_export: str
     enum_macro: str = 'token_enum'
+    #: Runtime vocabularies backed by a non-macro owner (for example an error
+    #: attribute enum). They still compare their stub Literal exactly.
+    extra_vocabulary: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -246,6 +246,8 @@ if TYPE_CHECKING:
     scalar_int: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(90, dtype=np.int64)
     assert_type(POINT.destination(scalar_float32, 1_000.0), gm.Point)
     assert_type(POINT.destination(scalar_int, 1_000.0), gm.Point)
+    assert_type(gm.rhumb_distance(POINT, POINT), float)
+    assert_type(gm.rhumb_distance(POINTS, POINT), npt.NDArray[np.float64])
     assert_type(
         gm.point_between(
             POINT,

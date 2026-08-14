@@ -81,15 +81,13 @@ def _promote_overloads(obj: Any, seen: set[int]) -> None:
         for name, variants in list(stranded.items()):
             if not variants or name in obj.members:
                 continue
-            canonical = max(
-                variants,
-                key=lambda variant: (
-                    len(getattr(variant, 'parameters', ())),
-                    variants.index(variant),
-                ),
-            )
-            if _is_never(canonical):
+            usable = [variant for variant in variants if not _is_never(variant)]
+            if not usable:
                 continue
+            # The stub's final concrete definition is Griffe's canonical
+            # implementation.  Arity is not a reliable proxy: overloads can
+            # deliberately widen or narrow parameters independently.
+            canonical = usable[-1]
             canonical.overloads = [
                 variant
                 for variant in variants

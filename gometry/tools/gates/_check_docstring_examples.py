@@ -19,17 +19,21 @@ import gometry
 
 def _public_objects() -> list[tuple[str, object]]:
     objects: list[tuple[str, object]] = [('gometry', gometry)]
+    seen: set[int] = {id(gometry)}
     for name in dir(gometry):
         if name.startswith('_'):
             continue
         obj = getattr(gometry, name)
-        objects.append((f'gometry.{name}', obj))
+        if id(obj) not in seen:
+            seen.add(id(obj))
+            objects.append((f'gometry.{name}', obj))
         if isinstance(obj, type):
             for member in dir(obj):
                 if member.startswith('_'):
                     continue
                 attr = getattr(obj, member, None)
-                if getattr(attr, '__doc__', None):
+                if getattr(attr, '__doc__', None) and id(attr) not in seen:
+                    seen.add(id(attr))
                     objects.append((f'gometry.{name}.{member}', attr))
     return objects
 

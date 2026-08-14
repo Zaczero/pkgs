@@ -237,7 +237,6 @@ PAGES: tuple[Page, ...] = (
             section(
                 'bearing',
                 'cross_track_distance',
-                'destination',
                 'point_between',
                 'rhumb_distance',
             ),

@@ -3,6 +3,12 @@
 # on the all-scalar call (the scalar overload, listed first, wins), which is
 # exactly what `reportOverlappingOverload` flags — disable it for this stub.
 # pyright: reportOverlappingOverload=false
+# The uninitialized ClassVar[None] declarations below need a mypy assignment
+# ignore, but Pyright correctly sees no assignment error in a stub.
+# pyright: reportUnnecessaryTypeIgnoreComment=false
+# Native sequence methods keep their runtime-accurate signatures rather than
+# widening them to match collections.abc.Sequence's protocol declarations.
+# pyright: reportIncompatibleMethodOverride=false
 import sys
 import types
 from collections.abc import (
@@ -15179,6 +15185,16 @@ def cross_track_distance(
 def point_between(
     left: Point,
     right: Point,
+    distance: ScalarFloatArray,
+    *,
+    normalized: bool = False,
+    path: Literal['geodesic'] = 'geodesic',
+    unit: DistanceUnit | None = None,
+) -> Point: ...
+@overload
+def point_between(
+    left: Point,
+    right: Point,
     distance: float,
     *,
     normalized: bool = False,
@@ -15205,6 +15221,16 @@ def point_between(
     path: Literal['geodesic'] = 'geodesic',
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[Point]: ...
+@overload
+def point_between(
+    left: Point,
+    right: Point,
+    distance: ScalarFloatArray,
+    *,
+    normalized: bool = False,
+    path: NavigationPath = 'geodesic',
+    unit: None = None,
+) -> Point: ...
 @overload
 def point_between(
     left: Point,
