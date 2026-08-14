@@ -1,9 +1,10 @@
 use pyo3::exceptions::PyAttributeError;
 
 use crate::py::classes::leaf_methods::{
-    EmptyKind, PyLineString, PyPoint, PyPolygon, PyRef, PyResult, Shape, Typed, pymethods,
+    EmptyKind, PyLineString, PyPoint, PyPolygon, PyRef, PyResult, Python, Shape, Typed, pymethods,
 };
 use crate::py::errors::geometry_type_err;
+use crate::{Bound, DistanceUnit, NavigationPath, Py, PyAny};
 
 enum PointAxis {
     X,
@@ -38,6 +39,71 @@ impl PyPoint {
 
 #[pymethods]
 impl PyPoint {
+    /// Walk from this point along a geodesic or rhumb path.
+    ///
+    /// Parameters
+    /// ----------
+    /// bearing : float or sequence of float
+    ///     Initial azimuth in degrees clockwise from north.
+    /// distance : float or sequence of float
+    ///     Distance to travel in CRS-natural units, unless `unit` is set.
+    /// path : {'geodesic', 'rhumb'}, default 'geodesic'
+    ///     Route model. Rhumb paths require a geographic CRS and use meters.
+    /// unit : {'planar', 'meters'}, optional
+    ///     Force coordinate units or CRS metric units.
+    ///
+    /// Returns
+    /// -------
+    /// Point or GeometryArray[Point]
+    ///     The destination point, or one destination per bearing or distance.
+    ///
+    /// Raises
+    /// ------
+    /// GeometryError
+    ///     If `bearing` or `distance` is invalid.
+    /// CRSError
+    ///     If the selected route requires an unavailable CRS metric.
+    /// InvalidGeometryError
+    ///     If a coordinate is outside the longitude/latitude domain.
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> point = gm.Point(0, 0, crs=4326)
+    /// >>> point.destination(90, 1000).to_wkt(precision=5)
+    /// 'POINT (0.00898 0)'
+    #[pyo3(
+        signature = (bearing, distance, *, path = NavigationPath::Geodesic, unit = None),
+        text_signature = "($self, bearing, distance, *, path='geodesic', unit=None)"
+    )]
+    pub(crate) fn destination(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        bearing: &Bound<'_, PyAny>,
+        distance: &Bound<'_, PyAny>,
+        path: NavigationPath,
+        unit: Option<DistanceUnit>,
+    ) -> PyResult<Py<PyAny>> {
+        match path {
+            NavigationPath::Geodesic => crate::measures::destination_point_receiver(
+                py,
+                slf.as_super(),
+                bearing,
+                distance,
+                unit,
+            ),
+            NavigationPath::Rhumb => {
+                crate::measures::reject_rhumb_unit(unit, "destination")?;
+                crate::measures::rhumb_destination_point_receiver(
+                    py,
+                    slf.as_super(),
+                    bearing,
+                    distance,
+                )
+            },
+        }
+    }
+
     /// ``case Point(x, y)`` destructures the ordinates. ``POINT EMPTY`` does
     /// not match because its X/Y attributes are absent.
     #[classattr]

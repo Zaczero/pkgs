@@ -83,7 +83,7 @@ discoverable: there is no `make_valid` *and* `repair`, no `STRtree` *and* `Rtree
 | spatial index | [`gm.SpatialIndex`][gometry.SpatialIndex] |
 | spatial join | [`gm.join`][gometry.join] |
 | polyfill | `gm.h3_cover(geom, ...)` |
-| geodesy | `gm.bearing(a, b)` / `gm.destination(...)` (geographic CRS) / `gm.CRS(c).geodesic` |
+| geodesy | `gm.bearing(a, b)` / `point.destination(...)` (geographic CRS) / `gm.CRS(c).geodesic` |
 | CRS transform | `geom.to_crs` / `gm.crs_transform` |
 | dissolve / unary union | [`gm.union_all`][gometry.union_all] |
 

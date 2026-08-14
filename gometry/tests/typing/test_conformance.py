@@ -228,11 +228,24 @@ if TYPE_CHECKING:
     assert_type(
         gm.bearing(POINTS, POINT, path=navigation_path), npt.NDArray[np.float64]
     )
-    assert_type(gm.destination(POINT, 90.0, 1_000.0, path='rhumb', unit=None), gm.Point)
+    assert_type(POINT.destination(90.0, 1_000.0, path='rhumb', unit=None), gm.Point)
     assert_type(
-        gm.destination(POINTS, 90.0, 1_000.0, path=navigation_path),
+        POINTS.destination(90.0, 1_000.0, path=navigation_path),
         gm.GeometryArray[gm.Point],
     )
+    assert_type(POINT.destination([90.0], 1_000.0), gm.GeometryArray[gm.Point])
+    assert_type(POINT.destination(90.0, [1_000.0]), gm.GeometryArray[gm.Point])
+    assert_type(
+        POINT.destination([90.0], [1_000.0], path='rhumb'),
+        gm.GeometryArray[gm.Point],
+    )
+    scalar_array: np.ndarray[tuple[()], np.dtype[np.float64]] = np.array(90.0)
+    assert_type(POINT.destination(scalar_array, 1_000.0), gm.Point)
+    assert_type(gm.point_between(POINT, POINT, scalar_array), gm.Point)
+    scalar_float32: np.ndarray[tuple[()], np.dtype[np.float32]] = np.array(90.0, dtype=np.float32)
+    scalar_int: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(90, dtype=np.int64)
+    assert_type(POINT.destination(scalar_float32, 1_000.0), gm.Point)
+    assert_type(POINT.destination(scalar_int, 1_000.0), gm.Point)
     assert_type(
         gm.point_between(
             POINT,

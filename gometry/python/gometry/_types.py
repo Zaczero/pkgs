@@ -43,6 +43,12 @@ else:  # Python 3.11: Buffer predates collections.abc
 # NumPy is core: precise array aliases are real at runtime and for checkers.
 BoolArray: TypeAlias = npt.NDArray[np.bool_]
 Float64Array: TypeAlias = npt.NDArray[np.float64]
+# A 0-D NumPy array follows the scalar native numeric path. Ordinary NDArray
+# aliases erase shape, so only an explicitly shaped value earns scalar returns.
+ScalarFloatArray: TypeAlias = np.ndarray[
+    tuple[()],
+    np.dtype[np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]],
+]
 
 TYPE_CHECKING = False
 

@@ -69,8 +69,9 @@ if TYPE_CHECKING:
     # Rhumb navigation is point-only and always uses metres: a literal rhumb
     # route must not accept the geodesic ``unit`` override.
     gm.bearing(POINT, POINT, path='constant')  # type: ignore[call-overload]
-    gm.destination(POINT, 90.0, 1_000.0, path='rhumb', unit='meters')  # type: ignore[call-overload]
-    gm.destination(POLY, 90.0, 1_000.0, path='rhumb')  # type: ignore[call-overload]
+    POINT.destination(90.0, 1_000.0, path='rhumb', unit='meters')  # type: ignore[call-overload]
+    POLY.destination(90.0, 1_000.0, path='rhumb')  # type: ignore[attr-defined]
+    GEOMS.destination(90.0, 1_000.0)  # type: ignore[misc]
     gm.point_between(POINT, POINT, 0.5, path='rhumb', unit='meters')  # type: ignore[call-overload]
     gm.point_between(POINT, POINT, 0.5, path='rhumb', unit='planar')  # type: ignore[call-overload]
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]

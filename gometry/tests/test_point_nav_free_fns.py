@@ -1,4 +1,4 @@
-"""Point navigation free functions (bearing, destination, interpolate, rhumb)."""
+"""Point navigation methods (bearing, destination, interpolate, rhumb)."""
 
 from __future__ import annotations
 
@@ -24,26 +24,26 @@ def test_bearing_scalar_and_array() -> None:
 
 def test_destination_scalar_and_array() -> None:
     start = gm.Point(0, 0, crs=4326)
-    end = gm.destination(start, 90, 111_000)
+    end = start.destination(90, 111_000)
     assert end.x == pytest.approx(1.0, abs=0.01)
     assert end.y == pytest.approx(0.0, abs=0.01)
     points = gm.GeometryArray([start, gm.Point(0, 1, crs=4326)])
-    outs = gm.destination(points, 90, 111_000)
+    outs = points.destination(90, 111_000)
     assert isinstance(outs, gm.GeometryArray)
     assert outs[0].x == pytest.approx(1.0, abs=0.01)
-    vector_outs = gm.destination(points, [90.0, 0.0], [111_000.0, 110_600.0])
+    vector_outs = points.destination([90.0, 0.0], [111_000.0, 110_600.0])
     assert isinstance(vector_outs, gm.GeometryArray)
     assert _wkb_rows(vector_outs) == [
-        gm.destination(points[0], 90.0, 111_000.0).to_wkb(),
-        gm.destination(points[1], 0.0, 110_600.0).to_wkb(),
+        points[0].destination(90.0, 111_000.0).to_wkb(),
+        points[1].destination(0.0, 110_600.0).to_wkb(),
     ]
-    scalar_point_vector_outs = gm.destination(
-        start, [90.0, 0.0], [111_000.0, 110_600.0]
+    scalar_point_vector_outs = start.destination(
+        [90.0, 0.0], [111_000.0, 110_600.0]
     )
     assert isinstance(scalar_point_vector_outs, gm.GeometryArray)
     assert _wkb_rows(scalar_point_vector_outs) == [
-        gm.destination(start, 90.0, 111_000.0).to_wkb(),
-        gm.destination(start, 0.0, 110_600.0).to_wkb(),
+        start.destination(90.0, 111_000.0).to_wkb(),
+        start.destination(0.0, 110_600.0).to_wkb(),
     ]
 
 
@@ -53,7 +53,7 @@ def test_destination_masked_mixed_axis_points_falls_back_rowwise() -> None:
         None,
         gm.Point(1.0, 1.0, z=5.0, crs=4326),
     ])
-    out = gm.destination(points, 90.0, 1000.0)
+    out = points.destination(90.0, 1000.0)
     assert out.is_missing.tolist() == [False, True, False]
     assert out[1] is None
     assert out[0].coordinate_axes == 'XY'
@@ -129,17 +129,17 @@ def test_point_nav_array_parity_is_bit_identical_to_scalar_loops() -> None:
         np.array([gm.bearing(point, right[0], path='rhumb') for point in left]),
     )
 
-    assert _wkb_rows(gm.destination(lefts, 33.0, 12_345.0)) == [
-        gm.destination(point, 33.0, 12_345.0).to_wkb() for point in left
+    assert _wkb_rows(lefts.destination(33.0, 12_345.0)) == [
+        point.destination(33.0, 12_345.0).to_wkb() for point in left
     ]
     bearings = [33.0, 34.0, 35.0]
     distances = [12_345.0, 23_456.0, 34_567.0]
-    assert _wkb_rows(gm.destination(lefts, bearings, distances)) == [
-        gm.destination(point, bearing, distance).to_wkb()
+    assert _wkb_rows(lefts.destination(bearings, distances)) == [
+        point.destination(bearing, distance).to_wkb()
         for point, bearing, distance in zip(left, bearings, distances, strict=True)
     ]
-    assert _wkb_rows(gm.destination(lefts, 91.0, 234_567.0, path='rhumb')) == [
-        gm.destination(point, 91.0, 234_567.0, path='rhumb').to_wkb() for point in left
+    assert _wkb_rows(lefts.destination(91.0, 234_567.0, path='rhumb')) == [
+        point.destination(91.0, 234_567.0, path='rhumb').to_wkb() for point in left
     ]
     assert _wkb_rows(gm.point_between(lefts, rights, 0.375, normalized=True)) == [
         gm.point_between(a, b, 0.375, normalized=True).to_wkb()
@@ -346,12 +346,12 @@ def test_point_nav_array_errors_keep_row_notes() -> None:
         gm.InvalidGeometryError,
         match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ) as destination_error:
-        gm.destination(starts, 90.0, 1_000.0)
+        starts.destination(90.0, 1_000.0)
     assert destination_error.value.__notes__ == ['while processing array element 1']
 
     pole_crossers = gm.GeometryArray([origin, gm.Point(0.0, 89.0, crs=4326)])
     with pytest.raises(gm.InvalidGeometryError) as rhumb_destination_error:
-        gm.destination(pole_crossers, 0.0, 200_000.0, path='rhumb')
+        pole_crossers.destination(0.0, 200_000.0, path='rhumb')
     assert rhumb_destination_error.value.__notes__ == [
         'while processing array element 1'
     ]
@@ -451,7 +451,7 @@ def test_rhumb_distance_and_bearing_path() -> None:
 
 
 def test_rhumb_destination_path_scalar() -> None:
-    end = gm.destination(gm.Point(-10, 45, crs=4326), 90, 1_000_000, path='rhumb')
+    end = gm.Point(-10, 45, crs=4326).destination(90, 1_000_000, path='rhumb')
     assert (round(end.x, 3), round(end.y, 3)) == (2.683, 45.0)
 
 
@@ -463,7 +463,7 @@ def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> No
 
     midpoint = gm.point_between(start, end, 0.5, normalized=True, path='rhumb')
     by_distance = gm.point_between(start, end, total / 2.0, path='rhumb')
-    direct = gm.destination(start, bearing, total / 2.0, path='rhumb')
+    direct = start.destination(bearing, total / 2.0, path='rhumb')
 
     assert midpoint.to_wkb() == by_distance.to_wkb()
     assert midpoint.x == pytest.approx(direct.x, abs=1e-09)
@@ -513,14 +513,14 @@ def test_point_between_and_rhumb_destination_path_broadcast_float_lanes() -> Non
     assert between_rows.to_wkt() == ['POINT (2.5 0)', 'POINT (0 5)']
 
     origin = gm.Point(-10, 45, crs=4326)
-    rhumb = gm.destination(origin, [90, 90], [0, 1_000_000], path='rhumb')
+    rhumb = origin.destination([90, 90], [0, 1_000_000], path='rhumb')
     assert rhumb[0] == origin
     assert (round(rhumb[1].x, 3), round(rhumb[1].y, 3)) == (2.683, 45.0)
 
     origins = gm.GeometryArray([origin, origin])
-    rhumb_rows = gm.destination(origins, [0, 90], [1000, 1_000_000], path='rhumb')
+    rhumb_rows = origins.destination([0, 90], [1000, 1_000_000], path='rhumb')
     expected = [
-        gm.destination(origins[row], [0, 90][row], [1000, 1_000_000][row], path='rhumb')
+        origins[row].destination([0, 90][row], [1000, 1_000_000][row], path='rhumb')
         for row in range(2)
     ]
     assert rhumb_rows.to_wkb() == [value.to_wkb() for value in expected]
@@ -528,10 +528,22 @@ def test_point_between_and_rhumb_destination_path_broadcast_float_lanes() -> Non
     with pytest.raises(gm.InvalidGeometryError, match='same length'):
         gm.point_between(lefts, rights, [0.25], normalized=True)
     with pytest.raises(gm.InvalidGeometryError, match='same length'):
-        gm.destination(origins, [0, 90, 180], 1000, path='rhumb')
+        origins.destination([0, 90, 180], 1000, path='rhumb')
 
 
-def test_point_navigation_exists_only_as_free_functions() -> None:
+def test_point_navigation_uses_binary_free_functions_and_receiver_destination() -> None:
     pt = gm.Point(0, 0, crs=4326)
+    points = gm.GeometryArray([pt])
+    assert not hasattr(gm, 'destination')
+    assert hasattr(pt, 'destination')
+    assert hasattr(points, 'destination')
+    assert not hasattr(gm.LineString([(0, 0), (1, 0)]), 'destination')
+    assert not hasattr(gm.box(0, 0, 1, 1), 'destination')
     with pytest.raises(AttributeError, match="object has no attribute 'bearing'"):
         pt.bearing(gm.Point(1, 0, crs=4326))
+    with pytest.raises(AttributeError, match="object has no attribute 'point_between'"):
+        pt.point_between(gm.Point(1, 0, crs=4326), 0.5)
+    assert gm.bearing(pt, gm.Point(1, 0, crs=4326)) == pytest.approx(90.0)
+    assert gm.point_between(
+        pt, gm.Point(1, 0, crs=4326), 0.5, normalized=True
+    ).x == pytest.approx(0.5)

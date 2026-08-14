@@ -200,7 +200,7 @@ geodesic, so there is no `Geod` object to construct.
 |---|---|---|
 | `g.inv(...)` distance | `gm.distance(a, b)` | Ellipsoidal meters. |
 | `g.inv(...)` azimuth | `gm.bearing(a, b)` | |
-| `g.fwd(lon, lat, az, d)` | `gm.destination(point, bearing, distance)` | |
+| `g.fwd(lon, lat, az, d)` | `point.destination(bearing, distance)` | |
 | `g.line_length(...)` | `line.length` | |
 | `g.geometry_area_perimeter(...)` | `poly.area` / `poly.length` | |
 | `g.npts(...)` | `gm.point_between(a, b, 0.5, normalized=True)` / `gm.CRS(4326).geodesic_interpolate(...)` | |
@@ -289,7 +289,7 @@ spelling:
 | `make_valid` | `g.repair()` |
 | `STRtree` / `Rtree` | `gm.SpatialIndex` |
 | `polyfill` | `gm.h3_cover(geom, ...)` |
-| `Geod` | `gm.bearing` / `gm.destination` (geographic CRS) / `gm.CRS(c).geodesic` |
+| `Geod` | `gm.bearing` / `point.destination` (geographic CRS) / `gm.CRS(c).geodesic` |
 | `Transformer` | `geom.to_crs` / `gm.crs_transform` |
 | `sjoin` | `gm.join` |
 | `unary_union` | `gm.union_all` |

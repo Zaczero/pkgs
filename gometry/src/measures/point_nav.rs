@@ -1,4 +1,4 @@
-//! Point navigation free functions — bearing, destination, interpolate, rhumb.
+//! Point navigation kernels — bearing, destination, interpolate, rhumb.
 #![allow(
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
@@ -1624,6 +1624,96 @@ fn destination_point_array(
     }
 }
 
+/// Point-leaf receiver path. Keeping this separate from the erased geometry
+/// parser prevents Point-only API placement from leaking through inheritance.
+pub(crate) fn destination_point_receiver(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    bearing: &Bound<'_, PyAny>,
+    distance: &Bound<'_, PyAny>,
+    unit: Option<DistanceUnit>,
+) -> PyResult<Py<PyAny>> {
+    let mut bearing = coordinate_input(py, bearing, "bearing")?;
+    let mut distance = coordinate_input(py, distance, "distance")?;
+    let len = broadcast_coordinate_group(
+        [(&mut bearing, "bearing"), (&mut distance, "distance")],
+        "bearing and distance",
+    )?;
+    validate_destination_distances(&distance.values)?;
+    let point = require_point(geometry, "destination")?;
+    let model = resolve_metric(geometry.crs_str(), unit, "destination")?;
+    if len == 1 && bearing.scalar && distance.scalar {
+        let point = match model {
+            crs::MetricModel::Geodesic(_) => {
+                destination_point::<true>(&model, point, bearing.values[0], distance.values[0])?
+            },
+            crs::MetricModel::Planar { .. } => {
+                destination_point::<false>(&model, point, bearing.values[0], distance.values[0])?
+            },
+        };
+        return Ok(geometry
+            .typed_shape(Shape::Point(point))
+            .into_pyobject(py)?
+            .unbind());
+    }
+    let axes = CoordinateAxes::from_point(point);
+    let coords = py.detach(move || {
+        destination_scalar_coords_dispatch(
+            &model,
+            point,
+            &bearing.values,
+            &distance.values,
+            len,
+            axes,
+        )
+    })?;
+    Ok(
+        PyGeometryArray::packed_points(coords, geometry.frame.clone())
+            .into_pyobject(py)?
+            .unbind()
+            .into(),
+    )
+}
+
+/// Point-leaf receiver path for the rhumb route.
+pub(crate) fn rhumb_destination_point_receiver(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    bearing: &Bound<'_, PyAny>,
+    distance: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let mut bearing = coordinate_input(py, bearing, "bearing")?;
+    let mut distance = coordinate_input(py, distance, "distance")?;
+    let len = broadcast_coordinate_group(
+        [(&mut bearing, "bearing"), (&mut distance, "distance")],
+        "bearing and distance",
+    )?;
+    validate_destination_distances(&distance.values)?;
+    let point = require_point(geometry, "destination(path='rhumb')")?;
+    let crs = require_geographic(geometry.crs_str(), "destination(path='rhumb')")?;
+    if len == 1 && bearing.scalar && distance.scalar {
+        let shape = point_rhumb_destination(geometry, bearing.values[0], distance.values[0])?;
+        return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
+    }
+    let axes = CoordinateAxes::from_point(point);
+    let coords = py.detach(move || {
+        let mut builder = CoordSeqBuilder::with_capacity(axes, len);
+        for row in 0..len {
+            let shape =
+                rhumb_destination_point(&crs, point, bearing.values[row], distance.values[row])
+                    .map_err(|err| crate::note_array_row(err, row))?;
+            builder.push(point_from_point_nav_shape(&shape));
+        }
+        Ok::<_, PyErr>(builder.finish_infallible())
+    })?;
+    Ok(
+        PyGeometryArray::packed_points(coords, geometry.frame.clone())
+            .into_pyobject(py)?
+            .unbind()
+            .into(),
+    )
+}
+
 struct PointBinaryNumericRowsSink<'py, K> {
     py: Python<'py>,
     model: crs::MetricModel,
@@ -2166,7 +2256,7 @@ pub(crate) fn cross_track_distance(
     cross_track_broadcast(py, point, start, end)
 }
 
-fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: &str) -> PyResult<()> {
+pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: &str) -> PyResult<()> {
     if unit.is_some() {
         return Err(crate::py::errors::GeometryError::new_err(format!(
             "{operation} does not accept unit when path='rhumb'; rhumb distances are meters"
@@ -2213,17 +2303,9 @@ fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: &str) -> PyResult<()
 ///     If ``point`` is not a `Point`.
 /// CRSError
 ///     If a coordinate is outside the longitude/latitude domain.
-#[pyfunction]
-#[pyo3(
-    signature = (point, bearing, distance, *, path = NavigationPath::Geodesic, unit = None),
-    text_signature = "(point, bearing, distance, *, path='geodesic', unit=None)"
-)]
 ///
 /// Examples
 /// --------
-/// >>> import gometry as gm
-/// >>> gm.destination(gm.Point(0, 0, crs=4326), distance=1000, bearing=90).to_wkt(precision=5)
-/// 'POINT (0.00898 0)'
 pub(crate) fn destination(
     py: Python<'_>,
     point: &Bound<'_, PyAny>,

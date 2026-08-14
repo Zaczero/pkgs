@@ -421,8 +421,8 @@ def crs_geodesic_direct_batch() -> dict[str, object]:
 
 
 def geodesic_destination_batch() -> gm.GeometryArray:
-    return gm.destination(
-        GEODESIC_DESTINATION_POINTS, CRS_GEODESIC_AZIMUTH, CRS_GEODESIC_DISTANCE
+    return GEODESIC_DESTINATION_POINTS.destination(
+        CRS_GEODESIC_AZIMUTH, CRS_GEODESIC_DISTANCE
     )
 
 

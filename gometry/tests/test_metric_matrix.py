@@ -257,9 +257,9 @@ def _exact_cases() -> list[ExactCase]:
     ))
     cases.append((
         'destination',
-        lambda: gm.destination(a, 90.0, 1.0).x,
-        lambda: gm.destination(a, 90.0, FOOT_UNIT_M, unit='meters').x,
-        lambda: gm.destination(fa, 90.0, 1.0, unit='meters'),
+        lambda: a.destination(90.0, 1.0).x,
+        lambda: a.destination(90.0, FOOT_UNIT_M, unit='meters').x,
+        lambda: fa.destination(90.0, 1.0, unit='meters'),
         1.0,
     ))
     cases.append((

@@ -39,7 +39,7 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
         gm.points([0, 0], [0, 0], crs=4326), gm.points([1, 0], [0, 1], crs=4326)
     ) == pytest.approx([111319.49079327357, 110574.38855779878])
     assert gm.bearing(start, end) == pytest.approx(90.0)
-    destination = gm.destination(start, 90.0, gm.distance(start, end))
+    destination = start.destination(90.0, gm.distance(start, end))
     assert destination.x == pytest.approx(end.x)
     assert destination.y == pytest.approx(end.y)
     wgs84 = gm.CRS(4326)
@@ -51,7 +51,7 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     )
     assert batch_destinations['longitude'][0] == pytest.approx(end.x)
     assert batch_destinations['latitude'][1] == pytest.approx(north.y)
-    point_destination = gm.destination(start, 90.0, 1000.0)
+    point_destination = start.destination(90.0, 1000.0)
     assert point_destination.crs == 'EPSG:4326'
     midpoint = gm.point_between(start, end, 0.5, normalized=True)
     assert midpoint.x == pytest.approx(0.5)

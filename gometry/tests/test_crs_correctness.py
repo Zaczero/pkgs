@@ -164,7 +164,7 @@ def test_foot_crs_default_distance_parameters_are_native_units() -> None:
         gm.Point(1, 0, crs=FOOT_CRS), unit='meters'
     ) == pytest.approx(FOOT_UNIT_M)
     assert line.line_substring(0.0, 1.0).length == pytest.approx(1.0)
-    destination = gm.destination(point, 90.0, 1.0)
+    destination = point.destination(90.0, 1.0)
     assert (destination.x, destination.y) == pytest.approx((1.0, 0.0))
     between = gm.point_between(point, gm.Point(10, 0, crs=FOOT_CRS), 1.0)
     assert (between.x, between.y) == pytest.approx((1.0, 0.0))
@@ -289,7 +289,7 @@ def test_geographic_out_of_domain_raises() -> None:
     with pytest.raises(ValueError):
         gm.bearing(gm.Point(0, 95, crs=4326), gm.Point(1, 95, crs=4326))
     with pytest.raises(ValueError):
-        gm.destination(gm.Point(0, 95, crs=4326), 45, 1000)
+        gm.Point(0, 95, crs=4326).destination(45, 1000)
     with pytest.raises(ValueError):
         gm.CRS(4326).geodesic(0, 95, 1, 95)
 

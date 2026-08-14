@@ -587,12 +587,11 @@ def test_point_nav_geometry_array_lanes_propagate_missing_rows() -> None:
         None,
     ])
 
-    destination = gm.destination(points, 90.0, 1000.0)
+    destination = points.destination(90.0, 1000.0)
     assert destination.is_missing.tolist() == [False, True, False]
     assert destination[1] is None
 
-    destination_arrays = gm.destination(
-        points,
+    destination_arrays = points.destination(
         [90.0, 180.0, 270.0],
         [1000.0, 1000.0, 1000.0],
     )
@@ -612,13 +611,13 @@ def test_point_nav_geometry_array_lanes_propagate_missing_rows() -> None:
     assert between_arrays[1] is None
     assert between_arrays[2] is None
 
-    rhumb_result = gm.destination(points, 90.0, 1000.0, path='rhumb')
+    rhumb_result = points.destination(90.0, 1000.0, path='rhumb')
     assert rhumb_result.is_missing.tolist() == [False, True, False]
     assert rhumb_result[1] is None
 
-    assert not gm.destination(dense, 90.0, 1000.0).is_missing.any()
+    assert not dense.destination(90.0, 1000.0).is_missing.any()
     assert not gm.point_between(dense, target, 1000.0).is_missing.any()
-    assert not gm.destination(dense, 90.0, 1000.0, path='rhumb').is_missing.any()
+    assert not dense.destination(90.0, 1000.0, path='rhumb').is_missing.any()
 
 
 def test_geojson_iterable_legacy_crs_conflict_matches_scalar_lane() -> None:

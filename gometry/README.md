@@ -90,7 +90,7 @@ libraries:
 |---|---|
 | Shapely geometry, predicates, overlays, constructive ops | `gm.Point/box/...`, `gm.contains(a, b)`, `geom.buffer(...)` |
 | pyproj transforms and CRS introspection | `geom.to_crs(...)`, `gm.CRS(...)`, `gm.crs_*` |
-| geographiclib / haversine geodesy | CRS-aware `area`/`length`/`distance`, `gm.bearing(..., path='rhumb')` / `gm.destination(..., path='rhumb')` |
+| geographiclib / haversine geodesy | CRS-aware `area`/`length`/`distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
 | h3-py, s2sphere | `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`, typed cells and coverage |
 | pygeohash, mercantile | `gm.geohash_cover(geom, ...)` / `gm.tile_cover(geom, ...)` |
 | rtree | `gm.SpatialIndex(values)` with exact-predicate refinement |

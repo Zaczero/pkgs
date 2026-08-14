@@ -91,7 +91,7 @@ is "just numbers", and it is unambiguous precisely because no CRS claims otherwi
 | Area/length on **already-projected** data | `geom.area` / `geom.length` | Native linear units of the projected CRS, planar and fast; `unit='meters'` for SI. |
 | A buffer in **meters** around lon/lat data | `geom.buffer(meters)` with a geographic CRS | Local-projection meter buffer; no "100 degrees?" trap. |
 | A buffer in **coordinate units** | `geom.buffer(distance)` on CRS-free geometry | Explicit unit buffer. |
-| Point bearing / walk a distance / interpolate | `gm.bearing(pt, o)` / `gm.destination(pt, az, m)` / `gm.point_between(pt, o, d)` | Geodesic on a geographic CRS, planar otherwise. |
+| Point bearing / walk a distance / interpolate | `gm.bearing(pt, o)` / `pt.destination(az, m)` / `gm.point_between(pt, o, d)` | Geodesic on a geographic CRS, planar otherwise. |
 | Topology: contains / intersects / within | `gm.contains(a, b)`, `gm.intersects(a, b)` | XY topology in the coordinates you hold; projection and seam handling can change the realized edges. |
 | **Aggregate** points/polygons into cells | `gm.h3_cover(geom, resolution=...)` | Discrete grid for group-by, heatmaps, rollups. |
 | **Global** geometry without antimeridian pain | `gm.s2_cover(geom, ...)` | Spherical cells, no projection seam. |

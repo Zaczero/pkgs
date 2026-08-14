@@ -639,8 +639,7 @@ wkb = gm.points([0.0, 1.0, 2.0], [50.0, 51.0, 52.0], crs=4326).to_wkb(
 )
 geoms = gm.from_wkb(wkb)
 
-destinations = gm.destination(
-    geoms,
+destinations = geoms.destination(
     np.array([90.0, 180.0, 270.0]),
     np.array([1000.0, 2000.0, 3000.0]),
 )

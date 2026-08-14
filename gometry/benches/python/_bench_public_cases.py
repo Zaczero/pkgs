@@ -1265,8 +1265,8 @@ def build_destination() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.destination(
-            d['starts'], d['az'], d['dist'], path='geodesic', unit='meters'
+        return d['starts'].destination(
+            d['az'], d['dist'], path='geodesic', unit='meters'
         )
 
     def competitor_call():

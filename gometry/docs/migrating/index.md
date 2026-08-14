@@ -337,7 +337,7 @@ preserved unchanged — never invented, never silently dropped.
 ### `Geod` → point navigation
 
 pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
-WGS 84 ellipsoidal geodesy) maps onto `gm.bearing`, `gm.destination`,
+WGS 84 ellipsoidal geodesy) maps onto `gm.bearing`, `point.destination`,
 `gm.point_between`, and the geometry metrics. On a **geographic** CRS these compute
 geodesically on the ellipsoid; there is no `Geod` object to construct. For a
 non-WGS 84 ellipsoid, [`gm.CRS`][gometry.CRS]`(code).geodesic(...)` runs the
@@ -367,7 +367,7 @@ geodesic problem on that CRS's own ellipsoid.
 
     print("distance (m): ", round(gm.distance(a, b)))            # geographic -> geodesic
     print("bearing (deg):", round(gm.bearing(a, b), 1))
-    print("destination:  ", gm.destination(a, 90.0, 1000.0))
+    print("destination:  ", a.destination(90.0, 1000.0))
     print("midpoint:     ", gm.point_between(a, b, 0.5, normalized=True))
     print("area (m^2):   ", round(area.area))
     print("perimeter (m):", round(area.length))
@@ -578,7 +578,7 @@ integrations like GeoPandas) stay adjacent: gometry is the engine they sit on.
 | --- | --- | --- |
 | `shapely` | planar geometry, predicates, overlay | the whole geometry surface — `gm.Point`, `geom.buffer(...)`, `gm.intersection`, `gm.contains`, … |
 | `pyproj` | CRS transforms, projection | `geom.to_crs`, [`gm.CRS`][gometry.CRS], `gm.crs_transform` |
-| `geographiclib` | geodesic & rhumb solutions | `gm.rhumb_distance(point, other)`; use `path='rhumb'` with `gm.bearing`, `gm.destination`, or `gm.point_between` for constant-bearing navigation. |
+| `geographiclib` | geodesic & rhumb solutions | `gm.rhumb_distance(point, other)`; use `path='rhumb'` with `gm.bearing`, `point.destination`, or `gm.point_between` for constant-bearing navigation. |
 | `pyclipper` | polygon buffer / offset / clip | `Geometry.buffer`, `Geometry.offset_curve`, `Geometry.clip_by_rect`, the overlay ops |
 | `pygeohash` family | geohash encode/decode | `gm.GeohashCell`, `cell.polygon`, `gm.geohash_cover(geom, ...)` |
 | `haversine` | point-to-point distance | `gm.distance(a, b)` on a geographic CRS ([exact geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |

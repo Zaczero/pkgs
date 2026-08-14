@@ -47,7 +47,7 @@ def test_affine_identity_axes_and_self_origin_packed_identity_preserve_bits() ->
 def test_point_navigation_and_lrs_boundaries_preserve_endpoint_bits() -> None:
     start = gm.Point(-0.0, -0.0, z=5.0, m=-0.0, crs=4326)
     end = gm.Point(1.0, -0.0, z=7.0, m=3.0, crs=4326)
-    assert _point_xy_bits(gm.destination(start, 90.0, 0.0)) == _point_xy_bits(start)
+    assert _point_xy_bits(start.destination(90.0, 0.0)) == _point_xy_bits(start)
     assert _point_xy_bits(
         gm.point_between(start, end, 0.0, normalized=True)
     ) == _point_xy_bits(start)

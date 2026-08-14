@@ -57,8 +57,8 @@ mod text;
 mod tokens;
 use measures::{
     area, area_natural_array, area_natural_scalar, bearing, bounds, bounds_array,
-    cross_track_distance, destination, length, length_3d, length_natural_array,
-    length_natural_scalar, point_between, rhumb_distance, shared_paths, snap, split,
+    cross_track_distance, length, length_3d, length_natural_array, length_natural_scalar,
+    point_between, rhumb_distance, shared_paths, snap, split,
 };
 mod array;
 pub(crate) use array::{
@@ -197,7 +197,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         relate, relate_pattern, equals, equals_exact, equals_identical,
         distance, distance_3d, hausdorff_distance,
         frechet_distance, nearest_points, shortest_line, split, dwithin,
-        bearing, cross_track_distance, destination, point_between, rhumb_distance,
+        bearing, cross_track_distance, point_between, rhumb_distance,
     );
     py::index::register(m)?;
     add_functions!(m;

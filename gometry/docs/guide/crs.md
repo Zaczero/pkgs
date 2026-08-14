@@ -249,31 +249,36 @@ disambiguate antipodal and antimeridian-sensitive paths.
     never projects. Keep the geometry geographic whenever you want a truthful
     metric and do not specifically need a projected coordinate frame.
 
-### Bearing and destination — point navigation free functions
+### Bearing and destination — point navigation
 
-gometry exposes the point-to-point geodesic toolkit as free functions under
-`gm.`. On a geographic CRS these are geodesic; on a projected or CRS-free point
-they are planar.
+gometry exposes binary point navigation as free functions under `gm.`. Unary
+destination is a receiver method on `Point` and `GeometryArray[Point]`. On a
+geographic CRS these operations are
+geodesic; on a projected or CRS-free point they are planar.
 
 - `gm.bearing(pt, other)` — initial heading (degrees) from one point to another.
-- `gm.destination(pt, bearing, distance)` — walk `distance` in CRS-natural units
+- `pt.destination(bearing, distance)` — walk `distance` in CRS-natural units
   (meters on a geographic CRS; native linear units when projected; coordinate
   units when CRS-free; override with `unit=`) along `bearing` degrees and return
   the arrival point.
 - `gm.point_between(a, b, distance, *, normalized=False)` — a point partway
   between two points.
 
+`bearing` and `point_between` relate two point operands and therefore remain
+free functions. `destination` transforms one point (or point column), so it is
+available only on the receiver.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 start = gm.Point(2.3522, 48.8566, crs=4326)
-arrival = gm.destination(start, 45.0, 100_000.0)   # bearing 45°, 100 km
+arrival = start.destination(45.0, 100_000.0)   # bearing 45°, 100 km
 print(arrival.to_wkt())
 
 ```
 
 !!! warning "Argument order: bearing first, then distance"
-    `gm.destination(pt, bearing, distance)` takes the **bearing in degrees first**
+    `pt.destination(bearing, distance)` takes the **bearing in degrees first**
     and the **distance in meters second**. Swapping them produces a
     plausible-but-wrong point with no error, so keep the order straight.
 

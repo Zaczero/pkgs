@@ -45,7 +45,7 @@ crate::tokens::token_enum! {
 
 crate::tokens::token_enum! {
     /// Route model used by point-navigation operations.
-    pub(crate) enum NavigationPath("navigation path", token = none, param = "path") {
+    pub enum NavigationPath("navigation path", token = none, param = "path") {
         Geodesic = "geodesic",
         Rhumb = "rhumb",
     }

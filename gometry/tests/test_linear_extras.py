@@ -178,33 +178,33 @@ def test_rhumb_trio_matches_rhumbsolve_oracles() -> None:
     assert gm.rhumb_distance(east, west) == pytest.approx(2151009.774334714, abs=0.0001)
     assert gm.bearing(east, west, path='rhumb') == pytest.approx(90.0, abs=1e-09)
     assert gm.bearing(west, east, path='rhumb') == pytest.approx(270.0, abs=1e-09)
-    end = gm.destination(jfk, 51.0, 5500000.0, path='rhumb')
+    end = jfk.destination(51.0, 5500000.0, path='rhumb')
     assert (end.y, end.x) == (
         pytest.approx(71.688899882813, abs=1e-08),
         pytest.approx(0.255519824423, abs=1e-08),
     )
-    end = gm.destination(gm.Point(-10, 45, crs=4326), 90.0, 1000000.0, path='rhumb')
+    end = gm.Point(-10, 45, crs=4326).destination(90.0, 1000000.0, path='rhumb')
     assert (end.y, end.x) == (
         pytest.approx(45.0, abs=1e-12),
         pytest.approx(2.682817246984, abs=1e-08),
     )
-    end = gm.destination(gm.Point(170, -45, crs=4326), 0.0, 1000000.0, path='rhumb')
+    end = gm.Point(170, -45, crs=4326).destination(0.0, 1000000.0, path='rhumb')
     assert (end.y, end.x) == (
         pytest.approx(-35.994607984102956, abs=1e-08),
         pytest.approx(170.0, abs=0),
     )
-    end = gm.destination(gm.Point(40, 88, crs=4326), 80.0, 500000.0, path='rhumb')
+    end = gm.Point(40, 88, crs=4326).destination(80.0, 500000.0, path='rhumb')
     assert (end.y, end.x) == (
         pytest.approx(88.77734535586033, abs=1e-08),
         pytest.approx(-160.06955185679547, abs=1e-07),
     )
-    end = gm.destination(gm.Point(179, 10, crs=4326), 90.0, 500000.0, path='rhumb')
+    end = gm.Point(179, 10, crs=4326).destination(90.0, 500000.0, path='rhumb')
     assert (end.y, end.x) == (
         pytest.approx(10.0, abs=1e-12),
         pytest.approx(-176.43959412525237, abs=1e-08),
     )
-    tagged = gm.destination(
-        gm.Point(0, 0, z=5.0, m=7.0, crs=4326), 90.0, 1000.0, path='rhumb'
+    tagged = gm.Point(0, 0, z=5.0, m=7.0, crs=4326).destination(
+        90.0, 1000.0, path='rhumb'
     )
     assert tagged.crs == 'EPSG:4326'
     assert (tagged.z, tagged.m) == (5.0, 7.0)
@@ -212,7 +212,7 @@ def test_rhumb_trio_matches_rhumbsolve_oracles() -> None:
 
 def test_rhumb_trio_error_gates() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='crosses a pole'):
-        gm.destination(gm.Point(0, 89, crs=4326), 0.0, 200000.0, path='rhumb')
+        gm.Point(0, 89, crs=4326).destination(0.0, 200000.0, path='rhumb')
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.rhumb_distance(gm.Point(0, 0), gm.Point(1, 1))
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
@@ -220,13 +220,13 @@ def test_rhumb_trio_error_gates() -> None:
     with pytest.raises(gm.CRSMismatchError, match='rhumb_distance'):
         gm.rhumb_distance(gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=3857))
     with pytest.raises(gm.GeometryError, match='non-negative'):
-        gm.destination(gm.Point(0, 0, crs=4326), 90.0, -1.0, path='rhumb')
+        gm.Point(0, 0, crs=4326).destination(90.0, -1.0, path='rhumb')
     with pytest.raises(gm.GeometryError, match='bearing'):
-        gm.destination(gm.Point(0, 0, crs=4326), float('nan'), 1.0, path='rhumb')
+        gm.Point(0, 0, crs=4326).destination(float('nan'), 1.0, path='rhumb')
     with pytest.raises(gm.InvalidGeometryError, match='crosses a pole'):
-        gm.destination(gm.Point(0, 0, crs=4326), 80.0, 57599025.01538026, path='rhumb')
-    arrival = gm.destination(
-        gm.Point(7, 0, crs=4326), 0.0, 10001965.729311671, path='rhumb'
+        gm.Point(0, 0, crs=4326).destination(80.0, 57599025.01538026, path='rhumb')
+    arrival = gm.Point(7, 0, crs=4326).destination(
+        0.0, 10001965.729311671, path='rhumb'
     )
     assert arrival.x == 7.0
     assert arrival.y == pytest.approx(90.0, abs=1e-09)

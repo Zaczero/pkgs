@@ -145,13 +145,13 @@ def test_linear_referencing_edge_positions() -> None:
 
 def test_geodesic_point_operations_at_poles_and_antimeridian() -> None:
     pole = gm.Point(0.0, 90.0, crs=4326)
-    south_a = gm.destination(pole, 0.0, 1000.0)
-    south_b = gm.destination(pole, 90.0, 1000.0)
+    south_a = pole.destination(0.0, 1000.0)
+    south_b = pole.destination(90.0, 1000.0)
     assert south_a.y == pytest.approx(south_b.y, abs=1e-09)
     start = gm.Point(170.0, 10.0, crs=4326)
-    out = gm.destination(start, 90.0, 2000000.0)
+    out = start.destination(90.0, 2000000.0)
     bearing_back = gm.bearing(out, start)
-    home = gm.destination(out, bearing_back, gm.distance(out, start))
+    home = out.destination(bearing_back, gm.distance(out, start))
     assert gm.distance(home, start) < 0.001
     a = gm.Point(179.0, 5.0, crs=4326)
     b = gm.Point(-179.0, 5.0, crs=4326)

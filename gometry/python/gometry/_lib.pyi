@@ -89,6 +89,7 @@ from gometry._types import (
     Features,
     FloatColumn,
     FloatInput,
+    ScalarFloatArray,
     GeoJsonFeature,
     GeoJsonFeatureCollection,
     GeoJsonFeatureNonNull,
@@ -244,7 +245,6 @@ __all__ = [
     'crs_unit',
     'crs_units',
     'crs_utm_zones',
-    'destination',
     'difference',
     'disjoint',
     'distance',
@@ -3806,6 +3806,167 @@ class Point(Geometry):
     __match_args__: Final = ('x', 'y')
 
     @overload
+    def destination(
+        self,
+        bearing: ScalarFloatArray,
+        distance: float | ScalarFloatArray,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: ScalarFloatArray,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: float,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: FloatColumn,
+        distance: float,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: FloatColumn,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: FloatColumn,
+        distance: FloatColumn,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> Point | GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: ScalarFloatArray,
+        distance: float | ScalarFloatArray,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: ScalarFloatArray,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: float,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> Point: ...
+    @overload
+    def destination(
+        self,
+        bearing: FloatColumn,
+        distance: float,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: float,
+        distance: FloatColumn,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: FloatColumn,
+        distance: FloatColumn,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self,
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> Point | GeometryArray[Point]:
+        """Walk from this point along a geodesic or rhumb path.
+
+        Parameters
+        ----------
+        bearing : float or sequence of float
+            Initial azimuth in degrees clockwise from north.
+        distance : float or sequence of float
+            Distance to travel in CRS-natural units, unless `unit` is set.
+        path : {'geodesic', 'rhumb'}, default 'geodesic'
+            Route model. Rhumb paths require a geographic CRS and use meters.
+        unit : {'planar', 'meters'}, optional
+            Force coordinate units or CRS metric units.
+
+        Returns
+        -------
+        Point or GeometryArray[Point]
+            The destination point, or one destination per bearing or distance.
+
+        Raises
+        ------
+        GeometryError
+            If `bearing` or `distance` is invalid.
+        CRSError
+            If the selected route requires an unavailable CRS metric.
+        InvalidGeometryError
+            If a coordinate is outside the longitude/latitude domain.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> point = gm.Point(0, 0, crs=4326)
+        >>> point.destination(90, 1000).to_wkt(precision=5)
+        'POINT (0.00898 0)'
+        """
+
+    @overload
     def __new__(
         cls,
         x: None = None,
@@ -4755,6 +4916,62 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     Homogeneous arrays use packed coordinate storage and batched Rust kernels;
     indexing and slicing preserve zero-copy views where possible.
     """
+    @overload
+    def destination(
+        self: GeometryArray[Point],
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self: GeometryArray[Point],
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> GeometryArray[Point]:
+        """Walk each point along a geodesic or rhumb path.
+
+        Parameters
+        ----------
+        bearing : float or sequence of float
+            Initial azimuth in degrees clockwise from north.
+        distance : float or sequence of float
+            Distance to travel in CRS-natural units, unless `unit` is set.
+        path : {'geodesic', 'rhumb'}, default 'geodesic'
+            Route model. Rhumb paths require a geographic CRS and use meters.
+        unit : {'planar', 'meters'}, optional
+            Force coordinate units or CRS metric units.
+
+        Returns
+        -------
+        GeometryArray[Point]
+            One destination point per array row.
+
+        Raises
+        ------
+        GeometryError
+            If `bearing` or `distance` is invalid.
+        CRSError
+            If the selected route requires an unavailable CRS metric.
+        GeometryTypeError
+            If an input row is not a point.
+        InvalidGeometryError
+            If a coordinate is outside the longitude/latitude domain.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> points = gm.GeometryArray([
+        ...     gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)
+        ... ])
+        >>> points.destination(90, 1000).to_wkt(precision=5)[0]
+        'POINT (0.00898 0)'
+        """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Pickle support: packed point/line/polygon arrays round-trip their raw
         little-endian f64 columns (plus CSR offsets for lineal storage);
@@ -14973,124 +15190,6 @@ def cross_track_distance(
     >>> probe = gm.Point(0.5, 0.1, crs=4326)
     >>> round(gm.cross_track_distance(probe, a, b) / 1000, 1)
     11.1
-    """
-
-@overload
-def destination(
-    point: Point,
-    bearing: float,
-    distance: float,
-    *,
-    path: Literal['geodesic'] = 'geodesic',
-    unit: DistanceUnit | None = None,
-) -> Point: ...
-@overload
-def destination(
-    point: GeometryArray[Point],
-    bearing: FloatInput,
-    distance: FloatInput,
-    *,
-    path: Literal['geodesic'] = 'geodesic',
-    unit: DistanceUnit | None = None,
-) -> GeometryArray[Point]: ...
-@overload
-def destination(
-    point: Point,
-    bearing: FloatColumn,
-    distance: FloatInput,
-    *,
-    path: Literal['geodesic'] = 'geodesic',
-    unit: DistanceUnit | None = None,
-) -> GeometryArray[Point]: ...
-@overload
-def destination(
-    point: Point,
-    bearing: FloatInput,
-    distance: FloatColumn,
-    *,
-    path: Literal['geodesic'] = 'geodesic',
-    unit: DistanceUnit | None = None,
-) -> GeometryArray[Point]: ...
-@overload
-def destination(
-    point: Point,
-    bearing: float,
-    distance: float,
-    *,
-    path: NavigationPath = 'geodesic',
-    unit: None = None,
-) -> Point: ...
-@overload
-def destination(
-    point: GeometryArray[Point],
-    bearing: FloatInput,
-    distance: FloatInput,
-    *,
-    path: NavigationPath = 'geodesic',
-    unit: None = None,
-) -> GeometryArray[Point]: ...
-@overload
-def destination(
-    point: Point,
-    bearing: FloatColumn,
-    distance: FloatInput,
-    *,
-    path: NavigationPath = 'geodesic',
-    unit: None = None,
-) -> GeometryArray[Point]: ...
-@overload
-def destination(
-    point: Point,
-    bearing: FloatInput,
-    distance: FloatColumn,
-    *,
-    path: NavigationPath = 'geodesic',
-    unit: None = None,
-) -> GeometryArray[Point]:
-    """Return the point reached from ``point`` along ``bearing`` for ``distance``.
-
-    CRS-aware like every metric: geodesic on a geographic CRS, a planar offset
-    in native units on a projected CRS, and coordinate units when CRS-free.
-    ``path='rhumb'`` instead follows a constant compass course in meters on a
-    geographic CRS.
-
-    Parameters
-    ----------
-    point : Point or GeometryArray
-        Starting point(s).
-    bearing : float or sequence of float
-        Initial azimuth(s) in degrees clockwise from north.
-    distance : float or sequence of float
-        Distance(s) to travel (geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units otherwise).
-    path : {'geodesic', 'rhumb'}, default 'geodesic'
-        Route model. Rhumb paths require a geographic CRS and use meters.
-    unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
-
-    Returns
-    -------
-    Point or GeometryArray
-        One destination per input point.
-
-    Raises
-    ------
-    GeometryError
-        If ``bearing`` or ``distance`` is invalid.
-    GeometryTypeError
-        If ``point`` is not a `Point`.
-    CRSError
-        If a coordinate is outside the longitude/latitude domain.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.destination(gm.Point(0, 0, crs=4326), distance=1000, bearing=90).to_wkt(precision=5)
-    'POINT (0.00898 0)'
     """
 
 @overload

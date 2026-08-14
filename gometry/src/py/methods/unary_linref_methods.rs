@@ -8,7 +8,7 @@ use pyo3::types::PyAny;
 use crate::py::errors::GeometryError;
 use crate::py::support::LineReferenceBasis;
 use crate::{
-    DistanceUnit, F64Param, GeometryInput, PyGeometry, PyGeometryArray, Typed,
+    DistanceUnit, F64Param, GeometryInput, NavigationPath, PyGeometry, PyGeometryArray, Typed,
     parse_interpolate_plan,
 };
 
@@ -487,6 +487,59 @@ impl PyGeometry {
 
 #[pymethods]
 impl PyGeometryArray {
+    /// Walk each point along a geodesic or rhumb path.
+    ///
+    /// Parameters
+    /// ----------
+    /// bearing : float or sequence of float
+    ///     Initial azimuth in degrees clockwise from north.
+    /// distance : float or sequence of float
+    ///     Distance to travel in CRS-natural units, unless `unit` is set.
+    /// path : {'geodesic', 'rhumb'}, default 'geodesic'
+    ///     Route model. Rhumb paths require a geographic CRS and use meters.
+    /// unit : {'planar', 'meters'}, optional
+    ///     Force coordinate units or CRS metric units.
+    ///
+    /// Returns
+    /// -------
+    /// GeometryArray[Point]
+    ///     One destination point per array row.
+    ///
+    /// Raises
+    /// ------
+    /// GeometryError
+    ///     If `bearing` or `distance` is invalid.
+    /// CRSError
+    ///     If the selected route requires an unavailable CRS metric.
+    /// GeometryTypeError
+    ///     If an input row is not a point.
+    /// InvalidGeometryError
+    ///     If a coordinate is outside the longitude/latitude domain.
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> points = gm.GeometryArray([
+    /// ...     gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)
+    /// ... ])
+    /// >>> points.destination(90, 1000).to_wkt(precision=5)[0]
+    /// 'POINT (0.00898 0)'
+    #[pyo3(
+        signature = (bearing, distance, *, path = NavigationPath::Geodesic, unit = None),
+        text_signature = "($self, bearing, distance, *, path='geodesic', unit=None)"
+    )]
+    pub fn destination(
+        &self,
+        py: Python<'_>,
+        bearing: &Bound<'_, PyAny>,
+        distance: &Bound<'_, PyAny>,
+        path: NavigationPath,
+        unit: Option<DistanceUnit>,
+    ) -> PyResult<Py<PyAny>> {
+        let points = Py::new(py, self.clone())?;
+        crate::measures::destination(py, points.bind(py), bearing, distance, path, unit)
+    }
+
     #[doc = doc_line_interpolate!(array)]
     #[pyo3(
         signature = (at = None, /, *, count = None, basis = LineReferenceBasis::Distance, normalized = false, unit = None),

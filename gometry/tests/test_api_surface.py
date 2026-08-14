@@ -120,7 +120,6 @@ def test_bulk_refactor_entrypoints_are_single_native_calls() -> None:
         'nearest_points',
         'contains',
         'bearing',
-        'destination',
         'point_between',
     ):
         function = getattr(gm, name)
@@ -377,8 +376,8 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
             lambda: gm.join(array, array, predicate='dwithin', distance=huge),
             'distance',
         ),
-        (lambda: gm.destination(geom, huge, 1), 'bearing'),
-        (lambda: gm.destination(geom, 0, huge), 'distance'),
+        (lambda: geom.destination(huge, 1), 'bearing'),
+        (lambda: geom.destination(0, huge), 'distance'),
         (lambda: gm.point_between(geom, other, huge), 'distance'),
         (lambda: geom.buffer(huge), 'distance'),
         (lambda: gm.H3Cell(huge, 0, resolution=5), 'longitude'),
@@ -407,7 +406,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'SpatialIndex.nearest': str(inspect.signature(idx.nearest)),
         'gm.nearest': str(inspect.signature(gm.nearest)),
         'gm.bearing': str(inspect.signature(gm.bearing)),
-        'gm.destination': str(inspect.signature(gm.destination)),
+        'Geometry.destination': str(inspect.signature(geom.destination)),
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
         'gm.s2_cover': str(inspect.signature(gm.s2_cover)),
@@ -436,8 +435,8 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     assert 'k=1' in signatures['gm.nearest']
     assert signatures['gm.bearing'] == "(left, right, *, path='geodesic')"
     assert (
-        signatures['gm.destination']
-        == "(point, bearing, distance, *, path='geodesic', unit=None)"
+        signatures['Geometry.destination']
+        == "(bearing, distance, *, path='geodesic', unit=None)"
     )
     assert (
         signatures['gm.point_between']
@@ -519,7 +518,7 @@ def test_readme_quickstart_stays_executable() -> None:
     )
     distance_m = gm.distance(point, gm.Point(22.0, 52.0, crs=4326))
     bearing_deg = gm.bearing(point, gm.Point(22.0, 52.0, crs=4326))
-    east_1km = gm.destination(point, 90.0, 1000.0)
+    east_1km = point.destination(90.0, 1000.0)
     midpoint = gm.point_between(
         point, gm.Point(22.0, 52.0, crs=4326), 0.5, normalized=True
     )
@@ -650,7 +649,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'covers',
         'cross_track_distance',
         'crosses',
-        'destination',
         'difference',
         'disjoint',
         'distance',

@@ -90,7 +90,7 @@ def test_geodesic_measurements_match_pyproj_oracle() -> None:
     azimuth, _, distance = geod.inv(21.0, 52.0, 22.0, 52.0)
     assert gm.bearing(point, other) == pytest.approx(azimuth % 360.0, rel=1e-09)
     destination_lon, destination_lat, _ = geod.fwd(21.0, 52.0, azimuth, distance)
-    destination = gm.destination(point, azimuth, distance)
+    destination = point.destination(azimuth, distance)
     assert destination.x == pytest.approx(destination_lon, rel=1e-09)
     assert destination.y == pytest.approx(destination_lat, rel=1e-09)
     midpoint_lon, midpoint_lat, _ = geod.fwd(21.0, 52.0, azimuth, distance / 2.0)
