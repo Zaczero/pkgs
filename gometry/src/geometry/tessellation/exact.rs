@@ -5,10 +5,6 @@
 //! constructed vertices never depend on a lossy coordinate frame.
 
 #![allow(
-    dead_code,
-    reason = "Pass A establishes exact construction interfaces consumed by the Pass C subdivision"
-)]
-#![allow(
     clippy::missing_const_for_fn,
     clippy::useless_conversion,
     reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"
@@ -99,18 +95,6 @@ pub(in crate::geometry) struct ExactDyadic {
 pub(super) struct ExactLine([ExactDyadic; 3]);
 
 impl ExactLine {
-    pub(super) fn through(a: XY, b: XY) -> Self {
-        let ax = ExactDyadic::from_f64(a.x);
-        let ay = ExactDyadic::from_f64(a.y);
-        let bx = ExactDyadic::from_f64(b.x);
-        let by = ExactDyadic::from_f64(b.y);
-        Self([
-            ay.clone().subtract(by.clone()),
-            bx.clone().subtract(ax.clone()),
-            ax.product(&by).subtract(bx.product(&ay)),
-        ])
-    }
-
     pub(super) fn perpendicular_bisector(a: XY, b: XY) -> Self {
         let ax = ExactDyadic::from_f64(a.x);
         let ay = ExactDyadic::from_f64(a.y);
@@ -143,9 +127,9 @@ impl ExactLine {
     }
 }
 
-/// V6: a virtual left-shifted view of a limb slice. `word(i)` yields exactly
-/// the word `shifted_limbs` would have written at index `i`, so every aligned
-/// operation reads the same words in the same order with no temporary.
+/// V6: a virtual left-shifted view of a limb slice. `word(i)` reads the aligned
+/// word directly, so every operation uses the same words in the same order
+/// with no temporary.
 #[derive(Clone, Copy)]
 struct Aligned<'a> {
     limbs: &'a [u64],
@@ -289,68 +273,6 @@ impl ExactDyadic {
             return 0;
         }
         limbs.len() + shift / 64 + usize::from(!shift.is_multiple_of(64))
-    }
-
-    fn shifted_limbs(&self, shift: usize) -> Vec<u64> {
-        if self.is_zero() {
-            return Vec::new();
-        }
-        let word_shift = shift / 64;
-        let bit_shift = shift % 64;
-        let mut result = vec![0; self.limbs.len() + word_shift + usize::from(bit_shift != 0)];
-        for (index, &limb) in self.limbs.iter().enumerate() {
-            let destination = index + word_shift;
-            result[destination] |= limb << bit_shift;
-            if bit_shift != 0 {
-                result[destination + 1] |= limb >> (64 - bit_shift);
-            }
-        }
-        result
-    }
-
-    fn compare_magnitude(left: &[u64], right: &[u64]) -> Ordering {
-        let left_len = left.iter().rposition(|&v| v != 0).map_or(0, |i| i + 1);
-        let right_len = right.iter().rposition(|&v| v != 0).map_or(0, |i| i + 1);
-        left_len.cmp(&right_len).then_with(|| {
-            left[..left_len]
-                .iter()
-                .rev()
-                .cmp(right[..right_len].iter().rev())
-        })
-    }
-
-    fn add_magnitude(left: &[u64], right: &[u64]) -> Vec<u64> {
-        let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
-        let mut carry = 0_u128;
-        for index in 0..left.len().max(right.len()) {
-            let sum = u128::from(*left.get(index).unwrap_or(&0))
-                + u128::from(*right.get(index).unwrap_or(&0))
-                + carry;
-            result.push(sum as u64);
-            carry = sum >> 64;
-        }
-        if carry != 0 {
-            result.push(carry as u64);
-        }
-        result
-    }
-
-    fn subtract_magnitude(larger: &[u64], smaller: &[u64]) -> Vec<u64> {
-        let mut result = Vec::with_capacity(larger.len());
-        let mut borrow = 0_i128;
-        for (index, &limb) in larger.iter().enumerate() {
-            let difference =
-                i128::from(limb) - i128::from(*smaller.get(index).unwrap_or(&0)) - borrow;
-            if difference < 0 {
-                result.push((difference + (1_i128 << 64)) as u64);
-                borrow = 1;
-            } else {
-                result.push(difference as u64);
-                borrow = 0;
-            }
-        }
-        debug_assert_eq!(borrow, 0);
-        result
     }
 
     fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Vec<u64> {
@@ -1916,8 +1838,16 @@ mod tests {
 
     #[test]
     fn line_intersection_rounding_is_projective_sign_invariant() {
-        let x_axis = ExactLine::through(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
-        let vertical = ExactLine::through(XY::new(0.5, -1.0), XY::new(0.5, 1.0));
+        let x_axis = ExactLine::through_points(
+            &ExactPoint::from_xy(XY::new(0.0, 0.0)),
+            &ExactPoint::from_xy(XY::new(1.0, 0.0)),
+        )
+        .unwrap();
+        let vertical = ExactLine::through_points(
+            &ExactPoint::from_xy(XY::new(0.5, -1.0)),
+            &ExactPoint::from_xy(XY::new(0.5, 1.0)),
+        )
+        .unwrap();
         let forward = line_intersection(&x_axis, &vertical)
             .round_nearest_even()
             .unwrap();
@@ -1985,7 +1915,11 @@ mod tests {
             ExactSign::Zero
         );
         let reversed = line_intersection(&vertical, &x_axis);
-        let above = ExactLine::through(XY::new(0.0, 1.0), XY::new(1.0, 1.0));
+        let above = ExactLine::through_points(
+            &ExactPoint::from_xy(XY::new(0.0, 1.0)),
+            &ExactPoint::from_xy(XY::new(1.0, 1.0)),
+        )
+        .unwrap();
         assert_eq!(
             signed_line_product(&above, &intersection),
             signed_line_product(&above, &reversed)

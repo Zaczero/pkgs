@@ -10,8 +10,16 @@ use crate::geometry::tessellation::shape::{
 
 #[test]
 fn exact_segment_rejects_projective_point_at_infinity() {
-    let horizontal = super::exact::ExactLine::through(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
-    let parallel = super::exact::ExactLine::through(XY::new(0.0, 1.0), XY::new(1.0, 1.0));
+    let horizontal = super::exact::ExactLine::through_points(
+        &super::exact::ExactPoint::from_xy(XY::new(0.0, 0.0)),
+        &super::exact::ExactPoint::from_xy(XY::new(1.0, 0.0)),
+    )
+    .expect("distinct segment");
+    let parallel = super::exact::ExactLine::through_points(
+        &super::exact::ExactPoint::from_xy(XY::new(0.0, 1.0)),
+        &super::exact::ExactPoint::from_xy(XY::new(1.0, 1.0)),
+    )
+    .expect("distinct segment");
     let infinity = super::exact::line_intersection(&horizontal, &parallel);
     let start = super::exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
     let end = super::exact::ExactPoint::from_xy(XY::new(1.0, 0.0));
