@@ -1110,21 +1110,25 @@ def test_h3_pole_normalization_closes_every_shape_and_rule_neighbourhood() -> No
         )
         for longitude in (0.0, 170.0):
             expected = _pole_neighbourhood_shapes(pole, longitude)
+            expected_tokens = {
+                (name, rule): {
+                    cell.token
+                    for cell in gm.h3_cover(exact, 2, cell_rule=rule).cells
+                }
+                for name, exact in expected.items()
+                for rule in ('overlap', 'bbox', 'center', 'within')
+            }
             for latitude in neighbours:
                 actual = _pole_neighbourhood_shapes(latitude, longitude)
-                for name, exact in expected.items():
+                for name in expected:
                     for rule in ('overlap', 'bbox', 'center', 'within'):
-                        exact_tokens = {
-                            cell.token
-                            for cell in gm.h3_cover(exact, 2, cell_rule=rule).cells
-                        }
                         actual_tokens = {
                             cell.token
                             for cell in gm.h3_cover(
                                 actual[name], 2, cell_rule=rule
                             ).cells
                         }
-                        assert actual_tokens == exact_tokens, (
+                        assert actual_tokens == expected_tokens[name, rule], (
                             pole,
                             latitude,
                             longitude,
