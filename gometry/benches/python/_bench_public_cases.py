@@ -43,6 +43,8 @@ from _bench_public_fixtures import (
     index_nearest_queries_1k,
     index_query_boxes_1k,
     intersection_pairs_1k,
+    intersects_polygon_and_points,
+    geohash_encode_inputs,
     masked_crs_200k,
     mixed_10k_gometry,
     mixed_10k_shapely,
@@ -924,6 +926,25 @@ def build_contains_xy() -> PublicCase:
     )
 
 
+def build_intersects_polygon_points() -> PublicCase:
+    data = intersects_polygon_and_points()
+    def gometry_call():
+        import gometry as gm
+        return gm.intersects(data['gm_polygon'], data['gm_points'])
+    def competitor_call():
+        import shapely
+        return shapely.intersects(data['sh_polygon'], data['sh_points'])
+    def precondition() -> None:
+        result = np.asarray(gometry_call())
+        for category, expected in (('interior', True), ('boundary', True), ('exterior', False)):
+            values = result[np.asarray([label == category for label in data['labels']])]
+            if values.size == 0 or not np.all(values == expected):
+                raise OracleMismatch('intersects category coverage', details=category)
+    _reg('gometry.intersects/irregular_polygon_point_array', gometry_call)
+    _reg('shapely.intersects/irregular_polygon_point_array', competitor_call)
+    return _case(gometry_call, competitor_call, exact_mask, kind='exact_mask', preconditions=(precondition,))
+
+
 def build_dwithin() -> PublicCase:
     d = dwithin_pairs_10k()
 
@@ -1263,8 +1284,6 @@ def build_destination() -> PublicCase:
     geod = Geod(ellps='WGS84')
 
     def gometry_call():
-        import gometry as gm
-
         return d['starts'].destination(
             d['az'], d['dist'], path='geodesic', unit='meters'
         )
@@ -1399,9 +1418,7 @@ def build_tile_cover() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        cells = gm.tile_cover(bbox, zoom=10, cell_rule='bbox', max_cells=None).cells
-        # Normalize to (z, x, y) so oracle helper can compare with mercantile
-        return [(int(c.zoom), int(c.x), int(c.y)) for c in cells]
+        return gm.tile_cover(bbox, zoom=10, cell_rule='bbox', max_cells=None)
 
     def competitor_call():
         import mercantile
@@ -1410,7 +1427,7 @@ def build_tile_cover() -> PublicCase:
 
     def pre() -> None:
         tiles = gometry_call()
-        n_tiles = len(tiles)
+        n_tiles = len(tiles.cells)
         if n_tiles != 15_340:
             raise OracleMismatch(
                 'tile cover count', details=f'got {n_tiles}, want 15340'
@@ -1454,6 +1471,53 @@ def build_index_join() -> PublicCase:
         _compare_join,
         kind='normalized_index_pairs',
     )
+
+
+def build_join_within() -> PublicCase:
+    countries = load_country_parts()
+    pois_gm = country_pois_10k()
+    pois_sh = country_pois_10k_shapely()
+    import shapely
+
+    sh_parts = [shapely.from_wkb(g.to_wkb()) for g in countries]
+
+    def gometry_call():
+        import gometry as gm
+        return gm.join(pois_gm, countries, predicate='within')
+
+    def competitor_call():
+        tree = shapely.STRtree(sh_parts)
+        pairs = tree.query(pois_sh, predicate='within')
+        return pairs[0], pairs[1]
+    _reg('gometry.join.within/10k_pois_217_countries', gometry_call)
+    _reg('shapely.STRtree.query.one_shot.within/10k_pois_217_countries', competitor_call)
+    return _case(gometry_call, competitor_call, _compare_join, kind='normalized_index_pairs')
+
+
+def build_geohash_encode() -> PublicCase:
+    data = geohash_encode_inputs()
+    def gometry_tokens(lon, lat, precision):
+        import gometry as gm
+        return list(gm.geohash_cells(lon, lat, precision=precision).token)
+    def gometry_call():
+        return gometry_tokens(data['lon'], data['lat'], 6)
+    def competitor_call():
+        import pygeohash
+        return [pygeohash.encode(float(lat), float(lon), precision=6)
+                for lon, lat in zip(data['lon'], data['lat'], strict=True)]
+    def precondition() -> None:
+        import pygeohash
+        for precision in (1, 6, 12):
+            expected = [pygeohash.encode(float(lat), float(lon), precision=precision)
+                        for lon, lat in zip(data['edge_lon'], data['edge_lat'], strict=True)]
+            if gometry_tokens(data['edge_lon'], data['edge_lat'], precision) != expected:
+                raise OracleMismatch('geohash edge probe mismatch', details=str(precision))
+    def compare(left, right, context):
+        if list(left) != list(right):
+            raise OracleMismatch('geohash token list mismatch')
+    _reg('gometry.geohash_encode/10k_precision6', gometry_call)
+    _reg('pygeohash.encode/10k_precision6', competitor_call)
+    return _case(gometry_call, competitor_call, compare, kind='exact_token_list', preconditions=(precondition,))
 
 
 def build_index_candidates() -> PublicCase:
@@ -1642,6 +1706,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.get_coordinates/100k_vertices_with_index': build_get_coordinates,
     'gometry.points/10k_numpy_xy': build_points,
     'gometry.prepare.contains_xy/100k_probes_1316_vertex_polygon': build_contains_xy,
+    'gometry.intersects/irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,
     'gometry.length/10k_roads_100k_vertices': build_length,
@@ -1661,6 +1726,8 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.s2_cover.adaptive/BR_target256_overlap': build_s2_cover,
     'gometry.tile_cover.bbox/BR_z10_15340_tiles': build_tile_cover,
     'gometry.index.join.within/10k_pois_217_countries': build_index_join,
+    'gometry.join.within/10k_pois_217_countries': build_join_within,
+    'gometry.geohash_encode/10k_precision6': build_geohash_encode,
     'gometry.index.candidates/1k_queries_10k_polygons': build_index_candidates,
     'gometry.index.nearest/1k_queries_10k_polygons_k1': build_index_nearest,
     'gometry.index.build/10k_polygons': build_index_build,

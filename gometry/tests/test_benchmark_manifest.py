@@ -51,16 +51,16 @@ EXPECTED_RELEASE_SCRIPTS = {
 
 
 def test_release_operation_counts() -> None:
-    assert len(RELEASE_OPERATIONS) == 32
+    assert len(RELEASE_OPERATIONS) == 35
     paired = [op for op in RELEASE_OPERATIONS if op.paired]
     solo = [op for op in RELEASE_OPERATIONS if not op.paired]
-    assert len(paired) == 31
+    assert len(paired) == 34
     assert len(solo) == 1
     names: list[str] = []
     for op in RELEASE_OPERATIONS:
         names.extend(op.rows)
-    assert len(names) == 63
-    assert len(set(names)) == 63
+    assert len(names) == 69
+    assert len(set(names)) == 69
 
 
 def test_release_script_inventory_is_complete() -> None:
@@ -81,7 +81,7 @@ def test_release_scripts_import_before_a_release_run(script: str) -> None:
 
 def test_domain_counts_and_contiguous_order() -> None:
     counts = Counter(op.domain for op in RELEASE_OPERATIONS)
-    assert [counts[d] for d in DOMAIN_ORDER] == [6, 11, 4, 4, 4, 3]
+    assert [counts[d] for d in DOMAIN_ORDER] == [6, 12, 4, 5, 5, 3]
     seen: list[str] = []
     for op in RELEASE_OPERATIONS:
         if not seen or seen[-1] != op.domain:
@@ -98,7 +98,7 @@ def test_only_s2_is_solo() -> None:
 
 
 def test_suite_inventory() -> None:
-    assert len(RELEASE.rows('competitors')) == 56
+    assert len(RELEASE.rows('competitors')) == 62
     assert len(RELEASE.rows('real_world')) == 6
     assert len(RELEASE.rows('gometry')) == 1
 
@@ -139,7 +139,7 @@ def test_pair_units_do_not_split_public_pairs() -> None:
     rows = RELEASE.rows('competitors')
     units = pair_units(rows, suite='competitors')
     assert all(len(u) == 2 for u in units)
-    assert sum(len(u) for u in units) == 56
+    assert sum(len(u) for u in units) == 62
 
 
 def test_filter_selects_both_pair_members() -> None:
@@ -173,7 +173,7 @@ def test_real_world_pairs_via_manifest() -> None:
 @pytest.mark.parametrize(
     'suite,expected',
     [
-        ('competitors', 56),
+        ('competitors', 62),
         ('real_world', 6),
         ('gometry', 1),
     ],

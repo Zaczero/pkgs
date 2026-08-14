@@ -61,7 +61,7 @@ class ReleaseOperation:
 
 
 # ---------------------------------------------------------------------------
-# Ordered public RELEASE set — 32 logical ops, domain counts 6/11/4/4/4/3
+# Ordered public RELEASE set — 35 logical ops
 # ---------------------------------------------------------------------------
 
 RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
@@ -127,6 +127,16 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         footnotes=('batched',),
     ),
     # --- Geometry — 11 ---
+    ReleaseOperation(
+        domain='Geometry',
+        label='intersects irregular polygon points',
+        workload='10k interior, boundary, and exterior probes',
+        suite='competitors',
+        gometry='gometry.intersects/irregular_polygon_point_array',
+        competitor='shapely.intersects/irregular_polygon_point_array',
+        competitor_label='Shapely',
+        footnotes=('batched',),
+    ),
     ReleaseOperation(
         domain='Geometry',
         label='Prepared polygon contains XY',
@@ -281,6 +291,16 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     # --- Discrete global grids — 4 ---
     ReleaseOperation(
         domain='Discrete global grids',
+        label='geohash encode tokens',
+        workload='10k WGS84 points precision 6',
+        suite='competitors',
+        gometry='gometry.geohash_encode/10k_precision6',
+        competitor='pygeohash.encode/10k_precision6',
+        competitor_label='pygeohash',
+        footnotes=('batched',),
+    ),
+    ReleaseOperation(
+        domain='Discrete global grids',
         label='h3_cover center Brazil',
         workload='BR res5 32260 cells',
         suite='competitors',
@@ -319,6 +339,16 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         footnotes=('batched',),
     ),
     # --- Spatial index — 4 ---
+    ReleaseOperation(
+        domain='Spatial index',
+        label='one-shot join within',
+        workload='10k POIs x 217 countries',
+        suite='competitors',
+        gometry='gometry.join.within/10k_pois_217_countries',
+        competitor='shapely.STRtree.query.one_shot.within/10k_pois_217_countries',
+        competitor_label='Shapely',
+        footnotes=('batched',),
+    ),
     ReleaseOperation(
         domain='Spatial index',
         label='index join within',

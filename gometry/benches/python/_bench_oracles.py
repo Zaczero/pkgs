@@ -357,7 +357,9 @@ def _normalize_tiles(value: object) -> list[tuple[int, int, int]]:
     if value is None:
         return items
     for item in value:  # type: ignore[union-attr]
-        if hasattr(item, 'z') and hasattr(item, 'x') and hasattr(item, 'y'):
+        if hasattr(item, 'zoom') and hasattr(item, 'x') and hasattr(item, 'y'):
+            items.append((int(item.zoom), int(item.x), int(item.y)))
+        elif hasattr(item, 'z') and hasattr(item, 'x') and hasattr(item, 'y'):
             items.append((int(item.z), int(item.x), int(item.y)))
         else:
             z, x, y = item  # type: ignore[misc]
