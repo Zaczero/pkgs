@@ -237,17 +237,10 @@ def test_concurrent_list_fancy_index_mutation(receiver_kind: str) -> None:
         pytest.param('contiguous', id='buffer-contiguous-f64-ndarray'),
         pytest.param('strided', id='buffer-strided-f64-ndarray'),
         pytest.param('nd', id='buffer-NxD-f64-ndarray'),
-        pytest.param('bytearray', id='buffer-bytearray'),
-        pytest.param('memoryview', id='buffer-memoryview'),
     ],
 )
-def test_concurrent_buffer_mutation(shape: str) -> None:
-    """Mutator rewrites buffer contents while the reader ingests them.
-
-    Without ReadOnlyCell / copy-on-mutable, forming ``&[f64]`` / ``&[u8]`` over
-    concurrently-written memory is Rust UB. Races are **probabilistic** without
-    TSAN; deterministic companion tests lock the safe ingest paths.
-    """
+def test_free_threaded_mutable_numeric_buffers_are_rejected(shape: str) -> None:
+    """Mutable PEP 3118 exporters are rejected before any f64 content read."""
     _require_free_threading()
 
     n = 256
@@ -255,17 +248,8 @@ def test_concurrent_buffer_mutation(shape: str) -> None:
         x = np.arange(n, dtype=np.float64)
         y = np.arange(n, dtype=np.float64) * 0.5
 
-        def mutator() -> None:
-            x[0] = float(x[0]) + 1.0
-            y[-1] = float(y[-1]) + 1.0
-
-        def reader() -> None:
-            try:
-                pts = gm.points(x, y)
-                assert len(pts) == n
-            except (ValueError, gm.GeometryError, gm.InvalidGeometryError):
-                # Non-finite / validation rejection under thrash is fine.
-                pass
+        with pytest.raises(BufferError, match='mutable buffer exporters'):
+            gm.points(x, y)
 
     elif shape == 'strided':
         storage = np.zeros((n, 2), dtype=np.float64)
@@ -274,16 +258,8 @@ def test_concurrent_buffer_mutation(shape: str) -> None:
         xs = storage[:, 0]
         ys = storage[:, 1]
 
-        def mutator() -> None:
-            storage[0, 0] += 1.0
-            storage[-1, 1] += 1.0
-
-        def reader() -> None:
-            try:
-                pts = gm.points(xs, ys)
-                assert len(pts) == n
-            except (ValueError, gm.GeometryError, gm.InvalidGeometryError):
-                pass
+        with pytest.raises(BufferError, match='mutable buffer exporters'):
+            gm.points(xs, ys)
 
     elif shape == 'nd':
         nd = np.column_stack([
@@ -291,52 +267,43 @@ def test_concurrent_buffer_mutation(shape: str) -> None:
             np.arange(n, dtype=np.float64) * 0.5,
         ])
 
-        def mutator() -> None:
-            nd[0, 0] += 1.0
-            nd[-1, 1] += 1.0
+        with pytest.raises(BufferError, match='mutable buffer exporters'):
+            gm.LineString(nd)
 
-        def reader() -> None:
-            try:
-                line = gm.LineString(nd)
-                assert len(line.coords) == n
-            except (ValueError, gm.GeometryError, gm.InvalidGeometryError):
-                pass
 
-    elif shape == 'bytearray':
-        wkb = bytearray(gm.Point(1.0, 2.0).to_wkb())
-        good = bytes(wkb)
+def test_free_threaded_readonly_facade_over_mutable_buffer_is_rejected() -> None:
+    """A readonly memoryview does not establish immutable provenance."""
+    _require_free_threading()
+    storage = np.arange(32, dtype=np.float64)
+    view = memoryview(storage).toreadonly()
+    with pytest.raises(BufferError, match='mutable buffer exporters'):
+        gm.points(view, view)
 
-        def mutator() -> None:
-            # Flip payload bytes; restore so the reader sometimes still succeeds.
-            for i in range(len(wkb)):
-                wkb[i] ^= 0xFF
-            wkb[:] = good
 
-        def reader() -> None:
-            try:
-                _ = gm.from_wkb(wkb)
-            except (ValueError, TypeError, gm.GeometryError, gm.ParseError):
-                pass
+@pytest.mark.parametrize('format', ['d', 'Q'])
+def test_free_threaded_bytes_backed_typed_memoryview_is_accepted(format: str) -> None:
+    """Exact built-in memoryview views over bytes have immutable provenance."""
+    _require_free_threading()
+    import struct
 
-    else:  # memoryview over mutable bytearray
-        storage = bytearray(gm.Point(3.0, 4.0).to_wkb())
-        good = bytes(storage)
-        view = memoryview(storage)
+    endian = '<' if sys.byteorder == 'little' else '>'
+    if format == 'd':
+        view = memoryview(struct.pack(f'{endian}2d', 1.5, -2.25)).cast('d')
+        arr = gm.points(view, view)
+        assert [point.x for point in arr] == [1.5, -2.25]
+    else:
+        cell = gm.S2Cell(0, 0, level=1)
+        view = memoryview(struct.pack(f'{endian}Q', cell.id)).cast('Q')
+        arr = gm.CellArray(view, type=gm.S2Cell)
+        assert arr[0].id == cell.id
 
-        def mutator() -> None:
-            for i in range(len(storage)):
-                storage[i] ^= 0xA5
-            storage[:] = good
 
-        def reader() -> None:
-            try:
-                _ = gm.from_wkb(view)
-            except (ValueError, TypeError, gm.GeometryError, gm.ParseError):
-                pass
-
-    errors = _run_mutator_reader(reader, mutator)
-    if errors:
-        pytest.fail('\n'.join(errors))
+def test_free_threaded_uint64_buffer_is_rejected() -> None:
+    """The numeric cell/H3 u64 paths use the same provenance gate."""
+    _require_free_threading()
+    ids = np.array([0x8928308280FFFFF], dtype=np.uint64)
+    with pytest.raises(BufferError, match='mutable buffer exporters'):
+        gm.CellArray(ids, type=gm.H3Cell)
 
 
 def test_proj_info_snapshot_survives_concurrent_reconfigure() -> None:

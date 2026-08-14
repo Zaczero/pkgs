@@ -528,6 +528,7 @@ dependencies = [
  "numpy",
  "proj-sys",
  "pyo3",
+ "pyo3-build-config",
  "robust",
  "rstar",
  "s2",

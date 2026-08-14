@@ -83,5 +83,8 @@ zmij = { version = "1.0.21", default-features = false }
 # affected swap_columns API. AGENTS.md records the release-audit decision.
 s2 = { version = "0.1.0", default-features = false }
 
+[build-dependencies]
+pyo3-build-config = { version = "0.29.0", default-features = false }
+
 [lints]
 workspace = true
