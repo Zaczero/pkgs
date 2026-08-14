@@ -58,7 +58,7 @@ def collect_errors(cfg: StubConfig) -> Findings:
     errors.extend(
         f'token vocabulary: {conf.vocabulary_export}() entry {name} '
         f'has no {conf.enum_macro}!'
-        for name in sorted(exported - declared)
+        for name in sorted(exported - declared - conf.extra_vocabulary)
     )
 
     types_label = conf.types_module.rsplit('.', 1)[-1]

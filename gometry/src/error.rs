@@ -99,9 +99,8 @@ impl From<FrameError> for Error {
 /// field on `Error` itself — move it into a kind variant instead.
 const _: () = assert!(std::mem::size_of::<Error>() == std::mem::size_of::<usize>());
 
-/// A `ParseError` format tag (which codec rejected the input) — so the
-/// point/grid codecs match the WKT/WKB/GeoJSON contract. PyErr decoration lives
-/// in `crate::py::errors`.
+/// A `ParseError` format tag identifying the malformed serialized, grid-cell,
+/// or point-code input. PyErr decoration lives in `crate::py::errors`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ParseFormat {
     Wkt,
@@ -121,6 +120,23 @@ pub(crate) enum ParseFormat {
 }
 
 impl ParseFormat {
+    pub(crate) const ALL: [Self; 14] = [
+        Self::Wkt,
+        Self::Wkb,
+        Self::GeoJson,
+        Self::GeoArrow,
+        Self::GeoParquet,
+        Self::H3,
+        Self::S2,
+        Self::Geohash,
+        Self::Tile,
+        Self::Quadkey,
+        Self::Polyline,
+        Self::PlusCode,
+        Self::OsmShortlink,
+        Self::Pickle,
+    ];
+
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Wkt => "wkt",

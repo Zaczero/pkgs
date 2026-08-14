@@ -89,6 +89,7 @@ from gometry._types import (
     Features,
     FloatColumn,
     FloatInput,
+    ParseFormat,
     ScalarFloatArray,
     GeoJsonFeature,
     GeoJsonFeatureCollection,
@@ -430,25 +431,7 @@ class TransformError(CRSError):
 class ParseError(GeometryError):
     """Serialized, grid-cell, or point-code input is malformed."""
 
-    format: (
-        Literal[
-            'wkt',
-            'wkb',
-            'geojson',
-            'geoarrow',
-            'geoparquet',
-            'h3',
-            's2',
-            'geohash',
-            'tile',
-            'quadkey',
-            'polyline',
-            'pluscode',
-            'osm_shortlink',
-            'pickle',
-        ]
-        | None
-    )
+    format: ParseFormat | None
     """Which codec rejected the input."""
     position: int | None
     """WKT UTF-8 input length; WKB true detection byte offset; otherwise None when unavailable."""

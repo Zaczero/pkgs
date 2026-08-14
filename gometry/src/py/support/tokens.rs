@@ -158,5 +158,13 @@ pub(crate) fn _token_vocabulary() -> Vec<(&'static str, Option<&'static str>, Ve
             Some("WktAxisRule"),
             crate::crs::WktAxisRule::TOKENS.to_vec(),
         ),
+        (
+            "ParseFormat",
+            Some("ParseFormat"),
+            crate::error::ParseFormat::ALL
+                .into_iter()
+                .map(crate::error::ParseFormat::label)
+                .collect(),
+        ),
     ]
 }

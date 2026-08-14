@@ -208,6 +208,7 @@ __all__ = [
     'Features',
     'FloatColumn',
     'FloatInput',
+    'ParseFormat',
     'GeoJsonFeature',
     'GeoJsonFeatureCollection',
     'GeoJsonFeatureNonNull',
@@ -773,6 +774,11 @@ FloatColumn: TypeAlias = Iterable[float] | Buffer
 #: One float per geometry: a scalar broadcasts, or pass an iterable /
 #: zero-copy buffer with one value per element.
 FloatInput: TypeAlias = float | FloatColumn
+
+ParseFormat: TypeAlias = Literal[
+    'wkt', 'wkb', 'geojson', 'geoarrow', 'geoparquet', 'h3', 's2', 'geohash',
+    'tile', 'quadkey', 'polyline', 'pluscode', 'osm_shortlink', 'pickle',
+]
 
 #: Anything accepted where a CRS is expected: an authority string
 #: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,

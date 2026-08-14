@@ -65,5 +65,6 @@ def config() -> StubConfig:
         tokens=TokenConfig(
             types_module='gometry._types',
             vocabulary_export='_token_vocabulary',
+            extra_vocabulary=frozenset({'ParseFormat'}),
         ),
     )
