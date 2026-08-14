@@ -696,7 +696,7 @@ except Exception as e:
     completed = _assert_terminates(script)
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
-    assert 'ValueError' in blob
+    assert 'GeometryError' in blob
     assert 'length' in blob
 
 
@@ -764,7 +764,7 @@ except Exception as e:
     completed = _assert_terminates(script)
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
-    assert 'ValueError' in blob
+    assert 'GeometryError' in blob
     assert 'does not match geometry length' in blob
 
 

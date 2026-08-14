@@ -428,7 +428,7 @@ class TransformError(CRSError):
     """The target CRS of the failed transform (else ``None``)."""
 
 class ParseError(GeometryError):
-    """Serialized input (WKT, WKB, GeoJSON, GeoArrow, or pickle) is malformed."""
+    """Serialized, grid-cell, or point-code input is malformed."""
 
     format: (
         Literal[

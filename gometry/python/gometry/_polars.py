@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from gometry._lib import (
+    CRSError,
     GeometryArray,
     GeometryError,
     from_wkb,
@@ -90,7 +91,7 @@ def to_polars(
     else:
         try:
             storage = values.to_wkb(include_srid=True, drop_epoch=drop_epoch)
-        except Exception as exc:
+        except CRSError as exc:
             if not drop_crs:
                 raise GeometryError(
                     'to_polars cannot encode this CRS in WKB/EWKB; '

@@ -600,16 +600,22 @@ class Features:
                 ):
                     raise TypeError('feature ids must be strings, numbers, or None')
                 elif isinstance(identifier, float) and not math.isfinite(identifier):
-                    raise ValueError('numeric feature ids must be finite')
+                    from gometry._lib import GeometryError
+
+                    raise GeometryError('numeric feature ids must be finite')
                 else:
                     collected_ids.append(identifier)
             id_rows = tuple(collected_ids)
         if len(property_rows) != rows:
-            raise ValueError(
+            from gometry._lib import GeometryError
+
+            raise GeometryError(
                 f'properties length {len(property_rows)} does not match geometries length {rows}'
             )
         if len(id_rows) != rows:
-            raise ValueError(
+            from gometry._lib import GeometryError
+
+            raise GeometryError(
                 f'ids length {len(id_rows)} does not match geometries length {rows}'
             )
         # ``object.__setattr__`` bypasses the frozen instance ``__setattr__``.

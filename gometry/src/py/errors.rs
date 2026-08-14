@@ -57,7 +57,7 @@ create_exception!(
     gometry,
     ParseError,
     GeometryError,
-    "Serialized input (WKT, WKB, GeoJSON, GeoArrow, or pickle) is malformed."
+    "Serialized, grid-cell, or point-code input is malformed."
 );
 create_exception!(
     gometry,

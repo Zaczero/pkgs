@@ -279,9 +279,9 @@ def test_features_record_validates_alignment_and_has_bounded_repr() -> None:
     assert len(repr(huge)) < 300
     with pytest.raises(TypeError, match='GeometryArray'):
         gm.Features([gm.Point(0, 0)], ({}), (None))  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match='properties length'):
+    with pytest.raises(gm.GeometryError, match='properties length'):
         gm.Features(geometries, iter([{}]), (None,) * 10)
-    with pytest.raises(ValueError, match='ids length'):
+    with pytest.raises(gm.GeometryError, match='ids length'):
         gm.Features(geometries, ({},) * 10, ())
     mapped = gm.Features(
         geometries,
@@ -320,7 +320,7 @@ def test_features_pickle_revalidates_parallel_columns() -> None:
         def __reduce__(self):
             return (gm.Features, (geometries, (), ()))
 
-    with pytest.raises(ValueError, match='properties length'):
+    with pytest.raises(gm.GeometryError, match='properties length'):
         pickle.loads(pickle.dumps(InvalidFeatures()))
 
 

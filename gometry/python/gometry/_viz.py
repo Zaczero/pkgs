@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from gometry._lib import Geometry, GeometryArray
+from gometry._lib import Geometry, GeometryArray, GeometryError
 from gometry._optional import missing_optional_dependency
 from gometry._types import PyArrowTable, mapping_as_dict
 
@@ -107,7 +107,7 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
         # Shared keys()+seen copier (N4): keys()-only ducks + repeated-key reject.
         columns = mapping_as_dict(attributes)
         if 'geometry' in columns:
-            raise ValueError(
+            raise GeometryError(
                 "attributes must not contain the reserved 'geometry' column"
             )
         if not columns:
@@ -138,9 +138,9 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
             'attributes must be an Arrow table, mapping of columns, or None'
         )
     if 'geometry' in table.column_names:
-        raise ValueError("attributes must not contain the reserved 'geometry' column")
+        raise GeometryError("attributes must not contain the reserved 'geometry' column")
     if table.num_rows != row_count:
-        raise ValueError(
+        raise GeometryError(
             f'attributes length {table.num_rows} does not match geometry length {row_count}'
         )
     return table
