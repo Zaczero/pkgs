@@ -194,16 +194,15 @@ jobs:
       CIBW_BUILD_FRONTEND: build[uv]
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE
+      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       CIBW_BEFORE_ALL_LINUX:
-        'if command -v dnf >/dev/null; then dnf install -y sqlite; else apk add --no-cache sqlite; fi
-        && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-        --default-toolchain none && rustup toolchain install --profile minimal
-        "$RUSTUP_TOOLCHAIN"'
+        'set -eu; if command -v dnf >/dev/null; then dnf install -y sqlite; else apk add --no-cache sqlite; fi;
+        curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o rustup-init.sh;
+        sh rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -271,7 +270,7 @@ jobs:
           fi
           {
             printf '%s\n' "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro"
-            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE"
+            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
             printf '%s\n' "CIBW_TEST_COMMAND=$test_command"
           } >> "$GITHUB_ENV"
 
