@@ -121,16 +121,17 @@ pub(crate) fn uncompact_unlimited<C: HierarchicalId>(cells: &[C], target: u8) ->
         })
         .fold(0_usize, usize::saturating_add);
     let mut out = Vec::with_capacity(estimated.min(1 << 20));
-    let mut stack: Vec<C> = cells.iter().copied().rev().collect();
+    let roots = normalize(cells.to_vec());
+    let mut stack: Vec<C> = roots.into_iter().rev().collect();
     while let Some(cell) = stack.pop() {
         if cell.depth() >= target {
             out.push(cell);
         } else {
+            let children_start = stack.len();
             stack.extend(cell.children());
+            stack[children_start..].reverse();
         }
     }
-    out.sort_unstable_by_key(|cell| cell.range_min());
-    out.dedup();
     out
 }
 
@@ -270,9 +271,77 @@ impl HierarchicalId for super::tile::Tile {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::super::geohash::Geohash;
+    use super::super::s2::cellid::CellId;
     use super::super::tile::Tile;
     use super::*;
+
+    static ROOT_CHILD_ENUMERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct InstrumentedId(u8);
+
+    impl HierarchicalId for InstrumentedId {
+        fn depth(self) -> u8 {
+            u8::from(self.0 != 0)
+        }
+
+        fn max_depth() -> u8 {
+            1
+        }
+
+        fn range_min(self) -> u64 {
+            u64::from(self.0)
+        }
+
+        fn range_max(self) -> u64 {
+            if self == Self(0) {
+                2
+            } else {
+                u64::from(self.0)
+            }
+        }
+
+        fn parent(self) -> Option<Self> {
+            None
+        }
+
+        fn child_count(self) -> usize {
+            2
+        }
+
+        fn children(self) -> impl ExactSizeIterator<Item = Self> {
+            if self == Self(0) {
+                ROOT_CHILD_ENUMERATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+            [Self(1), Self(2)].into_iter()
+        }
+    }
+
+    fn assert_uncompact_order<C: HierarchicalId + std::fmt::Debug>(
+        roots: [C; 2],
+        target: u8,
+        inputs: &[C],
+    ) {
+        let roots = normalize(roots.into_iter().collect());
+        let expected = roots
+            .iter()
+            .flat_map(|&root| {
+                HierarchicalId::children(root)
+                    .flat_map(HierarchicalId::children)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let expanded = uncompact_unlimited(inputs, target);
+        assert_eq!(expanded, expected);
+        assert!(
+            expanded
+                .windows(2)
+                .all(|pair| pair[0].range_min() < pair[1].range_min())
+        );
+    }
 
     #[test]
     fn geohash_set_algebra_identities() {
@@ -321,5 +390,59 @@ mod tests {
             assert!(base.range_min() <= child.range_min());
             assert!(child.range_max() <= base.range_max());
         }
+    }
+
+    #[test]
+    fn uncompact_normalizes_and_preserves_tile_range_order() {
+        let first = Tile { z: 5, x: 3, y: 7 };
+        let second = Tile { z: 5, x: 20, y: 11 };
+        let first_child = first.children()[0];
+        assert_uncompact_order([first, second], 7, &[
+            second,
+            first_child,
+            first,
+            second,
+            first_child,
+        ]);
+    }
+
+    #[test]
+    fn uncompact_normalizes_and_preserves_geohash_range_order() {
+        let first = Geohash::parse("u").unwrap();
+        let second = Geohash::parse("e").unwrap();
+        let first_child = first.children().next().unwrap();
+        assert_uncompact_order([first, second], 3, &[
+            second,
+            first_child,
+            first,
+            second,
+            first_child,
+        ]);
+    }
+
+    #[test]
+    fn uncompact_normalizes_and_preserves_s2_range_order() {
+        let first = CellId::from_lonlat(-120.0, 30.0).parent(5).unwrap();
+        let second = CellId::from_lonlat(120.0, 30.0).parent(5).unwrap();
+        let first_child = first.children().unwrap()[0];
+        assert_uncompact_order([first, second], 7, &[
+            second,
+            first_child,
+            first,
+            second,
+            first_child,
+        ]);
+    }
+
+    #[test]
+    fn uncompact_normalizes_roots_before_expansion() {
+        ROOT_CHILD_ENUMERATIONS.store(0, Ordering::Relaxed);
+        let expanded = uncompact_unlimited(
+            &[InstrumentedId(0), InstrumentedId(1), InstrumentedId(0)],
+            1,
+        );
+
+        assert_eq!(expanded, vec![InstrumentedId(1), InstrumentedId(2)]);
+        assert_eq!(ROOT_CHILD_ENUMERATIONS.load(Ordering::Relaxed), 1);
     }
 }
