@@ -20,12 +20,12 @@ impl PyH3Cell {
     ///
     /// Parameters
     /// ----------
-    /// lon : H3Cell, int, str, float, or Point
-    ///     A cell id/token, the longitude of a ``lon, lat`` pair, or a point
-    ///     geometry.
+    /// value : H3Cell, int, str, float, or Point
+    ///     An existing cell, id, token, longitude of a ``lon, lat`` pair, or
+    ///     a point geometry.
     ///
     /// lat : float, optional
-    ///     Latitude when ``lon`` is a scalar longitude.
+    ///     Latitude when ``value`` is a scalar longitude.
     ///
     /// resolution : int, optional
     ///     H3 resolution (``0``-``15``); required for coordinate construction.
@@ -41,7 +41,7 @@ impl PyH3Cell {
     /// GeometryError
     ///     If ``resolution`` is out of range.
     /// InvalidGeometryError
-    ///     If a scalar coordinate is non-finite.
+    ///     If a scalar coordinate is non-finite or out of range.
     ///
     /// Examples
     /// --------
@@ -122,7 +122,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> cell.center_child(resolution=8).token
     /// '8828308281fffff'
     fn center_child(&self, resolution: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -161,7 +162,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> cell.child_at(0, 8).token
     /// '8828308281fffff'
     fn child_at(
@@ -225,8 +227,10 @@ impl PyH3Cell {
     /// --------
     /// >>> import gometry as gm
     /// >>> cell = gm.H3Cell(13.4, 52.5, resolution=7)
-    /// >>> edge = cell.edge(cell.neighbors[0])
-    /// >>> (edge.origin == cell, edge.destination == cell.neighbors[0])
+    /// >>> neighbor = cell.neighbors[0]
+    /// >>> assert neighbor is not None
+    /// >>> edge = cell.edge(neighbor)
+    /// >>> (edge.origin == cell, edge.destination == neighbor)
     /// (True, True)
     fn edge(&self, destination: &Bound<'_, PyAny>) -> PyResult<PyH3Edge> {
         let destination = h3_cell_index(destination)?;
@@ -271,7 +275,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> len(cell.grid_disk(1))
     /// 7
     fn grid_disk(&self, k: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
@@ -303,7 +308,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> len(cell.grid_ring(1))
     /// 6
     fn grid_ring(&self, k: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
@@ -337,8 +343,11 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-    /// >>> cell.is_neighbor(list(cell.neighbors)[0])
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> cell.is_neighbor(neighbor)
     /// True
     fn is_neighbor(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         let other = h3_cell_index(other)?;
@@ -370,7 +379,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> cell.local_ij(cell)
     /// (160, 88)
     fn local_ij(&self, origin: &Bound<'_, PyAny>) -> PyResult<(i32, i32)> {
@@ -397,7 +407,8 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> cell.cell_from_local_ij(160, 88).token
     /// '872830828ffffff'
     fn cell_from_local_ij(&self, i: i32, j: i32) -> PyResult<Self> {
@@ -433,8 +444,11 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-    /// >>> cell.children(resolution=8)[0].child_position(7)
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> child = cell.children(resolution=8)[0]
+    /// >>> assert child is not None
+    /// >>> child.child_position(7)
     /// 0
     fn child_position(&self, resolution: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
         let resolution = parse_h3_resolution(resolution)?;
@@ -462,8 +476,11 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-    /// >>> cell.grid_distance(list(cell.neighbors)[0])
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> cell.grid_distance(neighbor)
     /// 1
     fn grid_distance(&self, other: &Bound<'_, PyAny>) -> PyResult<i32> {
         self.cell
@@ -492,8 +509,10 @@ impl PyH3Cell {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> nbr = list(cell.neighbors)[0]
+    /// >>> assert nbr is not None
     /// >>> len(cell.grid_path(nbr))
     /// 2
     fn grid_path(&self, other: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
@@ -530,34 +549,45 @@ grid_cell_common_pymethods! {
         children_text_signature: "($self, resolution=None)",
         neighbors_doc: "The edge-adjacent neighbor cells (six for a hexagon, five around a pentagon).",
         candidate_doc: "other : H3Cell, int, or str",
+        descendant_count_doc: "The exact descendant count (H3 pentagons have slightly fewer than hexagons).",
+        parse_error_doc: "If an id or token is not a valid cell.",
         example_parent: r"
 >>> import gometry as gm
->>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+>>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+>>> assert cell is not None
 >>> cell.parent(resolution=6).token
 '86283082fffffff'
 ",
         example_children: r"
 >>> import gometry as gm
->>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+>>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+>>> assert cell is not None
 >>> len(cell.children(resolution=8))
 7
 ",
         example_children_count: r"
 >>> import gometry as gm
->>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+>>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+>>> assert cell is not None
 >>> cell.children_count(resolution=8)
 7
 ",
         example_contains: r"
 >>> import gometry as gm
->>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
->>> cell.contains(cell.children(resolution=8)[0])
+>>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+>>> assert cell is not None
+>>> child = cell.children(resolution=8)[0]
+>>> assert child is not None
+>>> cell.contains(child)
 True
 ",
         example_intersects: r"
 >>> import gometry as gm
->>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
->>> cell.intersects(cell.parent(resolution=6))
+>>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+>>> assert cell is not None
+>>> parent = cell.parent(resolution=6)
+>>> assert parent is not None
+>>> cell.intersects(parent)
 True
 ",
         repr: h3,

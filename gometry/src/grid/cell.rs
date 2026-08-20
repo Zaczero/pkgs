@@ -11,44 +11,6 @@ use crate::geometry::{Point, Shape};
 use crate::grid::UncompactBudgetExceeded;
 use crate::grid::coverer::RectCell;
 
-/// Depth metadata for a visible cell set: either every cell is at one depth, or
-/// the set spans a closed min/max range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum CellDepth {
-    Uniform(u8),
-    Mixed { min: u8, max: u8 },
-}
-
-impl CellDepth {
-    pub(crate) fn from_levels(mut levels: impl Iterator<Item = u8>) -> Option<Self> {
-        let first = levels.next()?;
-        let (mut min, mut max) = (first, first);
-        for level in levels {
-            min = min.min(level);
-            max = max.max(level);
-        }
-        Some(if min == max {
-            Self::Uniform(min)
-        } else {
-            Self::Mixed { min, max }
-        })
-    }
-
-    pub(crate) const fn uniform_level(self) -> Option<u8> {
-        match self {
-            Self::Uniform(level) => Some(level),
-            Self::Mixed { .. } => None,
-        }
-    }
-
-    pub(crate) fn explain(self, name: &str) -> String {
-        match self {
-            Self::Uniform(level) => format!("{name} {level}"),
-            Self::Mixed { min, max } => format!("{name} {min}-{max}"),
-        }
-    }
-}
-
 /// Argument carried by a cell's `__reduce__` tuple.
 pub(crate) enum CellPickleArg {
     U64(u64),

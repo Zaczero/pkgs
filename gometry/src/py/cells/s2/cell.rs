@@ -1,17 +1,3 @@
-use pyo3::pymethods;
-use pyo3::types::{PyBool, PyInt};
-
-use crate::Typed;
-use crate::boundary::geographic::validate_lonlat_xy;
-use crate::grid::cell::GridCell;
-use crate::grid::s2::cell::Cell as S2GeomCell;
-use crate::grid::s2::cellid::CellId;
-use crate::py::cells::cell_ops::{
-    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
-    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
-};
-use crate::py::cells::coverage_ops::CoverageCells;
-use crate::py::cells::s2::{PyS2Cell, parse_s2_level};
 use crate::py::cells::{
     Bound, GridKind, Py, PyAny, PyAnyMethods as _, PyCellArray, PyGeometry, PyResult, Python,
     Shape, construct_s2_cell,
@@ -25,22 +11,18 @@ pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyCellAr
     )
 }
 
-pub(crate) fn py_s2_cell_array(cells: &CoverageCells<PyS2Cell>) -> PyCellArray {
-    cells.cell_array(GridKind::S2Cell)
-}
-
 #[pymethods]
 impl PyS2Cell {
     /// One S2 cell from an id, token, lon/lat pair, or point geometry.
     ///
     /// Parameters
     /// ----------
-    /// lon : S2Cell, int, str, float, or Point
-    ///     A cell id/token, the longitude of a ``lon, lat`` pair, or a point
-    ///     geometry.
+    /// value : S2Cell, int, str, float, or Point
+    ///     An existing cell, id, token, longitude of a ``lon, lat`` pair, or
+    ///     a point geometry.
     ///
     /// lat : float, optional
-    ///     Latitude when ``lon`` is a scalar longitude.
+    ///     Latitude when ``value`` is a scalar longitude.
     ///
     /// level : int, optional
     ///     S2 level (``0``-``30``); required for coordinate construction.
@@ -115,33 +97,42 @@ grid_cell_common_pymethods! {
         children_text_signature: "($self, level=None)",
         neighbors_doc: "The four edge-adjacent cells at this cell's level.",
         candidate_doc: "other : S2Cell, int, or str",
+        descendant_count_doc: "The exact descendant count.",
+        parse_error_doc: "If an id or token is not a valid cell.",
         example_parent: r"
 >>> import gometry as gm
->>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+>>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+>>> assert cell is not None
 >>> cell.parent(10).token
 '808581'
 ",
         example_children: r"
 >>> import gometry as gm
->>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+>>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+>>> assert cell is not None
 >>> len(cell.children(13))
 4
 ",
         example_children_count: r"
 >>> import gometry as gm
->>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+>>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+>>> assert cell is not None
 >>> cell.children_count(13)
 4
 ",
         example_contains: r"
 >>> import gometry as gm
->>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
->>> cell.contains(cell.children(13)[0])
+>>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+>>> assert cell is not None
+>>> child = cell.children(13)[0]
+>>> assert child is not None
+>>> cell.contains(child)
 True
 ",
         example_intersects: r"
 >>> import gometry as gm
->>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+>>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+>>> assert cell is not None
 >>> cell.intersects(cell.parent(10))
 True
 ",
@@ -200,3 +191,16 @@ pub(crate) fn cell_pole_side(boundary: &Shape) -> Option<bool> {
 pub(crate) fn s2_boundary_geometry(cell: CellId) -> PyGeometry {
     PyGeometry::wgs84(S2GeomCell::from_id(cell).boundary_shape())
 }
+use pyo3::pymethods;
+use pyo3::types::{PyBool, PyInt};
+
+use crate::Typed;
+use crate::boundary::geographic::validate_lonlat_xy;
+use crate::grid::cell::GridCell;
+use crate::grid::s2::cell::Cell as S2GeomCell;
+use crate::grid::s2::cellid::CellId;
+use crate::py::cells::cell_ops::{
+    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
+    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+};
+use crate::py::cells::s2::{PyS2Cell, parse_s2_level};

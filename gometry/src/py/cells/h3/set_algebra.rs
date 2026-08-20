@@ -2,16 +2,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::grid::cell::CellDepth;
-use crate::py::cells::coverage_ops::CoverageCells;
 use crate::py::cells::h3::{
-    CellIndex, H3Membership, PyH3Cell, PyH3Coverage, Resolution, h3_cell_array, h3_cell_index,
-    h3_cell_vec, h3_resolution, parse_h3_resolution, validate_h3_index_id,
+    CellIndex, PyH3Cell, Resolution, h3_cell_array, h3_cell_index, parse_h3_resolution,
+    validate_h3_index_id,
 };
-use crate::py::cells::{
-    Bound, CellRule, H3_MAX_RESOLUTION, PyAny, PyCellArray, PyResult, exact_geometry,
-    expected_geometry_or_array, pyfunction,
-};
+use crate::py::cells::{Bound, H3_MAX_RESOLUTION, PyAny, PyCellArray, PyResult, pyfunction};
 
 /// Range-key adapter making `CellIndex` a
 /// [`crate::grid::cell_set::HierarchicalId`]: base cell + the 3-bit digit path
@@ -114,6 +109,7 @@ grid_free_functions! {
         cell_doc: "H3Cell",
         item_doc: "H3Cell, int, str, or iterable of those",
         contract_doc: "This is cell-ID algebra (the ``compact`` contract): an H3 child's *geometry* does not nest exactly inside its parent, but its id does.",
+        parse_error_doc: "If an id or token is not a valid H3 cell.",
         parse_cell: |cell| h3_cell_index(cell).map(H3SetId),
         array: |cells| h3_cell_array(cells.into_iter().map(|id| id.0).collect()),
         union: h3_union,
@@ -122,87 +118,43 @@ grid_free_functions! {
         example_union: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cell = gm.h3_cover(p, resolution=7).cells[0]
->>> nbr = list(cell.neighbors)[0]
->>> len(gm.h3_union([cell], [nbr]))
+>>> cover = gm.h3_cover(p, resolution=7)
+>>> cell = cover[0]
+>>> assert cell is not None
+>>> neighbors = cell.neighbors
+>>> nbr = neighbors[0]
+>>> assert nbr is not None
+>>> cells = [item for item in cover if item is not None]
+>>> len(gm.h3_union(cells, [item for item in neighbors if item is not None][:1]))
 2
 ",
         example_intersection: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cell = gm.h3_cover(p, resolution=7).cells[0]
->>> nbr = list(cell.neighbors)[0]
->>> len(gm.h3_intersection([cell, nbr], [nbr]))
+>>> cover = gm.h3_cover(p, resolution=7)
+>>> cell = cover[0]
+>>> assert cell is not None
+>>> neighbors = cell.neighbors
+>>> nbr = neighbors[0]
+>>> assert nbr is not None
+>>> cells = [item for item in cover if item is not None]
+>>> len(gm.h3_intersection(cells + [nbr], [item for item in neighbors if item is not None][:1]))
 1
 ",
         example_difference: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cell = gm.h3_cover(p, resolution=7).cells[0]
->>> nbr = list(cell.neighbors)[0]
->>> len(gm.h3_difference([cell, nbr], [nbr]))
+>>> cover = gm.h3_cover(p, resolution=7)
+>>> cell = cover[0]
+>>> assert cell is not None
+>>> neighbors = cell.neighbors
+>>> nbr = neighbors[0]
+>>> assert nbr is not None
+>>> cells = [item for item in cover if item is not None]
+>>> len(gm.h3_difference(cells + [nbr], [item for item in neighbors if item is not None][:1]))
 1
 ",
     }
-}
-
-/// Rebuild a pickled H3Coverage from its public fields (internal; see
-/// ``H3Coverage.__reduce__``).
-///
-/// Source geometry is normalized through the same lon/lat path as ``h3_cover``.
-/// Visible cell ids are restored as-is (user-selected state after
-/// compact/with_parents). The overlap inspection partition is **not**
-/// recomputed at unpickle — it stays lazy under the recorded factory
-/// ``max_cells`` budget and is built on first ``interior_cells`` /
-/// ``boundary_cells`` / ``explain`` access.
-#[pyfunction]
-pub(super) fn _unpickle_h3_coverage(
-    geometry: &Bound<'_, PyAny>,
-    cell_ids: &Bound<'_, PyAny>,
-    cell_rule: &str,
-    factory_resolution: u8,
-    visible_depth: Option<u8>,
-    max_cells: Option<i64>,
-) -> PyResult<PyH3Coverage> {
-    let geometry_in = exact_geometry(geometry)
-        .ok_or_else(expected_geometry_or_array)?
-        .clone();
-    let geometry = crate::py::cells::coverage_ops::coverage_factory_geometry(&geometry_in, "H3")?;
-    let cell_rule = CellRule::parse(cell_rule)
-        .map_err(|message| crate::py::errors::parameter_error(message, "cell_rule"))?;
-    // Factory partition depth; independent of post-transform
-    // visible depth (uncompact / with_parents). Validate *both* before any
-    // empty-cell depth fallback so an impossible visible_depth (e.g. 255)
-    // cannot enter the restored CellDepth (D20).
-    let resolution = h3_resolution(factory_resolution)?;
-    if let Some(visible) = visible_depth {
-        h3_resolution(visible)?;
-    }
-    let max_cells = crate::py::cells::coverage_ops::parse_max_cells(max_cells)?;
-    let raw_ids: Vec<u64> = crate::py::cells::coverage_ops::collect_coverage_sequence(
-        cell_ids,
-        "H3 coverage pickle cells",
-    )?;
-    let cells = CoverageCells::from_cells(h3_cell_vec(
-        raw_ids
-            .into_iter()
-            .map(validate_h3_index_id::<CellIndex>)
-            .collect::<PyResult<Vec<_>>>()?,
-    ));
-    // Lazy membership: no overlap recompute on unpickle (D07 budget applies
-    // when inspection first materializes the partition).
-    let membership = H3Membership::lazy(resolution);
-    let depth = CellDepth::from_levels(cells.iter().map(|cell| cell.cell.resolution().into()))
-        .or_else(|| visible_depth.map(CellDepth::Uniform))
-        .unwrap_or(CellDepth::Uniform(factory_resolution));
-    Ok(PyH3Coverage {
-        geometry,
-        cells,
-        cell_rule,
-        depth,
-        membership,
-        max_cells,
-    })
 }
 
 /// Rebuild a pickled H3Cell from its 64-bit index (internal; see

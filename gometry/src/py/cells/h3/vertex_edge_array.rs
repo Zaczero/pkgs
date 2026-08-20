@@ -469,7 +469,9 @@ macro_rules! h3_index_array_common {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> edges = cell.edges
     /// >>> unique, counts = edges.value_counts()
     /// >>> counts.tolist()
     /// [1, 1, 1, 1, 1, 1]
@@ -501,7 +503,9 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> edges = cell.edges
     /// >>> codes, unique = edges.factorize()
     /// >>> len(codes) == len(edges)
     /// True
@@ -524,16 +528,6 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 
             fn __repr__(&self) -> String {
                 format!("<{} len={}>", $class_name, self.len())
-            }
-
-            /// Return a read-only ``uint64`` ndarray view of the id column.
-            ///
-            /// Returns
-            /// -------
-            /// numpy.ndarray
-            #[getter]
-            fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-                Self::to_numpy(slf)
             }
 
             /// Hexadecimal token of every row.
@@ -564,7 +558,9 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> edges = cell.edges
     /// >>> type(edges.to_numpy()).__name__
     /// 'ndarray'
 fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
@@ -782,7 +778,9 @@ impl PyH3EdgeArray {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> edges = cell.edges
     /// >>> edges.reverse()[0].token
     /// '1672830829ffffff'
     fn reverse(&self) -> Self {

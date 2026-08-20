@@ -66,10 +66,12 @@ pub(super) fn h3_tile(
             &mut coverage,
         )
     })?;
-    Ok(coverage
+    let mut cells: Vec<_> = coverage
         .into_iter()
         .map(|cell| TiledCell { cell })
-        .collect())
+        .collect();
+    cells.sort_unstable_by_key(|cell| u64::from(cell.cell));
+    Ok(cells)
 }
 
 /// Accumulate one atomic center-rule H3 source into `coverage`. Aggregate shapes were
@@ -557,5 +559,30 @@ mod edge_trace_tests {
         .expect_err("the sink's emitted-cell budget must stop the trace immediately");
         assert_eq!(calls, 1);
         assert_eq!(error.limit, 1);
+    }
+
+    #[test]
+    fn center_cover_is_sorted_and_unique() {
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(vec![
+                Point::new_unchecked_xy(-1.0, -1.0),
+                Point::new_unchecked_xy(1.0, -1.0),
+                Point::new_unchecked_xy(1.0, 1.0),
+                Point::new_unchecked_xy(-1.0, 1.0),
+                Point::new_unchecked_xy(-1.0, -1.0),
+            ]),
+            Vec::new(),
+        ));
+        let ids = |cells: Vec<TiledCell>| {
+            cells
+                .into_iter()
+                .map(|cell| u64::from(cell.cell))
+                .collect::<Vec<_>>()
+        };
+        let first = ids(h3_tile(&shape, Resolution::Six, None).expect("center cover"));
+        let second = ids(h3_tile(&shape, Resolution::Six, None).expect("center cover repeat"));
+        assert!(first.len() >= 2);
+        assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(first, second);
     }
 }

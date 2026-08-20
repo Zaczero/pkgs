@@ -1,7 +1,7 @@
 use h3o::error::CompactionError;
 use h3o::{CellIndex, Resolution};
 
-use crate::py::cells::{Bound, GeometryError, H3_MAX_RESOLUTION, PyAny, PyResult, py_i64_required};
+use crate::py::cells::{Bound, GeometryError, PyAny, PyResult, py_i64_required};
 /// Compact H3 `cells` without merging coarser than `min_resolution`: cells at
 /// or coarser than the floor pass through unchanged, complete sibling groups
 /// merge recursively (mixed-resolution input is grouped per resolution and
@@ -76,14 +76,4 @@ pub(super) fn parse_h3_grid_k(value: &Bound<'_, PyAny>) -> PyResult<u32> {
         ));
     }
     u32::try_from(k).map_err(|_| GeometryError::new_err("H3 grid distance is too large"))
-}
-
-pub(super) fn h3_floor(min_resolution: i64) -> PyResult<u8> {
-    super::super::checked_depth(
-        min_resolution,
-        "H3 min_resolution",
-        "min_resolution",
-        0,
-        i64::from(H3_MAX_RESOLUTION),
-    )
 }

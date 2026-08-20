@@ -2,18 +2,18 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::exceptions::{PyIndexError, PyTypeError};
+use pyo3::IntoPyObjectExt as _;
+use pyo3::exceptions::PyTypeError;
 
 use crate::geometry::LineSeq;
 use crate::py::cells::{
-    Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult,
-    PySliceMethods as _, Python, Shape, lonlat_shape,
+    Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
+    Shape, lonlat_shape,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
-use crate::py::numpy::bool_array;
 use crate::{
     PointRows, PyGeometry, PyGeometryArray, Typed, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, py_bool, validate_lonlat_shape,
+    expected_geometry_or_array, validate_lonlat_shape,
 };
 
 pub(super) fn uncompact_budget_err(err: crate::grid::UncompactBudgetExceeded) -> PyErr {
@@ -22,28 +22,6 @@ pub(super) fn uncompact_budget_err(err: crate::grid::UncompactBudgetExceeded) ->
 
 pub(super) fn cell_limit_err(err: crate::grid::CellLimitExceeded) -> PyErr {
     GeometryError::new_err(err.to_string())
-}
-
-pub(super) fn coverage_explain(
-    system: &str,
-    depth: &str,
-    rule: super::CellRule,
-    visible_len: usize,
-    member_noun: &str,
-    interior_len: usize,
-    outer_len: usize,
-) -> Vec<String> {
-    vec![
-        format!(
-            "{system} coverage: {depth}, cell_rule {}, {visible_len} {member_noun}",
-            rule.token()
-        ),
-        format!(
-            "coverage partition: {interior_len} interior {member_noun}, {} boundary {member_noun}",
-            outer_len - interior_len
-        ),
-        "membership predicates: exact source-geometry predicates; cell partitions are retained for inspection and derived coverages".to_owned(),
-    ]
 }
 
 /// Collect one cell identity or any iterable of identities.
@@ -125,55 +103,6 @@ pub(super) fn bounding_query_bounds(value: &Bound<'_, PyAny>) -> PyResult<crate:
     ))
 }
 
-/// Apply an exact membership `test` to a Geometry or `GeometryArray` of
-/// candidates, normalized by the grid input policy (WGS84 and CRS-free
-/// lon/lat pass through; any other CRS is reprojected).
-pub(super) fn coverage_members(
-    values: &Bound<'_, PyAny>,
-    test: impl Fn(&Shape) -> PyResult<bool>,
-    test_point: impl Fn(Point) -> PyResult<bool>,
-) -> PyResult<Py<PyAny>> {
-    Python::attach(|py| {
-        if let Some(geometry) = exact_geometry(values) {
-            let candidate = lonlat_shape(geometry)?;
-            return Ok(py_bool(py, test(&candidate)?));
-        }
-        if let Some(array) = exact_geometry_array(values) {
-            // Lon/lat point arrays skip per-row wrapper materialization and
-            // shape cloning: straight from the packed columns to the point
-            // test (range validity is checked inside the point kernels).
-            let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
-            if lonlat_frame && let Some(points) = array.storage().point_rows() {
-                let result = points
-                    .iter()
-                    .enumerate()
-                    .map(|(row, point)| {
-                        if array.is_row_missing(row) {
-                            return Ok(false);
-                        }
-                        test_point(point)
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                return bool_array(py, result);
-            }
-            let crs = array.crs_str();
-            let result = array
-                .storage()
-                .iter_shapes()
-                .enumerate()
-                .map(|(row, shape)| {
-                    if array.is_row_missing(row) {
-                        return Ok(false);
-                    }
-                    crate::lonlat_shape_under(&shape, crs).and_then(|candidate| test(&candidate))
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            return bool_array(py, result);
-        }
-        Err(expected_geometry_or_array())
-    })
-}
-
 pub(crate) enum GridPointRows<'a> {
     Source(PointRows<'a>),
     Columns { xs: Vec<f64>, ys: Vec<f64> },
@@ -250,22 +179,19 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
 
 /// Scalar/array coverage dispatch shared by all four grid families.
 ///
-/// A scalar geometry keeps the rich coverage object. An array returns one
-/// ragged cell row per input geometry; missing rows become empty groups so
-/// source-row association is preserved.
-pub(crate) fn grid_cover_dispatch<'py, C>(
+/// A scalar returns a flat cell array. An array returns one ragged cell row per
+/// input geometry; missing rows become empty groups so source-row association
+/// is preserved.
+pub(crate) fn grid_cover_dispatch<'py>(
     py: Python<'py>,
     geom: &Bound<'py, PyAny>,
     kind: GridKind,
     max_cells: Option<usize>,
-    build: impl Fn(&PyGeometry) -> PyResult<C>,
-    cell_ids: impl Fn(&C) -> Vec<u64>,
-) -> PyResult<Py<PyAny>>
-where
-    C: pyo3::IntoPyObjectExt<'py>,
-{
+    build: impl Fn(&PyGeometry, Option<usize>) -> PyResult<Vec<u64>>,
+) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(geom) {
-        return build(geometry)?.into_py_any(py);
+        let coverage = build(geometry, max_cells)?;
+        return PyCellArray::from_trusted_ids(kind, coverage).into_py_any(py);
     }
     let Some(array) = exact_geometry_array(geom) else {
         return Err(expected_geometry_or_array());
@@ -279,8 +205,13 @@ where
                 return Ok(Vec::new());
             }
             let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-            let coverage = build(&PyGeometry::wgs84(shape))?;
-            let ids = cell_ids(&coverage);
+            let remaining = remaining_cover_budget(produced, max_cells)?;
+            if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
+                return Err(crate::py::cells::coverage_ops::cover_budget_err(
+                    crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
+                ));
+            }
+            let ids = build(&PyGeometry::wgs84(shape), remaining)?;
             produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
             Ok(ids)
         })
@@ -299,48 +230,20 @@ fn checked_cover_batch_len(
     Ok(produced)
 }
 
-pub(super) fn lonlat_point_geometry(point: Point) -> PyGeometry {
-    PyGeometry::wgs84(Shape::Point(point))
+fn remaining_cover_budget(produced: usize, max_cells: Option<usize>) -> PyResult<Option<usize>> {
+    max_cells
+        .map(|limit| {
+            limit.checked_sub(produced).ok_or_else(|| {
+                crate::py::cells::coverage_ops::cover_budget_err(
+                    crate::grid::CoverBudgetExceeded::new(limit),
+                )
+            })
+        })
+        .transpose()
 }
 
-// --- Shared coverage dunder engines (S2/H3 mirror one cell-list shape) ---
-
-/// Python-negative-index lookup over a coverage's cell list, with the
-/// coverage's own out-of-range message.
-/// Coverage ``__getitem__``: an ``int`` returns one cell, a ``slice`` returns a
-/// `CellArray` of cells (the coverages are finite Python sequences).
-pub(super) fn coverage_getitem<'py, C>(
-    py: Python<'py>,
-    cells: &crate::py::cells::coverage_ops::CoverageCells<C>,
-    index: &Bound<'py, PyAny>,
-    message: &'static str,
-    kind: GridKind,
-) -> PyResult<Py<PyAny>>
-where
-    C: crate::py::cells::coverage_ops::CoverageCell + pyo3::IntoPyObjectExt<'py>,
-{
-    let len = cells.len() as isize;
-    if let Ok(slice) = index.cast::<pyo3::types::PySlice>() {
-        let indices = slice.indices(len)?;
-        let mut ids = Vec::new();
-        let mut i = indices.start;
-        while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
-            ids.push(crate::py::cells::coverage_ops::CoverageCell::coverage_id(
-                cells.get(i as usize).expect("slice index is in bounds"),
-            ));
-            i += indices.step;
-        }
-        return PyCellArray::from_trusted_ids(kind, ids).into_py_any(py);
-    }
-    let index: isize = index.extract()?;
-    let normalized = if index < 0 { len + index } else { index };
-    if normalized < 0 || normalized >= len {
-        return Err(PyIndexError::new_err(message));
-    }
-    cells
-        .get(normalized as usize)
-        .expect("normalized index is in bounds")
-        .into_py_any(py)
+pub(super) fn lonlat_point_geometry(point: Point) -> PyGeometry {
+    PyGeometry::wgs84(Shape::Point(point))
 }
 
 /// Dissolve a coverage's per-cell boundary polygons into one outline geometry
@@ -373,17 +276,18 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
 /// polygonize splits the outline at ±180 / closes the lat=±90 edge without a
 /// special case.
 pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
-    cells: &[C],
+    cells: &crate::py::cells::coverage_ops::SortedCells<C>,
 ) -> PyResult<Option<Typed>> {
-    let Some(first) = cells.first() else {
+    let Some(first) = cells.as_slice().first() else {
         return Ok(None);
     };
     let depth = first.depth();
-    if !cells.iter().all(|cell| cell.depth() == depth) {
+    if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let mut outline: Vec<crate::geometry::CoordSeq> = Vec::with_capacity(cells.len() * 4);
-    for cell in cells {
+    let mut outline: Vec<crate::geometry::CoordSeq> =
+        Vec::with_capacity(cells.as_slice().len() * 4);
+    for cell in cells.as_slice() {
         let bounds = cell.bounds();
         // CCW corners: (minx,miny) -> (maxx,miny) -> (maxx,maxy) -> (minx,maxy).
         let corners = [
@@ -395,7 +299,8 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
         // edge_neighbors() is [south, east, north, west], matching side `k` =
         // corners[k] -> corners[k+1].
         for (side, neighbor) in cell.edge_neighbors().into_iter().enumerate() {
-            let interior = neighbor.is_some_and(|across| cells.binary_search(&across).is_ok());
+            let interior =
+                neighbor.is_some_and(|across| cells.as_slice().binary_search(&across).is_ok());
             if !interior {
                 outline.push(crate::geometry::CoordSeq::from_points(&[
                     corners[side],
@@ -436,14 +341,14 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
 /// boundary union for mixed-depth or degenerate sets. Empty input flows to
 /// `coverage_to_polygon`, which raises the documented `GeometryError`.
 pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
-    mut cells: Vec<C>,
+    cells: Vec<C>,
 ) -> PyResult<Typed> {
-    cells.sort_unstable();
-    cells.dedup();
+    let cells = crate::py::cells::coverage_ops::SortedCells::new(cells);
     if let Some(typed) = rect_dissolve(&cells)? {
         return Ok(typed);
     }
     let shapes: Vec<Shape> = cells
+        .as_slice()
         .iter()
         .map(|cell| {
             let shape = crate::geometry::bounds_to_shape(cell.bounds());
@@ -453,21 +358,6 @@ pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
     coverage_to_polygon(&shapes)
 }
 
-/// Whether two coverages share the same source geometry frame and shape.
-pub(super) fn coverage_geometry_eq(left: &PyGeometry, right: &PyGeometry) -> bool {
-    left.crs_ref() == right.crs_ref() && left.epoch() == right.epoch() && left.shape == right.shape
-}
-
-/// Hash key for a coverage's source geometry (CRS, epoch, shape).
-pub(super) fn coverage_geometry_hash(geometry: &PyGeometry) -> u64 {
-    crate::collections::python_hash(&(
-        geometry.crs_ref(),
-        geometry.epoch().map(f64::to_bits),
-        &geometry.shape,
-    ))
-}
-use pyo3::IntoPyObjectExt as _;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,7 +365,7 @@ mod tests {
     #[test]
     fn grouped_cover_budget_is_cumulative_and_overflow_safe() {
         // `PyErr` rendering touches the interpreter even in a pure-Rust test.
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         let limit = crate::grid::GRID_MAX_CELLS;
         assert_eq!(
             checked_cover_batch_len(limit - 1, 1, Some(limit)).expect("at budget"),
@@ -489,5 +379,12 @@ mod tests {
             checked_cover_batch_len(usize::MAX - 1, 1, None).expect("unlimited"),
             usize::MAX
         );
+    }
+
+    #[test]
+    fn remaining_row_budget_shrinks_without_capping_unlimited_batches() {
+        assert_eq!(remaining_cover_budget(3, Some(5)).unwrap(), Some(2));
+        assert_eq!(remaining_cover_budget(5, Some(5)).unwrap(), Some(0));
+        assert_eq!(remaining_cover_budget(usize::MAX, None).unwrap(), None);
     }
 }

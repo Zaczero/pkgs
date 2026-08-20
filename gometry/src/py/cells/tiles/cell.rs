@@ -96,16 +96,6 @@ pub(crate) fn parse_tile_zoom(value: &Bound<'_, PyAny>) -> PyResult<u8> {
     parse_tile_zoom_value(crate::py_i64_required("zoom", value)?)
 }
 
-pub(super) fn tile_floor(min_zoom: i64) -> PyResult<u8> {
-    super::super::checked_depth(
-        min_zoom,
-        "tile min_zoom",
-        "min_zoom",
-        0,
-        i64::from(TILE_MAX_ZOOM),
-    )
-}
-
 #[pymethods]
 impl PyTile {
     /// One XYZ tile from a packed id, quadkey, lon/lat keywords, point geometry,
@@ -263,34 +253,47 @@ grid_cell_common_pymethods! {
         children_text_signature: "($self, zoom=None)",
         neighbors_doc: "The surrounding tiles at this zoom (8, fewer at the edges), row-major from the north-west; east-west wraps the antimeridian.",
         candidate_doc: "other : Tile, int, or str",
+        descendant_count_doc: "The exact descendant count.",
+        parse_error_doc: "If an id or token is not a valid cell.",
         example_parent: r"
 >>> import gometry as gm
->>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
->>> str(cell.parent())
+>>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+>>> assert cell is not None
+>>> parent = cell.parent()
+>>> assert parent is not None
+>>> str(parent)
 '023010203'
 ",
         example_children: r"
 >>> import gometry as gm
->>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
+>>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+>>> assert cell is not None
 >>> len(cell.children())
 4
 ",
         example_children_count: r"
 >>> import gometry as gm
->>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
+>>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+>>> assert cell is not None
 >>> cell.children_count()
 4
 ",
         example_contains: r"
 >>> import gometry as gm
->>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
->>> cell.contains(cell.children()[0])
+>>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+>>> assert cell is not None
+>>> child = cell.children()[0]
+>>> assert child is not None
+>>> cell.contains(child)
 True
 ",
         example_intersects: r"
 >>> import gometry as gm
->>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
->>> cell.intersects(cell.parent())
+>>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+>>> assert cell is not None
+>>> parent = cell.parent()
+>>> assert parent is not None
+>>> cell.intersects(parent)
 True
 ",
         repr: tile,

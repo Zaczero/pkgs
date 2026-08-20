@@ -1,4 +1,4 @@
-//! Shared `macro_rules!` helpers for grid cell/coverage PyO3 boilerplate.
+//! Shared `macro_rules!` helpers for grid cell PyO3 boilerplate.
 
 macro_rules! grid_cell_common_pymethods {
     (
@@ -15,6 +15,8 @@ macro_rules! grid_cell_common_pymethods {
             children_text_signature: $children_text_signature:literal,
             neighbors_doc: $neighbors_doc:literal,
             candidate_doc: $candidate_doc:literal,
+            descendant_count_doc: $descendant_count_doc:literal,
+            parse_error_doc: $parse_error_doc:literal,
             example_parent: $example_parent:literal,
             example_children: $example_children:literal,
             example_children_count: $example_children_count:literal,
@@ -46,7 +48,7 @@ macro_rules! grid_cell_common_pymethods {
                 cell_hash(self.cell)
             }
 
-            /// Pickle support: a cell is its id.
+            /// Pickle support: a cell is its identity value.
             fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
                 cell_reduce(self.cell, py, $unpickle)
             }
@@ -154,8 +156,7 @@ macro_rules! grid_cell_common_pymethods {
             /// Returns
             /// -------
             /// int
-            ///     The exact descendant count (H3 pentagons have slightly fewer
-            ///     than hexagons).
+            #[doc = concat!("    ", $descendant_count_doc)]
             ///
             /// Raises
             /// ------
@@ -223,9 +224,9 @@ macro_rules! grid_cell_common_pymethods {
             /// Raises
             /// ------
             /// ParseError
-            ///     If an id or token is not a valid cell.
+            #[doc = concat!("    ", $parse_error_doc)]
             /// TypeError
-            ///     If ``other`` is not a valid cell object, id, or token.
+            #[doc = grid_cell_common_pymethods!(@type_error $repr)]
             ///
             /// Examples
             /// --------
@@ -249,9 +250,9 @@ macro_rules! grid_cell_common_pymethods {
             /// Raises
             /// ------
             /// ParseError
-            ///     If an id or token is not a valid cell.
+            #[doc = concat!("    ", $parse_error_doc)]
             /// TypeError
-            ///     If ``other`` is not a valid cell object, id, or token.
+            #[doc = grid_cell_common_pymethods!(@type_error $repr)]
             ///
             /// Examples
             /// --------
@@ -325,846 +326,11 @@ macro_rules! grid_cell_common_pymethods {
     (@match_arg) => {
         "id"
     };
-}
-
-macro_rules! grid_coverage_common_pymethods {
-    (
-        impl $py_type:ident {
-            this: $this:ident,
-            kind: $kind:expr,
-            iter: $iter_type:ident,
-            cell_array: $cell_array:path,
-            parse_cell: $parse_cell:path,
-            parsed_key: |$parsed:ident| $parsed_key:expr,
-            interior_doc: $interior_doc:literal,
-            interior_cells: { $($interior_cells:tt)* },
-            boundary_doc: $boundary_doc:literal,
-            boundary_cells: { $($boundary_cells:tt)* },
-            depth_fields: [$($depth_field:ident),+ $(,)?],
-            hash_depth: ($($hash_depth:tt)*),
-            cell_hash_key: |$hash_item:ident| { $($cell_hash_key:tt)* },
-            explain_grid: $explain_grid:literal,
-            explain_depth: { $($explain_depth:tt)* },
-            explain_cells: $explain_cells:literal,
-            explain_interior_len: { $($explain_interior_len:tt)* },
-            explain_outer_len: { $($explain_outer_len:tt)* },
-            to_polygon_doc: $to_polygon_doc:literal,
-            to_polygon: { $($to_polygon:tt)* },
-            reduce_unpickle: $reduce_unpickle:literal,
-            reduce_args: { $($reduce_args:tt)* },
-            repr: { $($repr:tt)* },
-            index_error: $index_error:literal $(,)?
-        }
-    ) => {
-        impl crate::HeapSize for $py_type {
-            fn heap_bytes(&self) -> usize {
-                self.retained_heap_bytes()
-            }
-        }
-
-        #[pyo3::pymethods]
-        impl $py_type {
-            // NEP 13: opt out of numpy ufunc dispatch. A coverage is a spatial
-            // object, not an array of numeric ids to broadcast over.
-            #[classattr]
-            #[expect(non_upper_case_globals, reason = "Python dunder name")]
-            const __array_ufunc__: Option<pyo3::Py<pyo3::PyAny>> = None;
-
-            /// ``case Coverage(cells)`` destructures the materialized cell list.
-            #[classattr]
-            const fn __match_args__() -> (&'static str,) {
-                ("cells",)
-            }
-
-            /// The rule that materialized ``cells`` (``'center'``, ``'within'``,
-            /// ``'overlap'``, or ``'bbox'``). It shapes only the visible cell set; the
-            /// exact membership predicates never depend on it.
-            ///
-            /// Returns
-            /// -------
-            /// str
-            ///     The ``cell_rule`` token the covering was built with.
-            #[getter]
-            fn cell_rule(&self) -> &str {
-                self.cell_rule.token()
-            }
-
-            #[doc = $interior_doc]
-            #[getter]
-            #[expect(
-                clippy::allow_attributes,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            #[allow(
-                clippy::unnecessary_wraps,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            fn interior_cells(&self) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
-                let $this = self;
-                $($interior_cells)*
-            }
-
-            #[doc = $boundary_doc]
-            #[getter]
-            #[expect(
-                clippy::allow_attributes,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            #[allow(
-                clippy::unnecessary_wraps,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            fn boundary_cells(&self) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
-                let $this = self;
-                $($boundary_cells)*
-            }
-
-            /// The cells that make up the covering.
-            ///
-            /// Returns
-            /// -------
-            /// CellArray
-            #[getter]
-            fn cells(&self) -> crate::py::cells::PyCellArray {
-                $cell_array(&self.cells)
-            }
-
-            /// Logical cell-id payload in bytes for the visible cell set.
-            ///
-            /// Returns
-            /// -------
-            /// int
-            #[getter]
-            #[expect(
-                clippy::allow_attributes,
-                reason = "the scoped allow below is required by mixed direct/wrapper coverage storage"
-            )]
-            #[allow(
-                clippy::missing_const_for_fn,
-                reason = "rectangular coverage wrappers reach cells through a non-const Deref"
-            )]
-            fn nbytes(&self) -> usize {
-                self.cells.len() * std::mem::size_of::<u64>()
-            }
-
-            /// `sys.getsizeof` support: the wrapper plus visible cell ids,
-            /// partition data, and the retained source geometry.
-            fn __sizeof__(&self) -> usize {
-                crate::HeapSize::total_size(self)
-            }
-
-            /// Exact, boundary-inclusive membership of candidates in the covered area.
-            ///
-            /// Always answers against the source geometry — never the cells — so the
-            /// result is exact regardless of cell_rule.
-            ///
-            /// Parameters
-            /// ----------
-            /// geom : Geometry or GeometryArray
-            ///     Candidate geometry (or array). Follows the grid input policy:
-            ///     WGS84 and CRS-free lon/lat pass through, any other CRS is
-            ///     reprojected.
-            ///
-            /// Returns
-            /// -------
-            /// bool or numpy.ndarray
-            ///     One result per input geometry.
-            fn covers(
-                &self,
-                geom: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_members(
-                    geom,
-                    |candidate| {
-                        crate::py::cells::coverage_ops::coverage_member(
-                            &self.geometry,
-                            candidate,
-                            crate::py::cells::CoveragePredicate::Covers,
-                        )
-                    },
-                    |point| {
-                        crate::py::cells::coverage_ops::coverage_member_point(
-                            &self.geometry,
-                            point,
-                            crate::py::cells::CoveragePredicate::Covers,
-                        )
-                    },
-                )
-            }
-
-            /// Exact, strict-interior membership of candidates in the covered area.
-            ///
-            /// Like covers but boundary-exclusive: a point on the source
-            /// geometry's boundary is False.
-            ///
-            /// Parameters
-            /// ----------
-            /// geom : Geometry or GeometryArray
-            ///     Candidate geometry (or array). Follows the grid input policy:
-            ///     WGS84 and CRS-free lon/lat pass through, any other CRS is
-            ///     reprojected.
-            ///
-            /// Returns
-            /// -------
-            /// bool or numpy.ndarray
-            ///     One result per input geometry.
-            fn contains(
-                &self,
-                geom: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_members(
-                    geom,
-                    |candidate| {
-                        crate::py::cells::coverage_ops::coverage_member(
-                            &self.geometry,
-                            candidate,
-                            crate::py::cells::CoveragePredicate::Contains,
-                        )
-                    },
-                    |point| {
-                        crate::py::cells::coverage_ops::coverage_member_point(
-                            &self.geometry,
-                            point,
-                            crate::py::cells::CoveragePredicate::Contains,
-                        )
-                    },
-                )
-            }
-
-            /// Exact intersection test of candidates against the covered area.
-            ///
-            /// For points this matches covers; for lines and polygons it is true
-            /// when the candidate shares any point with the source geometry.
-            ///
-            /// Parameters
-            /// ----------
-            /// geom : Geometry or GeometryArray
-            ///     Candidate geometry (or array). Follows the grid input policy:
-            ///     WGS84 and CRS-free lon/lat pass through, any other CRS is
-            ///     reprojected.
-            ///
-            /// Returns
-            /// -------
-            /// bool or numpy.ndarray
-            ///     One result per input geometry.
-            fn intersects(
-                &self,
-                geom: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_members(
-                    geom,
-                    |candidate| {
-                        crate::py::cells::coverage_ops::coverage_member(
-                            &self.geometry,
-                            candidate,
-                            crate::py::cells::CoveragePredicate::Intersects,
-                        )
-                    },
-                    |point| {
-                        crate::py::cells::coverage_ops::coverage_member_point(
-                            &self.geometry,
-                            point,
-                            crate::py::cells::CoveragePredicate::Intersects,
-                        )
-                    },
-                )
-            }
-
-            /// Exact, strict contains test for raw lon/lat coordinates.
-            ///
-            /// Answers exactly against the source geometry, independent of
-            /// cell_rule.
-            ///
-            /// Parameters
-            /// ----------
-            /// x, y : float or sequence of float
-            ///     Longitude and latitude in degrees.
-            ///
-            /// Returns
-            /// -------
-            /// bool or numpy.ndarray
-            ///     A single bool for scalar ``x, y``, or one result per coordinate.
-            fn contains_xy(
-                &self,
-                py: pyo3::Python<'_>,
-                x: &pyo3::Bound<'_, pyo3::PyAny>,
-                y: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_ops::coverage_members_xy(
-                    py,
-                    &self.geometry,
-                    x,
-                    y,
-                    crate::py::cells::CoveragePredicate::Contains,
-                )
-            }
-
-            /// Exact, boundary-inclusive membership test for raw lon/lat coordinates.
-            ///
-            /// Parameters
-            /// ----------
-            /// x, y : float or sequence of float
-            ///     Longitude and latitude in degrees.
-            ///
-            /// Returns
-            /// -------
-            /// bool or numpy.ndarray
-            ///     A single bool for scalar ``x, y``, or one result per coordinate.
-            fn intersects_xy(
-                &self,
-                py: pyo3::Python<'_>,
-                x: &pyo3::Bound<'_, pyo3::PyAny>,
-                y: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_ops::coverage_members_xy(
-                    py,
-                    &self.geometry,
-                    x,
-                    y,
-                    crate::py::cells::CoveragePredicate::Intersects,
-                )
-            }
-
-            /// Describe the membership plan.
-            ///
-            /// Returns
-            /// -------
-            /// list of str
-            ///     One line per plan step.
-            ///
-            /// Raises
-            /// ------
-            /// GeometryError
-            ///     If a lazy coverage partition must be built and exceeds its
-            ///     recorded ``max_cells`` budget.
-            #[expect(
-                clippy::allow_attributes,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            #[allow(
-                clippy::unnecessary_wraps,
-                reason = "shared Result return: lazy partition init can fail on max_cells"
-            )]
-            fn explain(&self) -> pyo3::PyResult<Vec<String>> {
-                let $this = self;
-                let interior_len = {$($explain_interior_len)*};
-                let outer_len = {$($explain_outer_len)*};
-                Ok(crate::py::cells::coverage_explain(
-                    $explain_grid,
-                    &$($explain_depth)*,
-                    self.cell_rule,
-                    self.cells.len(),
-                    $explain_cells,
-                    interior_len,
-                    outer_len,
-                ))
-            }
-
-            #[doc = $to_polygon_doc]
-            fn to_polygon(&self) -> pyo3::PyResult<crate::Typed> {
-                let $this = self;
-                $($to_polygon)*
-            }
-
-            /// Equal when source geometry, rule, depth fields, and visible cells match.
-            fn __eq__(&self, other: &Self) -> bool {
-                crate::py::cells::coverage_geometry_eq(&self.geometry, &other.geometry)
-                    && self.cell_rule == other.cell_rule
-                    $(
-                        && self.$depth_field == other.$depth_field
-                    )+
-                    && self.cells.len() == other.cells.len()
-                    && self
-                        .cells
-                        .iter()
-                        .zip(other.cells.iter())
-                        .all(|(left, right)| left.cell == right.cell)
-            }
-
-            /// Hash consistent with __eq__.
-            fn __hash__(&self) -> u64 {
-                let $this = self;
-                crate::collections::python_hash(&(
-                    crate::py::cells::coverage_geometry_hash(&self.geometry),
-                    self.cell_rule.token(),
-                    $($hash_depth)*
-                    self.cells
-                        .iter()
-                        .map(|$hash_item| $($cell_hash_key)*)
-                        .collect::<Vec<_>>(),
-                ))
-            }
-
-            /// Pickle support: reconstruct from source geometry, visible cell
-            /// ids, rule, depth fields, and factory ``max_cells``.
-            ///
-            /// The inspection partition (``interior_cells`` /
-            /// ``boundary_cells``) is **cold** after unpickle — rebuilt lazily
-            /// on first access under the restored ``max_cells`` budget, not
-            /// serialized as partition state.
-            fn __reduce__(
-                &self,
-                py: pyo3::Python<'_>,
-            ) -> pyo3::PyResult<(pyo3::Py<pyo3::PyAny>, pyo3::Py<pyo3::PyAny>)> {
-                let $this = self;
-                Ok((
-                    crate::gometry_lib_module(py)?
-                        .getattr($reduce_unpickle)?
-                        .unbind(),
-                    ($($reduce_args)*).into_py_any(py)?,
-                ))
-            }
-
-            fn __repr__(&self) -> String {
-                let $this = self;
-                $($repr)*
-            }
-
-            #[expect(
-                clippy::allow_attributes,
-                reason = "the scoped allow below is required by mixed direct/wrapper coverage storage"
-            )]
-            #[allow(
-                clippy::missing_const_for_fn,
-                reason = "rectangular coverage wrappers reach cells through a non-const Deref"
-            )]
-            /// Number of visible cells in the coverage.
-            ///
-            /// Returns
-            /// -------
-            /// int
-            fn __len__(&self) -> usize {
-                self.cells.len()
-            }
-
-            #[expect(
-                clippy::allow_attributes,
-                reason = "the scoped allow below is required by mixed direct/wrapper coverage storage"
-            )]
-            #[allow(
-                clippy::missing_const_for_fn,
-                reason = "rectangular coverage wrappers reach cells through a non-const Deref"
-            )]
-            /// ``False`` only when the coverage has no visible cells.
-            ///
-            /// Returns
-            /// -------
-            /// bool
-            fn __bool__(&self) -> bool {
-                !self.cells.is_empty()
-            }
-
-            /// Select visible cells by integer or slice.
-            ///
-            /// An ``int`` returns one cell. A ``slice`` returns a ``CellArray``
-            /// of those cells (not a sliced coverage — membership still
-            /// answers against the full source geometry via the coverage).
-            ///
-            /// Returns
-            /// -------
-            /// Cell or CellArray
-            fn __getitem__(
-                &self,
-                py: pyo3::Python<'_>,
-                index: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                crate::py::cells::coverage_getitem(
-                    py,
-                    &self.cells,
-                    index,
-                    $index_error,
-                    $kind,
-                )
-            }
-
-            /// Iterate visible cells in coverage order.
-            ///
-            /// Returns
-            /// -------
-            /// iterator of Cell
-            fn __iter__(&self) -> $iter_type {
-                $iter_type::new(&self.cells, false)
-            }
-
-            /// Iterate visible cells in reverse order.
-            ///
-            /// Returns
-            /// -------
-            /// iterator of Cell
-            fn __reversed__(&self) -> $iter_type {
-                $iter_type::new(&self.cells, true)
-            }
-
-            /// Whether a cell is among the visible coverage cells.
-            ///
-            /// Returns
-            /// -------
-            /// bool
-            fn __contains__(&self, cell: &pyo3::Bound<'_, pyo3::PyAny>) -> bool {
-                // Membership is a predicate: an unparseable / wrong-type operand
-                // is simply not a member (never a raise), matching CellArray /
-// GeometryArray / Groups in.
-                let Ok($parsed) = $parse_cell(cell) else {
-                    return false;
-                };
-                self.cells.contains_id($parsed_key)
-            }
-
-            /// First index of an equal cell in `[start, stop)`.
-            ///
-            /// Parameters
-            /// ----------
-            /// value : object
-            ///     The cell value to locate.
-            /// start : int, default 0
-            ///     First position searched.
-            /// stop : int, optional
-            ///     One past the last position searched.
-            ///
-            /// Returns
-            /// -------
-            /// int
-            ///     The first matching position.
-            ///
-            /// Raises
-            /// ------
-            /// ValueError
-            ///     If no cell in the window equals ``value``.
-            #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
-            fn index(
-                &self,
-                value: &pyo3::Bound<'_, pyo3::PyAny>,
-                start: i64,
-                stop: Option<i64>,
-            ) -> pyo3::PyResult<usize> {
-                let parsed = $parse_cell(value).ok();
-                let len = self.cells.len();
-                let clamp = |bound: i64| -> usize {
-                    let resolved = if bound < 0 {
-                        bound + i64::try_from(len).unwrap_or(i64::MAX)
-                    } else {
-                        bound
-                    };
-                    usize::try_from(resolved.max(0)).unwrap_or(0).min(len)
-                };
-                let start = clamp(start);
-                let stop = stop.map_or(len, clamp);
-                if let Some($parsed) = parsed
-                    && start < stop
-                    && let Some(row) = self.cells.logical_index($parsed_key)
-                    && (start..stop).contains(&row)
-                {
-                    return Ok(row);
-                }
-                let class_name = <Self as pyo3::PyTypeInfo>::type_object(value.py()).name()?;
-                let value = value
-                    .repr()
-                    .and_then(|repr| repr.extract::<String>())
-                    .unwrap_or_else(|_| "value".to_owned());
-                Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "{value} is not in {class_name}"
-                )))
-            }
-
-            /// Number of cells equal to ``value``.
-            ///
-            /// Parameters
-            /// ----------
-            /// value : object
-            ///     The cell value to count.
-            ///
-            /// Returns
-            /// -------
-            /// int
-            fn count(&self, value: &pyo3::Bound<'_, pyo3::PyAny>) -> usize {
-                let Ok($parsed) = $parse_cell(value) else {
-                    return 0;
-                };
-                usize::from(self.cells.contains_id($parsed_key))
-            }
-
-            /// `copy.copy` returns the coverage itself — it is an immutable value.
-            fn __copy__(slf: &pyo3::Bound<'_, Self>) -> pyo3::Py<Self> {
-                slf.clone().unbind()
-            }
-
-            /// `copy.deepcopy` returns the coverage itself: every field is immutable.
-            #[pyo3(signature = (memo))]
-            fn __deepcopy__(
-                slf: &pyo3::Bound<'_, Self>,
-                memo: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::Py<Self> {
-                let _ = memo;
-                slf.clone().unbind()
-            }
-        }
+    (@type_error geohash) => {
+        "    If ``other`` is not a valid cell object or token."
     };
-}
-
-macro_rules! coverage_iter_pyclass {
-    (iter: $iter:ident, cell: $cell:ty, name: $name:literal) => {
-        /// Lazy iterator over a coverage's cells, yielding one cell per step.
-        #[pyclass(name = $name, module = "gometry", frozen, immutable_type)]
-        pub(super) struct $iter {
-            source: crate::py::cells::coverage_ops::CoverageIterCells<$cell>,
-            state: crate::py::row::RowIterState,
-        }
-
-        impl $iter {
-            pub(super) fn new(
-                cells: &crate::py::cells::coverage_ops::CoverageCells<$cell>,
-                reverse: bool,
-            ) -> Self {
-                Self {
-                    source: crate::py::cells::coverage_ops::CoverageIterCells::new(cells),
-                    state: crate::py::row::RowIterState::new(reverse),
-                }
-            }
-        }
-
-        row_iter_pymethods! {
-            impl $iter {
-                source: crate::py::cells::coverage_ops::CoverageIterCells<$cell>,
-            }
-        }
-
-        #[pymethods]
-        impl $iter {
-            fn __reversed__(&self) -> Self {
-                Self {
-                    source: self.source.clone(),
-                    state: crate::py::row::RowIterState::new(!self.state.is_reverse()),
-                }
-            }
-        }
-    };
-}
-
-macro_rules! grid_hierarchical_coverage_common_pymethods {
-    (
-        impl $py_type:ident {
-            compact_doc: $compact_doc:literal,
-            compact_param: $compact_param:ident,
-            compact_default: $compact_default:literal,
-            compact_text_signature: $compact_text_signature:literal,
-            uncompact_doc: $uncompact_doc:literal,
-            uncompact_param: $uncompact_param:ident,
-            uncompact_text_signature: $uncompact_text_signature:literal,
-            with_parents_doc: $with_parents_doc:literal,
-            with_parents_param: $with_parents_param:ident,
-            with_parents_default: $with_parents_default:literal,
-            with_parents_text_signature: $with_parents_text_signature:literal $(,)?
-        }
-    ) => {
-        #[pyo3::pymethods]
-        impl $py_type {
-            #[doc = $compact_doc]
-            #[pyo3(signature = (*, $compact_param = $compact_default), text_signature = $compact_text_signature)]
-            fn compact(&self, $compact_param: i64) -> pyo3::PyResult<Self> {
-                crate::py::cells::coverage_ops::hierarchical_coverage_compact(
-                    self,
-                    $compact_param,
-                )
-            }
-
-            #[doc = $uncompact_doc]
-            #[pyo3(signature = ($uncompact_param), text_signature = $uncompact_text_signature)]
-            fn uncompact(
-                &self,
-                $uncompact_param: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<Self> {
-                crate::py::cells::coverage_ops::hierarchical_coverage_uncompact(
-                    self,
-                    $uncompact_param,
-                )
-            }
-
-            #[doc = $with_parents_doc]
-            #[pyo3(signature = (*, $with_parents_param = $with_parents_default), text_signature = $with_parents_text_signature)]
-            fn with_parents(&self, $with_parents_param: i64) -> pyo3::PyResult<Self> {
-                crate::py::cells::coverage_ops::hierarchical_coverage_with_parents(
-                    self,
-                    $with_parents_param,
-                )
-            }
-        }
-    };
-}
-
-macro_rules! grid_rect_coverage_common_pymethods {
-    (
-        impl $py_type:ident {
-            cell: $cell_type:ty,
-            kind: $kind:expr,
-            kernel: $kernel:ident,
-            cell_vec: $cell_vec:path,
-            depth: $depth:ident,
-            depth_field: $depth_field:ident,
-            depth_name: $depth_name:literal,
-            min_depth: $min_depth:ident,
-            floor_default: $floor_default:literal,
-            floor: $floor:path,
-            parse_depth: $parse_depth:path,
-            compact_doc: $compact_doc:literal,
-            compact_text_signature: $compact_text_signature:literal,
-            uncompact_doc: $uncompact_doc:literal,
-            uncompact_text_signature: $uncompact_text_signature:literal,
-            with_parents_doc: $with_parents_doc:literal,
-            with_parents_text_signature: $with_parents_text_signature:literal,
-            fine_token: |$fine_cell:ident| { $($fine_token:tt)* } $(,)?
-        }
-    ) => {
-        #[pyo3::pymethods]
-        impl $py_type {
-            #[doc = $compact_doc]
-            #[pyo3(signature = (*, $min_depth = $floor_default), text_signature = $compact_text_signature)]
-            fn compact(&self, $min_depth: i64) -> pyo3::PyResult<Self> {
-                let floor = $floor($min_depth)?;
-                // Decorative with_parents ancestors must not participate in
-                // compact (N7) — only the leaf frontier covers the factory set.
-                let cells: Vec<$cell_type> = self.cells.iter().map(|cell| cell.cell).collect();
-                let cells = crate::py::cells::coverage_ops::coverage_frontier(&cells);
-                Ok(self.with_cells($cell_vec($kernel::compact_with_floor(cells, floor))))
-            }
-
-            #[doc = $uncompact_doc]
-            #[pyo3(signature = ($depth), text_signature = $uncompact_text_signature)]
-            fn uncompact(
-                &self,
-                $depth: &pyo3::Bound<'_, pyo3::PyAny>,
-            ) -> pyo3::PyResult<Self> {
-                let $depth = $parse_depth($depth)?;
-                if let Some($fine_cell) = self
-                    .cells
-                    .iter()
-                    .find(|cell| cell.cell.$depth_field > $depth)
-                {
-                    return Err(crate::py::cells::uncompact_floor_error(
-                        $kind,
-                        $depth_name,
-                        $($fine_token)*
-                    ));
-                }
-                // Explicit coverage transform — no cell budget re-cap.
-                // Expand only the leaf frontier so decorative parents cannot
-                // invent sibling branches outside the factory covering (N7).
-                let cells: Vec<$cell_type> = self.cells.iter().map(|cell| cell.cell).collect();
-                let cells = crate::py::cells::coverage_ops::coverage_frontier(&cells);
-                Ok(self.with_cells_depth(
-                    $cell_vec($kernel::uncompact_unlimited(&cells, $depth)),
-                    crate::grid::cell::CellDepth::Uniform($depth),
-                ))
-            }
-
-            #[doc = $with_parents_doc]
-            #[pyo3(signature = (*, $min_depth = $floor_default), text_signature = $with_parents_text_signature)]
-            fn with_parents(&self, $min_depth: i64) -> pyo3::PyResult<Self> {
-                let floor = $floor($min_depth)?;
-                let mut cells: Vec<$cell_type> = Vec::new();
-                for cell in self.cells.iter() {
-                    cells.push(cell.cell);
-                    for depth in floor..cell.cell.$depth_field {
-                        cells.push(cell.cell.parent_at(depth));
-                    }
-                }
-                Ok(self.with_cells($cell_vec(cells)))
-            }
-        }
-    };
-}
-
-macro_rules! rect_coverage_pyclass {
-    (
-        spec: $spec:ident,
-        coverage: $coverage:ident,
-        cell: $cell:ty,
-        kernel_cell: $kernel_cell:ty,
-        kind: $kind:expr,
-        roots: $roots:block,
-        level: |$level_cell:ident| $level_expr:expr,
-        parse_depth: $parse_depth:path,
-        label: $label:literal,
-        class_name: $class_name:literal,
-        class_doc: $class_doc:literal,
-        iter: $iter:ident,
-        iter_name: $iter_name:literal,
-        depth_getter: $depth_getter:ident,
-        depth_doc: $depth_doc:literal $(,)?
-    ) => {
-        struct $spec;
-
-        impl crate::py::cells::coverage_ops::RectCoverSpec for $spec {
-            type Cell = $kernel_cell;
-
-            const KIND: crate::py::cells::GridKind = $kind;
-
-            fn roots() -> Vec<Self::Cell> {
-                $roots
-            }
-
-            fn level_of(cell: &Self::Cell) -> u8 {
-                let $level_cell = cell;
-                $level_expr
-            }
-
-            fn parse_depth(value: &pyo3::Bound<'_, pyo3::types::PyAny>) -> pyo3::PyResult<u8> {
-                $parse_depth(value)
-            }
-
-            fn coverage_label() -> &'static str {
-                $label
-            }
-        }
-
-        impl crate::py::cells::coverage_ops::RectCoverageCell for $cell {
-            type Cell = $kernel_cell;
-
-            fn from_rect_cell(cell: Self::Cell) -> Self {
-                Self { cell }
-            }
-
-            fn level(self) -> u8 {
-                <$spec as crate::py::cells::coverage_ops::RectCoverSpec>::level_of(&self.cell)
-            }
-        }
-
-        #[doc = $class_doc]
-        #[pyclass(name = $class_name, module = "gometry", frozen, immutable_type, sequence, skip_from_py_object)]
-        #[derive(Clone, Debug)]
-        pub(crate) struct $coverage(crate::py::cells::coverage_ops::RectCoverageState<$cell>);
-
-        impl std::ops::Deref for $coverage {
-            type Target = crate::py::cells::coverage_ops::RectCoverageState<$cell>;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl $coverage {
-            fn with_cells(&self, cells: Vec<$cell>) -> Self {
-                Self(self.0.with_cells(cells))
-            }
-
-            fn with_cells_depth(
-                &self,
-                cells: Vec<$cell>,
-                fallback: crate::grid::cell::CellDepth,
-            ) -> Self {
-                Self(self.0.with_cells_depth(cells, fallback))
-            }
-        }
-
-        coverage_iter_pyclass! { iter: $iter, cell: $cell, name: $iter_name }
-
-        #[pyo3::pymethods]
-        impl $coverage {
-            #[doc = $depth_doc]
-            #[getter]
-            fn $depth_getter(&self) -> Option<u8> {
-                self.depth.uniform_level()
-            }
-        }
+    (@type_error $repr:ident) => {
+        "    If ``other`` is not a valid cell object, id, or token."
     };
 }
 
@@ -1177,6 +343,7 @@ macro_rules! grid_free_functions {
             cell_doc: $cell_doc:literal,
             item_doc: $item_doc:literal,
             contract_doc: $contract_doc:literal,
+            parse_error_doc: $parse_error_doc:literal,
             parse_cell: $parse_cell:expr,
             array: |$array_cells:ident| $array_expr:expr,
             union: $union:ident,
@@ -1222,7 +389,7 @@ macro_rules! grid_free_functions {
         /// Raises
         /// ------
         /// ParseError
-        #[doc = concat!("    If a cell input is not valid for the ", $label, " grid.")]
+        #[doc = concat!("    ", $parse_error_doc)]
         ///
         /// Examples
         /// --------
@@ -1247,7 +414,7 @@ macro_rules! grid_free_functions {
         /// Parameters
         /// ----------
         #[doc = concat!("left, right : ", $item_doc)]
-        ///     The two cell sets (any mix of cell objects, ids, or tokens).
+        #[doc = grid_free_functions!(@set_input_doc $cell_set_arg)]
         ///
         /// Returns
         /// -------
@@ -1256,7 +423,7 @@ macro_rules! grid_free_functions {
         /// Raises
         /// ------
         /// ParseError
-        #[doc = concat!("    If an id or token is not a valid ", $label, " cell.")]
+        #[doc = concat!("    ", $parse_error_doc)]
         ///
         /// Examples
         /// --------
@@ -1281,7 +448,7 @@ macro_rules! grid_free_functions {
         /// Parameters
         /// ----------
         #[doc = concat!("left, right : ", $item_doc)]
-        ///     The two cell sets (any mix of cell objects, ids, or tokens).
+        #[doc = grid_free_functions!(@set_input_doc $cell_set_arg)]
         ///
         /// Returns
         /// -------
@@ -1290,7 +457,7 @@ macro_rules! grid_free_functions {
         /// Raises
         /// ------
         /// ParseError
-        #[doc = concat!("    If an id or token is not a valid ", $label, " cell.")]
+        #[doc = concat!("    ", $parse_error_doc)]
         ///
         /// Examples
         /// --------
@@ -1306,5 +473,11 @@ macro_rules! grid_free_functions {
                 .map_err(crate::py::cells::cell_limit_err)?;
             Ok($array_expr)
         }
+    };
+    (@set_input_doc geohash_cell_set_arg) => {
+        "    The two cell sets (any mix of cell objects or tokens)."
+    };
+    (@set_input_doc $cell_set_arg:ident) => {
+        "    The two cell sets (any mix of cell objects, ids, or tokens)."
     };
 }

@@ -1,3 +1,5 @@
+use crate::py::cells::coverage_ops::SortedCells;
+use crate::py::cells::h3::register::build_coverage;
 use crate::py::cells::h3::{
     CellIndex, LatLng, PyH3Cell, Resolution, h3_resolution, h3_resolution_from_i64, parse_h3_index,
 };
@@ -44,7 +46,9 @@ use crate::py::errors::InvalidGeometryError;
 /// --------
 /// >>> import gometry as gm
 /// >>> cells = gm.h3_cells([-122.4, -122.3], [37.8, 37.7], resolution=7)
-/// >>> (len(cells), cells[0].token)
+/// >>> cell = cells[0]
+/// >>> assert cell is not None
+/// >>> (len(cells), cell.token)
 /// (2, '87283080cffffff')
 #[pyfunction]
 #[pyo3(
@@ -272,10 +276,9 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 
 /// Cover a geometry with H3 cells at ``resolution``.
 ///
-/// The result carries both ``cells`` — exactly the cells
-/// satisfying ``cell_rule`` (join keys, bins, visualization) — and the
-/// exact membership predicates ``covers``/``contains``/``intersects``,
-/// which always answer against the source geometry.
+/// The result is a ``CellArray`` of cells satisfying ``cell_rule``. Keep the
+/// source geometry separately and use the free ``gm.*`` predicates for exact
+/// geometry questions.
 ///
 /// Parameters
 /// ----------
@@ -301,7 +304,7 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 ///
 /// Returns
 /// -------
-/// H3Coverage or Groups of CellArray
+/// CellArray or Groups of CellArray
 ///     A scalar returns its coverage; an array returns one cell group per row.
 ///
 /// Raises
@@ -309,6 +312,8 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 /// GeometryError
 ///     If the geometry, depth, or a coverage parameter is invalid, or if
 ///     the covering would exceed ``max_cells``.
+/// InvalidGeometryError
+///     If the geometry is empty or coordinates leave the lon/lat domain.
 ///
 /// See Also
 /// --------
@@ -319,8 +324,10 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 /// >>> import gometry as gm
 /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 /// >>> cov = gm.h3_cover(p, resolution=7)
-/// >>> (len(cov.cells), cov.contains(p), cov.cells[0].token)
-/// (1, True, '872830828ffffff')
+/// >>> cell = cov[0]
+/// >>> assert cell is not None
+/// >>> (len(cov), cell.token)
+/// (1, '872830828ffffff')
 #[pyfunction]
 #[pyo3(
     signature = (geom, resolution, *, cell_rule = CellRule::Overlap, max_cells = 1_000_000),
@@ -339,13 +346,13 @@ pub(super) fn h3_cover(
         geom,
         GridKind::H3Cell,
         max_cells,
-        |geometry| super::build_coverage(geometry, resolution, cell_rule, max_cells),
-        |coverage| {
-            coverage
-                .cells
-                .iter()
-                .map(|cell| u64::from(cell.cell))
-                .collect()
+        |geometry, effective_max_cells| {
+            let cells = build_coverage(geometry, resolution, cell_rule, effective_max_cells)?;
+            Ok(SortedCells::from_sorted(cells)
+                .into_vec()
+                .into_iter()
+                .map(u64::from)
+                .collect())
         },
     )
 }

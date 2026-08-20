@@ -8,11 +8,13 @@ assertions stay in the H3/S2/geohash/tile oracle modules.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import gometry as gm
 import numpy as np
 import pytest
+from gometry import _lib
 
 
 @dataclass(frozen=True)
@@ -87,7 +89,7 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
     cells = gm.CellArray([gm.GeohashCell('u33d')])
     callable_, args = cells.__reduce__()
     assert callable_.__name__ == '_unpickle_cell_array'
-    assert args == (['u33d'], 'geohash')
+    assert args == (['u33d'], 'geohash', None)
     assert pickle.loads(pickle.dumps(cells)).token == ['u33d']
     with pytest.raises(TypeError):
         gm.CellArray([15043922711510253572], type=gm.GeohashCell)
@@ -107,6 +109,40 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
         gm.CellArray([15043922711510253572], type=gm.GeohashCell)
     with pytest.raises(TypeError, match=r'integers.*not floats'):
         gm.CellArray(np.array([1.0], dtype=np.float64), type=gm.H3Cell)
+
+
+@pytest.mark.parametrize(
+    ('cell_type', 'roots', 'depth', 'expected_count'),
+    (
+        (
+            gm.S2Cell,
+            lambda: [gm.S2Cell(-120, 30, level=5), gm.S2Cell(120, 30, level=5)],
+            7,
+            32,
+        ),
+        (gm.Tile, lambda: [gm.Tile('00000'), gm.Tile('11111')], 7, 32),
+        (gm.GeohashCell, lambda: [gm.GeohashCell('0'), gm.GeohashCell('z')], 3, 2048),
+    ),
+    ids=('s2', 'tile', 'geohash'),
+)
+def test_public_uncompact_preserves_exact_range_order(
+    cell_type: type, roots: object, depth: int, expected_count: int
+) -> None:
+    canonical_roots = roots()
+    first = canonical_roots[0]
+    second = canonical_roots[1]
+    overlapping = first.children()[0]
+    unsorted = gm.CellArray(
+        [second, first, first, overlapping, second],
+        type=cell_type,
+    )
+    canonical = gm.CellArray(canonical_roots, type=cell_type)
+
+    normalized_output = unsorted.uncompact(depth)
+    canonical_output = canonical.uncompact(depth)
+
+    assert len(normalized_output) == expected_count
+    assert normalized_output.token == canonical_output.token
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
@@ -328,6 +364,72 @@ def test_cell_array_hierarchical_predicate_broadcast(grid: GridCase) -> None:
     assert not values.contains(child).flags.writeable
     with pytest.raises(gm.GeometryError, match='equal lengths'):
         values.contains(paired[:1])
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_array_hierarchical_predicates_reject_other_grids(grid: GridCase) -> None:
+    grid_index = GRID_CASES.index(grid)
+    other = GRID_CASES[(grid_index + 1) % len(GRID_CASES)]
+    values = gm.CellArray([grid.make()], type=grid.cell_type)
+    other_cell = other.make()
+    other_values = gm.CellArray([other_cell], type=other.cell_type)
+    match = (
+        rf'\Acell types must match, got '
+        rf'{re.escape(grid.cell_type.__name__)} and '
+        rf'{re.escape(other.cell_type.__name__)}\Z'
+    )
+    for operand in (other_cell, other_values):
+        for predicate in (values.contains, values.intersects):
+            with pytest.raises(gm.GeometryError, match=match):
+                predicate(operand)
+
+    grid_token = 'tile' if grid.name == 'tiles' else grid.name
+    masked = _lib._unpickle_cell_array([], grid_token, b'\x01')
+    incompatible_masked = _lib._unpickle_cell_array(
+        [],
+        'tile' if other.name == 'tiles' else other.name,
+        b'\x01',
+    )
+    for operand in (other_cell, incompatible_masked):
+        for predicate in (masked.contains, masked.intersects):
+            with pytest.raises(gm.GeometryError, match=match):
+                predicate(operand)
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
+    """Missing rows remain aligned through every bulk row-preserving surface."""
+    a = grid.make()
+    grid_token = 'tile' if grid.name == 'tiles' else grid.name
+    values = _lib._unpickle_cell_array([a.token, a.token], grid_token, bytes([0, 1, 0]))
+    other = _lib._unpickle_cell_array([a.token, a.token], grid_token, bytes([0, 1, 0]))
+
+    assert values.is_missing.tolist() == [False, True, False]
+    np.testing.assert_array_equal(values.contains(other), [True, False, True])
+    assert values.center.is_missing.tolist() == [False, True, False]
+    assert values.polygon.is_missing.tolist() == [False, True, False]
+    assert np.isnan(values.area[1])
+    assert np.isnan(values.children_count()[1])
+    assert values.parent().is_missing.tolist() == [False, True, False]
+    assert [len(row) for row in values.neighbors] == [len(a.neighbors), 0, len(a.neighbors)]
+    assert [len(row) for row in values.children()] == [len(a.children()), 0, len(a.children())]
+    assert values.token == [a.token, None, a.token]
+
+
+def test_masked_cell_array_views_keep_mask_and_pickle_polarity() -> None:
+    import pickle
+
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    values = _lib._unpickle_cell_array(
+        [cell.token, cell.token], 'h3', bytes([0, 1, 0, 1])
+    )
+    for view, expected_mask in (
+        (values[1:], [True, False, True]),
+        (values[::-1], [True, False, True, False]),
+        (values[[3, 0, 2]], [True, False, False]),
+    ):
+        assert view.is_missing.tolist() == expected_mask
+        assert pickle.loads(pickle.dumps(view)) == view
 
 
 def test_cell_array_value_counts_and_factorize() -> None:

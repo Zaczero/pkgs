@@ -143,8 +143,12 @@ fn merge_h3_component(
 ) -> Result<(), H3CoverError> {
     let previous = std::mem::take(merged);
     let mut result = Vec::new();
+    let capacity = previous
+        .len()
+        .saturating_add(component.len())
+        .min(max_cells.unwrap_or(usize::MAX));
     result
-        .try_reserve(previous.len().saturating_add(component.len()))
+        .try_reserve(capacity)
         .map_err(|_| H3CoverError::Allocation)?;
     let (mut left, mut right) = (0, 0);
     while left < previous.len() || right < component.len() {

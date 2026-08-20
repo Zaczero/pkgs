@@ -752,34 +752,71 @@ fn concave_source_excludes_notch() {
     assert!(has(&outer, arm));
 }
 
-/// Adaptive covers use `target_cells` as a target, not `max_cells` as a
-/// hard rejection threshold. This must stay distinct from fixed-level
-/// cover construction, which does enforce a hard cap.
+/// Adaptive covers use `target_cells` as a refinement target, while finite
+/// `max_cells` remains a hard cap during construction.  With `min_level=0`,
+/// this reaches phase 2 directly from the face queue; the cap decision is in
+/// the adaptive staged-refinement decision, not forced descent.
 #[test]
-fn adaptive_max_cells_is_not_a_hard_cap() {
-    let source = box_shape(10.0, 40.0, 20.0, 50.0);
+fn adaptive_max_cells_is_a_hard_cap() {
+    let source = box_shape(40.0, -10.0, 50.0, 10.0);
+    let unlimited = Coverer {
+        min_level: 0,
+        max_level: 4,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 64,
+    }
+    .cover_identity(&source)
+    .expect("unlimited adaptive cover");
+    assert!(
+        unlimited.outer().iter().any(|id| id.level() > 0),
+        "fixture must enter adaptive refinement"
+    );
     let coverer = Coverer {
+        min_level: 0,
+        max_level: 4,
+        level_mod: 1,
+        max_cells: Some(2),
+        target_cells: 64,
+    };
+    // Phase 2 stages each root's children, then line 311 refuses that
+    // refinement growth because it would exceed the finite cap.  The
+    // conforming level-0 parents remain within the cap and are emitted.
+    let capped_small = coverer
+        .cover_identity(&source)
+        .expect("adaptive cap must refuse queue growth without exceeding it");
+    assert!(capped_small.outer().iter().all(|id| id.level() == 0));
+    assert_ne!(capped_small.outer(), unlimited.outer());
+
+    let capped = Coverer {
+        min_level: 0,
+        max_level: 4,
+        level_mod: 1,
+        max_cells: Some(unlimited.outer().len()),
+        target_cells: 64,
+    }
+    .cover_identity(&source)
+    .expect("finite adaptive budget matching the output must fit");
+    assert_eq!(capped.outer(), unlimited.outer());
+}
+
+#[test]
+fn adaptive_without_max_cells_remains_unlimited() {
+    let source = box_shape(10.0, 40.0, 20.0, 50.0);
+    let covering = Coverer {
         min_level: 4,
         max_level: 12,
         level_mod: 1,
-        max_cells: Some(1),
+        max_cells: None,
         target_cells: 64,
-    };
-    let covering = coverer
-        .cover_identity(&source)
-        .expect("adaptive cover must not reject at max_cells");
+    }
+    .cover_identity(&source)
+    .expect("unlimited adaptive cover");
     let outer = covering.outer();
-    let interior = covering.interior();
-    assert!(
-        outer.len() > 1,
-        "fixture must exceed max_cells=1 to exercise target semantics"
-    );
+    assert!(outer.len() > 1);
     let levels: std::collections::BTreeSet<u8> = outer.iter().map(|id| id.level()).collect();
     assert!(levels.len() > 1, "expected mixed levels, got {levels:?}");
     assert!(levels.iter().all(|&level| (4..=12).contains(&level)));
-    for &id in &interior {
-        assert!(source.covers_point(Cell::from_id(id).center_lonlat()));
-    }
 }
 
 /// Seam-straddling sources stay narrow (no degradation to a global

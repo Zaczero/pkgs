@@ -80,28 +80,18 @@ pub(crate) fn parse_geohash_precision(value: &Bound<'_, PyAny>) -> PyResult<u8> 
     parse_geohash_precision_value(crate::py_i64_required("precision", value)?)
 }
 
-pub(super) fn geohash_floor(min_precision: i64) -> PyResult<u8> {
-    super::super::checked_depth(
-        min_precision,
-        "geohash min_precision",
-        "min_precision",
-        1,
-        i64::from(GEOHASH_MAX_PRECISION),
-    )
-}
-
 #[pymethods]
 impl PyGeohashCell {
     /// One geohash cell from a token, lon/lat pair, or point geometry.
     ///
     /// Parameters
     /// ----------
-    /// lon : GeohashCell, str, float, or Point
-    ///     A cell token, the longitude of a ``lon, lat`` pair, or a point
-    ///     geometry.
+    /// value : GeohashCell, str, float, or Point
+    ///     An existing cell, token, longitude of a ``lon, lat`` pair, or a
+    ///     point geometry.
     ///
     /// lat : float, optional
-    ///     Latitude when ``lon`` is a scalar longitude.
+    ///     Latitude when ``value`` is a scalar longitude.
     ///
     /// precision : int, optional
     ///     Geohash precision (``1``-``12``); required for coordinate
@@ -167,33 +157,40 @@ grid_cell_common_pymethods! {
         children_text_signature: "($self, precision=None)",
         neighbors_doc: "The surrounding cells at this precision (8, fewer at the poles), row-major from the north-west; east-west wraps the antimeridian.",
         candidate_doc: "other : GeohashCell or str",
+        descendant_count_doc: "The exact descendant count.",
+        parse_error_doc: "If a cell or token is not a valid cell.",
         example_parent: r"
 >>> import gometry as gm
->>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+>>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+>>> assert cell is not None
 >>> cell.parent().token
 '9q8yy'
 ",
         example_children: r"
 >>> import gometry as gm
->>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+>>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+>>> assert cell is not None
 >>> len(cell.children())
 32
 ",
         example_children_count: r"
 >>> import gometry as gm
->>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+>>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+>>> assert cell is not None
 >>> cell.children_count()
 32
 ",
         example_contains: r"
 >>> import gometry as gm
->>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+>>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+>>> assert cell is not None
 >>> cell.contains(cell)
 True
 ",
         example_intersects: r"
 >>> import gometry as gm
->>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+>>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+>>> assert cell is not None
 >>> cell.intersects(cell.parent())
 True
 ",

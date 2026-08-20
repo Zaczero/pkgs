@@ -245,7 +245,9 @@ pub(crate) const fn root() -> Tile {
     Tile { z: 0, x: 0, y: 0 }
 }
 
-pub(crate) use crate::grid::cell_set::{compact_with_floor, uncompact, uncompact_unlimited};
+#[cfg(test)]
+use crate::grid::cell_set::uncompact;
+pub(crate) use crate::grid::cell_set::{compact_with_floor, uncompact_unlimited};
 
 impl crate::grid::coverer::RectCell for Tile {
     fn depth(self) -> u8 {

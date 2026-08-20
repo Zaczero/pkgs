@@ -221,29 +221,21 @@ impl PyH3Edge {
         }
     }
 
-    /// The ``(origin, destination)`` cell pair.
-    ///
-    /// Returns
-    /// -------
-    /// tuple of H3Cell
-    #[getter]
-    fn cells(&self) -> (PyH3Cell, PyH3Cell) {
-        let (origin, destination) = self.edge.cells();
-        (PyH3Cell { cell: origin }, PyH3Cell { cell: destination })
-    }
-
     /// Reverse this directed edge from ``destination`` back to ``origin``.
     ///
     /// Returns
     /// -------
     /// H3Edge
         ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-    /// >>> edge = cell.edge(list(cell.neighbors)[0])
-    /// >>> edge.reverse().token
+/// Examples
+/// --------
+/// >>> import gometry as gm
+/// >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+/// >>> assert cell is not None
+/// >>> neighbor = list(cell.neighbors)[0]
+/// >>> assert neighbor is not None
+/// >>> edge = cell.edge(neighbor)
+/// >>> edge.reverse().token
     /// '137283082cffffff'
 fn reverse(&self) -> Self {
         Self {
@@ -276,12 +268,14 @@ fn reverse(&self) -> Self {
     /// -------
     /// float
     ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> cell = gm.H3Cell(13.4, 52.5, resolution=7)
-    /// >>> edge = cell.edge(cell.neighbors[0])
-    /// >>> 1000 < edge.length < 3000
+/// Examples
+/// --------
+/// >>> import gometry as gm
+/// >>> cell = gm.H3Cell(13.4, 52.5, resolution=7)
+/// >>> neighbor = cell.neighbors[0]
+/// >>> assert neighbor is not None
+/// >>> edge = cell.edge(neighbor)
+/// >>> 1000 < edge.length < 3000
     /// True
     #[getter]
     fn length(&self) -> f64 {

@@ -1,5 +1,5 @@
 ---
-description: H3, S2, geohash, and XYZ-tile grids in gometry plus the point geocodes (plus codes, OSM shortlinks), the spherical model, and the space-filling-curve keys that order cells — typed cells, rule-exact tilings, and coverages that answer exact membership without a separate refine step.
+description: H3, S2, geohash, and XYZ-tile grids in gometry plus the point geocodes (plus codes, OSM shortlinks), the spherical model, and the space-filling-curve keys that order cells — typed cells and explicit cell-selection rules.
 ---
 
 # Grids & geocodes
@@ -26,16 +26,12 @@ and XYZ tiles — that other ecosystems split across separate packages:
 - **XYZ tiles** — the slippy-map [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) grid, addressed by *zoom*
   (0 coarse … 29 fine).
 
-All four share **one cell and coverage shape**: the same `cell_rule` semantics,
-the same hierarchy moves, the same exact membership predicates. Learn the H3
-surface and you already know the other three — [`gm.Cell`][gometry.Cell] is the
-structural protocol every cell type satisfies.
+All four share **one cell-array shape** and the same `cell_rule` semantics. Learn
+the H3 surface and you already know the other three — [`gm.Cell`][gometry.Cell]
+is the structural protocol every cell type satisfies.
 
-**A coverage is an exact region predicate plus the cell keys that accelerate and
-shard it.** The cells answer the *cell*
-question exactly (which cells satisfy your `cell_rule`); the membership methods
-answer the *geometry* question exactly (is this candidate really in the area) —
-and you never have to remember a second call to get the exact answer.
+Cover factories materialize cell keys. Keep the source geometry separately and
+use the free `gm.*` predicates when an exact geometry question is needed.
 
 ## Cells from points
 
@@ -84,7 +80,7 @@ a numeric id (where the system has one), or a token string. H3 topological
 vertices and directed edges are separate scalar identities (`H3Vertex(value)`,
 `H3Edge(value)`) with fixed arrays (`H3VertexArray`, `H3EdgeArray`) because
 they do not have cell hierarchy or area/polygon operations. Each system adds
-its own vocabulary on top: `H3Cell.resolution`, `.children_count(resolution)`,
+its own vocabulary on top: `H3Cell.resolution`,
 `.grid_disk(k)` / `.grid_ring(k)` / `.grid_path(...)`; `S2Cell.level`.
 Arbitrary [`CellArray`][gometry.CellArray] sets roll up and down with
 `cells.compact()` / `cells.uncompact(depth)`.
@@ -172,7 +168,7 @@ print(figure([cell.polygon, *cell_polys(cell.neighbors), cell.center], "neighbor
 
 The spherical model is geometry on a **sphere**, where there are no projection
 discontinuities and the antimeridian is not special. gometry exposes this through **S2** —
-typed cells and exact-classified coverings — rather than as a general spherical boolean-topology
+typed cells and explicit cell sets — rather than as a general spherical boolean-topology
 engine. The value is global correctness: an S2 cell or covering behaves the same near the
 antimeridian or the poles as it does over the equator, which is exactly where planar
 reasoning and projected frames break down.
@@ -211,8 +207,8 @@ print("covering cells:", len(covering))
 
 ## Covering an area
 
-`gm.h3_cover(geom, resolution=...)` and `gm.s2_cover(geom, level=...)` return the coverage
-directly. It is typed and self-describing:
+`gm.h3_cover(geom, resolution=...)` and `gm.s2_cover(geom, level=...)` return a
+typed `CellArray` directly:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -220,10 +216,9 @@ import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 cov = gm.h3_cover(area, resolution=5)
 
-print("cell_rule:", cov.cell_rule)   # which cells were materialized
-print("resolution:", cov.resolution)
-print("# cells:", len(cov.cells))
-print("first cell id:", cov.cells[0].id)
+print("cells:", len(cov))             # cells materialized by the factory
+print("# cells:", len(cov))
+print("first cell id:", cov[0].id)
 
 ```
 
@@ -247,7 +242,7 @@ import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 for rule in ("within", "center", "overlap", "bbox"):
     cov = gm.h3_cover(area, resolution=5, cell_rule=rule)
-    print(f"{rule:>8}: {len(cov.cells):>3} cells")
+    print(f"{rule:>8}: {len(cov):>3} cells")
 
 ```
 
@@ -267,7 +262,8 @@ print(panels([
 
 ```
 
-The rule shapes **only the visible cells** — never the membership answers below.
+The rule shapes the visible cell set. Keep the source geometry separately when
+you need exact geometry predicates.
 
 ### Projected input is normalized to lon/lat
 
@@ -286,67 +282,48 @@ import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 projected = area.to_crs(3857)
 cov = gm.h3_cover(projected, resolution=5)
-print('# cells:', len(cov.cells))
-print('projected candidate:', cov.covers(gm.Point(21.0, 52.0, crs=4326).to_crs(3857)))
+print('# cells:', len(cov))
+print('projected candidate:', gm.covers(projected, gm.Point(21.0, 52.0, crs=4326).to_crs(3857)))
 
 ```
 
-## Exact membership on a coverage object
+## Exact membership with the source geometry
 
 Cells never align with a geometry's boundary, so cell membership alone can never
-answer "is this point really in my area". gometry's coverages answer that question
-themselves, exactly, with the same predicate verbs the rest of the library uses:
+answer "is this point really in my area". Keep the source geometry and use the
+same predicate verbs the rest of the library uses:
 
-The coverage can do this because it retains its source geometry. If you export
-`.cells` as join keys, the source geometry is no longer part of the key table:
-refine candidate matches against the original geometries before treating them as
-exact.
+The returned `CellArray` does not retain the source geometry. If you export cells
+as join keys, refine candidate matches against the original geometries before
+treating them as exact.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-cov = gm.h3_cover(area, resolution=5)
+cells = gm.h3_cover(area, resolution=5)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-print('covers:', cov.covers(points))
-print('edge point:', cov.covers(gm.Point(20.0, 52.0, crs=4326)), '| strictly inside:', cov.contains(gm.Point(20.0, 52.0, crs=4326)))
-print('raw lon/lat stream:', cov.intersects_xy([21.0, 30.0], [52.0, 52.0]))
+print('covers:', gm.covers(area, points))
+print('edge point:', gm.covers(area, gm.Point(20.0, 52.0, crs=4326)), '| strictly inside:', gm.contains(area, gm.Point(20.0, 52.0, crs=4326)))
+print('raw lon/lat stream:', gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0]))
 
 ```
 
-Membership is not a cell-index query. It delegates to the prepared
-source-geometry predicate kernel — the same kernel as [`gm.contains_xy`][gometry.contains_xy]
-and friends — so the answer is exact even when a visible cell only approximates
-the boundary. `explain()` narrates that contract:
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-for line in gm.h3_cover(area, resolution=6).explain():
-    print(line)
-
-```
-
-The classification itself is public inspection data: `interior_cells` are
-certified fully inside, and `boundary_cells` are the fringe where cells and
-geometry disagree. They are retained for rendering, debugging, and derived
-coverage inputs — not as a query index:
+The returned cells are the public grid representation. Keep the source geometry
+separately when an exact predicate is needed:
 
 ```python exec="on" html="true"
 from _figures import figure
 import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-cov = gm.h3_cover(area, resolution=5)
-interior = cov.interior_cells.polygon
-fringe = cov.boundary_cells.polygon
-print(figure([*list(interior), *(cell.exterior for cell in fringe)], 'interior_cells (filled) vs boundary_cells (outline)'))
+cells = gm.h3_cover(area, resolution=5)
+print(figure([*cells.polygon, area], 'H3 cells'))
 
 ```
 
 !!! tip "Joins at scale"
     Use the default `"overlap"` cells as join keys (a superset never loses a
     candidate), join on cell IDs in your database or stream, then finish with
-    `cov.covers(matched)` for the exact answer. For in-memory many-to-many joins,
+    `gm.covers(area, matched)` for the exact answer. For in-memory many-to-many joins,
     [`gm.join`][gometry.join] does both stages for you.
 
 ## From cells back to geometry
@@ -403,7 +380,7 @@ compacted sets work as-is):
 import gometry as gm
 
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-cells = gm.h3_cover(area, resolution=6).cells.compact()
+cells = gm.h3_cover(area, resolution=6).compact()
 print(cells.to_polygon().geometry_type, "from", len(cells), "compacted cells")
 
 ```
@@ -419,7 +396,7 @@ zoom 8.
     ([`coverage_union`][gometry.coverage_union], `coverage_simplify`,
     `coverage_clean`) validate and repair an *arbitrary source polygon fabric*
     (parcels, admin boundaries) with edge-matched interfaces. A DGGS
-    `Coverage` is a different domain: same-resolution H3/S2 tessellations do
+    Cell arrays are a different domain: same-resolution H3/S2 tessellations do
     share boundaries, but hierarchy, compact/uncompact, and cell-set algebra
     already own that problem — use those, not `coverage_*`, to merge cells.
 
@@ -442,14 +419,14 @@ range-nesting exact (see below); geohash/tile algebra is prefix-based.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-a = gm.h3_cover(gm.box(20.0, 51.0, 22.0, 53.0, crs=4326), resolution=5).cells
-b = gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=5).cells
+a = gm.h3_cover(gm.box(20.0, 51.0, 22.0, 53.0, crs=4326), resolution=5)
+b = gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=5)
 print("h3 intersection:", len(gm.h3_intersection(a, b)))
-mixed = gm.h3_union(a, gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=6).cells)
+mixed = gm.h3_union(a, gm.h3_cover(gm.box(21.0, 52.0, 23.0, 54.0, crs=4326), resolution=6))
 print("h3 mixed-res union resolutions:", sorted({c.resolution for c in mixed}))
 print("s2 union sample:", len(gm.s2_union(
-    gm.s2_cover(gm.box(20.0, 51.0, 21.0, 52.0, crs=4326), level=8).cells,
-    gm.s2_cover(gm.box(21.0, 52.0, 22.0, 53.0, crs=4326), level=8).cells,
+    gm.s2_cover(gm.box(20.0, 51.0, 21.0, 52.0, crs=4326), level=8),
+    gm.s2_cover(gm.box(21.0, 52.0, 22.0, 53.0, crs=4326), level=8),
 )))
 
 ```
@@ -462,32 +439,29 @@ without touching geometry.
 
 ### A budget and a rule
 
-S2's covering algorithm is multi-resolution: candidate cells classify exactly
-against the geometry itself within a cell budget, mixing large and small cells.
-`gm.s2_cover(geom, ...)` takes the same `cell_rule` as H3 plus the budget knobs
-`level`, `max_cells`, `target_cells`, `min_level`, `max_level`, and `level_mod`:
+`gm.s2_cover(geom, ...)` materializes cells at the requested `level`, with the
+same `cell_rule` and `max_cells` controls as the other grid factories:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-cov = gm.s2_cover(area, min_level=6, max_level=12, max_cells=64)
-print('# cells:', len(cov.cells), '| budget:', cov.max_cells)
-print('levels present:', sorted({c.level for c in cov.cells}))
-print('exact membership anyway:', cov.covers(gm.Point(21.0, 52.0, crs=4326)))
+cov = gm.s2_cover(area, level=8, max_cells=64)
+print('# cells:', len(cov))
+print('levels present:', sorted({c.level for c in cov}))
 
 ```
 
-`max_cells` is the hard cap on fixed-depth cover factories (H3, geohash, tiles,
-and fixed-level S2), defaulting to `1_000_000`; pass `max_cells=None` for an
-unlimited fixed-depth cover (bounded only by memory). On S2, omit `level` for an
-adaptive multi-level covering guided by `target_cells` (default `8`, the
-S2-idiomatic approximation target). A fixed `level` never coarsens: if its
-exact covering exceeds `max_cells`, the factory raises.
-The cells are a true spatial key — exactly the cells satisfying `cell_rule` — and
-`interior_cells`/`boundary_cells` expose the same certified core-vs-fringe
-split as H3. The membership methods (`covers`/`contains`/`intersects` and the
-`_xy` spellings) answer exactly against the source geometry regardless, using
-the prepared predicate kernel.
+`max_cells` is the hard output and allocation cap, defaulting to `1_000_000`;
+pass `max_cells=None` for an unlimited cover (bounded only by memory). A fixed
+`level=` cover cannot coarsen, so it raises when the cover exceeds the cap. An
+adaptive cover (using `min_level`/`max_level`, or omitting `level`) stops
+refinement and retains coarser cells when its children would exceed the cap, so
+the result has at most `max_cells` cells. It raises only when even the
+admissible starting cover cannot fit or another coverage error occurs.
+`target_cells` remains the adaptive refinement target; it is distinct from the
+hard cap. The cells are a spatial key materialized according to `cell_rule`;
+exact geometry predicates remain free functions such as `gm.covers` and
+`gm.contains_xy`.
 
 ### Cell-set algebra
 
@@ -527,25 +501,21 @@ print('geohash:', gm.GeohashCell(point, precision=6).token)
 print('tile:   ', gm.Tile(point, zoom=12).token)
 area = gm.box(13.2, 52.4, 13.6, 52.6, crs=4326)
 cov = gm.geohash_cover(area, precision=5, cell_rule='overlap')
-print('# geohash cells:', len(cov.cells), 'interior:', len(cov.interior_cells))
-print('covers a point:', cov.contains_xy(13.4, 52.5))
+print('# geohash cells:', len(cov))
+print('covers a point:', gm.covers(area, gm.Point(13.4, 52.5, crs=4326)))
 tiles = gm.tile_cover(area, zoom=10)
-print('# tiles:', len(tiles.cells), 'first quadkey:', tiles.cells[0].token)
+print('# tiles:', len(tiles), 'first quadkey:', tiles[0].token)
 
 ```
 
-A geohash or tile coverage is built as a **uniform single-depth tiling** —
-every cell is the same precision/zoom, which is what makes `.cells` a clean
-spatial key. Exact membership still tests the retained source geometry and its
-cost therefore depends on that geometry; token lookup alone is not the answer.
-All four coverages
-share one cell-set surface: `compact()` / `uncompact(depth)` /
-`with_parents()` re-represent the visible cells (the exact predicates still
-answer against the source geometry, unchanged), and `CellArray` methods do the
-same algebra over a raw cell list.
+A geohash or tile cover is built as a **uniform single-depth tiling** —
+every cell is the same precision/zoom, which makes the returned `CellArray` a
+clean spatial key. Exact predicates test the source geometry supplied by the caller;
+token lookup alone is not the answer. Cell-set methods operate on the returned
+`CellArray` directly.
 
 `GeohashCell` and `Tile` carry the full cell surface — `center`,
-`boundary`, `area`, `parent`/`children`/`neighbors`, ordering, and pickle —
+`polygon`, `area`, `parent`/`children`/`neighbors`, ordering, and pickle —
 and `CellArray` adds the set operations (`cells.compact()` /
 `cells.uncompact(depth)`) while H3 vertex/edge arrays expose only their valid
 topological surfaces. `Tile` keeps the quadkey constructor
@@ -590,8 +560,7 @@ print("refined district rows:", point_to_district.values.tolist())
 handoff shape for pandas/NumPy-style grouping: `codes[i]` points at a row in the
 returned unique `CellArray`.
 
-Cell equality is a candidate join, not polygon truth. A coverage can answer exact
-membership only while it retains its source geometry; after exporting `.cells`
+Cell equality is a candidate join, not polygon truth. After exporting cells
 to a DataFrame or lakehouse, refine matched rows with `SpatialIndex.query`,
 `gm.join`, or the corresponding exact predicate against the original geometry.
 
@@ -676,17 +645,17 @@ rarely need a separate sort once you are working in cells:
 
 - **[S2](https://s2geometry.io/) cell ids are Hilbert order.** `sorted(s2_cells)` groups spatial
   neighbors, because an S2 id is the cell's position along the face Hilbert
-  curve. The cell-set algebra and coverage membership rely on it.
+  curve. The cell-set algebra relies on it.
 - **Tile ids and [quadkeys](https://learn.microsoft.com/en-us/bingmaps/articles/bing-maps-tile-system) are Morton order.** A `Tile`'s packed id interleaves
   `x`/`y` so it sorts in quadkey order; `tile.morton` is that index directly.
 - **[Geohash](https://en.wikipedia.org/wiki/Geohash) token order is a Z-ish curve.** Base-32 tokens sort
   lexicographically into a locality-preserving order — which is exactly why a
-  `GeohashCell`'s integer key equals its token order.
+  `GeohashCell`'s token carries that ordering directly.
 
 So the choice is: key your geometries explicitly with `spatial_key()` for
 GeoParquet/index packing (pass `curve='morton'` when its cheaper ordering is
-the fit), or address them as cells and let the cell id carry the ordering for
-free.
+the fit), or address them as cells and let their identity value carry the ordering
+for free.
 
 ## Point geocodes
 

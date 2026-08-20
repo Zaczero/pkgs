@@ -457,8 +457,8 @@ pub(crate) fn cover<C: RectCell>(
     loop {
         while let Some(cell) = interior.pop() {
             if cell.depth() >= target_depth {
+                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                 cells.push((cell, true));
-                ensure_cover_budget(cells.len(), max_cells)?;
             } else {
                 interior.extend(cell.children());
             }
@@ -470,8 +470,8 @@ pub(crate) fn cover<C: RectCell>(
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                     cells.push((cell, true));
-                    ensure_cover_budget(cells.len(), max_cells)?;
                 } else {
                     interior.extend(cell.children());
                 }
@@ -480,8 +480,8 @@ pub(crate) fn cover<C: RectCell>(
                 if cell.depth() >= target_depth {
                     // A boundary cell at the target depth intersects but is
                     // not fully covered.
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                     cells.push((cell, false));
-                    ensure_cover_budget(cells.len(), max_cells)?;
                 } else {
                     // Expand in place onto `boundary` — avoid a side buffer
                     // that copies twice. Children derived from parent edges
@@ -525,8 +525,8 @@ pub(crate) fn cover_center<C: RectCell>(
     loop {
         while let Some(cell) = interior.pop() {
             if cell.depth() >= target_depth {
+                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                 cells.push(cell);
-                ensure_cover_budget(cells.len(), max_cells)?;
             } else {
                 interior.extend(cell.children());
             }
@@ -538,8 +538,8 @@ pub(crate) fn cover_center<C: RectCell>(
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                     cells.push(cell);
-                    ensure_cover_budget(cells.len(), max_cells)?;
                 } else {
                     interior.extend(cell.children());
                 }
@@ -551,8 +551,8 @@ pub(crate) fn cover_center<C: RectCell>(
                         f64::midpoint(bounds.miny(), bounds.maxy()),
                     );
                     if classifier.covers_point(center) {
+                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                         cells.push(cell);
-                        ensure_cover_budget(cells.len(), max_cells)?;
                     }
                 } else {
                     cell.push_children_bounds(bounds, &mut boundary);

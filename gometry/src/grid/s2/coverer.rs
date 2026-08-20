@@ -52,15 +52,17 @@ use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 
 /// Level budget for a covering. `min_level <= max_level`; emitted levels
 /// satisfy `(level - min_level) % level_mod == 0`; `target_cells` guides
-/// optional adaptive refinement. `max_cells` is a hard emission budget only
-/// for fixed-level coverings (`None` = unlimited); adaptive construction uses
-/// its aggregate `target_cells` guide instead.
+/// optional adaptive refinement. `max_cells` is a coarsening ceiling and hard
+/// emission/allocation budget (`None` = unlimited); if the ceiling cannot be
+/// met without violating `min_level`, construction returns a typed rejection.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Coverer {
     pub min_level: u8,
     pub max_level: u8,
     pub level_mod: u8,
-    /// Fixed-level hard emission cap. `None` = unlimited.
+    /// Coarsening ceiling and finite emission/allocation cap; adaptive covering
+    /// may return a typed rejection when it cannot meet this above `min_level`.
+    /// `None` = unlimited.
     pub max_cells: Option<usize>,
     /// Adaptive refinement target, independent of the hard emission cap.
     pub target_cells: usize,
@@ -126,14 +128,13 @@ struct CoverContext<'a> {
 }
 
 impl Coverer {
-    /// Fixed-level `max_cells` is a hard emission cap; adaptive construction
-    /// uses it as its approximate target rather than a rejection threshold.
+    /// `max_cells` is a coarsening ceiling for adaptive construction and a hard
+    /// emission/allocation cap for fixed-level construction. If adaptive
+    /// coarsening cannot meet it above `min_level`, return a typed rejection.
+    /// `target_cells` remains the adaptive quality target and does not replace
+    /// or widen this ceiling.
     const fn hard_budget(self) -> Option<usize> {
-        if self.min_level == self.max_level {
-            self.max_cells
-        } else {
-            None
-        }
+        self.max_cells
     }
 
     /// Adaptive refinement target.

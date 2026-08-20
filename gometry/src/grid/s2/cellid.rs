@@ -130,8 +130,6 @@ pub(crate) const fn size_ij(level: u8) -> i32 {
 #[repr(transparent)]
 pub(crate) struct CellId(u64);
 
-const _: () = assert!(size_of::<CellId>() == size_of::<u64>());
-
 impl CellId {
     /// The raw 64-bit id.
     pub(crate) const fn raw(self) -> u64 {

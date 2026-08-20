@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
 use pyo3::exceptions::PyMemoryError;
 use rstar::{AABB, RTree, RTreeObject};
@@ -10,13 +10,13 @@ use crate::grid::affine_source::{
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{Coverer, Covering};
-use crate::py::cells::coverage_ops::{self, CoverageCells, coverage_factory_shapes};
+use crate::py::cells::coverage_ops::{self, coverage_factory_shapes};
+use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
-    _unpickle_s2_cell, _unpickle_s2_coverage, s2_bounding_cell, s2_cells, s2_cover, s2_difference,
-    s2_intersection, s2_union,
+    _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
+    s2_union,
 };
 use crate::py::cells::s2::parse::{bounds_query_shape, parse_s2_level_budget};
-use crate::py::cells::s2::{PyS2Cell, PyS2Coverage, PyS2CoverageIter, S2Membership};
 use crate::py::cells::{
     Bound, CellRule, PyAny, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
 };
@@ -255,6 +255,9 @@ fn cover_s2_shapes(
             .collect()
     };
     let mut tagged = Vec::new();
+    let mut unique = (min_level == max_level)
+        .then(|| max_cells.map(|_| BTreeMap::<CellId, bool>::new()))
+        .flatten();
     for (component, component_target) in components.iter().zip(component_targets) {
         let covered = cover_s2_component(
             component,
@@ -264,10 +267,27 @@ fn cover_s2_shapes(
             max_cells,
             component_target,
         )?;
-        tagged.extend(covered.into_cells());
+        for (cell, interior) in covered.into_cells() {
+            if let Some(unique) = &mut unique {
+                if let Some(existing) = unique.get_mut(&cell) {
+                    *existing |= interior;
+                    continue;
+                }
+                let limit = max_cells.expect("unique map has a finite budget");
+                crate::grid::ensure_cover_budget(unique.len().saturating_add(1), Some(limit))
+                    .map_err(S2ComponentCoverError::Budget)?;
+                unique.insert(cell, interior);
+            } else {
+                tagged.push((cell, interior));
+            }
+        }
     }
 
-    tagged.sort_unstable_by_key(|(cell, _)| *cell);
+    if let Some(unique) = unique {
+        tagged = unique.into_iter().collect();
+    } else {
+        tagged.sort_unstable_by_key(|(cell, _)| *cell);
+    }
     let mut merged = Vec::with_capacity(tagged.len());
     for (cell, interior) in tagged {
         if let Some((last, last_interior)) = merged.last_mut()
@@ -277,14 +297,6 @@ fn cover_s2_shapes(
         } else {
             merged.push((cell, interior));
         }
-    }
-    if min_level == max_level
-        && let Some(limit) = max_cells
-        && merged.len() > limit
-    {
-        return Err(S2ComponentCoverError::Budget(
-            crate::grid::CoverBudgetExceeded::new(limit),
-        ));
     }
     Ok(merged)
 }
@@ -326,75 +338,28 @@ pub(super) fn cover_s2_components(
 fn membership_from_tagged(
     tagged: Vec<(CellId, bool)>,
     cover_shape: Shape,
-    cover_is_split: bool,
-    budget: &S2Budget,
     cell_rule: CellRule,
     bbox_visible: Option<Vec<CellId>>,
-) -> (Arc<S2Membership>, CoverageCells<PyS2Cell>) {
-    let make_lazy = |shape: Shape| {
-        S2Membership::lazy(
-            shape,
-            cover_is_split,
-            budget.min_level,
-            budget.max_level,
-            budget.level_mod,
-            budget.target_cells,
-        )
-    };
+) -> Vec<CellId> {
     match cell_rule {
         // Overlap already builds the annotated product — seed the inspection
         // partition so interior/boundary do not re-cover.
-        CellRule::Overlap => {
-            let partition = S2Membership::partition_from_covering(tagged);
-            let cells = partition.all();
-            (
-                S2Membership::seeded(
-                    partition,
-                    cover_shape,
-                    cover_is_split,
-                    budget.min_level,
-                    budget.max_level,
-                    budget.level_mod,
-                    budget.target_cells,
-                ),
-                cells,
-            )
-        },
-        CellRule::Bbox => {
-            let cells = CoverageCells::from_cells(
-                bbox_visible
-                    .expect("bbox cells were built")
-                    .into_iter()
-                    .map(|cell| PyS2Cell { cell })
-                    .collect(),
-            );
-            (make_lazy(cover_shape), cells)
-        },
-        CellRule::Within => {
-            let cells = CoverageCells::from_cells(
-                tagged
-                    .into_iter()
-                    .filter_map(|(cell, interior)| interior.then_some(PyS2Cell { cell }))
-                    .collect(),
-            );
-            (make_lazy(cover_shape), cells)
-        },
+        CellRule::Overlap => tagged.into_iter().map(|(cell, _)| cell).collect(),
+        CellRule::Bbox => bbox_visible.expect("bbox cells were built"),
+        CellRule::Within => tagged
+            .into_iter()
+            .filter_map(|(cell, interior)| interior.then_some(cell))
+            .collect(),
         // Center: interior is a full-cover certificate (source.covers(rect)),
         // so the cell center is covered; only boundary cells probe the cover
         // working shape (split-normalized). Partition stays cold.
-        CellRule::Center => {
-            let cells = CoverageCells::from_cells(
-                tagged
-                    .into_iter()
-                    .filter_map(|(cell, interior)| {
-                        (interior
-                            || cover_shape.covers_point(S2GeomCell::from_id(cell).center_lonlat()))
-                        .then_some(PyS2Cell { cell })
-                    })
-                    .collect(),
-            );
-            (make_lazy(cover_shape), cells)
-        },
+        CellRule::Center => tagged
+            .into_iter()
+            .filter_map(|(cell, interior)| {
+                (interior || cover_shape.covers_point(S2GeomCell::from_id(cell).center_lonlat()))
+                    .then_some(cell)
+            })
+            .collect(),
     }
 }
 
@@ -413,7 +378,7 @@ pub(crate) fn build_coverage(
     max_level: Option<&Bound<'_, PyAny>>,
     level_mod: i64,
     cell_rule: CellRule,
-) -> PyResult<PyS2Coverage> {
+) -> PyResult<Vec<CellId>> {
     let parsed = parse_s2_level_budget(
         level,
         max_cells,
@@ -429,8 +394,7 @@ pub(crate) fn build_coverage(
         max_cells: parsed.max_cells,
         target_cells: parsed.target_cells,
     };
-    let (membership_geometry, cover_shape, cover_is_split) =
-        coverage_factory_shapes(geometry, "S2")?;
+    let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
         // Cover each non-wrapped lon/lat window separately and deduplicate.
         // A multipolygon / multipartite seam band has full-world merged bounds
@@ -483,25 +447,9 @@ pub(crate) fn build_coverage(
         (tagged, None)
     };
 
-    let (membership, cells) = membership_from_tagged(
-        tagged,
-        cover_shape,
-        cover_is_split,
-        &budget,
-        cell_rule,
-        bbox_visible,
-    );
-    Ok(PyS2Coverage {
-        geometry: membership_geometry,
-        cells,
-        cell_rule,
-        min_level: budget.min_level,
-        max_level: budget.max_level,
-        level_mod: budget.level_mod,
-        max_cells: budget.max_cells,
-        target_cells: budget.target_cells,
-        membership,
-    })
+    let cells = membership_from_tagged(tagged, cover_shape, cell_rule, bbox_visible);
+    let _ = budget.max_cells;
+    Ok(cells)
 }
 
 /// Non-wrapped lon/lat envelopes for the bbox cover rule.
@@ -552,8 +500,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
         s2_cells, s2_cover, s2_union,
         s2_intersection, s2_difference, s2_bounding_cell,
-        _unpickle_s2_cell, _unpickle_s2_coverage,
+        _unpickle_s2_cell,
     );
-    crate::add_classes!(m; PyS2Coverage, PyS2CoverageIter, PyS2Cell);
+    crate::add_classes!(m; PyS2Cell);
     Ok(())
 }

@@ -121,8 +121,14 @@ pub(crate) fn uncompact_unlimited<C: HierarchicalId>(cells: &[C], target: u8) ->
         })
         .fold(0_usize, usize::saturating_add);
     let mut out = Vec::with_capacity(estimated.min(1 << 20));
-    let roots = normalize(cells.to_vec());
-    let mut stack: Vec<C> = roots.into_iter().rev().collect();
+    let canonical = cells
+        .windows(2)
+        .all(|pair| pair[0].range_max() < pair[1].range_min());
+    let mut stack: Vec<C> = if canonical {
+        cells.iter().copied().rev().collect()
+    } else {
+        normalize(cells.to_vec()).into_iter().rev().collect()
+    };
     while let Some(cell) = stack.pop() {
         if cell.depth() >= target {
             out.push(cell);

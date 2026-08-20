@@ -34,6 +34,15 @@ use crate::py::errors::InvalidGeometryError;
 /// CellArray of Tile
 ///     One tile per input coordinate.
 ///
+/// Raises
+/// ------
+/// GeometryError
+///     If the input is scalar, zoom is invalid, or coordinate columns have
+///     different lengths.
+/// InvalidGeometryError
+///     If coordinates are non-finite or leave the lon/lat domain, or a
+///     latitude is outside the Web Mercator domain (±85.051129°).
+///
 /// See Also
 /// --------
 /// Tile : Build a single tile.
@@ -137,6 +146,7 @@ grid_free_functions! {
         cell_doc: "Tile",
         item_doc: "Tile, int, str, or iterable of those",
         contract_doc: "",
+        parse_error_doc: "If an id or token is not a valid tile cell.",
         parse_cell: tile_arg,
         array: |cells| tile_cell_array(cells),
         union: tile_union,
@@ -145,21 +155,21 @@ grid_free_functions! {
         example_union: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.tile_cover(p, zoom=10).cells)
+>>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_union(cells, cells))
 1
 ",
         example_intersection: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.tile_cover(p, zoom=10).cells)
+>>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_intersection(cells, cells))
 1
 ",
         example_difference: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.tile_cover(p, zoom=10).cells)
+>>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_difference(cells, []))
 1
 ",

@@ -1,21 +1,16 @@
+use super::functions::ensure_h3_uncompact_budget;
 use crate::geometry::CoordSeq;
 use crate::py::cells::coverage_ops::{
-    GridDissolver, coordseq_crosses_lon_seam, dissolve_grid_cells,
+    GridDissolver, SortedCells, coordseq_crosses_lon_seam, dissolve_grid_cells,
 };
-use crate::py::cells::h3::{CellIndex, ensure_h3_uncompact_budget, h3_cell_shape};
+use crate::py::cells::h3::{CellIndex, h3_cell_shape};
 use crate::py::cells::{GeometryError, Point, PyResult, Shape, Typed};
 
-pub(super) fn h3_dissolve(mut cells: Vec<CellIndex>) -> PyResult<Typed> {
+pub(super) fn h3_dissolve(cells: Vec<CellIndex>) -> PyResult<Typed> {
     // A cell SET dissolves to the same outline regardless of order or repeats,
     // so canonicalize to a set — the user shouldn't have to pre-deduplicate
     // (matching the set semantics of the cell-algebra ops).
-    cells.sort_unstable();
-    cells.dedup();
-    h3_dissolve_sorted(cells)
-}
-
-pub(super) fn h3_dissolve_sorted(cells: Vec<CellIndex>) -> PyResult<Typed> {
-    dissolve_grid_cells::<H3Dissolver>(&cells)
+    dissolve_grid_cells::<H3Dissolver>(SortedCells::new(cells))
 }
 
 struct H3Dissolver;
@@ -23,8 +18,11 @@ struct H3Dissolver;
 impl GridDissolver for H3Dissolver {
     type Cell = CellIndex;
 
-    fn fast_path_cells(cells: &[Self::Cell]) -> PyResult<Option<Vec<Self::Cell>>> {
+    fn fast_path_cells(
+        cells: &SortedCells<Self::Cell>,
+    ) -> PyResult<Option<SortedCells<Self::Cell>>> {
         let resolution = cells
+            .as_slice()
             .iter()
             .map(|cell| cell.resolution())
             .max()
@@ -32,15 +30,18 @@ impl GridDissolver for H3Dissolver {
         // Mixed-resolution sets dissolve as their finest-resolution descendants:
         // an H3 cell's boundary does NOT geometrically equal the union of its
         // children's boundaries, so coarse cells expand before edge cancellation.
-        if cells.iter().any(|cell| cell.resolution() != resolution) {
-            let estimated = ensure_h3_uncompact_budget(cells.iter().copied(), resolution)?;
+        if cells
+            .as_slice()
+            .iter()
+            .any(|cell| cell.resolution() != resolution)
+        {
+            let estimated =
+                ensure_h3_uncompact_budget(cells.as_slice().iter().copied(), resolution)?;
             let mut expanded = Vec::with_capacity(estimated);
-            expanded.extend(CellIndex::uncompact(cells.to_vec(), resolution));
-            expanded.sort_unstable();
-            expanded.dedup();
-            Ok(Some(expanded))
+            expanded.extend(CellIndex::uncompact(cells.as_slice().to_vec(), resolution));
+            Ok(Some(SortedCells::new(expanded)))
         } else {
-            Ok(Some(cells.to_vec()))
+            Ok(Some(cells.clone()))
         }
     }
 

@@ -32,6 +32,14 @@ use crate::py::errors::GeometryError;
 /// CellArray of GeohashCell
 ///     One cell per input coordinate.
 ///
+/// Raises
+/// ------
+/// GeometryError
+///     If the input is scalar, precision is invalid, or coordinate columns
+///     have different lengths.
+/// InvalidGeometryError
+///     If coordinates are non-finite or leave the lon/lat domain.
+///
 /// See Also
 /// --------
 /// GeohashCell : Build a single cell.
@@ -124,6 +132,7 @@ grid_free_functions! {
         cell_doc: "GeohashCell",
         item_doc: "GeohashCell, str, or iterable of those",
         contract_doc: "",
+        parse_error_doc: "If a cell or token is not a valid geohash cell.",
         parse_cell: geohash_cell_arg,
         array: |cells| geohash_cell_array(cells),
         union: geohash_union,
@@ -132,21 +141,21 @@ grid_free_functions! {
         example_union: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.geohash_cover(p, precision=6).cells)
+>>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_union(cells, cells))
 1
 ",
         example_intersection: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.geohash_cover(p, precision=6).cells)
+>>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_intersection(cells, cells))
 1
 ",
         example_difference: r"
 >>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
->>> cells = list(gm.geohash_cover(p, precision=6).cells)
+>>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_difference(cells, []))
 1
 ",

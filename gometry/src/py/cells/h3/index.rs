@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn generic_validation_preserves_concrete_index_types() {
-        Python::initialize();
+        crate::test_support::initialize_python();
 
         let cell: CellIndex = "8928308280fffff".parse().unwrap();
         let vertex = cell.vertexes().next().unwrap();

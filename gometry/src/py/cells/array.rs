@@ -15,7 +15,7 @@ use std::sync::Arc;
 use numpy::PyArrayMethods as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::{PyResult, Python, pyclass};
-use pyo3::types::{PyAny, PyTuple, PyType};
+use pyo3::types::{PyAny, PyBytes, PyBytesMethods as _, PyTuple, PyType};
 use pyo3::{Bound, Py};
 
 use crate::HeapSize;
@@ -139,7 +139,10 @@ impl CellArrayGrid for h3o::CellIndex {
     }
 
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        super::h3::uncompact_cells(cells, super::h3::resolution_from_depth(depth)?)
+        Ok(super::h3::uncompact_cells_unlimited(
+            cells,
+            super::h3::resolution_from_depth(depth)?,
+        ))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -169,8 +172,10 @@ impl CellArrayGrid for crate::grid::s2::cellid::CellId {
     }
 
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        crate::grid::s2::cell_set::uncompact(&crate::grid::s2::cell_set::normalize(cells), depth)
-            .map_err(super::uncompact_budget_err)
+        Ok(crate::grid::s2::cell_set::uncompact_unlimited(
+            &crate::grid::s2::cell_set::normalize(cells),
+            depth,
+        ))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -206,7 +211,7 @@ impl CellArrayGrid for crate::grid::tile::Tile {
     }
 
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        crate::grid::tile::uncompact(&cells, depth).map_err(super::uncompact_budget_err)
+        Ok(crate::grid::tile::uncompact_unlimited(&cells, depth))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -242,7 +247,7 @@ impl CellArrayGrid for crate::grid::geohash::Geohash {
     }
 
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        crate::grid::geohash::uncompact(&cells, depth).map_err(super::uncompact_budget_err)
+        Ok(crate::grid::geohash::uncompact_unlimited(&cells, depth))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -300,20 +305,6 @@ impl PyCellArray {
             return false;
         };
         mask[physical_row(self.selection_ref(), logical)]
-    }
-
-    /// Build a zero-copy logical view over an already validated shared id
-    /// column. Coverage objects use this to expose `.cells` without copying
-    /// their canonical storage.
-    pub(crate) const fn from_shared_ids(
-        kind: GridKind,
-        ids: Arc<[u64]>,
-        selection: RowSelection,
-    ) -> Self {
-        Self {
-            storage: CellStorage::from_shared_ids(kind, ids),
-            selection,
-        }
     }
 
     fn selection_ref(&self) -> RowSelectionRef<'_> {
@@ -437,6 +428,9 @@ impl PyCellArray {
         let mut uniques = Vec::new();
         let mut counts = Vec::new();
         for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                continue;
+            }
             let id = self.id_at(row);
             let slot = match slot_of.entry(id) {
                 Entry::Occupied(entry) => *entry.get(),
@@ -459,6 +453,10 @@ impl PyCellArray {
         let mut uniques = Vec::new();
         let mut codes = Vec::with_capacity(self.len());
         for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                codes.push(-1);
+                continue;
+            }
             let id = self.id_at(row);
             let slot = match slot_of.entry(id) {
                 Entry::Occupied(entry) => *entry.get(),
@@ -478,8 +476,19 @@ impl PyCellArray {
         cells.into_iter().map(GridCell::hash_key).collect()
     }
 
-    fn logical_cells<'a, G: CellArrayGrid + 'a>(&'a self) -> impl ExactSizeIterator<Item = G> + 'a {
-        self.logical_id_iter().map(G::from_validated_id)
+    fn logical_cells<'a, G: CellArrayGrid + 'a>(&'a self) -> impl Iterator<Item = G> + 'a {
+        (0..self.len())
+            .filter(|&logical| !self.is_row_missing(logical))
+            .map(|logical| G::from_validated_id(self.id_at(logical)))
+    }
+
+    fn missing_mask(&self) -> Option<crate::array::missing::MissingMask> {
+        crate::array::missing::MissingMask::from_vec(
+            self.len(),
+            (0..self.len())
+                .map(|row| self.is_row_missing(row))
+                .collect(),
+        )
     }
 
     fn map_logical_cells<G, T>(&self, f: impl FnMut(G) -> T) -> Vec<T>
@@ -496,11 +505,15 @@ impl PyCellArray {
     ) -> PyResult<CellNumpyArrayKind> {
         // Omitted dtype and explicit None both mean the grid default.
         if dtype.is_none_or(pyo3::types::PyAnyMethods::is_none) {
-            return Ok(if self.kind() == GridKind::GeohashCell {
-                CellNumpyArrayKind::Objects
-            } else {
-                CellNumpyArrayKind::Ids
-            });
+            return Ok(
+                if self.kind() == GridKind::GeohashCell
+                    || (0..self.len()).any(|row| self.is_row_missing(row))
+                {
+                    CellNumpyArrayKind::Objects
+                } else {
+                    CellNumpyArrayKind::Ids
+                },
+            );
         }
         let dtype = dtype.expect("checked non-None above");
         let numpy = crate::py::numpy::numpy_module(py)?;
@@ -513,6 +526,11 @@ impl PyCellArray {
             if self.kind() == GridKind::GeohashCell {
                 return Err(GeometryError::new_err(
                     "geohash CellArray has string tokens, not public uint64 ids; use dtype=object or .token",
+                ));
+            }
+            if (0..self.len()).any(|row| self.is_row_missing(row)) {
+                return Err(GeometryError::new_err(
+                    "masked CellArray cannot be exported as uint64",
                 ));
             }
             Ok(CellNumpyArrayKind::Ids)
@@ -555,9 +573,13 @@ impl PyCellArray {
                 )));
             }
             dispatch_cell_grid!(self, G, {
-                self.logical_cells::<G>()
-                    .zip(other.logical_cells::<G>())
-                    .map(|(left, right)| {
+                (0..self.len())
+                    .map(|row| {
+                        if self.is_row_missing(row) || other.is_row_missing(row) {
+                            return false;
+                        }
+                        let left = G::from_validated_id(self.id_at(row));
+                        let right = G::from_validated_id(other.id_at(row));
                         left.contains_cell(right) || (intersects && right.contains_cell(left))
                     })
                     .collect::<Vec<_>>()
@@ -574,8 +596,12 @@ impl PyCellArray {
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
                 let right = G::from_validated_id(other_id);
-                self.logical_cells::<G>()
-                    .map(|left| {
+                (0..self.len())
+                    .map(|row| {
+                        if self.is_row_missing(row) {
+                            return false;
+                        }
+                        let left = G::from_validated_id(self.id_at(row));
                         left.contains_cell(right) || (intersects && right.contains_cell(left))
                     })
                     .collect::<Vec<_>>()
@@ -780,9 +806,14 @@ impl PyCellArray {
     /// -------
     /// bool
     fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
+        if item.is_none() {
+            return (0..self.len()).any(|row| self.is_row_missing(row));
+        }
         self.kind()
             .id_from_value(item)
-            .is_ok_and(|needle| (0..self.len()).any(|row| self.id_at(row) == needle))
+            .is_ok_and(|needle| {
+                (0..self.len()).any(|row| !self.is_row_missing(row) && self.id_at(row) == needle)
+            })
     }
 
     /// Test whether every row hierarchically contains the paired cell.
@@ -801,8 +832,11 @@ impl PyCellArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> gm.CellArray([cell, list(cell.neighbors)[0]]).contains(cell).tolist()
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> gm.CellArray([cell, neighbor]).contains(cell).tolist()
     /// [True, False]
 fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.hierarchy_predicate(py, other, false)
@@ -826,8 +860,11 @@ fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> gm.CellArray([cell, list(cell.neighbors)[0]]).intersects(cell).tolist()
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> gm.CellArray([cell, neighbor]).intersects(cell).tolist()
     /// [True, False]
 fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.hierarchy_predicate(py, other, true)
@@ -856,13 +893,17 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     ///     If no element in the window equals ``value``.
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
     fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
-        let needle = self.kind().id_from_value(value).map_err(|_| {
+        let needle = if value.is_none() {
+            None
+        } else {
+            Some(self.kind().id_from_value(value).map_err(|_| {
             let value = value
                 .repr()
                 .and_then(|repr| repr.extract::<String>())
                 .unwrap_or_else(|_| "value".to_owned());
             PyValueError::new_err(format!("{value} is not in array"))
-        })?;
+            })?)
+        };
         let len = self.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
@@ -876,7 +917,9 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         let stop = stop.map_or(len, clamp);
         if start < stop {
             for row in start..stop {
-                if self.id_at(row) == needle {
+                if needle.is_none() == self.is_row_missing(row)
+                    && needle.is_none_or(|needle| self.id_at(row) == needle)
+                {
                     return Ok(row);
                 }
             }
@@ -899,9 +942,12 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// -------
     /// int
     fn count(&self, value: &Bound<'_, PyAny>) -> usize {
+        if value.is_none() {
+            return (0..self.len()).filter(|&row| self.is_row_missing(row)).count();
+        }
         self.kind().id_from_value(value).map_or(0, |needle| {
             (0..self.len())
-                .filter(|&row| self.id_at(row) == needle)
+                .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)
                 .count()
         })
     }
@@ -919,7 +965,8 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> unique, counts = gm.CellArray([cell, cell]).value_counts()
     /// >>> counts.tolist()
     /// [2]
@@ -954,8 +1001,11 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> codes, unique = gm.CellArray([cell, list(cell.neighbors)[0]]).factorize()
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> codes, unique = gm.CellArray([cell, neighbor]).factorize()
     /// >>> codes.tolist()
     /// [0, 1]
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -972,18 +1022,36 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         clippy::type_complexity,
         reason = "pickle tuple matches CPython reduce contract"
     )]
-    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (Py<PyAny>, String))> {
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (Py<PyAny>, String, Py<PyAny>))> {
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_cell_array"))?
             .unbind();
         let payload = if self.kind() == GridKind::GeohashCell {
-            self.token(py)?
+            let tokens = dispatch_cell_grid!(self, G, {
+                (0..self.len())
+                    .filter(|&row| !self.is_row_missing(row))
+                    .map(|row| G::from_validated_id(self.id_at(row)).token())
+                    .collect::<Vec<_>>()
+            });
+            tokens.into_py_any(py)?
         } else {
-            self.logical_ids_vec().into_py_any(py)?
+            let ids: Vec<u64> = (0..self.len())
+                .filter(|&row| !self.is_row_missing(row))
+                .map(|row| self.id_at(row))
+                .collect();
+            ids.into_py_any(py)?
+        };
+        let mask: Py<PyAny> = if (0..self.len()).any(|row| self.is_row_missing(row)) {
+            let bytes: Vec<u8> = (0..self.len())
+                .map(|row| u8::from(self.is_row_missing(row)))
+                .collect();
+            PyBytes::new(py, &bytes).into_any().unbind()
+        } else {
+            py.None()
         };
         Ok((
             callable,
-            (payload, self.kind().token().to_owned()),
+            (payload, self.kind().token().to_owned(), mask),
         ))
     }
 
@@ -1005,13 +1073,16 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> type(gm.CellArray([cell]).to_numpy()).__name__
     /// 'ndarray'
 fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let owner = slf.clone().into_any();
         let borrowed = slf.borrow();
-        if borrowed.kind() == GridKind::GeohashCell {
+        if borrowed.kind() == GridKind::GeohashCell
+            || (0..borrowed.len()).any(|row| borrowed.is_row_missing(row))
+        {
             return borrowed.object_numpy_array(owner.py());
         }
         if let Some(values) = borrowed.logical_contiguous_ids() {
@@ -1102,10 +1173,13 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             }
         });
         let coords = CoordSeq::from_xy(&points);
-        crate::PyGeometryArray::packed_points(
+        let result = crate::PyGeometryArray::packed_points(
             coords,
             crate::Frame::Crs(crate::wgs84_crs()),
-        )
+        );
+        self.missing_mask().map_or_else(|| result.clone(), |mask| {
+            crate::PyGeometryArray::scatter_present_rows(&result, mask)
+        })
     }
 
     /// Geodesic cell areas in square meters.
@@ -1127,7 +1201,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// True
     #[getter]
     pub(crate) fn area(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let values = map_grid_cells!(self, |cell| cell.area_m2());
+        let values = dispatch_cell_grid!(self, G, {
+            (0..self.len())
+                .map(|row| if self.is_row_missing(row) { f64::NAN } else { G::from_validated_id(self.id_at(row)).area_m2() })
+                .collect()
+        });
         crate::py::numpy::float64_array(py, values)
     }
 
@@ -1138,19 +1216,24 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// GeometryArray
     #[getter]
     pub(crate) fn polygon(&self) -> crate::PyGeometryArray {
-        let shapes = map_grid_cells!(self, |cell| cell.boundary_shape());
-        crate::PyGeometryArray::from_shapes(
-            shapes,
+        let result = crate::PyGeometryArray::from_shapes(
+            dispatch_cell_grid!(self, G, {
+                self.logical_cells::<G>().map(crate::grid::cell::GridCell::boundary_shape).collect()
+            }),
             crate::Frame::Crs(crate::wgs84_crs()),
-        )
+        );
+        self.missing_mask().map_or_else(|| result.clone(), |mask| {
+            crate::PyGeometryArray::scatter_present_rows(&result, mask)
+        })
     }
 
     /// Number of descendant cells each cell has at ``depth``.
     ///
     /// The columnar mirror of the scalar ``children_count`` — the count only,
     /// without materializing the children (which ``children`` does, as ragged
-    /// rows). Counts are exact and can be very large at a coarse-to-fine
-    /// depth gap, so they are returned as ``uint64``.
+    /// rows). Present-row counts are integer-valued but are represented as
+    /// ``float64``; they are exact only when within float64's integer precision.
+    /// Missing rows are represented by ``NaN`` to preserve row alignment.
     ///
     /// Parameters
     /// ----------
@@ -1161,7 +1244,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// numpy.ndarray
-    ///     Read-only ``uint64`` ``numpy.ndarray`` of shape ``(n,)``.
+    ///     Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``;
+    ///     missing rows are ``NaN``.
     ///
     /// Raises
     /// ------
@@ -1176,10 +1260,13 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> cells = gm.CellArray([cell, neighbor])
     /// >>> cells.children_count(9).tolist()
-    /// [49, 49]
+    /// [49.0, 49.0]
     #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     pub(crate) fn children_count(
         &self,
@@ -1187,13 +1274,19 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let values = dispatch_cell_grid!(self, G, {
-            self.map_logical_cells::<G, _>(|cell| {
-                crate::py::cells::cell_ops::cell_descendant_count(cell, depth, G::parse_depth)
-            })
+            (0..self.len()).map(|row| {
+                if self.is_row_missing(row) {
+                    Ok(f64::NAN)
+                } else {
+                    crate::py::cells::cell_ops::cell_descendant_count(
+                        G::from_validated_id(self.id_at(row)), depth, G::parse_depth,
+                    ).map(|value| value as f64)
+                }
+            }).collect::<Vec<_>>()
         })
         .into_iter()
         .collect::<PyResult<Vec<_>>>()?;
-        crate::py::numpy::uint64_array(py, values)
+        crate::py::numpy::float64_array(py, values)
     }
 
     /// Parent cell of every input cell.
@@ -1212,21 +1305,39 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
-    /// >>> cells.parent(6)[0].token
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> cells = gm.CellArray([cell, neighbor])
+    /// >>> parent = cells.parent(6)[0]
+    /// >>> assert parent is not None
+    /// >>> parent.token
     /// '86283082fffffff'
     pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
-        let ids = dispatch_cell_grid!(self, G, {
-            self.map_logical_cells::<G, _>(|cell| {
+        let present = dispatch_cell_grid!(self, G, {
+            self.logical_cells::<G>().map(|cell| {
                 crate::py::cells::cell_ops::cell_parent(cell, depth, G::parse_depth)
                     .map(GridCell::hash_key)
-            })
+            }).collect::<Vec<_>>()
         })
         .into_iter()
         .collect::<PyResult<Vec<_>>>()?;
-        Ok(Self::from_trusted_ids(kind, ids))
+        let mut ids = Vec::with_capacity(self.len());
+        let mut next = present.into_iter();
+        for row in 0..self.len() {
+            ids.push(if self.is_row_missing(row) {
+                0
+            } else {
+                next.next().expect("present parent count matches")
+            });
+        }
+        Ok(Self::from_trusted_ids_with_missing(
+            kind,
+            ids,
+            (0..self.len()).map(|row| self.is_row_missing(row)).collect(),
+        ))
     }
 
     /// The edge-adjacent cells of every cell, as ragged rows.
@@ -1235,14 +1346,19 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// -------
     /// Groups of CellArray
     ///     One row of neighbors per input cell, in input order. Neighbor
-    ///     counts vary (e.g. H3 pentagons have five), so the result is a
-    ///     Groups, not a rectangular CellArray.
+    ///     counts vary, so the result is a Groups, not a rectangular
+    ///     CellArray.
     #[getter]
     pub(crate) fn neighbors(&self) -> PyResult<crate::py::vectors::Groups> {
         let kind = self.kind();
         let mut builder = crate::grid::CellGroupsBuilder::new("CellArray.neighbors");
         dispatch_cell_grid!(self, G, {
-            for cell in self.logical_cells::<G>() {
+            for row in 0..self.len() {
+                if self.is_row_missing(row) {
+                    builder.push_row(std::iter::empty::<u64>()).map_err(super::cell_limit_err)?;
+                    continue;
+                }
+                let cell = G::from_validated_id(self.id_at(row));
                 builder
                     .push_row(
                         GridCell::neighbors(cell)
@@ -1275,8 +1391,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> len(gm.CellArray([cell]).children(8)[0])
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> children = gm.CellArray([cell]).children(8)[0]
+    /// >>> assert children is not None
+    /// >>> len(children)
     /// 7
     pub(crate) fn children(
         &self,
@@ -1286,7 +1405,12 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let kind = self.kind();
         let mut builder = crate::grid::CellGroupsBuilder::new("CellArray.children");
         dispatch_cell_grid!(self, G, {
-            for cell in self.logical_cells::<G>() {
+            for row in 0..self.len() {
+                if self.is_row_missing(row) {
+                    builder.push_row(std::iter::empty::<u64>()).map_err(super::cell_limit_err)?;
+                    continue;
+                }
+                let cell = G::from_validated_id(self.id_at(row));
                 builder
                     .push_row(
                         cell_children(cell, depth, G::parse_depth)?
@@ -1302,6 +1426,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     }
 
     /// Compact this cell set to the coarsest exact covering.
+    /// Missing rows are skipped; this is a set operation over present cells.
     ///
     /// Parameters
     /// ----------
@@ -1316,8 +1441,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    /// >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
+    /// >>> neighbor = list(cell.neighbors)[0]
+    /// >>> assert neighbor is not None
+    /// >>> cells = gm.CellArray([cell, neighbor])
     /// >>> len(cells.compact(5))
     /// 2
     #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
@@ -1333,6 +1461,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     }
 
     /// Expand this cell set to a uniform depth.
+    /// Missing rows are skipped; this is a set operation over present cells.
     ///
     /// Parameters
     /// ----------
@@ -1347,7 +1476,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> len(gm.CellArray([cell]).uncompact(8))
     /// 7
     #[pyo3(signature = (depth, /), text_signature = "($self, depth, /)")]
@@ -1369,6 +1499,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     }
 
     /// Dissolve this cell set into one outline geometry.
+    /// Missing rows are skipped; this is a set operation over present cells.
     ///
     /// Returns
     /// -------
@@ -1378,7 +1509,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// --------
     /// >>> import gometry as gm
     /// >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    /// >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+    /// >>> cell = gm.h3_cover(p, resolution=7)[0]
+    /// >>> assert cell is not None
     /// >>> gm.CellArray([cell]).to_polygon().geometry_type
     /// 'Polygon'
     fn to_polygon(&self) -> PyResult<crate::Typed> {
@@ -1416,9 +1548,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     ///
     /// Returns
     /// -------
-    /// list of str
-    ///     One canonical token per cell (H3 hex, S2 token, geohash, or tile
-    ///     quadkey).
+    /// list of str or None
+    ///     One canonical token per logical row (H3 hex, S2 token, geohash, or
+    ///     tile quadkey); ``None`` marks a missing row.
     ///
     /// Examples
     /// --------
@@ -1428,21 +1560,73 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[getter]
     pub(crate) fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use pyo3::IntoPyObjectExt as _;
-        let tokens: Vec<String> =
-            map_grid_cells!(self, |cell| { crate::grid::cell::GridCell::token(cell) });
+        let tokens: Vec<Option<String>> = (0..self.len()).map(|row| {
+            if self.is_row_missing(row) { None } else {
+                Some(dispatch_cell_grid!(self, G, {
+                    crate::grid::cell::GridCell::token(G::from_validated_id(self.id_at(row)))
+                }))
+            }
+        }).collect();
         tokens.into_py_any(py)
     }
 
 }
 }
 
-/// Rebuild a pickled CellArray from its public identities and grid token (internal).
+/// Rebuild a pickled CellArray from its public identities and logical mask.
 #[pyfunction]
-pub(crate) fn _unpickle_cell_array(ids: &Bound<'_, PyAny>, grid: &str) -> PyResult<PyCellArray> {
+pub(crate) fn _unpickle_cell_array(
+    ids: &Bound<'_, PyAny>,
+    grid: &str,
+    mask: &Bound<'_, PyAny>,
+) -> PyResult<PyCellArray> {
     let kind = GridKind::parse(grid)?;
-    let ids = super::grid_kind::collect_ids(ids, kind)?;
+    let (ids, missing) = if mask.is_none() {
+        (super::grid_kind::collect_ids(ids, kind)?, None)
+    } else {
+        let mask = mask
+            .cast::<PyBytes>()
+            .map_err(|_| PyValueError::new_err("CellArray pickle mask must be bytes or None"))?;
+        let bytes = mask.as_bytes();
+        let mut present_count = 0;
+        for &value in bytes {
+            match value {
+                0 => present_count += 1,
+                1 => {},
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "CellArray pickle mask must contain only 0 or 1",
+                    ));
+                },
+            }
+        }
+        let present = super::grid_kind::collect_ids(ids, kind)?;
+        if present_count != present.len() {
+            return Err(PyValueError::new_err(
+                "CellArray pickle mask present count does not match identities",
+            ));
+        }
+        let mut logical_ids = Vec::with_capacity(bytes.len());
+        let mut present_index = 0;
+        for &value in bytes {
+            logical_ids.push(if value == 0 {
+                let id = present[present_index];
+                present_index += 1;
+                id
+            } else {
+                0
+            });
+        }
+        (
+            logical_ids,
+            Some(bytes.iter().map(|&value| value == 1).collect()),
+        )
+    };
     Ok(PyCellArray {
-        storage: CellStorage::from_trusted_ids(kind, ids),
+        storage: match missing {
+            Some(missing) => CellStorage::from_trusted_ids_with_missing(kind, ids, missing),
+            None => CellStorage::from_trusted_ids(kind, ids),
+        },
         selection: RowSelection::Identity,
     })
 }
