@@ -48,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          submodules: true
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -95,12 +96,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          submodules: true
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           cache-dependency-glob: |
             pyproject.toml
+            native/**
           cache-suffix: ${{ env.PACKAGE }}
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -194,8 +197,13 @@ jobs:
       CIBW_BUILD_FRONTEND: build[uv]
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
+      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
       CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
+      # Wheels built here are what publish. maturin's PEP 517 default is `--release`,
+      # which is now the fast local profile (thin LTO, unstripped) — publishing that
+      # would ship a ~5x larger artifact. `release-dist` is the published configuration:
+      # fat LTO, one codegen unit, DWARF dropped, symbol table kept for named frames.
+      MATURIN_PEP517_ARGS: "--profile release-dist"
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -206,12 +214,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          submodules: true
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           cache-dependency-glob: |
             pyproject.toml
+            native/**
           enable-cache: true
           cache-suffix: ${{ env.PACKAGE }}
           save-cache: ${{ github.ref == 'refs/heads/main' }}

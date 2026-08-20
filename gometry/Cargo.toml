@@ -13,7 +13,9 @@ include = [
   "/Cargo.toml",
   "/README.md",
   "/LICENSE-*",
-  "/rust-toolchain.toml"
+  "/rust-toolchain.toml",
+  "/native/proj-sys/**",
+  "/native/libtiff-sys/**",
 ]
 
 [lib]
@@ -50,8 +52,9 @@ libsqlite3-sys = { version = "0.35.0", default-features = false, features = [
   "bundled"
 ] }
 numpy = { version = "0.29.0", default-features = false }
-proj-sys = { version = "0.27.0", default-features = false, features = [
-  "bundled_proj"
+proj-sys = { path = "native/proj-sys", default-features = false, features = [
+  "bundled_proj",
+  "tiff",
 ] }
 pyo3 = { version = "0.29.0", default-features = false, features = [
   "macros",

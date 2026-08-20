@@ -31,6 +31,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MONOREPO = ROOT.parent
 LICENSE_SCRIPT = MONOREPO / '.github' / 'scripts' / 'gen_licenses.py'
+LIBTIFF = ROOT / 'native' / 'libtiff-sys' / 'libtiff'
+LIBTIFF_PIN = ROOT / 'native' / 'libtiff-sys' / 'libtiff.pin'
+LIBTIFF_COMMIT = 'd01a94be176f5f6a87f7ee1c0b32e65416aa2b4d'
+LIBTIFF_VERSION = '4.7.2'
 H3_GIT_REV = '2b5bde491449c776cb9c1ae305a5f826f6d8e968'
 H3_SOURCE = f'git+https://github.com/Zaczero/h3o.git?rev={H3_GIT_REV}#{H3_GIT_REV}'
 TEXT_SUFFIXES = frozenset({
@@ -96,6 +100,7 @@ def build_wheel_from_sdist(sdist: Path, out_dir: Path, *, env: dict[str, str]) -
 
 
 def build_wheel(out_dir: Path) -> Path:
+    verify_libtiff_checkout()
     run([sys.executable, str(LICENSE_SCRIPT), 'gometry'], cwd=MONOREPO)
     env = release_build_env()
     maturin = str(Path(sys.executable).with_name('maturin'))
@@ -123,29 +128,93 @@ def _content_leaks(members: dict[str, str]) -> list[str]:
     return leaks
 
 
-def native_notice_markers() -> list[tuple[str, str]]:
-    """Component name and a notice phrase the wheel must reproduce."""
+def native_notice_markers() -> list[tuple[str, str, str]]:
+    """Component name, license ID, and notice phrase the wheel must reproduce."""
     manifest = ROOT / 'native-licenses.toml'
     if not manifest.exists():
         return []
     with manifest.open('rb') as stream:
         components = tomllib.load(stream)['component']
-    markers: list[tuple[str, str]] = []
+    markers: list[tuple[str, str, str]] = []
     for component in components:
         name = component['name']
         if copyright := component.get('copyright'):
-            markers.append((name, copyright))
+            markers.append((name, component['license'], copyright))
             continue
-        with tarfile.open(ROOT / component['archive']) as archive:
-            member = archive.extractfile(component['notice'])
-            if member is None:
-                raise AssertionError(f'native component {name} has no notice member')
-            text = member.read().decode('utf-8')
+        if notice_file := component.get('notice-file'):
+            try:
+                text = (ROOT / notice_file).read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError) as error:
+                raise AssertionError(
+                    f'native component {name} has unreadable notice-file {notice_file!r}'
+                ) from error
+        else:
+            with tarfile.open(ROOT / component['archive']) as archive:
+                member = archive.extractfile(component['notice'])
+                if member is None:
+                    raise AssertionError(
+                        f'native component {name} has no notice member'
+                    )
+                text = member.read().decode('utf-8')
         marker = next((line.strip() for line in text.splitlines() if line.strip()), '')
         if not marker:
             raise AssertionError(f'native component {name} has an empty notice')
-        markers.append((name, marker))
+        markers.append((name, component['license'], marker))
     return markers
+
+
+def verify_libtiff_checkout() -> None:
+    """Reject an uninitialized or altered source before maturin can omit it."""
+    cmake = LIBTIFF / 'CMakeLists.txt'
+    version = LIBTIFF / 'VERSION'
+    hint = 'git submodule update --init gometry/native/libtiff-sys/libtiff'
+    if not cmake.is_file() or not version.is_file():
+        raise AssertionError(f'libtiff submodule is not initialized; run `{hint}`')
+    if version.read_text().strip() != LIBTIFF_VERSION:
+        raise AssertionError(f'libtiff VERSION is not {LIBTIFF_VERSION}')
+    if 'add_subdirectory(build)' not in cmake.read_text():
+        raise AssertionError('libtiff CMakeLists.txt is not the unmodified upstream file')
+    pin = LIBTIFF_PIN.read_text()
+    required_pin = (
+        'url = https://gitlab.com/libtiff/libtiff.git\n'
+        f'commit = {LIBTIFF_COMMIT}\n'
+        'tag = v4.7.2\n'
+        'version = 4.7.2\n'
+    )
+    if pin != required_pin:
+        raise AssertionError('libtiff.pin does not describe the required upstream source')
+    result = subprocess.run(
+        ['git', '-C', str(LIBTIFF), 'rev-parse', 'HEAD'],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip() != LIBTIFF_COMMIT:
+        raise AssertionError(f'libtiff submodule is not pinned to {LIBTIFF_COMMIT}')
+    for diff_args in (('diff', '--exit-code'), ('diff', '--cached', '--exit-code')):
+        dirty = subprocess.run(
+            ['git', '-C', str(LIBTIFF), *diff_args],
+            capture_output=True,
+            text=True,
+        )
+        if dirty.returncode:
+            raise AssertionError(f'libtiff submodule has tracked changes: {dirty.stdout}')
+    status = subprocess.run(
+        ['git', '-C', str(LIBTIFF), 'status', '--porcelain', '--untracked-files=all'],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout:
+        raise AssertionError(f'libtiff submodule has untracked files: {status.stdout}')
+    license_text = (LIBTIFF / 'LICENSE.md').read_bytes()
+    first_start = license_text.index(b'Copyright')
+    first_end = license_text.index(b'# Lempel-Ziv')
+    notices = ROOT / 'native' / 'libtiff-sys' / 'notices'
+    if (notices / 'libtiff-license.md').read_bytes() != license_text[first_start:first_end]:
+        raise AssertionError('libtiff license notice extract differs from upstream LICENSE.md')
+    if (notices / 'libtiff-lzw-license.md').read_bytes() != license_text[first_end:]:
+        raise AssertionError('libtiff LZW notice extract differs from upstream LICENSE.md')
 
 
 def inspect_sdist(path: Path) -> str:
@@ -159,6 +228,7 @@ def inspect_sdist(path: Path) -> str:
             for member in archive.getmembers()
             if member.isfile() and _is_text_member(member.name)
         }
+    inspect_libtiff_sdist_members(names, path)
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
     required = {
         f'{root}/LICENSE-APACHE.md',
@@ -167,6 +237,8 @@ def inspect_sdist(path: Path) -> str:
         f'{root}/Cargo.lock',
         f'{root}/pyproject.toml',
         f'{root}/rust-toolchain.toml',
+        f'{root}/gometry/native/libtiff-sys/libtiff/CMakeLists.txt',
+        f'{root}/gometry/native/libtiff-sys/libtiff/libtiff/tif_lzw.c',
     }
     if missing := sorted(required - set(names)):
         raise AssertionError(f'sdist missing root release files: {missing}')
@@ -217,12 +289,53 @@ def inspect_sdist(path: Path) -> str:
     return metadata_version
 
 
+def libtiff_source_members() -> set[str]:
+    return {
+        path.relative_to(LIBTIFF).as_posix()
+        for path in LIBTIFF.rglob('*')
+        if path.is_file() and '.git' not in path.parts
+    }
+
+
+def inspect_libtiff_sdist(path: Path, expected: set[str] | None = None) -> None:
+    with tarfile.open(path) as archive:
+        inspect_libtiff_sdist_members(archive.getnames(), path, expected)
+
+
+def inspect_libtiff_sdist_members(
+    names: list[str], path: Path, expected: set[str] | None = None
+) -> None:
+    root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
+    prefix = f'{root}/gometry/native/libtiff-sys/libtiff/'
+    members = [
+        name.removeprefix(prefix)
+        for name in names
+        if name.startswith(prefix) and not name.endswith('/')
+    ]
+    if len(members) != len(set(members)):
+        raise AssertionError('sdist contains duplicate libtiff paths')
+    for member in members:
+        path = Path(member)
+        if not member or path.is_absolute() or '..' in path.parts:
+            raise AssertionError(f'sdist contains invalid libtiff path: {member!r}')
+    actual = set(members)
+    expected = libtiff_source_members() if expected is None else expected
+    if actual != expected:
+        raise AssertionError(
+            'sdist libtiff file set differs from initialized submodule: '
+            f'missing={sorted(expected - actual)[:20]}, '
+            f'extra={sorted(actual - expected)[:20]}'
+        )
+
+
 def verify_sdist_dependency_sources(path: Path) -> None:
     """Prove an extracted sdist resolves its pinned dependency sources."""
     expected = {
         'geographiclib-rs': 'registry+https://github.com/rust-lang/crates.io-index',
         'h3o': H3_SOURCE,
-        'proj-sys': 'registry+https://github.com/rust-lang/crates.io-index',
+        # PROJ is vendored so the bundled TIFF-enabled build is reproducible
+        # without resolving a system or registry copy.
+        'proj-sys': None,
     }
     with tempfile.TemporaryDirectory(prefix='gometry-sdist-') as tmp:
         extracted = Path(tmp)
@@ -318,8 +431,12 @@ def inspect_wheel(path: Path) -> str:
     if len(third_party) != 1:
         raise AssertionError(f'expected one third-party license file: {third_party!r}')
     third_party_text = text_members[third_party[0]]
-    for component, marker in native_notice_markers():
-        if component not in third_party_text or marker not in third_party_text:
+    for component, license_id, marker in native_notice_markers():
+        if (
+            component not in third_party_text
+            or f'Licensed under {license_id}.' not in third_party_text
+            or marker not in third_party_text
+        ):
             raise AssertionError(
                 f'wheel third-party license missing native component {component!r}'
             )
@@ -434,6 +551,12 @@ def main() -> int:
         metavar='SDIST',
         help='inspect an sdist, rebuild its wheel, and smoke the clean install',
     )
+    mode.add_argument(
+        '--inspect-libtiff-sdist',
+        type=Path,
+        metavar='SDIST',
+        help='inspect representative libtiff members without requiring generated licenses',
+    )
     args = parser.parse_args()
     if args.installed:
         run([sys.executable, '-W', 'error', '-c', textwrap.dedent(SMOKE)])
@@ -461,6 +584,11 @@ def main() -> int:
             )
             smoke_install(wheel)
         print(f'sdist rebuild smoke OK: {sdist.name}')
+        return 0
+    if args.inspect_libtiff_sdist:
+        sdist = args.inspect_libtiff_sdist.resolve()
+        inspect_libtiff_sdist(sdist)
+        print(f'libtiff sdist inspection OK: {sdist.name}')
         return 0
 
     with tempfile.TemporaryDirectory(prefix='gometry-wheel-build-') as tmp:

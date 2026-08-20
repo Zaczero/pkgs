@@ -14,17 +14,26 @@ compatibility.
 license = "Apache-2.0 OR MIT"
 ```
 
-The full license texts ship with the package as `LICENSE-APACHE.md` and
-`LICENSE-MIT.md` — generated at build time from this declaration by the
-shared `.github/scripts/gen_licenses.py`, never committed.
+The full license texts ship with release packages as `LICENSE-APACHE.md` and
+`LICENSE-MIT.md`. CI generates these files before release builds; for a local release
+build, run the shared `.github/scripts/gen_licenses.py` first. The generated files are
+never committed.
 
 ## Third-party components
 
 gometry statically links a set of third-party Rust crates into its compiled
 extension, each under its own permissive license. The authoritative inventory is
 `LICENSE-THIRD-PARTY.md` — generated from the linked dependency graph and shipped
-inside every wheel under `*.dist-info/licenses/` (alongside `LICENSE-APACHE.md` and
-`LICENSE-MIT.md`); the summary below reflects the 1.0.0 dependency graph.
+inside release wheels under `*.dist-info/licenses/` (alongside `LICENSE-APACHE.md`
+and `LICENSE-MIT.md`); the summary below reflects the 1.0.0 dependency graph.
+
+### Bundled native components
+
+The wheel also bundles the native sources pulled in by the vendored `proj-sys`
+path fork: PROJ 9.6.2, libtiff 4.7.2 (including its LZW codec), and stock zlib
+1.3.2. PROJ and libtiff carry their upstream MIT/BSD-style notices; zlib is
+under the Zlib license. The complete inventory, including exact notice text,
+is authoritative in the generated `LICENSE-THIRD-PARTY.md`, not this summary.
 
 ### Bundled libPROJ (CRS authority backend)
 
@@ -42,10 +51,12 @@ database, parsing, datum/grid pipelines, or general fallback.
 
 ### GeoRust PROJ binding
 
-The CRS boundary uses GeoRust's `proj-sys` binding, distributed under the
-permissive **MIT / Apache-2.0** licenses. Geometry, indexing, grid, and codec
-kernels are gometry-owned Rust implementations; the release does not link
-`geo` or `geo-types`.
+The CRS boundary uses a vendored path fork of GeoRust's `proj-sys` 0.27.0,
+distributed under the permissive **MIT / Apache-2.0** licenses. Its bundled
+TIFF integration is part of the native payload described above; network
+downloads remain disabled.
+Geometry, indexing, grid, and codec kernels are gometry-owned Rust
+implementations; the release does not link `geo` or `geo-types`.
 
 ### PyO3 and maturin
 

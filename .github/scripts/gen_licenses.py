@@ -254,6 +254,26 @@ END OF TERMS AND CONDITIONS
 """
 
 SPDX_TEXTS = {'0BSD': ZERO_BSD, 'MIT': MIT, 'Apache-2.0': APACHE_2_0}
+SPDX_TEXTS['Zlib'] = """{copyright}
+
+# Zlib License
+
+This software is provided 'as-is', without any express or implied warranty. In
+no event will the authors be held liable for any damages arising from the use
+of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it freely,
+subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a product,
+   an acknowledgment in the product documentation would be appreciated but is
+   not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+"""
 FILE_TAGS = {'0BSD': '0BSD', 'MIT': 'MIT', 'Apache-2.0': 'APACHE'}
 
 
@@ -368,17 +388,19 @@ def _native_section(package: str) -> str:
             raise _native_error(package, name, 'version must be a non-empty string')
         if not isinstance(license, str) or license not in accepted:
             raise _native_error(package, name, f'license {license!r} is not accepted')
-        archive, notice, copyright = (
+        archive, notice, notice_file, copyright = (
             component.get('archive'),
             component.get('notice'),
+            component.get('notice-file'),
             component.get('copyright'),
         )
         archive_mode = archive is not None or notice is not None
-        if archive_mode == (copyright is not None) or (archive is None) != (
-            notice is None
-        ):
+        file_mode = notice_file is not None
+        if sum((archive_mode, file_mode, copyright is not None)) != 1:
             raise _native_error(
-                package, name, 'declare exactly one of archive + notice or copyright'
+                package,
+                name,
+                'declare exactly one of archive + notice, notice-file, or copyright',
             )
         if archive_mode:
             if not isinstance(archive, str) or not isinstance(notice, str):
@@ -391,6 +413,25 @@ def _native_section(package: str) -> str:
                 raise _native_error(
                     package, name, f'could not extract {notice!r}: {error}'
                 ) from error
+        elif file_mode:
+            if not isinstance(notice_file, str) or not notice_file:
+                raise _native_error(
+                    package, name, 'notice-file must be a non-empty string'
+                )
+            package_root = (ROOT / package).resolve()
+            notice_path = (package_root / notice_file).resolve()
+            if package_root not in notice_path.parents:
+                raise _native_error(
+                    package, name, 'notice-file must be relative to package root'
+                )
+            try:
+                text = notice_path.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError) as error:
+                raise _native_error(
+                    package,
+                    name,
+                    f'could not read notice-file {notice_file!r}: {error}',
+                ) from error
         else:
             if not isinstance(copyright, str) or not copyright.strip():
                 raise _native_error(
@@ -399,9 +440,6 @@ def _native_section(package: str) -> str:
             try:
                 canonical = SPDX_TEXTS[license]
                 text = canonical.format(copyright=copyright)
-                heading, newline, remainder = text.partition('\n')
-                if heading.startswith('# ') and newline:
-                    text = remainder
                 if '{copyright}' not in canonical:
                     text = f'{copyright}\n\n{text}'
             except KeyError as error:

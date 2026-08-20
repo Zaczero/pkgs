@@ -63,8 +63,10 @@ dev = [
   "h3",
   "mercantile>=1.2.1",
   "pandas",
+  "pandas-stubs",
   "polars",
   "pyarrow",
+  "pyarrow-stubs",
   "pygeohash",
   "pyproj",
   "pytest>=9.1",
@@ -76,6 +78,7 @@ dev = [
   "s2sphere",
   "scikit-learn",
   "shapely",
+  "types-geopandas",
 ]
 docs = [
   "libcst",
@@ -110,6 +113,9 @@ include = [
   { path = "LICENSE-APACHE.md", format = "sdist" },
   { path = "LICENSE-MIT.md", format = "sdist" },
   { path = "LICENSE-THIRD-PARTY.md", format = "sdist" },
+  { path = "LICENSE-APACHE.md", format = "wheel" },
+  { path = "LICENSE-MIT.md", format = "wheel" },
+  { path = "LICENSE-THIRD-PARTY.md", format = "wheel" },
   { path = "rust-toolchain.toml", format = "sdist" },
 ]
 exclude = [
@@ -178,7 +184,7 @@ exclude = [".venv", ".ruff_cache", "site", "target*"]
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
 # Build inputs only: test changes must not invalidate the built wheel.
-# Key shipped Python/stub sources + explicit native Rust sources — never the
+# Key shipped Python/stub sources + explicit native sources — never the
 # generated ``_lib*.so`` (matched by a bare ``python/gometry/**`` glob and would
 # self-invalidate the uv cache after every maturin develop).
 cache-keys = [
@@ -186,6 +192,21 @@ cache-keys = [
   { file = "Cargo.toml" },
   { file = "Cargo.lock" },
   { file = "src/**/*.rs" },
+  { file = "native/**/*.rs" },
+  { file = "native/**/*.toml" },
+  { file = "native/**/*.pin" },
+  { file = "native/**/*.c" },
+  { file = "native/**/*.cc" },
+  { file = "native/**/*.cpp" },
+  { file = "native/**/*.cxx" },
+  { file = "native/**/*.h" },
+  { file = "native/**/*.hh" },
+  { file = "native/**/*.hpp" },
+  { file = "native/**/*.hxx" },
+  { file = "native/**/*.cmake" },
+  { file = "native/**/*.in" },
+  { file = "native/**/CMakeLists.txt" },
+  { file = "native/**/VERSION" },
   { file = "python/gometry/**/*.py" },
   { file = "python/gometry/**/*.pyi" },
 ]

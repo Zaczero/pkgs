@@ -3,6 +3,9 @@
 # `cargo-about` covers the Cargo dependency graph. Native sources vendored inside
 # `-sys` crates are outside that graph, so they are declared here. A `-sys` crate's
 # own license is a separate obligation from the library it bundles.
+# The zlib source is owned by libz-sys in Cargo's registry rather than this tree;
+# its version and holder are therefore pinned here and checked in the generated
+# payload, not coupled to a fragile registry path scan.
 
 [[component]]
 name     = "PROJ"
@@ -17,3 +20,24 @@ version   = "3.9.1"
 license   = "MIT"
 homepage  = "https://github.com/nlohmann/json"
 copyright = "Copyright (c) 2013-2019 Niels Lohmann"
+
+[[component]]
+name        = "libtiff"
+version     = "4.7.2"
+license     = "libtiff"
+homepage    = "https://libtiff.gitlab.io/libtiff/"
+notice-file = "native/libtiff-sys/notices/libtiff-license.md"
+
+[[component]]
+name        = "libtiff LZW codec"
+version     = "4.7.2"
+license     = "BSD-4-Clause-UC"
+homepage    = "https://libtiff.gitlab.io/libtiff/"
+notice-file = "native/libtiff-sys/notices/libtiff-lzw-license.md"
+
+[[component]]
+name      = "zlib"
+version   = "1.3.2"
+license   = "Zlib"
+homepage  = "https://zlib.net"
+copyright = "Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler"
