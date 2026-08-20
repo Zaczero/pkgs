@@ -81,22 +81,25 @@ postflight evidence (a quiet host is required for a table worth pasting).
 
 ## What the release manifest covers
 
-Six domains (32 logical operations; 31 competitive pairs + one honest S2-only
+Six domains (35 logical operations; 34 competitive pairs + one honest S2-only
 row):
 
 1. **Array construction & I/O** — mixed EWKB round-trip, GeoArrow ingest
    (including BinaryView WKB), coordinate extraction, NumPy point construction.
-2. **Geometry** — prepared contains XY, dwithin, area/length, simplify, buffer,
-   intersection, union_all, coverage_union, is_valid, repair.
+2. **Geometry** — irregular polygon intersects, prepared contains XY, dwithin,
+   area/length, simplify, buffer, intersection, union_all, coverage_union,
+   is_valid, repair.
 3. **CRS & geodesy** — masked `to_crs` (in-core path), vector `crs_transform`,
    geodesic distance and destination.
-4. **Discrete global grids** — H3 cover/compact, adaptive S2 cover (gometry-only),
-   tile bbox cover.
-5. **Spatial index** — join/within, candidates, nearest k=1, tree build.
+4. **Discrete global grids** — geohash encoding, H3 cover/compact, adaptive S2
+   cover (gometry-only), tile bbox cover.
+5. **Spatial index** — one-shot join/within, indexed join/within, candidates,
+   nearest k=1, tree build.
 6. **Real-world workflows** — country GeoJSON parse, ellipsoidal area and
    exterior length.
 
-Competitor rows use Shapely, pyproj, h3-py, GeoPandas, and Mercantile only where
+Competitor rows use Shapely, pyproj, h3-py, GeoPandas, Mercantile, and
+pygeohash only where
 the input, semantics, and output shape are meaningfully comparable. The S2
 adaptive cover row is gometry-only (s2sphere has no equivalent polygon coverer)
 and is excluded from every speedup statistic. A candidate-only index query is
@@ -130,6 +133,30 @@ Treat a `NOISE` verdict as no result. Explain any surprising magnitude before
 keeping the change. Call-level p99 and p99.9 belong to the release resource
 probes, not a nine-block implementation comparison. Every case invocation has
 a 300-second hard timeout, so a broken probe cannot hang the A/B run indefinitely.
+
+### Recorded focused measurements
+
+These implementation measurements use paired, interleaved trials and report
+retired user-mode instructions, not wall-clock time or competitive release-table
+results.
+
+- **Prepared point-in-polygon classification:** for prepared-geometry queries
+  against a 64-edge regular polygon, the lazy 64×64 conservative grid activates
+  at 10,000 probes. Instruction reductions were 82.388% at 10,000 probes,
+  81.273% at 12,000, 78.779% at 16,000, and 74.247% at 24,000. Below that
+  threshold, the deltas at 1, 4,096, 8,000, 9,000, and 9,999 probes were
+  +0.071%, +0.017%, -0.008%, +0.001%, and +0.010%. Grid construction fell from
+  11,140,738 to 833,224 instructions, including marking from 10,554,117 to
+  246,321. `Maybe = 252/4096`, so about 94% of cells had a certified result and
+  avoided exact evaluation.
+- **Hierarchical uncompact:** range-ordered expansion reduced instructions by
+  79.047% for S2 (16 roots to 4,096 leaves), 88.256% for Tile (16 roots to
+  4,096 leaves), and 80.704% for Geohash (8 roots to 8,192 leaves). At 262,144
+  leaves, the reductions were 85.294% for S2 (16 roots), 91.693% for Tile (16
+  roots), and 85.167% for Geohash (8 roots). Already-canonical input measured
+  reductions of 3.196% for S2 (3,072 roots/leaves), 2.081% for Tile (3,072
+  roots/leaves), and 3.134% for Geohash (7,936 roots/leaves). H3 is excluded:
+  it uses `h3o::CellIndex::uncompact`, not this generic path.
 
 ## Reading results
 

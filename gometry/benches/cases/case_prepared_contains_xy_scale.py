@@ -1,9 +1,9 @@
 """bench_ab case: prepared contains_xy probe-count scaling shape.
 
-Prints the median wall-clock of prepared 63-probe contains_xy on a large
-polygon (the pre-fix cliff site). A prepared hierarchical tester is µs-class
-at every count; the free-function MIN_PROBES=64 edge-walk at 63 is ms-class.
-Timing claims belong here, not in pytest.
+Prints the median wall-clock of prepared contains_xy at the measured
+plan-aware crossover on a large polygon. The retained prepared operand uses
+its hierarchical tester when the selected plan is eligible; timing claims
+belong here, not in pytest.
 """
 
 from __future__ import annotations
@@ -28,21 +28,21 @@ def _median_prepared(n: int, *, warm: int = 3, reps: int = 11) -> float:
     rng = np.random.default_rng(0)
     xs = rng.uniform(-1.5, 1.5, n)
     ys = rng.uniform(-1.5, 1.5, n)
-    assert prep.contains_xy(0.0, 0.0) is True
+    assert gm.contains_xy(prep, 0.0, 0.0) is True
     for _ in range(warm):
-        prep.contains_xy(xs, ys)
+        gm.contains_xy(prep, xs, ys)
     samples: list[float] = []
     last = None
     for _ in range(reps):
         t0 = time.perf_counter()
-        last = prep.contains_xy(xs, ys)
+        last = gm.contains_xy(prep, xs, ys)
         samples.append(time.perf_counter() - t0)
     # Untimed postconditions: vector length + origin containment.
     assert last is not None
     arr = np.asarray(last)
     assert arr.shape == (n,) and arr.dtype == np.bool_
-    assert bool(prep.contains_xy(0.0, 0.0)) is True
-    assert bool(prep.contains_xy(10.0, 10.0)) is False
+    assert bool(gm.contains_xy(prep, 0.0, 0.0)) is True
+    assert bool(gm.contains_xy(prep, 10.0, 10.0)) is False
     return statistics.median(samples)
 
 

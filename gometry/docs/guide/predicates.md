@@ -71,10 +71,9 @@ print(panels([(caption, [a.exterior, b]) for caption, b in cases]))
 
 Binary predicates are free functions by design — `gm.contains(left, right)`,
 never `left.contains(right)`. One spelling covers every scalar/array
-combination, and it cannot be misread as mutating or asymmetric. (The
-exceptions are the surfaces built for repeated probing: `PreparedGeometry`
-and the grid coverages carry predicate *methods* because the receiver is the
-accelerated object itself.)
+combination, and it cannot be misread as mutating or asymmetric. A
+`PreparedGeometry` is an operand to these same free functions when repeated
+probing is needed.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

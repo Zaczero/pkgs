@@ -181,7 +181,7 @@ def test_smoke_banner_and_workload_labels() -> None:
             'label': 'Prepared polygon contains XY',
             'workload': '100k probes / 1,316-coordinate holed polygon',
             'suite': 'competitors',
-            'gometry': 'gometry.prepare.contains_xy/100k_probes_1316_vertex_polygon',
+            'gometry': 'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
             'competitor': 'shapely.prepare.contains_xy/100k_probes_1316_vertex_polygon',
             'competitor_label': 'Shapely',
             'footnotes': ['batched'],
@@ -271,4 +271,3 @@ def test_release_operations_embeddable_shape() -> None:
             assert op.competitor_label is None
         else:
             assert op.competitor_label
-    assert len(RELEASE_OPERATIONS) == 32

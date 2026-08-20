@@ -22,7 +22,7 @@ zones = gm.GeometryArray([gm.box(i, 0, i + 2, 2) for i in range(4)])
 
 areas = zones.area                                   # float64 ndarray
 mask = gm.intersects(zones, gm.box(1, 1, 3, 3))    # bool_ ndarray
-left, right = gm.SpatialIndex(zones).query_pairs()         # (left, right) int64 ndarrays
+left, right = gm.SpatialIndex(zones).self_join()         # (left, right) int64 ndarrays
 
 print("areas:", areas.dtype, areas)
 print("mask :", mask.dtype, mask)
@@ -92,6 +92,13 @@ For those numeric grids, `np.asarray(cells)` gives raw ids, while
 identity is its base-32 string token, not an implementation integer, so
 `geohash_cells.to_numpy()` and `np.asarray(geohash_cells)` return a read-only
 object array of `GeohashCell` values; use `.token` for strings.
+
+Cell arrays with missing rows are logical sequences of `Cell | None`. Their
+default NumPy export is a read-only object array containing the typed cells and
+`None`; `dtype=object` always has this behavior. Explicit `dtype=uint64` is
+rejected for a masked array, and `copy=False` is rejected whenever an object,
+masked, or gathered export would need materialization. A selection containing
+only present rows can use the ordinary zero-copy numeric export.
 
 ```python exec="on" source="block" result="text"
 import numpy as np

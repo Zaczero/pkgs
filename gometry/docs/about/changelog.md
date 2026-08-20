@@ -56,7 +56,13 @@ is the correct one, and there is one way to do each thing — see
   with automatic prepared/cached acceleration for scalar-vs-array batches.
 - [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM) `relate` / `relate_pattern`.
 - Vectorized `contains_xy` / `intersects_xy` and `dwithin`.
-- Prepared geometry (`prepare`) and prepared point-array predicates with `explain` output.
+- Prepared geometry (`prepare`) and prepared point-array predicates; spatial-index diagnostics
+  are available through `SpatialIndex.explain(...)`.
+- Prepared point-in-polygon queries lazily build a conservative 64×64 cell classification
+  after 10,000 probes, skipping exact evaluation for cells with a certified predicate
+  result. For prepared-geometry queries against a 64-edge regular polygon, paired,
+  interleaved retired user-mode instruction trials reduced instructions by 82.388% at
+  10,000 probes and 74.247% at 24,000; below the threshold, trials stayed at parity.
 
 ### Overlay and constructive geometry
 
@@ -152,11 +158,16 @@ is the correct one, and there is one way to do each thing — see
   `gm.geohash_cover(geom, precision=..., cell_rule=...)`.
 - XYZ web-mercator tiles (full DGGS): `gm.Tile` (quadkey/id/lon-lat constructor),
   and `gm.tile_cover(geom, zoom=..., cell_rule=...)`.
-- All four grids share one cell/coverage shape — identical `cell_rule` semantics and exact
-  membership predicates (`covers` / `contains` / `intersects` and `_xy` spellings), `.cells.polygon`,
-  `.to_polygon()`, `.compact()` / `.uncompact()` / `.with_parents()`, indexing, and slicing —
-  captured by the `gm.Cell` protocol. A packed `CellArray` carries a homogeneous column
-  of cells; ragged results use the CSR-backed `Groups` container.
+- All four grids expose typed cells and packed `CellArray` columns with `cell_rule`-selected
+  candidates, `.polygon`, `.to_polygon()`, `.compact()` / `.uncompact()`, indexing, and
+  slicing, captured by the `gm.Cell` protocol. The source geometry remains caller-owned;
+  free predicates (`covers` / `contains` / `intersects` and `_xy` spellings) own exact
+  relation semantics. Ragged results use the CSR-backed `Groups` container.
+- Generic `CellArray.uncompact()` expands hierarchical cells in range order and avoids
+  normalization when the input is already canonical. H3 keeps its native
+  `h3o::CellIndex::uncompact` path.
+- Geohash cells are identified by string tokens; unlike H3, S2, and tile cells, they do not
+  accept numeric identifiers.
 - Point geocodes: [Open Location Code](https://github.com/google/open-location-code)
   plus codes (`pluscode_encode`, `pluscode_polygon`, `pluscode_shorten`, `pluscode_recover`) and OSM
   shortlinks (`osm_shortlink_encode`, `osm_shortlink_location`).
@@ -196,6 +207,7 @@ is the correct one, and there is one way to do each thing — see
 - `CellArray` — a packed, homogeneous column of discrete-grid cells (H3 / S2 / geohash / tile),
   sharing the cell operation surface columnar-wide.
 - `Groups` — a CSR-backed grouped result (offsets + ids) for ragged group-by output.
+- `Cell.children_count` is part of the public cell protocol.
 
 ### Integration layer
 
@@ -211,6 +223,9 @@ is the correct one, and there is one way to do each thing — see
 - **lonboard** — `gm.explore(...)` renders geometry to an interactive deck.gl map.
 - **Native Arrow** — homogeneous arrays export/import separated `x`/`y`/`z`/`m` GeoArrow children,
   with WKB fallback for mixed types ([`from_arrow`][gometry.from_arrow] / [`to_arrow`][gometry.Geometry.to_arrow]).
+- In pandas integration, `GeometryDtype.__from_arrow__` accepts `pyarrow.Array` and
+  `pyarrow.ChunkedArray`; `GeometryExtensionArray.__setitem__` accepts Python integers,
+  NumPy integer scalars, and pandas `ListLike` indexers.
 
 ### IO and interop
 
@@ -235,7 +250,7 @@ is the correct one, and there is one way to do each thing — see
   `simplify`, `offset_curve`) that stay coordinate-planar.
 - NumPy-native results: every bulk metric/predicate/index/bounds op returns a read-only
   `numpy.ndarray` (`float64` / `bool_` / `int64` / `uint64`); `bounds` is `(n, 4)`, joins and
-  `query_pairs` return a `(left, right)` pair of int64 arrays, and grouped matches use the CSR `Groups`
+  `self_join` return a `(left, right)` pair of int64 arrays, and grouped matches use the CSR `Groups`
   container. Geometry results stay a packed `GeometryArray` (with `to_numpy` bridges
   and `__array_ufunc__ = None`); coordinates expose `coords.x/.y/.z/.m` as float64 ndarrays.
   Strict broadcasting (scalar×array, equal-length pairwise; mismatched lengths raise).
@@ -250,7 +265,7 @@ is the correct one, and there is one way to do each thing — see
 
 - GeoArrow packed layout covers homogeneous XY/XYZ/XYM/XYZM simple and multi arrays plus WKB
   fallback for mixed axes and unsupported families.
-- S2 covers typed cells and exact-classified coverings, not full S2 boolean topology.
+- S2 covers typed cells and explicit cell-selection rules, not full S2 boolean topology.
 - Antimeridian auto-normalization covers topology, metrics, indexing, and prepared paths;
   planar constructive ops (`buffer`, `convex_hull`, `simplify`, `offset_curve`) still need
   an explicit `split_antimeridian` (or projected frame) on crossing input.

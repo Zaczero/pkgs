@@ -143,19 +143,19 @@ print(figure([catchment, *matched, stop], 'neighborhoods intersecting a 500 m ra
 ## 5. Bucket the catchment into grid cells
 
 Finally, cover the catchment with H3 cells — useful for joining against tiled
-datasets or binning at global scale. The [coverage][gometry.H3Coverage] answers
-exact membership itself, not just a bounding box:
+datasets or binning at global scale. Keep the source geometry for exact
+membership checks:
 
 ```python exec="on" source="block" result="text" session="catchment"
 import gometry as gm
-coverage = gm.h3_cover(catchment, resolution=10)
-print(len(coverage.cells), 'H3 cells cover the catchment')
-print('covers the stop:', coverage.covers(stop))
+cells = gm.h3_cover(catchment, resolution=10)
+print(len(cells), 'H3 cells cover the catchment')
+print('covers the stop:', gm.covers(catchment, stop))
 
 ```
 
 ```python exec="on" html="true" session="catchment"
-print(figure([coverage.to_polygon(), catchment], 'H3 resolution-10 coverage'))
+print(figure([*cells.polygon, catchment], 'H3 resolution-10 cells'))
 
 ```
 
@@ -168,7 +168,7 @@ In one page you built a real spatial query using the whole gometry loop:
   never picked "planar vs geodesic" at the call site.
 - **Indexing** — `gm.SpatialIndex` with a bounding-box prefilter and exact refinement.
 - **Predicates** — `intersects` kept only the reachable neighborhoods.
-- **Grids** — an H3 coverage that answers exact membership.
+- **Grids** — an H3 cell cover; use free predicates for exact membership.
 - **Vectorization** — one `GeometryArray` carried every neighborhood at once.
 
 ## Where to go next

@@ -283,8 +283,10 @@ def _compare_points(left: object, right: object | None, context: OracleContext) 
 
 
 def _precondition_prepared_hit_rate() -> None:
+    import gometry as gm
+
     data = prepared_polygon_and_probes()
-    mask = data['gm_prep'].contains_xy(data['xs'], data['ys'])
+    mask = gm.contains_xy(data['gm_prep'], data['xs'], data['ys'])
     rate = float(np.asarray(mask).mean())
     if not (0.40 <= rate <= 0.60):
         raise OracleMismatch(
@@ -482,10 +484,7 @@ def _compare_s2_cover(
     del right
     # left is the coverage or cell array ids
     cells = left
-    if hasattr(cells, 'cells'):
-        cell_arr = cells.cells  # type: ignore[union-attr]
-    else:
-        cell_arr = cells
+    cell_arr = cells
     cell_list = list(cell_arr)  # type: ignore[arg-type]
     ids = np.asarray(
         [int(c.id) for c in cell_list],
@@ -902,7 +901,9 @@ def build_contains_xy() -> PublicCase:
     xs, ys = data['xs'], data['ys']
 
     def gometry_call():
-        return gm_prep.contains_xy(xs, ys)
+        import gometry as gm
+
+        return gm.contains_xy(gm_prep, xs, ys)
 
     def competitor_call():
         import shapely
@@ -910,7 +911,7 @@ def build_contains_xy() -> PublicCase:
         return shapely.contains_xy(sh_poly, xs, ys)
 
     _reg(
-        'gometry.prepare.contains_xy/100k_probes_1316_vertex_polygon',
+        'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
         gometry_call,
     )
     _reg(
@@ -1323,7 +1324,7 @@ def build_h3_cover() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.h3_cover(br, 5, cell_rule='center').cells.to_numpy()
+        return gm.h3_cover(br, 5, cell_rule='center').to_numpy()
 
     def competitor_call():
         return np.asarray(numpy_int.h3shape_to_cells(h3_shape, 5), dtype=np.uint64)
@@ -1352,7 +1353,7 @@ def build_h3_compact() -> PublicCase:
 
     # Common sorted resolution-5 IDs (built outside timing)
     h3_ids = np.sort(
-        gm.h3_cover(br, 5, cell_rule='center').cells.to_numpy().astype(np.uint64)
+        gm.h3_cover(br, 5, cell_rule='center').to_numpy().astype(np.uint64)
     )
     gm_cells = gm.CellArray(h3_ids, type=gm.H3Cell)
 
@@ -1427,7 +1428,7 @@ def build_tile_cover() -> PublicCase:
 
     def pre() -> None:
         tiles = gometry_call()
-        n_tiles = len(tiles.cells)
+        n_tiles = len(tiles)
         if n_tiles != 15_340:
             raise OracleMismatch(
                 'tile cover count', details=f'got {n_tiles}, want 15340'
@@ -1705,7 +1706,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.to_wkb.batch/10k_mixed_ewkb': build_to_wkb,
     'gometry.get_coordinates/100k_vertices_with_index': build_get_coordinates,
     'gometry.points/10k_numpy_xy': build_points,
-    'gometry.prepare.contains_xy/100k_probes_1316_vertex_polygon': build_contains_xy,
+    'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,
     'gometry.intersects/irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,

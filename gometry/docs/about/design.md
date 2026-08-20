@@ -13,6 +13,18 @@ the Python geospatial developer experience around one idea:
 > composes the pieces, and provides a documented migration path without inheriting
 > legacy API baggage.
 
+The following amendments are binding public-API rules. Grid cover factories
+return a `CellArray` for scalar geometry and `Groups` of `CellArray` for geometry
+arrays; coverage objects and interior/boundary partitions are not public API.
+Exact geometry membership uses top-level predicates such as
+`gm.contains(source, probe)`. Prepared geometries are operands accepted on
+either side of top-level predicates and XY predicates; plan- and probe-aware
+selection never builds a tester for linear shapes. Numeric-id arrays expose
+`to_numpy()` and `__array__`, not `values`. CRS metadata collections are
+properties, bulk constructors and operations use `values` for their input
+column, and `__geo_interface__` raises when M or coordinate epoch cannot be
+represented by GeoJSON.
+
 This page is the API constitution — the rules that decide the public surface and
 how it is spelled. The [migration guide](../migrating/index.md) shows how these
 rules cash out against the old stack.
@@ -35,7 +47,7 @@ rules cash out against the old stack.
 5. **Batched/vectorized operations are canonical; scalar calls are convenience.**
 6. **Operations avoid accidental Python loops, object churn, and hidden copies.**
 7. **Earth model is explicit when correctness depends on it.**
-8. **Index/cell/coverage results carry semantics**, not naked low-level values.
+8. **Index and cell results carry semantics**, not naked low-level values.
 9. **Arrow/GeoArrow is the public columnar boundary**, not a beginner concept.
 
 Three carve-outs are deliberate API clarity, not exceptions by accident:
@@ -66,7 +78,7 @@ alphabetical reference lists: `crs_*`, `h3_*`, `s2_*`, `geohash_*`, `tile_*`,
 `pluscode_*`, and `osm_shortlink_*`. Grid families hold factories and set algebra
 (`cover`, `cells`,
 `bounding_cell`, `union`, `intersection`, `difference`); receiver operations stay
-on the cell, `CellArray`, or coverage: `cell.polygon`, `cell.children()`,
+on the cell or `CellArray`: `cell.polygon`, `cell.children()`,
 `cells.compact(depth)`, `cells.to_polygon()`.
 
 ## One canonical spelling per operation
@@ -147,13 +159,11 @@ operators, WKT `str`, format specs, and emptiness truthiness are established
 Python-geometry conventions. Sugar that would *hide* a decision is rejected on the same
 no-footgun grounds: no `bytes(geom)` (which WKB flavor? the CRS would vanish
 silently — say `to_wkb(...)`), no `round(geom, n)` (`quantize` is coordinate
-quantization, not numeric rounding), no coverage set-operators (cell-set vs
-exact-geometry algebra is a real choice — `gm.s2_union` and `set(cov.cells)`
-keep it visible), no interned "forever-alive" empty-geometry singletons
-(identity surprises for no measurable win), coverage slicing returns a
-[`CellArray`][gometry.CellArray] of the visible cells (`cov[i:j]`), never a
-sliced "coverage" object (a partial covering would no longer answer the exact
-predicate it was built for), `SpatialIndex` exposes mapping/iteration helpers
+quantization, not numeric rounding), no cell-set operator aliases (cell-set vs
+exact-geometry algebra is a real choice — `gm.s2_union` and `set(cells)` keep it
+visible), no interned "forever-alive" empty-geometry singletons (identity
+surprises for no measurable win), `CellArray` slicing returns another
+[`CellArray`][gometry.CellArray], and `SpatialIndex` exposes mapping/iteration helpers
 but candidates vs exact answers stay named methods —
 `candidates(...)`/`query(...)`.
 Cross-type `CRS == 4326` (and `CRS == "EPSG:4326"`) is supported for ergonomics,
@@ -197,13 +207,13 @@ idx = gm.SpatialIndex(geoms)
 candidates = idx.candidates(query)
 matches = idx.query(query, predicate='intersects')
 idx.explain(query, predicate='intersects')
-coverage = gm.h3_cover(geom, resolution=9, cell_rule='center')
-(coverage.cell_rule, coverage.interior_cells)
-coverage.covers(points)
+cells = gm.h3_cover(geom, resolution=9, cell_rule='center')
+gm.contains(geom, points)
 
 ```
 
-Coverages and `Groups` are typed objects that carry their own semantics.
+`CellArray` and `Groups` are typed containers. Cover factories return those
+containers directly; source-aware geometry membership stays with free predicates.
 Index results are ordinary `int64` ndarrays — the **method name** encodes the
 stage (`candidates` vs `query` vs `nearest`), not a distinct return type, so a
 candidate set is not silently typed as ground truth.
@@ -267,7 +277,7 @@ three shapes — **numbers**, **geometries**, or **ragged** — not a Python lis
   [`gm.GeometryArray`][gometry.GeometryArray] (also accepts `__geo_interface__` objects).
 - **Ragged** → [`Groups`][gometry.Groups] (CSR). Array-form index
   queries keep one values buffer + offsets; `.values`/`.offsets`/row views are `int64`
-  ndarrays. Joins and `query_pairs` return a plain `(left, right)` pair of int64
+  ndarrays. Joins and `self_join` return a plain `(left, right)` pair of int64
   ndarrays instead of a bespoke pair container.
 
 The rationale:
@@ -415,7 +425,7 @@ A condensed restatement of the rules that govern new API:
   `unit=` override (`gm.area(g) == g.area`); free functions for binary operands
   (`gm.distance(a, b)`); `to_crs(...)` changes the frame.
 - **Index/grid results:** typed and semantic — `candidates` is the prefilter,
-  `query` is refined, coverage answers `covers`/`contains`/`intersects` exactly.
+  `query` is refined, and exact geometry predicates remain top-level functions.
 - **Validation/repair:** `validate()` returns a structured report; `repair` is the
   canonical make-valid name.
 - **IO:** construction is free (`from_wkb`, `from_wkt`, `from_geojson`,

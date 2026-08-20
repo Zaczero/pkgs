@@ -34,7 +34,7 @@ print(type(mask).__name__, mask.tolist())                  # ndarray [True, Fals
 bounds = points.bounds
 print(type(bounds).__name__, bounds.shape, bounds.dtype)   # ndarray (2, 4) float64
 cover = gm.s2_cover(area, level=10, max_cells=None)
-print(cover.cell_rule, cover.covers(points).tolist())      # overlap [True, False]
+print(len(cover), gm.covers(area, points).tolist())         # 1 [True, False]
 
 ```
 
@@ -106,9 +106,8 @@ mappings.
   Rust-owned `GeometryArray`.
 - **CRS-aware metrics**, native by default, with `unit='planar'` / `unit='meters'`
   overrides and first-class coordinate-epoch support.
-- **Exact grid coverage** — H3, S2, geohash, and XYZ tiles share one cell and
-  coverage shape, and answer membership against the source geometry, not a
-  bounding-box superset.
+- **Grid cell covers** — H3, S2, geohash, and XYZ tiles share one typed
+  `CellArray` shape; keep source geometry with the caller for exact predicates.
 - **Spatial index** with explicit candidate vs exact-predicate refinement and
   CRS-aware distance queries.
 - **GeoArrow** packed arrays for homogeneous XY/XYZ/XYM/XYZM geometries, with

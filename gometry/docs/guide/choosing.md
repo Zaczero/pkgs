@@ -15,7 +15,7 @@ glance; each entry links to the full reference.
 | **one** geometry probed by many candidates | the same predicate, many times | [`geom.prepare()`][gometry.Geometry.prepare] — builds the segment index once, every later call reuses it |
 | **many** geometries queried by arbitrary probes | candidate retrieval + exact predicate | [`gm.SpatialIndex(values)`][gometry.SpatialIndex] then [`query(..., predicate=...)`][gometry.SpatialIndex.query] |
 | two whole collections matched row-to-row | a relational join | [`gm.join`][gometry.join] (inner/left semantics, any predicate) |
-| one collection grouped by mutual relationships | connected components under a geometric predicate | build a pair graph with [`gm.join`][gometry.join] / [`SpatialIndex.query_pairs`][gometry.SpatialIndex.query_pairs], then run a graph connected-components algorithm (networkx / scipy.sparse); reserve coordinate clustering ([NumPy handoff](../ecosystem/numpy.md#handing-off-to-scipy-and-scikit-learn)) for point features only |
+| one collection grouped by mutual relationships | connected components under a geometric predicate | build a pair graph with [`gm.join`][gometry.join] / [`SpatialIndex.self_join`][gometry.SpatialIndex.self_join], then run a graph connected-components algorithm (networkx / scipy.sparse); reserve coordinate clustering ([NumPy handoff](../ecosystem/numpy.md#handing-off-to-scipy-and-scikit-learn)) for point features only |
 | a cheap pre-group before exact work | bounding-box candidates only | [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates] |
 
 `prepare()` is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
@@ -96,15 +96,13 @@ print(before_after(with_vertices(off_grid), with_vertices(snapped),
 | the two closest points as a pair | [`nearest_points`][gometry.nearest_points] |
 | shared linework between two lines | [`shared_paths`][gometry.shared_paths] |
 
-## Polygonal `coverage_*` vs cell Coverages
+## Polygonal `coverage_*` vs grid cells
 
 Two different concepts share the word:
 
-- **DGGS coverages** — [`H3Coverage`][gometry.H3Coverage] /
-  [`S2Coverage`][gometry.S2Coverage] / [`GeohashCoverage`][gometry.GeohashCoverage] /
-  [`TileCoverage`][gometry.TileCoverage], built from `gm.h3_cover` /
-  `gm.s2_cover` / `gm.geohash_cover` / `gm.tile_cover`: a set of grid **cells**
-  plus an exact membership predicate over the source geometry.
+- **DGGS cells** — `gm.h3_cover`, `gm.s2_cover`, `gm.geohash_cover`, and
+  `gm.tile_cover` return typed `CellArray` values. Keep the source geometry
+  and use the top-level predicates for exact membership.
 - **A polygonal coverage** — a `GeometryArray` of polygons that tile a region
   without gaps or overlaps (parcels, admin boundaries). Operations on these are
   array methods named `coverage_*`.

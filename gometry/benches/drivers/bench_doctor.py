@@ -271,7 +271,7 @@ _LABEL_PACKAGE: dict[str, str] = {
     's2sphere': 's2sphere',
 }
 
-# Row-name prefix → import name for internal/fallback pairing.
+# Competitor row-name prefix → import name.
 _PREFIX_PACKAGE: dict[str, str] = {
     'shapely': 'shapely',
     'pyproj': 'pyproj',

@@ -1020,7 +1020,7 @@ def gometry_crs_factors() -> list[dict[str, object]]:
 
 def gometry_crs_geodesic() -> list[dict[str, object]]:
     return [
-        gm.CRS(crs).geodesic(lon1, lat1, lon2, lat2, z1=z1, z2=z2)
+        gm.CRS(crs).geodesic_inverse(lon1, lat1, lon2, lat2, z1=z1, z2=z2)
         for crs, lon1, lat1, lon2, lat2, z1, z2 in CRS_GEODESIC_VALUES
     ]
 
@@ -1028,7 +1028,7 @@ def gometry_crs_geodesic() -> list[dict[str, object]]:
 def gometry_crs_geodesic_batch() -> tuple[
     list[float], list[float | None], list[float], list[float]
 ]:
-    result = WGS84_CRS.geodesic(
+    result = WGS84_CRS.geodesic_inverse(
         CRS_GEODESIC_LON1, CRS_GEODESIC_LAT1, CRS_GEODESIC_LON2, CRS_GEODESIC_LAT2
     )
     return (
@@ -1161,7 +1161,7 @@ def gometry_crs_celestial_bodies() -> list[list[dict[str, object]]]:
 
 
 def gometry_crs_non_deprecated() -> list[list[dict[str, object]]]:
-    return [gm.CRS(2037).non_deprecated() for _ in range(CRS_DATABASE_COUNT)]
+    return [gm.CRS(2037).non_deprecated for _ in range(CRS_DATABASE_COUNT)]
 
 
 def gometry_crs_search() -> list[list[dict[str, object]]]:
@@ -1210,7 +1210,7 @@ def gometry_dwithin_pairwise() -> np.ndarray:
 
 
 def gometry_prepared_contains() -> np.ndarray:
-    result = PLANAR_PREPARED.contains(CRS_POINTS)
+    result = gm.contains(PLANAR_PREPARED, CRS_POINTS)
     return result
 
 
@@ -3661,7 +3661,7 @@ def main() -> None:
         gometry_dwithin_pairwise,
     )
     runner.bench_func(
-        'gometry.prepared.contains/polygon_points_10k',
+        'gometry.contains/prepared_polygon_points_10k',
         gometry_prepared_contains,
     )
     runner.bench_func(

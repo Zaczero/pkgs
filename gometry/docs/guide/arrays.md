@@ -180,7 +180,7 @@ Vectorized bulk lanes follow a fixed return contract:
 | Numbers | `float64` / `int64` / `uint64` ndarray | `area`, `distance`, `line_locate`, spatial keys |
 | Masks | `bool_` ndarray | `contains`, `intersects`, `within`, … |
 | Bounds | `(n, 4)` `float64` ndarray | `bounds` rows (`nan` for empty) |
-| Id pairs | `(left, right)` pair of `int64` ndarrays | `join`, `query_pairs` |
+| Id pairs | `(left, right)` pair of `int64` ndarrays | `join`, `self_join` |
 | Ragged matches | [`Groups`][gometry.Groups] (CSR) | array-form `index.query` |
 | Geometries | [`GeometryArray`][gometry.GeometryArray] | `buffer`, `to_crs`, …; overlays via `&` / `|` |
 | Coordinates | [`Coordinates`][gometry.Coordinates] view or [`gm.get_coordinates`][gometry.get_coordinates] | `geom.coords`, packed point columns |
@@ -283,6 +283,19 @@ NumPy arrays, buffers, and empty inputs have no reliable type evidence, so make 
 explicit with `type=gm.H3Cell` (or the corresponding S2/geohash/tile class). Mixed
 cell classes and an explicit `type` that disagrees with a cell object are errors.
 Construction preserves input order and duplicates; `CellArray` is a sequence, not a set.
+Bulk cell factories preserve missing input rows as `None`. Missing rows are
+included by slicing, reversing, and fancy indexing; `None in cells`,
+`cells.count(None)`, and `cells.index(None)` follow normal Python sequence
+semantics, while cell/id searches ignore missing rows. Pickles contain only
+public cell identities plus the logical missing mask, never an internal id
+sentinel.
+
+Row-preserving `CellArray` operations keep one result per logical input row:
+hierarchy predicates return `False` for either missing side, geometry accessors
+retain the geometry-array missing mask, numeric results use `NaN`, `parent`
+retains its mask, ragged hierarchy results contain an empty row, and `token`
+contains `None`. Set-like `compact`, `uncompact`, and `to_polygon` deliberately
+operate on present cells only.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -299,10 +312,11 @@ H3 topological vertices and directed edges are not cells: `H3Cell.vertices` retu
 sequence and uint64 id-column ergonomics but only expose valid topology operations such
 as `vertices.point`, `edges.origin`, `edges.destination`, `edges.line`, and
 `edges.length`. Bulk point→cell construction uses the prefixed plural builders —
-[`gm.h3_cells`][gometry.h3_cells], `gm.s2_cells`, and the geohash/tile twins. Coverage
-objects expose `.cells` as a sequence of cell objects for keys and joins; hierarchy
-transforms on that set may return `CellArray` when the engine can keep a packed id column.
-See [Grids](grids.md) for the full cell/coverage surface.
+[`gm.h3_cells`][gometry.h3_cells], `gm.s2_cells`, and the geohash/tile twins. Grid cover
+factories return `CellArray` for one geometry and `Groups` of `CellArray` for geometry
+arrays; hierarchy transforms on that set may return `CellArray` when the engine can keep
+a packed id column. For exact membership, keep the source geometry separately and use
+free predicates such as `gm.covers` or `gm.contains`.
 
 ## Groups (ragged CSR)
 
@@ -474,14 +488,15 @@ boundary = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 probes = gm.points([21.0, 40.0], [52.0, 10.0], crs=4326)
 
 prepared = boundary.prepare()           # build the edge index once
-print(prepared.contains(probes).tolist())  # array path — no Python loop
+print(gm.contains(prepared, probes).tolist())  # array path — no Python loop
 
 ```
 
-[`PreparedGeometry`][gometry.PreparedGeometry] exposes the full predicate family plus
-`contains_xy` and an `explain` plan. Each accepts a single geometry or an array (returning
-`bool` or a `bool_` ndarray mask) and reuses one cached prepared spatial/segment
-index. Prepare when the
+[`PreparedGeometry`][gometry.PreparedGeometry] is an operand for the free predicate
+family and `contains_xy`; pass it as either argument to `gm.*` (including XY
+predicates), never as a method receiver. These functions accept a single geometry or
+an array (returning `bool` or a `bool_` ndarray mask) and reuse one cached prepared
+spatial/segment index. Prepare when the
 *same* complex geometry is tested against many others; for two arrays, prefer the
 vectorized predicates or a [join](indexing.md).
 

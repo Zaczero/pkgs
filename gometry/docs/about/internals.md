@@ -25,7 +25,7 @@ The Python package is a thin, curated facade over the compiled extension (`_lib`
 | Layer | Role |
 |---|---|
 | `gometry/__init__.py` | The curated top-level surface: constructors, operations, predicates, IO, geometry/index classes, and globally discoverable domain families (`crs_*`, `h3_*`, …). |
-| `gometry/_types.py` | Private support for the stub's precise token, protocol, and structured-return types; only `Cell` and `Coverage` are re-exported at top level. |
+ | `gometry/_types.py` | Private support for the stub's precise token, protocol, and structured-return types; `Cell` is re-exported at top level. |
 | `gometry/_lib.pyi` | Type stub for the compiled extension; the one place typed signatures live. |
 | `gometry/_arrow.py`, `_optional.py`, `_pandas.py`, `_polars.py`, `_geopandas.py`, `_geoparquet.py`, `_viz.py` | Optional, lazily-imported integration glue and shared missing-dependency handling (pyarrow, pandas, polars, GeoPandas, GeoParquet, lonboard). |
 
@@ -39,8 +39,7 @@ unary-method / binary-free placement, and the flat family taxonomy — live in
 
 !!! note "Prefix families are a presentation layer, not a cost layer"
     `gm.h3_cover` / `gm.s2_cover` / `gm.geohash_cover` / `gm.tile_cover` are
-    global family factories that return a coverage from a geometry (a coverage may
-    retain a cheap handle to the source for exact membership). Metric operations
+    global family factories that return a typed cell array from a geometry. Metric operations
     dispatch on the geometry's CRS in the Rust kernel, so the CRS-driven API is
     essentially free at runtime.
 
@@ -182,20 +181,44 @@ print("sample area (m^2):", round(worker(21.0)))
 
 ```
 
+### Prepared point classification
+
+Prepared point-in-polygon batches retain exact predicate semantics while
+avoiding the exact kernel for certified cells. After 10,000 probes, an eligible
+prepared polygonal geometry lazily builds a conservative 64×64 classification
+grid. Cells are `Inside`, `Outside`, or `Maybe`; only `Maybe` cells continue to
+exact evaluation. The grid is therefore a skip structure, not a predicate
+approximation.
+
+### Hierarchical uncompact
+
+Generic `CellArray.uncompact()` walks cell ranges in order and emits leaves
+directly. It normalizes only non-canonical input rather than always sorting a
+leaf set after expansion. Canonicality falls out of a single linear scan: when
+every adjacent pair satisfies `previous.range_max() < next.range_min()`, the
+input is at once sorted, duplicate-free and free of ancestor overlap, so the
+normalize pass is skipped. Input that scan cannot prove canonical is normalized
+anyway, since a false positive would produce wrong output while a false negative
+only costs time. The budget estimate is taken from the raw input before either
+step, so duplicate and overlapping cells still count toward rejection. H3 remains
+separate because `h3o::CellIndex::uncompact` owns that expansion.
+
 ### Shared mutable engines
 
 [`PreparedGeometry`][gometry.PreparedGeometry] is safe to share and query from
 many threads without extra synchronization: it wraps immutable geometry state,
-and its lazy prepared caches use thread-safe slots internally. Grid coverages and
-their immutable cells are likewise safe for concurrent membership queries.
+and its lazy prepared caches use thread-safe slots internally. Grid cover
+factories return caller-owned `CellArray` values for scalar inputs, or `Groups`
+of `CellArray` values for array inputs. Keep the source geometry and use free
+predicates for exact membership; the returned cells do not retain the source.
 
 [`SpatialIndex`][gometry.SpatialIndex] has real mutation through `insert` and
 `remove`. Concurrent query-only use is supported, but callers should serialize
 writes, and serialize any query that must observe a particular write boundary,
 just as they would with any shared mutable index.
 
-Immutable values (`Geometry`, `GeometryArray`, `CRS`, cells, pickle round-trips)
-are safe to share across threads once constructed.
+Immutable values and containers (`Geometry`, `GeometryArray`, `CellArray`,
+`Groups`, `CRS`, and cells) are safe to share across threads once constructed.
 
 ### When to prefer processes
 

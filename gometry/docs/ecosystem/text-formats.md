@@ -55,8 +55,9 @@ print('from EWKB crs:', gm.from_wkb(ewkb).crs)
 
 ### The database boundary
 
-The **portable** binary boundary is ISO WKB (or GeoArrow) with CRS/epoch in side
-metadata. **EWKB** is the PostGIS-compatible option when the peer is PostGIS or
+The **portable** binary boundary is ISO WKB with CRS/epoch in side metadata, or
+GeoArrow with CRS plus gometry's epoch extension when the peer is gometry or
+extension-aware. **EWKB** is the PostGIS-compatible option when the peer is PostGIS or
 another system that documents EWKB SRID support — not a universal "what every
 database expects." gometry core ships **no database adapters**. Keep the boundary
 binary and columnar — write bytes out, read bytes back, and decode the whole
@@ -131,9 +132,9 @@ print("parse:", gm.from_wkt("POINT ZM (1 2 3 4)").coordinate_axes)
 
 [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) (RFC 7946) defines
 positions as `[lon, lat]` with an optional third altitude element. It has **no place
-for M**, and [`to_geojson`][gometry.Geometry.to_geojson] **raises** on an M ordinate by
-default rather than producing a file that silently lost your measure. (Note this
-differs from `__geo_interface__`, which *silently strips* M — see below.)
+for M or coordinate epoch metadata**, and [`to_geojson`][gometry.Geometry.to_geojson]
+**raises** on an M ordinate by default rather than producing a file that silently lost
+your measure. `__geo_interface__` also rejects M and epoch (see below).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -158,10 +159,14 @@ except gm.InvalidGeometryError as e:
     print("M ordinate raises on to_geojson:", type(e).__name__)
 ```
 
-!!! warning "GeoJSON cannot carry M"
-    `to_geojson` always raises on M. Explicitly clear M with `set_m(None)` only
-    when that data loss is intended. For M-preserving interchange (timestamps,
-    route measures), use WKB/EWKB, WKT, or GeoArrow.
+!!! warning "GeoJSON cannot carry M or epoch"
+    `to_geojson` always raises on M, and epoch metadata must be explicitly dropped with
+    `drop_epoch=True`. Clear M with `set_m(None)` and epoch with `set_epoch(None)` only
+    when that data loss is intended. WKB/EWKB preserves M, but neither format can
+     carry coordinate epoch. For lossless M/epoch interchange (timestamps, route
+     measures), use gometry's GeoArrow extension metadata with gometry or an
+     extension-aware consumer; standard GeoArrow metadata alone does not carry
+     epoch.
 
 ## `__geo_interface__`
 
@@ -183,12 +188,14 @@ feat = gm.from_geojson({"type": "Feature", "properties": {}, "geometry": mapping
 print("round-trip:", back.to_wkt(), "| from Feature:", feat.to_wkt())
 ```
 
-!!! note "`__geo_interface__` silently strips M"
-    Unlike `to_geojson` (which raises), the `__geo_interface__` mapping **silently
-    omits M** because the protocol follows GeoJSON, which has no M slot. Z is still
-    included when present. Full ordinates remain on `coords.to_nested()`,
-    [`to_wkt`][gometry.Geometry.to_wkt], and WKB — use those for measure-preserving
-    interchange.
+!!! note "`__geo_interface__` rejects unsupported metadata"
+    The `__geo_interface__` mapping follows GeoJSON and therefore **raises** when M or
+    coordinate epoch is present rather than silently discarding either. Clear them
+    explicitly with `set_m(None)` / `set_epoch(None)` only when loss is intended.
+     WKB/EWKB preserves M, but not coordinate epoch. For lossless M/epoch
+     interchange, use gometry's GeoArrow extension metadata with gometry or an
+     extension-aware consumer; standard GeoArrow metadata alone does not carry
+     epoch.
 
 [`gm.from_geojson`][gometry.from_geojson] is the one entry point for everything
 GeoJSON-shaped: JSON strings, mappings, Features, FeatureCollections, and any object
@@ -255,15 +262,18 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 
 ## Pickle, multiprocessing, and copies
 
-Durable public value types pickle — `Geometry`, `GeometryArray` (packed point, line,
-and polygon columns round-trip as raw coordinate/offset lanes), `CRS`, `H3Cell`, `S2Cell` — with CRS, epoch,
-and Z/M intact, so `multiprocessing`, `concurrent.futures`, joblib, and caching
-layers just work. `copy`/`deepcopy` ride the same protocol. Spatial indexes,
-prepared geometries, and coverages also pickle by serializing their durable input
-state and rebuilding derived acceleration structures on load. Treat unpickling
-those objects as reconstruction work, not a snapshot of warm caches. Lazy views
-such as `Coordinates` and `GeometryParts` are intentionally not serialized;
-materialize them with `get_coordinates()` / `list(geom.parts)` first.
+Pickle applies to durable public value and container types: `Geometry`,
+`GeometryArray` (packed point, line, and polygon columns round-trip as raw
+coordinate/offset lanes), `CellArray`, `Groups`, `CRS`, `H3Cell`, and `S2Cell`.
+Their CRS, epoch, and Z/M metadata remain intact, so `multiprocessing`,
+`concurrent.futures`, joblib, and caching layers just work. `copy`/`deepcopy`
+ride the same protocol. Spatial indexes and prepared geometries serialize their
+durable input state and rebuild derived acceleration structures on load; treat
+unpickling them as reconstruction work, not a snapshot of warm caches. There is
+no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
+containers. `Coordinates` and iterator types remain intentionally
+non-picklable. `GeometryParts` is picklable as an immutable parent view; it is
+reconstructed from its geometry when unpickled.
 
 ```python exec="on" source="block" result="text"
 import pickle
@@ -284,12 +294,12 @@ print(restored == point, restored.crs, restored.epoch)
 | WKT | `to_wkt(output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes (default; `output_dimension=2` drops) | yes (`M`/`ZM` tags) |
 | EWKT | `to_wkt(include_srid=True, output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes (default) | yes |
 | GeoJSON | `to_geojson(include_z=, drop_epoch=True)` | [`from_geojson`][gometry.from_geojson] | declares WGS84 on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
-| `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no | yes (when present) | no (silently stripped) |
-| GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes | yes | yes (packed Z/M children for homogeneous axes; WKB fallback for mixed axes) |
+| `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
+| GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes; WKB fallback for mixed axes) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of `Geometry` | yes (on each geometry) | yes (on each geometry object) | yes | yes |
 | GeoPandas | [`to_geopandas`][gometry.GeometryArray.to_geopandas] | GeoSeries | yes | no (requires `drop_epoch=True` when present) | yes | yes where the peer stores them |
 | polars | [`to_polars`][gometry.GeometryArray.to_polars] | [`from_polars`][gometry.from_polars] | optional (`drop_crs`) | no (requires `drop_epoch=True` when present) | yes (EWKB) | yes (EWKB) |
-| Pickle | `pickle.dumps` | `pickle.loads` | yes | yes | yes | yes (trusted Python only) |
+| Pickle (durable values/containers) | `pickle.dumps` | `pickle.loads` | yes | yes | yes | yes (trusted Python only) |
 
 !!! note "Dimensional empties"
     WKT and WKB preserve empty axes (`POINT Z EMPTY` stays XYZ). GeoJSON has no
@@ -300,14 +310,16 @@ print(restored == point, restored.crs, restored.epoch)
     The coordinate epoch is not representable in (E)WKB, (E)WKT, or GeoJSON, and
     the five lossy serializers (`to_wkb`, `to_wkt`, `to_geojson`, `to_polars`,
     `to_geopandas`) refuse to drop it silently — pass `drop_epoch=True` to
-    acknowledge the loss. [Arrow & storage](arrow.md) is the interoperable
-    columnar/wire format that carries epoch across process boundaries; pandas
-    and pickle also preserve epoch inside trusted Python persistence.
+    acknowledge the loss. [Arrow & storage](arrow.md) carries epoch across
+    gometry-to-gometry process boundaries, or to an extension-aware consumer,
+    using gometry's extension metadata; epoch is not portable standard GeoArrow
+    metadata and other producers may omit it. pandas and pickle also preserve
+    epoch inside trusted Python persistence.
 
 Coming from Shapely? See [Migrating](../migrating/index.md#coming-from-shapely).
 
 ## See also
 
-- [Arrow & storage](arrow.md) — the columnar boundary that also carries epoch, plus GeoParquet and lonboard.
+- [Arrow & storage](arrow.md) — the columnar boundary that carries gometry's epoch extension, plus GeoParquet and lonboard.
 - [DataFrames](dataframes.md) — polars stores the EWKB this page produces.
 - [Ecosystem & interoperability](index.md) — the partner matrix.

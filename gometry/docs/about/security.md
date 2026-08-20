@@ -68,12 +68,12 @@ What gometry **does** guarantee:
   non-conforming release callbacks remain outside the threat model.
 - Coverage factories expose one overridable size knob, `max_cells` (default
   `1_000_000` on H3, S2, geohash, and tile cover; pass `None` for unlimited).
-  S2's adaptive coverer (when `level` is omitted) additionally takes
-  `target_cells` (default `8`) as its approximation target — that is a quality
-  budget, not a hard cap. Parsers impose no flat byte or feature-count ceiling,
+  Parsers impose no flat byte or feature-count ceiling,
   but WKT, WKB, and GeoJSON ingestion reject excessive recursive nesting.
-  Generated-work and result-count limits also protect expansion, grid collection
-  and uncompact, transform-bounds densification, and CRS search. Bare
+  Generated-work and result-count limits also protect expansion, grid collection,
+  transform-bounds densification, and CRS search. `CellArray.uncompact` is a
+  caller-directed, unlimited transform and is not protected by factory
+  result-count limits. Bare
   unsized/infinite input iterables remain deliberately supported without an
   element ceiling (a lying `__len__` only tempers the reservation; it never caps
   or rejects).

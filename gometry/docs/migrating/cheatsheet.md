@@ -55,7 +55,7 @@ Conventions:
 | Shapely | gometry |
 |---|---|
 | `a.contains(b)` / `shapely.contains(a, b)` | [`gm.contains(a, b)`][gometry.contains] |
-| `a.contains_properly(b)` / `prep.contains_properly(b)` | [`gm.contains_properly(a, b)`][gometry.contains_properly] (also prepared, and as an index/join predicate) |
+| `a.contains_properly(b)` / `gm.contains_properly(prep, b)` | [`gm.contains_properly(a, b)`][gometry.contains_properly] (also prepared, and as an index/join predicate) |
 | `a.within(b)` / `shapely.within(a, b)` | [`gm.within(a, b)`][gometry.within] |
 | `a.intersects(b)` / `shapely.intersects(a, b)` | [`gm.intersects(a, b)`][gometry.intersects] |
 | `a.covers(b)` / `a.covered_by(b)` | `gm.covers(a, b)` / `gm.covered_by(a, b)` |
@@ -164,7 +164,7 @@ Conventions:
 | `tree.query(g, predicate=...)` | [`idx.query(g, predicate=...)`][gometry.SpatialIndex.query] | exact refine |
 | `tree.nearest(g)` | [`idx.nearest(g, unit=...)`][gometry.SpatialIndex.nearest] | |
 | `tree.query_nearest(g, exclusive=True)` | `idx.nearest(g, exclusive=True)` | skip self-matches |
-| `prepare(g)` + predicate | `g.prepare().<predicate>(geom)` or `idx.query(g, predicate=...)` | |
+| `prepare(g)` + predicate | `gm.<predicate>(g.prepare(), geom)` or `idx.query(g, predicate=...)` | The prepared geometry may be either operand. |
 
 ## pyproj
 
@@ -205,7 +205,7 @@ geodesic, so there is no `Geod` object to construct.
 | `g.geometry_area_perimeter(...)` | `poly.area` / `poly.length` | |
 | `g.npts(...)` | `gm.point_between(a, b, 0.5, normalized=True)` / `gm.CRS(4326).geodesic_interpolate(...)` | |
 | geographic meter buffer | `point.buffer(meters)` on a geographic CRS (local-projection approximation) | |
-| non-WGS 84 ellipsoid | `gm.CRS(code).geodesic(...)` / `.geodesic_direct(...)` / `.geodesic_interpolate(...)`; `geom.area` / `geom.length` under that CRS | |
+| non-WGS 84 ellipsoid | `gm.CRS(code).geodesic_inverse(...)` / `.geodesic_direct(...)` / `.geodesic_interpolate(...)`; `geom.area` / `geom.length` under that CRS | |
 
 ## h3-py
 
@@ -213,9 +213,9 @@ geodesic, so there is no `Geod` object to construct.
 |---|---|---|
 | `latlng_to_cell(lat, lng, r)` | `gm.H3Cell(point, resolution=r)` | Pass a `Point`; returns a typed `H3Cell`. |
 | `cell_to_boundary(h)` | `cell.polygon` / `cells.polygon` | Cell → polygon geometry; array form on `CellArray`. |
-| `polygon_to_cells(poly, r)` / `polyfill` | `gm.h3_cover(geom, resolution=r, cell_rule="center").cells` | Rule explicit; default `"overlap"` gives complete-coverage superset keys. |
-| `compact_cells` / `uncompact_cells` | `cells.compact()` / `cells.uncompact(r)` | On `CellArray` and coverages; hierarchy-aware. |
-| per-point exact membership | `coverage.covers(points)` | Built in — exact, no refine step. |
+| `polygon_to_cells(poly, r)` / `polyfill` | `gm.h3_cover(geom, resolution=r, cell_rule="center")` | Returns a `CellArray`; default `"overlap"` gives complete-coverage superset keys. |
+| `compact_cells` / `uncompact_cells` | `cells.compact()` / `cells.uncompact(r)` | Hierarchy-aware `CellArray` operations. |
+| per-point exact membership | `gm.covers(geom, points)` | Keep the source geometry and refine cell candidates explicitly. |
 
 ## s2sphere
 
@@ -225,8 +225,8 @@ geodesic, so there is no `Geod` object to construct.
 | `Cell(cell_id)` boundary | `cell.polygon` / `cells.polygon` | Cell → polygon geometry; array form on `CellArray`. |
 | `RegionCoverer().get_covering(region)` | `gm.s2_cover(geom, level=..., max_cells=...)` | |
 | `CellUnion` set ops | `gm.s2_union(a, b)` / `gm.s2_intersection(a, b)` / `gm.s2_difference(a, b)` | Hierarchy-aware cell-set algebra. |
-| `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | On `CellArray` and coverages. |
-| coverage membership | `coverage.covers(geometry)` | Exact, built in. |
+| `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | On `CellArray`. |
+| exact geometry predicate for a cell candidate | `gm.covers(geometry, probe)` | Keep the source geometry and call the free predicate explicitly. |
 
 ## rtree / STRtree / GeoPandas
 
@@ -248,7 +248,7 @@ geodesic, so there is no `Geod` object to construct.
 | `geohash.decode(token)` | `cell.center` | Cell centroid as a `Point`. |
 | `geohash.bbox(token)` | `cell.polygon.bounds` | |
 | `geohash.neighbors(token)` | `cell.neighbors` | 8-neighborhood, seam-wrapping. |
-| coverage of a polygon | `gm.geohash_cover(geom, precision=p).cells` | Cell set exact w.r.t. `cell_rule`; membership exact vs source. |
+| coverage of a polygon | `gm.geohash_cover(geom, precision=p)` | Returns candidate `CellArray` keys; keep the source geometry and use free predicates (`gm.covers` / `gm.contains` / `gm.intersects`) for exact relations. |
 
 ## mercantile
 
@@ -259,7 +259,7 @@ geodesic, so there is no `Geod` object to construct.
 | `mercantile.quadkey_to_tile(qk)` | `gm.Tile(qk)` | |
 | `mercantile.bounds(tile)` | `tile.polygon.bounds` | Tile footprint bounds. |
 | `mercantile.parent/children(tile)` | `tile.parent()` / `tile.children()` | |
-| `mercantile.tiles(*bbox, zooms)` | `gm.tile_cover(geom, zoom=z).cells` | Cell set exact w.r.t. `cell_rule`; membership via `cover.covers` is exact vs source (cells ≠ the region). |
+| `mercantile.tiles(*bbox, zooms)` | `gm.tile_cover(geom, zoom=z)` | Cell set exact w.r.t. the selected factory rule; refine candidates against the source geometry. |
 
 ## polyline / openlocationcode / OSM shortlink
 

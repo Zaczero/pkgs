@@ -63,7 +63,7 @@ print("nearby neighborhood rows:", nearby.tolist())
 
     ---
 
-    H3 & S2 coverages with explicit `cell_rule` and built-in exact membership, spatial indexing with
+    H3 & S2 cell covers with explicit `cell_rule`, spatial indexing with
     `explain`, and millimeter-accurate [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
 
     [:octicons-arrow-right-24: Discrete grids](guide/grids.md)
@@ -88,14 +88,14 @@ There is no "square degrees" footgun to commit.
 
 The hot paths are Rust. Predicates, overlay, buffering, geodesics, and coverage run as
 batched kernels over packed, GeoArrow-compatible buffers — so a million-point `contains`
-is one call, not a Python loop. Grid `cover` factories return coverages with
-exact membership against the source geometry.
+is one call, not a Python loop. Grid `cover` factories materialize typed cell arrays;
+use free geometry predicates for exact source checks.
 
 ### Hard to misuse
 
 `set_crs` declares; `to_crs` transforms — and they can't be confused. Spatial indexes
 expose `candidates` vs `query` (exact refine) instead of hiding the prefilter. Grid
-coverages carry their `cell_rule` and exact membership predicates so you never mistake a
+cover factories materialize cells with an explicit `cell_rule`; use free predicates so you never mistake a
 cover for exact geometry.
 
 ### One spelling per operation

@@ -42,9 +42,9 @@ gometry's design makes the model explicit and lets the pieces compose:
 - **Candidate / refine is first-class.** Spatial indexes expose
   `idx.candidates(...)` (bbox prefilter) and `idx.query(..., predicate=...)`
   (exact refine) as separate, obviously-named operations, plus `idx.explain(...)`.
-- **Coverage answers exactly.** A grid coverage names its `cell_rule` and answers
-  exact membership itself (`covers`/`contains`/`intersects`) — no separate refine
-  step to remember.
+- **Covers materialize cells.** A grid cover names its `cell_rule`; keep the
+  source geometry and use free predicates (`covers`/`contains`/`intersects`)
+  for exact membership.
 
 ## First ten minutes coming from the old stack
 
@@ -147,7 +147,7 @@ split explicit with two method names so you cannot confuse them.
     print("refined:   ", idx.query(area, predicate="contains"))  # exact
     ```
 
-### 5. Grid coverage names its rule — membership is exact
+### 5. Grid covers name their rule
 
 === "h3-py"
 
@@ -163,8 +163,8 @@ split explicit with two method names so you cannot confuse them.
 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     cov = gm.h3_cover(area, resolution=5)
-    print("cell_rule:", cov.cell_rule, "| cells:", len(cov.cells))
-    print("exact membership:", cov.covers(gm.Point(21.0, 52.0, crs=4326)))
+    print("cells:", len(cov))
+    print("exact membership:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
     ```
 
 Once these five are reflexes, the per-library sections below and the
@@ -276,7 +276,7 @@ keeps **two acceleration shapes**, not one collapse:
     print("candidates:", idx.candidates(area))                  # bbox prefilter
     print("refined:   ", idx.query(area, predicate="contains")) # exact
     prep = area.prepare()
-    print("prepared contains first point:", prep.contains(pts[0]))
+    print("prepared contains first point:", gm.contains(prep, pts[0]))
     ```
 
 Construction and IO map across directly. Build through the geometry classes
@@ -340,7 +340,7 @@ pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
 WGS 84 ellipsoidal geodesy) maps onto `gm.bearing`, `point.destination`,
 `gm.point_between`, and the geometry metrics. On a **geographic** CRS these compute
 geodesically on the ellipsoid; there is no `Geod` object to construct. For a
-non-WGS 84 ellipsoid, [`gm.CRS`][gometry.CRS]`(code).geodesic(...)` runs the
+non-WGS 84 ellipsoid, [`gm.CRS`][gometry.CRS]`(code).geodesic_inverse(...)` runs the
 geodesic problem on that CRS's own ellipsoid.
 
 === "pyproj Geod"
@@ -382,16 +382,13 @@ symbol map are in the [cheatsheet](cheatsheet.md#pyproj).
 h3-py and s2sphere both turn geometry into compact cell IDs for aggregation,
 joins, partitioning, and coarse pre-filtering. gometry unifies
 [H3](https://h3geo.org/) and [S2](https://s2geometry.io/) under typed cells and
-coverages, and fixes the recurring trap: **polygon coverage is approximate, and
-the rule that picked the cells is usually implicit** — with exact membership then
-your problem. gometry's coverages name the `cell_rule` and answer exact membership
-themselves.
+CellArray, and makes the cell-selection rule explicit. The returned cells are
+candidate keys; keep the source geometry for exact predicates.
 
 ### `polyfill` → `cover` with an explicit rule
 
-h3-py's `polygon_to_cells` (formerly `polyfill`) has an implicit containment rule,
-and exact membership afterwards is a hand-written per-cell geometry check. gometry
-names the rule and builds the exact step in.
+h3-py's `polygon_to_cells` (formerly `polyfill`) has an implicit containment rule.
+gometry names the rule and returns a typed `CellArray`.
 
 === "h3-py"
 
@@ -408,50 +405,53 @@ names the rule and builds the exact step in.
 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     cov = gm.h3_cover(area, resolution=5)
-    print("cell_rule:", cov.cell_rule)   # "overlap" — superset join keys
-    print("cells:", len(cov.cells))
+    print("cells:", len(cov))             # overlap is the default factory rule
+    print("cells:", len(cov))
 
-    # exact membership is built in — no separate refine step to remember:
-    print("covers:", cov.covers(gm.Point(21.0, 52.0, crs=4326)))
+    # Keep the source geometry for exact checks:
+    print("covers:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
     ```
 
 `cell_rule` is `"center"` (h3-py's binning behavior), `"within"` (cells the area
 fully owns), `"overlap"` (default — a complete-coverage superset, safe candidate
-keys), or `"bbox"` (loosest). Exact membership is one method away on the same
-object — `cov.covers(...)` / `.contains(...)` / `.intersects(...)`, plus the
-`_xy` spellings for raw lon/lat streams — always answered against the source
-geometry, never the cells. `gm.s2_cover(geom, level=..., max_cells=...)` is the S2
-analogue.
+keys), or `"bbox"` (loosest). Use the free predicates
+`gm.covers(...)` / `gm.contains(...)` / `gm.intersects(...)` against the source
+geometry when exact geometry answers are needed. `gm.s2_cover(geom, level=...)`
+is the S2 analogue.
 
 ### Cell-set algebra
 
 Every grid family exposes its own prefixed `union` / `intersection` /
-`difference` functions (`h3_*`, `s2_*`, `geohash_*`, `tile_*`). Coverages and
-`CellArray`s also carry `compact()` / `uncompact(...)` for multi-resolution
+`difference` functions (`h3_*`, `s2_*`, `geohash_*`, `tile_*`). `CellArray`s
+also carry `compact()` / `uncompact(...)` for multi-resolution
 rollups. Prefer the family algebra over plain Python `set`s so hierarchy-aware
 behavior stays consistent.
 
 ```python
 import gometry as gm
 
-a = gm.s2_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), level=8).cells
-b = gm.s2_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), level=8).cells
-shared = gm.s2_intersection(a, b)     # also gm.s2_union / gm.s2_difference
+a = gm.s2_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), level=8)
+b = gm.s2_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), level=8)
+a_present = [cell for cell in a if cell is not None]
+b_present = [cell for cell in b if cell is not None]
+shared = gm.s2_intersection(a_present, b_present)  # also gm.s2_union / gm.s2_difference
 rollup = shared.compact()             # coarsen full parents to one cell
 
-h3_a = gm.h3_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), resolution=5).cells
-h3_b = gm.h3_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), resolution=5).cells
-_ = gm.h3_union(h3_a, h3_b)
+h3_a = gm.h3_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), resolution=5)
+h3_b = gm.h3_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), resolution=5)
+h3_a_present = [cell for cell in h3_a if cell is not None]
+h3_b_present = [cell for cell in h3_b if cell is not None]
+_ = gm.h3_union(h3_a_present, h3_b_present)
 
 ```
 
-Beyond coverages, the typed cells carry the rest of the ecosystem surface:
+Beyond covering, the typed cells carry the rest of the ecosystem surface:
 `H3Cell` exposes adjacency and local indexing (`neighbors`, `is_neighbor`,
 `local_ij`, `base_cell`), with resolution metadata in the H3 function family
 (`gm.h3_pentagons(resolution)`, `gm.h3_base_cells()`); `.polygon` returns one
 cell's boundary polygon and `cells.polygon` a whole [`GeometryArray`][gometry.GeometryArray].
-The h3-py and s2sphere symbol tables — point → cell, boundaries,
-compact/uncompact, coverage membership — are in the
+The h3-py and s2sphere symbol tables — point → cell, boundaries, and
+compact/uncompact — are in the
 [cheatsheet](cheatsheet.md#h3-py).
 
 ## Coming from rtree & STRtree

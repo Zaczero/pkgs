@@ -95,7 +95,7 @@ is "just numbers", and it is unambiguous precisely because no CRS claims otherwi
 | Topology: contains / intersects / within | `gm.contains(a, b)`, `gm.intersects(a, b)` | XY topology in the coordinates you hold; projection and seam handling can change the realized edges. |
 | **Aggregate** points/polygons into cells | `gm.h3_cover(geom, resolution=...)` | Discrete grid for group-by, heatmaps, rollups. |
 | **Global** geometry without antimeridian pain | `gm.s2_cover(geom, ...)` | Spherical cells, no projection seam. |
-| **Prefilter** before expensive exact predicates | `gm.SpatialIndex(...)`, `gm.h3_cover(geom, ...)` | Candidate keys; exact answers built in. |
+| **Prefilter** before expensive exact predicates | `gm.SpatialIndex(...)`, `gm.h3_cover(geom, ...)` | Candidate keys; apply free predicates to the source geometry. |
 | Change what coordinates **mean** vs. **transform** them | `geom.set_crs(...)` vs. `geom.to_crs(...)` | Declaration is not transformation. |
 
 ## `set_crs` declares, `to_crs` transforms
@@ -115,17 +115,17 @@ source of data that is silently in the wrong place. See the [CRS, units & measur
 
 ## Candidate vs. exact is also explicit
 
-Cell keys are **candidates** — `cell_rule` names the covering rule the coverage was
-built with — while membership questions are answered **exactly** against the source
-geometry. An index likewise separates `candidates(...)` from exact `query(...)`, and
+Cell keys are **candidates** — `cell_rule` names the rule used to build the cell set.
+Keep the source geometry for exact predicates. An index likewise separates
+`candidates(...)` from exact `query(...)`, and
 explains its plan:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 cover = gm.h3_cover(poly, resolution=6)
-print('cell_rule:', cover.cell_rule, '| cells:', len(cover.cells))
-print('exact membership:', cover.covers(gm.Point(21.0, 52.0, crs=4326)))
+print('cells:', len(cover))
+print('exact membership:', gm.covers(poly, gm.Point(21.0, 52.0, crs=4326)))
 pts = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 idx = gm.SpatialIndex(pts)
 for step in idx.explain(poly, predicate='contains'):
@@ -168,8 +168,9 @@ print((a & b).area, (a | b).area)   # & is intersection, | is union
 
 Equality is **value** equality (same CRS, epoch, and exact coordinates), hash
 agrees with it — geometries and arrays key dicts and live in sets — and
-`pickle`/`copy`/`deepcopy` work on every data type (copies of immutable
-values are free), so multiprocessing and caching just work. Geometries,
+`pickle`/`copy`/`deepcopy` apply to durable value and container types (copies of
+immutable values are free), so multiprocessing and caching just work.
+`Coordinates` and iterator types are intentionally non-picklable. Geometries,
 arrays, and CRS support `weakref` for cache workflows; the tiny high-volume
 cell wrappers intentionally do not. Cells sort by their id (`sorted(cells)`);
 for the numeric-id systems (H3, S2, tiles) `int(cell)` bridges to h3-py /

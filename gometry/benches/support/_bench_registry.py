@@ -61,7 +61,7 @@ class ReleaseOperation:
 
 
 # ---------------------------------------------------------------------------
-# Ordered public RELEASE set — 35 logical ops
+# Ordered public RELEASE set — 35 logical ops (34 paired, 1 solo)
 # ---------------------------------------------------------------------------
 
 RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
@@ -126,7 +126,7 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         competitor_label='Shapely',
         footnotes=('batched',),
     ),
-    # --- Geometry — 11 ---
+    # --- Geometry — 12 (including irregular intersects) ---
     ReleaseOperation(
         domain='Geometry',
         label='intersects irregular polygon points',
@@ -142,7 +142,7 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         label='Prepared polygon contains XY',
         workload='100k probes / 1,316-coordinate holed polygon',
         suite='competitors',
-        gometry='gometry.prepare.contains_xy/100k_probes_1316_vertex_polygon',
+        gometry='gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
         competitor='shapely.prepare.contains_xy/100k_probes_1316_vertex_polygon',
         competitor_label='Shapely',
         footnotes=('batched',),
@@ -288,7 +288,7 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         competitor_label='pyproj + Shapely + GeoPandas',
         footnotes=('geodesic', 'batched'),
     ),
-    # --- Discrete global grids — 4 ---
+    # --- Discrete global grids — 5 (including geohash encoding) ---
     ReleaseOperation(
         domain='Discrete global grids',
         label='geohash encode tokens',
@@ -338,7 +338,7 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         competitor_label='Mercantile',
         footnotes=('batched',),
     ),
-    # --- Spatial index — 4 ---
+    # --- Spatial index — 5 (including one-shot join) ---
     ReleaseOperation(
         domain='Spatial index',
         label='one-shot join within',

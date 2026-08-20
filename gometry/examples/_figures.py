@@ -160,21 +160,12 @@ def curve_through(
 
 
 def cell_polys(cells: Any) -> list[Any]:
-    """List of per-cell polygons from a coverage, CellArray, or cell iterable.
+    """List of per-cell polygons from a CellArray.
 
-    Prefer the row-aligned ``.polygon`` array (or each cell's ``.polygon``),
-    not the aggregate ``to_polygon()`` coverage dissolve.
+    Use the row-aligned ``.polygon`` array, not the aggregate ``to_polygon()``
+    coverage dissolve.
     """
-    b = getattr(cells, 'polygon', None)
-    if b is not None and not callable(b):
-        return list(b)
-    inner = getattr(cells, 'cells', None)
-    if inner is not None:
-        b = getattr(inner, 'polygon', None)
-        if b is not None and not callable(b):
-            return list(b)
-        return [c.polygon for c in inner]
-    return [c.polygon for c in cells]
+    return list(cells.polygon)
 
 
 def _world_frame(geom: Any) -> list[Any]:

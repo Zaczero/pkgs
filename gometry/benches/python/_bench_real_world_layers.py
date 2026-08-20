@@ -156,7 +156,6 @@ def _representative_lonlat(feat: dict[str, Any]) -> tuple[float, float]:
     if isinstance(rep, dict) and rep.get('type') == 'Point':
         coords = rep['coordinates']
         return float(coords[0]), float(coords[1])
-    # fallback: geometry centroid via gometry
     raise RuntimeError('feature missing representative_point')
 
 
@@ -167,8 +166,7 @@ def country_pois_10k() -> gm.GeometryArray:
         features = load_country_features()
         parts = load_country_parts()
         assert len(features) == 217
-        # 46 * 217 + 18 = 9972 + 18 = 9990? Wait: 46*217 = 9982, +18 = 10000.
-        # 46 per country = 46*217 = 9982; one extra to first 18 → 10000.
+        # 46 per country = 46*217 = 9982; one extra to the first 18 → 10000.
         assert 46 * 217 + 18 == 10_000
 
         xs: list[float] = []

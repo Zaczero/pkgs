@@ -234,13 +234,12 @@ def _jagged_coverage_source(vertices: int) -> gm.Polygon:
 
 
 @cache
-def _coverage_fixture() -> tuple[
-    gm.H3Coverage,
+def _contains_xy_fixture() -> tuple[
+    gm.Geometry,
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
 ]:
     source = _jagged_coverage_source(COVERAGE_VERTEX_COUNT)
-    coverage = gm.h3_cover(source, resolution=8)
     xs = np.array(
         [
             19.4 + (i * 0.6180339887498949 % 1.0) * 3.2
@@ -255,7 +254,7 @@ def _coverage_fixture() -> tuple[
         ],
         dtype='float64',
     )
-    return (coverage, xs, ys)
+    return (source, xs, ys)
 
 
 P10B_LINE = gm.LineString([
@@ -315,8 +314,8 @@ def geometryarray_from_points() -> gm.GeometryArray:
     return gm.GeometryArray(POINT_LIST, crs=4326)
 
 
-def index_query_pairs_dense() -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
-    return DENSE_INDEX.query_pairs(predicate='intersects')
+def index_self_join_dense() -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    return DENSE_INDEX.self_join(predicate='intersects')
 
 
 def _geopandas_fixtures() -> tuple[object, object]:
@@ -359,9 +358,9 @@ def masked_to_crs() -> gm.GeometryArray:
     return MASKED_TO_CRS_POINTS.to_crs(3857)
 
 
-def coverage_contains_xy() -> np.ndarray:
-    coverage, xs, ys = _coverage_fixture()
-    return coverage.contains_xy(xs, ys)
+def polygon_contains_xy() -> np.ndarray:
+    source, xs, ys = _contains_xy_fixture()
+    return gm.contains_xy(source, xs, ys)
 
 
 def distance_3d_segment_bvh() -> np.ndarray:
@@ -400,13 +399,13 @@ def crs_factors_batch() -> dict[str, object]:
 
 def crs_geodesic() -> list[dict[str, object]]:
     return [
-        gm.CRS(crs).geodesic(lon1, lat1, lon2, lat2, z1=z1, z2=z2)
+        gm.CRS(crs).geodesic_inverse(lon1, lat1, lon2, lat2, z1=z1, z2=z2)
         for crs, lon1, lat1, lon2, lat2, z1, z2 in CRS_GEODESIC_VALUES
     ]
 
 
 def crs_geodesic_batch() -> dict[str, object]:
-    return gm.CRS(4326).geodesic(
+    return gm.CRS(4326).geodesic_inverse(
         CRS_GEODESIC_LON1, CRS_GEODESIC_LAT1, CRS_GEODESIC_LON2, CRS_GEODESIC_LAT2
     )
 
@@ -628,7 +627,7 @@ def crs_celestial_bodies() -> list[list[dict[str, object]]]:
 
 
 def crs_non_deprecated() -> list[list[dict[str, object]]]:
-    return [gm.CRS(2037).non_deprecated() for _ in range(CRS_DATABASE_COUNT)]
+    return [gm.CRS(2037).non_deprecated for _ in range(CRS_DATABASE_COUNT)]
 
 
 def crs_search() -> list[list[dict[str, object]]]:
@@ -673,8 +672,8 @@ def main() -> None:
         geometryarray_from_points,
     )
     runner.bench_func(
-        'gometry.index.query_pairs/dense_2k',
-        index_query_pairs_dense,
+        'gometry.index.self_join/dense_2k',
+        index_self_join_dense,
     )
     runner.bench_func(
         'gometry.from_pandas.extension/10k',
@@ -699,8 +698,8 @@ def main() -> None:
         masked_to_crs,
     )
     runner.bench_func(
-        'gometry.h3_cover.contains_xy/jagged_5k_50k',
-        coverage_contains_xy,
+        'gometry.contains_xy/jagged_5k_50k',
+        polygon_contains_xy,
     )
     runner.bench_func(
         'gometry.distance_3d/128x1024_segments',

@@ -165,7 +165,7 @@ print("structure:", overlap.repair(method="structure").area)  # union: 28
 
 Repair is cheap to call defensively: already-valid input is returned as-is at
 validation cost, on every surface — `geom.repair()`,
-`array.repair()` (valid rows are reused), and `report.repair()`. Z/M
+`array.repair()` (valid rows are reused). Z/M
 ordinates are carried through the rebuild, and the output is deterministic
 byte-for-byte run to run.
 
