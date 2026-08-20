@@ -14,7 +14,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TypedDict
 
-import h2.exceptions
 import pytest
 from h2corn import Config, Server
 from h2corn import _server as server_module
@@ -1816,6 +1815,31 @@ async def _wait_for_worker_count(
         await asyncio.sleep(0.02)
 
 
+async def _wait_for_worker_set(
+    *,
+    supervisor_pid: int,
+    replacement: int,
+    old_workers: set[int],
+    timeout: float = 5.0,
+) -> set[int]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        workers = set(_worker_pids(supervisor_pid))
+        if replacement not in workers:
+            raise AssertionError(
+                f'protected replacement {replacement} was retired; found {workers}'
+            )
+        if workers <= old_workers | {replacement} and len(workers & old_workers) == 1:
+            return workers
+        if loop.time() >= deadline:
+            raise AssertionError(
+                'timed out waiting for the replacement and exactly one original '
+                f'worker; found {workers}'
+            )
+        await asyncio.sleep(0.02)
+
+
 async def _wait_for_path(path: Path, timeout: float = 5.0) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -2361,6 +2385,8 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
     tmp_path: Path,
 ) -> None:
     delay_replacements = tmp_path / 'delay-replacements'
+    replacement_started = tmp_path / 'replacement-started'
+    release_replacement = tmp_path / 'release-replacement'
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
         module_name='scale_down_during_reload_app',
@@ -2374,7 +2400,10 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
                     message = await receive()
                     if message['type'] == 'lifespan.startup':
                         if os.path.exists({os.fspath(delay_replacements)!r}):
-                            await asyncio.sleep(1)
+                            with open({os.fspath(replacement_started)!r}, 'x') as started:
+                                started.write(str(os.getpid()))
+                            while not os.path.exists({os.fspath(release_replacement)!r}):
+                                await asyncio.sleep(0.01)
                         await send({{'type': 'lifespan.startup.complete'}})
                     elif message['type'] == 'lifespan.shutdown':
                         await send({{'type': 'lifespan.shutdown.complete'}})
@@ -2396,39 +2425,31 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
         delay_replacements.write_text('delay\n')
         process.send_signal(signal.SIGHUP)
 
-        # The third child is the replacement, held in lifespan startup for one
-        # second. Scale-down must retire another old worker, never this child.
-        await _wait_for_worker_count(supervisor_pid=process.pid, count=3)
+        # The third child records its PID then blocks in lifespan startup.
+        # Scale-down must retire an old worker, never this unready replacement.
+        await _wait_for_path(replacement_started)
+        replacement = int(replacement_started.read_text())
+        assert set(
+            await _wait_for_worker_count(supervisor_pid=process.pid, count=3)
+        ) == old_workers | {replacement}
         process.send_signal(signal.SIGTTOU)
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + 0.5
-        served = 0
-        while loop.time() < deadline:
-            try:
-                status, body = await asyncio.wait_for(
-                    h2_request(port=port), timeout=0.3
-                )
-            except (h2.exceptions.ProtocolError, OSError, TimeoutError):
-                # A connection opened into the scale-down window can receive
-                # the retiring worker's GOAWAY before its request is answered
-                # (the h2 client then refuses to send on a closed connection),
-                # or be refused outright. That is what a graceful retirement
-                # looks like from outside, and a real client retries. The claim
-                # under test is about *which* worker answers, so only answered
-                # requests count — and at least one must be.
-                continue
-            served += 1
-            assert status == 200
-            assert int(body) in old_workers
-        assert served, 'no request was answered during scale-down'
+        remaining_workers = await _wait_for_worker_set(
+            supervisor_pid=process.pid,
+            replacement=replacement,
+            old_workers=old_workers,
+        )
+        [serving_old_worker] = remaining_workers & old_workers
+        status, body = await h2_request(port=port)
+        assert (status, int(body)) == (200, serving_old_worker)
 
+        release_replacement.write_text('release\n')
         [final_worker] = await _wait_for_worker_count(
             supervisor_pid=process.pid,
             count=1,
             timeout=6,
         )
-        assert final_worker not in old_workers
+        assert final_worker == replacement
         status, body = await _wait_for_h2_body_any(port=port, timeout=5)
         assert (status, int(body)) == (200, final_worker)
         assert process.returncode is None

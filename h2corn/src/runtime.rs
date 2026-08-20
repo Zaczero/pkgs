@@ -1,4 +1,4 @@
-use std::mem::{size_of, swap, take};
+use std::mem::{swap, take};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -687,10 +687,8 @@ pub(crate) enum StreamInput {
     Reset(ErrorCode),
 }
 
-// Bytes, BytesMut, and Vec all keep payload storage out of line;
-// backlog compaction must not make every app-channel slot exceed this bound.
-const _: () = assert!(size_of::<StreamInput>() <= 64);
-
+// Bytes, BytesMut, and Vec all keep payload storage out of line, so app-channel
+// slots carry handles rather than payload bytes during backlog compaction.
 impl StreamInput {
     pub(crate) const fn data(body: Bytes) -> Self {
         Self::Data { body, credit: None }

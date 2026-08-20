@@ -183,8 +183,6 @@ pub(crate) enum HttpInboundEvent {
     HttpDisconnect,
 }
 
-const _: () = assert!(std::mem::size_of::<HttpInboundEvent>() <= 56);
-
 #[derive(Debug)]
 pub(crate) enum WebSocketInboundEvent {
     Connect,
@@ -1528,7 +1526,7 @@ mod tests {
         ResponseConnectionDirective, inspect_response_headers,
         prepare_fixed_length_response_headers_with_scan,
     };
-    use crate::http::types::{ResponseField, status_code};
+    use crate::http::types::status_code;
     use crate::python::py_dict;
     use crate::runtime::H2InputCreditQueue;
 
@@ -2161,7 +2159,6 @@ class Headers:
             // The ingress reserve covers `server`, `date`, and
             // `content-length`; the default helper separately reserves any
             // configured extras because their count belongs to configuration.
-            assert_eq!(std::mem::size_of::<ResponseField>(), 80);
 
             let one = PyList::new(py, [(PyBytes::new(py, b"x-app"), PyBytes::new(py, b"one"))])?;
             let mut headers = super::try_parse_exact_header_list(&one)

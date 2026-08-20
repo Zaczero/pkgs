@@ -6,6 +6,7 @@ that ignores one desynchronizes.
 """
 
 import asyncio
+import contextlib
 import sys
 from typing import Literal
 
@@ -81,6 +82,8 @@ async def _h2_exchange(app, path: bytes = b'/'):
                 await writer.drain()
         finally:
             writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
     return events, bytes(body)
 
 
@@ -237,6 +240,7 @@ async def test_a_hint_after_the_final_body_does_not_destroy_the_response() -> No
         await writer.drain()
         raw = await asyncio.wait_for(reader.read(), timeout=5)
         writer.close()
+        await writer.wait_closed()
 
     body = raw.split(b'\r\n\r\n', 1)[1]
     # Terminating chunk and trailer section both present.

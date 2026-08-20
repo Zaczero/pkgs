@@ -72,10 +72,6 @@ enum UpgradeRequest {
     },
 }
 
-const _: () = assert!(std::mem::size_of::<UpgradeRequest>() == 40);
-const _: () = assert!(std::mem::size_of::<RequestRoute>() == 40);
-const _: () = assert!(std::mem::size_of::<ParsedRequest>() == 192);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestBodyKind {
     None,

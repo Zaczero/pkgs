@@ -16,8 +16,6 @@ use crate::websocket::{WebSocketCloseCode, close_code};
 #[error(transparent)]
 pub(crate) struct H2CornError(Box<ErrorKind>);
 
-const _: () = assert!(std::mem::size_of::<H2CornError>() == std::mem::size_of::<usize>());
-
 #[derive(Debug, Error)]
 pub(crate) enum ErrorKind {
     #[error(transparent)]

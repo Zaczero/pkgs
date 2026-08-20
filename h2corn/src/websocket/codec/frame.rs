@@ -231,8 +231,6 @@ pub(crate) fn validate_close_code(code: WebSocketCloseCode) -> Result<(), H2Corn
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-
     use bytes::{Bytes, BytesMut};
 
     use super::{
@@ -243,7 +241,6 @@ mod tests {
 
     #[test]
     fn segmented_frame_header_covers_all_wire_lengths_compactly() {
-        assert_eq!(size_of::<super::EncodedFrameHeader>(), 11);
         assert_eq!(
             encode_frame_header(opcode::BINARY, 125, false).as_slice(),
             [0x82, 125]

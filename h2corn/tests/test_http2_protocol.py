@@ -2347,6 +2347,8 @@ async def test_window_update_on_a_server_stream_id_is_a_protocol_error() -> None
             frames = await read_raw_h2_frames(reader)
         finally:
             writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     goaway = [frame for frame in frames if frame[0] == 0x07]
     assert goaway, f'expected GOAWAY, saw {[frame[0] for frame in frames]}'
@@ -2601,6 +2603,7 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
             growth = _resident_kib() - before
         finally:
             writer.close()
+            await writer.wait_closed()
 
     # The PING ack is the read's terminal condition above, so asserting it here
     # would be vacuous.
@@ -2663,6 +2666,7 @@ async def test_header_only_responses_retain_no_more_than_body_responses() -> Non
                 return _resident_kib() - before
             finally:
                 writer.close()
+                await writer.wait_closed()
 
     # The body-bearing run goes first: it warms every allocator arena the
     # two share, so what the second run adds is attributable to it rather
@@ -2739,6 +2743,7 @@ async def test_a_rejected_header_block_keeps_the_hpack_table_in_step() -> None:
                         terminated = True
         finally:
             writer.close()
+            await writer.wait_closed()
 
     assert not terminated, 'the connection was torn down by the rejection'
     assert statuses[1] == 431

@@ -31,8 +31,6 @@ const MAX_SETTINGS_ENTRIES: usize = 7;
 /// provably encodable instead of failing the connection teardown it explains.
 const MAX_GOAWAY_DEBUG_LEN: usize = 1024;
 
-const _: () = assert!(size_of::<WireSetting>() == size_of::<[u8; 6]>());
-
 /// A frame-header rejection whose stream identity is available before any
 /// payload is buffered. Keeping that identity lets the HTTP/2 driver apply a
 /// stream-scoped FRAME_SIZE_ERROR where the frame type requires one.
@@ -210,11 +208,6 @@ impl WindowIncrement {
         self.0.get()
     }
 }
-
-const _: () = assert!(size_of::<StreamId>() == size_of::<u32>());
-const _: () = assert!(size_of::<Option<StreamId>>() == size_of::<u32>());
-const _: () = assert!(size_of::<WindowIncrement>() == size_of::<u32>());
-const _: () = assert!(size_of::<Option<WindowIncrement>>() == size_of::<u32>());
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

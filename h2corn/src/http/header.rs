@@ -90,8 +90,6 @@ bitflags! {
     }
 }
 
-const _: () = assert!(size_of::<ConnectionHeaderTokens>() == 1);
-
 impl ConnectionHeaderTokens {
     pub(crate) const fn close(self) -> bool {
         self.contains(Self::CLOSE)

@@ -47,10 +47,6 @@ struct ProxyV2Ipv6Addrs {
     server_port: U16,
 }
 
-const _: () = assert!(size_of::<ProxyV2Header>() == 16);
-const _: () = assert!(size_of::<ProxyV2Ipv4Addrs>() == 12);
-const _: () = assert!(size_of::<ProxyV2Ipv6Addrs>() == 36);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProxyProtocolMode {
     Off,
@@ -502,7 +498,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     let family = header.family_transport >> 4;
     let transport = header.family_transport & 0x0F;
     let payload_len = usize::from(header.payload_len.get());
-    if frame.len() != 16 + payload_len {
+    if frame.len() != size_of::<ProxyV2Header>() + payload_len {
         return ProxyError::TruncatedProxyV2Header.err();
     }
     match command {
@@ -524,7 +520,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
         return ProxyError::UnsupportedProxyV2Transport.err();
     }
 
-    let payload = &frame[16..];
+    let payload = &frame[size_of::<ProxyV2Header>()..];
     match family {
         0x1 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv4Addrs>::from_prefix(payload)

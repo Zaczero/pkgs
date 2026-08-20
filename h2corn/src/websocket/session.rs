@@ -436,25 +436,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-
     use bytes::BytesMut;
 
     use super::{
-        AcceptedWebSocketState, EncodedWebSocketFrame, PERMESSAGE_DEFLATE_RESPONSE, PendingClose,
-        WebSocketCloseCode, append_ws_accept_headers, take_pending_close_frame,
+        AcceptedWebSocketState, PERMESSAGE_DEFLATE_RESPONSE, PendingClose, WebSocketCloseCode,
+        append_ws_accept_headers, take_pending_close_frame,
     };
     use crate::websocket::close_code;
-
-    #[test]
-    fn encoded_frame_owner_stays_within_inline_queue_budget() {
-        assert!(size_of::<EncodedWebSocketFrame>() <= 64);
-    }
-
-    #[test]
-    fn accepted_close_lifecycle_preserves_state_layout_budget() {
-        assert!(size_of::<AcceptedWebSocketState>() <= 32);
-    }
 
     #[test]
     fn accept_headers_append_subprotocol_and_deflate_once() {

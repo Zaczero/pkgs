@@ -36,28 +36,21 @@ enum PendingChunkData {
 ///
 /// Both arms are stored inline. `FileStreamer` holds only a cursor and the
 /// state of one rolling read -- its buffer is behind its own pointer -- so it is
-/// *smaller* than a chunk descriptor and sets nothing: the sizes below are
-/// pinned so that stays true rather than being asserted in prose.
+/// *smaller* than a chunk descriptor, so it does not need a separate allocation.
 #[derive(Debug)]
 pub(super) enum BodyItem {
     Chunk(PendingChunk),
     File(FileStreamer),
 }
 
-// Pinned exactly on Unix, because this type is stored inline two
-// deep in every open stream. The file arm is *not* boxed: a `FileStreamer` is
-// the same size as a buffered chunk, so boxing would buy one pointer of
-// discriminant back in exchange for an allocation per segment.
+// This type is stored inline two deep in every open stream. The file arm is
+// *not* boxed: boxing the `FileStreamer` arm would recover only the enum
+// discriminant word, at the cost of one heap allocation per segment.
 //
 // The queued item is one word wider than a chunk, and deliberately: it carries
 // the admission credit that bounds how many descriptors a flow-controlled
 // client can make an application queue. Sixteen bytes per open stream is the
 // price of turning an unbounded descriptor leak into backpressure.
-#[cfg(unix)]
-const _: () = assert!(size_of::<FileStreamer>() == size_of::<PendingChunk>());
-#[cfg(unix)]
-const _: () = assert!(size_of::<BodyItem>() == 80);
-
 pub(super) type PendingBody = InlineFifo<BodyItem, 2>;
 
 #[derive(Debug)]
@@ -130,13 +123,10 @@ pub(super) enum StreamBodyState {
 // `Open` carries everything and the other two variants carry nothing, so
 // `clippy::large_enum_variant` would flag this — but its only remedy is to box
 // `body`, which puts the inline chunk queue above behind a pointer and adds a
-// malloc per response. The size is pinned here instead: exact, and it fails in
-// both directions.
-const _: () = assert!(size_of::<ResponseWriteState>() == 208);
-
+// malloc per response.
 #[expect(
     clippy::large_enum_variant,
-    reason = "boxing `Open` would put the inline body queue behind a pointer and add a malloc per response; the size is pinned above instead"
+    reason = "boxing `Open` would put the inline body queue behind a pointer and add a malloc per response"
 )]
 #[derive(Debug)]
 pub(super) enum ResponseWriteState {

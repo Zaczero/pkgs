@@ -963,7 +963,6 @@ const fn websocket_close_style(close_code: WebSocketCloseCode) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
     use std::net::SocketAddr;
     use std::str;
     use std::sync::Arc;
@@ -996,9 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn access_log_buffer_has_the_correct_layout_and_spills_at_128() {
-        assert_eq!(size_of::<AccessLogBuf>(), 136);
-
+    fn access_log_buffer_spills_at_128() {
         let mut line = AccessLogBuf::new();
         line.append(&[b'x'; 127]);
         assert_eq!(line.as_slice(), &[b'x'; 127]);

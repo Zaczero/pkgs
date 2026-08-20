@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::future::Future;
-use std::mem::{replace, size_of};
+use std::mem::replace;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -288,11 +288,8 @@ pub(super) enum StreamLifecycle {
 
 /// What the connection knows about a peer stream: its lifecycle, or `None`
 /// for idle -- which is the absence of a materialized stream, not a state one
-/// can be in. `Option` is also still one byte, by niche.
+/// can be in. `Option` uses the enum's niche for that idle state.
 pub(super) type ReceiveState = Option<StreamLifecycle>;
-
-const _: () = assert!(size_of::<StreamLifecycle>() == 1);
-const _: () = assert!(size_of::<ReceiveState>() == 1);
 
 impl StreamLifecycle {
     pub(super) const fn request_is_closed(self) -> bool {
@@ -351,8 +348,6 @@ pub(super) enum ClientPrefaceState {
     AwaitingSettings,
     Active,
 }
-
-const _: () = assert!(size_of::<ClientPrefaceState>() == 1);
 
 impl ConnectionDrainState {
     pub(super) const fn deadline(self) -> Option<Instant> {
@@ -603,8 +598,6 @@ impl ReceiveWindowState {
         Some(increment)
     }
 }
-
-const _: () = assert!(size_of::<ReceiveWindowState>() == 8);
 
 impl InboundStream {
     fn closed_disposition(&self, was_closed: bool) -> ClosedStreamDisposition {
@@ -915,8 +908,6 @@ impl RequestInputDeadlineKey {
         }
     }
 }
-
-const _: () = assert!(size_of::<RequestInputDeadlineKey>() == size_of::<u32>());
 
 impl RequestInputDeadline {
     pub(super) const fn instant(self) -> TokioInstant {

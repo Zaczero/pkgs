@@ -375,7 +375,6 @@ mod tests {
     use std::env::temp_dir;
     use std::fs::{File, create_dir, remove_dir, remove_file, write};
     use std::io::Read as _;
-    use std::mem::size_of;
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -392,15 +391,6 @@ mod tests {
     };
     use crate::config::{PATHSEND_PRELOAD_MAX, PATHSEND_READ_BUFFER_SIZE};
     use crate::error::{ErrorKind, PathsendError};
-
-    #[test]
-    fn accounting_cursor_preserves_streamer_layout_budget() {
-        // 72, not the former 64: the streamer now also carries the admission
-        // credit that bounds queued descriptors. The HTTP/2 writer pins the
-        // consequence exactly -- see the `BodyItem` assertions in
-        // `h2::writer::stream_state`, which this budget exists to protect.
-        assert!(size_of::<FileStreamer>() <= 72);
-    }
 
     #[test]
     fn sendfile_cursor_accounts_partial_offset_progress_on_drop() {

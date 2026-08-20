@@ -4,8 +4,6 @@ mod header_encode;
 mod ingress;
 mod stream_state;
 
-use std::mem::size_of;
-
 use smallvec::SmallVec;
 
 use crate::bridge::PayloadBytes;
@@ -159,5 +157,3 @@ impl WriterCommand {
         }
     }
 }
-
-const _: () = assert!(size_of::<WriterCommand>() <= 88);

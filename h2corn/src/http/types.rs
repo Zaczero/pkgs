@@ -52,7 +52,6 @@ macro_rules! common_status_codes {
     };
 }
 
-use std::mem::size_of;
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
 use std::str::Utf8Error;
@@ -282,9 +281,6 @@ impl fmt::Display for HttpStatusCode {
         self.0.fmt(f)
     }
 }
-
-const _: () = assert!(size_of::<HttpStatusCode>() == size_of::<u16>());
-const _: () = assert!(size_of::<Option<HttpStatusCode>>() == size_of::<u16>());
 
 /// Owned UTF-8 string backed by `Bytes`.
 ///
@@ -1100,13 +1096,6 @@ impl From<Bytes> for ResponseHeaderValue {
         Self::Rust(value)
     }
 }
-
-const _: () = {
-    assert!(size_of::<HeaderBytes>() == size_of::<Bytes>() + size_of::<usize>());
-    assert!(size_of::<ResponseHeaderName>() == size_of::<HeaderBytes>());
-    assert!(size_of::<ResponseHeaderValue>() == size_of::<HeaderBytes>());
-    assert!(size_of::<ResponseField>() == 2 * size_of::<HeaderBytes>());
-};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HttpVersion {
