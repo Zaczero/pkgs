@@ -43,11 +43,12 @@ def _stub_root(cfg: StubConfig) -> Path:
 
 def collect_validity_errors(cfg: StubConfig) -> list[str]:
     """Type-check the stub file with mypy; any diagnostic is an error."""
-    from mypy import api
-
     with TemporaryDirectory() as cache_dir:
         command = [
-            str(cfg.stub_path),
+            sys.executable,
+            '-m',
+            'mypy',
+            *(str(path) for path in (cfg.mypy_targets or (cfg.stub_path,))),
             '--no-error-summary',
             '--no-color-output',
             '--soft-error-limit=-1',
@@ -56,10 +57,17 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
         ]
         if cfg.mypy_config is not None:
             command += ['--config-file', str(cfg.mypy_config)]
-        stdout, stderr, status = api.run(command)
-    if status == 0:
+        result = subprocess.run(
+            command,
+            cwd='/tmp',  # noqa: S108 - neutral cwd is part of the gate contract
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, 'MYPYPATH': str(_stub_root(cfg)), 'PYTHONPATH': ''},
+        )
+    if result.returncode == 0:
         return []
-    output = (stdout + stderr).strip()
+    output = (result.stdout + result.stderr).strip()
     return [line for line in output.splitlines() if line.strip()]
 
 
@@ -67,12 +75,10 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
     """Run ``mypy.stubtest`` on the compiled module against its stub.
 
     The stub resolves via ``MYPYPATH`` pointed at the stub's package root, so
-    the gate checks the working tree even under an editable install. The child
-    inherits this process's import path, so the module it imports is the module
-    the caller has — a config shim that puts its package on ``sys.path`` (rather
-    than installing it) would otherwise fail here with an import error that
-    looks like a stub problem. Allowlist entries that no longer match fail the
-    run (no rot).
+    the gate checks the working tree even under an editable install. Runtime
+    imports use the installed environment only; ambient ``PYTHONPATH`` and the
+    gate process's mutated ``sys.path`` are excluded. Allowlist entries that no
+    longer match fail the run (no rot).
     """
     command = [sys.executable, '-m', 'mypy.stubtest', cfg.module]
     if cfg.stubtest_allowlist is not None:
@@ -87,8 +93,9 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
         env={
             **os.environ,
             'MYPYPATH': str(_stub_root(cfg)),
-            'PYTHONPATH': os.pathsep.join(path for path in sys.path if path),
+            'PYTHONPATH': '',
         },
+        cwd='/tmp',  # noqa: S108 - neutral cwd is part of the gate contract
     )
     if result.returncode == 0:
         return []

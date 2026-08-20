@@ -64,11 +64,9 @@ CLASS_EXPORTS = frozenset({
     'Cell',
     'CellArray',
     'Coordinates',
-    'Coverage',
     'Extremes',
     'Features',
     'GeohashCell',
-    'GeohashCoverage',
     'Geometry',
     'GeometryArray',
     'GeometryCollection',
@@ -77,7 +75,6 @@ CLASS_EXPORTS = frozenset({
     'GeometryTypeError',
     'Groups',
     'H3Cell',
-    'H3Coverage',
     'H3Edge',
     'H3EdgeArray',
     'H3Vertex',
@@ -93,10 +90,8 @@ CLASS_EXPORTS = frozenset({
     'PolygonizeResult',
     'PreparedGeometry',
     'S2Cell',
-    'S2Coverage',
     'SpatialIndex',
     'Tile',
-    'TileCoverage',
     'TransformError',
     'ValidationReport',
 })
@@ -310,14 +305,14 @@ PAGES: tuple[Page, ...] = (
     Page(
         'grids',
         'Grids & cells',
-        'Grid-generic Cell and Coverage protocols plus the shared columnar CellArray container.',
-        (section('Cell', 'Coverage', 'CellArray'),),
+        'Grid-generic cells and the shared columnar CellArray container.',
+        (section('Cell', 'CellArray'),),
         (('Grids & geocodes', '../guide/grids.md'),),
     ),
     Page(
         'h3',
         'H3',
-        'H3 factories, set operations, cells, directed edges, vertices, and source-aware coverages.',
+        'H3 factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
         (
             section(
                 'H3Cell',
@@ -325,7 +320,6 @@ PAGES: tuple[Page, ...] = (
                 'H3VertexArray',
                 'H3Edge',
                 'H3EdgeArray',
-                'H3Coverage',
                 title='Types',
             ),
             section(title='Functions', prefixes=('h3_',)),
@@ -335,9 +329,9 @@ PAGES: tuple[Page, ...] = (
     Page(
         's2',
         'S2',
-        'S2 factories, set operations, cells, and source-aware coverages.',
+        'S2 factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
         (
-            section('S2Cell', 'S2Coverage', title='Types'),
+            section('S2Cell', title='Types'),
             section(title='Functions', prefixes=('s2_',)),
         ),
         (('Grid-generic API', 'grids.md'),),
@@ -345,9 +339,9 @@ PAGES: tuple[Page, ...] = (
     Page(
         'geohash',
         'Geohash',
-        'Geohash factories, set operations, text-identified cells, and source-aware coverages.',
+        'Geohash factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
         (
-            section('GeohashCell', 'GeohashCoverage', title='Types'),
+            section('GeohashCell', title='Types'),
             section(title='Functions', prefixes=('geohash_',)),
         ),
         (('Grid-generic API', 'grids.md'),),
@@ -355,9 +349,9 @@ PAGES: tuple[Page, ...] = (
     Page(
         'tiles',
         'XYZ tiles',
-        'Web-mercator tile factories, set operations, cells, and source-aware coverages.',
+        'Web-mercator tile factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
         (
-            section('Tile', 'TileCoverage', title='Types'),
+            section('Tile', title='Types'),
             section(title='Functions', prefixes=('tile_',)),
         ),
         (('Grid-generic API', 'grids.md'),),

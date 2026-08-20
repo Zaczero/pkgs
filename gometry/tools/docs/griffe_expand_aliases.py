@@ -25,6 +25,7 @@ _STUB_LOCAL = (
     '_GeometryLike',
     '_IndexLane',
     '_IntInput',
+    '_PredicateOperand',
     '_WktOutputDimension',
 )
 _ERROR_CLASSES = (
@@ -231,7 +232,7 @@ class PromoteStubOverloads(griffe.Extension):
         _promote_overloads(pkg, set())
         _materialize_class_aliases(pkg)
         _materialize_classes(pkg, '_lib', _ERROR_CLASSES)
-        _materialize_classes(pkg, '_types', ('Cell', 'Coverage'))
+        _materialize_classes(pkg, '_types', ('Cell',))
         _canonicalize_public_classes(pkg)
         _materialize_function_aliases(pkg)
 
@@ -242,9 +243,9 @@ def _expand(expr: Any, aliases: dict[str, Any]) -> Any:
     if isinstance(expr, griffe.ExprName):
         if expr.name in _PRIVATE_TYPEVAR_RENAMES:
             return griffe.ExprName(_PRIVATE_TYPEVAR_RENAMES[expr.name])
-        if expr.name == '_CoverageIterator':
+        if expr.name == '_CellArrayIterator':
             return griffe.ExprName('Iterator')
-        if expr.name in {'_Coverage', '_NumericCell', '_Cell'}:
+        if expr.name in {'_NumericCell', '_Cell'}:
             return griffe.ExprName('object')
         return aliases.get(expr.name, expr)
     if isinstance(expr, griffe.ExprBinOp):
@@ -259,13 +260,12 @@ def _expand(expr: Any, aliases: dict[str, Any]) -> Any:
 
 
 def _expand_base(expr: Any, aliases: dict[str, Any]) -> Any:
-    if isinstance(expr, griffe.ExprSubscript) and isinstance(
-        expr.left, griffe.ExprName
+    if (
+        isinstance(expr, griffe.ExprSubscript)
+        and isinstance(expr.left, griffe.ExprName)
+        and expr.left.name == '_CellArrayIterator'
     ):
-        if expr.left.name == '_Coverage':
-            return griffe.ExprName('Sequence')
-        if expr.left.name == '_CoverageIterator':
-            return griffe.ExprName('Iterator')
+        return griffe.ExprName('Iterator')
     return _expand(expr, aliases)
 
 

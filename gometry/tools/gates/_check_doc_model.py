@@ -145,8 +145,7 @@ def collect_errors() -> list[str]:
                 if isinstance(alias, griffe.Alias)
             }
             if f'gometry._lib.{name}' not in targets and (
-                name in {'Cell', 'Coverage'}
-                and f'gometry._types.{name}' not in targets
+                name == 'Cell' and f'gometry._types.{name}' not in targets
             ):
                 errors.append(f'{name}: missing native class provenance')
 
@@ -191,7 +190,7 @@ def collect_errors() -> list[str]:
             member = module.members.get(name)
             if (
                 isinstance(member, griffe.Alias)
-                and name in {'Cell', 'Coverage'}
+                and name == 'Cell'
                 and member.canonical_path != f'gometry.{name}'
             ):
                 errors.append(

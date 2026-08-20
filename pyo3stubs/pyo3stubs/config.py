@@ -187,6 +187,8 @@ class StubConfig:
         Optional mypy config file applied to validity and stubtest.
     mypy_args:
         Extra mypy flags for the stub validity gate.
+    mypy_targets:
+        Explicit paths checked by validity. Defaults to the configured stub.
     uninspectable_allowlist:
         Public runtime callables where ``inspect.signature`` legitimately fails.
     doc_structure_allowlist:
@@ -214,6 +216,7 @@ class StubConfig:
     stubtest_allowlist: Path | None = None
     mypy_config: Path | None = None
     mypy_args: tuple[str, ...] = ()
+    mypy_targets: tuple[Path, ...] = ()
     uninspectable_allowlist: Reasons = field(default_factory=dict)
     doc_structure_allowlist: Reasons = field(default_factory=dict)
     extra_ignored_type_names: frozenset[str] = field(default_factory=frozenset)
