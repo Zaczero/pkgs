@@ -7,7 +7,7 @@ import gometry as gm
 import pytest
 
 
-def test_s2_cover_defaults_are_truthful_and_pickle_preserves_custom_target() -> None:
+def test_cellarray_pickle_roundtrip_preserves_custom_target() -> None:
     area = gm.box(0, 80, 10, 85, crs=4326)
     signature = str(inspect.signature(gm.s2_cover))
     assert 'max_cells=1000000' in signature
@@ -15,20 +15,15 @@ def test_s2_cover_defaults_are_truthful_and_pickle_preserves_custom_target() -> 
 
     fixed = gm.s2_cover(area, level=10)
     fixed_default = gm.s2_cover(area, level=10, max_cells=1_000_000)
-    assert fixed.cells == fixed_default.cells
-    assert fixed.max_cells == fixed_default.max_cells == 1_000_000
+    assert fixed == fixed_default
 
     adaptive = gm.s2_cover(area)
     adaptive_default = gm.s2_cover(area, max_cells=1_000_000, target_cells=8)
-    assert adaptive.cells == adaptive_default.cells
-    assert adaptive.max_cells == adaptive_default.max_cells == 1_000_000
-    assert adaptive.target_cells == adaptive_default.target_cells == 8
+    assert adaptive == adaptive_default
 
     custom = gm.s2_cover(area, min_level=2, max_level=12, target_cells=24)
     restored = pickle.loads(pickle.dumps(custom))
     assert restored == custom
-    assert restored.target_cells == 24
-    assert 'target_cells=24' in repr(restored)
 
     with pytest.raises(TypeError):
         gm.s2_cover(area, target_cells=None)

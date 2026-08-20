@@ -276,7 +276,7 @@ def test_r15i_s2_bounding_cell_array_matches_collection_seam_token_7() -> None:
 
 
 def _cover_tokens(cover: Any) -> set[str]:
-    return {c.token for c in cover.cells}
+    return {c.token for c in cover}
 
 
 def test_r15i_h3_s2_covered_point_tokens_subset_of_visible() -> None:
@@ -298,7 +298,7 @@ def test_r15i_h3_s2_covered_point_tokens_subset_of_visible() -> None:
             for row in coords:
                 lon, lat = float(row[0]), float(row[1])
                 pt = gm.Point(lon, lat, crs=4326)
-                if h3.covers(pt):
+                if gm.covers(geom, pt):
                     cell = gm.H3Cell(lon, lat, resolution=res)
                     assert cell.token in visible, (
                         f'H3 r{res}: covered point {pt.to_wkt()} cell {cell.token} '
@@ -310,7 +310,7 @@ def test_r15i_h3_s2_covered_point_tokens_subset_of_visible() -> None:
             for row in coords:
                 lon, lat = float(row[0]), float(row[1])
                 pt = gm.Point(lon, lat, crs=4326)
-                if s2.covers(pt):
+                if gm.covers(geom, pt):
                     cell = gm.S2Cell(lon, lat, level=level)
                     assert cell.token in visible, (
                         f'S2 L{level}: covered point cell {cell.token} not in visible'

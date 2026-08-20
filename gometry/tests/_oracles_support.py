@@ -151,9 +151,9 @@ def serialize_snapshot_value(value: object) -> object:
         ]
         return {'kind': 'cell_list', 'cells': cells, 'system': system}
     if isinstance(
-        value, (gm.H3Coverage, gm.S2Coverage, gm.GeohashCoverage, gm.TileCoverage)
+        value, (gm.CellArray, gm.Groups)
     ):
-        cells = value.cells
+        cells = value
         if not cells:
             return {'kind': 'cell_list', 'cells': [], 'system': 'empty'}
         return serialize_snapshot_value(cells)

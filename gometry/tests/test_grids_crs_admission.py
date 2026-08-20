@@ -444,17 +444,17 @@ def test_d2_h3_cells_geometry_array_missing_rows():
 
 
 # ---------------------------------------------------------------------------
-# D3 - coverage eq includes max_cells budget
+# D3 - CellArray equality uses visible values
 # ---------------------------------------------------------------------------
 
 
-def test_d3_h3_coverage_eq_includes_max_cells():
+def test_d3_cellarray_equality_uses_visible_values():
     box = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     a = gm.h3_cover(box, resolution=3, cell_rule='overlap', max_cells=100)
     b = gm.h3_cover(box, resolution=3, cell_rule='overlap', max_cells=50)
-    # Visible cells can match while budgets differ - budgets are behaviour-affecting.
-    assert list(a.cells) == list(b.cells)
-    assert a != b
+    # Factory budgets are not part of the CellArray value.
+    assert list(a) == list(b)
+    assert a == b
 
 
 # ---------------------------------------------------------------------------
@@ -512,11 +512,11 @@ def test_d1_h3_max_cells_charges_realized_cells_not_raw_candidates():
     """
     box = gm.box(-122.42, 37.77, -122.40, 37.79, crs=4326)
     full = gm.h3_cover(box, resolution=9, cell_rule='overlap')
-    n = len(list(full.cells))
+    n = len(list(full))
     assert n > 1
     # Budget equal to realized size must succeed (not charge raw duplicates).
     tight = gm.h3_cover(box, resolution=9, cell_rule='overlap', max_cells=n)
-    assert len(list(tight.cells)) == n
+    assert len(list(tight)) == n
     with pytest.raises(gm.GeometryError, match='max_cells'):
         gm.h3_cover(box, resolution=9, cell_rule='overlap', max_cells=max(1, n // 4))
 
@@ -543,7 +543,7 @@ def test_d6_h3_cell_polygon_doc_mentions_chord_proxy():
 
 def test_e6_cellarray_compact_uncompact_to_polygon_examples():
     p = gm.Point(-122.4194, 37.7749, crs=4326)
-    cell = gm.h3_cover(p, resolution=7).cells[0]
+    cell = gm.h3_cover(p, resolution=7)[0]
     cells = gm.CellArray([cell, next(iter(cell.neighbors))])
     assert len(cells.compact(5)) == 2
     assert len(gm.CellArray([cell]).uncompact(8)) == 7

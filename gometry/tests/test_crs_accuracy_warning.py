@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import sys
 import threading
 import warnings
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 import gometry as gm
 import numpy as np
@@ -105,19 +103,53 @@ def test_all_primary_transform_surfaces_warn(transform) -> None:
     assert 'us_noaa_conus.tif' in str(seen[0].message)
 
 
-def test_available_best_operation_grids_do_not_warn(tmp_path: Path) -> None:
-    # PROJ's availability contract is name visibility. The transform may reject
-    # these deliberately minimal files, but it must not claim they are missing.
+def test_available_best_operation_grids_execute_without_warning() -> None:
+    grid_dir = Path(__file__).with_name('fixtures')
     names = ('us_noaa_conus.tif', 'us_noaa_nbhpgn.tif')
-    for name in names:
-        (tmp_path / name).write_bytes(b'II*\0' + bytes(64))
-    gm.crs_configure(search_paths=[tmp_path])
+    gm.crs_configure(search_paths=[grid_dir])
     assert all(gm.crs_grid(name)['available'] is True for name in names)
 
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter('always')
-        gm.crs_transform(4267, 4326, -104.0, 40.0)
+        result = gm.crs_transform(4267, 4326, -104.0, 40.0)
+    assert result == pytest.approx(
+        (-104.0005055600116, 39.99998770647132), abs=1e-12
+    )
     assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+
+def test_replaced_grid_is_reprobed_before_public_availability_and_execution(
+    tmp_path: Path,
+) -> None:
+    fixture_dir = Path(__file__).with_name('fixtures')
+    names = ('us_noaa_conus.tif', 'us_noaa_nbhpgn.tif')
+    for name in names:
+        shutil.copyfile(fixture_dir / name, tmp_path / name)
+    gm.crs_configure(search_paths=[tmp_path])
+
+    assert all(gm.crs_grid(name)['available'] is True for name in names)
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        valid = gm.crs_transform(4267, 4326, -104.0, 40.0)
+    assert valid == pytest.approx((-104.0005055600116, 39.99998770647132), abs=1e-12)
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+    (tmp_path / 'us_noaa_conus.tif').write_bytes(b'II*\x00' + b'\x00' * 64)
+    assert gm.crs_grid('us_noaa_conus.tif')['available'] is False
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        replaced = gm.crs_transform(4267, 4326, -104.0, 40.0)
+    assert replaced == pytest.approx((-104.00054135243299, 39.999980362118514))
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+    with pytest.raises(gm.TransformError, match='No operation matching criteria found'):
+        gm.crs_transform(4267, 4326, -104.0, 40.0, only_best=True)
+
+
+def test_malformed_grid_is_not_reported_as_available(tmp_path: Path) -> None:
+    (tmp_path / 'us_noaa_conus.tif').write_bytes(b'II*\x00' + b'\x00' * 64)
+    gm.crs_configure(search_paths=[tmp_path])
+
+    assert gm.crs_grid('us_noaa_conus.tif')['available'] is False
 
 
 def test_only_best_raises_transform_error_naming_missing_grid() -> None:

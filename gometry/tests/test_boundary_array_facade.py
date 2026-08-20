@@ -214,6 +214,6 @@ def test_tile_cover_rejects_out_of_domain_latitude() -> None:
     in_domain = gm.box(-10, 84, 10, 85, crs=4326)
     out_domain = gm.box(-10, 84, 10, 89.9, crs=4326)
     cov = gm.tile_cover(in_domain, zoom=3)
-    assert len(cov.cells) >= 1
+    assert len(cov) >= 1
     with pytest.raises(gm.InvalidGeometryError, match='Web Mercator'):
         gm.tile_cover(out_domain, zoom=3)

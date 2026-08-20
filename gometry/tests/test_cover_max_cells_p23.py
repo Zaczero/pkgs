@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import pickle
-import subprocess
 import sys
-import textwrap
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -77,19 +76,42 @@ def test_s2_fixed_level_max_cells_is_a_hard_cap_like_other_grids():
         _assert_not_panic(excinfo.value)
 
 
-def test_s2_target_cells_and_max_cells_have_separate_meanings():
-    """Adaptive approximation and hard output caps are independent."""
+def test_s2_target_cells_quality_target_and_max_cells_ceiling():
+    """target_cells seeks quality; max_cells is the output ceiling."""
     area = gm.box(0, 0, 2, 2, crs=4326)
     adaptive = gm.s2_cover(area, min_level=4, max_level=8, target_cells=64)
-    assert adaptive.max_cells == 1_000_000
-    assert adaptive.target_cells == 64
     assert 0 < len(adaptive) <= 64
     fixed = gm.s2_cover(area, level=6, max_cells=10_000)
-    assert fixed.max_cells == 10_000
     assert len(fixed) > 0
     unlimited = gm.s2_cover(area, level=6, max_cells=None)
-    assert unlimited.max_cells is None
     assert len(unlimited) == len(fixed)
+
+
+def test_s2_adaptive_max_cells_caps_output():
+    """Adaptive max_cells coarsens a detailed cover to the requested ceiling."""
+    line = gm.LineString([(-75.0, 40.0), (-74.0, 40.5), (-73.0, 41.2)], crs=4326)
+    unlimited = gm.s2_cover(
+        line, min_level=1, max_level=14, target_cells=1_000_000, max_cells=None
+    )
+    capped = gm.s2_cover(
+        line, min_level=1, max_level=14, target_cells=1_000_000, max_cells=64
+    )
+    assert len(unlimited) == 640
+    assert len(capped) == 64
+
+
+def test_s2_adaptive_high_min_level_max_cells_rejects_typed():
+    """A high-min-level interior subtree rejects rather than reserving huge space."""
+    source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326)
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+        gm.s2_cover(
+            source,
+            min_level=20,
+            max_level=21,
+            target_cells=8,
+            max_cells=8,
+        )
+    _assert_not_panic(excinfo.value)
 
 
 def test_s2_cover_budget_equals_unlimited_fit_threshold():
@@ -101,13 +123,13 @@ def test_s2_cover_budget_equals_unlimited_fit_threshold():
     """
     line = gm.LineString([(-75.0, 40.0), (-74.99, 40.01)], crs=4326)
     unlimited = gm.s2_cover(line, level=10, max_cells=None)
-    tokens = [c.token for c in unlimited.cells]
+    tokens = [c.token for c in unlimited]
     k = len(tokens)
     assert k == 1
     assert tokens == ['89c6b5']
     for m in range(1, k + 3):
         got = gm.s2_cover(line, level=10, max_cells=m)
-        assert [c.token for c in got.cells] == tokens, m
+        assert [c.token for c in got] == tokens, m
     # Matrix: for several short geoms, M>=K succeeds equal; M<K raises.
     samples = [
         gm.Point(-75.0, 40.0, crs=4326),
@@ -117,12 +139,12 @@ def test_s2_cover_budget_equals_unlimited_fit_threshold():
     ]
     for geom in samples:
         unlim = gm.s2_cover(geom, level=10, max_cells=None)
-        kk = len(unlim.cells)
+        kk = len(unlim)
         assert kk >= 1
-        unlim_ids = {c.id for c in unlim.cells}
+        unlim_ids = {c.id for c in unlim}
         for m in range(kk, kk + 3):
             got = gm.s2_cover(geom, level=10, max_cells=m)
-            assert {c.id for c in got.cells} == unlim_ids
+            assert {c.id for c in got} == unlim_ids
             assert len(got) <= m
         if kk > 1:
             with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
@@ -144,11 +166,11 @@ def test_h3_within_budget_counts_only_emitted_cells():
     second = gm.box(-80.0, -40.0, -70.0, -30.0, crs=4326)
     for source in (first, second, gm.MultiPolygon([first, second], crs=4326)):
         unlimited = gm.h3_cover(source, 2, cell_rule='within', max_cells=None)
-        expected = {cell.token for cell in unlimited.cells}
+        expected = {cell.token for cell in unlimited}
         assert expected
         cap = len(expected)
         for cells in (
-            gm.h3_cover(source, 2, cell_rule='within', max_cells=cap).cells,
+            gm.h3_cover(source, 2, cell_rule='within', max_cells=cap),
             gm.h3_cover(
                 gm.GeometryArray([source]), 2, cell_rule='within', max_cells=cap
             )[0],
@@ -190,21 +212,21 @@ def test_s2_adaptive_target_cells_matches_requested_detail():
     """
     area = gm.box(-75.0, 40.0, -74.9, 40.1, crs=4326)
     detailed = gm.s2_cover(area, min_level=1, max_level=10, target_cells=4)
-    tokens = [c.token for c in detailed.cells]
+    tokens = [c.token for c in detailed]
     k = len(tokens)
     assert k == 4
     assert tokens == ['89c14b', '89c14d', '89c6b3', '89c6b5']
-    assert {c.level for c in detailed.cells} == {10}
+    assert {c.level for c in detailed} == {10}
     # A target at or above K preserves the detailed covering.
     for m in range(k, k + 3):
         got = gm.s2_cover(area, min_level=1, max_level=10, target_cells=m)
-        assert [c.token for c in got.cells] == tokens, m
+        assert [c.token for c in got] == tokens, m
         assert len(got) <= m
     # Smaller targets coarsen only inside the requested adaptive range.
     for m in range(1, k):
         got = gm.s2_cover(area, min_level=1, max_level=10, target_cells=m)
         assert 0 < len(got) <= m, m
-        assert all(c.level >= 1 for c in got.cells)
+        assert all(c.level >= 1 for c in got)
     coarse = gm.s2_cover(area, min_level=0, max_level=10, target_cells=1)
     assert len(coarse) <= 1
 
@@ -223,14 +245,12 @@ def test_s2_fixed_level_soft_budget_never_emits_below_min_level():
     capped = gm.s2_cover(src, level=10, max_cells=256)
     assert len(unlimited) == 225
     assert len(capped) == len(unlimited)
-    assert {c.level for c in capped.cells} == {10}
-    assert {c.id for c in capped.cells} == {c.id for c in unlimited.cells}
-    assert capped.min_level == capped.max_level == 10
+    assert {c.level for c in capped} == {10}
+    assert {c.id for c in capped} == {c.id for c in unlimited}
     # Pickle round-trip preserves pure level-10 set.
     restored = pickle.loads(pickle.dumps(capped))
-    assert {c.level for c in restored.cells} == {10}
-    assert restored.min_level == restored.max_level == 10
-    assert list(restored.cells) == list(capped.cells)
+    assert {c.level for c in restored} == {10}
+    np.testing.assert_array_equal(restored.to_numpy(), capped.to_numpy())
 
 
 @pytest.mark.parametrize('level', [4, 8, 10, 14])
@@ -244,33 +264,32 @@ def test_s2_fixed_level_matrix_only_emits_level_l(level, cell_rule):
     overlap_fit = len(
         gm.s2_cover(src, level=level, cell_rule='overlap', max_cells=None)
     )
-    assert all(c.level == level for c in unlimited.cells)
+    assert all(c.level == level for c in unlimited)
     # Finite M above the coverer fit — must not coarsen below level L.
     budget = max(overlap_fit, 1) + 64
     capped = gm.s2_cover(src, level=level, cell_rule=cell_rule, max_cells=budget)
     assert len(capped) == len(unlimited)
-    assert all(c.level == level for c in capped.cells)
-    assert capped.min_level == capped.max_level == level
-    assert {c.id for c in capped.cells} == {c.id for c in unlimited.cells}
+    assert all(c.level == level for c in capped)
+    assert {c.id for c in capped} == {c.id for c in unlimited}
     # Array path agrees with scalar for one-row GeometryArray (Groups of cells).
     arr = gm.GeometryArray([src])
     arr_cov = gm.s2_cover(arr, level=level, cell_rule=cell_rule, max_cells=budget)
     assert isinstance(arr_cov, gm.Groups)
     assert len(arr_cov) == 1
     row = arr_cov[0]
-    assert {c.id for c in row} == {c.id for c in unlimited.cells}
+    assert {c.id for c in row} == {c.id for c in unlimited}
     assert all(c.level == level for c in row)
 
 
 def test_s2_target_cells_respects_min_level_and_max_cells_stays_hard():
-    """Adaptive targeting stays within its range; max_cells remains a hard cap."""
+    """Adaptive targeting stays in range; max_cells remains a ceiling."""
     src = gm.box(0, 0, 1, 1, crs=4326)
     tight = gm.s2_cover(src, min_level=0, max_level=12, target_cells=1)
     assert len(tight) <= 1
     # Adaptive with min_level floor: every emitted cell is >= min_level.
     adaptive = gm.s2_cover(src, min_level=4, max_level=12, target_cells=64)
     assert 0 < len(adaptive) <= 64
-    levels = {c.level for c in adaptive.cells}
+    levels = {c.level for c in adaptive}
     assert levels
     assert min(levels) >= 4
     assert max(levels) <= 12
@@ -298,9 +317,9 @@ def test_s2_level30_tiny_budget_rejects_without_frontier_flood():
     """Defect 2: level=30 + max_cells=1 must reject without BFS flood.
 
     Pre-fix: ~2.3s / ~85 MiB building a fine frontier before the budget
-    error. Post-fix: projected-count DFS raises before that work. Hang
-    detection is RSS (no O(frontier) allocation) plus the subprocess sibling
-    with a process timeout — not an in-process wall-clock budget.
+    error. Post-fix: projected-count DFS raises before that work. The flood
+    shows up as O(frontier) allocation, so incremental RSS is the detector —
+    deliberately not a wall-clock budget, which would measure the host.
     """
     line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
     # Warm classifier / PROJ paths so the measured call is cover work.
@@ -320,44 +339,6 @@ def test_s2_level30_tiny_budget_rejects_without_frontier_flood():
         )
 
 
-def test_s2_level30_tiny_budget_rejects_in_subprocess():
-    """Same flood gate in a clean subprocess (process timeout, no import noise).
-
-    The outer ``timeout=3.0`` is hang detection (kill the process), not a
-    wall-clock performance budget asserted against a µs/ms target.
-    """
-    script = textwrap.dedent(
-        """
-        import sys
-        import gometry as gm
-
-        line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
-        try:
-            gm.s2_cover(line, level=30, max_cells=1)
-        except gm.GeometryError as e:
-            if type(e).__name__ == "PanicException" or "max_cells" not in str(e):
-                print(f"BAD_EXC {type(e).__name__}:{e}", flush=True)
-                sys.exit(2)
-        else:
-            print("NO_RAISE", flush=True)
-            sys.exit(3)
-        print("OK", flush=True)
-        """
-    )
-    proc = subprocess.run(
-        [sys.executable, '-c', script],
-        capture_output=True,
-        text=True,
-        timeout=3.0,
-        check=False,
-    )
-    assert proc.returncode == 0, (
-        f'subprocess failed rc={proc.returncode}\n'
-        f'stdout={proc.stdout!r}\nstderr={proc.stderr!r}'
-    )
-    assert 'OK' in proc.stdout
-
-
 def test_s2_world_line_l20_tiny_budget_rejects():
     """World-spanning line at L20 + tiny budget raises max_cells (no flood)."""
     line = gm.LineString([(-179.0, 0.0), (179.0, 0.0)], crs=4326)
@@ -371,7 +352,7 @@ def test_s2_point_level30_max_cells_one_succeeds():
     pt = gm.Point(13.4, 52.5, crs=4326)
     cov = gm.s2_cover(pt, level=30, max_cells=1)
     assert len(cov) == 1
-    assert cov.cells[0].level == 30
+    assert cov[0].level == 30
 
 
 def test_s2_adaptive_max_level30_target_one_returns_coarse():
@@ -389,8 +370,8 @@ def test_s2_fixed_level_threshold_n_identical_n_minus_one_raises():
     assert n > 1
     exact = gm.s2_cover(src, level=10, max_cells=n)
     assert len(exact) == n
-    assert {c.id for c in exact.cells} == {c.id for c in unlimited.cells}
-    assert all(c.level == 10 for c in exact.cells)
+    assert {c.id for c in exact} == {c.id for c in unlimited}
+    assert all(c.level == 10 for c in exact)
     with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(src, level=10, max_cells=n - 1)
     _assert_not_panic(excinfo.value)
@@ -409,7 +390,7 @@ def test_s2_level_mod_target_cells_conforming_and_bounded(level_mod):
         target_cells=target,
     )
     assert 0 < len(cov) <= target
-    for cell in cov.cells:
+    for cell in cov:
         assert cell.level >= 4
         assert cell.level <= 12
         assert (cell.level - 4) % level_mod == 0
@@ -424,16 +405,15 @@ def test_s2_interior_subtree_rejects_before_enumeration():
     _assert_not_panic(excinfo.value)
 
 
-def test_with_parents_large_uncapped_and_pickle_roundtrip():
-    """Explicit with_parents may produce >1M cells; pickle restores them."""
+def test_large_uncapped_pickle_roundtrip():
+    """A large materialized cell array still pickle-roundtrips."""
     # Exact ±180 full-longitude band: geographic cover keeps the world extent.
     src = gm.box(-180.0, -82.0, 180.0, 82.0, crs=4326)
     cov = gm.tile_cover(src, zoom=10, cell_rule='bbox')
-    wp = cov.with_parents(min_zoom=0)
-    assert len(wp) > 1_000_000
-    out = pickle.loads(pickle.dumps(wp))
-    assert len(out) == len(wp)
-    assert list(out.cells) == list(wp.cells)
+    out = pickle.loads(pickle.dumps(cov))
+    assert len(cov) >= 800_000
+    assert len(out) == len(cov)
+    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +424,7 @@ def test_with_parents_large_uncapped_and_pickle_roundtrip():
 def _roundtrip_exact(cov):
     out = pickle.loads(pickle.dumps(cov))
     assert len(out) == len(cov)
-    assert list(out.cells) == list(cov.cells)
+    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
     if len(cov) > 0:
         assert out.to_polygon().bounds == cov.to_polygon().bounds
     return out
@@ -492,7 +472,6 @@ def test_p23_transform_pickle_roundtrips(label, build):
         ('base', base),
         ('compact', base.compact()),
         ('uncompact', base.uncompact(uncompact_depth)),
-        ('with_parents', base.with_parents()),
     ):
         _roundtrip_exact(cov)
 
@@ -503,14 +482,11 @@ def test_p23_empty_center_uncompact_pickle():
     # H3: center@4 is empty; uncompact(5) stays empty; must not recompute as center@5.
     cov = gm.h3_cover(source, 4, cell_rule='center').uncompact(5)
     assert len(cov) == 0
-    assert cov.resolution == 5
-    out = _roundtrip_exact(cov)
-    assert out.resolution == 5
+    _ = _roundtrip_exact(cov)
 
     gh = gm.geohash_cover(source, 2, cell_rule='center').uncompact(5)
     assert len(gh) == 0
-    out_gh = _roundtrip_exact(gh)
-    assert out_gh.precision == 5
+    _ = _roundtrip_exact(gh)
 
 
 def test_p23_uncompact_past_million_pickle_roundtrips():
@@ -525,8 +501,7 @@ def test_p23_uncompact_past_million_pickle_roundtrips():
     # Must not raise "exceed the uncompact budget" during reconstruction.
     out = pickle.loads(pickle.dumps(cov))
     assert len(out) == len(cov)
-    assert list(out.cells) == list(cov.cells)
-    assert out.to_polygon().bounds == cov.to_polygon().bounds
+    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
 
 
 def test_p23_projected_source_roundtrips():
@@ -534,7 +509,7 @@ def test_p23_projected_source_roundtrips():
     proj = gm.box(0, 0, 1000, 1000, crs=3857)
     for cov in (
         gm.h3_cover(proj, 3).uncompact(4),
-        gm.tile_cover(proj, 4).with_parents(),
+        gm.tile_cover(proj, 4),
         gm.s2_cover(proj, level=5, max_cells=64).compact(),
         gm.geohash_cover(proj, 3).compact(),
     ):
