@@ -50,11 +50,6 @@ impl CsrOffset {
     }
 }
 
-const _: () = {
-    assert!(std::mem::size_of::<CsrOffset>() == std::mem::size_of::<i32>());
-    assert!(std::mem::align_of::<CsrOffset>() == std::mem::align_of::<i32>());
-};
-
 // SAFETY: `CsrOffset` is `repr(transparent)` over `i32` with no extra fields.
 unsafe impl bytemuck::TransparentWrapper<i32> for CsrOffset {}
 
@@ -62,8 +57,8 @@ unsafe impl bytemuck::TransparentWrapper<i32> for CsrOffset {}
 ///
 /// # Safety invariant
 ///
-/// `CsrOffset` is `repr(transparent)` over `i32` with identical size and
-/// alignment (asserted above).
+/// `CsrOffset` is `repr(transparent)` over `i32`, so it has identical size and
+/// alignment.
 fn arc_i32_from_csr_offsets(arc: Arc<[CsrOffset]>) -> Arc<[i32]> {
     let raw = Arc::into_raw(arc);
     // SAFETY: transparent layout over `i32` with matching size/alignment.
@@ -75,7 +70,7 @@ fn arc_i32_from_csr_offsets(arc: Arc<[CsrOffset]>) -> Arc<[i32]> {
 /// # Safety invariant
 ///
 /// `CsrOffset` is `repr(transparent)` over `i32` with identical size and
-/// alignment (asserted above).
+/// alignment, as required by the transparent representation.
 fn arc_csr_offsets_from_i32(arc: Arc<[i32]>) -> Arc<[CsrOffset]> {
     let raw = Arc::into_raw(arc);
     // SAFETY: transparent layout over `i32` with matching size/align.

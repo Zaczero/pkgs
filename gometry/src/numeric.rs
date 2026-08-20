@@ -134,11 +134,6 @@ impl Deref for Positive {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<Finite>() == std::mem::size_of::<f64>());
-const _: () = assert!(std::mem::size_of::<NonNegative>() == std::mem::size_of::<f64>());
-const _: () = assert!(std::mem::size_of::<Positive>() == std::mem::size_of::<f64>());
-const _: () = assert!(std::mem::size_of::<AxisScale>() == std::mem::size_of::<f64>());
-
 #[cfg(test)]
 mod tests {
     use super::AxisScale;

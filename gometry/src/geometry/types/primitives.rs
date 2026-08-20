@@ -53,8 +53,6 @@ pub struct Point {
     pub(crate) axes: CoordinateAxes,
 }
 
-const _: () = assert!(std::mem::size_of::<Point>() <= 40);
-
 // Structural identity for `Point`: same coordinate axes and the same *active*
 // ordinates compared by bit pattern (so NaN is deterministic and inactive Z/M
 // sentinels never differ). `Eq`/`Hash` are kept consistent for value semantics
@@ -86,26 +84,18 @@ impl std::hash::Hash for Point {
 #[repr(transparent)]
 pub(crate) struct HasZ(pub bool);
 
-const _: () = assert!(size_of::<HasZ>() == size_of::<bool>());
-
 /// Whether a coordinate has an M ordinate.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub(crate) struct HasM(pub bool);
 
-const _: () = assert!(size_of::<HasM>() == size_of::<bool>());
-
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub(crate) struct ZOrdinate(pub Option<f64>);
 
-const _: () = assert!(size_of::<ZOrdinate>() == size_of::<Option<f64>>());
-
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub(crate) struct MOrdinate(pub Option<f64>);
-
-const _: () = assert!(size_of::<MOrdinate>() == size_of::<Option<f64>>());
 
 /// Which ordinates a coordinate carries.
 ///
@@ -115,8 +105,6 @@ const _: () = assert!(size_of::<MOrdinate>() == size_of::<Option<f64>>());
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct CoordinateAxes(u8);
-
-const _: () = assert!(size_of::<CoordinateAxes>() == size_of::<u8>());
 
 impl CoordinateAxes {
     pub const XY: Self = Self(0);

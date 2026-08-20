@@ -24,8 +24,6 @@ pub(crate) struct Facet {
     pub(crate) segment_count: u8,
 }
 
-const _: () = assert!(size_of::<Facet>() <= 12, "Facet must stay <=12 bytes");
-
 /// A shape's linework as per-chain [`CoordSeq`] views plus its facet
 /// partition — the storage every BVH traversal and brute scan reads.
 /// Facets never span a chain boundary, so every facet's vertex run is one

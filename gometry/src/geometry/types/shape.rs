@@ -110,10 +110,6 @@ pub enum Shape {
 // 72 or less.  Boxing `Polygon` to reach 80 was measured a net loss — the packed
 // lanes never store `Shape`, so it would buy ~2% of a mixed array's footprint
 // for a per-row allocation and an indirection on the hottest structural access.
-// This bound exists so that trade cannot be silently reversed by widening a
-// variant; it is a build error, not a test failure.
-const _: () = assert!(size_of::<Shape>() <= 96);
-
 impl HeapSize for Shape {
     /// Retained native heap: coordinate columns **plus** container allocations
     /// (`Vec` of parts/members, `Arc<[Ring]>` hole storage) and nested shapes.

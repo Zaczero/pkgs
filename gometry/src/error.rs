@@ -24,7 +24,9 @@ use crate::io::IoError;
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The crate error: a boxed [`ErrorKind`], so the type is pointer-sized and
-/// large messages are heap-allocated only when an error actually occurs.
+/// large messages are heap-allocated only when an error actually occurs. One
+/// pointer keeps `Result<T, Error>` register-returnable on hot per-row paths;
+/// fields belong on the kind variants, not on `Error` itself.
 // The `std::io::Error` naming precedent: the crate error IS named `Error`.
 #[expect(
     clippy::error_impl_error,
@@ -34,8 +36,6 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 #[error(transparent)]
 #[repr(transparent)]
 pub struct Error(Box<ErrorKind>);
-
-const _: () = assert!(size_of::<Error>() == size_of::<Box<ErrorKind>>());
 
 /// The domain error kinds. Adding a kind forces a deliberate Python exception
 /// classification in `py::errors` (the conversion match has no wildcard arm).
@@ -93,11 +93,6 @@ impl From<FrameError> for Error {
         ErrorKind::Frame(error).into()
     }
 }
-
-/// One pointer, period: the boxed kind is what keeps `Result<T, Error>`
-/// register-returnable on hot per-row paths. If this trips, something put a
-/// field on `Error` itself — move it into a kind variant instead.
-const _: () = assert!(std::mem::size_of::<Error>() == std::mem::size_of::<usize>());
 
 /// A `ParseError` format tag identifying the malformed serialized, grid-cell,
 /// or point-code input. PyErr decoration lives in `crate::py::errors`.

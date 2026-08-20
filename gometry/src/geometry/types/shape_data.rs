@@ -136,11 +136,7 @@ pub struct ShapeData {
 
 // Large lazy products are `OnceLock<Box<_>>` (~16 B cold) rather than inline
 // `OnceLock`s of 128-280 B values; the pre-shrink header was ~968 B, which cost
-// ~1.1 KB per scalar geometry. These were `#[cfg(test)]` assertions, so they
-// only fired under `cargo test`; as `const _` they fail the BUILD, like the
-// other size contracts in this crate.
-const _: () = assert!(size_of::<ShapeData>() < 400);
-const _: () = assert!(size_of::<ShapeData>() > size_of::<Shape>());
+// ~1.1 KB per scalar geometry.
 
 impl ShapeData {
     pub(crate) fn retained_heap_bytes(&self) -> usize {

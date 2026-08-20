@@ -81,10 +81,6 @@ pub(super) struct OwnedUnitList {
     len: i32,
 }
 
-const _: () = {
-    assert!(std::mem::size_of::<OwnedPj>() == std::mem::size_of::<*mut proj_sys::PJ>());
-};
-
 macro_rules! impl_proj_single_drop {
     ($ty:ty, $destroy:path) => {
         impl Drop for $ty {

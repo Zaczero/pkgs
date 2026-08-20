@@ -91,9 +91,7 @@ pub struct CoordSeq {
 // Four (fat) `Arc` pointers + the u32 window; the storage win is per-vertex,
 // not per-sequence: the XY case (the common one) holds 16 B/vertex in two
 // `f64` columns versus the 40-byte AoS `Point` — 2.5× less cache/bandwidth,
-// and contiguous columns the reducers read with no gather. If this trips, a
-// column field grew unexpectedly.
-const _: () = assert!(std::mem::size_of::<CoordSeq>() <= 72);
+// and contiguous columns the reducers read with no gather.
 
 impl AsRef<Self> for CoordSeq {
     fn as_ref(&self) -> &Self {

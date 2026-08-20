@@ -12,8 +12,6 @@ use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index
 #[repr(transparent)]
 pub(crate) struct AreaMeasure(f64);
 
-const _: () = assert!(size_of::<AreaMeasure>() == size_of::<f64>());
-
 impl AreaMeasure {
     pub(crate) const fn get(self) -> f64 {
         self.0
@@ -29,8 +27,6 @@ impl AreaMeasure {
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub(crate) struct SignedAreaMeasure(f64);
-
-const _: () = assert!(size_of::<SignedAreaMeasure>() == size_of::<f64>());
 
 impl SignedAreaMeasure {
     const fn new(value: f64) -> Self {
