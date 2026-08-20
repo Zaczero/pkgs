@@ -85,6 +85,28 @@ def test_array_bounds_with_empty_rows_and_empty_arrays() -> None:
     assert empty.geometry_type == []
 
 
+@pytest.mark.parametrize(
+    'dtype',
+    [np.dtype(object), object, 'O', 'object'],
+    ids=['dtype', 'type', 'O', 'object'],
+)
+def test_geometry_array_numpy_protocol_accepts_object_dtype_spellings(
+    dtype: object,
+) -> None:
+    array = gm.GeometryArray([gm.Point(0, 1)])
+
+    direct = array.__array__(dtype=dtype)
+    via_numpy = np.asarray(array, dtype=dtype)
+    for result in (direct, via_numpy):
+        assert result.dtype == np.dtype(object)
+        assert result[0].to_wkt() == 'POINT (0 1)'
+
+    with pytest.raises(gm.GeometryError, match='dtype must be object or None'):
+        array.__array__(dtype=np.float64)
+    with pytest.raises(gm.GeometryError, match='dtype must be object or None'):
+        np.asarray(array, dtype='int64')
+
+
 def test_array_set_crs_strips_and_relabels_the_whole_frame() -> None:
     pts = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326)
     plain = (pts).set_crs(None)

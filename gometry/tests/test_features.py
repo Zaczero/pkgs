@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import pickle
+import sys
 import types
 
 import gometry as gm
@@ -53,6 +54,23 @@ def test_feature_properties_are_shallow_copies_not_aliases() -> None:
     assert feature['properties'] == {'k': 2}
     feature['properties']['k'] = 3
     assert proxy['k'] == 2
+
+
+def test_features_sizeof_counts_retained_columns_without_len_behavior() -> None:
+    small = gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=[{'a': 1}])
+    large = gm.Features(
+        gm.GeometryArray([gm.Point(i, i) for i in range(100)]),
+        properties=[{f'key_{key}': key for key in range(20)} for _ in range(100)],
+    )
+
+    assert sys.getsizeof(small) > 0
+    assert sys.getsizeof(large) > sys.getsizeof(small)
+    geometries, properties, ids = small
+    assert geometries is small.geometries
+    assert properties is small.properties
+    assert ids is small.ids
+    with pytest.raises(TypeError):
+        len(small)  # type: ignore[arg-type]
 
 
 def test_feature_helpers_preserve_properties_round_trip() -> None:
@@ -297,7 +315,10 @@ def test_features_record_validates_alignment_and_has_bounded_repr() -> None:
 def test_features_defaults_and_mapping_broadcast_are_independent() -> None:
     geometries = gm.points([0, 1], [2, 3])
     empty = gm.Features(geometries)
-    assert empty.properties == (None, None)
+    assert empty.properties == ({}, {})
+    assert empty.properties[0] is not empty.properties[1]
+    empty.properties[0]['x'] = 1
+    assert empty.properties[1] == {}
     assert empty.ids == (None, None)
 
     nested: list[int] = []

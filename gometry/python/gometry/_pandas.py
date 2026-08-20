@@ -6,8 +6,13 @@ Missing-data model (glue-level, geopandas-compatible): ``None``/``pd.NA`` is
 Rust core uses while preserving pandas' nullable scalar conventions.
 """
 
+# The dynamic pandas bases require mypy-only ignores; pyright does not need
+# those ignores and should not reject them as unnecessary.
+# pyright: reportUnnecessaryTypeIgnoreComment=false
+
 from __future__ import annotations
 
+import builtins  # noqa: TC003 - required by runtime get_type_hints
 import types  # noqa: TC003 - required by runtime get_type_hints
 from collections.abc import (  # noqa: TC003 - required by runtime get_type_hints
     Callable,
@@ -44,12 +49,17 @@ def _pandas() -> Any:
 
 if TYPE_CHECKING:
     import pandas as pd
+    import pyarrow as pa
+    from pandas._typing import ListLike
+    _ArrowArray: TypeAlias = pa.Array | pa.ChunkedArray
 
     # pandas' public stubs model several extension-protocol members more
     # narrowly than pandas itself accepts. Keep the implementation bases
     # dynamic while retaining exact public Series/Index annotations.
     _pd: Any = pd
 else:
+    _ArrowArray: TypeAlias = Any
+    ListLike: TypeAlias = Any
     _pd = _pandas()
     pd = _pd
 
@@ -57,11 +67,13 @@ _ExtensionDtype = _pd.api.extensions.ExtensionDtype
 _ExtensionArray = _pd.api.extensions.ExtensionArray
 
 
-class GeometryDtype(_ExtensionDtype):
+# mypy cannot model these runtime-selected pandas extension bases; pandas is
+# deliberately kept lazy so the optional dependency remains optional.
+class GeometryDtype(_ExtensionDtype):  # type: ignore[valid-type, misc]
     """pandas extension dtype for gometry geometries."""
 
     name = 'gometry.geometry'
-    type = Geometry
+    type: builtins.type[Geometry] = Geometry
     na_value = None
 
     @classmethod
@@ -75,10 +87,10 @@ class GeometryDtype(_ExtensionDtype):
         raise TypeError(f"Cannot construct a '{cls.__name__}' from '{string}'")
 
     @classmethod
-    def construct_array_type(cls) -> type[GeometryExtensionArray]:
+    def construct_array_type(cls) -> builtins.type[GeometryExtensionArray]:
         return GeometryExtensionArray
 
-    def __from_arrow__(self, array: object) -> GeometryExtensionArray:
+    def __from_arrow__(self, array: _ArrowArray) -> GeometryExtensionArray:
         from gometry import from_arrow
 
         return GeometryExtensionArray(from_arrow(array))
@@ -117,7 +129,7 @@ def _unpickle_geometry_extension_array(
     return array
 
 
-class GeometryExtensionArray(_ExtensionArray):
+class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
     """pandas ExtensionArray backed by a gometry ``GeometryArray``.
 
     Missing rows are first-class in the core array itself (``is_missing`` /
@@ -125,7 +137,9 @@ class GeometryExtensionArray(_ExtensionArray):
     contract on top.
     """
 
-    __hash__ = None  # mutable container
+    # pandas' mutable extension container is intentionally unhashable; mypy
+    # inherits object.__hash__ and rejects the runtime-correct assignment.
+    __hash__ = None  # type: ignore[assignment]
     _dtype = GeometryDtype()
 
     def __init__(self, values: GeometryArray) -> None:
@@ -202,7 +216,9 @@ class GeometryExtensionArray(_ExtensionArray):
             result = type(self)(self._geoms[item])
             result._readonly = self._readonly
             return result
-        key = check_array_indexer(self, item)
+        # pandas accepts the full runtime indexer protocol represented above;
+        # its stubs do not include the bool/tuple forms after narrowing.
+        key = check_array_indexer(self, item)  # type: ignore[arg-type]  # pyright: ignore[reportCallIssue, reportArgumentType]
         if isinstance(key, slice):
             result = type(self)(self._geoms[key])
             result._readonly = self._readonly
@@ -219,7 +235,9 @@ class GeometryExtensionArray(_ExtensionArray):
         # readonly (only real views/slices share the parent flag).
         return type(self)(self._geoms[key_arr])
 
-    def __setitem__(self, key: object, value: object) -> None:
+    def __setitem__(
+        self, key: int | np.integer[Any] | ListLike, value: object
+    ) -> None:
         from pandas.api.indexers import check_array_indexer
 
         if self._readonly:
@@ -288,7 +306,7 @@ class GeometryExtensionArray(_ExtensionArray):
         from gometry import equals_identical
 
         if isinstance(other, GeometryExtensionArray):
-            other_values: object = other._geoms
+            other_values: GeometryArray | Geometry = other._geoms
         elif isinstance(other, (GeometryArray, Geometry)):
             other_values = other
         elif _is_missing_scalar(other):
@@ -302,12 +320,14 @@ class GeometryExtensionArray(_ExtensionArray):
         )
         return ~result if invert else result
 
-    def __eq__(self, other: object) -> BoolArray | types.NotImplementedType:
+    # ExtensionArray comparisons are elementwise; object's scalar-bool model is
+    # incorrect for pandas and mypy reports this valid override as incompatible.
+    def __eq__(self, other: object) -> BoolArray | types.NotImplementedType:  # type: ignore[override]
         result = self._compare(other, invert=False)
         # NotImplemented defers to the other operand (standard dunder protocol)
         return NotImplemented if result is None else result
 
-    def __ne__(self, other: object) -> BoolArray | types.NotImplementedType:
+    def __ne__(self, other: object) -> BoolArray | types.NotImplementedType:  # type: ignore[override]
         result = self._compare(other, invert=True)
         return NotImplemented if result is None else result
 
@@ -479,7 +499,9 @@ class GeometryExtensionArray(_ExtensionArray):
         if type is None:
             return array
         try:
-            return array.cast(type)
+            # pandas permits an opaque Arrow cast target; pyarrow stubs require
+            # its concrete DataType, so neither checker can express the bridge.
+            return array.cast(type)  # type: ignore[type-var]  # pyright: ignore[reportArgumentType]
         except (TypeError, ValueError, pa.ArrowException) as error:
             raise TypeError(
                 f'cannot cast gometry geometry Arrow array to {type!r}'

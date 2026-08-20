@@ -340,6 +340,11 @@ impl PyGeometry {
 
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if self.has_m() || self.epoch().is_some() {
+            return Err(PyTypeError::new_err(
+                "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
+            ));
+        }
         geojson_dict(py, &self.shape)
     }
     /// Area in CRS-natural units for the geometry's CRS.

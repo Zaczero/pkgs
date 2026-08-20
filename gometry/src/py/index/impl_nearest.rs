@@ -100,15 +100,14 @@ impl PySpatialIndex {
             return self.bound_ordered_nearest(
                 |envelope| aabb_box_distance_2(&query_envelope, envelope).sqrt() * to_metre,
                 |idx| {
-                    self.rows.row(idx).with_data(|data| {
-                        pair_distance_resolved(
-                            &resolved,
-                            data,
-                            &self.rows.frame_cache(idx),
-                            query,
-                            query_cache,
-                        )
-                    })
+                    let data = self.rows.prepared_row(idx);
+                    pair_distance_resolved(
+                        &resolved,
+                        &data,
+                        &self.rows.frame_cache(idx),
+                        query,
+                        query_cache,
+                    )
                 },
                 k,
                 max_distance,
@@ -122,15 +121,14 @@ impl PySpatialIndex {
             return self.bound_ordered_nearest(
                 |envelope| pruner.envelope_lower_bound(envelope),
                 |idx| {
-                    self.rows.row(idx).with_data(|data| {
-                        pair_distance_resolved(
-                            &resolved,
-                            data,
-                            &self.rows.frame_cache(idx),
-                            query,
-                            query_cache,
-                        )
-                    })
+                    let data = self.rows.prepared_row(idx);
+                    pair_distance_resolved(
+                        &resolved,
+                        &data,
+                        &self.rows.frame_cache(idx),
+                        query,
+                        query_cache,
+                    )
                 },
                 k,
                 max_distance,
@@ -153,15 +151,14 @@ impl PySpatialIndex {
             if exclude.is_some_and(|shape| row.with_shape(|other| *other == *shape)) {
                 continue;
             }
-            let distance = row.with_data(|data| {
-                pair_distance_resolved(
-                    &resolved,
-                    data,
-                    &self.rows.frame_cache(entry.idx),
-                    query,
-                    query_cache,
-                )
-            })?;
+            let data = self.rows.prepared_row(entry.idx);
+            let distance = pair_distance_resolved(
+                &resolved,
+                &data,
+                &self.rows.frame_cache(entry.idx),
+                query,
+                query_cache,
+            )?;
             if max_distance.is_some_and(|max| distance > max.get()) {
                 continue;
             }

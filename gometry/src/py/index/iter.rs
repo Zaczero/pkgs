@@ -1,5 +1,7 @@
 //! Lazy handle iterator over a `SpatialIndex`, kept beside its pymethods.
 
+use std::mem::size_of_val;
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{Py, PyRef, PyResult, Python, pyclass, pymethods};
 
@@ -25,6 +27,10 @@ impl PySpatialIndexIter {
 
     const fn __length_hint__(&self) -> usize {
         self.remaining
+    }
+
+    fn __sizeof__(&self, py: Python<'_>) -> usize {
+        size_of_val(self) + self.source.borrow(py).__sizeof__()
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<usize>> {

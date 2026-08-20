@@ -13,7 +13,7 @@ use crate::py::wire_crs::{
 };
 use crate::{
     CoordinateAxes, Crs, Frame, FrameAdoption, FrameEdit, GeoJsonDecodeContext, HeapSize,
-    InvalidGeometryError, PyGeometry, PyGeometryArray, RepairMethod, Typed, ValidationIssue,
+    InvalidGeometryError, PyGeometry, PyGeometryArray, Typed, ValidationIssue,
     coerce_geojson_geometry_value, crs_arc, crs_label, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, geometry, guard_epoch_frame, io, is_mapping_like,
     is_one_byte_buffer, parse_crs, parse_geojson_slice, parse_geojson_value, parse_wkb_geometry,
@@ -389,7 +389,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
 /// Returned by ``geom.validate()``: truthy when the geometry is valid;
 /// otherwise ``report.reason`` names the OGC violation, ``report.location``
 /// pinpoints it, and ``report.path`` addresses the offending part.
-/// ``report.repair(...)`` returns a repaired copy of the reported geometry.
+/// Validation reports describe invalid geometries and their reasons.
 #[pyclass(
     name = "ValidationReport",
     module = "gometry",
@@ -472,34 +472,6 @@ impl PyValidationReport {
     #[getter]
     pub fn path(&self) -> Option<String> {
         self.issue.as_ref().and_then(|issue| issue.path.clone())
-    }
-
-    /// Return a repaired copy of the validated geometry (see
-    /// `Geometry.repair`).
-    ///
-    /// Parameters
-    /// ----------
-    /// method : {'linework', 'structure'}, default 'linework'
-    ///     Repair strategy: rebuild from noded linework, or fix ring structure.
-    ///
-    /// Returns
-    /// -------
-    /// Geometry
-    ///     A valid geometry.
-    ///
-    #[pyo3(
-        signature = (*, method = RepairMethod::Linework),
-        text_signature = "($self, *, method='linework')"
-    )]
-        ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> bad = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))')
-    /// >>> bad.validate().repair().is_valid
-    /// True
-pub fn repair(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
-        self.geometry.repair_impl(py, method)
     }
 
     /// ``sys.getsizeof`` support: the report plus the retained geometry

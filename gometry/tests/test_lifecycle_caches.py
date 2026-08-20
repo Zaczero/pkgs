@@ -22,7 +22,6 @@ import gometry as gm
 assert "numpy" in sys.modules
 assert not hasattr(gm, "TYPE_CHECKING")
 assert gm.Cell is __import__("gometry._types", fromlist=["Cell"]).Cell
-assert gm.Coverage is __import__("gometry._types", fromlist=["Coverage"]).Coverage
 from gometry._lib import H3Cell
 # Protocol structural check still works after identity re-export.
 _ = H3Cell

@@ -52,9 +52,10 @@ pub(crate) use types::{
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    geographic_crossing, geographic_crossing_bounds, geographic_crossing_bounds_for_shapes,
-    is_geographic_frame, is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame,
-    repair_shape_in_frame, self_intersections_in_frame, topology_split, unary_antimeridian_derived,
+    DerivedPointStrategy, geographic_crossing, geographic_crossing_bounds,
+    geographic_crossing_bounds_for_shapes, is_geographic_frame, is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_in_frame, topology_split, unary_antimeridian_derived,
     validate_data_in_frame, validate_shape_in_frame,
 };
 mod arrangement;
@@ -90,6 +91,7 @@ mod relate;
 mod relate_ng;
 pub(crate) use relate_ng::CompiledPattern;
 mod segment_index;
+pub(crate) use segment_index::uses_linear_plan_for_len;
 mod segments;
 mod tessellation;
 mod topology;
@@ -151,7 +153,7 @@ use overlay::{
 #[doc(hidden)]
 pub(crate) use packed_line_metrics::PackedLineColumnView;
 pub(crate) use packed_line_metrics::scale_metric_values;
-pub(crate) use point_location::PointBatchTester;
+pub(crate) use point_location::{CellCertificate, PointBatchTester, PointProbeUse};
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, face_interior_point,
     has_collection_operand, isolated_point_contact, line_contains_point,
@@ -165,6 +167,7 @@ pub(crate) use predicates::{
     line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
     point_is_geographic_pole, pole_position, polygon_is_valid, shape_encloses_pole,
     shape_has_polar_ring, shape_reaches_geographic_pole, shape_spans_full_longitude,
+    vertex_witness_probe_count,
 };
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
@@ -183,7 +186,7 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
 }
 use relate::{
     De9im, Loc, effective_dimension, lineal_relate_shapes, mixed_relate_shapes, native_relate_data,
-    native_relate_pattern_shapes, native_relate_shapes,
+    native_relate_data_for, native_relate_pattern_shapes, native_relate_shapes,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,

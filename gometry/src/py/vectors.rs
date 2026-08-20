@@ -314,6 +314,17 @@ impl Groups {
     // Sequences compare by value; like lists, they do not hash.
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __hash__: Option<Py<PyAny>> = None;
+
+    fn __copy__<'py>(slf: &Bound<'py, Self>) -> Bound<'py, Self> {
+        slf.clone()
+    }
+
+    #[pyo3(signature = (memo))]
+    fn __deepcopy__<'py>(slf: &Bound<'py, Self>, memo: &Bound<'py, PyAny>) -> Bound<'py, Self> {
+        let _ = memo;
+        slf.clone()
+    }
+
     #[classattr]
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;

@@ -109,9 +109,9 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert utm_radian_factors['meridian_convergence'] == pytest.approx(
         math.radians(cast('float', utm_factors['meridian_convergence']))
     )
-    crs_geodesic = gm.CRS(4326).geodesic(-73.0, 41.0, -74.0, 42.0)
-    crs_geodesic_3d = gm.CRS(4326).geodesic(-73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0)
-    crs_geodesic_radians = gm.CRS(4326).geodesic(
+    crs_geodesic = gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0)
+    crs_geodesic_3d = gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0)
+    crs_geodesic_radians = gm.CRS(4326).geodesic_inverse(
         math.radians(-73.0),
         math.radians(41.0),
         math.radians(-74.0),
@@ -128,7 +128,7 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert crs_geodesic_radians['forward_azimuth'] == pytest.approx(
         math.radians(cast('float', crs_geodesic['forward_azimuth']))
     )
-    crs_geodesic_batch = gm.CRS(4326).geodesic(
+    crs_geodesic_batch = gm.CRS(4326).geodesic_inverse(
         [-73.0, -73.0],
         [41.0, 41.0],
         [-74.0, -74.0],
@@ -362,9 +362,9 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert broadcast_apply_from_z[0] == pytest.approx([2.0, 2.0])
     assert broadcast_apply_from_z[1] == pytest.approx([7.0, 7.0])
     assert broadcast_apply_from_z[2] == pytest.approx([13.0, 23.0])
-    broadcast_geodesic = gm.CRS(4326).geodesic(-73.0, [41.0, 42.0], -74.0, [42.0, 43.0])
+    broadcast_geodesic = gm.CRS(4326).geodesic_inverse(-73.0, [41.0, 42.0], -74.0, [42.0, 43.0])
     assert len(broadcast_geodesic['distance']) == 2
-    broadcast_geodesic_from_z = gm.CRS(4326).geodesic(
+    broadcast_geodesic_from_z = gm.CRS(4326).geodesic_inverse(
         -73.0, 41.0, -74.0, 42.0, z1=[10.0, 20.0], z2=[110.0, 20.0]
     )
     assert broadcast_geodesic_from_z['distance'] == pytest.approx(
@@ -393,7 +393,7 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     buffer_xs, buffer_ys = buffer_matrix[:, 0], buffer_matrix[:, 1]
     assert buffer_xs == pytest.approx(raw_xs)
     assert buffer_ys == pytest.approx(raw_ys)
-    buffer_geodesic = gm.CRS(4326).geodesic(
+    buffer_geodesic = gm.CRS(4326).geodesic_inverse(
         memoryview(array('d', [-73.0, -73.0])),
         memoryview(array('d', [41.0, 41.0])),
         memoryview(array('d', [-74.0, -74.0])),
@@ -449,17 +449,17 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     with pytest.raises(ValueError, match='lon must be finite'):
         gm.CRS(3857).factors(float('nan'), 41.0)
     with pytest.raises(ValueError, match='geodesic coordinates must be finite'):
-        gm.CRS(4326).geodesic(float('nan'), 41.0, -74.0, 42.0)
+        gm.CRS(4326).geodesic_inverse(float('nan'), 41.0, -74.0, 42.0)
     with pytest.raises(ValueError, match='requires both z1 and z2'):
-        gm.CRS(4326).geodesic(-73.0, 41.0, -74.0, 42.0, z1=10.0)
+        gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0, z1=10.0)
     with pytest.raises(
         ValueError, match='lon1, lat1, lon2, and lat2 must have the same length'
     ):
-        gm.CRS(4326).geodesic([-73.0, -72.0], [41.0], -74.0, 42.0)
+        gm.CRS(4326).geodesic_inverse([-73.0, -72.0], [41.0], -74.0, 42.0)
     with pytest.raises(
         ValueError, match='lon1, lat1, lon2, lat2, z1, and z2 must have the same length'
     ):
-        gm.CRS(4326).geodesic(
+        gm.CRS(4326).geodesic_inverse(
             [-73.0, -72.0],
             [41.0, 42.0],
             [-74.0, -75.0],

@@ -191,7 +191,7 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use prepared::{FrameCacheRows, fresh_prepared_cache};
+pub(crate) use prepared::{BoundsSeed, FrameCacheRows, PreparedRow, fresh_prepared_cache};
 mod storage_helpers;
 mod storage_types;
 pub(crate) use packed_column_builder::{PackedColumnBuilder, PointColumnBuilder};

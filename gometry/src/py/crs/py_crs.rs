@@ -11,7 +11,7 @@ use crate::py::crs::{
 ///
 /// A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
 /// ``crs.ellipsoid``), serialize it (``crs.to_wkt()``, ``crs.to_epsg()``),
-/// compute on it (``crs.factors(...)``, ``crs.geodesic(...)``), and attach it
+/// compute on it (``crs.factors(...)``, ``crs.geodesic_inverse(...)``), and attach it
 /// to geometries via ``to_crs``. Accepts an authority string, EPSG code,
 /// authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 ///

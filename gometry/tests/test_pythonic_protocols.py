@@ -193,8 +193,8 @@ def test_match_sequence_pattern_on_geometry_array() -> None:
 def test_match_cells_coverages_reports_and_features() -> None:
     coverage = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=4)
     match coverage:
-        case gm.H3Coverage(cells):
-            assert cells == coverage.cells
+        case gm.CellArray() as cells:
+            assert cells == coverage
     match coverage[0]:
         case gm.H3Cell(cell_id):
             assert cell_id == int(coverage[0])
@@ -383,8 +383,93 @@ def test_sequence_index_count_windows_across_native_views() -> None:
         first = coverage[0]
         assert coverage.index(first) == 0 and coverage.count(first) == 1
         assert coverage.count(None) == 0
-        with pytest.raises(ValueError, match=rf'not in {type(coverage).__name__}'):
+        with pytest.raises(ValueError, match='None is not in array'):
             coverage.index(None)
+
+
+def test_groups_copy_deepcopy_and_pickle_preserve_value_container_protocols() -> None:
+    import operator
+
+    geometry_values = gm.GeometryArray([
+        gm.Point(0, 0),
+        gm.Point(1, 1),
+        gm.Point(2, 2),
+        gm.Point(3, 3),
+    ])
+    cell_values = gm.h3_cells(
+        [0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], resolution=1
+    )
+    groups = (
+        _lib._unpickle_int64_groups([1, 2, 3, 4], [0, 2, 4]),
+        _lib._unpickle_geometry_groups(geometry_values, [0, 2, 4]),
+        _lib._unpickle_cell_groups(cell_values, [0, 2, 4]),
+    )
+    for group in groups:
+        for view in (group, group[1:], group[::2]):
+            assert copy.copy(view) is view
+            assert copy.deepcopy(view) is view
+            restored = pickle.loads(pickle.dumps(view))
+            assert restored == view and restored is not view
+
+            iterator = iter(view)
+            assert iter(iterator) is iterator
+            assert operator.length_hint(iterator) == len(view)
+            assert iterator.__sizeof__() > 0
+            if view:
+                first = next(iterator)
+                expected = view[0]
+                if isinstance(first, np.ndarray):
+                    np.testing.assert_array_equal(first, expected)
+                else:
+                    assert first == expected
+                assert operator.length_hint(iterator) == len(view) - 1
+
+
+def test_multipart_direct_membership_index_count_use_part_semantics() -> None:
+    line = gm.LineString([(0, 0), (1, 1)])
+    polygon = gm.box(0, 0, 1, 1)
+    owners = (
+        (gm.MultiPoint([(0, 0), (1, 1), (0, 0)]), 2, -1),
+        (gm.MultiLineString([line, line, gm.LineString([(2, 2), (3, 3)])]), 1, -2),
+        (gm.MultiPolygon([polygon, polygon, gm.box(2, 2, 3, 3)]), 1, -2),
+        (gm.GeometryCollection([
+            gm.Point(0, 0),
+            line,
+            gm.Point(0, 0),
+        ]), 2, -1),
+    )
+    for owner, duplicate_index, negative_start in owners:
+        first = owner[0]
+        equal_distinct = owner.parts[0]
+        assert first == equal_distinct and first is not equal_distinct
+        assert first in owner and equal_distinct in owner
+        assert owner.count(equal_distinct) == 2
+        assert owner.index(equal_distinct) == 0
+        assert owner.index(equal_distinct, 1) == duplicate_index
+        assert owner.index(equal_distinct, negative_start) == duplicate_index
+        assert owner.index(equal_distinct, -100, 100) == 0
+        with pytest.raises(ValueError, match='not in GeometryParts'):
+            owner.index(equal_distinct, 2, 1)
+        with pytest.raises(ValueError, match='not in GeometryParts'):
+            owner.index(gm.Point(99, 99))
+        assert gm.Point(99, 99) not in owner
+        assert owner.count(object()) == 0
+
+    collection = owners[-1][0]
+    assert gm.Point(0, 0) in collection
+    assert line in collection
+    assert gm.LineString([(2, 2), (3, 3)]) not in collection
+
+
+def test_scalar_geometries_are_not_sequences() -> None:
+    for scalar in (
+        gm.Point(0, 0),
+        gm.LineString([(0, 0), (1, 1)]),
+        gm.box(0, 0, 1, 1),
+    ):
+        assert not isinstance(scalar, cabc.Sequence)
+        assert not hasattr(scalar, 'index')
+        assert not hasattr(scalar, 'count')
 
 
 def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> None:
@@ -438,7 +523,7 @@ def test_reversed_edge_cases_for_geometry_cell_and_coverage_sequences() -> None:
     assert list(reversed(gm.h3_cells([], [], resolution=1))) == []
 
     coverage = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=3)
-    assert list(reversed(coverage)) == list(coverage.cells)[::-1]
+    assert list(reversed(coverage)) == list(coverage)[::-1]
     empty_coverage = gm.h3_cover(
         gm.Point(0, 0, crs=4326), resolution=3, cell_rule='within'
     )
@@ -472,25 +557,46 @@ def test_multipart_and_coverage_support_slicing() -> None:
         gm.geohash_cover(box, precision=3),
         gm.tile_cover(box, zoom=5),
     ):
+        values = list(cov)
         head = cov[:2]
-        assert isinstance(head, gm.CellArray) and list(head) == list(cov)[:2]
-        assert cov[0] == cov.cells[0]
+        assert isinstance(head, gm.CellArray) and list(head) == values[:2]
+        first = values[0]
+        assert cov[0] == first
+        assert isinstance(first, (gm.H3Cell, gm.S2Cell, gm.GeohashCell, gm.Tile))
 
 
 def test_cells_sort_by_id_and_reject_foreign_comparisons() -> None:
-    h3_cells = gm.h3_cover(gm.box(0, 0, 2, 2, crs=4326), resolution=3).cells
+    h3_cells = gm.h3_cover(gm.box(0, 0, 2, 2, crs=4326), resolution=3)
     assert sorted(h3_cells) == sorted(h3_cells, key=int)
     assert h3_cells.count(gm.H3Cell(80.0, 80.0, resolution=3)) == 0
     assert h3_cells.count(None) == 0
     with pytest.raises(ValueError, match='None is not in array'):
         h3_cells.index(None)
-    s2_cells = gm.s2_cover(gm.box(0, 0, 2, 2, crs=4326), target_cells=8).cells
+    s2_cells = gm.s2_cover(gm.box(0, 0, 2, 2, crs=4326), target_cells=8)
     assert sorted(s2_cells) == sorted(s2_cells, key=int)
     assert min(s2_cells) == sorted(s2_cells)[0]
     with pytest.raises(TypeError):
         _ = h3_cells[0] < 5
     assert hex(h3_cells[0]).startswith('0x')
     assert int(s2_cells[0]) == s2_cells[0].id
+
+
+def test_cell_array_missing_rows_are_pythonic_and_lossless_in_numpy() -> None:
+    points = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 1)])
+    cells = gm.h3_cells(points, resolution=3)
+    assert list(cells)[1] is None
+    assert None in cells and cells.count(None) == 1
+    assert cells.index(None) == 1
+    assert cells.count(cells[0]) == 1
+    with pytest.raises(ValueError, match='not in array'):
+        cells.index(cells[0], 1)
+    values = cells.to_numpy()
+    assert values.dtype == object and values[1] is None
+    assert not values.flags.writeable
+    with pytest.raises(ValueError, match='masked'):
+        np.asarray(cells, dtype=np.uint64)
+    with pytest.raises(gm.GeometryError, match='copying'):
+        np.asarray(cells, dtype=object, copy=False)
 
 
 def test_weakref_support_on_data_types() -> None:
@@ -584,8 +690,8 @@ def test_coordinate_iteration_is_linear_and_hinted() -> None:
     assert next(reverse_coords) == (99.0, 0.0)
     assert operator.length_hint(reverse_coords) == 99
     cov = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=4)
-    assert list(cov[0:2]) == list(cov.cells[:2])
-    assert list(reversed(cov)) == list(cov.cells[::-1])
+    assert list(cov[0:2]) == list(cov)[:2]
+    assert list(reversed(cov)) == list(cov[::-1])
 
 
 def test_array_getitem_error_messages_share_one_template() -> None:
@@ -639,7 +745,7 @@ def test_copy_returns_self_for_immutable_values() -> None:
         gm.points([0.0, 1.0], [0.0, 1.0]),
         gm.CRS(4326),
         coverage[0],
-        coverage.cells,
+        coverage,
     ]
     for value in values:
         assert copy.copy(value) is value, type(value).__name__
@@ -697,8 +803,7 @@ def test_engine_copy_and_pickle_contracts() -> None:
     assert copy.copy(prepared) is prepared
     assert copy.deepcopy(prepared) is prepared
     clone = pickle.loads(pickle.dumps(prepared))
-    assert clone.contains(gm.Point(0.5, 0.5, crs=4326))
-    assert clone.explain() == prepared.explain()
+    assert gm.contains(clone, gm.Point(0.5, 0.5, crs=4326))
 
 
 def test_coordinates_pickle_copy_and_deepcopy_are_type_stable() -> None:
@@ -899,7 +1004,7 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     prepared = prepared_poly.prepare()
     cold_size = sys.getsizeof(prepared)
     assert cold_size > prepared_poly.nbytes
-    prepared.contains_xy([0.0, 2.0], [0.0, 2.0])
+    gm.contains_xy(prepared, [0.0, 2.0], [0.0, 2.0])
     assert sys.getsizeof(prepared) >= cold_size
     line = gm.LineString([(float(i), 0.0) for i in range(128)])
     prepared_line = line.prepare()

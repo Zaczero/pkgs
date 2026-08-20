@@ -137,11 +137,21 @@ def test_b1_to_feature_splits_antimeridian_seam() -> None:
     assert len(feature['geometry']['coordinates']) >= 2
 
 
-def test_b1_to_feature_silently_drops_epoch() -> None:
-    """Epoch is not representable on Feature mappings — documented silent drop."""
-    feature = gm.to_feature(gm.Point(0, 0, crs=4326, epoch=2020.0))
+def test_b1_to_feature_requires_explicit_epoch_drop() -> None:
+    """Feature mappings require explicit acknowledgement of epoch loss."""
+    point = gm.Point(0, 0, crs=4326, epoch=2020.0)
+    with pytest.raises(
+        gm.GeometryError,
+        match=r'to_feature cannot encode coordinate epoch metadata; '
+        r'pass drop_epoch=True to acknowledge the loss',
+    ):
+        gm.to_feature(point)
+
+    feature = gm.to_feature(point, drop_epoch=True)
     assert 'epoch' not in feature
     assert set(feature) >= {'type', 'geometry', 'properties'}
+    decoded = gm.from_features(feature)
+    assert decoded.geometries[0].epoch is None
 
 
 # ---------------------------------------------------------------------------

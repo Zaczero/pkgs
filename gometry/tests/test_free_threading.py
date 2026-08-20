@@ -34,10 +34,10 @@ def _shared_fixtures() -> dict[str, Any]:
     values = [poly, line, gm.Point(-1, -1), outside]
     idx = gm.SpatialIndex(values)
     prepared = poly.prepare()
-    coverage = gm.h3_cover(poly, resolution=5)
     arr = gm.GeometryArray(values)
     wgs = gm.box(-1, -1, 1, 1, crs=4326)
     wgs_point = gm.Point(0.1, 0.1, crs=4326)
+    covers_expected = gm.covers(wgs, wgs_point)
     merc = gm.CRS(3857)
     return {
         'poly': poly,
@@ -48,7 +48,6 @@ def _shared_fixtures() -> dict[str, Any]:
         'values': values,
         'idx': idx,
         'prepared': prepared,
-        'coverage': coverage,
         'arr': arr,
         'wgs': wgs,
         'wgs_point': wgs_point,
@@ -58,9 +57,9 @@ def _shared_fixtures() -> dict[str, Any]:
         'hausdorff': gm.hausdorff_distance(poly, line),
         'distance': gm.distance(poly, probe),
         'idx_hits': idx.query(probe).tolist(),
-        'prepared_contains': prepared.contains(hole),
-        'prepared_intersects': prepared.intersects(line),
-        'coverage_contains': coverage.contains(wgs_point),
+        'prepared_contains': gm.contains(prepared, hole),
+        'prepared_intersects': gm.intersects(prepared, line),
+        'covers_expected': covers_expected,
         'to_crs': wgs.to_crs(merc),
         'arr_areas': arr.area.tolist(),
         'arr_intersects': gm.intersects(arr, probe).tolist(),
@@ -82,22 +81,21 @@ def _worker(
         outside = fixtures['outside']
         idx = fixtures['idx']
         prepared = fixtures['prepared']
-        coverage = fixtures['coverage']
         arr = fixtures['arr']
         wgs = fixtures['wgs']
         wgs_point = fixtures['wgs_point']
         merc = fixtures['merc']
 
-        assert prepared.contains(hole) == fixtures['prepared_contains']
-        assert prepared.intersects(line) == fixtures['prepared_intersects']
-        assert prepared.disjoint(outside)
+        assert gm.contains(prepared, hole) == fixtures['prepared_contains']
+        assert gm.intersects(prepared, line) == fixtures['prepared_intersects']
+        assert gm.disjoint(prepared, outside)
         assert idx.query(probe).tolist() == fixtures['idx_hits']
         assert idx.candidates(probe).tolist() == fixtures['idx_hits']
         assert gm.distance(poly, probe) == fixtures['distance']
         assert gm.hausdorff_distance(poly, line) == fixtures['hausdorff']
         assert gm.union(poly, line) == fixtures['union']
         assert gm.intersection(poly, line) == fixtures['intersection']
-        assert coverage.contains(wgs_point) == fixtures['coverage_contains']
+        assert gm.covers(wgs, wgs_point) == fixtures['covers_expected']
         assert wgs.to_crs(merc) == fixtures['to_crs']
         assert arr.area.tolist() == fixtures['arr_areas']
         assert gm.intersects(arr, probe).tolist() == fixtures['arr_intersects']
@@ -152,7 +150,7 @@ def test_prepared_geometry_is_sendable() -> None:
     thread.start()
     thread.join(timeout=10.0)
     assert not thread.is_alive()
-    assert holder[0].contains(gm.Point(0.5, 0.5))
+    assert gm.contains(holder[0], gm.Point(0.5, 0.5))
 
 
 def test_shared_coverage_iterator_drains_once_across_threads() -> None:

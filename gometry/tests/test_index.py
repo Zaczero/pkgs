@@ -452,7 +452,7 @@ def test_index_predicate_controls_are_keyword_only() -> None:
     with pytest.raises(TypeError, match='positional'):
         index.query(point, 'intersects')  # type: ignore[call-arg]
     with pytest.raises(TypeError, match='positional'):
-        index.query_pairs('intersects')  # type: ignore[call-arg]
+        index.self_join('intersects')  # type: ignore[call-arg]
     with pytest.raises(TypeError, match='positional'):
         gm.join([point], [point], 'intersects')  # type: ignore[call-arg]
 
@@ -662,8 +662,8 @@ def test_geometry_array_prepared_contains_and_index() -> None:
         gm.equals(gm.Point(0, 0, crs=4326), values), [True, False, False, False]
     )
     prepared = polygon.prepare()
-    np.testing.assert_array_equal(prepared.contains(values), [True, False, True, False])
-    assert prepared.contains_xy(0, 0)
+    np.testing.assert_array_equal(gm.contains(prepared, values), [True, False, True, False])
+    assert gm.contains_xy(prepared, 0, 0)
     family = (
         'contains',
         'intersects',
@@ -685,29 +685,26 @@ def test_geometry_array_prepared_contains_and_index() -> None:
     ]
     for predicate in family:
         np.testing.assert_array_equal(
-            getattr(prepared, predicate)(values),
+            getattr(gm, predicate)(prepared, values),
             [getattr(gm, predicate)(polygon, item) for item in list(values)],
             err_msg=predicate,
         )
+        np.testing.assert_array_equal(
+            getattr(gm, predicate)(values, prepared),
+            [getattr(gm, predicate)(item, polygon) for item in list(values)],
+            err_msg=f'{predicate} right-prepared',
+        )
         for probe in probes:
-            assert getattr(prepared, predicate)(probe) == getattr(gm, predicate)(
+            assert getattr(gm, predicate)(prepared, probe) == getattr(gm, predicate)(
                 polygon, probe
             ), (predicate, (probe).to_wkt())
-    assert prepared.dwithin(gm.Point(2, 0, crs=4326), 1.5) == gm.dwithin(
+    assert gm.dwithin(prepared, gm.Point(2, 0, crs=4326), 1.5) == gm.dwithin(
         polygon, gm.Point(2, 0, crs=4326), 1.5
     )
     np.testing.assert_array_equal(
-        prepared.dwithin(values, 0.0),
+        gm.dwithin(prepared, values, 0.0),
         [gm.dwithin(polygon, item, 0.0) for item in list(values)],
     )
-    assert prepared.explain() == [
-        'prepared geometry: Polygon',
-        'predicate kernel: hierarchical Y-stabbing raycast (parts → rings → edges)',
-        'scalar geometry inputs: bounds gate, then the cached pair kernel',
-        'array geometry inputs: shared batch engine (point/line gates, cached scalar state)',
-        'packed point arrays: direct Rust point-in-geometry kernel',
-        'CRS metadata: EPSG:4326',
-    ]
     assert repr(prepared) == '<PreparedGeometry geometry_type=Polygon>'
     assert ids(gm.SpatialIndex(values).query(polygon, predicate='contains')) == [0, 2]
     assert ids(gm.SpatialIndex(values).query(polygon, predicate='covers')) == [0, 2, 3]
@@ -755,8 +752,8 @@ def test_spatial_index_completeness_len_batch_pairs_and_nearest_distance() -> No
         gm.box(1, 1, 3, 3),
         gm.box(5, 5, 6, 6),
     ])
-    assert pair_rows(gm.SpatialIndex(boxes).query_pairs()) == [(0, 1)]
-    assert pair_rows(gm.SpatialIndex(boxes).query_pairs(predicate='overlaps')) == [
+    assert pair_rows(gm.SpatialIndex(boxes).self_join()) == [(0, 1)]
+    assert pair_rows(gm.SpatialIndex(boxes).self_join(predicate='overlaps')) == [
         (0, 1)
     ]
     probe = gm.Point(1.1, 0)
@@ -866,6 +863,22 @@ def test_spatial_index_read_only_mapping_views_and_lazy_iterator() -> None:
         next(invalidated)
 
 
+def test_spatial_index_iterator_size_tracks_retained_index() -> None:
+    import sys
+
+    small = gm.SpatialIndex([gm.box(0, 0, 1, 1)])
+    large = gm.SpatialIndex([gm.box(i, 0, i + 1, 1) for i in range(256)])
+    small_iterator = iter(small)
+    large_iterator = iter(large)
+
+    small_size = sys.getsizeof(small_iterator)
+    assert small_size > 0
+    assert sys.getsizeof(large_iterator) > small_size
+
+    assert next(small_iterator) == 0
+    assert sys.getsizeof(small_iterator) == small_size
+
+
 def test_spatial_index_insert_array_matches_insert_loop() -> None:
     base = [gm.box(0, 0, 1, 1)]
     additions = gm.GeometryArray([
@@ -882,8 +895,8 @@ def test_spatial_index_insert_array_matches_insert_loop() -> None:
     assert [loop.insert(geom) for geom in additions] == [1, 2, 3]
     query = gm.box(-1, -1, 10, 10)
     assert ids(batch.query(query)) == ids(loop.query(query))
-    assert pair_rows(batch.query_pairs(predicate='intersects')) == pair_rows(
-        loop.query_pairs(predicate='intersects')
+    assert pair_rows(batch.self_join(predicate='intersects')) == pair_rows(
+        loop.self_join(predicate='intersects')
     )
 
 
@@ -895,7 +908,7 @@ def test_spatial_index_insert_rejects_frame_mismatch() -> None:
     assert ids(idx.query(gm.box(-1, -1, 1, 1, crs=4326))) == before
 
 
-def test_insert_array_antimeridian_crossing_row_is_query_pairs_visible() -> None:
+def test_insert_array_antimeridian_crossing_row_is_self_join_visible() -> None:
     box175 = gm.box(174.0, -5.0, 176.0, 5.0, crs=4326)
     idx = gm.SpatialIndex(gm.GeometryArray([box175]))
     crossing = gm.GeometryArray([
@@ -911,12 +924,12 @@ def test_insert_array_antimeridian_crossing_row_is_query_pairs_visible() -> None
         )
     ])
     assert idx.insert(crossing) == [1]
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 1)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 1)]
 
 
 def test_insert_iterable_path_widens_antimeridian_crossing() -> None:
     # The Python-list (iterable) path must widen crossing envelopes just like the
-    # packed-array path, or query_pairs silently misses the inserted pair.
+    # packed-array path, or self_join silently misses the inserted pair.
     box175 = gm.box(174.0, -5.0, 176.0, 5.0, crs=4326)
     idx = gm.SpatialIndex(gm.GeometryArray([box175]))
     crossing = gm.Polygon(
@@ -924,7 +937,7 @@ def test_insert_iterable_path_widens_antimeridian_crossing() -> None:
         crs=4326,
     )
     assert idx.insert([crossing]) == [1]
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 1)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 1)]
 
 
 def test_insert_batch_is_atomic_on_a_bad_row() -> None:
@@ -980,7 +993,7 @@ def test_packed_array_index_mutates_like_a_boxed_one() -> None:
     assert ids(index.nearest(gm.Point(4.9, 4.9))) == [2]
     pairs_index = gm.SpatialIndex(gm.points([0.0, 0.5, 9.0], [0.0, 0.5, 9.0]))
     pairs_index.insert(gm.Point(0.25, 0.25))
-    assert pair_rows(pairs_index.query_pairs(predicate='dwithin', distance=1.0)) == [
+    assert pair_rows(pairs_index.self_join(predicate='dwithin', distance=1.0)) == [
         (0, 1),
         (0, 3),
         (1, 3),
@@ -1001,11 +1014,11 @@ def test_spatial_index_remove_excludes_removed_from_nearest() -> None:
     assert ids(after) == [1]
 
 
-def test_query_pairs_rejects_directional_predicates() -> None:
+def test_self_join_rejects_directional_predicates() -> None:
     idx = gm.SpatialIndex([gm.box(0, 0, 4, 4), gm.box(1, 1, 2, 2)])
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 1)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 1)]
     with pytest.raises(ValueError, match='symmetric'):
-        idx.query_pairs(predicate=cast('Any', 'contains'))
+        idx.self_join(predicate=cast('Any', 'contains'))
 
 
 def test_geodesic_nearest_pruning_matches_brute_force_on_adversarial_points() -> None:
@@ -1121,7 +1134,7 @@ def test_candidates_accepts_geometry_arrays() -> None:
     assert ids(idx.query(queries)) == [[0], []]
 
 
-def test_query_pairs_refines_each_unordered_pair_once_with_exact_results() -> None:
+def test_self_join_refines_each_unordered_pair_once_with_exact_results() -> None:
     boxes = gm.GeometryArray([
         gm.box(0, 0, 2, 2),
         gm.box(1, 1, 3, 3),
@@ -1129,7 +1142,7 @@ def test_query_pairs_refines_each_unordered_pair_once_with_exact_results() -> No
         gm.box(10, 10, 11, 11),
     ])
     idx = gm.SpatialIndex(boxes)
-    pairs = idx.query_pairs(predicate='intersects')
+    pairs = idx.self_join(predicate='intersects')
     items = list(boxes)
     brute = [
         (i, j)
@@ -1294,7 +1307,7 @@ def test_empty_index_answers_every_method_gracefully() -> None:
     assert ids(idx.query(probe)) == []
     assert ids(idx.nearest(probe)) == []
     assert ids(idx.candidates(probe)) == []
-    assert pair_rows(idx.query_pairs()) == []
+    assert pair_rows(idx.self_join()) == []
     assert ids(idx.query(gm.Point(0, 0, crs=3857))) == []
 
 
@@ -1383,10 +1396,10 @@ def test_geodesic_nearest_max_distance_interacts_with_pruning() -> None:
     assert ids(idx.nearest(probe, k=3, max_distance=1.0)) == []
 
 
-def test_query_pairs_supports_geodesic_dwithin() -> None:
+def test_self_join_supports_geodesic_dwithin() -> None:
     idx = gm.SpatialIndex(gm.points([0.0, 1.0, 50.0], [0.0, 0.0, 0.0], crs=4326))
     np.testing.assert_allclose(
-        pair_rows(idx.query_pairs(predicate='dwithin', distance=150000.0)), [(0, 1)]
+        pair_rows(idx.self_join(predicate='dwithin', distance=150000.0)), [(0, 1)]
     )
 
 
@@ -1430,17 +1443,17 @@ def test_geodesic_full_scan_arm_matches_brute_force_for_shapes() -> None:
             ]
 
 
-def test_mutation_keeps_handles_stable_through_query_pairs() -> None:
+def test_mutation_keeps_handles_stable_through_self_join() -> None:
     idx = gm.SpatialIndex([
         gm.box(0, 0, 2, 2),
         gm.box(1, 1, 3, 3),
         gm.box(2.5, 2.5, 4, 4),
     ])
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 1), (1, 2)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 1), (1, 2)]
     assert idx.remove(1)
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == []
+    assert pair_rows(idx.self_join(predicate='intersects')) == []
     assert idx.insert(gm.box(0.5, 0.5, 1.5, 1.5)) == 3
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 3)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 3)]
     assert not idx.remove(1)
 
 
@@ -1476,9 +1489,9 @@ def test_insert_enforces_the_index_frame_and_never_reuses_handles() -> None:
     assert idx.insert(gm.Point(2, 0, crs=4326, epoch=2020.0)) == 1
 
 
-def test_query_pairs_finds_an_inserted_antimeridian_crossing_pair() -> None:
+def test_self_join_finds_an_inserted_antimeridian_crossing_pair() -> None:
     """An inserted antimeridian-crossing geometry must index with its wrapped
-    band, exactly like build-time rows: otherwise a later ``query_pairs`` misses
+    band, exactly like build-time rows: otherwise a later ``self_join`` misses
     the pair against a lower-id row whose narrow envelope cannot reach the
     crossing row's planar false-middle box (``j > i`` blocks the reverse emit).
     ``remove`` mirrors the same envelope so the entry round-trips.
@@ -1491,9 +1504,9 @@ def test_query_pairs_finds_an_inserted_antimeridian_crossing_pair() -> None:
     )
     assert gm.intersects(box175, crossing)  # ground truth
     assert idx.insert(crossing) == 1
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == [(0, 1)]
+    assert pair_rows(idx.self_join(predicate='intersects')) == [(0, 1)]
     assert idx.remove(1) is True
-    assert pair_rows(idx.query_pairs(predicate='intersects')) == []
+    assert pair_rows(idx.self_join(predicate='intersects')) == []
 
 
 def test_array_dwithin_query_widens_an_antimeridian_crossing_row() -> None:
@@ -1509,7 +1522,7 @@ def test_array_dwithin_query_widens_an_antimeridian_crossing_row() -> None:
     assert match_rows(matches) == [[0]]
 
 
-def test_query_pairs_intersects_agrees_with_brute_force_convex_and_concave() -> None:
+def test_self_join_intersects_agrees_with_brute_force_convex_and_concave() -> None:
     """The symmetric ``intersects`` self-join must agree with an O(n^2) brute
     force across mixed convex (overlapping boxes) and concave (L-shaped) rows.
     """
@@ -1529,7 +1542,7 @@ def test_query_pairs_intersects_agrees_with_brute_force_convex_and_concave() -> 
         ])
     )
     idx = gm.SpatialIndex(gm.GeometryArray(geoms))
-    got = set(pair_rows(idx.query_pairs(predicate='intersects')))
+    got = set(pair_rows(idx.self_join(predicate='intersects')))
     brute = {
         (i, j)
         for i, j in itertools.combinations(range(len(geoms)), 2)

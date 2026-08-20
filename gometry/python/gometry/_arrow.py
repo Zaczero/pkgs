@@ -327,7 +327,11 @@ def strip_missing(array: pa.Array) -> pa.Array:
     """The array without its null rows (dense import lane input)."""
     pa = _pyarrow()
     if hasattr(array, 'storage'):
-        return pa.ExtensionArray.from_storage(array.type, array.storage.drop_null())
+        # pyarrow-stubs does not narrow hasattr(array, 'storage') to
+        # ExtensionArray, although the runtime attribute check does.
+        return pa.ExtensionArray.from_storage(
+            array.type, array.storage.drop_null()  # pyright: ignore[reportAttributeAccessIssue]
+        )
     return array.drop_null()
 
 

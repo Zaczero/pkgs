@@ -190,8 +190,6 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: gm.h3_cover(area, resolution=-1), 'H3 resolution'),
         (lambda: gm.s2_cover(area, level=-1), 'S2 level'),
         (lambda: gm.s2_cover(area, level=5, max_cells=-1), 'max_cells'),
-        (lambda: gm.s2_cover(area, level=5, level_mod=99), 'level_mod'),
-        (lambda: gm.s2_cover(area, level=5, min_level=-1), 'S2 level'),
         (lambda: h3_cell.parent(-1), 'H3 resolution'),
         (lambda: h3_cell.children(huge), 'H3 resolution'),
         (lambda: h3_cell.grid_disk(-1), 'H3 grid distance'),
@@ -371,7 +369,7 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
         (lambda: gm.contains_xy(geom, huge, 0), 'x'),
         (lambda: gm.intersects_xy(geom, huge, 0), 'x'),
-        (lambda: geom.prepare().contains_xy(huge, 0), 'x'),
+        (lambda: gm.contains_xy(geom.prepare(), huge, 0), 'x'),
         (lambda: gm.contains_xy(geom, huge, 0), 'x'),
         (lambda: gm.intersects_xy(geom, huge, 0), 'x'),
         (lambda: gm.dwithin(geom, other, huge), 'distance'),
@@ -398,7 +396,7 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
 
 
 def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> None:
-    area = gm.box(-1, -1, 1, 1, crs=4326)
+    _ = gm.box(-1, -1, 1, 1, crs=4326)
     idx = gm.SpatialIndex(gm.points([0], [0]))
     geom = gm.Point(0, 0)
     arr = gm.GeometryArray([geom])
@@ -416,12 +414,6 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
         'gm.s2_cover': str(inspect.signature(gm.s2_cover)),
-        'S2Coverage.with_parents': str(
-            inspect.signature(gm.s2_cover(area, level=5).with_parents)
-        ),
-        'H3Coverage.with_parents': str(
-            inspect.signature(gm.h3_cover(area, resolution=3).with_parents)
-        ),
         'GeometryArray': str(inspect.signature(gm.GeometryArray)),
         'Point': str(inspect.signature(gm.Point)),
         'LineString': str(inspect.signature(gm.LineString)),
@@ -450,10 +442,6 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     )
     assert "cell_rule='overlap'" in signatures['gm.h3_cover']
     assert 'max_cells=1000000' in signatures['gm.s2_cover']
-    assert 'target_cells=8' in signatures['gm.s2_cover']
-    assert 'level_mod=1' in signatures['gm.s2_cover']
-    assert 'min_level=0' in signatures['S2Coverage.with_parents']
-    assert 'min_resolution=0' in signatures['H3Coverage.with_parents']
     assert signatures['GeometryArray'] == '(values, *, crs=None, epoch=None)'
     assert (
         signatures['Point']
@@ -537,13 +525,11 @@ def test_readme_quickstart_stays_executable() -> None:
     assert area_m2 > 0
     assert perimeter_m > 0
     cells = gm.h3_cover(area, resolution=6, cell_rule='center')
-    assert cells.cell_rule == 'center'
-    assert cells.resolution == 6
-    assert cells.covers(point)
+    assert len(cells) > 0
     s2_cell = gm.S2Cell(point, level=12)
     s2_cells = gm.s2_cover(area, level=12)
     assert s2_cell.level == 12
-    assert s2_cells.covers(point)
+    assert len(s2_cells) > 0
     idx = gm.SpatialIndex(gm.points([21.0, 30.0], [52.0, 52.0], crs=4326))
     np.testing.assert_allclose(idx.candidates(area), [0])
     np.testing.assert_allclose(idx.query(area, predicate='contains'), [0])
@@ -607,7 +593,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'Extremes',
         'Features',
         'GeohashCell',
-        'GeohashCoverage',
         'Geometry',
         'GeometryArray',
         'GeometryCollection',
@@ -616,7 +601,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'GeometryTypeError',
         'Groups',
         'H3Cell',
-        'H3Coverage',
         'H3Edge',
         'H3EdgeArray',
         'H3Vertex',
@@ -632,10 +616,8 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'PolygonizeResult',
         'PreparedGeometry',
         'S2Cell',
-        'S2Coverage',
         'SpatialIndex',
         'Tile',
-        'TileCoverage',
         'TransformError',
         'ValidationReport',
         'area',
@@ -664,7 +646,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'equals_exact',
         'equals_identical',
         'Cell',
-        'Coverage',
         'frechet_distance',
         'from_arrow',
         'from_features',
@@ -775,38 +756,6 @@ def test_cell_protocol_conformance() -> None:
         assert cell.contains(cell.children()[0])
         assert cell.intersects(cell.children()[0].token)
         assert all(isinstance(neighbor.token, str) for neighbor in cell.neighbors)
-
-
-def test_coverage_protocol_conformance() -> None:
-    """Every coverage class satisfies ``gometry.Coverage`` structurally.
-
-    Annotated assignments in ``tests/typing/test_conformance.py`` are the
-    static gate; these runtime asserts lock the shared surface when only
-    pytest runs.
-    """
-    box = gm.box(13.0, 52.0, 13.5, 52.5)
-    assert gm.Coverage.__module__ == 'gometry'
-    coverages = [
-        gm.h3_cover(box, resolution=5),
-        gm.s2_cover(box, level=8),
-        gm.geohash_cover(box, precision=4),
-        gm.tile_cover(box, zoom=6),
-    ]
-    probe = gm.Point(13.25, 52.25)
-    for cov in coverages:
-        assert len(cov.cells) == len(cov)
-        assert len(cov.interior_cells) + len(cov.boundary_cells) == len(cov.cells)
-        covers = cov.covers(probe)
-        assert isinstance(covers, bool)
-        # Membership is exact against the source geometry, not the cell outline.
-        assert covers is True
-        assert isinstance(cov.contains(probe), bool)
-        assert isinstance(cov.intersects(probe), bool)
-        outline = cov.to_polygon()
-        assert outline.geometry_type in ('Polygon', 'MultiPolygon')
-        compacted = cov.compact()
-        assert len(compacted) <= len(cov)
-        assert isinstance(cov.with_parents(), type(cov))
 
 
 def test_sequence_types_use_iteration_as_the_only_list_materialization() -> None:

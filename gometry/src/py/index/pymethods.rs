@@ -410,11 +410,10 @@ impl PySpatialIndex {
                 let mut ids = Vec::new();
                 let mut offsets = Vec::with_capacity(row_count + 1);
                 offsets.push(0);
-                for (missing, row) in array.masked_storage_rows() {
+                for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                     if !missing {
-                        row.with_data(|shape| {
-                            self.topological_matches_append(shape, topological, &mut ids);
-                        });
+                        let shape = array.prepared_row(row_index, row);
+                        self.topological_matches_append(&shape, topological, &mut ids);
                     }
                     offsets.push(ids.len());
                 }
@@ -425,16 +424,13 @@ impl PySpatialIndex {
             // candidate core and the pair kernel on stack handles — no
             // per-row PyGeometry staging.
             let plan = PreparedIndexQuery::for_array(self, array, Some(predicate), distance, unit)?;
-            let element_bounds = array.cached_element_bounds();
             let row_count = array.storage().len();
             let mut ids = Vec::new();
             let mut offsets = Vec::with_capacity(row_count + 1);
             offsets.push(0);
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
-                    let seeded = element_bounds
-                        .as_ref()
-                        .and_then(|bounds| bounds.get(row_index).copied().flatten());
+                    let seeded = array.row_bounds_seed(row_index);
                     self.dwithin_query_row_matches_append(
                         row,
                         &array.row_frame_cache(row_index),
@@ -545,10 +541,10 @@ impl PySpatialIndex {
     /// --------
     /// >>> import gometry as gm
     /// >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)])
-    /// >>> left, right = idx.query_pairs()
+    /// >>> left, right = idx.self_join()
     /// >>> (left.tolist(), right.tolist())
     /// ([], [])
-    pub(crate) fn query_pairs(
+    pub(crate) fn self_join(
         &self,
         py: Python<'_>,
         predicate: &str,
@@ -558,7 +554,7 @@ impl PySpatialIndex {
         let predicate = IndexPredicate::parse(predicate)?;
         if !predicate.is_symmetric() {
             return Err(GeometryError::new_err(format!(
-                "query_pairs requires a symmetric predicate, but \"{}\" is directional; \
+                "self_join requires a symmetric predicate, but \"{}\" is directional; \
                  use join(...) for directed relations",
                 predicate.label(),
             )));
@@ -644,7 +640,6 @@ impl PySpatialIndex {
             // id-buffer copy. Packed element bounds are hoisted once so each
             // row reuses the cache instead of re-scanning shells.
             let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
-            let element_bounds = array.cached_element_bounds();
             // Pure envelope candidates (no distance, not geographic): never
             // enter row prep / with_shape — bounds cache is the whole answer.
             let envelope_only =
@@ -656,12 +651,13 @@ impl PySpatialIndex {
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let row_start = ids.len();
-                    let seeded = element_bounds
-                        .as_ref()
-                        .and_then(|bounds| bounds.get(row_index).copied().flatten());
+                    let seeded = array.row_bounds_seed(row_index);
                     let (predicate, distance, metric) = plan.candidate_parts();
                     if envelope_only {
-                        let bounds = seeded.or_else(|| row.quick_bounds());
+                        let bounds = match seeded {
+                            crate::array::BoundsSeed::Unset => row.quick_bounds(),
+                            crate::array::BoundsSeed::Value(bounds) => bounds,
+                        };
                         self.candidate_ids_core_append(
                             bounds, None, None, None, None, None, &mut ids,
                         );
@@ -876,20 +872,19 @@ impl PySpatialIndex {
             let mut frontier = BinaryHeap::new();
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
-                    let candidates = row.with_data(|query| {
-                        self.nearest_core_ties(
-                            &metric,
-                            query,
-                            &array.row_frame_cache(row_index),
-                            k,
-                            max_distance,
-                            NearestOptions {
-                                exclude_equal: exclusive,
-                                include_ties: ties,
-                            },
-                            &mut frontier,
-                        )
-                    })?;
+                    let query = array.prepared_row(row_index, row);
+                    let candidates = self.nearest_core_ties(
+                        &metric,
+                        &query,
+                        &array.row_frame_cache(row_index),
+                        k,
+                        max_distance,
+                        NearestOptions {
+                            exclude_equal: exclusive,
+                            include_ties: ties,
+                        },
+                        &mut frontier,
+                    )?;
                     for candidate in candidates {
                         ids.push(candidate.idx);
                         if return_distance {
@@ -911,11 +906,11 @@ impl PySpatialIndex {
     /// handles in input order. Batch inserts follow the same frame and envelope rules as scalar
     /// insert: the first inserted row fixes an empty index's CRS/epoch frame,
     /// later inserts must match it, and geographic antimeridian-crossing rows use
-    /// the wrapped-band envelope required by ``query_pairs``.
+    /// the wrapped-band envelope required by ``self_join``.
     ///
     /// Parameters
     /// ----------
-    /// geom : Geometry or GeometryArray or iterable of Geometry
+    /// values : Geometry or GeometryArray or iterable of Geometry
     ///     Values to append to the index; all must share the
     ///     index's CRS/epoch frame. Empty geometries cannot be inserted.
     ///
@@ -939,17 +934,17 @@ impl PySpatialIndex {
     /// >>> idx = gm.SpatialIndex([])
     /// >>> idx.insert(gm.Point(1, 1))
     /// 0
-    pub(crate) fn insert(&mut self, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        let py = geom.py();
-        if let Some(geometry) = exact_geometry(geom) {
+    pub(crate) fn insert(&mut self, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let py = values.py();
+        if let Some(geometry) = exact_geometry(values) {
             return self.insert_one(geometry)?.into_py_any(py);
         }
         // Batch handles return a read-only int64 ndarray, matching every other
-        // index id lane (query/candidates/nearest/join/query_pairs).
-        let handles = if let Some(array) = exact_geometry_array(geom) {
+        // index id lane (query/candidates/nearest/join/self_join).
+        let handles = if let Some(array) = exact_geometry_array(values) {
             self.insert_array(array)?
         } else {
-            self.insert_items(geometry_items(geom)?)?
+            self.insert_items(geometry_items(values)?)?
         };
         crate::py::numpy::int64_array(py, handles.into_iter().map(|h| h as i64).collect())
     }

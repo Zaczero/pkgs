@@ -23,10 +23,10 @@ def test_prepared_holed_matches_unprepared_batch():
     xs = np.array([1.0, 5.0, 0.0, 20.0, 5.0, 3.0], dtype=np.float64)
     ys = np.array([1.0, 5.0, 5.0, 20.0, 1.0, 5.0], dtype=np.float64)
     np.testing.assert_array_equal(
-        prep.contains_xy(xs, ys), gm.contains_xy(poly, xs, ys)
+        gm.contains_xy(prep, xs, ys), gm.contains_xy(poly, xs, ys)
     )
     np.testing.assert_array_equal(
-        prep.intersects_xy(xs, ys), gm.intersects_xy(poly, xs, ys)
+        gm.intersects_xy(prep, xs, ys), gm.intersects_xy(poly, xs, ys)
     )
 
 
@@ -36,8 +36,8 @@ def test_multipolygon_overlap_is_union_not_xor():
     multi = gm.MultiPolygon([a, b])
     prep = multi.prepare()
     # Overlap is interior of the union.
-    assert prep.contains_xy(0.75, 0.75)
-    assert not prep.contains_xy(3.0, 3.0)
+    assert gm.contains_xy(prep, 0.75, 0.75)
+    assert not gm.contains_xy(prep, 3.0, 3.0)
 
 
 def test_many_sparse_holes_match_unprepared():
@@ -61,7 +61,7 @@ def test_many_sparse_holes_match_unprepared():
     xs = np.concatenate([xs, extra_x])
     ys = np.concatenate([ys, extra_y])
     np.testing.assert_array_equal(
-        prep.contains_xy(xs, ys), gm.contains_xy(poly, xs, ys)
+        gm.contains_xy(prep, xs, ys), gm.contains_xy(poly, xs, ys)
     )
 
 
@@ -75,17 +75,18 @@ def test_tall_edge_prepared_constructs_and_classifies():
     pts.append((0.0, 0.0))
     poly = gm.Polygon(pts)
     prep = poly.prepare()
-    assert prep.contains_xy(0.5, n_side * 0.5)
-    assert not prep.contains_xy(-1.0, n_side * 0.5)
-    assert not prep.contains_xy(0.5, -1.0)
+    assert gm.contains_xy(prep, 0.5, n_side * 0.5)
+    assert not gm.contains_xy(prep, -1.0, n_side * 0.5)
+    assert not gm.contains_xy(prep, 0.5, -1.0)
     # Batch query stays responsive (no blow-up).
     xs = np.linspace(0.1, 0.9, 2000)
     ys = np.linspace(1.0, n_side - 1.0, 2000)
-    mask = prep.contains_xy(xs, ys)
+    mask = gm.contains_xy(prep, xs, ys)
     assert mask.all()
 
 
-def test_explain_mentions_y_stabbing_not_facet_tree():
-    plan = gm.box(0, 0, 2, 2).prepare().explain()
-    assert any('Y-stabbing' in line or 'raycast' in line for line in plan)
-    assert not any('facet-tree' in line for line in plan)
+def test_prepared_point_index_preserves_contains_predicate_behavior():
+    polygon = gm.box(0, 0, 2, 2)
+    prepared = polygon.prepare()
+    assert gm.contains(prepared, gm.Point(1, 1))
+    assert not gm.contains(prepared, gm.Point(3, 3))

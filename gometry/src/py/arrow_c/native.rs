@@ -2229,7 +2229,7 @@ mod layout_validation_tests {
 
     fn ensure_python() {
         // `NullCount::parse` and friends construct `PyErr` on failure paths.
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
     }
 
     fn stack_array(

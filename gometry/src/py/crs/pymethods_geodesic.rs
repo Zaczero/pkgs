@@ -76,8 +76,9 @@ impl PyCrs {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.CRS(4326).non_deprecated()
+    /// >>> gm.CRS(4326).non_deprecated
     /// []
+    #[getter]
     fn non_deprecated(slf: &Bound<'_, Self>) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
         crs_non_deprecated(slf.as_any())
     }
@@ -91,8 +92,9 @@ impl PyCrs {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.CRS(4326).geoid_models()
+    /// >>> gm.CRS(4326).geoid_models
     /// []
+    #[getter]
     fn geoid_models(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
         crs_geoid_models(slf.as_any())
     }
@@ -181,9 +183,9 @@ impl PyCrs {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> round(gm.CRS(4326).geodesic(-122.4, 37.8, -122.3, 37.9)['distance'])
+    /// >>> round(gm.CRS(4326).geodesic_inverse(-122.4, 37.8, -122.3, 37.9)['distance'])
     /// 14165
-    fn geodesic(
+    fn geodesic_inverse(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
         lon1: &Bound<'_, PyAny>,

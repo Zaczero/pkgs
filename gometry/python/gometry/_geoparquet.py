@@ -349,7 +349,13 @@ def to_geoparquet(
     # and cannot be silently relabeled by forging geo metadata. WKB stays plain
     # binary storage: kind lives in the WKB payload, and some Parquet readers
     # rewrite geoarrow.wkb extension CRS metadata (EPSG:4326 → OGC:CRS84).
-    geometry_column = arrow if parquet_encoding != 'WKB' else arrow.storage
+    if parquet_encoding == 'WKB':
+        if not isinstance(arrow, pa.ExtensionArray):
+            raise TypeError('WKB GeoArrow output must be an extension array')
+        # pyarrow-stubs omits storage from the narrowed ExtensionArray model.
+        geometry_column = arrow.storage  # pyright: ignore[reportAttributeAccessIssue]
+    else:
+        geometry_column = arrow
     if attributes_table is None:
         table = pa.table({'geometry': geometry_column})
     else:

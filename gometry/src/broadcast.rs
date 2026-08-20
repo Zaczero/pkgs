@@ -27,7 +27,7 @@ mod element;
 pub(crate) use element::BulkElement;
 
 use crate::error::Result;
-use crate::geometry::{LineSeq, PointBatchTester};
+use crate::geometry::LineSeq;
 use crate::predicates::{PredicateSpec, point_batch};
 use crate::py::numpy::bool_array;
 
@@ -40,8 +40,7 @@ pub(crate) use input::{
 mod metrics;
 pub(crate) use metrics::{
     DistanceUnit, OptionalDensifyParam, array_crs_distances, array_crs_dwithin,
-    array_crs_dwithin_per_element, array_crs_dwithin_scalar, array_crs_metric_float,
-    array_crs_similarity_metric_per_densify, crs_aware_dwithin,
+    array_crs_dwithin_per_element, array_crs_metric_float, array_crs_similarity_metric_per_densify,
     crs_metric_binary_geometry_broadcast, lonlat_shape, lonlat_shape_under,
     metric_frechet_densified, metric_hausdorff_densified, metric_maximum_inscribed_radius,
     metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points,
@@ -53,7 +52,7 @@ mod predicates;
 pub(crate) use predicates::{
     bool_array_mask_missing, ensure_same_len, multipoint_splitter_from_array, predicate_broadcast,
     predicate_pairwise_arrays, predicate_scalar_vs_array, relate_pattern_broadcast,
-    relate_string_broadcast, xy_predicate, xy_predicate_geometry, xy_predicate_values,
+    relate_string_broadcast, xy_predicate,
 };
 
 /// The single engine behind the binary value-returning broadcast families

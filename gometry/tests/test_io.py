@@ -377,16 +377,26 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
         gm.GeometryArray([gm.Point(1, 2, m=3)]).to_geojson()
 
 
-def test_geo_interface_strips_m_but_coords_preserves_m() -> None:
-    point_m = gm.Point(1, 2, m=3)
-    assert point_m.__geo_interface__ == {'type': 'Point', 'coordinates': [1.0, 2.0]}
-    assert point_m.coords.to_nested() == [1.0, 2.0, 3.0]
-    point_zm = gm.Point(1, 2, z=9, m=7)
-    assert point_zm.__geo_interface__ == {
-        'type': 'Point',
-        'coordinates': [1.0, 2.0, 9.0],
-    }
-    assert point_zm.coords.to_nested() == [1.0, 2.0, 9.0, 7.0]
+@pytest.mark.parametrize(
+    ('geometry', 'unsupported_metadata'),
+    [
+        pytest.param(gm.Point(1, 2, m=3), 'M', id='scalar-m'),
+        pytest.param(gm.GeometryArray([gm.Point(1, 2, m=3)]), 'M', id='array-m'),
+        pytest.param(
+            gm.Point(1, 2, crs=4326, epoch=2020.0), 'epoch', id='scalar-epoch'
+        ),
+        pytest.param(
+            gm.GeometryArray([gm.Point(1, 2, crs=4326)], epoch=2020.0),
+            'epoch',
+            id='array-epoch',
+        ),
+    ],
+)
+def test_geo_interface_rejects_m_and_epoch(
+    geometry: Any, unsupported_metadata: str
+) -> None:
+    with pytest.raises(TypeError, match=rf'cannot represent .*{unsupported_metadata}'):
+        _ = geometry.__geo_interface__
 
 
 def test_geojson_feature_and_feature_collection_inputs() -> None:
@@ -764,6 +774,31 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
             ewkbs[0],
             gm.Point(3, 4, crs=3857).to_wkb(include_srid=True),
         ])
+
+
+def test_geometry_array_accepts_direct_geojson_mapping_rows() -> None:
+    rows = [
+        {'type': 'Point', 'coordinates': [1, 2]},
+        {'type': 'LineString', 'coordinates': [[0, 0], [1, 1]]},
+        None,
+    ]
+
+    array = gm.GeometryArray(rows, crs=4326, epoch=2020.0)
+    assert isinstance(array[0], gm.Point)
+    assert isinstance(array[1], gm.LineString)
+    assert array.to_wkt(drop_epoch=True) == [
+        'POINT (1 2)',
+        'LINESTRING (0 0, 1 1)',
+        None,
+    ]
+    assert array.crs == 'EPSG:4326'
+    assert array.epoch == 2020.0
+    assert array.is_missing.tolist() == [False, False, True]
+    assert array[0].crs == 'EPSG:4326'
+    assert array[1].epoch == 2020.0
+
+    with pytest.raises(gm.ParseError, match='invalid GeoJSON'):
+        gm.GeometryArray([{'type': 'Point', 'coordinates': [1]}])
 
 
 def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:

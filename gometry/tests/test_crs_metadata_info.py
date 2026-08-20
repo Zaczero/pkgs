@@ -167,9 +167,9 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
         unit['code'] == '9001' and unit['proj_short_name'] == 'm'
         for unit in linear_units
     )
-    geoid_models = gm.CRS(5703).geoid_models()
+    geoid_models = gm.CRS(5703).geoid_models
     assert 'GEOID18' in geoid_models
-    assert gm.CRS(4326).geoid_models() == []
+    assert gm.CRS(4326).geoid_models == []
     with pytest.raises(ValueError, match='unknown PROJ database kind'):
         gm.crs_codes('EPSG', kind='postcode')
     with pytest.raises(ValueError, match='unknown PROJ database kind'):
@@ -204,7 +204,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert geographic['scope'] == 'Horizontal component of 3D system.'
     assert cast('list[object]', geographic['domains'])
     assert gm.crs_info(2037)['deprecated'] is True
-    replacements = gm.CRS(2037).non_deprecated()
+    replacements = gm.CRS(2037).non_deprecated
     assert replacements == [
         {
             'crs': 'EPSG:2960',
@@ -222,7 +222,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
             },
         }
     ]
-    assert gm.CRS(4326).non_deprecated() == []
+    assert gm.CRS(4326).non_deprecated == []
     search = gm.crs_search(
         'British National Grid', authority='EPSG', kind='projected', limit=5
     )

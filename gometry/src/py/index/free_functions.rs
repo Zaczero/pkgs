@@ -204,7 +204,6 @@ pub(crate) fn join_pair_columns(
         // metric resolution for dwithin); rows feed the shared cores with
         // no Vec<PyGeometry> staging.
         let plan = PreparedIndexQuery::for_array(index, array, Some(predicate), distance, unit)?;
-        let element_bounds = array.cached_element_bounds();
         let mut left_ids = Vec::new();
         let mut right_ids = Vec::new();
         if let IndexPredicate::Topological(topological) = predicate
@@ -215,12 +214,11 @@ pub(crate) fn join_pair_columns(
                     continue;
                 }
                 let left = left_idx as i64;
-                row.with_data(|shape| {
-                    for right_idx in index.topological_matches(shape, topological) {
-                        left_ids.push(left);
-                        right_ids.push(right_idx as i64);
-                    }
-                });
+                let shape = array.prepared_row(left_idx, row);
+                for right_idx in index.topological_matches(&shape, topological) {
+                    left_ids.push(left);
+                    right_ids.push(right_idx as i64);
+                }
             }
             return Ok((left_ids, right_ids));
         }
@@ -229,9 +227,7 @@ pub(crate) fn join_pair_columns(
             if missing {
                 continue;
             }
-            let seeded = element_bounds
-                .as_ref()
-                .and_then(|bounds| bounds.get(left_idx).copied().flatten());
+            let seeded = array.row_bounds_seed(left_idx);
             index.dwithin_query_row_matches(
                 row,
                 &array.row_frame_cache(left_idx),

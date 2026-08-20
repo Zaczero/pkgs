@@ -1,17 +1,34 @@
+#[cfg(test)]
+use std::cell::Cell;
+
 use rstar::Envelope as _;
 
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
     GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate, NearestCandidate,
-    NonNegative, Point, PointBatchTester, PointRows, Predicate, PreparedIndexQuery, PyGeometry,
-    PyGeometryArray, PyResult, PySpatialIndex, RTreeNode, RowMatches, Shape, ShapeData, ShapeRow,
-    XY, bounds_envelope, collect_subtree_ids, convex_box_strictly_inside, crs, crs_label,
-    epoch_label, global_geographic_candidate_envelope, index_envelope,
-    nearest_candidates_from_heap, pair_distance_resolved, pair_dwithin_resolved, point_from_bounds,
-    point_index_envelope, push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids,
-    topology_scalar_pair,
+    NonNegative, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry, PyGeometryArray,
+    PyResult, PySpatialIndex, RTreeNode, RowMatches, Shape, ShapeData, ShapeRow, XY,
+    bounds_envelope, collect_subtree_ids, convex_box_strictly_inside, crs, crs_label, epoch_label,
+    global_geographic_candidate_envelope, index_envelope, nearest_candidates_from_heap,
+    pair_distance_resolved, pair_dwithin_resolved, point_from_bounds, point_index_envelope,
+    push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids, topology_scalar_pair,
 };
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DwithinQueryBounds {
+    NotObserved,
+    Empty,
+    Value(Bounds),
+}
+
+#[cfg(test)]
+thread_local! {
+    // The transient query handle is local to exact refinement, so this records
+    // the boundary's cache state for the regression test below.
+    static DWITHIN_QUERY_BOUNDS: Cell<DwithinQueryBounds> = const { Cell::new(DwithinQueryBounds::NotObserved) };
+}
 
 impl PySpatialIndex {
     /// Every live entry — the STR bulk (tombstones skipped) then the
@@ -59,7 +76,7 @@ impl PySpatialIndex {
 
     /// Walk every unordered live pair `(i, j)` with `i < j` whose geometries
     /// satisfy the symmetric `predicate` — the self-join engine behind
-    /// `query_pairs`.
+    /// `self_join`.
     pub(crate) fn for_each_symmetric_pair(
         &self,
         predicate: IndexPredicate,
@@ -84,7 +101,7 @@ impl PySpatialIndex {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
             let row = self.rows.row(i);
-            let prepared = plan.row(self, row, None);
+            let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset);
             let (predicate, distance, metric) = plan.candidate_parts();
             self.candidate_ids_core(
                 prepared.bounds,
@@ -97,27 +114,33 @@ impl PySpatialIndex {
             );
             candidates.retain(|&j| j > i);
             match (spec, resolved) {
-                (Some(spec), _) => row.with_data(|query| {
-                    let rows = candidates.iter().map(|&idx| (idx, self.rows.row(idx)));
-                    let mask = scalar_vs_shapes(&spec, query, rows, true, None, self.geographic());
-                    let mut mask = mask.into_iter();
-                    retain_row(&mut candidates, 0, |_| Ok(mask.next().unwrap_or(false)))
-                })?,
-                (None, Some(resolved)) => row.with_data(|query| -> PyResult<()> {
+                (Some(spec), _) => {
+                    let query = self.rows.prepared_row(i);
+                    retain_row(&mut candidates, 0, |idx| {
+                        let data = self.rows.prepared_row(idx);
+                        Ok(topology_scalar_pair(
+                            &spec,
+                            &query,
+                            &data,
+                            self.geographic(),
+                        ))
+                    })?;
+                },
+                (None, Some(resolved)) => {
+                    let query = self.rows.prepared_row(i);
                     let query_cache = self.rows.frame_cache(i);
                     retain_row(&mut candidates, 0, |idx| {
-                        self.rows.row(idx).with_data(|data| {
-                            pair_dwithin_resolved(
-                                resolved,
-                                data,
-                                &self.rows.frame_cache(idx),
-                                query,
-                                &query_cache,
-                                radius,
-                            )
-                        })
-                    })
-                })?,
+                        let data = self.rows.prepared_row(idx);
+                        pair_dwithin_resolved(
+                            resolved,
+                            &data,
+                            &self.rows.frame_cache(idx),
+                            &query,
+                            &query_cache,
+                            radius,
+                        )
+                    })?;
+                },
                 (None, None) => unreachable!("dwithin self-join resolves its metric once"),
             }
             sort_row_ids(&mut candidates, self.rows.len());
@@ -197,7 +220,7 @@ impl PySpatialIndex {
     /// Index metadata wins when present (frames already match). An empty
     /// index has no metadata and accepts any query CRS, so fall through to
     /// the caller's string. Shared by every distance-bearing index surface
-    /// (`query`/`candidates`/`nearest`/`join`/`query_pairs`).
+    /// (`query`/`candidates`/`nearest`/`join`/`self_join`).
     pub(crate) fn metric_crs_str<'a>(&'a self, query_crs: Option<&'a str>) -> Option<&'a str> {
         self.metadata
             .as_ref()
@@ -249,18 +272,16 @@ impl PySpatialIndex {
                 self.rows.len(),
                 self.live_entries().map(|entry| {
                     let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-                    (
-                        entry.idx,
-                        self.rows.row(entry.idx).with_data(|data| {
-                            data.geodesic_cap_cached(
-                                &self.rows.frame_cache(entry.idx),
-                                crs,
-                                semi_major,
-                                flattening,
-                                ellipsoid,
-                            )
-                        }),
-                    )
+                    (entry.idx, {
+                        let data = self.rows.prepared_row(entry.idx);
+                        data.geodesic_cap_cached(
+                            &self.rows.frame_cache(entry.idx),
+                            crs,
+                            semi_major,
+                            flattening,
+                            ellipsoid,
+                        )
+                    })
                 }),
             ))
         })
@@ -336,15 +357,14 @@ impl PySpatialIndex {
             if exclude.is_some_and(|shape| row.with_shape(|other| *other == *shape)) {
                 continue;
             }
-            let distance = row.with_data(|data| {
-                pair_distance_resolved(
-                    &resolved,
-                    data,
-                    &self.rows.frame_cache(idx),
-                    query,
-                    query_cache,
-                )
-            })?;
+            let data = self.rows.prepared_row(idx);
+            let distance = pair_distance_resolved(
+                &resolved,
+                &data,
+                &self.rows.frame_cache(idx),
+                query,
+                query_cache,
+            )?;
             if max_distance.is_some_and(|max| distance > max.get()) {
                 continue;
             }
@@ -489,7 +509,11 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Vec<usize>> {
         let plan = PreparedIndexQuery::for_geometry(self, geometry, None, distance, unit)?;
-        let row = plan.row(self, ShapeRow::Handle(&geometry.shape), None);
+        let row = plan.row(
+            self,
+            ShapeRow::Handle(&geometry.shape),
+            crate::array::BoundsSeed::Unset,
+        );
         let mut ids = Vec::new();
         let (predicate, distance, metric) = plan.candidate_parts();
         self.candidate_ids_core(
@@ -515,7 +539,7 @@ impl PySpatialIndex {
         query_cache: &crate::geometry::FrameDependentCaches,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
-        seeded_bounds: Option<Bounds>,
+        seeded_bounds: crate::array::BoundsSeed,
     ) -> PyResult<()> {
         matches.clear();
         self.dwithin_query_row_matches_append(row, query_cache, plan, matches, seeded_bounds)
@@ -528,7 +552,7 @@ impl PySpatialIndex {
         query_cache: &crate::geometry::FrameDependentCaches,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
-        seeded_bounds: Option<Bounds>,
+        seeded_bounds: crate::array::BoundsSeed,
     ) -> PyResult<()> {
         let row_start = matches.len();
         let prepared = plan.row(self, row, seeded_bounds);
@@ -548,19 +572,23 @@ impl PySpatialIndex {
         else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
-        row.with_data(|query| -> PyResult<()> {
-            retain_row(matches, row_start, |idx| {
-                self.rows.row(idx).with_data(|data| {
-                    pair_dwithin_resolved(
-                        resolved,
-                        data,
-                        &self.rows.frame_cache(idx),
-                        query,
-                        query_cache,
-                        distance.get(),
-                    )
-                })
-            })
+        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds);
+        #[cfg(test)]
+        DWITHIN_QUERY_BOUNDS.with(|bounds| {
+            bounds.set(query.bounds().map_or(DwithinQueryBounds::Empty, |bounds| {
+                DwithinQueryBounds::Value(bounds)
+            }));
+        });
+        retain_row(matches, row_start, |idx| {
+            let data = self.rows.prepared_row(idx);
+            pair_dwithin_resolved(
+                resolved,
+                &data,
+                &self.rows.frame_cache(idx),
+                &query,
+                query_cache,
+                distance.get(),
+            )
         })?;
         sort_row_ids(&mut matches[row_start..], self.rows.len());
         Ok(())
@@ -589,27 +617,30 @@ impl PySpatialIndex {
                 // `query OP item`: the query is the fixed left operand of the
                 // shared batch engine (prepared/cached exactly like the
                 // broadcast surfaces); candidate handles feed it directly.
-                let rows = matches.iter().map(|&idx| (idx, self.rows.row(idx)));
-                let mask =
-                    scalar_vs_shapes(&spec, &geometry.shape, rows, true, None, self.geographic());
-                let mut mask = mask.into_iter();
-                retain_row(&mut matches, 0, |_| Ok(mask.next().unwrap_or(false)))?;
+                retain_row(&mut matches, 0, |idx| {
+                    let data = self.rows.prepared_row(idx);
+                    Ok(topology_scalar_pair(
+                        &spec,
+                        &geometry.shape,
+                        &data,
+                        self.geographic(),
+                    ))
+                })?;
             },
             PreparedIndexQuery::Dwithin {
                 resolved, distance, ..
             } => {
                 let distance = distance.get();
                 retain_row(&mut matches, 0, |idx| {
-                    self.rows.row(idx).with_data(|data| {
-                        pair_dwithin_resolved(
-                            resolved,
-                            data,
-                            &self.rows.frame_cache(idx),
-                            &geometry.shape,
-                            &geometry.frame_cache,
-                            distance,
-                        )
-                    })
+                    let data = self.rows.prepared_row(idx);
+                    pair_dwithin_resolved(
+                        resolved,
+                        &data,
+                        &self.rows.frame_cache(idx),
+                        &geometry.shape,
+                        &geometry.frame_cache,
+                        distance,
+                    )
                 })?;
             },
             PreparedIndexQuery::Candidates | PreparedIndexQuery::CandidatesDwithin { .. } => {
@@ -636,7 +667,11 @@ impl PySpatialIndex {
         {
             return Ok(self.topological_matches(&geometry.shape, predicate));
         }
-        let prepared = plan.row(self, ShapeRow::Handle(&geometry.shape), None);
+        let prepared = plan.row(
+            self,
+            ShapeRow::Handle(&geometry.shape),
+            crate::array::BoundsSeed::Unset,
+        );
         let mut candidates = Vec::new();
         let (candidate_predicate, candidate_distance, metric) = plan.candidate_parts();
         self.candidate_ids_core(
@@ -702,7 +737,7 @@ impl PySpatialIndex {
             .map(|&idx| (idx, self.rows.row(idx)));
         // Collect the mask first: `scalar_vs_shapes` may re-enter row handles
         // that would conflict with a simultaneous mutable retain over `out`.
-        let mask = scalar_vs_shapes(&spec, shape, rows, true, None, self.geographic());
+        let mask = scalar_vs_shapes(&spec, shape, rows, true, false, None, self.geographic());
         let mut mask = mask.into_iter();
         retain_row(out, row_start, |_| Ok(mask.next().unwrap_or(false)))
             .expect("topological refinement is infallible");
@@ -730,7 +765,11 @@ impl PySpatialIndex {
         if geographic && scalar.shape().crosses_antimeridian() {
             return None;
         }
-        if scalar.shape().coord_count() >= PointBatchTester::MIN_PROBES {
+        if let Shape::Polygon(polygon) = scalar.shape()
+            && !crate::geometry::uses_linear_plan_for_len(
+                polygon.shell.coords().len().saturating_sub(1),
+            )
+        {
             return None;
         }
         let ccw = scalar.convex_shell()?;
@@ -775,12 +814,10 @@ impl PySpatialIndex {
             if !entry.envelope.intersects(&query_envelope) {
                 return;
             }
-            if inside(&entry.envelope)
-                || self
-                    .rows
-                    .row(entry.idx)
-                    .with_data(|element| topology_scalar_pair(&spec, scalar, element, geographic))
-            {
+            if inside(&entry.envelope) || {
+                let element = self.rows.prepared_row(entry.idx);
+                topology_scalar_pair(&spec, scalar, &element, geographic)
+            } {
                 matches.push(entry.idx);
             }
         };
@@ -906,10 +943,8 @@ impl PySpatialIndex {
             }
             match (&spec, model, predicate) {
                 (Some(spec), ..) => retain_row(&mut ids, row_start, |idx| {
-                    Ok(self
-                        .rows
-                        .row(idx)
-                        .with_data(|data| topology_scalar_pair(spec, &query, data, geographic)))
+                    let data = self.rows.prepared_row(idx);
+                    Ok(topology_scalar_pair(spec, &query, &data, geographic))
                 })?,
                 (None, Some(_), Some(IndexPredicate::Dwithin)) => {
                     let PreparedIndexQuery::Dwithin {
@@ -922,16 +957,15 @@ impl PySpatialIndex {
                     };
                     let limit = limit.get();
                     retain_row(&mut ids, row_start, |idx| {
-                        self.rows.row(idx).with_data(|data| {
-                            pair_dwithin_resolved(
-                                resolved,
-                                &query,
-                                &array.row_frame_cache(row),
-                                data,
-                                &self.rows.frame_cache(idx),
-                                limit,
-                            )
-                        })
+                        let data = self.rows.prepared_row(idx);
+                        pair_dwithin_resolved(
+                            resolved,
+                            &query,
+                            &array.row_frame_cache(row),
+                            &data,
+                            &self.rows.frame_cache(idx),
+                            limit,
+                        )
                     })?;
                 },
                 // Candidates-only: the envelope answer is the result.
@@ -941,5 +975,54 @@ impl PySpatialIndex {
             offsets.push(ids.len());
         }
         Ok(RowMatches { ids, offsets })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::BoundsSeed;
+    use crate::geometry::{CoordSeq, LineSeq};
+    use crate::py::index::spatial_index;
+
+    #[test]
+    fn dwithin_exact_refinement_preserves_unset_query_bounds() {
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_unchecked_xy(0.0, 0.0))),
+            Frame::None,
+        )])
+        .unwrap();
+        let array = PyGeometryArray::mixed_shapes(
+            vec![Shape::LineString(LineSeq::from_trusted(
+                CoordSeq::from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, None),
+            ))],
+            Frame::None,
+        );
+        let plan = PreparedIndexQuery::for_array(
+            &index,
+            &array,
+            Some(IndexPredicate::Dwithin),
+            Some(NonNegative::try_new("distance", 0.0).unwrap()),
+            None,
+        )
+        .unwrap();
+        let mut matches = Vec::new();
+
+        DWITHIN_QUERY_BOUNDS.with(|bounds| bounds.set(DwithinQueryBounds::NotObserved));
+        index
+            .dwithin_query_row_matches_append(
+                array.storage().row(0),
+                &array.row_frame_cache(0),
+                &plan,
+                &mut matches,
+                BoundsSeed::Unset,
+            )
+            .unwrap();
+
+        assert_eq!(matches, [0]);
+        assert_eq!(
+            DWITHIN_QUERY_BOUNDS.with(Cell::get),
+            DwithinQueryBounds::Value(Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0))
+        );
     }
 }

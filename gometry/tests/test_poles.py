@@ -115,9 +115,8 @@ def test_pairwise_pole_longitude_neighbours_bypass_planar_bounds_gates() -> None
                     assert bools(predicate(poles, caps)) == [bool(predicate(pole, cap))]
                 prepared = pole.prepare()
                 for name in ('intersects', 'covers', 'disjoint'):
-                    predicate = getattr(prepared, name)
                     expected = bool(getattr(gm, name)(pole, cap))
-                    assert bools(predicate(caps)) == [expected]
+                    assert bools(getattr(gm, name)(prepared, caps)) == [expected]
 
 
 def test_scalar_polar_cap_packed_and_prepared_predicates_use_pole_topology() -> None:
@@ -140,7 +139,7 @@ def test_scalar_polar_cap_packed_and_prepared_predicates_use_pole_topology() -> 
                 for name in ('covers', 'intersects', 'touches', 'disjoint'):
                     expected = bool(getattr(gm, name)(cap, pole))
                     assert bools(getattr(gm, name)(cap, packed)) == [expected]
-                    assert bools(getattr(prepared, name)(packed)) == [expected]
+                    assert bools(getattr(gm, name)(prepared, packed)) == [expected]
 
 
 def test_pole_longitude_neighbours_reach_every_spatial_index_route() -> None:
@@ -186,7 +185,7 @@ def test_pole_longitude_neighbours_reach_every_spatial_index_route() -> None:
                     ) == (([0], [0]) if expected else ([], []))
                     assert tuple(
                         values.tolist()
-                        for values in gm.SpatialIndex([pole, cap]).query_pairs(
+                        for values in gm.SpatialIndex([pole, cap]).self_join(
                             predicate='intersects'
                         )
                     ) == (([0], [1]) if expected else ([], []))
@@ -203,7 +202,7 @@ def test_pole_longitude_neighbours_reach_every_spatial_index_route() -> None:
                     assert mutable.insert(pole) == 1
                     assert tuple(
                         values.tolist()
-                        for values in mutable.query_pairs(predicate='intersects')
+                        for values in mutable.self_join(predicate='intersects')
                     ) == (([0], [1]) if expected else ([], []))
 
 

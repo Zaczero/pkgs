@@ -9,9 +9,13 @@ and is imported here eagerly for precise ``ndarray`` spellings
 Do not redeclare these types elsewhere. Public users receive them through
 precise signatures rather than a separate annotation catalog. Public
 re-exports from this module are the cross-grid protocols ``Cell`` and
-``Coverage`` plus the structured result records ``Extremes``, ``Features``,
+plus the structured result records ``Extremes``, ``Features``,
 and ``PolygonizeResult``.
 """
+
+# Features must remain explicitly unhashable; mypy needs a narrow assignment
+# ignore for this runtime contract, while pyright does not.
+# pyright: reportUnnecessaryTypeIgnoreComment=false
 
 from __future__ import annotations
 
@@ -100,7 +104,6 @@ from gometry._lib import (
     GeometryArray,
     GeometryError,
     LineString,
-    MultiPolygon,
     Point,
     Polygon,
 )
@@ -145,10 +148,8 @@ if TYPE_CHECKING:
         from typing_extensions import TypeVar as _DefaultTypeVar
 
     _ExtremeT = _DefaultTypeVar('_ExtremeT', default=Point)
-    CellT_co = TypeVar('CellT_co', bound='Cell', covariant=True)
 else:
     _ExtremeT = TypeVar('_ExtremeT')
-    CellT_co = TypeVar('CellT_co', covariant=True)
 
 __all__ = [
     'ArrowEncoding',
@@ -158,8 +159,6 @@ __all__ = [
     'Cell',
     'CellRule',
     'CoordinateAxes',
-    'Coverage',
-    'CoverageOverlapRule',
     'CrsAreaBounds',
     'CrsAreaInput',
     'CrsAreaOfInterestLike',
@@ -321,50 +320,9 @@ class Cell(Protocol):
     def area(self) -> float: ...
     def parent(self, depth: int | None = None, /) -> Self: ...
     def children(self, depth: int | None = None, /) -> CellArray[Self]: ...
+    def children_count(self, depth: int | None = None, /) -> int: ...
     def contains(self, other: Self | str) -> bool: ...
     def intersects(self, other: Self | str) -> bool: ...
-
-
-class Coverage(Protocol[CellT_co]):
-    """One covering of a geometry by discrete-global-grid cells.
-
-    The uniform surface every coverage class (``H3Coverage``, ``S2Coverage``,
-    ``GeohashCoverage``, ``TileCoverage``) satisfies structurally. Annotate
-    grid-system-agnostic code with this protocol::
-
-        import gometry as gm
-
-        def outline(cov: gm.Coverage[gm.H3Cell]) -> gm.Polygon | gm.MultiPolygon:
-            return cov.to_polygon()
-
-    ``cells``/``interior_cells``/``boundary_cells`` are the visible partition;
-    ``covers``/``contains``/``intersects`` answer exactly against the source
-    geometry, independent of ``cell_rule``. System-specific depth keywords
-    (``min_resolution``/``min_level``/…) are accepted as extra kwargs on the
-    concrete classes — the protocol only requires the zero-arg / positional
-    forms that every system shares.
-    """
-
-    @property
-    def cell_rule(self) -> CellRule: ...
-    @property
-    def cells(self) -> CellArray[CellT_co]: ...
-    @property
-    def interior_cells(self) -> CellArray[CellT_co]: ...
-    @property
-    def boundary_cells(self) -> CellArray[CellT_co]: ...
-    def covers(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
-    def contains(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
-    def intersects(self, geom: Geometry | GeometryArray) -> bool | BoolArray: ...
-    def contains_xy(self, x: FloatInput, y: FloatInput) -> bool | BoolArray: ...
-    def intersects_xy(self, x: FloatInput, y: FloatInput) -> bool | BoolArray: ...
-    def to_polygon(self) -> Polygon | MultiPolygon: ...
-    def compact(self) -> Self: ...
-    def uncompact(self, depth: int, /) -> Self: ...
-    def with_parents(self) -> Self: ...
-    def __len__(self) -> int: ...
-    def __iter__(self) -> Iterator[CellT_co]: ...
-    def __contains__(self, cell: object, /) -> bool: ...
 
 
 #: Topology-preserving nested coordinate payload from ``Coordinates.to_nested``.
@@ -450,7 +408,7 @@ TopologicalPredicate: TypeAlias = Literal[
 ]
 #: Spatial predicate token for ``join``/``SpatialIndex`` queries.
 Predicate: TypeAlias = TopologicalPredicate | Literal['dwithin']
-#: The symmetric predicates ``SpatialIndex.query_pairs`` accepts (a self-join
+#: The symmetric predicates ``SpatialIndex.self_join`` accepts (a self-join
 #: needs a predicate that is the same in both directions).
 SymmetricTopologicalPredicate: TypeAlias = Literal[
     'intersects', 'equals', 'touches', 'crosses', 'overlaps'
@@ -545,7 +503,9 @@ class Features:
             raise TypeError('geometries must be a GeometryArray')
         rows = len(geometries)
         if properties is None:
-            property_rows: tuple[dict[str, Any] | None, ...] = (None,) * rows
+            property_rows: tuple[dict[str, Any] | None, ...] = tuple(
+                {} for _ in range(rows)
+            )
         elif isinstance(properties, Mapping) or callable(
             getattr(properties, 'keys', None)
         ):
@@ -631,6 +591,20 @@ class Features:
     def __delattr__(self, name: str) -> None:
         raise AttributeError(f'cannot delete attribute {name!r} on frozen Features')
 
+    def __sizeof__(self) -> int:
+        """Report the shallow retained footprint of the feature columns."""
+        return (
+            object.__sizeof__(self)
+            + self.geometries.__sizeof__()
+            + self.properties.__sizeof__()
+            + self.ids.__sizeof__()
+            + sum(
+                property_row.__sizeof__()
+                for property_row in self.properties
+                if property_row is not None
+            )
+        )
+
     def __eq__(self, other: object) -> bool:
         if self is other:
             return True
@@ -644,7 +618,9 @@ class Features:
 
     # Unhashable: property dicts are mutable. Frozen dataclass would also
     # refuse hashing when a field is unhashable at use time; be explicit.
-    __hash__: ClassVar[None] = None  # pyright: ignore[reportIncompatibleMethodOverride]
+    # The runtime object is intentionally unhashable; mypy models
+    # object.__hash__ as callable and cannot express this contract.
+    __hash__: ClassVar[None] = None  # type: ignore[assignment]
 
     def __replace__(self, /, **changes: Any) -> Features:
         """Return a new ``Features`` with the given fields replaced.

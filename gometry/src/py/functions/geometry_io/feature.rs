@@ -119,6 +119,10 @@ fn feature_dict<'py>(
 ///     Feature properties. The mapping is copied and all keys must be strings.
 /// id : str or finite number, optional
 ///     Feature identifier.
+/// drop_epoch : bool, default False
+///     GeoJSON Feature mappings cannot encode coordinate epoch metadata. If
+///     ``False``, an epoch-bearing geometry raises ``GeometryError``; pass
+///     ``True`` to acknowledge and explicitly lose the epoch metadata.
 ///
 /// Returns
 /// -------
@@ -130,16 +134,20 @@ fn feature_dict<'py>(
 /// TypeError
 ///     If ``geom`` is not a Geometry or ``None``.
 /// GeometryError
-///     If properties are not a string-keyed mapping, or the id is invalid.
+///     If properties are not a string-keyed mapping, the id is invalid, or
+///     coordinate epoch metadata is present without ``drop_epoch=True``.
 /// InvalidGeometryError
-///     If a WGS84-tagged geometry has coordinates outside the lon/lat domain.
+///     If the geometry has an M ordinate, or a WGS84-tagged geometry has
+///     coordinates outside the lon/lat domain. GeoJSON Feature mappings have
+///     no representation for M; use WKT/GeoArrow to preserve it.
 /// CRSError
 ///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 ///
 /// Notes
 /// -----
-/// Coordinate epoch metadata is not representable in GeoJSON Feature mappings
-/// and is **silently dropped** (same contract as ``to_geojson(..., drop_epoch=True)``).
+/// Coordinate epoch metadata is not representable in GeoJSON Feature mappings.
+/// It is rejected unless ``drop_epoch=True``; that option explicitly
+/// acknowledges and loses the epoch metadata.
 ///
 /// Examples
 /// --------
@@ -148,12 +156,13 @@ fn feature_dict<'py>(
 /// >>> feature.get("properties")
 /// {'name': 'A'}
 #[pyfunction]
-#[pyo3(signature = (geom, *, properties = None, id = None))]
+#[pyo3(signature = (geom, *, properties = None, id = None, drop_epoch = false))]
 pub(crate) fn to_feature(
     py: Python<'_>,
     geom: Option<&Bound<'_, PyAny>>,
     properties: Option<&Bound<'_, PyAny>>,
     id: Option<&Bound<'_, PyAny>>,
+    drop_epoch: bool,
 ) -> PyResult<Py<PyDict>> {
     let geometry = match geom.filter(|value| !value.is_none()) {
         None => None,
@@ -163,6 +172,7 @@ pub(crate) fn to_feature(
     };
     let crs = geometry.as_ref().and_then(|geometry| geometry.crs_str());
     if let Some(geometry) = geometry {
+        crate::py::errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
     }
     Ok(feature_dict(
@@ -213,6 +223,8 @@ fn aligned_rows<'py>(
 /// ----------
 /// values : Features, Geometry, None, GeometryArray, or iterable of Geometry or None
 ///     A `Features` record reuses its aligned geometries, properties, and ids.
+///     Features already owns aligned properties and ids, so properties and ids
+///     must be omitted; supplying them raises ``TypeError``.
 ///     Otherwise, one geometry or geometry rows to encode. CRS-tagged rows must
 ///     use EPSG:4326 longitude/latitude coordinates.
 /// properties : Mapping or iterable of Mapping or None, optional
@@ -220,6 +232,10 @@ fn aligned_rows<'py>(
 ///     mapping or explicit ``None`` per row. Omit for independent empty mappings.
 /// ids : iterable of str, finite number, or None, optional
 ///     One optional feature identifier per geometry.
+/// drop_epoch : bool, default False
+///     GeoJSON Feature mappings cannot encode coordinate epoch metadata. If
+///     ``False``, an epoch-bearing geometry raises ``GeometryError``; pass
+///     ``True`` to acknowledge and explicitly lose the epoch metadata.
 ///
 /// Returns
 /// -------
@@ -229,9 +245,15 @@ fn aligned_rows<'py>(
 /// Raises
 /// ------
 /// TypeError
-///     If a geometry row is not a Geometry or ``None``.
+///     If a geometry row is not a Geometry or ``None``, or if properties or ids
+///     are supplied when values is a Features record.
 /// GeometryError
-///     If properties or ids are invalid or are not aligned with geometries.
+///     If properties or ids are invalid or are not aligned with geometries, or
+///     coordinate epoch metadata is present without ``drop_epoch=True``.
+/// InvalidGeometryError
+///     If a geometry has an M ordinate, or a WGS84-tagged geometry has
+///     coordinates outside the lon/lat domain. GeoJSON Feature mappings have
+///     no representation for M; use WKT/GeoArrow to preserve it.
 /// CRSError
 ///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 ///
@@ -242,12 +264,13 @@ fn aligned_rows<'py>(
 /// >>> fc["type"], len(fc["features"])
 /// ('FeatureCollection', 1)
 #[pyfunction]
-#[pyo3(signature = (values, *, properties = None, ids = None))]
+#[pyo3(signature = (values, *, properties = None, ids = None, drop_epoch = false))]
 pub(crate) fn to_feature_collection(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     properties: Option<&Bound<'_, PyAny>>,
     ids: Option<&Bound<'_, PyAny>>,
+    drop_epoch: bool,
 ) -> PyResult<Py<PyDict>> {
     if values.is_instance(crate::features_type(py)?)? {
         if properties.is_some() || ids.is_some() {
@@ -265,9 +288,10 @@ pub(crate) fn to_feature_collection(
             &feature_geometries,
             Some(&feature_properties),
             Some(&feature_ids),
+            drop_epoch,
         );
     }
-    to_feature_collection_impl(py, values, properties, ids)
+    to_feature_collection_impl(py, values, properties, ids, drop_epoch)
 }
 
 fn to_feature_collection_impl(
@@ -275,6 +299,7 @@ fn to_feature_collection_impl(
     values: &Bound<'_, PyAny>,
     properties: Option<&Bound<'_, PyAny>>,
     ids: Option<&Bound<'_, PyAny>>,
+    drop_epoch: bool,
 ) -> PyResult<Py<PyDict>> {
     // F1: copy a broadcast mapping ONCE via the keystone, then shallow-copy
     // that retained dict per feature (identity isolation). Never re-enumerate
@@ -285,6 +310,7 @@ fn to_feature_collection_impl(
     };
     let features = PyList::empty(py);
     if let Some(array) = exact_geometry_array(values) {
+        crate::py::errors::require_epoch_drop(array.epoch(), drop_epoch, "to_feature_collection")?;
         require_geojson_crs(array.crs_str())?;
         if array.has_m() {
             return Err(InvalidGeometryError::new_err(
@@ -292,7 +318,11 @@ fn to_feature_collection_impl(
             ));
         }
         let array_crs = array.crs_str();
-        let properties = if let Some(props) = &broadcast_properties {
+        let properties = if properties.is_none() {
+            std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
+                .take(array.storage().len())
+                .collect::<PyResult<Vec<_>>>()?
+        } else if let Some(props) = &broadcast_properties {
             std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
                 .take(array.storage().len())
                 .collect::<PyResult<Vec<_>>>()?
@@ -326,9 +356,18 @@ fn to_feature_collection_impl(
             }
             let geometry =
                 exact_geometry(geometry).ok_or_else(|| geometry_type_err("expected Geometry"))?;
+            crate::py::errors::require_epoch_drop(
+                geometry.epoch(),
+                drop_epoch,
+                "to_feature_collection",
+            )?;
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
-        let properties = if let Some(props) = &broadcast_properties {
+        let properties = if properties.is_none() {
+            std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
+                .take(geometry_rows.len())
+                .collect::<PyResult<Vec<_>>>()?
+        } else if let Some(props) = &broadcast_properties {
             std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
                 .take(geometry_rows.len())
                 .collect::<PyResult<Vec<_>>>()?

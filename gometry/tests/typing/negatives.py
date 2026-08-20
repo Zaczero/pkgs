@@ -10,6 +10,11 @@ checkers fail. The positive twin is ``test_conformance.py``.
 Everything lives under ``if TYPE_CHECKING`` — the misuse must never execute.
 """
 
+# mypy also needs ignores for the two dataframe-boundary calls below. In this
+# environment pyright resolves those optional inputs as Any, so its matching
+# ignores are intentionally not reported as unused.
+# pyright: reportUnnecessaryTypeIgnoreComment=false
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -89,6 +94,12 @@ if TYPE_CHECKING:
     class _MyPoint(gm.Point):  # type: ignore[misc]
         pass
 
+    class _MySpatialIndex(gm.SpatialIndex):  # type: ignore[misc]
+        pass
+
+    class _MyValidationReport(gm.ValidationReport):  # type: ignore[misc]
+        pass
+
     # Return-only native types have no statically constructible path.
     gm.Geometry()  # type: ignore[call-arg]
     gm.Coordinates()  # type: ignore[call-arg]
@@ -96,10 +107,8 @@ if TYPE_CHECKING:
     gm.Groups()  # type: ignore[call-arg]
     gm.PreparedGeometry()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
-    gm.H3Coverage()  # type: ignore[call-arg]
-    gm.S2Coverage()  # type: ignore[call-arg]
-    gm.GeohashCoverage()  # type: ignore[call-arg]
-    gm.TileCoverage()  # type: ignore[call-arg]
+
+    gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]
 
     # Covariance permits this boundary widening, but its erased CellArray
     # receiver cannot consume a different grid scalar.
@@ -109,7 +118,14 @@ if TYPE_CHECKING:
         cells.contains(other)  # type: ignore[misc]
         cells.intersects(other)  # type: ignore[misc]
 
-    _reject_cross_grid_after_widening(H3_CELLS, S2_CELLS[0])
+    s2_cell = S2_CELLS[0]
+    assert s2_cell is not None
+    _reject_cross_grid_after_widening(H3_CELLS, s2_cell)
+
+    h3_cell = H3_CELLS[0]
+    assert h3_cell is not None
+    _ = h3_cell.vertices.values  # type: ignore[attr-defined]
+    _ = h3_cell.edges.values  # type: ignore[attr-defined]
 
     # nearest_points is exactly a pair — a 3-name unpack must fail.
     _a, _b, _c = gm.nearest_points(POINT, POLY)  # type: ignore[misc]
@@ -126,8 +142,8 @@ if TYPE_CHECKING:
     # OSM shortlink zoom is an int.
     gm.osm_shortlink_encode(0.0, 0.0, zoom='17')  # type: ignore[call-overload]
 
-    # query_pairs returns plain (left, right) columns, not an object.
-    _ = gm.SpatialIndex(POINTS).query_pairs().pairs  # type: ignore[attr-defined]
+    # self_join returns plain (left, right) columns, not an object.
+    _ = gm.SpatialIndex(POINTS).self_join().pairs  # type: ignore[attr-defined]
 
     # Selector-dependent index calls deliberately have no broad fallback:
     # dynamically correlated ``predicate``/``distance`` values must be narrowed
@@ -137,8 +153,8 @@ if TYPE_CHECKING:
     INDEX.query(POINT, predicate='intersects', distance=1.0)  # type: ignore[call-overload]
     INDEX.join(POINTS, predicate='dwithin')  # type: ignore[call-overload]
     INDEX.join(POINTS, predicate='within', distance=1.0)  # type: ignore[call-overload]
-    INDEX.query_pairs(predicate='dwithin')  # type: ignore[call-overload]
-    INDEX.query_pairs(predicate='equals', distance=1.0)  # type: ignore[call-overload]
+    INDEX.self_join(predicate='dwithin')  # type: ignore[call-overload]
+    INDEX.self_join(predicate='equals', distance=1.0)  # type: ignore[call-overload]
     INDEX.explain(predicate='dwithin')  # type: ignore[call-overload]
     INDEX.explain(predicate='intersects', distance=1.0)  # type: ignore[call-overload]
     gm.join(POINTS, POINTS, predicate='dwithin')  # type: ignore[call-overload]
@@ -162,11 +178,11 @@ if TYPE_CHECKING:
 
     # Optional dataframe boundaries are explicit and statically typed; native
     # arrays are not framework Series/GeoSeries values.
-    gm.from_pandas(POINTS)  # pyright: ignore[reportArgumentType]
+    gm.from_pandas(POINTS)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
     POINTS.to_pandas(name=[])  # type: ignore[arg-type]
     gm.from_polars(POINTS)  # type: ignore[arg-type]
     POINTS.to_polars(name=1)  # type: ignore[arg-type]
-    gm.from_geopandas(POINTS)  # pyright: ignore[reportArgumentType]
+    gm.from_geopandas(POINTS)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
     POINTS.to_geopandas(drop_epoch='yes')  # type: ignore[arg-type]
 
     # Geometry-like collection lanes accept native geometries, binary buffers,
@@ -179,7 +195,9 @@ if TYPE_CHECKING:
 
     # CellArray inference requires actual homogeneous typed cells; raw
     # identities need an explicit type= discriminator.
-    gm.CellArray([H3_CELLS[0].id])  # type: ignore[list-item]
+    h3_id_cell = H3_CELLS[0]
+    assert h3_id_cell is not None
+    gm.CellArray([h3_id_cell.id])  # type: ignore[list-item]
 
     # Cell factories have two disjoint grammars: an existing identity, or a
     # point/longitude plus its required depth. A bare point is neither.

@@ -273,17 +273,57 @@ pub(crate) struct PyGeometryParts {
 
 impl PyGeometryParts {
     fn part_matches(&self, row: usize, item: &Bound<'_, PyAny>) -> bool {
-        let Some(other) = exact_geometry(item) else {
-            return false;
-        };
-        self.geometry.crs_ref() == other.crs_ref()
-            && self.geometry.epoch() == other.epoch()
-            && self
-                .geometry
-                .shape
-                .part_at(row)
-                .is_some_and(|part| part == *other.shape.shape())
+        geometry_part_matches(&self.geometry, row, item)
     }
+}
+
+fn geometry_part_matches(geometry: &PyGeometry, row: usize, item: &Bound<'_, PyAny>) -> bool {
+    let Some(other) = exact_geometry(item) else {
+        return false;
+    };
+    geometry.crs_ref() == other.crs_ref()
+        && geometry.epoch() == other.epoch()
+        && geometry
+            .shape
+            .part_at(row)
+            .is_some_and(|part| part == *other.shape.shape())
+}
+
+fn geometry_parts_index(
+    geometry: &PyGeometry,
+    value: &Bound<'_, PyAny>,
+    start: i64,
+    stop: Option<i64>,
+) -> PyResult<usize> {
+    let len = geometry.shape.part_count();
+    let clamp = |bound: i64| -> usize {
+        let resolved = if bound < 0 {
+            bound + i64::try_from(len).unwrap_or(i64::MAX)
+        } else {
+            bound
+        };
+        usize::try_from(resolved.max(0)).unwrap_or(0).min(len)
+    };
+    let start = clamp(start);
+    let stop = stop.map_or(len, clamp);
+    if start < stop
+        && let Some(row) = (start..stop).find(|&row| geometry_part_matches(geometry, row, value))
+    {
+        return Ok(row);
+    }
+    let value = value
+        .repr()
+        .and_then(|repr| repr.extract::<String>())
+        .unwrap_or_else(|_| "value".to_owned());
+    Err(PyValueError::new_err(format!(
+        "{value} is not in GeometryParts"
+    )))
+}
+
+fn geometry_parts_count(geometry: &PyGeometry, value: &Bound<'_, PyAny>) -> usize {
+    (0..geometry.shape.part_count())
+        .filter(|&row| geometry_part_matches(geometry, row, value))
+        .count()
 }
 
 /// Index or slice into a multipart geometry's parts. Scalar access clones one
@@ -416,29 +456,7 @@ impl PyGeometryParts {
     ///     If no part in the window equals ``value``.
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
     fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
-        let len = self.geometry.shape.part_count();
-        let clamp = |bound: i64| -> usize {
-            let resolved = if bound < 0 {
-                bound + i64::try_from(len).unwrap_or(i64::MAX)
-            } else {
-                bound
-            };
-            usize::try_from(resolved.max(0)).unwrap_or(0).min(len)
-        };
-        let start = clamp(start);
-        let stop = stop.map_or(len, clamp);
-        if start < stop
-            && let Some(row) = (start..stop).find(|&row| self.part_matches(row, value))
-        {
-            return Ok(row);
-        }
-        let value = value
-            .repr()
-            .and_then(|repr| repr.extract::<String>())
-            .unwrap_or_else(|_| "value".to_owned());
-        Err(PyValueError::new_err(format!(
-            "{value} is not in GeometryParts"
-        )))
+        geometry_parts_index(&self.geometry, value, start, stop)
     }
 
     /// Number of parts equal to ``value``.
@@ -452,9 +470,7 @@ impl PyGeometryParts {
     /// -------
     /// int
     fn count(&self, value: &Bound<'_, PyAny>) -> usize {
-        (0..self.geometry.shape.part_count())
-            .filter(|&row| self.part_matches(row, value))
-            .count()
+        geometry_parts_count(&self.geometry, value)
     }
 
     /// Value equality against another parts view or geometry sequence.
@@ -668,6 +684,71 @@ macro_rules! geometry_parts_methods {
             /// iterator of Geometry
             fn __reversed__(slf: PyRef<'_, Self>) -> PyGeometryPartsIter {
                 PyGeometryPartsIter::new(&**slf.as_super(), true)
+            }
+
+            /// Whether a geometry equals one of the component parts.
+            fn __contains__(slf: PyRef<'_, Self>, item: &Bound<'_, PyAny>) -> bool {
+                let geometry = &**slf.as_super();
+                (0..geometry.shape.part_count()).any(|row| geometry_part_matches(geometry, row, item))
+            }
+
+            /// First index of an equal part in ``[start, stop)``.
+            ///
+            /// Parameters
+            /// ----------
+            /// value : object
+            ///     The geometry value to locate.
+            /// start : int, default 0
+            ///     First position searched.
+            /// stop : int, optional
+            ///     One past the last position searched.
+            ///
+            /// Returns
+            /// -------
+            /// int
+            ///     The first matching position.
+            ///
+            /// Raises
+            /// ------
+            /// ValueError
+            ///     If no part in the window equals ``value``.
+            ///
+            /// Examples
+            /// --------
+            /// >>> import gometry as gm
+            /// >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+            /// >>> part = multi[0]
+            /// >>> multi.index(part)
+            /// 0
+            #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
+            fn index(
+                slf: PyRef<'_, Self>,
+                value: &Bound<'_, PyAny>,
+                start: i64,
+                stop: Option<i64>,
+            ) -> PyResult<usize> {
+                geometry_parts_index(&**slf.as_super(), value, start, stop)
+            }
+
+            /// Number of parts equal to ``value``.
+            ///
+            /// Parameters
+            /// ----------
+            /// value : object
+            ///     The geometry value to count.
+            ///
+            /// Returns
+            /// -------
+            /// int
+            ///
+            /// Examples
+            /// --------
+            /// >>> import gometry as gm
+            /// >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+            /// >>> multi.count(multi[0])
+            /// 1
+            fn count(slf: PyRef<'_, Self>, value: &Bound<'_, PyAny>) -> usize {
+                geometry_parts_count(&**slf.as_super(), value)
             }
         }
     };

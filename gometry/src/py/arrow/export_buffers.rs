@@ -386,7 +386,7 @@ mod exact_arrow_fill_tests {
     #[test]
     fn mismatched_axes_cannot_complete_xyz_fill() {
         // PyResult error construction needs an interpreter.
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         // XYZ fill + XY-only values must not reach assume_init on Z.
         let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2);
         let err = try_append_raw(&mut fill, &[1.0, 2.0], &[3.0, 4.0], None, None)
@@ -422,7 +422,7 @@ mod exact_arrow_fill_tests {
     fn production_append_rejects_axes_mismatch() {
         // Drive the real `append_arrow_coordinates` entry with synthetic
         // `ArrowCoordinateValues` so the shipped axes gate is what fails.
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 1);
         let xy_only = ArrowCoordinateValues {
             x: ordinate(&[1.0], "x"),

@@ -69,7 +69,7 @@ def test_packed_length_and_huge_hex_are_deterministic():
 
 
 def _cover_tokens(cover):
-    return tuple(sorted(c.token for c in cover.cells))
+    return tuple(sorted(c.token for c in cover))
 
 
 @pytest.mark.parametrize('rule', ['center', 'overlap', 'within', 'bbox'])
@@ -127,7 +127,29 @@ def test_prepared_tall_edge_masks_match_unprepared():
     xs = np.linspace(0, 6, 200)
     ys = np.linspace(0, 1000, 200)
     gx, gy = np.meshgrid(xs, ys, indexing='xy')
+    prepared = gm.contains_xy(prep, gx.ravel(), gy.ravel())
+    scalar = np.array(
+        [
+            gm.contains(poly, gm.Point(float(x), float(y)))
+            for x, y in zip(gx.ravel(), gy.ravel(), strict=True)
+        ]
+    )
+    np.testing.assert_array_equal(prepared, scalar)
     np.testing.assert_array_equal(
-        prep.contains_xy(gx.ravel(), gy.ravel()),
+        prepared,
         gm.contains_xy(poly, gx.ravel(), gy.ravel()),
     )
+
+    # The tall-edge mesh does not enter a certified interior cell at these
+    # coordinates. Keep its identity lock, and also pin the shared path to an
+    # independent scalar oracle on a certified interior cell.
+    theta = np.arange(64) * (2.0 * np.pi / 64.0)
+    oracle_poly = gm.Polygon([(10.0 * np.cos(t), 10.0 * np.sin(t)) for t in theta])
+    oracle_prepared = oracle_poly.prepare()
+    oracle_x = np.zeros(10_000)
+    oracle_y = np.zeros(10_000)
+    oracle_batch = gm.contains_xy(oracle_prepared, oracle_x, oracle_y)
+    oracle_scalar = np.array(
+        [gm.contains(oracle_poly, gm.Point(0.0, 0.0))] * len(oracle_x)
+    )
+    np.testing.assert_array_equal(oracle_batch, oracle_scalar)

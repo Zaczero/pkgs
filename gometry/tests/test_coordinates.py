@@ -79,6 +79,65 @@ def test_coords_sequence_is_flat_and_columnar() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    'dtype',
+    [
+        np.dtype(np.float64),
+        np.float64,
+        'float64',
+        'f8',
+        'd',
+        np.dtype(np.float32),
+        np.float32,
+        'float32',
+        'f4',
+        np.dtype(np.float16),
+        np.float16,
+        'float16',
+        'f2',
+        'e',
+    ],
+    ids=[
+        'float64-dtype',
+        'float64-type',
+        'float64-name',
+        'float64-f8',
+        'float64-d',
+        'float32-dtype',
+        'float32-type',
+        'float32-name',
+        'float32-f4',
+        'float16-dtype',
+        'float16-type',
+        'float16-name',
+        'float16-f2',
+        'float16-e',
+    ],
+)
+def test_coordinates_numpy_protocol_accepts_float_dtype_spellings(dtype: object) -> None:
+    coords = gm.LineString([(0, 0), (1, 2)]).coords
+
+    direct = coords.__array__(dtype=dtype)
+    via_numpy = np.asarray(coords, dtype=dtype)
+    for result in (direct, via_numpy):
+        assert result.dtype == np.dtype(dtype)
+        np.testing.assert_array_equal(result, [[0.0, 0.0], [1.0, 2.0]])
+
+
+@pytest.mark.parametrize(
+    'dtype',
+    [np.int64, 'int64', np.bool_, 'bool'],
+    ids=['int64-type', 'int64-name', 'bool-type', 'bool-name'],
+)
+def test_coordinates_numpy_protocol_rejects_nonfloating_dtype(dtype: object) -> None:
+    coords = gm.LineString([(0, 0), (1, 2)]).coords
+    message = 'dtype must be a floating dtype or None'
+    with pytest.raises(gm.GeometryError, match=message):
+        coords.__array__(dtype=dtype)
+    with pytest.raises(gm.GeometryError, match=message):
+        np.asarray(coords, dtype=dtype)
+
+
 def test_coordinates_equality_compares_visible_values() -> None:
     xy = gm.LineString([(0, 0), (1, 1)]).coords
     assert xy == gm.LineString([(0, 0), (1, 1)]).coords

@@ -21,10 +21,9 @@ use pyo3::types::PyModule;
 use rstar::{AABB, ParentNode, PointDistance, RTree, RTreeNode, RTreeObject};
 use str_tree::StaticStrTree;
 
+use crate::array::BoundsSeed;
 use crate::collections::sort_row_ids;
-use crate::geometry::{
-    Bounds, Point, PointBatchTester, Shape, ShapeData, XY, convex_box_strictly_inside,
-};
+use crate::geometry::{Bounds, Point, Shape, ShapeData, XY, convex_box_strictly_inside};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -56,7 +55,7 @@ pub(crate) use pymethods::{_unpickle_spatial_index, PySpatialIndexIter};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
-/// `query`/`query_pairs`/`explain`/`join`, and the topological side reads its
+/// `query`/`self_join`/`explain`/`join`, and the topological side reads its
 /// facts from [`Predicate::spec`], so the index cannot drift from the
 /// broadcast/prepared surfaces in which predicates it accepts or how they
 /// refine.
@@ -338,7 +337,7 @@ impl PreparedIndexQuery {
         &self,
         index: &PySpatialIndex,
         row: ShapeRow<'_>,
-        seeded_bounds: Option<Bounds>,
+        seeded_bounds: BoundsSeed,
     ) -> PreparedIndexRow {
         let pruner_point = match row {
             ShapeRow::Point(point) => Some(point),
@@ -373,7 +372,10 @@ impl PreparedIndexQuery {
             }),
             None => None,
         };
-        let bounds = seeded_bounds.or_else(|| row.quick_bounds());
+        let bounds = match seeded_bounds {
+            BoundsSeed::Unset => row.quick_bounds(),
+            BoundsSeed::Value(bounds) => bounds,
+        };
         let bounds = bounds
             .map(|bounds| row.with_shape(|shape| index_bounds(shape, bounds, index.geographic())));
         PreparedIndexRow {
@@ -419,7 +421,7 @@ pub(crate) struct GeodesicCapsCache {
 /// Built by ``SpatialIndex(geoms)``: ask set questions against the indexed
 /// geometries — exact predicate matches (``idx.query(geom)``), bounding-box
 /// candidates (``idx.candidates(geom)``), proximity (``idx.nearest(geom)``),
-/// self-joins (``idx.query_pairs()``) — and mutate it incrementally with
+/// self-joins (``idx.self_join()``) — and mutate it incrementally with
 /// ``insert``/``remove``. Distances follow the indexed CRS: meters on a
 /// geographic frame, native linear units on a projected frame, coordinate
 /// units when CRS-free.
@@ -490,8 +492,7 @@ pub(crate) struct IndexEntry {
 /// component and duplicating CSR/selection logic.
 #[derive(Clone, Debug)]
 pub(crate) struct PackedStore {
-    pub(crate) rows: Arc<GeometryArrayStorage>,
-    pub(crate) frame_caches: crate::array::FrameCacheRows,
+    pub(crate) source: PyGeometryArray,
 }
 
 /// The indexed rows. Building from a packed point or line array shares its
@@ -509,7 +510,11 @@ pub(crate) struct IndexRows {
 
 impl IndexRows {
     fn len(&self) -> usize {
-        let len = self.packed.as_ref().map_or(0, |packed| packed.rows.len()) + self.boxed.len();
+        let len = self
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.storage().len())
+            + self.boxed.len();
         debug_assert_eq!(len, self.live.len());
         len
     }
@@ -518,11 +523,14 @@ impl IndexRows {
     /// packed rows, the persistent handle (prepared caches intact) for
     /// boxed rows.
     fn get(&self, handle: usize) -> Option<ShapeRow<'_>> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.rows.len());
+        let packed_len = self
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.storage().len());
         if let Some(packed) = &self.packed
-            && handle < packed.rows.len()
+            && handle < packed.source.storage().len()
         {
-            return Some(packed.rows.row(handle));
+            return Some(packed.source.storage().row(handle));
         }
         self.boxed
             .get(handle - packed_len)
@@ -530,21 +538,41 @@ impl IndexRows {
     }
 
     fn row(&self, handle: usize) -> ShapeRow<'_> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.rows.len());
+        let packed_len = self
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.storage().len());
         if let Some(packed) = &self.packed
-            && handle < packed.rows.len()
+            && handle < packed.source.storage().len()
         {
-            return packed.rows.row(handle);
+            return packed.source.storage().row(handle);
         }
         ShapeRow::Handle(&self.boxed[handle - packed_len].shape)
     }
 
-    fn frame_cache(&self, handle: usize) -> Arc<crate::geometry::FrameDependentCaches> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.rows.len());
+    fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
+        let packed_len = self
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.storage().len());
         if let Some(packed) = &self.packed
-            && handle < packed.rows.len()
+            && handle < packed_len
         {
-            return packed.frame_caches.cache(handle);
+            let row = packed.source.storage().row(handle);
+            return packed.source.prepared_row(handle, row);
+        }
+        crate::array::PreparedRow::Shared(&self.boxed[handle - packed_len].shape)
+    }
+
+    fn frame_cache(&self, handle: usize) -> Arc<crate::geometry::FrameDependentCaches> {
+        let packed_len = self
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.storage().len());
+        if let Some(packed) = &self.packed
+            && handle < packed.source.storage().len()
+        {
+            return packed.source.row_frame_cache(handle);
         }
         Arc::clone(&self.boxed[handle - packed_len].frame_cache)
     }
@@ -619,7 +647,7 @@ impl HeapSize for IndexRows {
     fn heap_bytes(&self) -> usize {
         self.packed
             .as_ref()
-            .map_or(0, |packed| packed.rows.logical_heap_bytes())
+            .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
             + self.boxed.heap_bytes()
             + self.live.heap_bytes()
     }

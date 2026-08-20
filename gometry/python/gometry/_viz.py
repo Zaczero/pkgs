@@ -13,6 +13,7 @@ from gometry._types import PyArrowTable, mapping_as_dict
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
+    import pyarrow as pa
     from lonboard import Map
 else:
     # Runtime: keep the `Map` annotation name resolvable WITHOUT importing
@@ -23,7 +24,7 @@ else:
 
 _LONBOARD_INSTALL = "install the 'gometry[viz]' extra"
 _lonboard_available: bool | None = None
-_VIZ_DEFAULTS = {
+_VIZ_DEFAULTS: dict[str, dict[str, Any]] = {
     'scatterplot_kwargs': {
         'get_fill_color': [28, 119, 195],
         'radius_min_pixels': 4,
@@ -257,6 +258,7 @@ def array_repr_html(arr: GeometryArray) -> str | None:
     # returns. Materialize the Arrow object so workers do not outlive the
     # direct C-capsule handoff owned by ``display_arr``.
     try:
+        data: pa.Array | GeometryArray
         data = display_arr.to_arrow()
     except ModuleNotFoundError:
         # Without PyArrow, lonboard serializes the direct capsule through arro3.

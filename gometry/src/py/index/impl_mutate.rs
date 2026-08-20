@@ -133,7 +133,7 @@ impl PySpatialIndex {
                 idx: start + offset,
                 envelope: insert_envelope(row, bounds, geographic),
             });
-            let shape = row.into_shape_data(Some(bounds));
+            let shape = array.prepared_row(offset, row).into_owned_data();
             non_prunable_live += usize::from(!geodesic_prunable_point(shape.shape()));
             items.push(PyGeometry::with_frame(shape, array.frame.clone()));
         }

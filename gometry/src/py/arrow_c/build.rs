@@ -537,7 +537,7 @@ mod owner_export_tests {
     use super::*;
 
     fn ensure_python() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
     }
 
     #[test]

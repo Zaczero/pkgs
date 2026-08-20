@@ -284,6 +284,7 @@ assert_type(
     gm.h3_cover(gm.GeometryArray([POLY]), resolution=2),
     gm.Groups[gm.CellArray[gm.H3Cell]],
 )
+assert_type(gm.h3_cover(POLY, resolution=2), gm.CellArray[gm.H3Cell])
 h3_cell = gm.H3Cell(POINT, resolution=9)
 assert_type(gm.CellArray([h3_cell]), gm.CellArray[gm.H3Cell])
 assert_type(
@@ -298,7 +299,7 @@ assert_type(h3_vertices[:2], gm.H3VertexArray)
 assert_type(h3_vertices[[True, False, True, False, True, False]], gm.H3VertexArray)
 assert_type(h3_vertices[np.asarray([0, 1], dtype=np.int64)], gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.token), gm.H3VertexArray)
-assert_type(gm.H3VertexArray(h3_vertices.values), gm.H3VertexArray)
+assert_type(gm.H3VertexArray(h3_vertices.to_numpy()), gm.H3VertexArray)
 assert_type(h3_vertices.point, gm.GeometryArray[gm.Point])
 assert_type(h3_vertices[0].point, gm.Point)
 assert_type(h3_edges, gm.H3EdgeArray)
@@ -307,7 +308,7 @@ assert_type(h3_edges[:2], gm.H3EdgeArray)
 assert_type(h3_edges[[True, False, True, False, True, False]], gm.H3EdgeArray)
 assert_type(h3_edges[np.asarray([0, 1], dtype=np.int64)], gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.token), gm.H3EdgeArray)
-assert_type(gm.H3EdgeArray(h3_edges.values), gm.H3EdgeArray)
+assert_type(gm.H3EdgeArray(h3_edges.to_numpy()), gm.H3EdgeArray)
 assert_type(h3_edges.origin, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.destination, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.reverse(), gm.H3EdgeArray)
@@ -343,13 +344,23 @@ assert_type(
     gm.s2_cover(gm.GeometryArray([POLY]), level=12),
     gm.Groups[gm.CellArray[gm.S2Cell]],
 )
+assert_type(gm.s2_cover(POLY, level=12), gm.CellArray[gm.S2Cell])
 assert_type(
     gm.geohash_cover(gm.GeometryArray([POLY]), precision=5),
     gm.Groups[gm.CellArray[gm.GeohashCell]],
 )
+assert_type(gm.geohash_cover(POLY, precision=5), gm.CellArray[gm.GeohashCell])
 assert_type(
     gm.tile_cover(gm.GeometryArray([POLY]), zoom=10),
     gm.Groups[gm.CellArray[gm.Tile]],
+)
+assert_type(gm.tile_cover(POLY, zoom=10), gm.CellArray[gm.Tile])
+H3_GROUPS = gm.h3_cover(gm.GeometryArray([POLY]), resolution=2)
+assert_type(H3_GROUPS.index(H3_GROUPS[0]), int)
+assert_type(H3_GROUPS.count(H3_GROUPS[0]), int)
+assert_type(
+    gm.h3_cover(POLY, resolution=2).to_numpy(),
+    npt.NDArray[np.uint64] | npt.NDArray[np.object_],
 )
 INDEX = gm.SpatialIndex(POINTS)
 assert_type(INDEX.crs, gm.CRS | None)
@@ -361,7 +372,7 @@ if TYPE_CHECKING:
     assert_type(INDEX.query(POINTS), gm.Groups[npt.NDArray[np.int64]])
 else:
     assert isinstance(INDEX.query(POINTS), gm.Groups)
-assert_type(INDEX.query_pairs(), tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]])
+assert_type(INDEX.self_join(), tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]])
 assert_type(
     INDEX.nearest(POINT, return_distance=True),
     tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]],
@@ -458,9 +469,55 @@ BARE_CELLS_OK: gm.CellArray = h3_cells  # PEP 696 default: bare == [Cell]
 
 # --- High-value free-function overload groups (manifest: _OVERLOAD_TARGETS) ---
 assert_type(gm.contains(POLY, POINT), bool)
+assert_type(gm.contains(POLY.prepare(), POINT), bool)
+assert_type(gm.contains(POLY, POINT.prepare()), bool)
+assert_type(gm.equals(POLY.prepare(), POLY.prepare()), bool)
 assert_type(gm.contains(POINTS, POINT), npt.NDArray[np.bool_])
 assert_type(gm.intersects(POLY, POINT), bool)
 assert_type(gm.intersects(POINTS, POINT), npt.NDArray[np.bool_])
+
+# Prepared scalars are valid on either side of every topological predicate;
+# arrays remain GeometryArray-only operands.
+_PREP_POLY = POLY.prepare()
+assert_type(gm.contains(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.contains(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.contains_properly(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.contains_properly(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.within(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.within(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.covers(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.covers(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.covered_by(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.covered_by(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.intersects(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.intersects(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.relate(_PREP_POLY, POLY), str)
+assert_type(gm.relate(POLY, _PREP_POLY), str)
+assert_type(gm.relate(_PREP_POLY, POINTS), list[str])
+assert_type(gm.relate(POINTS, _PREP_POLY), list[str])
+assert_type(gm.relate_pattern(_PREP_POLY, POLY, 'T********'), bool)
+assert_type(gm.relate_pattern(POLY, _PREP_POLY, 'T********'), bool)
+assert_type(
+    gm.relate_pattern(_PREP_POLY, POINTS, 'T********'), npt.NDArray[np.bool_]
+)
+assert_type(
+    gm.relate_pattern(POINTS, _PREP_POLY, 'T********'), npt.NDArray[np.bool_]
+)
+assert_type(gm.disjoint(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.disjoint(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.touches(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.touches(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.crosses(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.crosses(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.overlaps(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.overlaps(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.equals(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
+assert_type(gm.equals(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
+assert_type(gm.intersects_xy(_PREP_POLY, 0.0, 0.0), bool)
+assert_type(gm.intersects_xy(_PREP_POLY, [0.0], [0.0]), npt.NDArray[np.bool_])
+assert_type(gm.equals(_PREP_POLY, _PREP_POLY), bool)
+assert_type(gm.dwithin(_PREP_POLY, _PREP_POLY, 0.0), bool)
+assert_type(gm.equals_exact(_PREP_POLY, _PREP_POLY), bool)
 assert_type(gm.distance(POINT, POLY), float)
 assert_type(gm.distance(POINTS, POLY), npt.NDArray[np.float64])
 assert_type(gm.area(POLY), float)
@@ -487,7 +544,9 @@ assert_type(POINT.coords.__array__(), npt.NDArray[np.float64])
 assert_type(POINT.coords.__array__(dtype=np.dtype(np.float32)), npt.NDArray[np.float32])
 assert_type(POINTS.__array__(), npt.NDArray[np.object_])
 assert_type(POINTS.to_numpy(), npt.NDArray[np.object_])
-assert_type(h3_cells.__array__(), npt.NDArray[np.uint64])
+assert_type(
+    h3_cells.__array__(), npt.NDArray[np.uint64] | npt.NDArray[np.object_]
+)
 assert_type(h3_cells.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])
 assert_type(h3_vertices.__array__(), npt.NDArray[np.uint64])
 assert_type(h3_vertices.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])
@@ -512,14 +571,16 @@ if TYPE_CHECKING:
 assert_type(gm.crs_search('WGS', kind='geographic_2d'), list[sht.CrsCatalogInfo])
 assert_type(gm.crs_codes('EPSG', kind='projected'), list[str])
 
-# Coverage protocol structural assignment (all four systems).
+# Bare CellArray defaults to Cell (protocol), not Any.
 if TYPE_CHECKING:
-    _h3_cov: gm.Coverage[gm.H3Cell] = gm.h3_cover(POLY, resolution=5)
-    _s2_cov: gm.Coverage[gm.S2Cell] = gm.s2_cover(POLY, level=8)
-    _gh_cov: gm.Coverage[gm.GeohashCell] = gm.geohash_cover(POLY, precision=4)
-    _tile_cov: gm.Coverage[gm.Tile] = gm.tile_cover(POLY, zoom=6)
-    # Bare CellArray defaults to Cell (protocol), not Any.
-    _bare_cell: gm.Cell = h3_cells[0]
+    _bare_cell = h3_cells[0]
+    assert _bare_cell is not None
+    _bare_cell_ok: gm.Cell = _bare_cell
+    _h3_cell_ok: gm.Cell = h3_cell
+    _s2_cell_ok: gm.Cell = gm.S2Cell(POINT, level=12)
+    _geohash_cell_ok: gm.Cell = gm.GeohashCell(POINT, precision=7)
+    _tile_cell_ok: gm.Cell = gm.Tile(POINT, zoom=10)
+    assert_type(_h3_cell_ok.children_count(), int)
 
 
 def test_static_narrowing_matches_runtime() -> None:

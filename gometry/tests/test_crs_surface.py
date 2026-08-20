@@ -33,7 +33,7 @@ def test_crs_public_type_hints_resolve() -> None:
     assert gm.crs_info(4326)['kind'] == 'geographic_2d'
     assert gm.CRS(4326).kind == 'geographic_2d'
     assert gm.CRS(3857).is_projected is True
-    assert isinstance(gm.CRS(5703).geoid_models(), list)
+    assert isinstance(gm.CRS(5703).geoid_models, list)
     assert isinstance(gm.CRS(4326).to_projjson_dict(), dict)
 
 

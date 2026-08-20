@@ -15,8 +15,7 @@ pub(crate) mod unary;
 
 pub(crate) use de9im::{equals, equals_exact, equals_identical, relate, relate_pattern};
 pub(crate) use engine::{
-    IndexEnvelope, PREPARED_PREDICATE_MIN, Predicate, PredicateSpec, point_batch, scalar_vs_shapes,
-    topology_scalar_pair,
+    IndexEnvelope, Predicate, PredicateSpec, point_batch, scalar_vs_shapes, topology_scalar_pair,
 };
 pub(crate) use pairwise::{
     distance, distance_3d, dwithin, frechet_distance, hausdorff_distance, nearest_points,

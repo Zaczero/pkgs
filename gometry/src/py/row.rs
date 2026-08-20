@@ -45,10 +45,6 @@ impl RowIterState {
             position
         })
     }
-
-    pub(crate) const fn is_reverse(&self) -> bool {
-        self.reverse
-    }
 }
 
 /// Monomorphized row behavior for sequence-like containers.

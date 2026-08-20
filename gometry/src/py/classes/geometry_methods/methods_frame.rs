@@ -47,9 +47,8 @@ impl PyGeometry {
         )?)))
     }
 
-    /// Build a `PreparedGeometry` with a cached spatial index.
-    /// Amortizes repeated predicate queries (``contains``/``intersects``/…)
-    /// against this geometry; build once, query many times.
+    /// Create a `PreparedGeometry` predicate operand in O(1).
+    /// The relevant spatial product is built lazily on first use.
     ///
     /// Returns
     /// -------
@@ -59,7 +58,7 @@ impl PyGeometry {
     /// --------
     /// >>> import gometry as gm
     /// >>> prep = gm.box(0, 0, 2, 2).prepare()
-    /// >>> prep.contains(gm.Point(1, 1))
+    /// >>> gm.contains(prep, gm.Point(1, 1))
     /// True
     pub fn prepare(&self) -> PyPreparedGeometry {
         // The prepared state IS the geometry's shared `ShapeData` handle: its

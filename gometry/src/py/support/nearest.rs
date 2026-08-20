@@ -91,15 +91,14 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
                     if missing.as_ref().is_some_and(|mask| mask[index]) {
                         return Ok(f64::NAN);
                     }
-                    row.with_data(|line| {
-                        crate::broadcast::degrade_linref_float(line_locate_shape(
-                            &model,
-                            line,
-                            &left.row_frame_cache(index),
-                            query,
-                            normalized,
-                        ))
-                    })
+                    let line = left.prepared_row(index, row);
+                    crate::broadcast::degrade_linref_float(line_locate_shape(
+                        &model,
+                        &line,
+                        &left.row_frame_cache(index),
+                        query,
+                        normalized,
+                    ))
                 })
                 .collect_rows()
         })
@@ -134,7 +133,6 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     let model = resolve_metric(fixed.crs_str(), unit, "nearest_points")?;
     let fixed_shape = Arc::clone(&fixed.shape);
     let fixed_cache = Arc::clone(&fixed.frame_cache);
-    let storage = Arc::clone(array.storage_arc());
     let array_owned = array.clone();
     let missing = array.missing().cloned();
     if let crate::crs::MetricModel::Geodesic(crs) = model {
@@ -161,35 +159,32 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                             if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                                 return Ok((None, CoordinateAxes::XY));
                             }
-                            row.with_data(|element| {
-                                let element_cache = array_owned.row_frame_cache(row_index);
-                                let common = crate::geometry::common_axes(
-                                    fixed_shape.shape(),
-                                    element.shape(),
-                                );
-                                if fixed_is_left {
-                                    fixed_shape.geodesic_nearest_points_cached_split(
-                                        &fixed_cache,
-                                        element,
-                                        &element_cache,
-                                        crs,
-                                        semi_major,
-                                        flattening,
-                                        metric,
-                                    )
-                                } else {
-                                    element.geodesic_nearest_points_cached_split(
-                                        &element_cache,
-                                        &fixed_shape,
-                                        &fixed_cache,
-                                        crs,
-                                        semi_major,
-                                        flattening,
-                                        metric,
-                                    )
-                                }
-                                .map(|pair| (pair, common))
-                            })
+                            let element = array_owned.prepared_row(row_index, row);
+                            let element_cache = array_owned.row_frame_cache(row_index);
+                            let common =
+                                crate::geometry::common_axes(fixed_shape.shape(), element.shape());
+                            if fixed_is_left {
+                                fixed_shape.geodesic_nearest_points_cached_split(
+                                    &fixed_cache,
+                                    &element,
+                                    &element_cache,
+                                    crs,
+                                    semi_major,
+                                    flattening,
+                                    metric,
+                                )
+                            } else {
+                                element.geodesic_nearest_points_cached_split(
+                                    &element_cache,
+                                    &fixed_shape,
+                                    &fixed_cache,
+                                    crs,
+                                    semi_major,
+                                    flattening,
+                                    metric,
+                                )
+                            }
+                            .map(|pair| (pair, common))
                         })
                         .collect_rows())
                 },
@@ -205,23 +200,22 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     let missing = array.missing().cloned();
     let pairs = py
         .detach(move || {
-            storage
+            array_owned
+                .storage()
                 .iter_rows()
                 .enumerate()
                 .map(|(row_index, row)| {
                     if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                         return Ok((None, CoordinateAxes::XY));
                     }
-                    row.with_data(|element| {
-                        let common =
-                            crate::geometry::common_axes(fixed_shape.shape(), element.shape());
-                        if fixed_is_left {
-                            metric_nearest_points(&model, &fixed_shape, element)
-                        } else {
-                            metric_nearest_points(&model, element, &fixed_shape)
-                        }
-                        .map(|pair| (pair, common))
-                    })
+                    let element = array_owned.prepared_row(row_index, row);
+                    let common = crate::geometry::common_axes(fixed_shape.shape(), element.shape());
+                    if fixed_is_left {
+                        metric_nearest_points(&model, &fixed_shape, &element)
+                    } else {
+                        metric_nearest_points(&model, &element, &fixed_shape)
+                    }
+                    .map(|pair| (pair, common))
                 })
                 .collect_rows()
         })

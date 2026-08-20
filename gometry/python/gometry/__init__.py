@@ -16,7 +16,8 @@ reference systems; ``h3_*``, ``s2_*``, ``geohash_*``, and ``tile_*`` for grids;
 and codec-specific ``pluscode_*`` / ``osm_shortlink_*`` names for point codes.
 API placement follows one doctrine: facts are properties, unary geometry work is
 on `Geometry`/`GeometryArray`, binary relationships are free functions, and
-grid receiver-ops live on cells, arrays, and coverages.
+ grid factories return `CellArray`/`Groups`; source geometry remains caller-owned,
+ and exact membership uses free predicates.
 
 Examples
 --------
@@ -58,7 +59,6 @@ from gometry._lib import (
     CRSError,
     CRSMismatchError,
     GeohashCell,
-    GeohashCoverage,
     Geometry,
     GeometryArray,
     GeometryCollection,
@@ -67,7 +67,6 @@ from gometry._lib import (
     GeometryTypeError,
     Groups,
     H3Cell,
-    H3Coverage,
     H3Edge,
     H3EdgeArray,
     H3Vertex,
@@ -82,10 +81,8 @@ from gometry._lib import (
     Polygon,
     PreparedGeometry,
     S2Cell,
-    S2Coverage,
     SpatialIndex,
     Tile,
-    TileCoverage,
     TransformError,
     ValidationReport,
     area,
@@ -220,7 +217,6 @@ from gometry._lib import (
 )
 from gometry._types import (
     Cell,
-    Coverage,
     Extremes,
     Features,
     PolygonizeResult,
@@ -228,7 +224,7 @@ from gometry._types import (
 
 # Public Python-defined types have the same canonical identity users import
 # and document; the private module is only their implementation home.
-for _public_type in (Cell, Coverage, Extremes, Features, PolygonizeResult):
+for _public_type in (Cell, Extremes, Features, PolygonizeResult):
     # Resolve class annotations while their real implementation module still
     # owns the private aliases.  After publishing the canonical module name,
     # `typing.get_type_hints()` must not need fake private globals on gometry.
@@ -251,10 +247,6 @@ _NATIVE_SEQUENCE_TYPES = (
     Coordinates,
     H3VertexArray,
     H3EdgeArray,
-    H3Coverage,
-    S2Coverage,
-    GeohashCoverage,
-    TileCoverage,
 )
 
 
@@ -275,11 +267,9 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'Cell',
     'CellArray',
     'Coordinates',
-    'Coverage',
     'Extremes',
     'Features',
     'GeohashCell',
-    'GeohashCoverage',
     'Geometry',
     'GeometryArray',
     'GeometryCollection',
@@ -288,7 +278,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'GeometryTypeError',
     'Groups',
     'H3Cell',
-    'H3Coverage',
     'H3Edge',
     'H3EdgeArray',
     'H3Vertex',
@@ -304,10 +293,8 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'PolygonizeResult',
     'PreparedGeometry',
     'S2Cell',
-    'S2Coverage',
     'SpatialIndex',
     'Tile',
-    'TileCoverage',
     'TransformError',
     'ValidationReport',
     'area',

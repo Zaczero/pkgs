@@ -162,10 +162,10 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         assert gm.contains(band, point)
         assert band.area > 0.0
         assert band.length > 0.0
-        assert len(h3.cells) > 0
-        assert len(s2.cells) > 0
-        assert h3.contains(point)
-        assert s2.contains(point)
+        assert len(h3) > 0
+        assert len(s2) > 0
+        assert gm.H3Cell(point, resolution=0) in h3
+        assert gm.S2Cell(point, level=1) in s2
 
 
 def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged() -> (

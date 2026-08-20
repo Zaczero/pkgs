@@ -801,14 +801,14 @@ mod tests {
 
     #[test]
     fn offset_validators_accept_monotonic_windows() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         ensure_i32_offsets_monotonic(&[0, 2, 5], 0, 2, 5).unwrap();
         ensure_i64_offsets_monotonic(&[0, 2, 5], 0, 2, 5).unwrap();
     }
 
     #[test]
     fn offset_validators_reject_descending_pairs() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         for message in [
             error_message(
                 ensure_i32_offsets_monotonic(&[0, 2, 1], 0, 2, 2)
@@ -825,7 +825,7 @@ mod tests {
 
     #[test]
     fn offset_validators_reject_negative_and_conversion_overflow_offsets() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         for message in [
             error_message(
                 ensure_i32_offsets_monotonic(&[0, -1], 0, 1, 0).expect_err("negative i32 offset"),
@@ -848,7 +848,7 @@ mod tests {
 
     #[test]
     fn offset_validators_preserve_negative_before_ordering_precedence() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         for message in [
             error_message(
                 ensure_i32_offsets_monotonic(&[2, 1, -1], 0, 2, 2)
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn offset_validators_reject_terminals_past_the_child() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         for message in [
             error_message(
                 ensure_i32_offsets_monotonic(&[0, 3], 0, 1, 2)
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn offset_validators_validate_empty_windows() {
-        pyo3::Python::initialize();
+        crate::test_support::initialize_python();
         ensure_i32_offsets_monotonic(&[2], 0, 0, 2).unwrap();
         ensure_i64_offsets_monotonic(&[2], 0, 0, 2).unwrap();
         for (index, message) in [

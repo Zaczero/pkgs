@@ -327,13 +327,16 @@ impl PyCoordinates {
         if dtype.is_none() {
             return Ok(array);
         }
+        let numpy = crate::py::numpy::numpy_module(py)?;
+        let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
         let kind = dtype.getattr("kind")?.extract::<String>()?;
-        let itemsize = dtype.getattr("itemsize")?.extract::<usize>()?;
-        if kind == "f" && itemsize == 8 {
+        if kind == "f" && dtype.getattr("itemsize")?.extract::<usize>()? == 8 {
             return Ok(array);
         }
         if kind != "f" {
-            return Err(GeometryError::new_err("dtype must be float64 or None"));
+            return Err(GeometryError::new_err(
+                "dtype must be a floating dtype or None",
+            ));
         }
         Ok(array.bind(py).call_method1("astype", (dtype,))?.unbind())
     }

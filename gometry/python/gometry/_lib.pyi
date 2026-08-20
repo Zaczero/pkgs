@@ -6,6 +6,9 @@
 # The uninitialized ClassVar[None] declarations below need a mypy assignment
 # ignore, but Pyright correctly sees no assignment error in a stub.
 # pyright: reportUnnecessaryTypeIgnoreComment=false
+# Runtime dunder declarations below are intentional protocol surface, even where
+# Ruff's generic stub heuristic considers them redundant.
+# ruff: noqa: PYI029
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false
@@ -141,7 +144,6 @@ _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
 # Unbound: a `bound=Cell` here (and on `_CellT_co`) collides with the recursive
 # `Cell` protocol (`neighbors`/`children` → `CellArray[Self]`) — structural
 # membership can't prove `Self <: Cell` while `CellArray` demands that proof.
-_CellT = TypeVar('_CellT')
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
@@ -159,6 +161,7 @@ _GroupValuesT_co = TypeVar(
     '_GroupValuesT_co',
     covariant=True,
 )
+_PredicateOperand: TypeAlias = Geometry | PreparedGeometry
 
 __version__: Final[str]
 
@@ -172,8 +175,6 @@ __all__ = [
     'Coordinates',
     'CoordinatesIterator',
     'GeohashCell',
-    'GeohashCoverage',
-    'GeohashCoverageIterator',
     'Geometry',
     'GeometryArray',
     'GeometryArrayIterator',
@@ -185,8 +186,6 @@ __all__ = [
     'Groups',
     'GroupsIterator',
     'H3Cell',
-    'H3Coverage',
-    'H3CoverageIterator',
     'H3Edge',
     'H3EdgeArray',
     'H3EdgeArrayIterator',
@@ -203,13 +202,9 @@ __all__ = [
     'Polygon',
     'PreparedGeometry',
     'S2Cell',
-    'S2Coverage',
-    'S2CoverageIterator',
     'SpatialIndex',
     'SpatialIndexIterator',
     'Tile',
-    'TileCoverage',
-    'TileCoverageIterator',
     'TransformError',
     'ValidationReport',
     'area',
@@ -542,6 +537,8 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         geometry/array sidecars (prepared caches, coverage membership, …) are
         not owned by the view and are not counted here.
         """
+    def __repr__(self) -> str:
+        """Return the bounded representation of this coordinate view."""
     def __reduce__(self) -> Never: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
@@ -757,7 +754,7 @@ class Geometry:
         """Create and return a new object.  See help(type) for accurate signature."""
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Pickle support: round-trip through plain WKB (Z/M preserved) plus the
-        frame (canonical CRS string, epoch). Enables ``pickle``, ``copy``, and
+        frame (canonical CRS string and epoch stored separately). Enables ``pickle``, ``copy``, and
         ``deepcopy``, so it round-trips through multiprocessing and caches.
         """
     def __copy__(self) -> Self:
@@ -812,6 +809,10 @@ class Geometry:
         or trailing-zero-trimmed (``g``); ``x``/``X`` → lower/uppercase hex
         ISO WKB. Display only — the geometry is unchanged.
         """
+    def __repr__(self) -> str:
+        """Return the bounded angle-bracket geometry representation."""
+    def __str__(self) -> str:
+        """Return the geometry's WKT representation."""
     def __sizeof__(self) -> int:
         """Retained native cost of this geometry for ``sys.getsizeof``.
 
@@ -1054,10 +1055,9 @@ class Geometry:
     def __geo_interface__(self) -> GeoJsonGeometry:
         """GeoJSON-like mapping for the `__geo_interface__` protocol.
 
-        Z ordinates are included when present; M ordinates are deliberately
-        omitted (`GeoJSON` has no M slot); measure values are
-        not folded into ``coordinates`` — use ``coords``, ``to_wkt()``, or
-        WKB when M must round-trip.
+        Z ordinates are included when present. M ordinates and coordinate epochs
+        are not representable by GeoJSON and therefore raise. Use an explicit
+        export operation with its metadata-dropping option when loss is intended.
 
         Returns
         -------
@@ -1286,9 +1286,8 @@ class Geometry:
             required).
         """
     def prepare(self) -> PreparedGeometry:
-        """Build a `PreparedGeometry` with a cached spatial index.
-        Amortizes repeated predicate queries (``contains``/``intersects``/…)
-        against this geometry; build once, query many times.
+        """Create a `PreparedGeometry` predicate operand in O(1).
+        The relevant spatial product is built lazily on first use.
 
         Returns
         -------
@@ -1298,7 +1297,7 @@ class Geometry:
         --------
         >>> import gometry as gm
         >>> prep = gm.box(0, 0, 2, 2).prepare()
-        >>> prep.contains(gm.Point(1, 1))
+        >>> gm.contains(prep, gm.Point(1, 1))
         True
         """
     def __replace__(
@@ -4233,19 +4232,69 @@ class MultiPoint(Geometry):
         -------
         Geometry or list of Geometry
         """
-    def __iter__(self) -> Iterator[Point]:
+    def __iter__(self) -> GeometryPartsIterator[Point]:
         """Iterate component geometries.
 
         Returns
         -------
         iterator of Geometry
         """
-    def __reversed__(self) -> Iterator[Point]:
+    def __reversed__(self) -> GeometryPartsIterator[Point]:
         """Iterate component geometries in reverse order.
 
         Returns
         -------
         iterator of Geometry
+        """
+    def __contains__(self, item: object, /) -> bool: ...
+    def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
+        """First index of an equal part in ``[start, stop)``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to locate.
+        start : int, default 0
+            First position searched.
+        stop : int, optional
+            One past the last position searched.
+
+        Returns
+        -------
+        int
+            The first matching position.
+
+        Raises
+        ------
+        ValueError
+            If no part in the window equals ``value``.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> part = multi[0]
+        >>> multi.index(part)
+        0
+        """
+    def count(self, value: object) -> int:
+        """Number of parts equal to ``value``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to count.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> multi.count(multi[0])
+        1
         """
 
 @final
@@ -4427,19 +4476,69 @@ class MultiLineString(Geometry):
         -------
         Geometry or list of Geometry
         """
-    def __iter__(self) -> Iterator[LineString]:
+    def __iter__(self) -> GeometryPartsIterator[LineString]:
         """Iterate component geometries.
 
         Returns
         -------
         iterator of Geometry
         """
-    def __reversed__(self) -> Iterator[LineString]:
+    def __reversed__(self) -> GeometryPartsIterator[LineString]:
         """Iterate component geometries in reverse order.
 
         Returns
         -------
         iterator of Geometry
+        """
+    def __contains__(self, item: object, /) -> bool: ...
+    def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
+        """First index of an equal part in ``[start, stop)``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to locate.
+        start : int, default 0
+            First position searched.
+        stop : int, optional
+            One past the last position searched.
+
+        Returns
+        -------
+        int
+            The first matching position.
+
+        Raises
+        ------
+        ValueError
+            If no part in the window equals ``value``.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> part = multi[0]
+        >>> multi.index(part)
+        0
+        """
+    def count(self, value: object) -> int:
+        """Number of parts equal to ``value``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to count.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> multi.count(multi[0])
+        1
         """
 
 @final
@@ -4636,19 +4735,69 @@ class MultiPolygon(Geometry):
         -------
         Geometry or list of Geometry
         """
-    def __iter__(self) -> Iterator[Polygon]:
+    def __iter__(self) -> GeometryPartsIterator[Polygon]:
         """Iterate component geometries.
 
         Returns
         -------
         iterator of Geometry
         """
-    def __reversed__(self) -> Iterator[Polygon]:
+    def __reversed__(self) -> GeometryPartsIterator[Polygon]:
         """Iterate component geometries in reverse order.
 
         Returns
         -------
         iterator of Geometry
+        """
+    def __contains__(self, item: object, /) -> bool: ...
+    def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
+        """First index of an equal part in ``[start, stop)``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to locate.
+        start : int, default 0
+            First position searched.
+        stop : int, optional
+            One past the last position searched.
+
+        Returns
+        -------
+        int
+            The first matching position.
+
+        Raises
+        ------
+        ValueError
+            If no part in the window equals ``value``.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> part = multi[0]
+        >>> multi.index(part)
+        0
+        """
+    def count(self, value: object) -> int:
+        """Number of parts equal to ``value``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to count.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> multi.count(multi[0])
+        1
         """
 
 @final
@@ -4736,19 +4885,69 @@ class GeometryCollection(Geometry):
         -------
         Geometry or list of Geometry
         """
-    def __iter__(self) -> Iterator[Geometry]:
+    def __iter__(self) -> GeometryPartsIterator[Geometry]:
         """Iterate component geometries.
 
         Returns
         -------
         iterator of Geometry
         """
-    def __reversed__(self) -> Iterator[Geometry]:
+    def __reversed__(self) -> GeometryPartsIterator[Geometry]:
         """Iterate component geometries in reverse order.
 
         Returns
         -------
         iterator of Geometry
+        """
+    def __contains__(self, item: object, /) -> bool: ...
+    def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
+        """First index of an equal part in ``[start, stop)``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to locate.
+        start : int, default 0
+            First position searched.
+        stop : int, optional
+            One past the last position searched.
+
+        Returns
+        -------
+        int
+            The first matching position.
+
+        Raises
+        ------
+        ValueError
+            If no part in the window equals ``value``.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> part = multi[0]
+        >>> multi.index(part)
+        0
+        """
+    def count(self, value: object) -> int:
+        """Number of parts equal to ``value``.
+
+        Parameters
+        ----------
+        value : object
+            The geometry value to count.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> multi = gm.MultiPoint([(0, 0), (1, 1)])
+        >>> multi.count(multi[0])
+        1
         """
 
 @final
@@ -4793,6 +4992,8 @@ class GeometryParts(Sequence[_GeometryT_co], Generic[_GeometryT_co]):
         logical coordinate heap. The view shares the geometry; it does not
         materialize individual parts.
         """
+    def __repr__(self) -> str:
+        """Return the bounded representation of this parts view."""
     def __len__(self) -> int:
         """Number of component parts.
 
@@ -4967,6 +5168,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         mixed arrays round-trip per-row WKB. The frame (canonical CRS string,
         epoch) travels alongside.
         """
+    def __repr__(self) -> str:
+        """Return the bounded representation of this geometry array."""
     def __copy__(self) -> Self:
         """``copy.copy`` returns the object itself — a GeometryArray is an
         immutable value, so a copy IS the original (like ``tuple``).
@@ -4985,8 +5188,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """Return self^value."""
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
-    def __hash__(self) -> int:
-        """Return hash(self)."""
+    __hash__: ClassVar[None]  # type: ignore[assignment]
     def __bool__(self) -> bool:
         """``False`` only when the array has zero rows.
 
@@ -8712,629 +8914,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """
 
 @final
-class PreparedGeometry:
-    """A geometry with a prebuilt edge index for repeated predicate tests.
-
-    Returned by ``geom.prepare()``: the full predicate surface
-    (``contains``/``intersects``/...) against one fixed geometry whose spatial
-    structure is indexed once and reused; each call accepts a scalar or array
-    of probes. Prefer it when the same geometry is tested across many separate
-    calls — the array-broadcast surfaces already auto-prepare internally.
-    """
-
-    def __new__(cls, _nonconstructible: Never, /) -> Self:
-        """Prepared geometries are returned by ``geom.prepare()``."""
-    @property
-    def geometry(self) -> Geometry:
-        """Source geometry retained by this prepared handle.
-
-        Returns
-        -------
-        Geometry
-            The original typed geometry, sharing its immutable coordinate payload.
-        """
-    def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus the source geometry's
-        retained native cost (``ShapeData`` Arc, shape payload, and any
-        prepared/frame caches already built on that shared handle). Calling
-        this does not build new caches.
-        """
-    def __copy__(self) -> Self:
-        """``copy.copy`` returns the object itself — the prepared handle is an
-        immutable value (geometry + cached indexes), so a copy IS the
-        original (like ``tuple``).
-        """
-    def __deepcopy__(self, memo: object) -> Self:
-        """``copy.deepcopy`` returns the object itself: every field is immutable
-        and holds no Python references, so there is nothing to copy.
-        """
-    def __reduce__(self) -> tuple[object, tuple[Geometry]]:
-        """Pickles as the source geometry plus a re-`prepare()` on load: the
-        cached indexes are transient state, rebuilt cheaply on first use in
-        the new process (`multiprocessing`/`dask` round-trips just work).
-        """
-    def __eq__(self, other: object, /) -> bool:
-        """Return self==value."""
-    def __hash__(self) -> int:
-        """Return hash(self)."""
-    @overload
-    def contains(self, geom: Geometry) -> bool: ...
-    @overload
-    def contains(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry contains ``geom``.
-
-        Same definition as ``contains``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        contains : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().contains(gm.Point(1, 1))
-        True
-        """
-    @overload
-    def contains_properly(self, geom: Geometry) -> bool: ...
-    @overload
-    def contains_properly(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains_properly(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry contains ``geom`` properly.
-
-        Same definition as ``contains_properly`` (no boundary contact).
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        contains_properly : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().contains_properly(gm.Point(1, 1))
-        True
-        """
-    @overload
-    def intersects(self, geom: Geometry) -> bool: ...
-    @overload
-    def intersects(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry intersects ``geom``.
-
-        Same definition as ``intersects``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        intersects : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().intersects(gm.Point(1, 1))
-        True
-        """
-    @overload
-    def within(self, geom: Geometry) -> bool: ...
-    @overload
-    def within(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def within(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry lies within ``geom``.
-
-        Same definition as ``within``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        within : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().within(gm.box(-1, -1, 3, 3))
-        True
-        """
-    @overload
-    def covers(self, geom: Geometry) -> bool: ...
-    @overload
-    def covers(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def covers(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry covers ``geom``.
-
-        Same definition as ``covers``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        covers : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().covers(gm.Point(0, 0))
-        True
-        """
-    @overload
-    def covered_by(self, geom: Geometry) -> bool: ...
-    @overload
-    def covered_by(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def covered_by(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry is covered by ``geom``.
-
-        Same definition as ``covered_by``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        covered_by : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().covered_by(gm.box(-1, -1, 3, 3))
-        True
-        """
-    @overload
-    def disjoint(self, geom: Geometry) -> bool: ...
-    @overload
-    def disjoint(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def disjoint(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry is disjoint from ``geom``.
-
-        Same definition as ``disjoint``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        disjoint : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().disjoint(gm.Point(5, 5))
-        True
-        """
-    @overload
-    def touches(self, geom: Geometry) -> bool: ...
-    @overload
-    def touches(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def touches(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry touches ``geom``.
-
-        Same definition as ``touches``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        touches : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().touches(gm.Point(0, 1))
-        True
-        """
-    @overload
-    def crosses(self, geom: Geometry) -> bool: ...
-    @overload
-    def crosses(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def crosses(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry crosses ``geom``.
-
-        Same definition as ``crosses``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        crosses : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().crosses(gm.LineString([(-1, 1), (3, 1)]))
-        True
-        """
-    @overload
-    def overlaps(self, geom: Geometry) -> bool: ...
-    @overload
-    def overlaps(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def overlaps(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry overlaps ``geom``.
-
-        Same definition as ``overlaps``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        overlaps : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().overlaps(gm.box(1, 1, 3, 3))
-        True
-        """
-    @overload
-    def equals(self, geom: Geometry) -> bool: ...
-    @overload
-    def equals(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def equals(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry is topologically equal to ``geom``.
-
-        Same definition as ``equals``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Probe geometry or array of probes; must share the prepared
-            geometry's CRS. A scalar gives one ``bool``; an array gives one
-            result per row.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            Whether the relation holds; one result per input.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-
-        See Also
-        --------
-        equals : Free-function form of the same predicate.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().equals(gm.box(0, 0, 2, 2))
-        True
-        """
-    @overload
-    def dwithin(
-        self, geom: Geometry, distance: float, *, unit: DistanceUnit | None = None
-    ) -> bool: ...
-    @overload
-    def dwithin(
-        self, geom: GeometryArray, distance: float, *, unit: DistanceUnit | None = None
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def dwithin(
-        self,
-        geom: Geometry | GeometryArray,
-        distance: float,
-        *,
-        unit: DistanceUnit | None = None,
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry is within ``distance`` of ``geom``.
-
-        Same definition as ``dwithin``.
-
-        Parameters
-        ----------
-        geom : Geometry or GeometryArray
-            Geometry (or array) to test; must share this geometry's CRS.
-        distance : float
-            Non-negative threshold.
-        unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
-            geographic CRS — only for deliberate coordinate-space math);
-            ``'meters'`` forces the CRS metric and raises without a CRS.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            One result per input geometry.
-
-        Raises
-        ------
-        CRSMismatchError
-            If the operands' CRS or coordinate-epoch metadata differ.
-        GeometryError
-            If ``distance`` is negative or non-finite, or ``unit='meters'`` is
-            requested for a CRS-free geometry.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().dwithin(gm.Point(3, 0), 1.0)
-        True
-        """
-    @overload
-    def contains_xy(self, x: float, y: float) -> bool: ...
-    @overload
-    def contains_xy(self, x: FloatColumn, y: FloatInput) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains_xy(self, x: FloatInput, y: FloatColumn) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains_xy(self, x: FloatInput, y: FloatInput) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry contains each ``(x, y)`` point.
-
-        Parameters
-        ----------
-        x, y : float or sequence of float
-            Finite coordinates in the prepared geometry's CRS. Geographic
-            antimeridian seams and poles use full point-predicate topology.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            A single bool for scalar ``x, y``, or one result per coordinate.
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``x``/``y`` are non-finite or differ in length.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().contains_xy(1, 1)
-        True
-        """
-    @overload
-    def intersects_xy(self, x: float, y: float) -> bool: ...
-    @overload
-    def intersects_xy(self, x: FloatColumn, y: FloatInput) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects_xy(self, x: FloatInput, y: FloatColumn) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects_xy(
-        self, x: FloatInput, y: FloatInput
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Test whether this prepared geometry intersects each ``(x, y)`` point.
-
-        Boundary-inclusive (unlike ``contains_xy``).
-
-        Parameters
-        ----------
-        x, y : float or sequence of float
-            Finite coordinates in the prepared geometry's CRS. Geographic
-            antimeridian seams and poles use full point-predicate topology.
-
-        Returns
-        -------
-        bool or numpy.ndarray
-            A single bool for scalar ``x, y``, or one result per coordinate.
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``x``/``y`` are non-finite or differ in length.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().intersects_xy(3, 3)
-        False
-        """
-    def explain(self) -> list[str]:
-        """Describe the prepared-predicate plan.
-
-        Returns
-        -------
-        list of str
-            One line per plan step.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).prepare().explain()[0]
-        'prepared geometry: Polygon'
-        """
-
-@final
 class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     """Shared CSR ragged container: one flat `values` payload plus row `offsets`.
     ``groups[i]`` is a zero-copy row view; ``groups[s]`` shares the backing
     with a sub-offset window. ``.values``/``.offsets``/``.counts`` expose the
     Arrow ListArray columns for vectorized work without copying.
     """
-
-    __array_ufunc__: ClassVar[None]
-    __hash__: ClassVar[None]  # type: ignore[assignment]
     def __new__(cls, _nonconstructible: Never, /) -> Self:
         """Not constructed directly — the error points at the producers."""
-    def __class_getitem__(cls, key: Any) -> types.GenericAlias:
-        """See PEP 585"""
-    def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus this group's logical CSR
-        payload. Sliced groups report the visible values window and rebased
-        logical offsets, not the whole shared backing allocation.
-        """
-    @property
-    def nbytes(self) -> int:
-        """Logical CSR payload in bytes: the selected flat values payload plus the
-        ``len(self) + 1`` int64 offsets column. For geometry-valued groups this
-        uses the values ``GeometryArray.nbytes`` and excludes geometry
-        structural offsets, matching NumPy's payload-only convention.
-
-        Returns
-        -------
-        int
-        """
     @property
     def values(self) -> _GroupValuesT_co:
         """The flat backing column (int64 ndarray or `GeometryArray`)."""
@@ -9346,40 +8933,93 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @property
     def counts(self) -> npt.NDArray[np.int64]:
         """Per-group element counts (`offsets[i + 1] - offsets[i]`)."""
-    def __len__(self) -> int:
-        """Number of row groups.
+    @property
+    def nbytes(self) -> int:
+        """Logical CSR payload in bytes: the selected flat values payload plus the
+        ``len(self) + 1`` int64 offsets column. For geometry-valued groups this
+        uses the values ``GeometryArray.nbytes`` and excludes geometry
+        structural offsets, matching NumPy's payload-only convention.
 
         Returns
         -------
         int
         """
-    def __bool__(self) -> bool:
-        """``False`` only when there are zero groups.
-
-        Returns
-        -------
-        bool
+    def __sizeof__(self) -> int:
+        """``sys.getsizeof`` support: the wrapper plus this group's logical CSR
+        payload. Sliced groups report the visible values window and rebased
+        logical offsets, not the whole shared backing allocation.
         """
-    def __iter__(self) -> Iterator[_GroupValuesT_co]:
-        """Iterate one row group at a time.
-
-        Returns
-        -------
-        iterator
-        """
-    def __reversed__(self) -> Iterator[_GroupValuesT_co]:
+    def __class_getitem__(cls, key: Any) -> types.GenericAlias:
+        """See PEP 585"""
+    __array_ufunc__: ClassVar[None]
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+    def __copy__(self) -> Self: ...
+    def __deepcopy__(self, memo: object) -> Self: ...
+    def __contains__(self, value: object, /) -> bool: ...
+    def __eq__(self, other: object, /) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]: ...
+    def __len__(self) -> int: ...
+    def __bool__(self) -> bool: ...
+    def __iter__(self) -> GroupsIterator[_GroupValuesT_co]: ...
+    def __reversed__(self) -> GroupsIterator[_GroupValuesT_co]:
         """Iterate row groups in reverse order.
 
         Returns
         -------
         iterator
         """
-    def __contains__(self, item: object, /) -> bool:
-        """Whether any group equals ``item`` (whole-row value equality).
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> _GroupValuesT_co: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> Self: ...
+    def to_pairs(self) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
+
+        The right column is a zero-copy read-only view of the flat CSR values;
+        only the repeated row-id column is materialized. Row ids are positions
+        in this logical ``Groups`` object, so sliced groups start again at zero.
 
         Returns
         -------
-        bool
+        tuple of numpy.ndarray
+            Parallel read-only int64 ``(row_ids, values)`` columns.
+
+        Raises
+        ------
+        TypeError
+            If the groups contain geometry or cell rows rather than integers.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> idx = gm.SpatialIndex([
+        ...     gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3), gm.box(10, 10, 11, 11)])
+        >>> row_ids, values = idx.query(
+        ...     gm.GeometryArray([gm.Point(1.5, 1.5), gm.Point(10.5, 10.5)])
+        ... ).to_pairs()
+        >>> (row_ids.tolist(), values.tolist())
+        ([0, 0, 1], [0, 1, 2])
+        """
+    @overload
+    def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
+    @overload
+    def to_list(self: Groups[GeometryArray[_GeometryT_co]]) -> list[list[_GeometryT_co]]: ...
+    @overload
+    def to_list(self: Groups[CellArray[_CellT_co]]) -> list[list[_CellT_co]]:
+        """Copy into a plain nested Python list.
+
+        Returns
+        -------
+        list of list
+            Materialized rows of the grouped values.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
+        >>> [g.to_wkt() for g in groups.to_list()[0]]
+        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
         """
     def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
         """First index of an equal row in ``[start, stop)``.
@@ -9415,91 +9055,18 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         -------
         int
         """
-    @overload
-    def __getitem__(self, index: SupportsIndex, /) -> _GroupValuesT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> Groups[_GroupValuesT_co]: ...
-    @overload
-    def __getitem__(
-        self, index: SupportsIndex | slice, /
-    ) -> _GroupValuesT_co | Groups[_GroupValuesT_co]:
-        """Select groups by integer or slice.
-
-        An ``int`` returns one group's values (for example an ``int64``
-        ndarray of matched ids). A ``slice`` returns a rebased ``Groups``.
-
-        Returns
-        -------
-        numpy.ndarray or Groups
-        """
-    def __eq__(self, other: object, /) -> bool:
-        """Return self==value."""
-    @overload
-    def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
-    @overload
-    def to_list(self: Groups[GeometryArray[_GeometryT]]) -> list[list[_GeometryT]]: ...
-    @overload
-    def to_list(self: Groups[CellArray[_CellT]]) -> list[list[_CellT]]: ...
-    @overload
-    def to_list(self) -> list[list[int]] | list[list[Geometry]] | list[list[Cell]]:
-        """Copy into a plain nested Python list.
-
-        Returns
-        -------
-        list of list
-            Materialized rows of the grouped values.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
-        >>> [g.to_wkt() for g in groups.to_list()[0]]
-        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
-        """
-    def to_pairs(
-        self: Groups[npt.NDArray[np.int64]],
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
-        """Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
-
-        The right column is a zero-copy read-only view of the flat CSR values;
-        only the repeated row-id column is materialized. Row ids are positions
-        in this logical ``Groups`` object, so sliced groups start again at zero.
-
-        Returns
-        -------
-        tuple of numpy.ndarray
-            Parallel read-only int64 ``(row_ids, values)`` columns.
-
-        Raises
-        ------
-        TypeError
-            If the groups contain geometry or cell rows rather than integers.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> idx = gm.SpatialIndex([
-        ...     gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3), gm.box(10, 10, 11, 11)])
-        >>> row_ids, values = idx.query(
-        ...     gm.GeometryArray([gm.Point(1.5, 1.5), gm.Point(10.5, 10.5)])
-        ... ).to_pairs()
-        >>> (row_ids.tolist(), values.tolist())
-        ([0, 0, 1], [0, 1, 2])
-        """
 
 @final
 class GroupsIterator(Iterator[_GroupValuesT_co]):
     """Lazy row iterator for [`Groups`]."""
-    def __iter__(self) -> Self:
-        """Implement iter(self)."""
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> _GroupValuesT_co: ...
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
         """
-    def __next__(self) -> _GroupValuesT_co:
-        """Implement next(self)."""
 
 @final
 class SpatialIndexIterator(Iterator[int]):
@@ -9508,11 +9075,45 @@ class SpatialIndexIterator(Iterator[int]):
     the first result. Mutation invalidates iteration, matching mapping iterator
     semantics and keeping ``__length_hint__`` exact.
     """
-    def __iter__(self) -> Self:
-        """Implement iter(self)."""
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> int: ...
     def __length_hint__(self) -> int: ...
-    def __next__(self) -> int:
-        """Implement next(self)."""
+    def __sizeof__(self) -> int: ...
+
+@final
+class PreparedGeometry:
+    """A geometry handle that opts repeated predicate tests into prepared kernels.
+
+    Returned by ``geom.prepare()``: the full predicate surface
+    The relevant spatial product is built lazily on first use. Pass this handle
+    on either side of free predicate functions.
+    """
+    def __new__(cls, _nonconstructible: Never, /) -> Self: ...
+    @property
+    def geometry(self) -> Geometry:
+        """Source geometry retained by this prepared handle.
+
+        Returns
+        -------
+        Geometry
+            The original typed geometry, sharing its immutable coordinate payload.
+        """
+    def __sizeof__(self) -> int:
+        """``sys.getsizeof`` support: the wrapper plus the source geometry's
+        retained native cost (``ShapeData`` Arc, shape payload, and any
+        prepared/frame caches already built on that shared handle). Calling
+        this does not build new caches.
+        """
+    def __copy__(self) -> Self: ...
+    def __deepcopy__(self, memo: object) -> Self: ...
+    def __reduce__(self) -> tuple[Callable[[Geometry], PreparedGeometry], tuple[Geometry]]:
+        """Pickles as the source geometry plus a re-`prepare()` on load: the
+        cached indexes are transient state, rebuilt cheaply on first use in
+        the new process (`multiprocessing`/`dask` round-trips just work).
+        """
+    def __eq__(self, other: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
 
 @final
 class SpatialIndex(Mapping[int, Geometry]):
@@ -9521,7 +9122,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     Built by ``SpatialIndex(geoms)``: ask set questions against the indexed
     geometries — exact predicate matches (``idx.query(geom)``), bounding-box
     candidates (``idx.candidates(geom)``), proximity (``idx.nearest(geom)``),
-    self-joins (``idx.query_pairs()``) — and mutate it incrementally with
+    self-joins (``idx.self_join()``) — and mutate it incrementally with
     ``insert``/``remove``. Distances follow the indexed CRS: meters on a
     geographic frame, native linear units on a projected frame, coordinate
     units when CRS-free.
@@ -9529,7 +9130,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     def __new__(
         cls,
         values: Geometry | GeometryArray | Iterable[_GeometryLike | None] | None = None,
-    ) -> SpatialIndex:
+    ) -> Self:
         """Build a spatial index (STR-tree) over present geometries.
 
         Parameters
@@ -9564,6 +9165,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         geodesic cap cache. Shared buffers are reported as this index's
         logical retained footprint.
         """
+    def __repr__(self) -> str:
+        """Return the bounded representation of this spatial index."""
     @property
     def crs(self) -> CRS | None:
         """CRS shared by the indexed geometries, or ``None`` for an unframed index.
@@ -9615,7 +9218,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         -------
         bool
         """
-    def __iter__(self) -> Iterator[int]:
+    def __iter__(self) -> SpatialIndexIterator:
         """Iterate live handles lazily in ascending handle order.
 
         Returns
@@ -9838,7 +9441,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         ([0], [0])
         """
     @overload
-    def query_pairs(
+    def self_join(
         self,
         *,
         predicate: Literal['dwithin'],
@@ -9846,7 +9449,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
     ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
     @overload
-    def query_pairs(
+    def self_join(
         self,
         *,
         predicate: SymmetricTopologicalPredicate = 'intersects',
@@ -9891,7 +9494,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         --------
         >>> import gometry as gm
         >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)])
-        >>> left, right = idx.query_pairs()
+        >>> left, right = idx.self_join()
         >>> (left.tolist(), right.tolist())
         ([], [])
         """
@@ -10139,14 +9742,14 @@ class SpatialIndex(Mapping[int, Geometry]):
         [1]
         """
     @overload
-    def insert(self, geom: Geometry) -> int: ...
+    def insert(self, values: Geometry) -> int: ...
     @overload
     def insert(
-        self, geom: GeometryArray | Iterable[_GeometryLike]
+        self, values: GeometryArray | Iterable[_GeometryLike]
     ) -> npt.NDArray[np.int64]: ...
     @overload
     def insert(
-        self, geom: Geometry | GeometryArray | Iterable[_GeometryLike]
+        self, values: Geometry | GeometryArray | Iterable[_GeometryLike]
     ) -> int | npt.NDArray[np.int64]:
         """Insert one geometry or many geometries and return their stable handles.
 
@@ -10155,11 +9758,11 @@ class SpatialIndex(Mapping[int, Geometry]):
         handles in input order. Batch inserts follow the same frame and envelope rules as scalar
         insert: the first inserted row fixes an empty index's CRS/epoch frame,
         later inserts must match it, and geographic antimeridian-crossing rows use
-        the wrapped-band envelope required by ``query_pairs``.
+        the wrapped-band envelope required by ``self_join``.
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray or iterable of Geometry
+        values : Geometry or GeometryArray or iterable of Geometry
             Values to append to the index; all must share the
             index's CRS/epoch frame. Empty geometries cannot be inserted.
 
@@ -10214,7 +9817,7 @@ class CRS:
 
     A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
     ``crs.ellipsoid``), serialize it (``crs.to_wkt()``, ``crs.to_epsg()``),
-    compute on it (``crs.factors(...)``, ``crs.geodesic(...)``), and attach it
+    compute on it (``crs.factors(...)``, ``crs.geodesic_inverse(...)``), and attach it
     to geometries via ``to_crs``. Accepts an authority string, EPSG code,
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
@@ -10231,6 +9834,10 @@ class CRS:
         the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
         owned by the Python object and are not counted.
         """
+    def __str__(self) -> str:
+        """Return the canonical CRS string."""
+    def __repr__(self) -> str:
+        """Return the constructor-style CRS representation."""
     def __copy__(self) -> Self:
         """``copy.copy`` returns the object itself — a CRS is an immutable
         value, so a copy IS the original (like ``tuple``).
@@ -10755,6 +10362,7 @@ class CRS:
         >>> gm.CRS(4326).identify()[0]['code']
         '4326'
         """
+    @property
     def non_deprecated(self) -> list[CrsAuthorityObject]:
         """Non-deprecated authority objects equivalent to this CRS.
 
@@ -10765,9 +10373,10 @@ class CRS:
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.CRS(4326).non_deprecated()
+        >>> gm.CRS(4326).non_deprecated
         []
         """
+    @property
     def geoid_models(self) -> list[str]:
         """Geoid model names available for this CRS.
 
@@ -10778,7 +10387,7 @@ class CRS:
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.CRS(4326).geoid_models()
+        >>> gm.CRS(4326).geoid_models
         []
         """
     @overload
@@ -10836,7 +10445,7 @@ class CRS:
         1.0
         """
     @overload
-    def geodesic(
+    def geodesic_inverse(
         self,
         lon1: float,
         lat1: float,
@@ -10848,7 +10457,7 @@ class CRS:
         radians: bool = False,
     ) -> CrsGeodesicInfo: ...
     @overload
-    def geodesic(
+    def geodesic_inverse(
         self,
         lon1: FloatInput,
         lat1: FloatInput,
@@ -10890,7 +10499,7 @@ class CRS:
         Examples
         --------
         >>> import gometry as gm
-        >>> round(gm.CRS(4326).geodesic(-122.4, 37.8, -122.3, 37.9)['distance'])
+        >>> round(gm.CRS(4326).geodesic_inverse(-122.4, 37.8, -122.3, 37.9)['distance'])
         14165
         """
     @overload
@@ -11155,11 +10764,11 @@ class CellArrayIterator(Generic[_CellT_co]):
 
     def __iter__(self) -> Self:
         """Implement iter(self)."""
-    def __next__(self) -> _CellT_co:
-        """Implement next(self)."""
+    def __next__(self) -> _CellT_co | None:
+        """Return the next typed cell, or ``None`` for a missing row."""
 
 @final
-class CellArray(Sequence[_CellT_co]):
+class CellArray(Sequence[_CellT_co | None]):
     """An immutable array of one grid cell type backed by a shared ``uint64`` id
     column.
 
@@ -11182,8 +10791,10 @@ class CellArray(Sequence[_CellT_co]):
         ``uint64`` id payload and any row-selection map. Shared backing buffers
         are reported like NumPy views, not as the full parent allocation.
         """
-    def __reduce__(self) -> tuple[Any, tuple[list[int] | list[str], str]]:
-        """Pickle support: round-trip through the id column and grid token."""
+    def __repr__(self) -> str:
+        """Return the bounded representation of this cell array."""
+    def __reduce__(self) -> tuple[Any, tuple[list[int] | list[str], str, bytes | None]]:
+        """Pickle support: public identities plus a mask (0=present, 1=missing)."""
     def __copy__(self) -> Self:
         """``copy.copy`` returns the object itself — a CellArray is an immutable
         value, so a copy IS the original (like ``tuple``).
@@ -11284,8 +10895,11 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> gm.CellArray([cell, list(cell.neighbors)[0]]).contains(cell).tolist()
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> gm.CellArray([cell, neighbor]).contains(cell).tolist()
         [True, False]
         """
     @overload
@@ -11322,8 +10936,11 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> gm.CellArray([cell, list(cell.neighbors)[0]]).intersects(cell).tolist()
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> gm.CellArray([cell, neighbor]).intersects(cell).tolist()
         [True, False]
         """
     def value_counts(self) -> tuple[CellArray[_CellT_co], npt.NDArray[np.int64]]:
@@ -11340,7 +10957,8 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
         >>> unique, counts = gm.CellArray([cell, cell]).value_counts()
         >>> counts.tolist()
         [2]
@@ -11359,8 +10977,11 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> codes, unique = gm.CellArray([cell, list(cell.neighbors)[0]]).factorize()
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> codes, unique = gm.CellArray([cell, neighbor]).factorize()
         >>> codes.tolist()
         [0, 1]
         """
@@ -11423,13 +11044,14 @@ class CellArray(Sequence[_CellT_co]):
         -------
         GeometryArray
         """
-    def children_count(self, depth: int | None = None, /) -> npt.NDArray[np.uint64]:
+    def children_count(self, depth: int | None = None, /) -> npt.NDArray[np.float64]:
         """Number of descendant cells each cell has at ``depth``.
 
         The columnar mirror of the scalar ``children_count`` — the count only,
         without materializing the children (which ``children`` does, as ragged
-        rows). Counts are exact and can be very large at a coarse-to-fine
-        depth gap, so they are returned as ``uint64``.
+        rows). Present-row counts are integer-valued but are represented as
+        ``float64``; they are exact only when within float64's integer precision.
+        Missing rows are represented by ``NaN`` to preserve row alignment.
 
         Parameters
         ----------
@@ -11440,7 +11062,8 @@ class CellArray(Sequence[_CellT_co]):
         Returns
         -------
         numpy.ndarray
-            Read-only ``uint64`` ``numpy.ndarray`` of shape ``(n,)``.
+            Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``;
+            missing rows are ``NaN``.
 
         Raises
         ------
@@ -11455,10 +11078,13 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> cells = gm.CellArray([cell, neighbor])
         >>> cells.children_count(9).tolist()
-        [49, 49]
+        [49.0, 49.0]
         """
     def parent(self, depth: int | None = None, /) -> CellArray[_CellT_co]:
         """Parent cell of every input cell.
@@ -11476,9 +11102,14 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
-        >>> cells.parent(6)[0].token
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> cells = gm.CellArray([cell, neighbor])
+        >>> parent = cells.parent(6)[0]
+        >>> assert parent is not None
+        >>> parent.token
         '86283082fffffff'
         """
     @property
@@ -11489,8 +11120,8 @@ class CellArray(Sequence[_CellT_co]):
         -------
         Groups of CellArray
             One row of neighbors per input cell, in input order. Neighbor
-            counts vary (e.g. H3 pentagons have five), so the result is a
-            Groups, not a rectangular CellArray.
+            counts vary, so the result is a Groups, not a rectangular
+            CellArray.
         """
     def children(self, depth: int | None = None, /) -> Groups[CellArray[_CellT_co]]:
         """Return the child cells of every cell at a finer depth, as ragged rows.
@@ -11510,12 +11141,16 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> len(gm.CellArray([cell]).children(8)[0])
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> children = gm.CellArray([cell]).children(8)[0]
+        >>> assert children is not None
+        >>> len(children)
         7
         """
     def compact(self, depth: int | None = None, /) -> CellArray[_CellT_co]:
         """Compact this cell set to the coarsest exact covering.
+        Missing rows are skipped; this is a set operation over present cells.
 
         Parameters
         ----------
@@ -11530,13 +11165,17 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-        >>> cells = gm.CellArray([cell, list(cell.neighbors)[0]])
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> cells = gm.CellArray([cell, neighbor])
         >>> len(cells.compact(5))
         2
         """
     def uncompact(self, depth: int, /) -> CellArray[_CellT_co]:
         """Expand this cell set to a uniform depth.
+        Missing rows are skipped; this is a set operation over present cells.
 
         Parameters
         ----------
@@ -11551,12 +11190,14 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
         >>> len(gm.CellArray([cell]).uncompact(8))
         7
         """
     def to_polygon(self) -> Polygon | MultiPolygon:
         """Dissolve this cell set into one outline geometry.
+        Missing rows are skipped; this is a set operation over present cells.
 
         Returns
         -------
@@ -11566,12 +11207,13 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
         >>> gm.CellArray([cell]).to_polygon().geometry_type
         'Polygon'
         """
     @property
-    def token(self) -> list[str]:
+    def token(self) -> list[str | None]:
         """Canonical string token of every cell, in order.
 
         For H3, S2, and tiles this is the text form of the numeric id exposed
@@ -11580,9 +11222,9 @@ class CellArray(Sequence[_CellT_co]):
 
         Returns
         -------
-        list of str
-            One canonical token per cell (H3 hex, S2 token, geohash, or tile
-            quadkey).
+        list of str or None
+            One canonical token per logical row (H3 hex, S2 token, geohash, or
+            tile quadkey); ``None`` marks a missing row.
 
         Examples
         --------
@@ -11593,21 +11235,21 @@ class CellArray(Sequence[_CellT_co]):
     def __class_getitem__(cls, key: Any) -> types.GenericAlias:
         """See PEP 585"""
     def __len__(self) -> int:
-        """Number of cells.
+        """Number of logical rows, including missing rows.
 
         Returns
         -------
         int
         """
     def __iter__(self) -> CellArrayIterator[_CellT_co]:
-        """Iterate cells in row order.
+        """Iterate logical rows in row order, yielding cells or ``None``.
 
         Returns
         -------
-        iterator of Cell
+        iterator of Cell or None
         """
     @overload
-    def __getitem__(self, index: int, /) -> _CellT_co: ...
+    def __getitem__(self, index: int, /) -> _CellT_co | None: ...
     @overload
     def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
     @overload
@@ -11628,15 +11270,15 @@ class CellArray(Sequence[_CellT_co]):
         | _IndexLane
         | npt.NDArray[np.int64],
         /,
-    ) -> _CellT_co | CellArray[_CellT_co]:
-        """Select cells by integer, slice, or fancy index.
+        ) -> _CellT_co | CellArray[_CellT_co]:
+        """Select logical rows by integer, slice, or fancy index.
 
-        An ``int`` returns one cell object. A ``slice`` or fancy index returns
-        a ``CellArray`` of the same cell kind.
+        An ``int`` returns one cell object or ``None`` for a missing row. A
+        ``slice`` or fancy index returns a ``CellArray`` of the same cell kind.
 
         Returns
         -------
-        Cell or CellArray
+        Cell, None, or CellArray
         """
     @overload
     def __new__(
@@ -11716,7 +11358,7 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def to_numpy(
         self: CellArray[H3Cell | S2Cell | Tile],
-    ) -> npt.NDArray[np.uint64]:
+    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]:
         """Return a read-only NumPy identity column.
 
         H3, S2, and tile arrays expose their validated ids as uint64
@@ -11731,7 +11373,8 @@ class CellArray(Sequence[_CellT_co]):
         --------
         >>> import gometry as gm
         >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cell = gm.h3_cover(p, resolution=7).cells[0]
+        >>> cell = gm.h3_cover(p, resolution=7)[0]
+        >>> assert cell is not None
         >>> type(gm.CellArray([cell]).to_numpy()).__name__
         'ndarray'
         """
@@ -11744,7 +11387,7 @@ class CellArray(Sequence[_CellT_co]):
         self: CellArray[H3Cell | S2Cell | Tile],
         dtype: None = None,
         copy: bool | None = None,
-    ) -> npt.NDArray[np.uint64]: ...
+    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
     @overload
     def __array__(
         self: CellArray[H3Cell | S2Cell | Tile],
@@ -11809,14 +11452,6 @@ class H3VertexArray(Sequence[H3Vertex]):
     ) -> Self:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
-    def values(self) -> npt.NDArray[np.uint64]:
-        """Return a read-only ``uint64`` ndarray view of the id column.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-    @property
     def token(self) -> list[str]:
         """Hexadecimal token of every row.
 
@@ -11854,7 +11489,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> type(edges.to_numpy()).__name__
         'ndarray'
         """
@@ -11901,7 +11538,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> unique, counts = edges.value_counts()
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
@@ -11917,7 +11556,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> codes, unique = edges.factorize()
         >>> len(codes) == len(edges)
         True
@@ -11951,6 +11592,7 @@ class H3VertexArray(Sequence[H3Vertex]):
         int
         """
     def __sizeof__(self) -> int: ...
+    def __repr__(self) -> str: ...
     def __reduce__(self) -> tuple[Any, tuple[list[int]]]: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
@@ -12059,14 +11701,6 @@ class H3EdgeArray(Sequence[H3Edge]):
     ) -> Self:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
-    def values(self) -> npt.NDArray[np.uint64]:
-        """Return a read-only ``uint64`` ndarray view of the id column.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-    @property
     def token(self) -> list[str]:
         """Hexadecimal token of every row.
 
@@ -12102,7 +11736,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> edges.reverse()[0].token
         '1672830829ffffff'
         """
@@ -12145,7 +11781,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> type(edges.to_numpy()).__name__
         'ndarray'
         """
@@ -12192,7 +11830,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> unique, counts = edges.value_counts()
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
@@ -12208,7 +11848,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         Examples
         --------
         >>> import gometry as gm
-        >>> edges = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0].edges
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> edges = cell.edges
         >>> codes, unique = edges.factorize()
         >>> len(codes) == len(edges)
         True
@@ -12242,6 +11884,7 @@ class H3EdgeArray(Sequence[H3Edge]):
         int
         """
     def __sizeof__(self) -> int: ...
+    def __repr__(self) -> str: ...
     def __reduce__(self) -> tuple[Any, tuple[list[int]]]: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
@@ -12317,270 +11960,6 @@ class H3EdgeArray(Sequence[H3Edge]):
         H3Edge or H3Vertex or H3EdgeArray or H3VertexArray
         """
 
-class _CoverageIterator(Generic[_CellT_co]):
-    """Stub-only generic base for the four native coverage iterators."""
-    def __length_hint__(self) -> int:
-        """Remaining cells — lets ``list(iter)`` preallocate."""
-    def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the copied cell
-        buffer it walks.
-        """
-    def __iter__(self) -> Self:
-        """Implement iter(self)."""
-    def __reversed__(self) -> Self:
-        """Return a reverse iterator over the same coverage cells."""
-    def __next__(self) -> _CellT_co:
-        """Implement next(self)."""
-
-class _Coverage(Sequence[_CellT_co]):
-    """Stub-only generic base for native grid coverages."""
-
-    __array_ufunc__: ClassVar[None]
-    def __new__(cls, _nonconstructible: Never, /) -> Self:
-        """Coverages are returned by grid coverage factories and cannot be constructed."""
-    @property
-    def nbytes(self) -> int:
-        """Logical cell-id payload in bytes for the visible cell set.
-
-        Returns
-        -------
-        int
-        """
-    def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus visible cell ids,
-        partition data, and the retained source geometry.
-        """
-    @property
-    def cell_rule(self) -> CellRule:
-        """The rule that materialized ``cells`` (``'center'``, ``'within'``,
-        ``'overlap'``, or ``'bbox'``). It shapes only the visible cell set; the
-        exact membership predicates never depend on it.
-
-        Returns
-        -------
-        str
-            The ``cell_rule`` token the covering was built with.
-        """
-    @property
-    def cells(self) -> CellArray[_CellT_co]:
-        """The cells that make up the covering.
-
-        Returns
-        -------
-        `CellArray`
-        """
-    @property
-    def interior_cells(self) -> CellArray[_CellT_co]:
-        """Cells certified entirely inside the source geometry.
-
-        Returns
-        -------
-        `CellArray`
-        """
-    @property
-    def boundary_cells(self) -> CellArray[_CellT_co]:
-        """Cells partially overlapping the source geometry (the fringe where cell membership cannot answer the geometry question).
-
-        Returns
-        -------
-        `CellArray`
-        """
-    @overload
-    def covers(self, geom: Geometry) -> bool: ...
-    @overload
-    def covers(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def covers(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Exact, boundary-inclusive membership of candidates in the covered area.
-
-        Always answers against the source geometry — never the cells — so the
-        result is exact regardless of ``cell_rule``.
-
-        Parameters
-        ----------
-        geom : Geometry or `GeometryArray`
-            Candidate geometry (or array). Follows the grid input policy:
-            WGS84 and CRS-free lon/lat pass through, any other CRS is
-            reprojected.
-
-        Returns
-        -------
-        bool or ndarray
-            One result per input geometry.
-        """
-    @overload
-    def contains(self, geom: Geometry) -> bool: ...
-    @overload
-    def contains(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(self, geom: Geometry | GeometryArray) -> bool | npt.NDArray[np.bool_]:
-        """Exact, strict-interior membership of candidates in the covered area.
-
-        Like ``covers`` but boundary-exclusive: a point on the source
-        geometry's boundary is ``False``.
-
-        Parameters
-        ----------
-        geom : Geometry or `GeometryArray`
-            Candidate geometry (or array). Follows the grid input policy:
-            WGS84 and CRS-free lon/lat pass through, any other CRS is
-            reprojected.
-
-        Returns
-        -------
-        bool or ndarray
-            One result per input geometry.
-        """
-    @overload
-    def intersects(self, geom: Geometry) -> bool: ...
-    @overload
-    def intersects(self, geom: GeometryArray) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self, geom: Geometry | GeometryArray
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Exact intersection test of candidates against the covered area.
-
-        For points this matches ``covers``; for lines and polygons it is true
-        when the candidate shares any point with the source geometry.
-
-        Parameters
-        ----------
-        geom : Geometry or `GeometryArray`
-            Candidate geometry (or array). Follows the grid input policy:
-            WGS84 and CRS-free lon/lat pass through, any other CRS is
-            reprojected.
-
-        Returns
-        -------
-        bool or ndarray
-            One result per input geometry.
-        """
-    @overload
-    def contains_xy(self, x: float, y: float) -> bool: ...
-    @overload
-    def contains_xy(self, x: FloatColumn, y: FloatInput) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains_xy(self, x: FloatInput, y: FloatColumn) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains_xy(self, x: FloatInput, y: FloatInput) -> bool | npt.NDArray[np.bool_]:
-        """Exact, strict ``contains`` test for raw lon/lat coordinates.
-
-        Answers exactly against the source geometry, independent of
-        ``cell_rule``.
-
-        Parameters
-        ----------
-        x, y : float or sequence of float
-            Longitude and latitude in degrees.
-
-        Returns
-        -------
-        bool or ndarray
-            A single bool for scalar ``x, y``, or one result per coordinate.
-        """
-    @overload
-    def intersects_xy(self, x: float, y: float) -> bool: ...
-    @overload
-    def intersects_xy(self, x: FloatColumn, y: FloatInput) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects_xy(self, x: FloatInput, y: FloatColumn) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects_xy(
-        self, x: FloatInput, y: FloatInput
-    ) -> bool | npt.NDArray[np.bool_]:
-        """Exact, boundary-inclusive membership test for raw lon/lat coordinates.
-
-        Parameters
-        ----------
-        x, y : float or sequence of float
-            Longitude and latitude in degrees.
-
-        Returns
-        -------
-        bool or ndarray
-            A single bool for scalar ``x, y``, or one result per coordinate.
-        """
-    def explain(self) -> list[str]:
-        """Describe the membership plan.
-
-        Returns
-        -------
-        list of str
-            One line per plan step.
-        """
-    def to_polygon(self) -> Polygon | MultiPolygon:
-        """Dissolve the coverage into one outline geometry.
-
-        Returns
-        -------
-        `Polygon` or `MultiPolygon`
-
-        Raises
-        ------
-        GeometryError
-            If the coverage is empty.
-        """
-    def __len__(self) -> int:
-        """Number of visible cells in the coverage.
-
-        Returns
-        -------
-        int
-        """
-    def __bool__(self) -> bool:
-        """``False`` only when the coverage has no visible cells.
-
-        Returns
-        -------
-        bool
-        """
-    @overload
-    def __getitem__(self, index: int, /) -> _CellT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
-    @overload
-    def __getitem__(self, index: int | slice, /) -> _CellT_co | CellArray[_CellT_co]:
-        """Select visible cells by integer or slice.
-
-        An ``int`` returns one cell. A ``slice`` returns a ``CellArray``
-        of those cells (not a sliced coverage — membership still answers
-        against the full source geometry via the coverage).
-
-        Returns
-        -------
-        Cell or CellArray
-        """
-    def __iter__(self) -> _CoverageIterator[_CellT_co]:
-        """Iterate visible cells in coverage order.
-
-        Returns
-        -------
-        iterator of Cell
-        """
-    def __reversed__(self) -> _CoverageIterator[_CellT_co]:
-        """``reversed(coverage)`` — lazy end-to-start iteration of cells."""
-    def __contains__(self, cell: object, /) -> bool:
-        """Whether a cell is among the visible coverage cells.
-
-        Returns
-        -------
-        bool
-        """
-    def index(self, value: object, start: int = 0, stop: int | None = None) -> int: ...
-    def count(self, value: object) -> int: ...
-    def __eq__(self, other: object, /) -> bool:
-        """Return self==value."""
-    def __hash__(self) -> int:
-        """Return hash(self)."""
-    def __copy__(self) -> Self:
-        """``copy.copy`` returns the coverage itself — it is an immutable value."""
-    def __deepcopy__(self, memo: object) -> Self:
-        """``copy.deepcopy`` returns the coverage itself: every field is immutable."""
-    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle support: round-trip through the source geometry, cell ids,
-        partition data, rule, and depth fields.
-        """
 
 class _Cell:
     """Stub-only generic base for shared scalar cell members."""
@@ -12602,6 +11981,10 @@ class _Cell:
         -------
         str
         """
+    def __str__(self) -> str:
+        """Return the canonical cell token."""
+    def __repr__(self) -> str:
+        """Return the angle-bracket cell display summary."""
     @property
     def center(self) -> Point:
         """Cell center as a WGS84 ``Point`` (lon/lat).
@@ -12672,115 +12055,12 @@ class _NumericCell(_Cell):
     def intersects(self, other: Self | int | str) -> bool:
         """Whether this cell intersects another cell."""
     def __reduce__(self) -> tuple[object, tuple[int]]:
-        """Pickle support: a cell is its id."""
+        """Pickle support: a cell is its identity value."""
     def __int__(self) -> int:
         """int(self)"""
     def __index__(self) -> int:
         """Return self converted to an integer, if self is suitable for use as an index into a list."""
 
-@final
-class H3CoverageIterator(_CoverageIterator['H3Cell']):
-    """Lazy iterator over a coverage's cells, yielding one cell per step."""
-    def __reversed__(self) -> Self:
-        """Return a reverse iterator over the same coverage cells."""
-
-@final
-class H3Coverage(_Coverage['H3Cell']):
-    """An H3 covering of a geometry.
-
-    Returned by ``h3_cover(...)``: ``coverage.cells`` materializes the
-    cells selected by ``cell_rule`` (join keys, bins, visualization), while
-    ``covers``/``contains``/``intersects`` answer exactly against the source
-    geometry, independent of the rule. Iterate it, test ``cell in coverage``,
-    or ``compact``/``with_parents`` across resolutions.
-    """
-
-    __match_args__: Final = ('cells',)
-    @property
-    def resolution(self) -> int | None:
-        """Uniform H3 resolution of the covering's cells, or ``None`` for mixed
-        resolutions.
-
-        Returns
-        -------
-        int or None
-        """
-    def compact(self, *, min_resolution: int = 0) -> H3Coverage:
-        """Compact the cell set to its coarsest covering.
-
-        Parameters
-        ----------
-        min_resolution : int, default 0
-            Coarsest resolution compaction may produce; merging stops at this
-            floor (cells already coarser pass through unchanged).
-
-        Returns
-        -------
-        H3Coverage
-            The compacted covering (same area, fewest cells).
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> poly = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
-        >>> cov = gm.h3_cover(poly, resolution=7)
-        >>> len(cov.compact().cells) < len(cov.cells)
-        True
-        """
-    def uncompact(self, resolution: int) -> H3Coverage:
-        """Expand the cell set to a uniform resolution (every cell subdivided down
-        to ``resolution``).
-
-        Parameters
-        ----------
-        resolution : int
-            Target H3 resolution (``0``-``15``); no coarser than any
-            current cell.
-
-        Returns
-        -------
-        H3Coverage
-            The expanded covering.
-
-        Raises
-        ------
-        GeometryError
-            If ``resolution`` is out of range.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> poly = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
-        >>> cov = gm.h3_cover(poly, resolution=7).compact()
-        >>> len(cov.uncompact(7).cells) >= len(cov.cells)
-        True
-        """
-    def with_parents(self, *, min_resolution: int = 0) -> H3Coverage:
-        """Include parent cells down to a minimum resolution.
-
-        Parameters
-        ----------
-        min_resolution : int, default 0
-            Coarsest resolution to add parents for (0 is the base-cell
-            resolution).
-
-        Returns
-        -------
-        H3Coverage
-
-        Raises
-        ------
-        GeometryError
-            If ``min_resolution`` is out of range.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> poly = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
-        >>> cov = gm.h3_cover(poly, resolution=7)
-        >>> len(cov.with_parents().cells) > len(cov.cells)
-        True
-        """
 
 @final
 class H3Vertex:
@@ -12826,6 +12106,8 @@ class H3Vertex:
         TypeError
             If ``value`` is not an `H3Vertex`, int, or str.
         """
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
 
     @property
     def id(self) -> int:
@@ -12925,6 +12207,8 @@ class H3Edge:
         TypeError
             If ``value`` is not an `H3Edge`, int, or str.
         """
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
 
     @property
     def id(self) -> int:
@@ -12958,14 +12242,6 @@ class H3Edge:
         -------
         H3Cell
         """
-    @property
-    def cells(self) -> tuple[H3Cell, H3Cell]:
-        """The ``(origin, destination)`` cell pair.
-
-        Returns
-        -------
-        tuple of H3Cell
-        """
     def reverse(self) -> H3Edge:
         """Reverse this directed edge from ``destination`` back to ``origin``.
 
@@ -12976,8 +12252,11 @@ class H3Edge:
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-        >>> edge = cell.edge(list(cell.neighbors)[0])
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> edge = cell.edge(neighbor)
         >>> edge.reverse().token
         '137283082cffffff'
         """
@@ -13002,7 +12281,9 @@ class H3Edge:
         --------
         >>> import gometry as gm
         >>> cell = gm.H3Cell(13.4, 52.5, resolution=7)
-        >>> edge = cell.edge(cell.neighbors[0])
+        >>> neighbor = cell.neighbors[0]
+        >>> assert neighbor is not None
+        >>> edge = cell.edge(neighbor)
         >>> 1000 < edge.length < 3000
         True
         """
@@ -13067,12 +12348,12 @@ class GeohashCell(_Cell):
 
         Parameters
         ----------
-        lon : GeohashCell, str, float, or Point
-            A cell token, the longitude of a ``lon, lat`` pair, or a point
-            geometry.
+        value : GeohashCell, str, float, or Point
+            An existing cell, token, longitude of a ``lon, lat`` pair, or a
+            point geometry.
 
         lat : float, optional
-            Latitude when ``lon`` is a scalar longitude.
+            Latitude when ``value`` is a scalar longitude.
 
         precision : int, optional
             Geohash precision (``1``-``12``); required for coordinate
@@ -13114,7 +12395,8 @@ class GeohashCell(_Cell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+        >>> assert cell is not None
         >>> cell.parent().token
         '9q8yy'
         """
@@ -13143,7 +12425,8 @@ class GeohashCell(_Cell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+        >>> assert cell is not None
         >>> len(cell.children())
         32
         """
@@ -13160,8 +12443,7 @@ class GeohashCell(_Cell):
         Returns
         -------
         int
-            The exact descendant count (H3 pentagons have slightly fewer
-            than hexagons).
+            The exact descendant count.
 
         Raises
         ------
@@ -13172,7 +12454,8 @@ class GeohashCell(_Cell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+        >>> assert cell is not None
         >>> cell.children_count()
         32
         """
@@ -13192,15 +12475,16 @@ class GeohashCell(_Cell):
         Raises
         ------
         ParseError
-            If an id or token is not a valid cell.
+            If a cell or token is not a valid cell.
         TypeError
-            If ``other`` is not a valid cell object, id, or token.
+            If ``other`` is not a valid cell object or token.
 
         Examples
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+        >>> assert cell is not None
         >>> cell.contains(cell)
         True
         """
@@ -13220,107 +12504,22 @@ class GeohashCell(_Cell):
         Raises
         ------
         ParseError
-            If an id or token is not a valid cell.
+            If a cell or token is not a valid cell.
         TypeError
-            If ``other`` is not a valid cell object, id, or token.
+            If ``other`` is not a valid cell object or token.
 
         Examples
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6).cells[0]
+        >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
+        >>> assert cell is not None
         >>> cell.intersects(cell.parent())
         True
         """
     def __reduce__(self) -> tuple[object, tuple[str]]:
-        """Pickle support: a cell is its id."""
+        """Pickle support: a cell is its identity value."""
 
-@final
-class GeohashCoverageIterator(_CoverageIterator[GeohashCell]):
-    """Lazy iterator over a coverage's cells, yielding one cell per step."""
-    def __reversed__(self) -> Self:
-        """Return a reverse iterator over the same coverage cells."""
-
-@final
-class GeohashCoverage(_Coverage[GeohashCell]):
-    """A geohash covering of a geometry (the ``geohash_cover`` backend).
-
-    Returned by ``geohash_cover(...)``: ``coverage.cells`` materializes
-    the cells selected by ``cell_rule`` at the chosen precision (join keys,
-    bins, visualization), while ``covers``/``contains``/``intersects``
-    answer exactly against the source geometry, independent of the rule.
-    """
-
-    __match_args__: Final = ('cells',)
-    @property
-    def precision(self) -> int | None:
-        """Uniform geohash precision of the covering's cells, or ``None`` for
-        mixed precisions.
-
-        Returns
-        -------
-        int or None
-        """
-    def compact(self, *, min_precision: int = 1) -> GeohashCoverage:
-        """Compact the cell set to its coarsest covering.
-
-        Parameters
-        ----------
-        min_precision : int, default 1
-            Coarsest precision compaction may produce.
-
-        Returns
-        -------
-        GeohashCoverage
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.geohash_cover(p, precision=6)
-        >>> len(cov.compact().cells) <= len(cov.cells)
-        True
-        """
-    def uncompact(self, precision: int) -> GeohashCoverage:
-        """Expand the cell set to a uniform precision.
-
-        Parameters
-        ----------
-        precision : int
-            Target precision (``1``-``12``); no coarser than any current cell.
-
-        Returns
-        -------
-        GeohashCoverage
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.geohash_cover(p, precision=6)
-        >>> len(cov.uncompact(7).cells) >= len(cov.cells)
-        True
-        """
-    def with_parents(self, *, min_precision: int = 1) -> GeohashCoverage:
-        """Include parent cells down to a minimum precision.
-
-        Parameters
-        ----------
-        min_precision : int, default 1
-            Coarsest precision to add parents for.
-
-        Returns
-        -------
-        GeohashCoverage
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.geohash_cover(p, precision=6)
-        >>> len(cov.with_parents().cells) >= len(cov.cells)
-        True
-        """
 
 @final
 class H3Cell(_NumericCell):
@@ -13352,12 +12551,12 @@ class H3Cell(_NumericCell):
 
         Parameters
         ----------
-        lon : H3Cell, int, str, float, or Point
-            A cell id/token, the longitude of a ``lon, lat`` pair, or a point
-            geometry.
+        value : H3Cell, int, str, float, or Point
+            An existing cell, id, token, longitude of a ``lon, lat`` pair, or
+            a point geometry.
 
         lat : float, optional
-            Latitude when ``lon`` is a scalar longitude.
+            Latitude when ``value`` is a scalar longitude.
 
         resolution : int, optional
             H3 resolution (``0``-``15``); required for coordinate construction.
@@ -13373,7 +12572,7 @@ class H3Cell(_NumericCell):
         GeometryError
             If ``resolution`` is out of range.
         InvalidGeometryError
-            If a scalar coordinate is non-finite.
+            If a scalar coordinate is non-finite or out of range.
 
         Examples
         --------
@@ -13404,7 +12603,8 @@ class H3Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.parent(resolution=6).token
         '86283082fffffff'
         """
@@ -13433,7 +12633,8 @@ class H3Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> len(cell.children(resolution=8))
         7
         """
@@ -13468,8 +12669,11 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-        >>> cell.is_neighbor(list(cell.neighbors)[0])
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> cell.is_neighbor(neighbor)
         True
         """
     def local_ij(self, origin: H3Cell | int | str) -> tuple[int, int]:
@@ -13496,7 +12700,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.local_ij(cell)
         (160, 88)
         """
@@ -13516,7 +12721,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.cell_from_local_ij(160, 88).token
         '872830828ffffff'
         """
@@ -13537,8 +12743,11 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-        >>> cell.children(resolution=8)[0].child_position(7)
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> child = cell.children(resolution=8)[0]
+        >>> assert child is not None
+        >>> child.child_position(7)
         0
         """
     @property
@@ -13562,8 +12771,7 @@ class H3Cell(_NumericCell):
         Returns
         -------
         int
-            The exact descendant count (H3 pentagons have slightly fewer
-            than hexagons).
+            The exact descendant count (H3 pentagons have slightly fewer than hexagons).
 
         Raises
         ------
@@ -13574,7 +12782,8 @@ class H3Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.children_count(resolution=8)
         7
         """
@@ -13600,7 +12809,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.center_child(resolution=8).token
         '8828308281fffff'
         """
@@ -13633,7 +12843,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> cell.child_at(0, 8).token
         '8828308281fffff'
         """
@@ -13673,8 +12884,10 @@ class H3Cell(_NumericCell):
         --------
         >>> import gometry as gm
         >>> cell = gm.H3Cell(13.4, 52.5, resolution=7)
-        >>> edge = cell.edge(cell.neighbors[0])
-        >>> (edge.origin == cell, edge.destination == cell.neighbors[0])
+        >>> neighbor = cell.neighbors[0]
+        >>> assert neighbor is not None
+        >>> edge = cell.edge(neighbor)
+        >>> (edge.origin == cell, edge.destination == neighbor)
         (True, True)
         """
     @property
@@ -13705,7 +12918,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> len(cell.grid_disk(1))
         7
         """
@@ -13729,7 +12943,8 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> len(cell.grid_ring(1))
         6
         """
@@ -13755,8 +12970,11 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
-        >>> cell.grid_distance(list(cell.neighbors)[0])
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
+        >>> neighbor = list(cell.neighbors)[0]
+        >>> assert neighbor is not None
+        >>> cell.grid_distance(neighbor)
         1
         """
     def grid_path(self, other: H3Cell | int | str) -> CellArray[H3Cell]:
@@ -13781,162 +12999,14 @@ class H3Cell(_NumericCell):
         Examples
         --------
         >>> import gometry as gm
-        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7).cells[0]
+        >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
+        >>> assert cell is not None
         >>> nbr = list(cell.neighbors)[0]
+        >>> assert nbr is not None
         >>> len(cell.grid_path(nbr))
         2
         """
 
-@final
-class S2CoverageIterator(_CoverageIterator['S2Cell']):
-    """Lazy iterator over a coverage's cells, yielding one cell per step."""
-    def __reversed__(self) -> Self:
-        """Return a reverse iterator over the same coverage cells."""
-
-@final
-class S2Coverage(_Coverage['S2Cell']):
-    """An exact-classified S2 covering of a geometry.
-
-    Returned by ``s2_cover(...)``: ``coverage.cells`` materializes the
-    cells selected by ``cell_rule`` within the level budget (join keys,
-    bins, visualization), while ``covers``/``contains``/``intersects``
-    answer exactly against the source geometry, independent of the rule.
-    Iterate it, test ``cell in coverage``, or ``compact``/``uncompact``
-    across levels.
-    """
-
-    __match_args__: Final = ('cells',)
-    @property
-    def level_mod(self) -> int:
-        """Level stride of the covering (emitted levels step by this much).
-
-        Returns
-        -------
-        int
-        """
-    @property
-    def min_level(self) -> int:
-        """Minimum (coarsest) cell level allowed in the covering.
-
-        Returns
-        -------
-        int
-        """
-    @property
-    def max_level(self) -> int:
-        """Maximum (finest) cell level allowed in the covering.
-
-        Returns
-        -------
-        int
-        """
-    @property
-    def max_cells(self) -> int | None:
-        """Configured fixed-level emission cap from the factory. Adaptive covers
-        retain this value for introspection but use ``target_cells`` instead.
-        ``None`` means unlimited for fixed-level construction.
-
-        Returns
-        -------
-        int or None
-        """
-    @property
-    def target_cells(self) -> int:
-        """Adaptive refinement target from the factory. It guides optional
-        subdivision and does not affect fixed-level construction.
-
-        Returns
-        -------
-        int
-        """
-    @property
-    def level(self) -> int | None:
-        """Fixed S2 cell level of the **visible** cell set, or ``None`` when the
-        visible cells span multiple levels (adaptive / compacted).
-
-        Factory cover bounds stay on ``min_level`` / ``max_level`` (pickle
-        recompute uses those); after ``uncompact`` the visible set is uniform
-        even when the source covering was adaptive.
-
-        Returns
-        -------
-        int or None
-        """
-    def with_parents(self, *, min_level: int = 0) -> S2Coverage:
-        """Include parent cells down to a minimum level.
-
-        Parameters
-        ----------
-        min_level : int, default 0
-            Coarsest level to add parents for (0 is the root face level).
-
-        Returns
-        -------
-        S2Coverage
-
-        Raises
-        ------
-        GeometryError
-            If ``min_level`` is out of range.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.s2_cover(p, level=12)
-        >>> len(cov.with_parents().cells) >= len(cov.cells)
-        True
-        """
-    def compact(self, *, min_level: int = 0) -> S2Coverage:
-        """Compact the cell set to its coarsest covering (merge complete sibling
-        groups into their parent).
-
-        Parameters
-        ----------
-        min_level : int, default 0
-            Coarsest level compaction may produce; merging stops at this floor
-            (cells already coarser pass through unchanged).
-
-        Returns
-        -------
-        S2Coverage
-            The compacted covering (same area, fewest cells).
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.s2_cover(p, level=12)
-        >>> len(cov.compact().cells) <= len(cov.cells)
-        True
-        """
-    def uncompact(self, level: int) -> S2Coverage:
-        """Expand the cell set to a uniform level (every cell subdivided down to
-        ``level``).
-
-        Parameters
-        ----------
-        level : int
-            Target S2 level (``0``-``30``); no coarser than any current cell.
-
-        Returns
-        -------
-        S2Coverage
-            The expanded covering.
-
-        Raises
-        ------
-        GeometryError
-            If ``level`` is out of range.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.s2_cover(p, level=12)
-        >>> len(cov.uncompact(12).cells) >= len(cov.cells)
-        True
-        """
 
 @final
 class S2Cell(_NumericCell):
@@ -13967,12 +13037,12 @@ class S2Cell(_NumericCell):
 
         Parameters
         ----------
-        lon : S2Cell, int, str, float, or Point
-            A cell id/token, the longitude of a ``lon, lat`` pair, or a point
-            geometry.
+        value : S2Cell, int, str, float, or Point
+            An existing cell, id, token, longitude of a ``lon, lat`` pair, or
+            a point geometry.
 
         lat : float, optional
-            Latitude when ``lon`` is a scalar longitude.
+            Latitude when ``value`` is a scalar longitude.
 
         level : int, optional
             S2 level (``0``-``30``); required for coordinate construction.
@@ -14013,7 +13083,8 @@ class S2Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+        >>> assert cell is not None
         >>> cell.parent(10).token
         '808581'
         """
@@ -14042,7 +13113,8 @@ class S2Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+        >>> assert cell is not None
         >>> len(cell.children(13))
         4
         """
@@ -14059,8 +13131,7 @@ class S2Cell(_NumericCell):
         Returns
         -------
         int
-            The exact descendant count (H3 pentagons have slightly fewer
-            than hexagons).
+            The exact descendant count.
 
         Raises
         ------
@@ -14071,7 +13142,8 @@ class S2Cell(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12).cells[0]
+        >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
+        >>> assert cell is not None
         >>> cell.children_count(13)
         4
         """
@@ -14166,8 +13238,11 @@ class Tile(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
-        >>> str(cell.parent())
+        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+        >>> assert cell is not None
+        >>> parent = cell.parent()
+        >>> assert parent is not None
+        >>> str(parent)
         '023010203'
         """
     def children(self, zoom: int | None = None) -> CellArray[Tile]:
@@ -14195,7 +13270,8 @@ class Tile(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
+        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+        >>> assert cell is not None
         >>> len(cell.children())
         4
         """
@@ -14212,8 +13288,7 @@ class Tile(_NumericCell):
         Returns
         -------
         int
-            The exact descendant count (H3 pentagons have slightly fewer
-            than hexagons).
+            The exact descendant count.
 
         Raises
         ------
@@ -14224,7 +13299,8 @@ class Tile(_NumericCell):
         --------
 
         >>> import gometry as gm
-        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10).cells[0]
+        >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
+        >>> assert cell is not None
         >>> cell.children_count()
         4
         """
@@ -14253,97 +13329,6 @@ class Tile(_NumericCell):
         int
         """
 
-@final
-class TileCoverageIterator(_CoverageIterator[Tile]):
-    """Lazy iterator over a coverage's cells, yielding one cell per step."""
-    def __reversed__(self) -> Self:
-        """Return a reverse iterator over the same coverage cells."""
-
-@final
-class TileCoverage(_Coverage[Tile]):
-    """An XYZ-tile covering of a geometry (the ``tile_cover`` backend).
-
-    Returned by ``tile_cover(...)``: ``coverage.cells`` materializes
-    the tiles selected by ``cell_rule`` at the chosen zoom (join keys,
-    bins, visualization), while ``covers``/``contains``/``intersects``
-    answer exactly against the source geometry, independent of the rule.
-    """
-
-    __match_args__: Final = ('cells',)
-    @property
-    def zoom(self) -> int | None:
-        """Uniform zoom level of the covering's tiles, or ``None`` for mixed
-        zooms.
-
-        Returns
-        -------
-        int or None
-        """
-    def compact(self, *, min_zoom: int = 0) -> TileCoverage:
-        """Compact the tile set to its coarsest covering.
-
-        Parameters
-        ----------
-        min_zoom : int, default 0
-            Coarsest zoom compaction may produce.
-
-        Returns
-        -------
-        TileCoverage
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.tile_cover(p, zoom=10)
-        >>> len(cov.compact().cells) <= len(cov.cells)
-        True
-        """
-    def uncompact(self, zoom: int) -> TileCoverage:
-        """Expand the tile set to a uniform zoom.
-
-        Parameters
-        ----------
-        zoom : int
-            Target zoom (``0``-``29``); no coarser than any current tile.
-
-        Returns
-        -------
-        TileCoverage
-
-        Raises
-        ------
-        GeometryError
-            If ``zoom`` is coarser than a current tile.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.tile_cover(p, zoom=10)
-        >>> len(cov.uncompact(10).cells) >= len(cov.cells)
-        True
-        """
-    def with_parents(self, *, min_zoom: int = 0) -> TileCoverage:
-        """Include parent tiles down to a minimum zoom.
-
-        Parameters
-        ----------
-        min_zoom : int, default 0
-            Coarsest zoom to add parents for.
-
-        Returns
-        -------
-        TileCoverage
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-        >>> cov = gm.tile_cover(p, zoom=10)
-        >>> len(cov.with_parents().cells) >= len(cov.cells)
-        True
-        """
 
 @final
 class ValidationReport:
@@ -14352,7 +13337,7 @@ class ValidationReport:
     Returned by ``geom.validate()``: truthy when the geometry is valid;
     otherwise ``report.reason`` names the OGC violation, ``report.location``
     pinpoints it, and ``report.path`` addresses the offending part.
-    ``report.repair(...)`` returns a repaired copy of the reported geometry.
+    Validation reports describe invalid geometries and their reasons.
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self:
         """Validation reports are returned by ``geom.validate()``."""
@@ -14364,6 +13349,8 @@ class ValidationReport:
         """``sys.getsizeof`` support: the report plus the retained geometry
         coordinate payload and any validation issue strings.
         """
+    def __repr__(self) -> str:
+        """Return the bounded representation of this validation report."""
     def __copy__(self) -> Self:
         """``copy.copy`` returns the report itself — it is an immutable value."""
     def __deepcopy__(self, memo: object) -> Self:
@@ -14372,9 +13359,7 @@ class ValidationReport:
         """
     def __reduce__(
         self,
-    ) -> tuple[
-        Any, tuple[Geometry, tuple[str, tuple[float, float] | None, str | None] | None]
-    ]:
+    ) -> tuple[Callable[[Geometry], ValidationReport], tuple[Geometry]]:
         """Pickle support: serialize the geometry only; the verdict is recomputed
         on unpickle (never trusts derived state in the payload).
         """
@@ -14413,33 +13398,6 @@ class ValidationReport:
         -------
         str or None
         """
-    def repair(
-        self,
-        *,
-        method: RepairMethod = 'linework',
-    ) -> Geometry:
-        """Return a repaired copy of the validated geometry (see
-        `Geometry.repair`).
-
-        Parameters
-        ----------
-        method : {'linework', 'structure'}, default 'linework'
-            Repair strategy: rebuild from noded linework, or fix ring structure.
-
-        Returns
-        -------
-        Geometry
-            A valid geometry.
-
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> bad = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))')
-        >>> bad.validate().repair().is_valid
-        True
-        """
-
 @overload
 def box(
     minx: float,
@@ -15505,16 +14463,16 @@ def from_polyline(
     """
 
 @overload
-def contains(left: Geometry, right: Geometry) -> bool: ...
+def contains(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def contains(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def contains(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def contains(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right``.
 
@@ -15556,18 +14514,18 @@ def contains(
     """
 
 @overload
-def contains_properly(left: Geometry, right: Geometry) -> bool: ...
+def contains_properly(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def contains_properly(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right`` with no boundary contact.
 
@@ -15604,16 +14562,16 @@ def contains_properly(
     """
 
 @overload
-def within(left: Geometry, right: Geometry) -> bool: ...
+def within(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def within(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def within(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def within(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
@@ -15649,16 +14607,16 @@ def within(
     """
 
 @overload
-def covers(left: Geometry, right: Geometry) -> bool: ...
+def covers(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def covers(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def covers(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def covers(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
@@ -15696,16 +14654,16 @@ def covers(
     """
 
 @overload
-def covered_by(left: Geometry, right: Geometry) -> bool: ...
+def covered_by(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def covered_by(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def covered_by(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def covered_by(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
@@ -15741,16 +14699,16 @@ def covered_by(
     """
 
 @overload
-def contains_xy(geom: Geometry, x: float, y: float) -> bool: ...
+def contains_xy(geom: _PredicateOperand, x: float, y: float) -> bool: ...
 @overload
 def contains_xy(
-    geom: Geometry,
+    geom: _PredicateOperand,
     x: FloatColumn,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: Geometry,
+    geom: _PredicateOperand,
     x: FloatInput,
     y: FloatColumn,
 ) -> npt.NDArray[np.bool_]: ...
@@ -15762,7 +14720,7 @@ def contains_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: Geometry | GeometryArray, x: FloatInput, y: FloatInput
+    geom: _PredicateOperand | GeometryArray, x: FloatInput, y: FloatInput
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether a geometry contains each ``(x, y)`` point (vectorized).
 
@@ -15793,16 +14751,16 @@ def contains_xy(
     """
 
 @overload
-def intersects_xy(geom: Geometry, x: float, y: float) -> bool: ...
+def intersects_xy(geom: _PredicateOperand, x: float, y: float) -> bool: ...
 @overload
 def intersects_xy(
-    geom: Geometry,
+    geom: _PredicateOperand,
     x: FloatColumn,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: Geometry,
+    geom: _PredicateOperand,
     x: FloatInput,
     y: FloatColumn,
 ) -> npt.NDArray[np.bool_]: ...
@@ -15814,7 +14772,7 @@ def intersects_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: Geometry | GeometryArray, x: FloatInput, y: FloatInput
+    geom: _PredicateOperand | GeometryArray, x: FloatInput, y: FloatInput
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether a geometry intersects each ``(x, y)`` point (vectorized).
 
@@ -15848,16 +14806,16 @@ def intersects_xy(
     """
 
 @overload
-def intersects(left: Geometry, right: Geometry) -> bool: ...
+def intersects(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def intersects(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def intersects(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share any point.
 
@@ -15892,16 +14850,16 @@ def intersects(
     """
 
 @overload
-def disjoint(left: Geometry, right: Geometry) -> bool: ...
+def disjoint(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def disjoint(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def disjoint(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def disjoint(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
@@ -15937,16 +14895,16 @@ def disjoint(
     """
 
 @overload
-def touches(left: Geometry, right: Geometry) -> bool: ...
+def touches(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def touches(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def touches(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def touches(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
@@ -15977,16 +14935,16 @@ def touches(
     """
 
 @overload
-def crosses(left: Geometry, right: Geometry) -> bool: ...
+def crosses(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def crosses(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def crosses(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def crosses(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` cross (interiors meet with lower
     dimension).
@@ -16020,16 +14978,16 @@ def crosses(
     """
 
 @overload
-def overlaps(left: Geometry, right: Geometry) -> bool: ...
+def overlaps(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def overlaps(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def overlaps(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def overlaps(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
@@ -16061,14 +15019,16 @@ def overlaps(
     """
 
 @overload
-def relate(left: Geometry, right: Geometry) -> str: ...
-@overload
-def relate(left: GeometryArray, right: Geometry | GeometryArray) -> list[str]: ...
-@overload
-def relate(left: Geometry, right: GeometryArray) -> list[str]: ...
+def relate(left: _PredicateOperand, right: _PredicateOperand) -> str: ...
 @overload
 def relate(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
+) -> list[str]: ...
+@overload
+def relate(left: _PredicateOperand, right: GeometryArray) -> list[str]: ...
+@overload
+def relate(
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> str | list[str]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
@@ -16100,22 +15060,26 @@ def relate(
     """
 
 @overload
-def relate_pattern(left: Geometry, right: Geometry, pattern: str) -> bool: ...
+def relate_pattern(
+    left: _PredicateOperand, right: _PredicateOperand, pattern: str
+) -> bool: ...
 @overload
 def relate_pattern(
     left: GeometryArray,
-    right: Geometry | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: Geometry,
+    left: _PredicateOperand,
     right: GeometryArray,
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray, pattern: str
+    left: _PredicateOperand | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
+    pattern: str,
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
 
@@ -16150,16 +15114,16 @@ def relate_pattern(
     """
 
 @overload
-def equals(left: Geometry, right: Geometry) -> bool: ...
+def equals(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def equals(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def equals(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def equals(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
@@ -16234,8 +15198,8 @@ def equals_identical(
 
 @overload
 def equals_exact(
-    left: Geometry,
-    right: Geometry,
+    left: _PredicateOperand,
+    right: _PredicateOperand,
     tolerance: float = 0.0,
     *,
     include_z: bool = True,
@@ -16244,7 +15208,7 @@ def equals_exact(
 @overload
 def equals_exact(
     left: GeometryArray,
-    right: Geometry | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -16252,7 +15216,7 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: Geometry,
+    left: _PredicateOperand,
     right: GeometryArray,
     tolerance: FloatInput = 0.0,
     *,
@@ -16261,8 +15225,8 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: _PredicateOperand | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -16844,8 +15808,8 @@ def split(
 
 @overload
 def dwithin(
-    left: Geometry,
-    right: Geometry,
+    left: _PredicateOperand,
+    right: _PredicateOperand,
     distance: float,
     *,
     unit: DistanceUnit | None = None,
@@ -16853,14 +15817,14 @@ def dwithin(
 @overload
 def dwithin(
     left: GeometryArray,
-    right: Geometry | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: Geometry,
+    left: _PredicateOperand,
     right: GeometryArray,
     distance: FloatInput,
     *,
@@ -16868,8 +15832,8 @@ def dwithin(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: _PredicateOperand | GeometryArray,
+    right: _PredicateOperand | GeometryArray,
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -18215,6 +17179,7 @@ def to_feature(
     *,
     properties: Mapping[str, Any] | None = None,
     id: FeatureId = None,
+    drop_epoch: bool = False,
 ) -> GeoJsonFeature:
     """Build a GeoJSON Feature mapping from a geometry and side data.
 
@@ -18227,6 +17192,10 @@ def to_feature(
         Feature properties. The mapping is copied and all keys must be strings.
     id : str or finite number, optional
         Feature identifier.
+    drop_epoch : bool, default False
+        GeoJSON Feature mappings cannot encode coordinate epoch metadata. If
+        ``False``, an epoch-bearing geometry raises ``GeometryError``; pass
+        ``True`` to acknowledge and explicitly lose the epoch metadata.
 
     Returns
     -------
@@ -18238,16 +17207,20 @@ def to_feature(
     TypeError
         If ``geom`` is not a Geometry or ``None``.
     GeometryError
-        If properties are not a string-keyed mapping, or the id is invalid.
+        If properties are not a string-keyed mapping, the id is invalid, or
+        coordinate epoch metadata is present without ``drop_epoch=True``.
     InvalidGeometryError
-        If a WGS84-tagged geometry has coordinates outside the lon/lat domain.
+        If the geometry has an M ordinate, or a WGS84-tagged geometry has
+        coordinates outside the lon/lat domain. GeoJSON Feature mappings have
+        no representation for M; use WKT/GeoArrow to preserve it.
     CRSError
         If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 
     Notes
     -----
-    Coordinate epoch metadata is not representable in GeoJSON Feature mappings
-    and is **silently dropped** (same contract as ``to_geojson(..., drop_epoch=True)``).
+    Coordinate epoch metadata is not representable in GeoJSON Feature mappings.
+    It is rejected unless ``drop_epoch=True``; that option explicitly
+    acknowledges and loses the epoch metadata.
 
     Examples
     --------
@@ -18259,7 +17232,11 @@ def to_feature(
 
 @overload
 def to_feature_collection(
-    values: Features, *, properties: None = None, ids: None = None
+    values: Features,
+    *,
+    properties: None = None,
+    ids: None = None,
+    drop_epoch: bool = False,
 ) -> GeoJsonFeatureCollection: ...
 @overload
 def to_feature_collection(
@@ -18267,6 +17244,7 @@ def to_feature_collection(
     *,
     properties: Mapping[str, Any] | Iterable[Mapping[str, Any] | None] | None = None,
     ids: Iterable[FeatureId] | None = None,
+    drop_epoch: bool = False,
 ) -> GeoJsonFeatureCollection:
     """Build a GeoJSON FeatureCollection from geometries and aligned side data.
 
@@ -18274,6 +17252,8 @@ def to_feature_collection(
     ----------
     values : Features, Geometry, None, GeometryArray, or iterable of Geometry or None
         A `Features` record reuses its aligned geometries, properties, and ids.
+        Features already owns aligned properties and ids, so properties and ids
+        must be omitted; supplying them raises ``TypeError``.
         Otherwise, one geometry or geometry rows to encode. CRS-tagged rows must
         use EPSG:4326 longitude/latitude coordinates.
     properties : Mapping or iterable of Mapping or None, optional
@@ -18281,6 +17261,10 @@ def to_feature_collection(
         mapping or explicit ``None`` per row. Omit for independent empty mappings.
     ids : iterable of str, finite number, or None, optional
         One optional feature identifier per geometry.
+    drop_epoch : bool, default False
+        GeoJSON Feature mappings cannot encode coordinate epoch metadata. If
+        ``False``, an epoch-bearing geometry raises ``GeometryError``; pass
+        ``True`` to acknowledge and explicitly lose the epoch metadata.
 
     Returns
     -------
@@ -18290,9 +17274,15 @@ def to_feature_collection(
     Raises
     ------
     TypeError
-        If a geometry row is not a Geometry or ``None``.
+        If a geometry row is not a Geometry or ``None``, or if properties or ids
+        are supplied when values is a Features record.
     GeometryError
-        If properties or ids are invalid or are not aligned with geometries.
+        If properties or ids are invalid or are not aligned with geometries, or
+        coordinate epoch metadata is present without ``drop_epoch=True``.
+    InvalidGeometryError
+        If a geometry has an M ordinate, or a WGS84-tagged geometry has
+        coordinates outside the lon/lat domain. GeoJSON Feature mappings have
+        no representation for M; use WKT/GeoArrow to preserve it.
     CRSError
         If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 
@@ -19537,55 +18527,60 @@ def geohash_cover(
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
-) -> GeohashCoverage:
-    """Cover a geometry with geohash cells at ``precision``.
+) -> CellArray[GeohashCell]:
+    """Cover a geometry with geohash cells at a fixed precision.
 
-    The result carries both ``cells`` — exactly the
-    cells satisfying ``cell_rule`` — and the exact membership predicates
-    ``covers``/``contains``/``intersects``, which always answer against
-    the source geometry.
+    The result is a ``CellArray`` for scalar input or ``Groups[CellArray]`` for
+    array input, with geohash cells selected by ``cell_rule``.
+    Keep the source geometry separately and use the free ``gm.*`` predicates
+    for exact geometry questions.
 
     Parameters
     ----------
     geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+        Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
+        flat cell array; an array returns one grouped cell row per input
+        geometry, preserving source-row association.
 
     precision : int
         Geohash precision (``1``-``12``; finer at higher values).
 
     cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-        Which cells to materialize, strictest to loosest. ``'center'``:
-        cells whose center is inside — unique assignment, balanced point
-        binning. ``'within'``: only cells entirely inside — cells the area
-        fully owns. ``'overlap'``: every cell touching the geometry — a
-        complete-coverage superset, the safe default for candidate keys.
-        ``'bbox'``: cells whose bounding box overlaps — loosest and fastest;
-        for geohash a cell IS its bbox, so identical to ``'overlap'``. The
-        rule never affects the exact predicates.
+        Which cells to materialize. ``'center'`` selects cells whose center is
+        inside; ``'within'`` selects cells entirely inside; ``'overlap'``
+        selects every cell touching the geometry; and ``'bbox'`` selects cells
+        whose bounding box overlaps. For geohash cells, ``'bbox'`` and
+        ``'overlap'`` are equivalent. The rule never affects exact predicates.
 
     max_cells : int or None, default 1000000
-        Upper bound on emitted cells. Raise to allow a larger covering, or
-        pass ``None`` for unlimited (bounded only by memory).
+        Finite hard cap on candidate cells considered by the coverer before the
+        ``within`` filter. A ``within`` cover can yield fewer final cells while
+        raising when the pre-within-filter candidate count would exceed this
+        candidate budget. Pass
+        ``None`` for an unlimited cover.
 
     Returns
     -------
-    GeohashCoverage or Groups of CellArray
-        A scalar returns its coverage; an array returns one cell group per row.
+    CellArray or Groups[CellArray]
+        A scalar returns a ``CellArray``; an array returns one ``CellArray``
+        group per input geometry.
 
     Raises
     ------
     GeometryError
-        If the geometry, depth, or a coverage parameter is invalid, or if
-        the covering would exceed ``max_cells``.
+        If the geometry, precision, ``cell_rule``, or ``max_cells`` is invalid,
+        or if the pre-``within``-filter candidate count would exceed
+        ``max_cells``.
+    InvalidGeometryError
+        If the geometry is empty.
 
     Examples
     --------
     >>> import gometry as gm
-    >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.geohash_cover(p, precision=6)
-    >>> (len(cov.cells), cov.contains(p), cov.cells[0].token)
-    (1, True, '9q8yyk')
+    >>> point = gm.Point(1, 1)
+    >>> cells = gm.geohash_cover(point, precision=1)
+    >>> len(cells)
+    1
     """
 
 def geohash_cells(
@@ -19614,6 +18609,14 @@ def geohash_cells(
     -------
     CellArray of GeohashCell
         One cell per input coordinate.
+
+    Raises
+    ------
+    GeometryError
+        If the input is scalar, precision is invalid, or coordinate columns
+        have different lengths.
+    InvalidGeometryError
+        If coordinates are non-finite or leave the lon/lat domain.
 
     See Also
     --------
@@ -19685,14 +18688,14 @@ def geohash_union(
     Raises
     ------
     ParseError
-        If a cell input is not valid for the geohash grid.
+        If a cell or token is not a valid geohash cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.geohash_cover(p, precision=6).cells)
+    >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
     >>> len(gm.geohash_union(cells, cells))
     1
     """
@@ -19710,7 +18713,7 @@ def geohash_intersection(
     Parameters
     ----------
     left, right : GeohashCell, str, or iterable of those
-        The two cell sets (any mix of cell objects, ids, or tokens).
+        The two cell sets (any mix of cell objects or tokens).
 
     Returns
     -------
@@ -19719,14 +18722,14 @@ def geohash_intersection(
     Raises
     ------
     ParseError
-        If an id or token is not a valid geohash cell.
+        If a cell or token is not a valid geohash cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.geohash_cover(p, precision=6).cells)
+    >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
     >>> len(gm.geohash_intersection(cells, cells))
     1
     """
@@ -19744,7 +18747,7 @@ def geohash_difference(
     Parameters
     ----------
     left, right : GeohashCell, str, or iterable of those
-        The two cell sets (any mix of cell objects, ids, or tokens).
+        The two cell sets (any mix of cell objects or tokens).
 
     Returns
     -------
@@ -19753,14 +18756,14 @@ def geohash_difference(
     Raises
     ------
     ParseError
-        If an id or token is not a valid geohash cell.
+        If a cell or token is not a valid geohash cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.geohash_cover(p, precision=6).cells)
+    >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
     >>> len(gm.geohash_difference(cells, []))
     1
     """
@@ -19780,60 +18783,60 @@ def tile_cover(
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
-) -> TileCoverage:
-    """Cover a geometry with XYZ web-mercator tiles at ``zoom``.
+) -> CellArray[Tile]:
+    """Cover a geometry with Web Mercator tiles at a fixed zoom.
 
-    The result carries both ``cells`` — exactly the
-    tiles satisfying ``cell_rule`` — and the exact membership predicates
-    ``covers``/``contains``/``intersects``, which always answer against
-    the source geometry.
+    The result is a ``CellArray`` for scalar input or ``Groups[CellArray]`` for
+    array input, with tiles selected by ``cell_rule``. Keep the source geometry
+    separately and use the free ``gm.*`` predicates for exact geometry
+    questions.
 
     Parameters
     ----------
     geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+        Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
+        flat cell array; an array returns one grouped cell row per input
+        geometry, preserving source-row association.
 
     zoom : int
         Tile zoom (``0``-``29``; finer at higher values).
 
     cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-        Which tiles to materialize, strictest to loosest. ``'center'``:
-        tiles whose center is inside — unique assignment, balanced point
-        binning. ``'within'``: only tiles entirely inside — tiles the area
-        fully owns. ``'overlap'``: every tile touching the geometry — a
-        complete-coverage superset, the safe default for candidate keys.
-        ``'bbox'``: tiles whose bounding box overlaps — loosest and fastest;
-        a tile IS its bbox, so identical to ``'overlap'``. The rule never
-        affects the exact predicates.
+        Which cells to materialize. ``'center'`` selects cells whose center is
+        inside; ``'within'`` selects cells entirely inside; ``'overlap'``
+        selects every cell touching the geometry; and ``'bbox'`` selects cells
+        whose bounding box overlaps. For tiles, ``'bbox'`` and ``'overlap'``
+        are equivalent. The rule never affects exact predicates.
 
     max_cells : int or None, default 1000000
-        Upper bound on emitted cells. Raise to allow a larger covering, or
-        pass ``None`` for unlimited (bounded only by memory).
+        Finite hard cap on candidate cells considered by the coverer before the
+        ``within`` filter. A ``within`` cover can yield fewer final cells while
+        raising when the pre-within-filter candidate count would exceed this
+        candidate budget. Pass
+        ``None`` for an unlimited cover.
 
     Returns
     -------
-    TileCoverage or Groups of CellArray
-        A scalar returns its coverage; an array returns one cell group per row.
+    CellArray or Groups[CellArray]
+        A scalar returns a ``CellArray``; an array returns one ``CellArray``
+        group per input geometry.
 
     Raises
     ------
     GeometryError
-        If the geometry, depth, or a coverage parameter is invalid, or if
-        the covering would exceed ``max_cells``.
+        If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
+        if the pre-``within``-filter candidate count would exceed ``max_cells``.
     InvalidGeometryError
-        If any vertex latitude is outside the Web Mercator domain
-        (±85.05112878°). Tile coverings cannot extend past that edge; out-of-
-        domain geometries are rejected (same typed error as ``Tile`` /
-        ``tile_cells``), never silently clipped.
+        If the geometry is empty or any latitude is outside the Web Mercator
+        domain (±85.05112878 degrees).
 
     Examples
     --------
     >>> import gometry as gm
-    >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.tile_cover(p, zoom=10)
-    >>> (len(cov.cells), cov.contains(p), str(cov.cells[0]))
-    (1, True, '0230102033')
+    >>> point = gm.Point(1, 1)
+    >>> cells = gm.tile_cover(point, zoom=0)
+    >>> len(cells)
+    1
     """
 
 def tile_cells(
@@ -19864,6 +18867,15 @@ def tile_cells(
     -------
     CellArray of Tile
         One tile per input coordinate.
+
+    Raises
+    ------
+    GeometryError
+        If the input is scalar, zoom is invalid, or coordinate columns have
+        different lengths.
+    InvalidGeometryError
+        If coordinates are non-finite or leave the lon/lat domain, or a
+        latitude is outside the Web Mercator domain (±85.051129°).
 
     See Also
     --------
@@ -19935,14 +18947,14 @@ def tile_union(
     Raises
     ------
     ParseError
-        If a cell input is not valid for the tile grid.
+        If an id or token is not a valid tile cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.tile_cover(p, zoom=10).cells)
+    >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
     >>> len(gm.tile_union(cells, cells))
     1
     """
@@ -19976,7 +18988,7 @@ def tile_intersection(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.tile_cover(p, zoom=10).cells)
+    >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
     >>> len(gm.tile_intersection(cells, cells))
     1
     """
@@ -20010,7 +19022,7 @@ def tile_difference(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.tile_cover(p, zoom=10).cells)
+    >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
     >>> len(gm.tile_difference(cells, []))
     1
     """
@@ -20306,13 +19318,12 @@ def h3_cover(
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
-) -> H3Coverage:
+) -> CellArray[H3Cell]:
     """Cover a geometry with H3 cells at ``resolution``.
 
-    The result carries both ``cells`` — exactly the cells
-    satisfying ``cell_rule`` (join keys, bins, visualization) — and the
-    exact membership predicates ``covers``/``contains``/``intersects``,
-    which always answer against the source geometry.
+    The result is a ``CellArray`` of cells satisfying ``cell_rule``. Keep the
+    source geometry separately and use the free ``gm.*`` predicates for exact
+    geometry questions.
 
     Parameters
     ----------
@@ -20338,7 +19349,7 @@ def h3_cover(
 
     Returns
     -------
-    H3Coverage or Groups of CellArray
+    CellArray or Groups of CellArray
         A scalar returns its coverage; an array returns one cell group per row.
 
     Raises
@@ -20346,6 +19357,8 @@ def h3_cover(
     GeometryError
         If the geometry, depth, or a coverage parameter is invalid, or if
         the covering would exceed ``max_cells``.
+    InvalidGeometryError
+        If the geometry is empty or coordinates leave the lon/lat domain.
 
     See Also
     --------
@@ -20356,8 +19369,10 @@ def h3_cover(
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cov = gm.h3_cover(p, resolution=7)
-    >>> (len(cov.cells), cov.contains(p), cov.cells[0].token)
-    (1, True, '872830828ffffff')
+    >>> cell = cov[0]
+    >>> assert cell is not None
+    >>> (len(cov), cell.token)
+    (1, '872830828ffffff')
     """
 
 def h3_cells(
@@ -20403,7 +19418,9 @@ def h3_cells(
     --------
     >>> import gometry as gm
     >>> cells = gm.h3_cells([-122.4, -122.3], [37.8, 37.7], resolution=7)
-    >>> (len(cells), cells[0].token)
+    >>> cell = cells[0]
+    >>> assert cell is not None
+    >>> (len(cells), cell.token)
     (2, '87283080cffffff')
     """
 
@@ -20463,16 +19480,21 @@ def h3_union(
     Raises
     ------
     ParseError
-        If a cell input is not valid for the H3 grid.
+        If an id or token is not a valid H3 cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    >>> nbr = list(cell.neighbors)[0]
-    >>> len(gm.h3_union([cell], [nbr]))
+    >>> cover = gm.h3_cover(p, resolution=7)
+    >>> cell = cover[0]
+    >>> assert cell is not None
+    >>> neighbors = cell.neighbors
+    >>> nbr = neighbors[0]
+    >>> assert nbr is not None
+    >>> cells = [item for item in cover if item is not None]
+    >>> len(gm.h3_union(cells, [item for item in neighbors if item is not None][:1]))
     2
     """
 
@@ -20505,9 +19527,14 @@ def h3_intersection(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    >>> nbr = list(cell.neighbors)[0]
-    >>> len(gm.h3_intersection([cell, nbr], [nbr]))
+    >>> cover = gm.h3_cover(p, resolution=7)
+    >>> cell = cover[0]
+    >>> assert cell is not None
+    >>> neighbors = cell.neighbors
+    >>> nbr = neighbors[0]
+    >>> assert nbr is not None
+    >>> cells = [item for item in cover if item is not None]
+    >>> len(gm.h3_intersection(cells + [nbr], [item for item in neighbors if item is not None][:1]))
     1
     """
 
@@ -20540,9 +19567,14 @@ def h3_difference(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cell = gm.h3_cover(p, resolution=7).cells[0]
-    >>> nbr = list(cell.neighbors)[0]
-    >>> len(gm.h3_difference([cell, nbr], [nbr]))
+    >>> cover = gm.h3_cover(p, resolution=7)
+    >>> cell = cover[0]
+    >>> assert cell is not None
+    >>> neighbors = cell.neighbors
+    >>> nbr = neighbors[0]
+    >>> assert nbr is not None
+    >>> cells = [item for item in cover if item is not None]
+    >>> len(gm.h3_difference(cells + [nbr], [item for item in neighbors if item is not None][:1]))
     1
     """
 
@@ -20607,13 +19639,12 @@ def s2_cover(
     min_level: int | None = None,
     max_level: int | None = None,
     level_mod: Literal[1, 2, 3] = 1,
-) -> S2Coverage:
+) -> CellArray[S2Cell]:
     """Cover a geometry with S2 cells within a level budget.
 
-    The result carries both ``cells`` — the S2 cells selected by
-    ``cell_rule`` within the level budget — and exact membership
-    predicates ``covers``/``contains``/``intersects``, which always answer
-    against the source geometry, never the cells.
+    The result is a ``CellArray`` of S2 cells selected by ``cell_rule`` within
+    the level budget. Keep the source geometry separately and use the free
+    ``gm.*`` predicates for exact geometry questions.
 
     Parameters
     ----------
@@ -20636,9 +19667,11 @@ def s2_cover(
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
-        Hard cap on emitted cells when ``level`` fixes the cover depth. It is
-        retained as metadata for adaptive covers, whose size is instead guided
-        by ``target_cells``. Pass ``None`` for an unlimited fixed-level cover.
+        Finite hard cap on emitted/allocation cells. For a fixed-level cover,
+        the level cannot be coarsened, so an insufficient cap raises. For an
+        adaptive cover, refinement stops and coarser cells are retained when
+        further children would exceed the cap; the result has at most
+        ``max_cells`` cells. Pass ``None`` for an unlimited cover.
 
     target_cells : int, default 8
         S2-idiomatic approximation target for optional adaptive refinement
@@ -20653,14 +19686,17 @@ def s2_cover(
 
     Returns
     -------
-    S2Coverage or Groups of CellArray
+    CellArray or Groups of CellArray
         A scalar returns its coverage; an array returns one cell group per row.
 
     Raises
     ------
     GeometryError
-        If the geometry, depth, or a coverage parameter is invalid, or if
-        a fixed-level covering would exceed ``max_cells``.
+        If the geometry, depth, or a coverage parameter is invalid, or if a
+        fixed-level cover exceeds ``max_cells``. An adaptive cover raises when
+        even its admissible starting cover cannot fit within the cap.
+    InvalidGeometryError
+        If the geometry is empty or coordinates leave the lon/lat domain.
 
     See Also
     --------
@@ -20671,8 +19707,10 @@ def s2_cover(
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cov = gm.s2_cover(p, level=12)
-    >>> (len(cov.cells), cov.contains(p), cov.cells[0].token)
-    (1, True, '8085809')
+    >>> cell = cov[0]
+    >>> assert cell is not None
+    >>> (len(cov), cell.token)
+    (1, '8085809')
     """
 
 def s2_cells(
@@ -20785,14 +19823,14 @@ def s2_union(
     Raises
     ------
     ParseError
-        If a cell input is not valid for the S2 grid.
+        If an id or token is not a valid S2 cell.
 
     Examples
     --------
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.s2_cover(p, level=12).cells)
+    >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
     >>> len(gm.s2_union(cells, cells))
     1
     """
@@ -20826,7 +19864,7 @@ def s2_intersection(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.s2_cover(p, level=12).cells)
+    >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
     >>> len(gm.s2_intersection(cells, cells))
     1
     """
@@ -20860,7 +19898,7 @@ def s2_difference(
 
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cells = list(gm.s2_cover(p, level=12).cells)
+    >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
     >>> len(gm.s2_difference(cells, []))
     1
     """

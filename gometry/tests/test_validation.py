@@ -110,15 +110,21 @@ def test_validation_reports_wkb_boundary_ring_location_and_path() -> None:
 
 
 def test_validation_reports_and_repairs_self_intersecting_polygons() -> None:
-    bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
-    report = bowtie.validate()
+    planar_bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
+    report = planar_bowtie.validate()
     assert not report
     assert report.reason is not None
     assert 'self-intersection' in report.reason.lower()
-    repaired = report.repair()
-    assert repaired.geometry_type == 'MultiPolygon'
-    assert repaired.validate().valid
-    assert repaired.area == pytest.approx(2)
+    planar_repaired = planar_bowtie.repair()
+    assert planar_repaired.geometry_type == 'MultiPolygon'
+    assert planar_repaired.validate().valid
+    assert planar_repaired.area == pytest.approx(2)
+    geographic_bowtie = gm.Polygon(
+        [(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)], crs=4326
+    )
+    geographic_repaired = geographic_bowtie.repair()
+    assert geographic_repaired.crs == 'EPSG:4326'
+    assert geographic_repaired.validate().valid
 
 
 def test_repair_accepts_geometry_directly_and_preserves_crs() -> None:
@@ -184,7 +190,7 @@ def test_is_valid_packed_arrays_match_mixed() -> None:
 
 
 def test_is_valid_is_uniform_across_scalar_and_array() -> None:
-    bowtie = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))')
+    bowtie = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))', crs=4326)
     square = gm.box(0, 0, 1, 1)
     assert square.is_valid is True
     assert bowtie.is_valid is False
@@ -193,7 +199,7 @@ def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     reports = array.validate()
     np.testing.assert_array_equal([bool(report) for report in reports], [True, False])
     assert reports[1].reason
-    repaired = reports[1].repair()
+    repaired = bowtie.repair()
     assert repaired.is_valid and repaired.crs == 'EPSG:4326'
 
 
@@ -201,7 +207,7 @@ BOWTIE_WKT = 'POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))'
 
 
 def test_repair_is_deterministic() -> None:
-    bowtie = gm.from_wkt(BOWTIE_WKT)
+    bowtie = gm.from_wkt(BOWTIE_WKT, crs=4326)
     lines = gm.GeometryArray([
         gm.LineString([(0, 0), (1, 0)]),
         gm.LineString([(1, 0), (1, 1)]),
@@ -246,12 +252,12 @@ def test_repair_structure_fills_wound_shells() -> None:
 
 
 def test_repair_parity_and_valid_fast_path() -> None:
-    bowtie = gm.from_wkt(BOWTIE_WKT)
-    square = gm.box(0, 0, 1, 1)
+    bowtie = gm.from_wkt(BOWTIE_WKT, crs=4326)
+    square = gm.box(0, 0, 1, 1, crs=4326)
     expected = bowtie.repair().to_wkt()
     assert bowtie.repair().to_wkt() == expected
-    assert bowtie.validate().repair().to_wkt() == expected
-    array = gm.GeometryArray([bowtie, square])
+    assert bowtie.repair().to_wkt() == expected
+    array = gm.GeometryArray([bowtie, square], crs=4326)
     repaired = array.repair()
     assert repaired[0].to_wkt() == expected
     assert all(repaired.is_valid)

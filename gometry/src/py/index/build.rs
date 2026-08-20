@@ -1,7 +1,7 @@
 use crate::py::index::{
-    Arc, Bound, Bounds, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows,
-    PackedStore, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
-    RTree, ShapeData, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
+    Bound, Bounds, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore,
+    PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, RTree,
+    ShapeData, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
     geodesic_prunable_point, index_envelope, point_index_envelope,
 };
 pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
@@ -143,8 +143,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> Option<PySpatialI
             Some(PySpatialIndex {
                 rows: IndexRows {
                     packed: Some(PackedStore {
-                        rows: Arc::clone(array.storage_arc()),
-                        frame_caches: array.frame_caches.clone(),
+                        source: array.clone(),
                     }),
                     boxed: Vec::new(),
                     live: vec![true; total_rows],
@@ -168,8 +167,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> Option<PySpatialI
             Some(PySpatialIndex {
                 rows: IndexRows {
                     packed: Some(PackedStore {
-                        rows: Arc::clone(array.storage_arc()),
-                        frame_caches: array.frame_caches.clone(),
+                        source: array.clone(),
                     }),
                     boxed: Vec::new(),
                     live: vec![true; total_rows],
@@ -200,12 +198,11 @@ pub(crate) fn build_spatial_index(values: &Bound<'_, PyAny>) -> PyResult<PySpati
         }
         let rows: Vec<Option<PyGeometry>> = array
             .masked_storage_rows()
-            .map(|(missing, row)| {
+            .enumerate()
+            .map(|(index, (missing, row))| {
                 (!missing).then(|| {
-                    PyGeometry::with_frame(
-                        row.into_shape_data(row.quick_bounds()),
-                        array.frame.clone(),
-                    )
+                    let shape = array.prepared_row(index, row).into_owned_data();
+                    PyGeometry::with_frame(shape, array.frame.clone())
                 })
             })
             .collect();
@@ -335,4 +332,109 @@ pub(crate) fn index_metadata(items: &[PyGeometry]) -> PyResult<Option<Frame>> {
     }
     // The canonical shared-frame gate: per-axis CRSMismatchError messages.
     Ok(Some(crate::Frame::common(items, "spatial index")?))
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::HeapSize;
+    use crate::boundary::Frame;
+    use crate::geometry::{CoordSeq, CsrOffsetColumn, PolygonLevel, RingLevel};
+
+    fn points() -> PyGeometryArray {
+        PyGeometryArray::packed_points(
+            CoordSeq::from_vecs(vec![0.0, 10.0], vec![0.0, 10.0], None, None),
+            Frame::None,
+        )
+    }
+
+    fn long_lines() -> PyGeometryArray {
+        PyGeometryArray::packed_lines(
+            CoordSeq::from_vecs((0..34).map(f64::from).collect(), vec![0.0; 34], None, None),
+            CsrOffsetColumn::try_new(vec![0, 34], 34).unwrap(),
+            Frame::None,
+        )
+    }
+
+    fn polygons() -> PyGeometryArray {
+        PyGeometryArray::packed_polygons(
+            CoordSeq::from_vecs(
+                vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0, 0.0],
+                None,
+                None,
+            ),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
+            Frame::None,
+        )
+    }
+
+    #[test]
+    fn packed_sources_are_indexed_without_build_time_boxes() {
+        let point_index = packed_spatial_index(&points()).unwrap();
+        assert!(point_index.rows.packed.is_some());
+        assert!(point_index.rows.boxed.is_empty());
+
+        let line_index = packed_spatial_index(&long_lines()).unwrap();
+        assert!(line_index.rows.packed.is_some());
+        assert!(line_index.rows.boxed.is_empty());
+
+        let polygon_index = packed_spatial_index(&polygons()).unwrap();
+        assert!(polygon_index.rows.packed.is_some());
+        assert!(polygon_index.rows.boxed.is_empty());
+
+        let source = points();
+        let mut index = packed_spatial_index(&source).unwrap();
+        let inserted = index.rows.packed.as_ref().unwrap().source.clone();
+        let handles = index.insert_array(&inserted).unwrap();
+        assert_eq!(handles, [2, 3]);
+        assert_eq!(index.rows.boxed.len(), 2);
+    }
+
+    #[test]
+    fn packed_index_and_source_share_the_persistent_row_arc() {
+        let source = long_lines();
+        let index = packed_spatial_index(&source).unwrap();
+        let source_arc = match source.prepared_row(0, source.storage().row(0)) {
+            crate::array::PreparedRow::Shared(data) => Arc::clone(data),
+            crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
+        };
+        let indexed_arc = index.rows.prepared_row(0).into_owned_data();
+        assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
+
+        let inverse = packed_spatial_index(&source).unwrap();
+        let indexed_first = inverse.rows.prepared_row(0).into_owned_data();
+        let source_second = source
+            .prepared_row(0, source.storage().row(0))
+            .into_owned_data();
+        assert!(Arc::ptr_eq(&indexed_first, &source_second));
+        assert_eq!(
+            source
+                .prepared_cache
+                .get()
+                .unwrap()
+                .iter()
+                .filter(|slot| slot.get().is_some())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pickle_restore_keeps_sparse_handles_and_boxes_rows() {
+        let source = points();
+        let restored = restore_spatial_index(&source, &[1]).unwrap();
+        assert!(restored.rows.packed.is_none());
+        assert_eq!(restored.rows.boxed.len(), 2);
+        assert!(!restored.rows.is_live(0));
+        assert!(restored.rows.is_live(1));
+        assert_eq!(restored.rows.live, [false, true]);
+        assert_eq!(
+            restored.rows.heap_bytes(),
+            HeapSize::heap_bytes(&restored.rows)
+        );
+    }
 }
