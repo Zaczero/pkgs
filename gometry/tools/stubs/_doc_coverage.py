@@ -53,7 +53,6 @@ ERROR_EXPORTS = frozenset({
 _DOC_COVERAGE_SKIP = ERROR_EXPORTS | frozenset({
     'Cell',
     'Coordinates',
-    'Coverage',
     'Extremes',
     'Features',
     'GeometryCollection',
@@ -97,10 +96,6 @@ RAISES_VALUEERROR_EXEMPT: dict[str, str] = {
     'Groups.index': 'list.index convention: a missing element is a plain ValueError',
     'Coordinates.index': 'list.index convention: a missing element is a plain ValueError',
     'GeometryParts.index': 'list.index convention: a missing element is a plain ValueError',
-    'H3Coverage.index': 'list.index convention: a missing element is a plain ValueError',
-    'S2Coverage.index': 'list.index convention: a missing element is a plain ValueError',
-    'GeohashCoverage.index': 'list.index convention: a missing element is a plain ValueError',
-    'TileCoverage.index': 'list.index convention: a missing element is a plain ValueError',
     'H3VertexArray.index': 'list.index convention: a missing element is a plain ValueError',
     'H3EdgeArray.index': 'list.index convention: a missing element is a plain ValueError',
 }
@@ -318,8 +313,6 @@ def required_raises(
         required |= {'GeometryError', 'ParseError'}
 
     if owner == 'S2Cell' and name == 'parent':
-        required.add('GeometryError')
-    if owner in ('H3Coverage', 'S2Coverage') and name in ('with_parents', 'uncompact'):
         required.add('GeometryError')
     if qualname in ('h3_cover', 's2_cover', 'geohash_cover', 'tile_cover'):
         required.add('GeometryError')
